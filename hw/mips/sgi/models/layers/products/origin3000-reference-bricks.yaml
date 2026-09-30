@@ -1,0 +1,52 @@
+# Origin 3000 reference set: one C-brick, one R-brick, one I-brick.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit. The key left here backs topology, population, and fitted_memory
+# only, whose strict evidence policy (tools/origami_lib/model_validation.py)
+# requires non-empty sources regardless of provenance. It cites only the internal
+# closure research note's family table, so the checker reports it under "facts
+# whose only sources are internal documents" rather than resolving it; replacing
+# it with an independently obtainable citation is follow-up work on the evidence
+# itself, not a citation-form change. The scoping key the table previously carried
+# backed no fact in this file and is dropped with the rest of the table.
+sources:
+  sn-family-closure-family-table: "docs/research/sn-family-closure-20260913.md family table, Origin 3000 row: IP35 C-brick, Bedrock; NUMAlink 3, R-brick 8-port; none in the C-brick, XBridge crossbar in I/P/X-bricks; I-brick host ports A and B, head E bus 2, head F bus 1 plus IO7"
+layer:
+  kind: product
+  id: origin3000-reference-bricks
+  requires: {assembly: ip35}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    provenance: vendor-document
+    sources: [sn-family-closure-family-table]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The closure record establishes the C-brick's DIMM slots and bank range but not an installed memory population for this reference set.
+      provenance: derived
+      sources: [sn-family-closure-family-table]
+    provenance: vendor-document
+    sources: [sn-family-closure-family-table]
+  data:
+    machine:
+      name: Origin 3000 reference bricks
+      model_role: reference
+      notes: >-
+        One of each brick type the closure record establishes ports and widgets
+        for: a C-brick (one Bedrock node, two processors, no onboard crossbar), an
+        R-brick (the eight-port SN1 Router, cabled to the C-brick on port 3 within
+        its documented C-brick port range), and an I-brick (an XBridge on host
+        port A, IO7's four fixed devices on bus 1). No SGI-catalogued product ships
+        exactly this combination: the 3200 pairs two C-bricks directly with no
+        R-brick, and the smallest R-brick-joined systems in the closure record's
+        sources start at eight processors across two C-bricks. This set exists to
+        show each brick's own documented ports and widgets, not to assert a
+        shipped configuration. Processor clock and cache are not asserted: the
+        closure record names R12000 360 MHz and R12000A 400 MHz for the C-brick
+        without a cache size. This configuration never compiles: no QEMU consumer
+        for the Origin 3000 exists.
+    evidence_policy: strict

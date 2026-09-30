@@ -31,10 +31,12 @@ meson = { accepted = ">=1.12.0", installed = "1.12.0", canary = "meson" }
 sphinx = { accepted = ">=7.2.6", installed = "7.2.6", canary = "sphinx-build" }
 sphinx_rtd_theme = { accepted = ">=1.2.2", installed = "2.0.0" }
 
-# This test group is for dependencies required to run various tooling
-# and tests that should always be installed at configure time. It should
-# only include dependencies that can be guaranteed via configure from
-# system packages, or python packages we vendor.
+# Optional dependencies for the public SGI model generator and its tests.
+# The required smoke job installs this group; normal QEMU builds do not need it.
+[sgi-model]
+PyYAML = { accepted = ">=6.0", installed = "6.0.1" }
+jsonschema = { accepted = ">=4.18.0", installed = "4.18.0" }
+
 [tooling]
 "qemu.qmp" = { accepted = ">=0.0.5", installed = "0.0.6" }
 "qemu" = { path = "python/" }

@@ -1,0 +1,67 @@
+model_version: 1
+evidence_policy: strict
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: fixture-board
+  product: fixture-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: fixture-board}
+    - {kind: product, id: fixture-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1], [2], [3]]
+    provenance: derived
+    sources: [Node-asic capacity fixture]
+  population:
+    nodes: 1
+    cpus_per_node: [3]
+    fitted_memory:
+      status: unknown
+      reason: This fixture describes node-asic capacity, not installed memory.
+      provenance: vendor-document
+      sources: [Node-asic capacity fixture]
+    provenance: derived
+    sources: [Node-asic capacity fixture]
+  limits:
+    nodes: 1
+    cpus_per_node: 4
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Node-asic capacity fixture]
+machine:
+  name: Node-asic capacity reference
+  generation: SN0
+  board_ip: IP27
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: xio, name: XIO}]
+components:
+  - id: hub
+    name: Hub
+    kind: node-asic
+    provenance: vendor-document
+    sources: [Node-asic capacity fixture]
+    node_asic: {processor_interfaces: 1, cpus_per_interface: 2}
+buses:
+  - id: xio
+    name: XIO
+    kind: xio
+    master: hub
+    provenance: derived
+    sources: [Node-asic capacity fixture]
+connections:
+  - component: hub
+    bus: xio
+    role: master
+    provenance: derived
+    sources: [Node-asic capacity fixture]

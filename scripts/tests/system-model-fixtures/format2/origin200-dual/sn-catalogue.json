@@ -1,0 +1,398 @@
+{
+  "offerings": [
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Dual-module Origin 200",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": false,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512,
+          256,
+          128,
+          64
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 2,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.2",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.3",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-dual"
+    }
+  ],
+  "schema": "sgi-sn-catalogue",
+  "topologies": [
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            },
+            {
+              "index": 1,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "cable",
+          "name": "peer-craylink"
+        }
+      ],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [],
+      "description": "SGI Origin 200 (IP29)",
+      "generation": "sn0",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "onboard",
+          "id": "baseio",
+          "ioc3-serial": 103835129348097,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1244-001",
+          "preset": "ip29-io",
+          "revision": 4,
+          "serial": 6618611909121
+        },
+        {
+          "attachment": 0,
+          "carrier": "onboard",
+          "id": "baseio",
+          "ioc3-serial": 103835129348098,
+          "module-index": 1,
+          "other-identity-parts": [],
+          "part": "030-1244-001",
+          "preset": "ip29-io",
+          "revision": 4,
+          "serial": 6618611909122
+        }
+      ],
+      "junk-uart": 0,
+      "modules": [
+        {
+          "controller-index": -1,
+          "id": "node0-cpu-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        },
+        {
+          "controller-index": -1,
+          "id": "node1-cpu-module",
+          "initial-module-number": 0,
+          "nodes": [
+            1
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "origin200-dual",
+      "node-populations": [
+        {
+          "cables": [
+            0
+          ],
+          "grade": "established",
+          "nodes": [
+            0,
+            1
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                2,
+                2
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512,
+            256,
+            128,
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node0-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 3,
+            "serial": 13241552537607,
+            "system-controller": true,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        },
+        {
+          "accepted-memory-mib": [
+            512,
+            256,
+            128,
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node1-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 3,
+            "serial": 13241552537608,
+            "system-controller": true,
+            "widget-revision": 1
+          },
+          "module-index": 1,
+          "slave-role": true,
+          "slot": 0
+        }
+      ],
+      "product": "origin200",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 8
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 1,
+          "widget": 8
+        }
+      ],
+      "xio-slots": []
+    }
+  ],
+  "version": 1
+}

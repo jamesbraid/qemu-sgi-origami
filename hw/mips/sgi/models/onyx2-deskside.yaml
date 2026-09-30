@@ -1,0 +1,52 @@
+# The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
+# IO1 (Crossbow widget F) and one InfiniteReality pipe on XIO4 (widget 8)
+# with no Ktown (docs/datasheets/onyx2.md, Deskside). Launch it with
+# tools/origami run irix --machine onyx2 --topology onyx2-deskside
+# (QEMU: -M onyx2,topology=onyx2-deskside).
+#
+# Each node board's physical_slot carries the Hub slot bits this midplane
+# drives: 3 in node slot 1 and 2 in node slot 2, which firmware and IRIX
+# decode as the deskside's n1 and n2 (docs/datasheets/onyx2.md, Node slot
+# codes).
+configuration_version: 1
+sources:
+  deskside-empty-xio: "The selected Onyx2 deskside fits no optional XIO board."
+  deskside-graphics: "docs/datasheets/onyx2.md Deskside: the graphics board set takes XIO slot 4 directly."
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip27.yaml
+  - layers/modules/onyx2-deskside-module.yaml
+  - layers/products/onyx2-deskside.yaml
+module_instances:
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-1-
+    module_role: MASTER
+    parent: compute-module
+    physical_slot: {kind: node, number: 1, hub_slot_bits: 3}
+  - model: layers/modules/ip27-node-board.yaml
+    prefix: node-board-2-
+    module_role: SLAVE
+    parent: compute-module
+    physical_slot: {kind: node, number: 2, hub_slot_bits: 2}
+  - model: layers/modules/kona-pipe.yaml
+    prefix: io4-
+    parent: graphics-slots
+    physical_slot: {kind: io, number: 4}
+    bus_bindings: {upstream: xbow0-io4}
+  # The GE14-4 plugs into the midplane's GE graphics slot beside the
+  # rest of the board set; its record is the first on the pipe's chain.
+  - model: layers/modules/kona-ge14-4.yaml
+    prefix: io4-ge-
+    parent: graphics-slots
+    bus_bindings: {pipe-one-wire: io4-one-wire}
+connector_population:
+  - component: graphics-slots
+    occupancy: occupied
+    occupant: io4-pipe
+    reason: Fit the one InfiniteReality pipe the deskside carries.
+    provenance: derived
+    sources: [deskside-graphics]
+  - {component: xio-slot-2, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
+  - {component: xio-slot-3, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
+  - {component: xio-slot-5, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}
+  - {component: xio-slot-6, occupancy: empty, reason: Select a deskside without optional XIO boards., provenance: derived, sources: [deskside-empty-xio]}

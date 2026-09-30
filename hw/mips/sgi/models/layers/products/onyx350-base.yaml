@@ -1,0 +1,45 @@
+# One Onyx 350 base compute module; graphics hardware is outside this model.
+layer_version: 1
+layer:
+  kind: product
+  id: onyx350-base
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [4]]
+    provenance: vendor-document
+    sources: ["007-4632-001 printed pages 47-49: every system has a base compute module with two or four processors, 1-8 GB local memory, four PCI/PCI-X slots on two buses"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The guide gives allowed capacity, not the installed DIMMs in this reference system.
+      provenance: derived
+      sources: ["007-4632-001 printed page 48: 1-8 GB local memory"]
+    provenance: vendor-document
+    sources: ["007-4632-001 printed pages 47-49: base compute module and two-processor option"]
+  data:
+    machine:
+      name: Onyx 350 base compute module
+      model_role: reference
+      notes: >-
+        The boot module has an IP53 node board, Bedrock, IO9 in the lowermost PCI
+        slot, and an L1 controller. The guide establishes two PCI buses, an XIO
+        connector, and one NUMAlink 3 connector. The graphics attachment is
+        outside this non-graphics reference. PIC revision, XIO widget
+        placement, PCI device numbers, fitted DIMMs and board revisions are
+        unknown for this selected configuration. Origin 350 placements do not
+        establish those values for Onyx 350.
+    evidence_policy: strict
+    components:
+      - {id: chassis, name: Onyx 350 base compute module, kind: chassis, provenance: vendor-document, sources: ["007-4632-001 printed page 47: base compute module"]}
+      - {id: cpu0, name: MIPS processor, kind: cpu, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
+      - {id: cpu1, name: MIPS processor, kind: cpu, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 54: two or four processors on IP53"]}
+      - {id: memory, name: node memory, kind: memory, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 48 and 53: 1-8 GB in two to eight DIMMs"]}
+      - {id: io9, name: IO9 card, kind: io-controller, parent: chassis, provenance: vendor-document, sources: ["007-4632-001 printed pages 47 and 50: factory-installed IO9 in lowermost PCI slot"]}
+    buses:
+      - {id: pci, name: PCI/PCI-X slots on two buses, kind: pci, provenance: vendor-document, sources: ["007-4632-001 printed page 49: four slots on two buses"]}
+    connections:
+      - {component: io9, bus: pci, role: endpoint, provenance: vendor-document, sources: ["007-4632-001 printed page 50: IO9 in lowermost PCI slot"]}

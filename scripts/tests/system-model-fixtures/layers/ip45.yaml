@@ -1,0 +1,6 @@
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip45
+  platform: ip35
+  requires: {architecture: sn1}

@@ -1,0 +1,12 @@
+# Origin 300 with the NUMAlink module, reference composition. Resolve before
+# validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/modules/origin300-base.yaml
+  - layers/products/origin300-numalink-module.yaml
+module_instances:
+  - model: layers/modules/numalink-module.yaml
+    prefix: numalink-
+    parent: link-connector

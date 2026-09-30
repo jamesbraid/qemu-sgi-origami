@@ -1,0 +1,21 @@
+# Origin 3000 reference-bricks composition. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip35.yaml
+  - layers/modules/c-brick.yaml
+  - layers/products/origin3000-reference-bricks.yaml
+module_instances:
+  - model: layers/modules/r-brick.yaml
+    prefix: rbrick-
+    parent: chassis
+  - model: layers/modules/i-brick.yaml
+    prefix: ibrick-
+    parent: chassis
+    observed_hardware:
+      mode: direct
+      sources: ["docs/research/sn-family-closure-20260913.md, Origin 300 and Origin 3000 section, I-brick paragraph: three owners' IRIX inventories (nekonomicon forum 14 threads 16719632, 16723604, 16720581)"]
+      note: >-
+        The IO7 device identities are the closure record's own three
+        independent owners' IRIX inventories, reused directly for this
+        reference I-brick rather than a distinct capture of this exact set.

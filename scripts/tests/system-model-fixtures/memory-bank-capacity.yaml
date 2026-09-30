@@ -1,0 +1,70 @@
+model_version: 1
+evidence_policy: strict
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: fixture-board
+  product: fixture-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: fixture-board}
+    - {kind: product, id: fixture-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: derived
+    sources: [Memory bank capacity fixture]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    memory_mib_per_node: [192]
+    memory_bank_mib_per_node: [[64, 64, 64, 0]]
+    provenance: derived
+    sources: [Memory bank capacity fixture]
+  limits:
+    nodes: 1
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Memory bank capacity fixture]
+machine:
+  name: Memory bank capacity reference
+  generation: SN0
+  board_ip: IP27
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection: {mechanism: not-traced}
+address_spaces: [{id: memory, name: memory}]
+components:
+  - id: node-memory
+    name: node memory
+    kind: memory
+    provenance: vendor-document
+    sources: [Memory bank capacity fixture]
+    memory: {banks: 2, dimms_per_bank: 2, bank_sizes_mib: [64]}
+  - id: hub
+    name: Hub
+    kind: node-asic
+    provenance: vendor-document
+    sources: [Memory bank capacity fixture]
+    node_asic: {processor_interfaces: 1, cpus_per_interface: 2}
+buses:
+  - id: xio
+    name: XIO
+    kind: xio
+    master: hub
+    provenance: derived
+    sources: [Memory bank capacity fixture]
+connections:
+  - component: hub
+    bus: xio
+    role: master
+    provenance: derived
+    sources: [Memory bank capacity fixture]

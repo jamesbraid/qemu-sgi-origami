@@ -1,0 +1,87 @@
+model_version: 1
+evidence_policy: strict
+machine:
+  name: Conflicting direct link
+  generation: SN0
+  board_ip: IP29
+  architecture_ip: IP27
+  kernel_ip: IP27
+  model_role: reference
+processors:
+  - part: r10000
+    variants: [{clock_mhz: 180, cache_mib: 1}]
+    provenance: derived
+    sources: ["test fixture"]
+space_selection:
+  mechanism: not-traced
+address_spaces:
+  - id: xio
+    name: XIO
+components:
+  - {id: hub, name: Hub, kind: node-asic, provenance: vendor-document, node_asic: {processor_interfaces: 1, cpus_per_interface: 2}}
+  - {id: bridge, name: Bridge, kind: pci-host-bridge, provenance: vendor-document, pci_host_bridge: {heads: 1}}
+  - {id: bridge-two, name: Second Bridge, kind: pci-host-bridge, provenance: vendor-document, pci_host_bridge: {heads: 1}}
+buses:
+- id: xio
+  name: XIO
+  kind: xio
+  master: hub
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  sources: [Synthetic topology validation fixture]
+
+connections:
+- component: hub
+  bus: xio
+  role: master
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  sources: &id001 [Synthetic topology validation fixture]
+- component: bridge
+  bus: xio
+  role: endpoint
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  xio:
+    physical_attachment: direct-link
+    discovery_widget: 0
+    enumerated_widget: 8
+    master_widget: 10
+    decoded_widgets: [0, 8]
+    identity_aliases:
+    - widget: 0
+      roles: [discovery, decoded]
+    - widget: 8
+      roles: [enumerated, decoded]
+  sources: *id001
+- component: bridge-two
+  bus: xio
+  role: endpoint
+  provenance: unsourced
+  evidence_gap: Adversarial identity fixture.
+  xio:
+    physical_attachment: crossbar-port
+    decoded_widgets: [8]
+  sources: *id001
+composition:
+  architecture: sn0
+  platform: ip27
+  assembly: fixture-board
+  product: fixture-product
+  layers:
+    - {kind: architecture, id: sn0}
+    - {kind: assembly, id: fixture-board}
+    - {kind: product, id: fixture-product}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: derived
+    sources: [Synthetic topology validation fixture]
+  population: {"nodes":1,"cpus_per_node":[1],"memory_mib_per_node":[64],"provenance":"derived","sources":["Synthetic topology validation fixture"]}
+  limits:
+    nodes: 1
+    cpus_per_node: 2
+    dimms_per_node: 8
+    provenance: derived
+    sources: [Synthetic topology validation fixture]

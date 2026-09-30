@@ -1,0 +1,6 @@
+configuration_version: 1
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip27.yaml
+  - layers/modules/origin2000-module.yaml
+  - layers/products/origin2000.yaml

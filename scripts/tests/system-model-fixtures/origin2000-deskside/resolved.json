@@ -1,0 +1,3563 @@
+{
+  "address_spaces": [
+    {
+      "id": "memory",
+      "name": "uncached memory",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Placed at carrier window zero so a plain physical address still means memory.",
+      "provenance": "public-header",
+      "selector": 3,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9600_0000_0000_0000"
+    },
+    {
+      "id": "hub-special",
+      "name": "Hub special",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Boot flash window, the node's own uncached memory alias, directory and ECC access.",
+      "provenance": "public-header",
+      "selector": 0,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9000_0000_0000_0000"
+    },
+    {
+      "id": "io",
+      "name": "I/O",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Sixteen small windows of 16 MB fill offsets 0x0000_0000 to 0x0fff_ffff, widget N at N times 16 MB. Seven big windows of 512 MB start at 0x2000_0000. Small window 0 and big window 6 are two views of the same widget, and both decode: Linux reads widget 0's identification register through the small window by its raw address, OpenBSD reaches the same device through the big window, so both paths have to work. See docs/datasheets/address-map.md for the small-window-0 reversal history.",
+      "provenance": "public-header",
+      "selector": 1,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9200_0000_0000_0000"
+    },
+    {
+      "id": "memory-special",
+      "name": "memory special",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Fetch-and-op and other special memory operations. Not on the first-boot path.",
+      "provenance": "public-header",
+      "selector": 2,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9400_0000_0000_0000"
+    }
+  ],
+  "buses": [
+    {
+      "id": "module-management-i2c",
+      "kind": "i2c",
+      "masters": [
+        "node-board-1-management-adapter",
+        "node-board-2-management-adapter",
+        "node-board-3-management-adapter",
+        "node-board-4-management-adapter",
+        "module-msc"
+      ],
+      "name": "Shared module management I2C bus",
+      "provenance": "derived",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "id": "xbow0-node1",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 host link to Node 1",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io1",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO1",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io3",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO3",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io5",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO5",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io2",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO2",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io4",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO4",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow0-io6",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 XIO position IO6",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io8",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO8",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io10",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO10",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io12",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO12",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "r1-node1",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "router-1",
+      "name": "Router 1 to Node 1",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "r1-node2",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "router-1",
+      "name": "Router 1 to Node 2",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "r1-r2",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "router-1",
+      "name": "inter-Router link",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "r2-node3",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "router-2",
+      "name": "Router 2 to Node 3",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "r2-node4",
+      "kind": "fabric",
+      "link": {
+        "kind": "midplane"
+      },
+      "master": "router-2",
+      "name": "Router 2 to Node 4",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "xbow0-node3",
+      "kind": "xio",
+      "master": "crossbow-0",
+      "name": "Crossbow 1 host link to Node 3",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-node4",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 host link to Node 4",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "null-router",
+      "kind": "fabric",
+      "link": {
+        "kind": "null-router"
+      },
+      "master": "node-board-1-hub",
+      "name": "Null Router between node slots 1 and 2",
+      "notes": "A direct Hub-to-Hub link, fitted only with two node boards: three or four take two Standard Routers instead. No PROM or IRIX inventory lists the Null Router (docs/datasheets/onyx2.md, The two-node deskside).",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3453-002 printed page 22 PDF page 40, Figure 2-9: a two-node Origin 2000 deskside with a Null Router",
+        "007-3439-002 printed page 57 PDF page 71: the Null Router joins two node boards in one deskside and cannot be expanded"
+      ]
+    },
+    {
+      "id": "xbow1-node2",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 host link to Node 2",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io7",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO7",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io9",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO9",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "xbow1-io11",
+      "kind": "xio",
+      "master": "crossbow-1",
+      "name": "Crossbow 2 XIO position IO11",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "baseio-pci",
+      "kind": "pci",
+      "master": "baseio-bridge",
+      "name": "BaseIO PCI",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-sysad",
+      "kind": "sysad",
+      "master": "node-board-1-cpu-a",
+      "name": "node SysAD",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-main-memory-link",
+      "kind": "internal",
+      "master": "node-board-1-bx",
+      "name": "node BX-to-main-memory data",
+      "notes": "Downstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-directory-memory-link",
+      "kind": "directory-bus",
+      "master": "node-board-1-hub",
+      "name": "node Hub-to-directory-memory data",
+      "notes": "Figure 2-1's bidirectional directory-data path connects Hub directly to directory memory.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-bx-hub-link",
+      "kind": "internal",
+      "master": "node-board-1-hub",
+      "name": "node Hub-to-BX main-memory data",
+      "notes": "Upstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-main-memory-control-link",
+      "kind": "internal",
+      "master": "node-board-1-hub",
+      "name": "node main-memory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to main memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-directory-control-link",
+      "kind": "directory-bus",
+      "master": "node-board-1-hub",
+      "name": "node directory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to directory memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-sysad",
+      "kind": "sysad",
+      "master": "node-board-2-cpu-a",
+      "name": "node SysAD",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-main-memory-link",
+      "kind": "internal",
+      "master": "node-board-2-bx",
+      "name": "node BX-to-main-memory data",
+      "notes": "Downstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-directory-memory-link",
+      "kind": "directory-bus",
+      "master": "node-board-2-hub",
+      "name": "node Hub-to-directory-memory data",
+      "notes": "Figure 2-1's bidirectional directory-data path connects Hub directly to directory memory.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-bx-hub-link",
+      "kind": "internal",
+      "master": "node-board-2-hub",
+      "name": "node Hub-to-BX main-memory data",
+      "notes": "Upstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-main-memory-control-link",
+      "kind": "internal",
+      "master": "node-board-2-hub",
+      "name": "node main-memory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to main memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-directory-control-link",
+      "kind": "directory-bus",
+      "master": "node-board-2-hub",
+      "name": "node directory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to directory memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-sysad",
+      "kind": "sysad",
+      "master": "node-board-3-cpu-a",
+      "name": "node SysAD",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-main-memory-link",
+      "kind": "internal",
+      "master": "node-board-3-bx",
+      "name": "node BX-to-main-memory data",
+      "notes": "Downstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-directory-memory-link",
+      "kind": "directory-bus",
+      "master": "node-board-3-hub",
+      "name": "node Hub-to-directory-memory data",
+      "notes": "Figure 2-1's bidirectional directory-data path connects Hub directly to directory memory.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-bx-hub-link",
+      "kind": "internal",
+      "master": "node-board-3-hub",
+      "name": "node Hub-to-BX main-memory data",
+      "notes": "Upstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-main-memory-control-link",
+      "kind": "internal",
+      "master": "node-board-3-hub",
+      "name": "node main-memory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to main memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-directory-control-link",
+      "kind": "directory-bus",
+      "master": "node-board-3-hub",
+      "name": "node directory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to directory memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-sysad",
+      "kind": "sysad",
+      "master": "node-board-4-cpu-a",
+      "name": "node SysAD",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-main-memory-link",
+      "kind": "internal",
+      "master": "node-board-4-bx",
+      "name": "node BX-to-main-memory data",
+      "notes": "Downstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-directory-memory-link",
+      "kind": "directory-bus",
+      "master": "node-board-4-hub",
+      "name": "node Hub-to-directory-memory data",
+      "notes": "Figure 2-1's bidirectional directory-data path connects Hub directly to directory memory.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-bx-hub-link",
+      "kind": "internal",
+      "master": "node-board-4-hub",
+      "name": "node Hub-to-BX main-memory data",
+      "notes": "Upstream segment of Figure 2-1's bidirectional main-memory data path through BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-main-memory-control-link",
+      "kind": "internal",
+      "master": "node-board-4-hub",
+      "name": "node main-memory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to main memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-directory-control-link",
+      "kind": "directory-bus",
+      "master": "node-board-4-hub",
+      "name": "node directory address/control",
+      "notes": "Figure 2-1 connects this unidirectional path from Hub directly to directory memory, bypassing BX.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "id": "origin2000-chassis",
+      "kind": "chassis",
+      "name": "Origin 2000 chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "compute-module",
+      "kind": "module",
+      "name": "system module",
+      "parent": "origin2000-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "007-3453-002 printed page 22 PDF page 40, Figure 2-9: two node boards and a Null Router"
+      ]
+    },
+    {
+      "id": "module-midplane",
+      "kind": "board",
+      "name": "module midplane",
+      "parent": "compute-module",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbow"
+      },
+      "datasheet_contracts": [
+        "docs/datasheets/xbow.md"
+      ],
+      "hardware_kind": "xbow",
+      "id": "crossbow-0",
+      "identity": {
+        "notes": "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_mfg": "0x0",
+        "widget_part": "0x0",
+        "widget_revision": 2
+      },
+      "kind": "crossbar",
+      "name": "Crossbow 1",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbow"
+      },
+      "datasheet_contracts": [
+        "docs/datasheets/xbow.md"
+      ],
+      "hardware_kind": "xbow",
+      "id": "crossbow-1",
+      "identity": {
+        "notes": "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_mfg": "0x0",
+        "widget_part": "0x0",
+        "widget_revision": 2
+      },
+      "kind": "crossbar",
+      "name": "Crossbow 2",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "id": "router-board-1",
+      "identity": {
+        "notes": "The Standard Router board the rack module's R1 fits (docs/machines/layers/modules/origin2000-module.yaml).",
+        "part": "030-0841-002"
+      },
+      "kind": "board",
+      "name": "Router board R1",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "router",
+        "number": 1
+      },
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
+        "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/router.md"
+      ],
+      "hardware_kind": "router",
+      "id": "router-1",
+      "identity": {
+        "chip_inputs": 15,
+        "hardware_revision": 1,
+        "notes": "The same part and R1 slot inputs as the rack module's Router 1.",
+        "part": "0x1"
+      },
+      "kind": "router-asic",
+      "name": "Router 1",
+      "parent": "router-board-1",
+      "provenance": "vendor-document",
+      "router_asic": {
+        "port_count": 6,
+        "role": "router"
+      },
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "router-board-2",
+      "identity": {
+        "notes": "The Standard Router board the rack module's R2 fits (docs/machines/layers/modules/origin2000-module.yaml).",
+        "part": "030-0841-002"
+      },
+      "kind": "board",
+      "name": "Router board R2",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "router",
+        "number": 2
+      },
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
+        "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/router.md"
+      ],
+      "hardware_kind": "router",
+      "id": "router-2",
+      "identity": {
+        "chip_inputs": 14,
+        "hardware_revision": 1,
+        "notes": "The same part and R2 slot inputs as the rack module's Router 2.",
+        "part": "0x1"
+      },
+      "kind": "router-asic",
+      "name": "Router 2",
+      "parent": "router-board-2",
+      "provenance": "vendor-document",
+      "router_asic": {
+        "port_count": 6,
+        "role": "router"
+      },
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "id": "baseio",
+      "identity": {
+        "notes": "The plain BaseIO part QEMU's io6 preset presents; docs/datasheets/baseio.md.",
+        "part": "030-1124-002"
+      },
+      "kind": "board",
+      "name": "BaseIO board in IO1",
+      "parent": "module-midplane",
+      "physical_slot": {
+        "kind": "io",
+        "number": 1
+      },
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/bridge.md"
+      ],
+      "hardware_kind": "bridge",
+      "id": "baseio-bridge",
+      "identity": {
+        "notes": "Select Bridge D; encodings independently cleared in docs/reviews/origin2000-component-revision-encoding-review-20260905.md.",
+        "widget_mfg": "0x36",
+        "widget_part": "0xc002",
+        "widget_revision": 4
+      },
+      "kind": "pci-host-bridge",
+      "name": "Bridge",
+      "parent": "baseio",
+      "pci_host_bridge": {
+        "heads": 1
+      },
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/ioc3.md"
+      ],
+      "hardware_kind": "ioc3",
+      "id": "baseio-ioc3",
+      "identity": {
+        "notes": "Select the revision 1 component supported by docs/datasheets/ioc3.md; subsystem compatibility is a separate software policy.",
+        "pci_revision": 1
+      },
+      "kind": "io-controller",
+      "name": "IOC3",
+      "parent": "baseio",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/isp1040.md"
+      ],
+      "hardware_kind": "isp1040",
+      "id": "baseio-scsi-0",
+      "identity": {
+        "clock_mhz": 60,
+        "hardware_revision": 6,
+        "notes": "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification.",
+        "pci_revision": 5
+      },
+      "kind": "storage-hba",
+      "name": "SCSI controller 0",
+      "parent": "baseio",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/isp1040.md"
+      ],
+      "hardware_kind": "isp1040",
+      "id": "baseio-scsi-1",
+      "identity": {
+        "clock_mhz": 60,
+        "hardware_revision": 6,
+        "notes": "Select ISP1040C-compatible behavior cleared in docs/reviews/origin2000-scsi-component-selection-review-20260905.md; not a historical package identification.",
+        "pci_revision": 5
+      },
+      "kind": "storage-hba",
+      "name": "SCSI controller 1",
+      "parent": "baseio",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO3",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-3",
+      "kind": "connector",
+      "name": "XIO slot IO3",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO5",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-5",
+      "kind": "connector",
+      "name": "XIO slot IO5",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO2",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-2",
+      "kind": "connector",
+      "name": "XIO slot IO2",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO4",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-4",
+      "kind": "connector",
+      "name": "XIO slot IO4",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO6",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-6",
+      "kind": "connector",
+      "name": "XIO slot IO6",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO8",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-8",
+      "kind": "connector",
+      "name": "XIO slot IO8",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO10",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-10",
+      "kind": "connector",
+      "name": "XIO slot IO10",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO12",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-12",
+      "kind": "connector",
+      "name": "XIO slot IO12",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO7",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-7",
+      "kind": "connector",
+      "name": "XIO slot IO7",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO9",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-9",
+      "kind": "connector",
+      "name": "XIO slot IO9",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "IO11",
+        "occupancy": "empty"
+      },
+      "id": "xio-slot-11",
+      "kind": "connector",
+      "name": "XIO slot IO11",
+      "parent": "module-midplane",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 and Table 1 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/ioc3.md"
+      ],
+      "description": "Separate serial support component on IOC3 byte bus.",
+      "id": "baseio-superio",
+      "kind": "io-controller",
+      "name": "Super I/O",
+      "parent": "baseio-ioc3",
+      "provenance": "derived"
+    },
+    {
+      "hardware_kind": "ioc3-serial-a",
+      "id": "baseio-serial-a",
+      "kind": "subfunction",
+      "name": "Serial port A",
+      "parent": "baseio-superio",
+      "provenance": "derived"
+    },
+    {
+      "hardware_kind": "ioc3-serial-b",
+      "id": "baseio-serial-b",
+      "kind": "subfunction",
+      "name": "Serial port B",
+      "parent": "baseio-superio",
+      "provenance": "derived"
+    },
+    {
+      "hardware_kind": "ioc3-ethernet",
+      "id": "baseio-ethernet",
+      "kind": "subfunction",
+      "name": "Ethernet MAC",
+      "parent": "baseio-ioc3",
+      "provenance": "derived"
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/timekeeper.md"
+      ],
+      "description": "Select the reviewed Timekeeper class, directly addressed on IOC3 byte select 0; no alternative indexed clock.",
+      "hardware_kind": "ioc3-timekeeper",
+      "id": "baseio-timekeeper",
+      "kind": "rtc",
+      "name": "32 KiB Timekeeper",
+      "parent": "baseio-ioc3",
+      "provenance": "derived"
+    },
+    {
+      "hardware_kind": "ioc3-onewire-identity",
+      "id": "baseio-ioc3-nic",
+      "kind": "subfunction",
+      "name": "IOC3 identity path",
+      "parent": "baseio-ioc3",
+      "provenance": "derived"
+    },
+    {
+      "description": "Published board-local support memory; separate from system RAM.",
+      "id": "baseio-ioc3-ssram",
+      "kind": "memory",
+      "name": "64K by 18 SSRAM",
+      "parent": "baseio-ioc3",
+      "provenance": "derived"
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/baseio.md"
+      ],
+      "description": "Published board-local flash with serial-number region. Exact part and register decode are not selected by the node boot-flash contract.",
+      "id": "baseio-bridge-flash",
+      "kind": "flash",
+      "name": "1 MiB Bridge flash EPROM",
+      "parent": "baseio-bridge",
+      "provenance": "derived"
+    },
+    {
+      "id": "baseio-bridge-nic",
+      "kind": "subfunction",
+      "name": "Bridge identity path",
+      "parent": "baseio-bridge",
+      "provenance": "derived"
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "hardware_kind": "msc",
+      "id": "module-msc",
+      "kind": "system-controller",
+      "name": "Module system controller",
+      "parent": "compute-module",
+      "provenance": "derived",
+      "system_controller": {
+        "kind": "msc"
+      }
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "description": "One logical 2048-byte store across eight slave addresses; physical package count is unknown.",
+      "hardware_kind": "i2c-management-nvram",
+      "id": "module-management-nvram",
+      "kind": "flash",
+      "name": "Shared management NVRAM address space",
+      "parent": "compute-module",
+      "provenance": "derived"
+    },
+    {
+      "hardware_kind": "msc-serial",
+      "id": "module-aux-console",
+      "kind": "subfunction",
+      "name": "Module alternate RS-232 console",
+      "parent": "module-msc",
+      "provenance": "derived"
+    },
+    {
+      "id": "node-board-1-node-board",
+      "kind": "board",
+      "name": "IP27 node board",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "node",
+        "number": 1
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-1-cpu-a",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-1-cpu-b",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "id": "node-board-1-main-memory",
+      "kind": "memory",
+      "memory": {
+        "bank_sizes_mib": [
+          64,
+          128,
+          512
+        ],
+        "banks": 8,
+        "dimm_slots": 32,
+        "dimms_per_bank": 2,
+        "directory_dimm_slots": 8
+      },
+      "name": "main memory",
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "node-memory",
+          "name": "Node memory address aperture",
+          "offset": "0x0",
+          "size": "0x100000000",
+          "space": "memory"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-1-directory-memory",
+      "kind": "memory",
+      "name": "directory memory",
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-memory-directory.md"
+      ],
+      "id": "node-board-1-bx",
+      "kind": "bus-controller",
+      "name": "BX memory-interface ASIC",
+      "notes": "The reviewed Hub memory contract owns the modeled memory data path. This is not a complete BX register contract or a separate emulated BX device.",
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-network-interface.md",
+        "docs/datasheets/hub-processor-interface.md",
+        "docs/datasheets/hub-memory-directory.md",
+        "docs/datasheets/hub-io-interface.md"
+      ],
+      "hardware_kind": "hub",
+      "id": "node-board-1-hub",
+      "identity": {
+        "ni_revision": 3,
+        "notes": "Select Hub 2.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_revision": 1
+      },
+      "kind": "node-asic",
+      "name": "Hub",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 1
+      },
+      "parent": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "hub-registers-local",
+          "name": "Local Hub registers",
+          "offset": "0x1000000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-registers-node",
+          "name": "Named Hub registers",
+          "offset": "0x1800000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-local-memory",
+          "name": "Local uncached memory",
+          "offset": "0x0",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "hub-remote-memory",
+          "name": "Named uncached memory",
+          "offset": "0x20000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "ecc-backdoor",
+          "name": "ECC backdoor",
+          "offset": "0x80000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "directory-backdoor",
+          "name": "Directory backdoor",
+          "offset": "0xc0000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/boot-flash.md"
+      ],
+      "hardware_kind": "am29f080",
+      "id": "node-board-1-boot-flash",
+      "kind": "flash",
+      "name": "1 MiB node boot flash",
+      "parent": "node-board-1-node-board",
+      "provenance": "derived",
+      "regions": [],
+      "views": [
+        {
+          "id": "reset",
+          "name": "Reset vector view",
+          "offset": "0x1fc00000",
+          "size": "0x100000",
+          "space": "memory"
+        },
+        {
+          "id": "lboot",
+          "name": "Local boot aperture",
+          "offset": "0x10000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "rboot",
+          "name": "Named boot aperture",
+          "offset": "0x30000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        }
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "hardware_kind": "pcf8584",
+      "id": "node-board-1-management-adapter",
+      "kind": "bus-controller",
+      "name": "PCF8584 node interface",
+      "parent": "node-board-1-node-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "data-register",
+          "name": "Data register",
+          "offset": "0x220000",
+          "relative_to": "node-board-1-hub"
+        },
+        {
+          "id": "control-status-register",
+          "name": "Control/status register",
+          "offset": "0x220008",
+          "relative_to": "node-board-1-hub"
+        }
+      ]
+    },
+    {
+      "id": "node-board-2-node-board",
+      "kind": "board",
+      "name": "IP27 node board",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "node",
+        "number": 2
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-2-cpu-a",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-2-cpu-b",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "id": "node-board-2-main-memory",
+      "kind": "memory",
+      "memory": {
+        "bank_sizes_mib": [
+          64,
+          128,
+          512
+        ],
+        "banks": 8,
+        "dimm_slots": 32,
+        "dimms_per_bank": 2,
+        "directory_dimm_slots": 8
+      },
+      "name": "main memory",
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "node-memory",
+          "name": "Node memory address aperture",
+          "offset": "0x0",
+          "size": "0x100000000",
+          "space": "memory"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-2-directory-memory",
+      "kind": "memory",
+      "name": "directory memory",
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-memory-directory.md"
+      ],
+      "id": "node-board-2-bx",
+      "kind": "bus-controller",
+      "name": "BX memory-interface ASIC",
+      "notes": "The reviewed Hub memory contract owns the modeled memory data path. This is not a complete BX register contract or a separate emulated BX device.",
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-network-interface.md",
+        "docs/datasheets/hub-processor-interface.md",
+        "docs/datasheets/hub-memory-directory.md",
+        "docs/datasheets/hub-io-interface.md"
+      ],
+      "hardware_kind": "hub",
+      "id": "node-board-2-hub",
+      "identity": {
+        "ni_revision": 3,
+        "notes": "Select Hub 2.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_revision": 1
+      },
+      "kind": "node-asic",
+      "name": "Hub",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 1
+      },
+      "parent": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "hub-registers-local",
+          "name": "Local Hub registers",
+          "offset": "0x1000000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-registers-node",
+          "name": "Named Hub registers",
+          "offset": "0x1800000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-local-memory",
+          "name": "Local uncached memory",
+          "offset": "0x0",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "hub-remote-memory",
+          "name": "Named uncached memory",
+          "offset": "0x20000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "ecc-backdoor",
+          "name": "ECC backdoor",
+          "offset": "0x80000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "directory-backdoor",
+          "name": "Directory backdoor",
+          "offset": "0xc0000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/boot-flash.md"
+      ],
+      "hardware_kind": "am29f080",
+      "id": "node-board-2-boot-flash",
+      "kind": "flash",
+      "name": "1 MiB node boot flash",
+      "parent": "node-board-2-node-board",
+      "provenance": "derived",
+      "regions": [],
+      "views": [
+        {
+          "id": "reset",
+          "name": "Reset vector view",
+          "offset": "0x1fc00000",
+          "size": "0x100000",
+          "space": "memory"
+        },
+        {
+          "id": "lboot",
+          "name": "Local boot aperture",
+          "offset": "0x10000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "rboot",
+          "name": "Named boot aperture",
+          "offset": "0x30000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        }
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "hardware_kind": "pcf8584",
+      "id": "node-board-2-management-adapter",
+      "kind": "bus-controller",
+      "name": "PCF8584 node interface",
+      "parent": "node-board-2-node-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "data-register",
+          "name": "Data register",
+          "offset": "0x220000",
+          "relative_to": "node-board-2-hub"
+        },
+        {
+          "id": "control-status-register",
+          "name": "Control/status register",
+          "offset": "0x220008",
+          "relative_to": "node-board-2-hub"
+        }
+      ]
+    },
+    {
+      "id": "node-board-3-node-board",
+      "kind": "board",
+      "name": "IP27 node board",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "node",
+        "number": 3
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-3-cpu-a",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-3-cpu-b",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "id": "node-board-3-main-memory",
+      "kind": "memory",
+      "memory": {
+        "bank_sizes_mib": [
+          64,
+          128,
+          512
+        ],
+        "banks": 8,
+        "dimm_slots": 32,
+        "dimms_per_bank": 2,
+        "directory_dimm_slots": 8
+      },
+      "name": "main memory",
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "node-memory",
+          "name": "Node memory address aperture",
+          "offset": "0x0",
+          "size": "0x100000000",
+          "space": "memory"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-3-directory-memory",
+      "kind": "memory",
+      "name": "directory memory",
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-memory-directory.md"
+      ],
+      "id": "node-board-3-bx",
+      "kind": "bus-controller",
+      "name": "BX memory-interface ASIC",
+      "notes": "The reviewed Hub memory contract owns the modeled memory data path. This is not a complete BX register contract or a separate emulated BX device.",
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-network-interface.md",
+        "docs/datasheets/hub-processor-interface.md",
+        "docs/datasheets/hub-memory-directory.md",
+        "docs/datasheets/hub-io-interface.md"
+      ],
+      "hardware_kind": "hub",
+      "id": "node-board-3-hub",
+      "identity": {
+        "ni_revision": 3,
+        "notes": "Select Hub 2.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_revision": 1
+      },
+      "kind": "node-asic",
+      "name": "Hub",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 1
+      },
+      "parent": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "hub-registers-local",
+          "name": "Local Hub registers",
+          "offset": "0x1000000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-registers-node",
+          "name": "Named Hub registers",
+          "offset": "0x1800000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-local-memory",
+          "name": "Local uncached memory",
+          "offset": "0x0",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "hub-remote-memory",
+          "name": "Named uncached memory",
+          "offset": "0x20000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "ecc-backdoor",
+          "name": "ECC backdoor",
+          "offset": "0x80000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "directory-backdoor",
+          "name": "Directory backdoor",
+          "offset": "0xc0000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/boot-flash.md"
+      ],
+      "hardware_kind": "am29f080",
+      "id": "node-board-3-boot-flash",
+      "kind": "flash",
+      "name": "1 MiB node boot flash",
+      "parent": "node-board-3-node-board",
+      "provenance": "derived",
+      "regions": [],
+      "views": [
+        {
+          "id": "reset",
+          "name": "Reset vector view",
+          "offset": "0x1fc00000",
+          "size": "0x100000",
+          "space": "memory"
+        },
+        {
+          "id": "lboot",
+          "name": "Local boot aperture",
+          "offset": "0x10000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "rboot",
+          "name": "Named boot aperture",
+          "offset": "0x30000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        }
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "hardware_kind": "pcf8584",
+      "id": "node-board-3-management-adapter",
+      "kind": "bus-controller",
+      "name": "PCF8584 node interface",
+      "parent": "node-board-3-node-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "data-register",
+          "name": "Data register",
+          "offset": "0x220000",
+          "relative_to": "node-board-3-hub"
+        },
+        {
+          "id": "control-status-register",
+          "name": "Control/status register",
+          "offset": "0x220008",
+          "relative_to": "node-board-3-hub"
+        }
+      ]
+    },
+    {
+      "id": "node-board-4-node-board",
+      "kind": "board",
+      "name": "IP27 node board",
+      "parent": "compute-module",
+      "physical_slot": {
+        "kind": "node",
+        "number": 4
+      },
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-4-cpu-a",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "node-board-4-cpu-b",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000-family CPU",
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ]
+    },
+    {
+      "id": "node-board-4-main-memory",
+      "kind": "memory",
+      "memory": {
+        "bank_sizes_mib": [
+          64,
+          128,
+          512
+        ],
+        "banks": 8,
+        "dimm_slots": 32,
+        "dimms_per_bank": 2,
+        "directory_dimm_slots": 8
+      },
+      "name": "main memory",
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "node-memory",
+          "name": "Node memory address aperture",
+          "offset": "0x0",
+          "size": "0x100000000",
+          "space": "memory"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "id": "node-board-4-directory-memory",
+      "kind": "memory",
+      "name": "directory memory",
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-memory-directory.md"
+      ],
+      "id": "node-board-4-bx",
+      "kind": "bus-controller",
+      "name": "BX memory-interface ASIC",
+      "notes": "The reviewed Hub memory contract owns the modeled memory data path. This is not a complete BX register contract or a separate emulated BX device.",
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/hub-network-interface.md",
+        "docs/datasheets/hub-processor-interface.md",
+        "docs/datasheets/hub-memory-directory.md",
+        "docs/datasheets/hub-io-interface.md"
+      ],
+      "hardware_kind": "hub",
+      "id": "node-board-4-hub",
+      "identity": {
+        "ni_revision": 3,
+        "notes": "Select Hub 2.1, the earliest revision accepted by IRIX 6.5.30; not a captured chassis revision.",
+        "widget_revision": 1
+      },
+      "kind": "node-asic",
+      "name": "Hub",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 1
+      },
+      "parent": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "regions": [
+        {
+          "id": "hub-registers-local",
+          "name": "Local Hub registers",
+          "offset": "0x1000000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-registers-node",
+          "name": "Named Hub registers",
+          "offset": "0x1800000",
+          "size": "0x800000",
+          "space": "io"
+        },
+        {
+          "id": "hub-local-memory",
+          "name": "Local uncached memory",
+          "offset": "0x0",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "hub-remote-memory",
+          "name": "Named uncached memory",
+          "offset": "0x20000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "ecc-backdoor",
+          "name": "ECC backdoor",
+          "offset": "0x80000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "directory-backdoor",
+          "name": "Directory backdoor",
+          "offset": "0xc0000000",
+          "size": "0x40000000",
+          "space": "hub-special"
+        }
+      ],
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/boot-flash.md"
+      ],
+      "hardware_kind": "am29f080",
+      "id": "node-board-4-boot-flash",
+      "kind": "flash",
+      "name": "1 MiB node boot flash",
+      "parent": "node-board-4-node-board",
+      "provenance": "derived",
+      "regions": [],
+      "views": [
+        {
+          "id": "reset",
+          "name": "Reset vector view",
+          "offset": "0x1fc00000",
+          "size": "0x100000",
+          "space": "memory"
+        },
+        {
+          "id": "lboot",
+          "name": "Local boot aperture",
+          "offset": "0x10000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        },
+        {
+          "id": "rboot",
+          "name": "Named boot aperture",
+          "offset": "0x30000000",
+          "size": "0x10000000",
+          "space": "hub-special"
+        }
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md",
+        "docs/datasheets/origin2000-module-management.md"
+      ],
+      "hardware_kind": "pcf8584",
+      "id": "node-board-4-management-adapter",
+      "kind": "bus-controller",
+      "name": "PCF8584 node interface",
+      "parent": "node-board-4-node-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "data-register",
+          "name": "Data register",
+          "offset": "0x220000",
+          "relative_to": "node-board-4-hub"
+        },
+        {
+          "id": "control-status-register",
+          "name": "Control/status register",
+          "offset": "0x220008",
+          "relative_to": "node-board-4-hub"
+        }
+      ]
+    }
+  ],
+  "composition": {
+    "architecture": "sn0",
+    "assembly": "ip27",
+    "layers": [
+      {
+        "id": "sn0",
+        "kind": "architecture"
+      },
+      {
+        "id": "ip27",
+        "kind": "assembly"
+      },
+      {
+        "id": "origin2000-deskside",
+        "kind": "product"
+      }
+    ],
+    "limits": {
+      "cpus_per_node": 2,
+      "dimms_per_node": 32,
+      "directory_memory_slots_per_node": 8,
+      "main_memory_dimm_positions_per_node": 32,
+      "main_memory_slots_per_node": 16,
+      "memory_banks_per_node": 8,
+      "nodes": 4,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted",
+        "007-3439-002 printed p.35: 16-Mb parts support up to 1 GB per node in increments of 64 or 128 MB, 64-Mb parts up to 4 GB in increments of 512 MB, always in DIMM pairs",
+        "IP27 PROM 6.156 string \"256 MB dimm banks not allowed on IP27 node boards\", printed as it disables such a bank"
+      ],
+      "supported_bank_sizes_mib": [
+        64,
+        128,
+        512
+      ]
+    },
+    "module_instances": [
+      {
+        "model": "layers/modules/ip27-node-board.yaml",
+        "parent": "compute-module",
+        "physical_slot": {
+          "kind": "node",
+          "number": 1
+        },
+        "prefix": "node-board-1-"
+      },
+      {
+        "model": "layers/modules/ip27-node-board.yaml",
+        "parent": "compute-module",
+        "physical_slot": {
+          "kind": "node",
+          "number": 2
+        },
+        "prefix": "node-board-2-"
+      },
+      {
+        "model": "layers/modules/ip27-node-board.yaml",
+        "parent": "compute-module",
+        "physical_slot": {
+          "kind": "node",
+          "number": 3
+        },
+        "prefix": "node-board-3-"
+      },
+      {
+        "model": "layers/modules/ip27-node-board.yaml",
+        "parent": "compute-module",
+        "physical_slot": {
+          "kind": "node",
+          "number": 4
+        },
+        "prefix": "node-board-4-"
+      }
+    ],
+    "platform": "ip27",
+    "population": {
+      "cpus_per_node": [
+        2,
+        2,
+        2,
+        2
+      ],
+      "dimms_per_node": [
+        4,
+        4,
+        4,
+        4
+      ],
+      "memory_bank_mib_per_node": [
+        [
+          128,
+          128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          128,
+          128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          128,
+          128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          128,
+          128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "memory_mib_per_node": [
+        256,
+        256,
+        256,
+        256
+      ],
+      "nodes": 4,
+      "provenance": "derived",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
+        "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures"
+      ]
+    },
+    "product": "origin2000-deskside",
+    "topology": {
+      "max_nodes": 4,
+      "min_nodes": 1,
+      "node_populations": [
+        {
+          "fabric_links": [],
+          "grade": "inferred",
+          "node_slots": [
+            1
+          ],
+          "notes": "Figure 2-9 draws one node board with no router board, but the same guide's printed page 21 says every deskside ships with the first router board installed. Which a one-node deskside carried is not settled, so leaving both Router slots empty is inferred.",
+          "routers": [],
+          "sources": [
+            "007-3453-002 printed page 21 PDF page 39, Table 2-2: without a router board only one Node board and XIO slots 1-6 work",
+            "007-3453-002 printed page 22 PDF page 40, Figure 2-9: one node board needs no router board"
+          ],
+          "supported_cpu_populations": [
+            [
+              2
+            ],
+            [
+              1
+            ]
+          ],
+          "xio_slots": {
+            "xio-slot-2": 1,
+            "xio-slot-3": 1,
+            "xio-slot-4": 1,
+            "xio-slot-5": 1,
+            "xio-slot-6": 1
+          }
+        },
+        {
+          "fabric_links": [
+            "null-router"
+          ],
+          "grade": "established",
+          "node_slots": [
+            1,
+            2
+          ],
+          "routers": [],
+          "sources": [
+            "007-3453-002 printed page 22 PDF page 40, Figure 2-9: a two-node Origin 2000 deskside with a Null Router",
+            "007-3453-002 printed page 21 PDF page 39, Table 2-2: XIO slots 7-12 work with a second Node board",
+            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: in a 2-node system N1 controls IO1-IO6 and N2 IO7-IO12"
+          ],
+          "supported_cpu_populations": [
+            [
+              2,
+              2
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              1
+            ]
+          ],
+          "xio_slots": {
+            "xio-slot-10": 2,
+            "xio-slot-11": 2,
+            "xio-slot-12": 2,
+            "xio-slot-2": 1,
+            "xio-slot-3": 1,
+            "xio-slot-4": 1,
+            "xio-slot-5": 1,
+            "xio-slot-6": 1,
+            "xio-slot-7": 2,
+            "xio-slot-8": 2,
+            "xio-slot-9": 2
+          }
+        },
+        {
+          "fabric_links": [
+            "r1-node1",
+            "r1-node2",
+            "r1-r2",
+            "r2-node3"
+          ],
+          "grade": "inferred",
+          "node_slots": [
+            1,
+            2,
+            3
+          ],
+          "notes": "Which node controls IO8, IO10 and IO12 with node board 4 absent is inferred: node 2 is the only Hub on Crossbow 1. Two Standard Routers in a deskside is the model's choice among fits SGI documents; see the four-node row.",
+          "routers": [
+            "router-1",
+            "router-2"
+          ],
+          "sources": [
+            "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
+            "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
+            "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture boots PROM 6.156 on node slots 1-3 with both Routers",
+            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+          ],
+          "supported_cpu_populations": [
+            [
+              2,
+              2,
+              2
+            ],
+            [
+              1,
+              1,
+              1
+            ],
+            [
+              2,
+              1,
+              1
+            ],
+            [
+              2,
+              2,
+              1
+            ]
+          ],
+          "xio_slots": {
+            "xio-slot-10": 2,
+            "xio-slot-11": 2,
+            "xio-slot-12": 2,
+            "xio-slot-2": 3,
+            "xio-slot-3": 1,
+            "xio-slot-4": 3,
+            "xio-slot-5": 1,
+            "xio-slot-6": 3,
+            "xio-slot-7": 2,
+            "xio-slot-8": 2,
+            "xio-slot-9": 2
+          }
+        },
+        {
+          "fabric_links": [
+            "r1-node1",
+            "r1-node2",
+            "r1-r2",
+            "r2-node3",
+            "r2-node4"
+          ],
+          "grade": "inferred",
+          "node_slots": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "notes": "SGI shipped three- and four-node desksides with a Router and a Star Router (007-3453-002 Figure 2-9), and 007-3439-002 printed page 57 says 3- and 4-node configurations are built that way. The two Standard Routers here rest on a chain: the deskside is one module (007-3456-003 printed page 30), 108-0170-001 section 6.2.1 gives a fully populated single module two Routers, and 007-3439-002 printed page 57 lets Standard Routers join node boards in one enclosure. The Star is not modelled because the stock PROM's partner probe does not finish on it in the model.",
+          "routers": [
+            "router-1",
+            "router-2"
+          ],
+          "sources": [
+            "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified",
+            "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
+            "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants",
+            "docs/datasheets/origin2000-module.md Node-board populations: the joint-buck capture's IRIX hinv lists four Hubs and both Routers, each with active ports 4, 5 and 6"
+          ],
+          "supported_cpu_populations": [
+            [
+              2,
+              2,
+              2,
+              2
+            ],
+            [
+              1,
+              1,
+              1,
+              1
+            ],
+            [
+              2,
+              1,
+              1,
+              1
+            ],
+            [
+              2,
+              2,
+              1,
+              1
+            ],
+            [
+              2,
+              2,
+              2,
+              1
+            ]
+          ],
+          "xio_slots": {
+            "xio-slot-10": 4,
+            "xio-slot-11": 2,
+            "xio-slot-12": 4,
+            "xio-slot-2": 3,
+            "xio-slot-3": 1,
+            "xio-slot-4": 3,
+            "xio-slot-5": 1,
+            "xio-slot-6": 3,
+            "xio-slot-7": 2,
+            "xio-slot-8": 4,
+            "xio-slot-9": 2
+          }
+        }
+      ],
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 printed page 57 PDF page 71: the Standard Router cables together 2 to 32 Node boards in 1 to 8 enclosures",
+        "007-3453-002 printed page 1 PDF page 19: up to four node boards"
+      ],
+      "supported_cpu_populations": [
+        [
+          2,
+          2,
+          2,
+          2
+        ]
+      ]
+    }
+  },
+  "connections": [
+    {
+      "bus": "module-management-i2c",
+      "component": "node-board-1-management-adapter",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "module-management-i2c",
+      "component": "node-board-2-management-adapter",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "module-management-i2c",
+      "component": "node-board-3-management-adapter",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "module-management-i2c",
+      "component": "node-board-4-management-adapter",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "r1-node1",
+      "component": "router-1",
+      "fabric_port": 5,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r1-node1",
+      "component": "node-board-1-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r1-node2",
+      "component": "router-1",
+      "fabric_port": 4,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r1-node2",
+      "component": "node-board-2-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r1-r2",
+      "component": "router-1",
+      "fabric_port": 6,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r1-r2",
+      "component": "router-2",
+      "fabric_port": 6,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r2-node3",
+      "component": "router-2",
+      "fabric_port": 5,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r2-node3",
+      "component": "node-board-3-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r2-node4",
+      "component": "router-2",
+      "fabric_port": 4,
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "r2-node4",
+      "component": "node-board-4-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0170-001 Figure 6-2 and Table 6-1 printed page 6-3 PDF page 97 mapping visually verified"
+      ]
+    },
+    {
+      "bus": "xbow0-node3",
+      "component": "node-board-3-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+      ],
+      "widget": 10,
+      "xio": {
+        "physical_port": 2
+      }
+    },
+    {
+      "bus": "xbow1-node4",
+      "component": "node-board-4-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+      ],
+      "widget": 9,
+      "xio": {
+        "physical_port": 1
+      }
+    },
+    {
+      "bus": "module-management-i2c",
+      "component": "module-msc",
+      "i2c_address": 8,
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "module-management-i2c",
+      "component": "module-management-nvram",
+      "i2c_address": 80,
+      "i2c_address_count": 8,
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/origin2000-module-management.md"
+      ]
+    },
+    {
+      "bus": "xbow0-node1",
+      "component": "node-board-1-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+      ],
+      "widget": 9,
+      "xio": {
+        "physical_port": 1
+      }
+    },
+    {
+      "bus": "xbow0-io1",
+      "component": "baseio-bridge",
+      "controlled_by": "node-board-1-node-board",
+      "notes": "BaseIO is fixed at IO1; Bridge is the board's upstream Crossbow endpoint.",
+      "provenance": "vendor-document",
+      "role": "bridge-upstream",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+      ],
+      "widget": 8,
+      "xio": {
+        "physical_port": 0
+      }
+    },
+    {
+      "bus": "xbow0-io3",
+      "component": "xio-slot-3",
+      "controlled_by": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 15,
+      "xio": {
+        "physical_port": 7
+      }
+    },
+    {
+      "bus": "xbow0-io5",
+      "component": "xio-slot-5",
+      "controlled_by": "node-board-1-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 14,
+      "xio": {
+        "physical_port": 6
+      }
+    },
+    {
+      "bus": "xbow0-io2",
+      "component": "xio-slot-2",
+      "controlled_by": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 12,
+      "xio": {
+        "physical_port": 4
+      }
+    },
+    {
+      "bus": "xbow0-io4",
+      "component": "xio-slot-4",
+      "controlled_by": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 11,
+      "xio": {
+        "physical_port": 3
+      }
+    },
+    {
+      "bus": "xbow0-io6",
+      "component": "xio-slot-6",
+      "controlled_by": "node-board-3-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 13,
+      "xio": {
+        "physical_port": 5
+      }
+    },
+    {
+      "bus": "xbow1-io8",
+      "component": "xio-slot-8",
+      "controlled_by": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 11,
+      "xio": {
+        "physical_port": 3
+      }
+    },
+    {
+      "bus": "xbow1-io10",
+      "component": "xio-slot-10",
+      "controlled_by": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 12,
+      "xio": {
+        "physical_port": 4
+      }
+    },
+    {
+      "bus": "xbow1-io12",
+      "component": "xio-slot-12",
+      "controlled_by": "node-board-4-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 13,
+      "xio": {
+        "physical_port": 5
+      }
+    },
+    {
+      "bus": "null-router",
+      "component": "node-board-1-hub",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3439-002 printed page 57 PDF page 71"
+      ]
+    },
+    {
+      "bus": "null-router",
+      "component": "node-board-2-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 printed page 57 PDF page 71"
+      ]
+    },
+    {
+      "bus": "xbow1-node2",
+      "component": "node-board-2-hub",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252"
+      ],
+      "widget": 10,
+      "xio": {
+        "physical_port": 2
+      }
+    },
+    {
+      "bus": "xbow1-io7",
+      "component": "xio-slot-7",
+      "controlled_by": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 14,
+      "xio": {
+        "physical_port": 6
+      }
+    },
+    {
+      "bus": "xbow1-io9",
+      "component": "xio-slot-9",
+      "controlled_by": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 15,
+      "xio": {
+        "physical_port": 7
+      }
+    },
+    {
+      "bus": "xbow1-io11",
+      "component": "xio-slot-11",
+      "controlled_by": "node-board-2-node-board",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Crossbow example and port table printed pages 249-250 PDF pages 251-252",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf Table 41 printed page 130 PDF page 132: the four-node quadrants"
+      ],
+      "widget": 8,
+      "xio": {
+        "physical_port": 0
+      }
+    },
+    {
+      "bus": "baseio-pci",
+      "component": "baseio-bridge",
+      "provenance": "vendor-document",
+      "role": "bridge-downstream",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "bus": "baseio-pci",
+      "component": "baseio-ioc3",
+      "notes": "The public board diagram does not establish a universal PCI device number.",
+      "pci_device": 2,
+      "pci_function": 0,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "bus": "baseio-pci",
+      "component": "baseio-scsi-0",
+      "notes": "The controller's exact part identity and PCI device number are not asserted here.",
+      "pci_device": 0,
+      "pci_function": 0,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "bus": "baseio-pci",
+      "component": "baseio-scsi-1",
+      "notes": "The controller's exact part identity and PCI device number are not asserted here.",
+      "pci_device": 1,
+      "pci_function": 0,
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figure 5 and configuration rules printed pages 6-8 PDF pages 20-22 mapping trusted; 007-3439-002 Figure 2-25 printed page 69 PDF page 83 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-sysad",
+      "component": "node-board-1-cpu-a",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-sysad",
+      "component": "node-board-1-cpu-b",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-sysad",
+      "component": "node-board-1-hub",
+      "cpu_interrupt_inputs": {
+        "bank0": 0,
+        "bank1": 1,
+        "rt": 2
+      },
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-main-memory-link",
+      "component": "node-board-1-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-directory-memory-link",
+      "component": "node-board-1-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-bx-hub-link",
+      "component": "node-board-1-bx",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-main-memory-control-link",
+      "component": "node-board-1-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-1-directory-control-link",
+      "component": "node-board-1-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-sysad",
+      "component": "node-board-2-cpu-a",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-sysad",
+      "component": "node-board-2-cpu-b",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-sysad",
+      "component": "node-board-2-hub",
+      "cpu_interrupt_inputs": {
+        "bank0": 0,
+        "bank1": 1,
+        "rt": 2
+      },
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-main-memory-link",
+      "component": "node-board-2-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-directory-memory-link",
+      "component": "node-board-2-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-bx-hub-link",
+      "component": "node-board-2-bx",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-main-memory-control-link",
+      "component": "node-board-2-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-2-directory-control-link",
+      "component": "node-board-2-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-sysad",
+      "component": "node-board-3-cpu-a",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-sysad",
+      "component": "node-board-3-cpu-b",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-sysad",
+      "component": "node-board-3-hub",
+      "cpu_interrupt_inputs": {
+        "bank0": 0,
+        "bank1": 1,
+        "rt": 2
+      },
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-main-memory-link",
+      "component": "node-board-3-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-directory-memory-link",
+      "component": "node-board-3-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-bx-hub-link",
+      "component": "node-board-3-bx",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-main-memory-control-link",
+      "component": "node-board-3-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-3-directory-control-link",
+      "component": "node-board-3-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-sysad",
+      "component": "node-board-4-cpu-a",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-sysad",
+      "component": "node-board-4-cpu-b",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-sysad",
+      "component": "node-board-4-hub",
+      "cpu_interrupt_inputs": {
+        "bank0": 0,
+        "bank1": 1,
+        "rt": 2
+      },
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-main-memory-link",
+      "component": "node-board-4-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-directory-memory-link",
+      "component": "node-board-4-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-bx-hub-link",
+      "component": "node-board-4-bx",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-main-memory-control-link",
+      "component": "node-board-4-main-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    },
+    {
+      "bus": "node-board-4-directory-control-link",
+      "component": "node-board-4-directory-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted"
+      ]
+    }
+  ],
+  "evidence_policy": "strict",
+  "interrupts": [
+    {
+      "chain": [
+        {
+          "as": "interrupt pin 4",
+          "at": "baseio-bridge",
+          "mechanism": "level"
+        }
+      ],
+      "id": "baseio-ioc3-to-bridge",
+      "provenance": "public-header",
+      "source": "baseio-ioc3",
+      "sources": [
+        "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/pci/pci-xtalk-bridge.c BaseIO PCI device 2 interrupt mapping selects Bridge input 4."
+      ]
+    }
+  ],
+  "machine": {
+    "architecture_ip": "IP27",
+    "board_ip": "IP27",
+    "emulation": {
+      "display_description": "SGI Origin 2000 deskside",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          64,
+          256
+        ]
+      },
+      "hub_ni_revision_overrides": [
+        {
+          "component": "node-board-1-hub",
+          "ni_revision": 5,
+          "reason": "Stock Origin 2000 inventories report Hub revision code 5: the two-node Origin 2200 capture model-toad (an 8P12_MPLN module with no graphics) prints HUB Revision 5 on both node slots, and no stock capture shows code 3. The reusable node-board module's code 3 (Hub 2.1, the earliest IRIX 6.5.30 accepts) stays the baseline for products this override does not name."
+        },
+        {
+          "component": "node-board-2-hub",
+          "ni_revision": 5,
+          "reason": "Matches node-board-1-hub; a module's Hubs share one manufactured revision."
+        },
+        {
+          "component": "node-board-3-hub",
+          "ni_revision": 5,
+          "reason": "Matches node-board-1-hub; a module's Hubs share one manufactured revision."
+        },
+        {
+          "component": "node-board-4-hub",
+          "ni_revision": 5,
+          "reason": "Matches node-board-1-hub; a module's Hubs share one manufactured revision."
+        }
+      ],
+      "initial_module_numbers": [
+        {
+          "component": "compute-module",
+          "number": 1,
+          "reason": "Selected initial identity, matching the rack module. With 0 the stock PROM votes a module number and resets once more before it settles."
+        }
+      ],
+      "initially_operational_crossbow_links": [
+        {
+          "component": "crossbow-0",
+          "reason": "Static emulator startup health for the fitted BaseIO and the Hub links of nodes 1 and 3. Machine launch and whole-machine reset reapply it; migration restores runtime link state instead. This does not model Crossbow training or establish diagnostic acceptance.",
+          "widgets": [
+            8,
+            9,
+            10
+          ]
+        },
+        {
+          "component": "crossbow-1",
+          "reason": "Static emulator startup health for the Hub links of nodes 2 and 4. Machine launch and whole-machine reset reapply it; migration restores runtime link state instead.",
+          "widgets": [
+            9,
+            10
+          ]
+        }
+      ],
+      "lifecycle": "implemented",
+      "machine_name": "origin2000",
+      "module_responder_identities": [
+        {
+          "component": "node-board-1-hub",
+          "reason": "Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.",
+          "serial": "0x100000000009"
+        },
+        {
+          "component": "node-board-2-hub",
+          "reason": "Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.",
+          "serial": "0x10000000000a"
+        },
+        {
+          "component": "node-board-3-hub",
+          "reason": "Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.",
+          "serial": "0x10000000000b"
+        },
+        {
+          "component": "node-board-4-hub",
+          "reason": "Stable synthetic node-local module responder identity, the rack module's own value for the same node slot.",
+          "serial": "0x10000000000c"
+        }
+      ],
+      "module_semantic_serials": [
+        {
+          "component": "compute-module",
+          "reason": "Stable synthetic module identity for this selected emulated installation, distinct from the rack module's SGIMODULE1 because the two are separate selected installations of the same physical module type, never running together.",
+          "serial": "SGIMODULE2"
+        }
+      ],
+      "profile": "origin2000-deskside",
+      "synthetic_identities": [
+        {
+          "component": "node-board-1-hub",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.",
+          "serial": "0x100000000001"
+        },
+        {
+          "component": "node-board-2-hub",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.",
+          "serial": "0x100000000002"
+        },
+        {
+          "component": "node-board-3-hub",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.",
+          "serial": "0x100000000003"
+        },
+        {
+          "component": "node-board-4-hub",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for the same node slot.",
+          "serial": "0x100000000004"
+        },
+        {
+          "component": "router-1",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its Router 1.",
+          "serial": "0x100000000005"
+        },
+        {
+          "component": "router-2",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its Router 2.",
+          "serial": "0x100000000006"
+        },
+        {
+          "component": "baseio-bridge",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its BaseIO Bridge.",
+          "serial": "0x100000000007"
+        },
+        {
+          "component": "baseio-ioc3",
+          "reason": "Stable synthetic identity for this selected physical component; not hardware evidence. The rack module's own value for its BaseIO IOC3.",
+          "serial": "0x100000000008"
+        }
+      ]
+    },
+    "firmware_config": {
+      "cpu_clock_hz": 180000000,
+      "flash_read_cycles": 8,
+      "flash_write_cycles": 1,
+      "hub_clock_hz": 90000000,
+      "machine_type": 0,
+      "processor_reset_mode": {
+        "cache_test_mode": false,
+        "coherent_request_target": "external-agent",
+        "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+        "maximum_outstanding_processor_requests": 4,
+        "memory_endianness": "big",
+        "open_drain_system_interface": false,
+        "processor_device_number": 0,
+        "processor_eliminate_requests": false,
+        "secondary_cache_block_words": 32,
+        "secondary_cache_clock_divisor": 1.5,
+        "secondary_cache_clock_tap": 9,
+        "secondary_cache_error_correction": "retry-access-through-corrector",
+        "secondary_cache_size_kib": 1024,
+        "system_clock_divisor": 2
+      },
+      "provenance": "derived",
+      "sources": [
+        "docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.",
+        "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.",
+        "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz."
+      ]
+    },
+    "generation": "SN0",
+    "kernel_ip": "IP27",
+    "model_role": "emulation-target",
+    "name": "Origin 2000 deskside",
+    "notes": "Four node boards, each with two processors and 256 MiB in two 128 MB banks, two Standard Routers, and a plain BaseIO (io6) in IO1, and no graphics, as a shipped Origin 2000 deskside has none. The Routers are the model's choice: SGI shipped three- and four-node desksides with a Router and a Star Router. The machine's nodes= property fits fewer node boards, in SGI's fill order: one takes no Router board and two a Null Router (007-3453-002 Figure 2-9). This is the eight-processor module, so node 1 reaches Crossbow 0 at widget 9, node 2 Crossbow 1 at widget A, node 3 Crossbow 0 at widget A and node 4 Crossbow 1 at widget 9. This is a selected population, not a captured machine inventory. The full processor mode word is not the full CP0 Config register; only the reviewed low 25 bits transfer. Stock image configuration must agree and is never rewritten by descriptor generation."
+  },
+  "model_version": 1,
+  "open_questions": [],
+  "processors": [
+    {
+      "part": "r10000",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 90,
+          "cache_mib": 1,
+          "clock_mhz": 180,
+          "fpu_identification": "0x0900",
+          "notes": "Identity registers and cache clock corroborated as the same R10000/1 MiB assembly Origin 200 already catalogues (a real Origin 200 hinv reports \"Rev 2.6\"; boot-logs records this as the same variant on both products).",
+          "processor_identification": "0x0926",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1.5,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 1024,
+            "system_clock_divisor": 2
+          }
+        },
+        {
+          "cache_mib": 4,
+          "clock_mhz": 195,
+          "notes": "Reset mode cleared by the independent firmware-configuration review (candidate 7a0508cb6f18b5d8441b8e0dca30f8e386d503fd, docs/reviews/origin2000-firmware-configuration-review-20260905.md) recomputed from IRIX 6.5.7 configuration data and reconciled with the public processor manual and SGI service procedure; docs/datasheets/origin2000-cache-configuration.md records the clearance. This is not the product's selected default (that is 180 MHz/1 MiB); no product here authors it. Identity registers and cache clock for this SKU are not established by any held source and are absent here.",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1.5,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 4096,
+            "system_clock_divisor": 2
+          }
+        }
+      ]
+    }
+  ],
+  "space_selection": {
+    "bits": "58:57",
+    "count": 4,
+    "mechanism": "processor-attribute",
+    "notes": "Two bits the processor drives beside the address, not part of it. All four spaces decode to the same 40-bit physical address and the attribute is what tells them apart. Emulator carrier addresses are target implementation metadata and do not belong in this shared hardware layer.",
+    "provenance": "public-header",
+    "sources": [
+      "linux:arch/mips/include/asm/mach-ip27/spaces.h, public GPL header, names the SN0 uncached-attribute mechanism and uncached memory selector"
+    ]
+  }
+}

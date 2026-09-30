@@ -1,0 +1,92 @@
+# Experimental Origin 300 connected to one V-brick.
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-vbrick
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [4]]
+    provenance: derived
+    sources: ["007-4365-002 printed pages 8 and 10", "007-4264-002 printed pages 52 and 54"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    provenance: derived
+    sources: ["007-4365-002 printed pages 10 to 12"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu2, cpu1, cpu3]
+  memory_kits_per_node: [kit-512-at-banks-2-3]
+  data:
+    machine:
+      name: Origin 300 with a V-brick
+      model_role: emulation-target
+      notes: >-
+        The V-brick is a separate module with its own XBridge, L1 and V12.
+        The Origin 300-to-V-brick cable and nested V12 address projection
+        are explicit emulator approximations. No reviewed inventory shows
+        this pairing. The V-brick L1 host protocol remains unknown.
+      emulation:
+        machine_name: origin300
+        display_description: SGI Origin 300 (IP45) with experimental V-brick
+        profile: vbrick
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: ["docs/library/ip35-source-map.md", "docs/library/origin300-evidence-matrix.md", "docs/library/origin300-reset-alias-evidence.md", "D-0024"]
+          notes: >-
+            The Origin 300's bounded emulator views alias one operator-supplied
+            payload. They do not identify a fitted flash part or physical decoder.
+        synthetic_identities:
+          - component: bedrock
+            serial: "0x0d0c0b0a0908"
+            reason: Reuse the one-chassis Origin 300's synthetic node identity.
+          - component: xbridge
+            serial: "0x0b0a090807"
+            reason: Reuse the one-chassis Origin 300's synthetic IO-8 identity.
+          - component: ioc3
+            serial: "0x5e7000000002"
+            reason: Reuse the one-chassis Origin 300's synthetic IOC3 identity.
+          - component: graphics-v12
+            serial: "0x0b0a090809"
+            reason: >-
+              Stable synthetic catalogue metadata for the uncaptured graphics board.
+          - component: graphics-xbridge
+            serial: "0x0b0a09080a"
+            reason: No captured V-brick XBridge identity is available.
+        initially_operational_crossbow_links:
+          - component: xbridge-crossbar
+            widgets: [11, 14, 15]
+            reason: >-
+              The two IO-8 heads and the experimental V-brick cable port
+              answer on this emulator topology.
+    evidence_policy: strict

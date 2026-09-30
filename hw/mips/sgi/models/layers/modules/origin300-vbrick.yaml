@@ -1,0 +1,134 @@
+# Published V-brick inventory, with its internal XIO route still unresolved.
+layer_version: 1
+layer:
+  kind: module
+  id: origin300-vbrick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: vbrick
+        name: V-brick
+        kind: module
+        hardware_kind: vbrick
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: >-
+          A physical enclosure with its own XBridge, L1 controller and
+          graphics board. No reviewed source establishes an Origin 300
+          attachment or its widget route.
+      - id: cable-port
+        name: V-brick XIO 10 cable port
+        kind: connector
+        parent: vbrick
+        connector: {interface: Crosstown2, location: enclosure exterior, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 52 and 54"]
+      - id: cable-port-b
+        name: V-brick XIO 11 cable port
+        kind: connector
+        parent: vbrick
+        connector: {interface: Crosstown2, location: enclosure exterior, occupancy: empty}
+        provenance: vendor-document
+        sources: ["007-4264-002 printed pages 54 to 56"]
+        notes: The one-pipe experiment leaves this second cable port unconnected.
+      - id: graphics-port
+        name: V-brick internal graphics port
+        kind: connector
+        parent: vbrick
+        connector: {interface: XIO, location: enclosure interior, occupancy: opaque}
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: The exact XBridge port and board route remain unresolved.
+      - id: xbridge
+        name: V-brick XBridge
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        identity:
+          widget_revision: 2
+          notes: >-
+            Revision 2 is an experimental choice matching the Origin 300
+            node's XBridge. The V-brick's fitted revision is unknown.
+        parent: vbrick
+        provenance: vendor-document
+        datasheet_contracts: [docs/datasheets/xbridge.md]
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: The physical port assignment and cascade behavior remain unresolved.
+      - id: l1
+        name: V-brick L1 controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        parent: vbrick
+        provenance: vendor-document
+        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        sources: ["007-4264-002 printed pages 52 and 54"]
+      - id: v12
+        name: VPro V12 board
+        kind: board
+        hardware_kind: odyssey
+        identity:
+          widget_revision: 10
+          notes: The QEMU Odyssey default; no V-brick board revision was measured.
+        parent: vbrick
+        provenance: vendor-document
+        datasheet_contracts: [docs/datasheets/odyssey.md]
+        sources: ["007-4264-002 printed pages 10, 52 and 54"]
+        notes: Its widget route, revision, NIC, memory and display option are unresolved.
+    buses:
+      - id: second-cable-xio
+        name: V-brick XIO 11 cable
+        kind: xio
+        master: xbridge
+        provenance: derived
+        sources: ["007-4264-002 printed pages 54 to 56"]
+        notes: The experiment leaves this documented second cable open.
+      - id: internal-xio
+        name: V-brick internal XIO
+        kind: xio
+        master: xbridge
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: The exact XBridge port and widget number are unresolved.
+    connections:
+      - component: cable-port
+        bus: cable-xio
+        role: endpoint
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: Only the enclosure's external connection is recorded.
+      - component: xbridge
+        bus: cable-xio
+        role: endpoint
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: The experimental route receives this cable at XBridge host port 0xa.
+      - component: xbridge
+        bus: internal-xio
+        role: master
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+      - component: xbridge
+        bus: second-cable-xio
+        role: master
+        provenance: derived
+        sources: ["007-4264-002 printed pages 54 to 56"]
+      - component: cable-port-b
+        bus: second-cable-xio
+        role: endpoint
+        provenance: derived
+        sources: ["007-4264-002 printed pages 54 to 56"]
+      - component: graphics-port
+        bus: internal-xio
+        role: endpoint
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+      - component: v12
+        bus: internal-xio
+        role: endpoint
+        widget: 8
+        provenance: derived
+        sources: ["007-4264-002 printed pages 52 and 54"]
+        notes: >-
+          Port 8 is an experimental internal Xtalk choice. The V-brick guide
+          does not identify the V12 port; ports 10 and 11 are external cables.

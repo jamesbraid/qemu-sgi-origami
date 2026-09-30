@@ -1,0 +1,64 @@
+# The SI graphics board (MGRAS, sold for the Origin 2000 and Onyx2 as SI
+# Viz): an XIO board whose HQ4 host interface answers XIO directly,
+# with no Bridge or PCI bus. A composition fits it into an XIO slot
+# connector with a module_instances entry whose parent is that connector and
+# selects the connector occupied; the connector supplies the widget,
+# controlling node and physical port. The HQ4's upstream attachment names
+# the placeholder bus `upstream`, which the instance binds to its
+# connector's XIO bus. docs/datasheets/mgras-hq4.md and
+# docs/datasheets/mgras-raster-display.md own the board's behavior.
+layer_version: 1
+layer:
+  kind: module
+  id: mgras
+  data:
+    components:
+      - id: mgras
+        name: SI graphics XIO board
+        kind: board
+        hardware_kind: mgras
+        provenance: datasheet
+        datasheet_contracts: [docs/datasheets/mgras-hq4.md, docs/datasheets/mgras-raster-display.md]
+        sources: [docs/datasheets/mgras-hq4.md]
+        notes: >-
+          One textureless SI board: one HQ4, one GE11, one RE4, two PP1s and
+          one display path (docs/datasheets/mgras-hq4.md, Scope). The board's
+          own part number and revision are not captured for this population,
+          so no identity.part is claimed; the catalogue record carries an
+          empty part.
+
+      - id: hq4
+        name: HQ4 host interface
+        kind: io-controller
+        hardware_kind: hq4
+        parent: mgras
+        provenance: datasheet
+        identity:
+          widget_mfg: "0x2aa"
+          widget_part: "0xc003"
+          widget_revision: 0
+        datasheet_contracts: [docs/datasheets/mgras-hq4.md]
+        sources: [docs/designs/2026-09-24-mgras-family-architecture.md]
+        notes: >-
+          The widget identity register answers manufacturer 0x2aa and part
+          0xc003, the ImpactSR identity OpenBSD's xbowdevs and Linux's
+          IMPACTSR_XTALK_MFGR/PART expect of every HQ4 board
+          (docs/designs/2026-09-24-mgras-family-architecture.md, "What
+          software can see"). The widget revision is not captured for this
+          population: 0 is a placeholder matching the QEMU device's own
+          default, not a decoded hardware revision. QEMU's mgras preset
+          answers these values from the device itself; the catalogue record
+          does not drive them.
+
+    connections:
+      - component: hq4
+        bus: upstream
+        role: endpoint
+        provenance: datasheet
+        sources: [docs/datasheets/mgras-hq4.md]
+        notes: >-
+          A placeholder each instance binds to its connector's XIO bus
+          (bus_bindings); the connector's own attachment carries the widget
+          and controlling node. The HQ4 has no downstream bus other
+          components attach through, so this is role endpoint, not
+          bridge-upstream.

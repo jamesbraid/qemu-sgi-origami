@@ -1,0 +1,98 @@
+# One InfiniteReality graphics pipe (KONA): the geometry board, one raster
+# manager with its texture memory and a display generator. The host reaches
+# the pipe through the XIO-to-graphics ASIC (XG) on the geometry board,
+# which is the XIO widget software sees, manufacturer 0x2aa and part
+# 0xc102 on both the Onyx2 deskside and the rack (docs/datasheets/onyx2.md,
+# Pipe identity). The geometry board differs by chassis in the captures, a
+# GE14-4 in the deskside and a GE16-4 in the rack, so a composition fits one
+# of layers/modules/kona-ge14-4.yaml or kona-ge16-4.yaml under this pipe,
+# binding its placeholder `pipe-one-wire` bus to this pipe's one-wire bus.
+# Its record is the first on the chain.
+#
+# The two Onyx2 chassis attach the pipe differently. The deskside's geometry
+# board sits on its midplane and takes XIO slot 4 directly, so a deskside
+# composition fits this layer alone into its graphics-slot connector. A rack
+# pipe lives in a separate graphics module, reached over a Crosstown cable
+# from an Xtown board in a compute-module XIO slot to a Ktown board, whose
+# own record then joins this chain; layers/modules/ir-graphics-module.yaml
+# holds those boards. A composition binds the placeholder `upstream` bus to
+# the XIO link the pipe answers on.
+layer_version: 1
+layer:
+  kind: module
+  id: kona-pipe
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: pipe
+        name: InfiniteReality graphics pipe
+        kind: board
+        hardware_kind: kona
+        provenance: datasheet
+        datasheet_contracts: [docs/datasheets/onyx2.md, docs/datasheets/infinitereality-host-interface.md]
+        sources: ["docs/datasheets/onyx2.md Role and Pipe identity"]
+        notes: >-
+          The pipe's board set as one catalogue board: a geometry board
+          (fitted per chassis), one raster manager with texture memory, and
+          one display generator. A selected minimal population, not a
+          captured inventory. Real pipes carry one to four raster managers.
+
+      - id: xg
+        name: XIO-to-graphics ASIC (XG)
+        kind: io-controller
+        hardware_kind: xg
+        parent: pipe
+        provenance: datasheet
+        identity:
+          widget_mfg: "0x2aa"
+          widget_part: "0xc102"
+          widget_revision: 0
+        datasheet_contracts: [docs/datasheets/onyx2.md, docs/datasheets/infinitereality-host-interface.md]
+        sources: ["docs/datasheets/onyx2.md Widget part number", "linux:2f9060b1db4aa2c21c248e34476d8936a2b69cf6 arch/mips/include/asm/xtalk/xwidget.h WIDGET_KONA_PART_NUM 0xc102 and WIDGET_KONA_MFGR_NUM 0x2aa"]
+        notes: >-
+          Sits on the geometry board, where the host path ends on both
+          chassis (007-3454-005 printed page 28 names the XG ASIC). Parented
+          to the pipe board here so the catalogue names the whole pipe as
+          one board. No widget revision is captured: 0 is a placeholder,
+          and QEMU's sgi-kona answers the identity from the device itself.
+
+      - id: rm
+        name: Raster manager with texture memory
+        kind: board
+        hardware_kind: raster-manager
+        parent: pipe
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+        notes: >-
+          One RM/TM assembly, the minimum either chassis takes. The model
+          presents no raster-manager record on the one-wire chain.
+
+      - id: dg
+        name: Display generator (DG5-2)
+        kind: board
+        hardware_kind: display-generator
+        parent: pipe
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+        notes: The model presents no display-generator record on the one-wire chain.
+
+    buses:
+      - id: one-wire
+        name: Pipe one-wire identity chain
+        kind: one-wire
+        master: xg
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+
+    connections:
+      - component: xg
+        bus: upstream
+        role: endpoint
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md How a pipe reaches the compute module"]
+        notes: >-
+          A placeholder each instance binds to the XIO link the pipe
+          answers on; that link's own attachment carries the widget and
+          controlling node.
+      - {component: xg, bus: one-wire, role: master, provenance: datasheet, sources: ["docs/datasheets/onyx2.md One-wire records"]}

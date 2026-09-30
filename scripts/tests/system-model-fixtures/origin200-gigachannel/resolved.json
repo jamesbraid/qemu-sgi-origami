@@ -1,0 +1,2676 @@
+{
+  "address_spaces": [
+    {
+      "id": "memory",
+      "name": "uncached memory",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Placed at carrier window zero so a plain physical address still means memory.",
+      "provenance": "public-header",
+      "selector": 3,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9600_0000_0000_0000"
+    },
+    {
+      "id": "hub-special",
+      "name": "Hub special",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Boot flash window, the node's own uncached memory alias, directory and ECC access.",
+      "provenance": "public-header",
+      "selector": 0,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9000_0000_0000_0000"
+    },
+    {
+      "id": "io",
+      "name": "I/O",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Sixteen small windows of 16 MB fill offsets 0x0000_0000 to 0x0fff_ffff, widget N at N times 16 MB. Seven big windows of 512 MB start at 0x2000_0000. Small window 0 and big window 6 are two views of the same widget, and both decode: Linux reads widget 0's identification register through the small window by its raw address, OpenBSD reaches the same device through the big window, so both paths have to work. See docs/datasheets/address-map.md for the small-window-0 reversal history.",
+      "provenance": "public-header",
+      "selector": 1,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9200_0000_0000_0000"
+    },
+    {
+      "id": "memory-special",
+      "name": "memory special",
+      "node_stride": "0x1_0000_0000",
+      "notes": "Fetch-and-op and other special memory operations. Not on the first-boot path.",
+      "provenance": "public-header",
+      "selector": 2,
+      "sources": [
+        "linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows",
+        "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation",
+        "108-0170-001 address-entry shortcuts for the SN0 spaces"
+      ],
+      "unmapped_base": "0x9400_0000_0000_0000"
+    }
+  ],
+  "buses": [
+    {
+      "id": "cpu-xio",
+      "kind": "xio",
+      "master": "base-hub",
+      "name": "CPU-side XIO extension",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "gigachannel-cable-a",
+      "kind": "xio",
+      "master": "crosstown-cpu",
+      "name": "XIO cable A",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "gigachannel-cable-b",
+      "kind": "xio",
+      "master": "crosstown-cpu",
+      "name": "XIO cable B",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "cabinet-xio",
+      "kind": "xio",
+      "master": "crosstown-cabinet",
+      "name": "cabinet XIO",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-a",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link A to attached Hub",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-9",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link 9 to IP29 Bridge at io1",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-8",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link 8 to cabinet Bridge at io7",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-b",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link B to optional XIO position io2",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-c",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link C to optional XIO position io3",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-d",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link D to optional XIO position io4",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-e",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link E to optional XIO position io5",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "crossbow-link-f",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "Crossbow link F to optional XIO position io6",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "cabinet-xio-slot-set",
+      "kind": "xio",
+      "master": "crossbow",
+      "name": "GIGAchannel cabinet XIO slot set",
+      "notes": "Slots 11-15 correspond as a set to links B-F and software positions io2-io6, but the one-to-one physical slot mapping is not established.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "gigachannel-bridge-one-wire",
+      "kind": "one-wire",
+      "master": "gigachannel-bridge",
+      "name": "cabinet Bridge one-wire line",
+      "provenance": "derived",
+      "sources": [
+        "docs/datasheets/bridge.md one-wire master",
+        "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view"
+      ]
+    },
+    {
+      "id": "gigachannel-pci",
+      "kind": "pci",
+      "master": "gigachannel-bridge",
+      "name": "GIGAchannel PCI",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "base-sysad",
+      "kind": "sysad",
+      "master": "base-cpu0",
+      "name": "SysAD",
+      "notes": "The processor's multiplexed address/data bus to the Hub's processor interface. The uncached attribute rides beside the address here, on SysAD[59:58], which is the signal the 42-bit machine bus address carries.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"
+      ]
+    },
+    {
+      "id": "base-pci",
+      "kind": "pci",
+      "master": "base-bridge",
+      "name": "PCI",
+      "notes": "33 MHz PCI, presented by the Bridge. Dual-address cycles carry 64 bits. The base board also exposes three opaque expansion connectors labelled slots 5, 6, and 7; those physical labels are not inferred PCI device numbers.",
+      "provenance": "derived",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "id": "base-byte-bus",
+      "kind": "byte-bus",
+      "master": "base-ioc3",
+      "name": "IOC3 byte bus",
+      "notes": "Four device selects for byte-wide devices outside the chip.",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
+        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+      ]
+    },
+    {
+      "id": "base-i2c",
+      "kind": "i2c",
+      "master": "base-pcf8584",
+      "name": "I2C",
+      "notes": "The PCF8584 masters the system-controller and configuration-NVRAM bus.",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ]
+    },
+    {
+      "id": "base-one-wire",
+      "kind": "one-wire",
+      "master": "base-ioc3",
+      "name": "MicroLAN",
+      "notes": "The Dallas single-wire bus. SGI's own register block for it is named MicroLAN. Real and emulated Origin 200 systems supply an Ethernet-address NIC here.",
+      "provenance": "guest-source",
+      "sources": [
+        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+      ]
+    },
+    {
+      "id": "base-bridge-one-wire",
+      "kind": "one-wire",
+      "master": "base-bridge",
+      "name": "Bridge one-wire line",
+      "notes": "**A different bus from the IOC3's MicroLAN**, and the distinction is load-bearing. The Bridge has its own one-wire master at widget offset 0x00_00b0, driven a bit at a time \u2014 bit 0 samples the wire, bit 1 says the slot finished, a write starts a slot with its low-drive and remaining times packed in. Linux and OpenBSD read the layout the same way, but their timings differ slightly, so a model must key off the sequence of slots rather than exact microseconds.\n**Mainline Linux will not boot without it.** It reads the board-identity NIC before doing anything else with the Bridge, and a failed read makes the driver return a deferred-probe error so the Bridge never attaches \u2014 no PCI bus, no I/O controller, no console, no disk, and a deferred-probe message as the only clue.",
+      "provenance": "guest-source",
+      "sources": [
+        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+      ]
+    },
+    {
+      "id": "base-hub-one-wire",
+      "kind": "one-wire",
+      "master": "base-hub-md",
+      "name": "Hub one-wire line",
+      "notes": "The Hub memory/directory interface owns this third one-wire master. The hardware endpoint is a DS2505-compatible responder whose pages describe the installed PIMM population, part number, installed revision, and barcode serial. The current model implements an empty bus. The responder's package, reference designator, connector contact, and copper route remain unresolved.",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+      ]
+    },
+    {
+      "id": "base-directory-bus",
+      "kind": "directory-bus",
+      "master": "base-hub-md",
+      "name": "Hub memory/directory path",
+      "notes": "The Hub memory/directory interface services node memory and owns the flash timing and ready signals. The source set does not establish how the overlapping node offset 0x1fc0_0000 selects flash instead of RAM; that decode remains an explicit open question in `open_questions`.",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
+      ]
+    }
+  ],
+  "components": [
+    {
+      "id": "gigachannel-system",
+      "kind": "chassis",
+      "name": "Origin 200 GIGAchannel system",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "description": "CPU-side adapter replacing the passive XTalk jumper board, PCA XBOX EXTENSION BOARD O200.",
+      "hardware_kind": "crosstown",
+      "id": "crosstown-cpu",
+      "identity": {
+        "part": "030-1264-001"
+      },
+      "kind": "board",
+      "name": "Crosstown adapter",
+      "parent": "base-ip29-system-board",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0187-001 Tables 1-1 and 1-2 section page 1-2 PDF page 14 mapping trusted",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"
+      ]
+    },
+    {
+      "description": "The XBOX_EXT board record, rev C, that real inventories list beside the IP29 record under io1/MotherBoard. That it answers on the IP29 Bridge's own one-wire line is inferred from that grouping, the way the BaseIO-G's MIO record shares its Bridge's line.",
+      "id": "crosstown-identity",
+      "identity": {
+        "part": "030-1264-001"
+      },
+      "kind": "identity",
+      "name": "Crosstown board-identity NIC",
+      "parent": "crosstown-cpu",
+      "provenance": "observed-hardware",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"
+      ]
+    },
+    {
+      "hardware_kind": "r10000",
+      "id": "base-cpu1",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000",
+      "parent": "base-pimm",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "id": "gigachannel-chassis",
+      "kind": "chassis",
+      "name": "GIGAchannel expansion cabinet",
+      "parent": "gigachannel-system",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "description": "Cabinet-side paired-cable adapter.",
+      "id": "crosstown-cabinet",
+      "kind": "board",
+      "name": "Crosstown adapter",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "crossbar": {
+        "kind": "xbow"
+      },
+      "datasheet_contracts": [
+        "docs/datasheets/xbow.md"
+      ],
+      "description": "External cabinet Crossbow. Link A reaches the attached Hub, link 9 reaches the IP29 Bridge at io1, link 8 reaches the cabinet Bridge at io7, and links B-F reach the optional positions io2-io6. Revision 12.0 retains a read/write NIC register but identifies its MicroLAN controller as nonfunctional, so this reference exposes no Crossbow one-wire bus or responder.",
+      "hardware_kind": "xbow",
+      "id": "crossbow",
+      "identity": {
+        "notes": "Select Crossbow 1.1, the earliest revision accepted by IRIX 6.5.30, as the Origin 2000 module does; no GIGAchannel capture prints the cabinet Crossbow's revision. The part 0x0000 is the whole of the IP27 PROM's cabinet detection.",
+        "widget_mfg": "0x0",
+        "widget_part": "0x0",
+        "widget_revision": 2
+      },
+      "kind": "crossbar",
+      "name": "Crossbow",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "asic/sgi-crossbow-asic-spec-rev12.0.pdf printed and PDF pages 13 14 29 63 93 and 129 mapping trusted",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted"
+      ]
+    },
+    {
+      "description": "PCA XBOX MIDPLANE O200, part 030-1380-002 by two seller listings. The XIO slots, the interface board and the PCI backplane plug into it. That the cabinet Bridge sits on it is inferred: no photograph shows the Bridge on the interface board or on the visible part of the PCI backplane. The board record firmware reads through this Bridge names the interface board instead (gigachannel-identity).",
+      "hardware_kind": "gigachannel-midplane",
+      "id": "gigachannel-midplane",
+      "kind": "board",
+      "name": "GIGAchannel midplane",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3709-002 printed pages 107-123 PDF pages 123-139 mapping trusted",
+        "docs/datasheets/sgi-gigachannel.md Physical composition"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/bridge.md"
+      ],
+      "description": "The cited two-module post-installation inventory reports this PCI_XIO board in module 1, slot io7. Its external-flash window holds the BASEIO PROM the IP27 PROM loads on a GIGAchannel; the flash part is not established, so none is fitted.",
+      "hardware_kind": "bridge",
+      "id": "gigachannel-bridge",
+      "identity": {
+        "widget_mfg": "0x036",
+        "widget_part": "0xc002",
+        "widget_revision": 4
+      },
+      "kind": "pci-host-bridge",
+      "name": "Bridge",
+      "parent": "gigachannel-midplane",
+      "pci_host_bridge": {
+        "heads": 1
+      },
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "description": "The XBOX_DUALXTOWN record, rev F, of the 030-1252-001 XBOX XTALK INTERFACE board, which firmware reports at io7. Which one-wire line carries it is not established; this model presents it on the cabinet Bridge's own line, the one the firmware names io7 from.",
+      "id": "gigachannel-identity",
+      "identity": {
+        "part": "030-1252-001"
+      },
+      "kind": "identity",
+      "name": "cabinet board-identity NIC",
+      "parent": "gigachannel-chassis",
+      "provenance": "observed-hardware",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Product identity and Firmware and IRIX view, citing the Higher Intellect Origin 200 inventories and the 2003 comp.sys.sgi.marketplace owner post"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "slot 11",
+        "occupancy": "opaque"
+      },
+      "id": "xio-slot-11",
+      "kind": "connector",
+      "name": "XIO slot 11",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "slot 12",
+        "occupancy": "opaque"
+      },
+      "id": "xio-slot-12",
+      "kind": "connector",
+      "name": "XIO slot 12",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "slot 13",
+        "occupancy": "opaque"
+      },
+      "id": "xio-slot-13",
+      "kind": "connector",
+      "name": "XIO slot 13",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "slot 14",
+        "occupancy": "opaque"
+      },
+      "id": "xio-slot-14",
+      "kind": "connector",
+      "name": "XIO slot 14",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "slot 15",
+        "occupancy": "opaque"
+      },
+      "id": "xio-slot-15",
+      "kind": "connector",
+      "name": "XIO slot 15",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "io2",
+        "occupancy": "opaque"
+      },
+      "description": "The software position io2 on Crossbow link B; which physical slot among 11-15 it is remains unknown.",
+      "id": "xio-position-io2",
+      "kind": "connector",
+      "name": "XIO position io2",
+      "parent": "gigachannel-chassis",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "io3",
+        "occupancy": "opaque"
+      },
+      "description": "The software position io3 on Crossbow link C; which physical slot among 11-15 it is remains unknown.",
+      "id": "xio-position-io3",
+      "kind": "connector",
+      "name": "XIO position io3",
+      "parent": "gigachannel-chassis",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "io4",
+        "occupancy": "opaque"
+      },
+      "description": "The software position io4 on Crossbow link D; which physical slot among 11-15 it is remains unknown.",
+      "id": "xio-position-io4",
+      "kind": "connector",
+      "name": "XIO position io4",
+      "parent": "gigachannel-chassis",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "io5",
+        "occupancy": "opaque"
+      },
+      "description": "The software position io5 on Crossbow link E; which physical slot among 11-15 it is remains unknown.",
+      "id": "xio-position-io5",
+      "kind": "connector",
+      "name": "XIO position io5",
+      "parent": "gigachannel-chassis",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "XIO",
+        "location": "io6",
+        "occupancy": "opaque"
+      },
+      "description": "The software position io6 on Crossbow link F; which physical slot among 11-15 it is remains unknown.",
+      "id": "xio-position-io6",
+      "kind": "connector",
+      "name": "XIO position io6",
+      "parent": "gigachannel-chassis",
+      "provenance": "datasheet",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 1",
+        "occupancy": "opaque"
+      },
+      "id": "pci-slot-1",
+      "kind": "connector",
+      "name": "PCI slot 1",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 2",
+        "occupancy": "opaque"
+      },
+      "id": "pci-slot-2",
+      "kind": "connector",
+      "name": "PCI slot 2",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 3",
+        "occupancy": "opaque"
+      },
+      "id": "pci-slot-3",
+      "kind": "connector",
+      "name": "PCI slot 3",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 4",
+        "occupancy": "opaque"
+      },
+      "id": "pci-slot-4",
+      "kind": "connector",
+      "name": "PCI slot 4",
+      "parent": "gigachannel-chassis",
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "description": "The physical enclosure for one Origin 200 CPU module.",
+      "id": "base-origin200-chassis",
+      "kind": "chassis",
+      "name": "Origin 200 CPU chassis",
+      "parent": "gigachannel-system",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted"
+      ]
+    },
+    {
+      "description": "One complete Origin 200 CPU module.",
+      "id": "base-cpu-module",
+      "kind": "module",
+      "name": "Origin 200 CPU module",
+      "parent": "base-origin200-chassis",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted"
+      ]
+    },
+    {
+      "description": "The removable metal carrier that holds the main system board, CPU daughterboard, and PCI backplane as one field-replaceable assembly.",
+      "id": "base-logic-carrier",
+      "kind": "carrier",
+      "name": "logic carrier",
+      "parent": "base-cpu-module",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted"
+      ]
+    },
+    {
+      "description": "The main system board on the logic carrier.",
+      "id": "base-ip29-system-board",
+      "kind": "board",
+      "name": "IP29 System Board",
+      "parent": "base-logic-carrier",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted",
+        "photos/theretroweb-origin200/sgi-origin2-1-6a784d73a6d3e594546835.jpg solder-side assembly label, marking 030-1025-002 REV M"
+      ]
+    },
+    {
+      "description": "The processor daughterboard carries one or two R10000-family processors.",
+      "id": "base-pimm",
+      "kind": "board",
+      "name": "PIMM",
+      "parent": "base-logic-carrier",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted",
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 mapping trusted"
+      ]
+    },
+    {
+      "description": "The distinct board carrying PCI option slots 5, 6, and 7.",
+      "id": "base-pci-backplane",
+      "kind": "board",
+      "name": "PCI backplane",
+      "parent": "base-logic-carrier",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3709-002 Figure 5-8 and text printed page 84 PDF page 98 mapping trusted",
+        "photos/theretroweb-origin200/sgi-origin3-1-6a784d734456f326815695.jpg PCI backplane component side",
+        "photos/theretroweb-origin200/sgi-origin4-1-6a784d7361a61633987402.jpg PCI backplane solder side"
+      ]
+    },
+    {
+      "aliases": [
+        "MIPS R10000 Processor Chip"
+      ],
+      "description": "The processor. One is installed on a daughterboard that accepts one or two CPUs.",
+      "hardware_kind": "r10000",
+      "id": "base-cpu0",
+      "identity": {
+        "cache_clock_mhz": 90,
+        "cache_mib": 1,
+        "clock_mhz": 180,
+        "fpu_identification": "0x0900",
+        "processor_identification": "0x0926",
+        "variants": [
+          {
+            "cache_mib": 1,
+            "clock_mhz": 180
+          },
+          {
+            "cache_mib": 4,
+            "clock_mhz": 195
+          }
+        ]
+      },
+      "kind": "cpu",
+      "name": "R10000",
+      "parent": "base-pimm",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf"
+      ]
+    },
+    {
+      "description": "Four physical banks of paired DIMMs. KLCONFIG carries eight architectural bank entries, with IP29 using entries 0 through 3.",
+      "id": "base-node-memory",
+      "kind": "memory",
+      "memory": {
+        "bank_sizes_mib": [
+          32,
+          64,
+          128,
+          512
+        ],
+        "banks": 4,
+        "dimm_slots": 8,
+        "dimms_per_bank": 2
+      },
+      "name": "node memory",
+      "notes": "The capture shows one populated bank of 64 MB. Bank count and size are that machine's configuration; what is observed is that memory is reported per board and then per bank.",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "node-memory",
+          "name": "node memory",
+          "offset": "0x0",
+          "size": "0x1_0000_0000",
+          "space": "memory"
+        }
+      ],
+      "sources": [
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted, establishes four physical banks and eight DIMM sockets",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "SN0 Hub"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/hub-processor-interface.md",
+        "docs/datasheets/hub-memory-directory.md",
+        "docs/datasheets/hub-io-interface.md",
+        "docs/datasheets/hub-network-interface.md",
+        "docs/datasheets/hub-bte.md",
+        "docs/datasheets/hub-onewire.md"
+      ],
+      "description": "The node controller. Memory controller, directory-coherence engine, interrupt controller, XIO port and fabric port in one chip. The processor interface is the face it turns towards the node's two R10000s.",
+      "id": "base-hub",
+      "identity": {
+        "clock_hz": 90000000,
+        "ni_revision": 3,
+        "notes": "The Hub is XIO widget 1. A stock-PROM A/B capture binds the KLCONFIG revision to NI_STATUS, not to the widget-ID revision.",
+        "widget_part": "0xc101",
+        "widget_revision": 1
+      },
+      "kind": "node-asic",
+      "name": "Hub",
+      "node_asic": {
+        "cpus_per_interface": 2,
+        "processor_interfaces": 1
+      },
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "hub-registers-local",
+          "name": "Hub registers, local view",
+          "notes": "Widget 1's small window, lower half \u2014 the position-independent one. The address is formed with the node-number field **zero**, not with the reader's own node number, and the Hub the reading processor is attached to answers it. That is how a guest reaches its own Hub before it knows its node number. On this one-node machine the two readings coincide; they diverge the moment a second node exists.",
+          "offset": "0x0100_0000",
+          "size": "0x80_0000",
+          "space": "io"
+        },
+        {
+          "id": "hub-registers-node",
+          "name": "Hub registers, node-named view",
+          "notes": "Upper half of the same small window. Names a node explicitly.",
+          "offset": "0x0180_0000",
+          "size": "0x80_0000",
+          "space": "io"
+        },
+        {
+          "id": "hub-local-memory",
+          "name": "Hub local memory view",
+          "notes": "Position-independent uncached view of the reading processor's node memory.",
+          "offset": "0x0000_0000",
+          "size": "0x1000_0000",
+          "space": "hub-special"
+        },
+        {
+          "id": "hub-remote-memory",
+          "name": "Hub remote memory view",
+          "notes": "Uncached memory view selected by the address's node number.",
+          "offset": "0x2000_0000",
+          "size": "0x1000_0000",
+          "space": "hub-special"
+        },
+        {
+          "id": "ecc-backdoor",
+          "name": "ECC backdoor",
+          "offset": "0x8000_0000",
+          "size": "0x4000_0000",
+          "space": "hub-special"
+        },
+        {
+          "id": "directory-backdoor",
+          "name": "directory backdoor",
+          "offset": "0xc000_0000",
+          "size": "0x4000_0000",
+          "space": "hub-special"
+        }
+      ],
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "description": "Faces the processors. Real-time counter, interrupt pending banks and per-processor masks.",
+      "id": "base-hub-pi",
+      "kind": "subfunction",
+      "name": "Hub processor interface",
+      "parent": "base-hub",
+      "provenance": "public-header",
+      "regions": [
+        {
+          "id": "processor-interface",
+          "name": "processor interface",
+          "offset": "0x0100_0000",
+          "size": "0x20_0000",
+          "space": "io"
+        },
+        {
+          "id": "real-time-counter",
+          "name": "real-time counter",
+          "notes": "Outside the unit's main block, in a separate 64 KB sub-block. Linux, OpenBSD and the IRIX headers all give this offset, so it is a genuine decode. Counts at 1.25 MHz.",
+          "offset": "0x0103_0100",
+          "size": "0x8",
+          "space": "io"
+        },
+        {
+          "id": "interrupt-modify",
+          "name": "interrupt-modify register",
+          "notes": "Where the Bridge's interrupt write lands, setting one bit of a pending bank. This is the **node-named** half of the Hub's small window, not the local half at 0x0100_0090. Both halves decode and only one is what the Bridge writes; Linux and OpenBSD compute this address from opposite directions and agree on it.",
+          "offset": "0x0180_0090",
+          "size": "0x8",
+          "space": "io"
+        }
+      ],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/sn0/hubpi.h"
+      ]
+    },
+    {
+      "description": "Real Hub junk-bus hardware for early bring-up. The model leaves it disabled by default; its population in production units is uncertain.",
+      "id": "base-junk-uart",
+      "kind": "subfunction",
+      "name": "Hub junk-bus UART",
+      "optional": {
+        "default_enabled": false,
+        "node": 0
+      },
+      "parent": "base-hub",
+      "provenance": "measured-on-our-model",
+      "regions": []
+    },
+    {
+      "description": "Memory controller and directory-coherence state.",
+      "id": "base-hub-md",
+      "kind": "subfunction",
+      "name": "Hub memory/directory interface",
+      "notes": "Hardware services node memory and the boot flash through this interface. The exact flash-versus-RAM decode at their overlapping node offset remains open.",
+      "parent": "base-hub",
+      "provenance": "public-header",
+      "regions": [
+        {
+          "id": "memory-directory-controller",
+          "name": "memory and directory controller",
+          "offset": "0x0120_0000",
+          "size": "0x20_0000",
+          "space": "io"
+        }
+      ],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/sn0/hubmd.h",
+        "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
+      ]
+    },
+    {
+      "description": "The Hub's XIO port. Widget identity, translation-table entries, programmed-I/O windows, interrupt destination.",
+      "id": "base-hub-ii",
+      "kind": "subfunction",
+      "name": "Hub I/O interface",
+      "parent": "base-hub",
+      "provenance": "public-header",
+      "regions": [
+        {
+          "id": "io-interface",
+          "name": "I/O interface",
+          "offset": "0x0140_0000",
+          "size": "0x20_0000",
+          "space": "io"
+        },
+        {
+          "id": "widget-identification",
+          "name": "widget identification",
+          "offset": "0x0140_0000",
+          "size": "0x8",
+          "space": "io"
+        }
+      ],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/sn0/hubio.h"
+      ]
+    },
+    {
+      "description": "The CrayLink fabric port.",
+      "id": "base-hub-ni",
+      "kind": "subfunction",
+      "name": "Hub network interface",
+      "notes": "Reports no remote link, which is correct for one node, and reports M mode addressing. This is the interface a second node opens.",
+      "parent": "base-hub",
+      "provenance": "public-header",
+      "regions": [
+        {
+          "id": "network-interface",
+          "name": "network interface",
+          "offset": "0x0160_0000",
+          "size": "0x20_0000",
+          "space": "io"
+        }
+      ],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/sn0/hubni.h"
+      ]
+    },
+    {
+      "aliases": [
+        "xbridge (OpenBSD driver name, even on IP27)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/bridge.md"
+      ],
+      "description": "The XIO widget that presents a PCI bus, translates DMA through address-translation entries, and gathers device interrupts.",
+      "id": "base-bridge",
+      "identity": {
+        "widget_mfg": "0x036",
+        "widget_part": "0xc002",
+        "widget_revision": 4
+      },
+      "kind": "pci-host-bridge",
+      "name": "Bridge",
+      "notes": "This chip answers at widget 0 as well as at widget 8, because there is no crossbar between it and the Hub and so nothing routes by widget number. OpenBSD treats widget 0xa as the interrupt-carrying face of the same bridge. Both are machine-contract sign-offs.",
+      "parent": "base-ip29-system-board",
+      "pci_host_bridge": {
+        "heads": 1
+      },
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "bridge-registers",
+          "name": "Bridge registers",
+          "notes": "Widget 8 small window, at widget number times 16 MB.",
+          "offset": "0x0800_0000",
+          "size": "0x100_0000",
+          "space": "io"
+        }
+      ],
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "ioc (OpenBSD driver)",
+        "SGI IOC3 (PCI identification)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/ioc3.md"
+      ],
+      "description": "The multifunction PCI device capable of two serial ports, 10/100 ethernet, a PS/2 keyboard and mouse controller, general-purpose I/O, a one-wire bus and a byte-wide expansion bus. What this board connects is a separate question from what the chip can do.",
+      "id": "base-ioc3",
+      "identity": {
+        "pci_device": "0x0003",
+        "pci_revision": 1,
+        "pci_subsystem_id": "0xc303",
+        "pci_vendor": "0x10a9"
+      },
+      "kind": "io-controller",
+      "name": "IOC3",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 5",
+        "occupancy": "opaque"
+      },
+      "id": "base-pci-slot-5",
+      "kind": "connector",
+      "name": "PCI slot 5",
+      "parent": "base-pci-backplane",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 6",
+        "occupancy": "opaque"
+      },
+      "id": "base-pci-slot-6",
+      "kind": "connector",
+      "name": "PCI slot 6",
+      "parent": "base-pci-backplane",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "connector": {
+        "interface": "PCI",
+        "location": "slot 7",
+        "occupancy": "opaque"
+      },
+      "id": "base-pci-slot-7",
+      "kind": "connector",
+      "name": "PCI slot 7",
+      "parent": "base-pci-backplane",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "description": "The console UART. Presents a 16550 programming model over a DMA ring-descriptor engine.",
+      "id": "base-ioc3-uart-a",
+      "kind": "subfunction",
+      "name": "IOC3 serial port A",
+      "parent": "base-ioc3",
+      "provenance": "public-header",
+      "regions": [
+        {
+          "id": "console-port",
+          "name": "console port",
+          "notes": "Measured from the chip's own register block, not from an address space \u2014 computing an absolute address by adding this to a space base gives a number that means nothing. The chip's serial block sits in a window at 0x20000 and port A is at 0x178 inside it, so 0x20178 is the offset that reaches the port's first 16550 register. Its low twelve bits, 0x178, are separately what a guest reads to decide which controller generation this is; at or above 0x380 it would read a configuration register that does not exist here. Two facts, two masks, one number.",
+          "offset": "0x20178",
+          "relative_to": "base-ioc3",
+          "size": "0x8"
+        }
+      ],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+      ]
+    },
+    {
+      "description": "The second rear-panel serial port connected through IOC3's serial block.",
+      "id": "base-ioc3-uart-b",
+      "kind": "subfunction",
+      "name": "IOC3 serial port B",
+      "parent": "base-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
+        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+      ]
+    },
+    {
+      "description": "The keyboard and mouse controller connected to the rear-panel PS/2 ports.",
+      "id": "base-ioc3-ps2",
+      "kind": "subfunction",
+      "name": "IOC3 PS/2 controller",
+      "parent": "base-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
+        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+      ]
+    },
+    {
+      "description": "The rear-panel parallel port present on the IP29 System Board.",
+      "id": "base-ioc3-parallel",
+      "kind": "subfunction",
+      "name": "IOC3 parallel port",
+      "parent": "base-ioc3",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 establishes the two serial ports, parallel port, keyboard and mouse ports, and ethernet connection",
+        "linux:arch/mips/include/asm/sn/ioc3.h names UARTA and UARTB"
+      ]
+    },
+    {
+      "description": "The chip's 10/100 interface, driving an external physical-layer transceiver.",
+      "id": "base-ioc3-eth",
+      "kind": "subfunction",
+      "name": "IOC3 ethernet",
+      "parent": "base-ioc3",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "DP83840AVCE (package marking)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/dp83840.md"
+      ],
+      "description": "The ethernet physical-layer transceiver, reached through the chip's management interface.",
+      "id": "base-enet-phy",
+      "kind": "subfunction",
+      "name": "DP83840A",
+      "parent": "base-ioc3",
+      "provenance": "public-header",
+      "regions": [],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/ioc3.h names the PHY and its management interface",
+        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg Ethernet section, package marked DP83840AVCE"
+      ]
+    },
+    {
+      "aliases": [
+        "ISP1040B (package marking)",
+        "ISP1020 (PCI identification)",
+        "QL1040B (rev. 2) (inventory output)",
+        "qlw (OpenBSD driver)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/isp1040.md"
+      ],
+      "description": "The base board's single-channel Ultra SCSI adapter for the 3.5-inch drives, at PCI device 0. A real Origin 200's own hardware inventory names both chips directly, at PCI device 0 and 1 (docs/component-taxonomy.md's captured `hinv` output); the captured graph shows a disk behind this one.",
+      "id": "base-isp1040",
+      "identity": {
+        "hardware_revision": 6,
+        "pci_device": "0x1020",
+        "pci_revision": 5,
+        "pci_vendor": "0x1077"
+      },
+      "kind": "storage-hba",
+      "name": "QLogic ISP1040",
+      "notes": "Two artifacts, and they establish different halves. The capture observes a SCSI adapter answering at PCI device 0: it names the FUNCTION and the SLOT and not the part. The part comes from a high-resolution photograph of a real IP29 System Board, which shows two adjacent QLogic packages marked ISP1040B. The PCI and hardware revisions come from the captured inventory and public revision mapping, not from the package marking.",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Ultra SCSI channel and its 3.5-inch drive path",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "ISP1040B (package marking)",
+        "ISP1020 (PCI identification)",
+        "QL1040B (rev. 2) (inventory output)",
+        "qlw (OpenBSD driver)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/isp1040.md"
+      ],
+      "description": "The base board's single-channel Fast/Narrow SCSI adapter for the 5.25-inch devices, at PCI device 1. The same ISP1040 part as the `isp1040` Ultra channel is configured for a different board-level interface. A real Origin 200's own hardware inventory reports the identical revision for both (docs/component-taxonomy.md's captured `hinv` output).",
+      "id": "base-isp1040-1",
+      "identity": {
+        "hardware_revision": 6,
+        "pci_device": "0x1020",
+        "pci_revision": 5,
+        "pci_vendor": "0x1077"
+      },
+      "kind": "storage-hba",
+      "name": "QLogic ISP1040",
+      "notes": "Same split as the first channel: the capture names a SCSI adapter at PCI device 1 and not which part it is, and the photograph of a real board supplies the ISP1040B marking. The two QLogic chips are a matched pair in adjacent footprints, which is the physical evidence that this machine's two SCSI channels are two instances of one controller rather than two different parts -- something neither the capture nor a driver reading states.",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg adjacent QLogic packages beside the internal SCSI connector, package marked ISP1040B",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 identifies the Fast/Narrow SCSI channel and its 5.25-inch device path",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/boot-flash.md"
+      ],
+      "description": "One megabyte of firmware storage, presented at two addresses.",
+      "id": "base-boot-flash",
+      "kind": "flash",
+      "name": "boot flash",
+      "parent": "base-ip29-system-board",
+      "provenance": "public-header",
+      "regions": [],
+      "sources": [
+        "linux:arch/mips/include/asm/sn/sn0/addrs.h IP27PROM_FLASH_HDR and IP27PROM_FLASH_DATA, plus a mapped and an unmapped PROM base"
+      ],
+      "views": [
+        {
+          "id": "reset",
+          "name": "reset vector view",
+          "notes": "Where the processor's reset vector reaches it. The reset vector 0xffff_ffff_bfc0_0000 lands in the **uncached** compatibility segment at 0xffff_ffff_a000_0000, not the cached one at 0xffff_ffff_8000_0000 \u2014 the cached segment is what the guests read the firmware parameter block through. The two behave differently and the distinction has cost this team a week once already.",
+          "offset": "0x1fc0_0000",
+          "size": "0x10_0000",
+          "space": "memory"
+        },
+        {
+          "id": "lboot",
+          "name": "Hub special view",
+          "notes": "One region aliased into both views. Which bus the flash hangs off is settled \u2014 the memory and directory unit \u2014 and that also explains the part that looked odd: the reset vector reaches the flash in uncached *memory* space rather than through an I/O space because memory space is what that unit decodes, so the flash sits inside it rather than beside it. What remains open is narrower: how a compatibility-segment access physically resolves to flash rather than to memory at the same offset, traced in the compatibility-segment routing note, whose source reading is settled and three-sourced but whose hardware implication is contradicted by real-hardware evidence. The alias gives every guest what it expects meanwhile.",
+          "offset": "0x1000_0000",
+          "size": "0x1000_0000",
+          "space": "hub-special"
+        },
+        {
+          "id": "rboot",
+          "name": "remote Hub special view",
+          "notes": "Node-explicit maintenance view of the same flash storage.",
+          "offset": "0x3000_0000",
+          "size": "0x1000_0000",
+          "space": "hub-special"
+        }
+      ]
+    },
+    {
+      "aliases": [
+        "M48T35-70PCI (package marking)",
+        "M48T35 (Linux driver name)",
+        "DS1742W (what OpenBSD prints)",
+        "DS1747"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/timekeeper.md"
+      ],
+      "description": "Battery-backed non-volatile memory with a real-time clock, on the IOC3's byte bus.",
+      "id": "base-rtc",
+      "kind": "rtc",
+      "name": "MK48T35-class Timekeeper",
+      "notes": "Byte-bus chip select 0 is what makes this a Timekeeper. Chip selects 1 and 2 mean a DS1687 instead, which is the Octane's clock and is indirectly addressed. The two are not interchangeable. The provenance is SGI's own clock driver for this generation rather than a guest's, and the distinction was worth making: mainline Linux does carry a driver for this part, but its build condition names no SGI machine at all, so citing it would have been a fact about a driver that exists rather than about this board. The public header that does name this board defines its subsystem identifier and says nothing about a clock.",
+      "parent": "base-ip29-system-board",
+      "provenance": "vendor-source",
+      "regions": [],
+      "sources": [
+        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg battery-backed clock package, marked M48T35-70PCI"
+      ]
+    },
+    {
+      "aliases": [
+        "Number In a Can",
+        "DS2505-family serial EPROM",
+        "one-wire family code 0x0b \u2014 how Linux recognises it on this master"
+      ],
+      "description": "The board-identity NIC reached through the Bridge's own one-wire master. Its physical attachment within the Origin 200 assembly is not established.",
+      "id": "base-board-identity",
+      "identity": {
+        "part": "030-1244-001"
+      },
+      "kind": "identity",
+      "name": "board-identity NIC",
+      "notes": "What must be on the far side is specific: Linux looks for family code 0x0b on this master and ignores anything else, then reads the first 64 bytes as two independent 32-byte blocks, each with an inverted CRC-16 in its last two bytes so a CRC over the whole block leaves a fixed residue. Both blocks must check out or the memory is treated as unreadable. Existence and contents are observed: a real Origin 200 printed this board's identity string. Placement behind the Bridge one-wire master is derived by pairing that observation with the cited public Linux driver, not claimed as part of the hardware capture.",
+      "parent": "base-origin200-chassis",
+      "provenance": "derived",
+      "regions": []
+    },
+    {
+      "aliases": [
+        "Number In a Can",
+        "MAC NIC",
+        "owmac (OpenBSD driver)"
+      ],
+      "description": "Number In a Can (NIC) holding the board's Ethernet address.",
+      "id": "base-nic-mac",
+      "kind": "identity",
+      "name": "Ethernet-address NIC",
+      "notes": "The capture observes owmac0 and prints the low seven-bit family type. The full family byte is decoder-derived rather than directly observed, so this projection keeps the component generic and leaves that decoder detail in the cited IOC3 datasheet.",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [],
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "PCF8584T (package marking)",
+        "I2C chip (the firmware's own progress-code table)",
+        "PCD8584 (a different Philips part, miscited for this one in a vendor driver comment)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ],
+      "description": "The Philips I2C-bus controller wired into the Hub's local register space. It is the only path from the Hub onto the I2C bus, and the system controller answers as a slave on that bus. A generic third-party part rather than an SGI design, which is why it is named by its part number.",
+      "id": "base-pcf8584",
+      "kind": "bus-controller",
+      "name": "PCF8584",
+      "notes": "The Origin 200 board photograph directly shows the PCF8584T package. The Origin 2000 and Onyx2 manuals independently identify the shared firmware's initialization progress code and tie the controller to the system-controller path. A real PCF8584 can also be addressed as a slave.",
+      "parent": "base-ip29-system-board",
+      "provenance": "derived",
+      "regions": [
+        {
+          "id": "data-register",
+          "name": "Data register",
+          "offset": "0x22_0000",
+          "relative_to": "base-hub"
+        },
+        {
+          "id": "control-status-register",
+          "name": "Control/status register",
+          "notes": "Write-only control and read-only status share this offset; which one an access reaches is decided by the serial-interface-enable bit.",
+          "offset": "0x22_0008",
+          "relative_to": "base-hub"
+        }
+      ],
+      "sources": [
+        "photos/theretroweb-origin200/sgi-origin-1-6a784d737f602597049387.jpg I2C section, package marked PCF8584T",
+        "108-0161-002 Origin2000 and Onyx2 Power-On Diagnostics, PDF page 113",
+        "108-0164-002 Origin2000 and Onyx2 Diagnostic Roadmap, PDF page 86",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "aliases": [
+        "MSC",
+        "Module System Controller",
+        "Entry Level System Controller"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ],
+      "description": "The Origin 200's instance of the SN0 Module System Controller (MSC; \"ELSC\" is SGI's own older name for the same part): a separate board answering as a slave on the I2C bus the PCF8584 masters. It takes a checksummed ASCII command and response protocol covering power control, reset and switch readback on the Origin 200 (the family protocol also carries an 8-character display and multi-module commands the Origin 200 has no hardware for), and separately multiplexes a serial terminal on its own rear diagnostic connector onto the same link.",
+      "id": "base-sgi-elsc",
+      "kind": "system-controller",
+      "name": "ELSC",
+      "notes": "This one is attested by our own machine's manual rather than a neighbour's: the Origin 200 Owner's Guide documents reaching the controller with a control-T escape and gives its prompt. The Origin 2000 and Onyx2 carry a different controller with a keyswitch, an eight-character display and eight debug switches, and none of that describes this part.",
+      "parent": "base-cpu-module",
+      "provenance": "vendor-document",
+      "regions": [],
+      "sources": [
+        "007-3708-002 Origin 200 and Origin 200 GIGAchannel Owner's Guide, printed page 123"
+      ],
+      "system_controller": {
+        "kind": "msc"
+      }
+    },
+    {
+      "aliases": [
+        "NVRAM (the firmware's own term for it)"
+      ],
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ],
+      "description": "A serial non-volatile store answering as a slave on the same I2C bus the system controller sits on. It holds the module, partition, domain, cluster and cell numbers, the supervisor password, the debug-switch values and the built-in-self-test flag.",
+      "id": "base-i2c-nvram",
+      "kind": "flash",
+      "name": "I2C configuration NVRAM",
+      "notes": "NOT the same part as the machine's other non-volatile store: the clock component is a battery-backed Timekeeper on the I/O controller's BYTE BUS at chip select 0, and this is a separate device on the HUB'S I2C BUS, reached by raw transactions the system controller never sees. The distinction's history is in the pcf8584-elsc datasheet's behavioral notes. It answers EIGHT CONSECUTIVE SLAVE ADDRESSES FROM 0x50, the top three bits of an eleven-bit byte address choosing among them and the low byte addressing within one. Whether that is one 2 KB part consuming eight addresses or several smaller ones is not established, and the firmware cannot tell either. The system controller's own reserved area is the last of the eight, which SGI's PROM Technical Reference corroborates independently by reserving the top 256 bytes for the controller's use. The `kind` is the least-wrong available value: this is an EEPROM rather than flash, and what the field is carrying here is the role of non-volatile storage.",
+      "parent": "base-cpu-module",
+      "provenance": "vendor-source",
+      "regions": []
+    },
+    {
+      "datasheet_contracts": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ],
+      "description": "A single-byte read and write target answering on the Hub's I2C bus at slave address 0x20, driven directly by a pair of firmware routines the interactive monitor calls.",
+      "id": "base-i2c-device-20",
+      "kind": "flash",
+      "name": "Unidentified I2C device at slave address 0x20",
+      "notes": "WHAT THIS DEVICE IS HAS NOT BEEN ESTABLISHED, and the reviewed datasheet deliberately declines to guess. The entry exists because an unidentified part that provably answers is inventory: a model implementing only the system controller leaves this address unanswered, and leaving the entry out because the part cannot be named is the omission a completeness audit exists to surface rather than a reason to stay silent. The `kind` is a PLACEHOLDER and should not be read as a claim -- the enum has no value for an unidentified device, and nothing establishes that this one is storage. What would settle it is a firmware routine read for what it does with the byte, or a board document naming a part at this address.",
+      "parent": "base-cpu-module",
+      "provenance": "vendor-source",
+      "regions": []
+    }
+  ],
+  "composition": {
+    "architecture": "sn0",
+    "assembly": "ip29",
+    "layers": [
+      {
+        "id": "sn0",
+        "kind": "architecture"
+      },
+      {
+        "id": "ip29",
+        "kind": "assembly"
+      },
+      {
+        "id": "origin200-gigachannel",
+        "kind": "product"
+      }
+    ],
+    "limits": {
+      "cpus_per_node": 2,
+      "dimms_per_node": 8,
+      "memory_banks_per_node": 4,
+      "nodes": 1,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted",
+        "papers/origin200-2000-technical-report-7-chapters.tar.gz Chapter 2 section 2.2.2.3 Table 2-1 printed page 23 chapter PDF page 7, lists Origin200 DIMM and bank sizes"
+      ],
+      "supported_bank_sizes_mib": [
+        32,
+        64,
+        128,
+        512
+      ]
+    },
+    "module_instances": [
+      {
+        "model": "layers/modules/logic-carrier.yaml",
+        "module_role": "MASTER",
+        "observed_hardware": {
+          "mode": "projected",
+          "note": "Base-module population and placement are projected from the captured single-module system and the published GIGAchannel conversion topology; no complete GIGAchannel hardware capture is claimed.",
+          "sources": [
+            "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+            "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+            "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+          ]
+        },
+        "omit_buses": [
+          "craylink",
+          "xio"
+        ],
+        "parent": "gigachannel-system",
+        "prefix": "base-"
+      }
+    ],
+    "platform": "ip27",
+    "population": {
+      "cpus_per_node": [
+        2
+      ],
+      "dimms_per_node": [
+        2
+      ],
+      "memory_bank_mib_per_node": [
+        [
+          128,
+          0,
+          0,
+          0
+        ]
+      ],
+      "memory_mib_per_node": [
+        128
+      ],
+      "nodes": 1,
+      "provenance": "derived",
+      "sources": [
+        "108-0187-001 inventory section page 3-8 PDF page 34 records two CPUs and 128 MiB in bank 0 on the module carrying the GIGAchannel PCI_XIO board",
+        "007-3709-002 printed pages 46 48 and 53 establishes paired DIMMs in bank 0"
+      ]
+    },
+    "product": "origin200-gigachannel",
+    "topology": {
+      "max_nodes": 1,
+      "min_nodes": 1,
+      "provenance": "vendor-document",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and attachment limits printed page 22 PDF page 48 mapping trusted"
+      ],
+      "supported_cpu_populations": [
+        [
+          2
+        ],
+        [
+          1
+        ]
+      ]
+    }
+  },
+  "connections": [
+    {
+      "bus": "base-sysad",
+      "component": "base-cpu1",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cpu-xio",
+      "component": "base-hub",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cpu-xio",
+      "component": "crosstown-cpu",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-cable-a",
+      "component": "crosstown-cpu",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-cable-a",
+      "component": "crosstown-cabinet",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-cable-b",
+      "component": "crosstown-cpu",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-cable-b",
+      "component": "crosstown-cabinet",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio",
+      "component": "crosstown-cabinet",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio",
+      "component": "crossbow",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-a",
+      "component": "base-hub",
+      "notes": "Logical link A endpoint, inferred (docs/datasheets/sgi-gigachannel.md, Crossbow link assignment); no physical XIO A/B cable is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ],
+      "widget": 10
+    },
+    {
+      "bus": "crossbow-link-9",
+      "component": "base-bridge",
+      "controlled_by": "base-logic-carrier",
+      "notes": "Attached module's IP29 Bridge at software position io1.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ],
+      "widget": 9
+    },
+    {
+      "bus": "crossbow-link-8",
+      "component": "gigachannel-bridge",
+      "controlled_by": "base-logic-carrier",
+      "notes": "Cabinet Bridge at software position io7; installed widget-ID revision 4.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ],
+      "widget": 8
+    },
+    {
+      "bus": "crossbow-link-b",
+      "component": "crossbow",
+      "notes": "Link B reaches software position io2; no physical slot is selected.",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-b",
+      "component": "xio-position-io2",
+      "controlled_by": "base-logic-carrier",
+      "notes": "The IP27 PROM names widget 11 io2 on an Origin 200.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ],
+      "widget": 11
+    },
+    {
+      "bus": "crossbow-link-c",
+      "component": "crossbow",
+      "notes": "Link C reaches software position io3; no physical slot is selected.",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-c",
+      "component": "xio-position-io3",
+      "controlled_by": "base-logic-carrier",
+      "notes": "The IP27 PROM names widget 12 io3 on an Origin 200.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ],
+      "widget": 12
+    },
+    {
+      "bus": "crossbow-link-d",
+      "component": "crossbow",
+      "notes": "Link D reaches software position io4; no physical slot is selected.",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-d",
+      "component": "xio-position-io4",
+      "controlled_by": "base-logic-carrier",
+      "notes": "The IP27 PROM names widget 13 io4 on an Origin 200.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ],
+      "widget": 13
+    },
+    {
+      "bus": "crossbow-link-e",
+      "component": "crossbow",
+      "notes": "Link E reaches software position io5; no physical slot is selected.",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-e",
+      "component": "xio-position-io5",
+      "controlled_by": "base-logic-carrier",
+      "notes": "The IP27 PROM names widget 14 io5 on an Origin 200.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ],
+      "widget": 14
+    },
+    {
+      "bus": "crossbow-link-f",
+      "component": "crossbow",
+      "notes": "Link F reaches software position io6; no physical slot is selected.",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "crossbow-link-f",
+      "component": "xio-position-io6",
+      "controlled_by": "base-logic-carrier",
+      "notes": "The IP27 PROM names widget 15 io6 on an Origin 200.",
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Crossbow link assignment, established by disassembly of the IP27 PROM 6.156 widget-to-slot table"
+      ],
+      "widget": 15
+    },
+    {
+      "bus": "cabinet-xio-slot-set",
+      "component": "xio-slot-11",
+      "notes": "Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio-slot-set",
+      "component": "xio-slot-12",
+      "notes": "Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio-slot-set",
+      "component": "xio-slot-13",
+      "notes": "Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio-slot-set",
+      "component": "xio-slot-14",
+      "notes": "Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "cabinet-xio-slot-set",
+      "component": "xio-slot-15",
+      "notes": "Member of the physical slot set; the corresponding link among B-F and software position among io2-io6 are unresolved.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-pci",
+      "component": "gigachannel-bridge",
+      "provenance": "vendor-document",
+      "role": "bridge-downstream",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-pci",
+      "component": "pci-slot-1",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-pci",
+      "component": "pci-slot-2",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-pci",
+      "component": "pci-slot-3",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-pci",
+      "component": "pci-slot-4",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 and configurations printed page 22 PDF page 48 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    },
+    {
+      "bus": "gigachannel-bridge-one-wire",
+      "component": "gigachannel-bridge",
+      "provenance": "derived",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/bridge.md one-wire master"
+      ]
+    },
+    {
+      "bus": "gigachannel-bridge-one-wire",
+      "component": "gigachannel-identity",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md What a model needs, item 3: the record is presented without claiming a wiring"
+      ]
+    },
+    {
+      "bus": "base-bridge-one-wire",
+      "component": "crosstown-identity",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/sgi-gigachannel.md Firmware and IRIX view: XBOX_EXT listed beside the IP29 record under io1/MotherBoard"
+      ]
+    },
+    {
+      "bus": "base-sysad",
+      "component": "base-cpu0",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"
+      ]
+    },
+    {
+      "bus": "base-sysad",
+      "component": "base-hub",
+      "cpu_interrupt_inputs": {
+        "bank0": 0,
+        "bank1": 1,
+        "rt": 2
+      },
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-bridge",
+      "provenance": "derived",
+      "role": "bridge-downstream",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-isp1040",
+      "pci_device": 0,
+      "pci_function": 0,
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-isp1040-1",
+      "pci_device": 1,
+      "pci_function": 0,
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-ioc3",
+      "pci_device": 2,
+      "pci_function": 0,
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-pci-slot-5",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-pci-slot-6",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "bus": "base-pci",
+      "component": "base-pci-slot-7",
+      "notes": "Physical slot label only; no installed PCI card is selected.",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 188, 192, and 197, records PCI devices 0, 1, and 2",
+        "007-3708-002 Figure 1-4 printed page 6 PDF page 32 and Table 1-1 printed page 5 PDF page 31 establish three PCI expansion slots labelled 5, 6, and 7"
+      ]
+    },
+    {
+      "bus": "base-byte-bus",
+      "component": "base-ioc3",
+      "provenance": "datasheet",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
+        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+      ]
+    },
+    {
+      "bus": "base-byte-bus",
+      "chip_select": 0,
+      "component": "base-rtc",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/ioc3.md reviewed public IOC3 byte-bus register evidence",
+        "docs/datasheets/timekeeper.md reviewed public Timekeeper attachment evidence"
+      ]
+    },
+    {
+      "bus": "base-i2c",
+      "component": "base-pcf8584",
+      "provenance": "datasheet",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ]
+    },
+    {
+      "bus": "base-i2c",
+      "component": "base-sgi-elsc",
+      "i2c_address": 8,
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ]
+    },
+    {
+      "bus": "base-i2c",
+      "component": "base-i2c-nvram",
+      "i2c_address": 80,
+      "i2c_address_count": 8,
+      "provenance": "datasheet",
+      "role": "endpoint",
+      "sources": [
+        "docs/datasheets/pcf8584-elsc.md"
+      ]
+    },
+    {
+      "bus": "base-directory-bus",
+      "component": "base-hub-md",
+      "provenance": "vendor-document",
+      "role": "master",
+      "sources": [
+        "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
+      ]
+    },
+    {
+      "bus": "base-directory-bus",
+      "component": "base-node-memory",
+      "provenance": "vendor-document",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
+      ]
+    },
+    {
+      "bus": "base-directory-bus",
+      "component": "base-boot-flash",
+      "notes": "Attachment to MD is settled. Selection against RAM at the overlapping node offset is not.",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "007-3439-002 Figure 3-2 and accompanying Hub description printed pages 78-79 PDF pages 92-93 mapping trusted"
+      ]
+    },
+    {
+      "bus": "base-one-wire",
+      "component": "base-ioc3",
+      "provenance": "guest-source",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/ioc3.md lines 72-81 and 692-755, citing OpenBSD commit 2df91d80c104636deeef8124252ddd5951b55fbf and Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the IOC3 MicroLAN master and guest decoder"
+      ]
+    },
+    {
+      "bus": "base-bridge-one-wire",
+      "component": "base-bridge",
+      "provenance": "guest-source",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire master"
+      ]
+    },
+    {
+      "bus": "base-hub-one-wire",
+      "component": "base-hub-md",
+      "provenance": "datasheet",
+      "role": "master",
+      "sources": [
+        "docs/datasheets/hub-onewire.md reviewed Hub one-wire master contract"
+      ]
+    },
+    {
+      "bus": "base-bridge-one-wire",
+      "component": "base-board-identity",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "docs/library/boot-logs.md lines 198-220, source archive commit b6a76788b894308b8c46f217acca3e63af3bd7e9, records the real Origin 200 KLCONFIG base-I/O identity; base-I/O is a firmware record type here, not a physical BaseIO card",
+        "docs/datasheets/bridge.md lines 731-745, citing Linux mainline commit db2ddb87143519e20a95aa36c60b36107b736a58, establishes the Bridge one-wire consumer"
+      ]
+    },
+    {
+      "bus": "base-one-wire",
+      "component": "base-nic-mac",
+      "provenance": "derived",
+      "role": "endpoint",
+      "sources": [
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html lines 197-199, observes owmac0 on the real Origin 200",
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33, GIGAchannel system drawing",
+        "108-0187-001 inventory section page 3-8 PDF page 34, retained IP29 module I/O and added Crosstown topology",
+        "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"
+      ]
+    }
+  ],
+  "evidence_policy": "strict",
+  "excluded_components": [
+    {
+      "match": {
+        "id": "baseio"
+      },
+      "provenance": "vendor-document",
+      "reason": "GIGAchannel uses its external expansion cabinet and does not acquire the Origin 2000 BaseIO board.",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 mapping trusted",
+        "108-0187-001 Figure 2-3 section page 2-4 PDF page 18 and inventory section page 3-8 PDF page 34 mapping trusted"
+      ]
+    }
+  ],
+  "interrupts": [
+    {
+      "chain": [
+        {
+          "as": "enabled Bridge error interrupt",
+          "at": "gigachannel-bridge",
+          "mechanism": "level"
+        },
+        {
+          "as": "routed XIO interrupt write",
+          "at": "crossbow",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "interrupt destination",
+          "at": "base-hub-ii",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "pending bit and processor mask",
+          "at": "base-hub-pi",
+          "mechanism": "pending-bit"
+        },
+        {
+          "as": "hardware interrupt 0 or 1",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "An enabled error in the cabinet Bridge follows the same XIO write protocol as another Bridge interrupt through Crossbow link 8, the fabric, and link A to Hub.",
+      "id": "gigachannel-bridge-error",
+      "provenance": "derived",
+      "source": "gigachannel-bridge",
+      "sources": [
+        "007-3708-002 Figure 1-5 printed page 7 PDF page 33 establishes the physical path"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "PCI interrupt pin A",
+          "at": "base-ioc3-eth",
+          "mechanism": "level"
+        },
+        {
+          "as": "interrupt status bit, gated by interrupt enable",
+          "at": "base-bridge",
+          "mechanism": "level"
+        },
+        {
+          "as": "XIO write to the address in the interrupt-destination registers, carrying the configured interrupt number, targeting widget 0xa",
+          "at": "base-bridge",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "interrupt-modify register at the node-named half, +0x0180_0090, sets one bit of a pending bank",
+          "at": "base-hub-pi",
+          "mechanism": "pending-bit"
+        },
+        {
+          "as": "pending AND this processor's mask",
+          "at": "base-hub-pi",
+          "mechanism": "level"
+        },
+        {
+          "as": "hardware interrupt 0 or 1, Cause bit 10 or 11",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The IOC3's ethernet interrupt. The first of the chip's two outputs, on PCI interrupt pin A.",
+      "id": "base-ioc3-ethernet",
+      "provenance": "derived",
+      "source": "base-ioc3-eth",
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "second interrupt output",
+          "at": "base-ioc3",
+          "mechanism": "level"
+        },
+        {
+          "as": "interrupt pin 3",
+          "at": "base-bridge",
+          "mechanism": "level"
+        },
+        {
+          "as": "XIO write to the address in the interrupt-destination registers, carrying the configured interrupt number, targeting widget 0xa",
+          "at": "base-bridge",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "interrupt-modify register at the node-named half, +0x0180_0090, sets one bit of a pending bank",
+          "at": "base-hub-pi",
+          "mechanism": "pending-bit"
+        },
+        {
+          "as": "hardware interrupt 0 or 1, Cause bit 10 or 11",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The IOC3's second interrupt output, the SuperIO one. Bridge pin 3, ratified by James and confirmed on both guests: Linux maps the board part number to pin 3 through its board table, and OpenBSD's occupancy scan reaches the same pin because the real bus occupies devices 0, 1 and 2 so the first empty is 3. The correction history for this pin assignment is in the Bridge datasheet's behavioral notes.",
+      "id": "base-ioc3-superio",
+      "provenance": "derived",
+      "source": "base-ioc3",
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "PCI interrupt pin A",
+          "at": "base-isp1040",
+          "mechanism": "level"
+        },
+        {
+          "as": "interrupt status bit, gated by interrupt enable",
+          "at": "base-bridge",
+          "mechanism": "level"
+        },
+        {
+          "as": "XIO write to the address in the interrupt-destination registers, carrying the configured interrupt number, targeting widget 0xa",
+          "at": "base-bridge",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "interrupt-modify register at the node-named half, +0x0180_0090, sets one bit of a pending bank",
+          "at": "base-hub-pi",
+          "mechanism": "pending-bit"
+        },
+        {
+          "as": "hardware interrupt 0 or 1, Cause bit 10 or 11",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The SCSI adapter's interrupt, by the same path as any PCI device behind the Bridge.",
+      "id": "base-scsi0",
+      "provenance": "derived",
+      "source": "base-isp1040",
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "PCI interrupt pin A",
+          "at": "base-isp1040-1",
+          "mechanism": "level"
+        },
+        {
+          "as": "interrupt status bit, gated by interrupt enable",
+          "at": "base-bridge",
+          "mechanism": "level"
+        },
+        {
+          "as": "XIO write to the address in the interrupt-destination registers, carrying the configured interrupt number, targeting widget 0xa",
+          "at": "base-bridge",
+          "mechanism": "xio-write"
+        },
+        {
+          "as": "interrupt-modify register at the node-named half, +0x0180_0090, sets one bit of a pending bank",
+          "at": "base-hub-pi",
+          "mechanism": "pending-bit"
+        },
+        {
+          "as": "hardware interrupt 0 or 1, Cause bit 10 or 11",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The second SCSI adapter interrupt, independently sourced before the shared Bridge and Hub path.",
+      "id": "base-scsi1",
+      "provenance": "derived",
+      "source": "base-isp1040-1",
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf processor Cause interrupt contract"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "counter reaches this processor's compare value",
+          "at": "base-hub-pi",
+          "mechanism": "level"
+        },
+        {
+          "as": "hardware interrupt 2, Cause bit 12",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The Hub's real-time counter comparator for this processor.",
+      "id": "base-rt-counter",
+      "provenance": "datasheet",
+      "source": "base-hub-pi",
+      "sources": [
+        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
+        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "profiling compare",
+          "at": "base-hub-pi",
+          "mechanism": "level"
+        },
+        {
+          "as": "hardware interrupt 3, Cause bit 13",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The profiling comparator, which raises on both processors.",
+      "id": "base-profiling",
+      "provenance": "datasheet",
+      "source": "base-hub-pi",
+      "sources": [
+        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
+        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "error-pending register",
+          "at": "base-hub",
+          "mechanism": "level"
+        },
+        {
+          "as": "gated by this processor's error mask",
+          "at": "base-hub-pi",
+          "mechanism": "level"
+        },
+        {
+          "as": "hardware interrupt 4, Cause bit 14",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "Hub errors, from the error-pending register gated by this processor's error mask.",
+      "id": "base-hub-error",
+      "provenance": "datasheet",
+      "source": "base-hub",
+      "sources": [
+        "docs/datasheets/hub-processor-interface.md reviewed public Hub PI interrupt contract",
+        "docs/library/sn0-linux-register-map.md lines 166-168 records the pinned public Linux interrupt mapping"
+      ]
+    },
+    {
+      "chain": [
+        {
+          "as": "hardware interrupt 5, the processor's own count and compare",
+          "at": "base-cpu0",
+          "mechanism": "cause-bit"
+        }
+      ],
+      "description": "The processor's own count and compare. Included so the model accounts for every processor interrupt line, but it never leaves the CPU and the Hub does not drive it.",
+      "id": "base-cpu-timer",
+      "provenance": "vendor-document",
+      "source": "base-cpu0",
+      "sources": [
+        "mips/r10000-users-manual-v2.0.pdf processor count/compare interrupt contract"
+      ]
+    }
+  ],
+  "machine": {
+    "architecture_ip": "IP27",
+    "board_ip": "IP29",
+    "emulation": {
+      "display_description": "SGI Origin 200 (IP29)",
+      "emulator_constraints": {
+        "accepted_bank_sizes_mib": [
+          512,
+          256,
+          128,
+          64
+        ]
+      },
+      "lifecycle": "implemented",
+      "machine_name": "origin200",
+      "profile": "gigachannel",
+      "synthetic_identities": [
+        {
+          "component": "base-hub",
+          "reason": "Stable synthetic node identity; the attached module keeps the base Origin 200 value.",
+          "serial": "0x0c0b0a090807"
+        },
+        {
+          "component": "base-bridge",
+          "reason": "Stable synthetic I/O board identity; the attached module's IP29 Bridge keeps the base Origin 200 value.",
+          "serial": "0x060504030201"
+        },
+        {
+          "component": "base-ioc3",
+          "reason": "Stable synthetic IOC3 identity; the attached module keeps the base Origin 200 value.",
+          "serial": "0x5e7000000001"
+        },
+        {
+          "component": "gigachannel-bridge",
+          "reason": "Stable synthetic identity for the cabinet Bridge, distinct from the IP29 Bridge's; its last byte names Crossbow link 8. No real cabinet serial is captured.",
+          "serial": "0x060504030208"
+        }
+      ]
+    },
+    "firmware_config": {
+      "flash_read_cycles": 15,
+      "flash_write_cycles": 4,
+      "machine_type": 1,
+      "processor_reset_mode": {
+        "cache_test_mode": false,
+        "coherent_request_target": "external-agent",
+        "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+        "maximum_outstanding_processor_requests": 4,
+        "memory_endianness": "big",
+        "open_drain_system_interface": false,
+        "processor_device_number": 0,
+        "processor_eliminate_requests": false,
+        "secondary_cache_block_words": 32,
+        "secondary_cache_clock_divisor": 1.5,
+        "secondary_cache_clock_tap": 9,
+        "secondary_cache_error_correction": "retry-access-through-corrector",
+        "secondary_cache_size_kib": 1024,
+        "system_clock_divisor": 2
+      },
+      "provenance": "derived",
+      "sources": [
+        "docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values",
+        "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"
+      ]
+    },
+    "generation": "SN0",
+    "kernel_ip": "IP27",
+    "model_role": "emulation-target",
+    "name": "Origin 200 GIGAchannel",
+    "notes": "The one-module GIGAchannel system: the two-CPU, 128 MiB attached module from the upgrade guide with its cabinet. A cabinet may attach to either module of a two-module system, but one cabinet cannot be shared between modules and cabinets cannot be daisy-chained; this configuration builds the one-module form only."
+  },
+  "model_version": 1,
+  "open_questions": [],
+  "processors": [
+    {
+      "part": "r10000",
+      "provenance": "vendor-document",
+      "sources": [
+        "108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted",
+        "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"
+      ],
+      "variants": [
+        {
+          "cache_clock_mhz": 90,
+          "cache_mib": 1,
+          "clock_mhz": 180,
+          "fpu_identification": "0x0900",
+          "notes": "Identity registers and cache clock corroborated as the same R10000/1 MiB assembly Origin 200 already catalogues (a real Origin 200 hinv reports \"Rev 2.6\"; boot-logs records this as the same variant on both products).",
+          "processor_identification": "0x0926",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1.5,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 1024,
+            "system_clock_divisor": 2
+          }
+        },
+        {
+          "cache_mib": 4,
+          "clock_mhz": 195,
+          "notes": "Reset mode cleared by the independent firmware-configuration review (candidate 7a0508cb6f18b5d8441b8e0dca30f8e386d503fd, docs/reviews/origin2000-firmware-configuration-review-20260905.md) recomputed from IRIX 6.5.7 configuration data and reconciled with the public processor manual and SGI service procedure; docs/datasheets/origin2000-cache-configuration.md records the clearance. This is not the product's selected default (that is 180 MHz/1 MiB); no product here authors it. Identity registers and cache clock for this SKU are not established by any held source and are absent here.",
+          "reset_mode": {
+            "cache_test_mode": false,
+            "coherent_request_target": "external-agent",
+            "kseg0_cache_algorithm": "cacheable-coherent-exclusive-on-write",
+            "maximum_outstanding_processor_requests": 4,
+            "memory_endianness": "big",
+            "open_drain_system_interface": false,
+            "processor_device_number": 0,
+            "processor_eliminate_requests": false,
+            "secondary_cache_block_words": 32,
+            "secondary_cache_clock_divisor": 1.5,
+            "secondary_cache_clock_tap": 9,
+            "secondary_cache_error_correction": "retry-access-through-corrector",
+            "secondary_cache_size_kib": 4096,
+            "system_clock_divisor": 2
+          }
+        }
+      ]
+    }
+  ],
+  "space_selection": {
+    "bits": "58:57",
+    "count": 4,
+    "mechanism": "processor-attribute",
+    "notes": "Two bits the processor drives beside the address, not part of it. All four spaces decode to the same 40-bit physical address and the attribute is what tells them apart. Emulator carrier addresses are target implementation metadata and do not belong in this shared hardware layer.",
+    "provenance": "public-header",
+    "sources": [
+      "linux:arch/mips/include/asm/mach-ip27/spaces.h, public GPL header, names the SN0 uncached-attribute mechanism and uncached memory selector"
+    ]
+  }
+}

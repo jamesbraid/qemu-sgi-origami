@@ -1,0 +1,138 @@
+# Published dual-module product limits and the four-CPU emulator projection.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; every other fact above has moved to that direct form. The two keys
+# left here back the firmware configuration fact only, whose strict evidence policy
+# (tools/origami_lib/model_validation.py) requires non-empty sources regardless of
+# provenance -- unlike a component, which may carry none. Both cite only an internal
+# datasheet, so the checker reports them under "facts whose only sources are
+# internal documents" rather than resolving them; replacing them with an
+# independently obtainable citation is follow-up work on the evidence itself, not a
+# citation-form change.
+sources:
+  firmware-structures-datasheet-boot-flash: "docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values"
+  address-map-datasheet-origin-200: "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"
+layer:
+  kind: product
+  id: origin200-dual
+  requires: {assembly: ip29}
+  topology:
+    min_nodes: 2
+    max_nodes: 2
+    supported_cpu_populations:
+      - [2, 2]
+    provenance: vendor-document
+    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31, Setting a Module as a Slave printed pages 56-59 PDF pages 82-85, Connecting Two Modules printed page 77 PDF page 103, and module definition printed page 202 PDF page 228 mapping trusted", "108-0187-001 Figure 2-9 printed page 11 PDF page 23 mapping trusted"]
+  population:
+    nodes: 2
+    cpus_per_node: [2, 2]
+    provenance: derived
+    sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 and Table 1-1 printed page 5 PDF page 31 mapping trusted", "007-3709-002 printed pages 46, 48, and 53, establishes paired DIMMs in bank 0 sockets 1 and 2"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu0, node0-cpu1, node1-cpu1]
+  memory_kits_per_node: [kit-64, kit-64]
+  data:
+    machine:
+      name: Dual-module Origin 200
+      model_role: emulation-target
+      firmware_config:
+        machine_type: 1
+        flash_read_cycles: 15
+        flash_write_cycles: 4
+        provenance: derived
+        sources: [firmware-structures-datasheet-boot-flash, address-map-datasheet-origin-200]
+      emulation:
+        machine_name: origin200
+        display_description: SGI Origin 200 (IP29)
+        profile: dual-module
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512, 256, 128, 64]
+        synthetic_identities:
+          - component: node0-hub
+            serial: "0x0c0b0a090807"
+            reason: >-
+              Stable synthetic node identity for this selected emulated
+              installation, in the one shape the schema still carries
+              (synthetic_serials, the KLCONFIG-era per-kind base/stride
+              form, went with synthesized firmware). Node 0 keeps the
+              base Origin 200 value unchanged from before that removal.
+          - component: node0-bridge
+            serial: "0x060504030201"
+            reason: Stable synthetic I/O board identity; node 0 keeps the base Origin 200 value.
+          - component: node0-ioc3
+            serial: "0x5e7000000001"
+            reason: Stable synthetic IOC3 identity; node 0 keeps the base Origin 200 value.
+          - component: node1-hub
+            serial: "0x0c0b0a090808"
+            reason: >-
+              Stable synthetic node identity for node 1, one past node 0's
+              value, the same per-node stride the removed synthetic_serials
+              mechanism applied (base plus node index).
+          - component: node1-bridge
+            serial: "0x060504030202"
+            reason: Stable synthetic I/O board identity for node 1, one past node 0's value.
+          - component: node1-ioc3
+            serial: "0x5e7000000002"
+            reason: Stable synthetic IOC3 identity for node 1, one past node 0's value.
+      notes: >-
+        The default configuration is the implemented four-CPU, two-node form.
+        The Owner's Guide (007-3708-002-tab1-1) also documents a three-CPU
+        dual-module form with one one-CPU and one two-CPU PIMM in either
+        module; this emulation target does not compile that population, so
+        supported_cpu_populations names only the shipped [2, 2] form.
+        Both node-local configuration graphs retain the base model's unnamed
+        Hub port descriptor. That value names no Router or Crossbow port; the
+        direct peer CrayLink does not supply such a name. This is a model
+        decision, not a claim about the unresolved hardware meaning of that
+        field for a directly linked pair.
+    evidence_policy: strict
+    components:
+      - id: origin200-system
+        name: Dual-module Origin 200 system
+        kind: chassis
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
+      - id: node0-cpu1
+        name: R10000
+        kind: cpu
+        hardware_kind: r10000
+        provenance: vendor-document
+        parent: node0-pimm
+        sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
+        identity:
+          processor_identification: "0x0926"
+          fpu_identification: "0x0900"
+      - id: node1-cpu1
+        name: R10000
+        kind: cpu
+        hardware_kind: r10000
+        provenance: vendor-document
+        parent: node1-pimm
+        sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
+        identity:
+          processor_identification: "0x0926"
+          fpu_identification: "0x0900"
+    buses:
+      - id: peer-craylink
+        name: direct peer CrayLink
+        kind: fabric
+        master: node0-hub
+        link: {kind: cable}
+        notes: >-
+          A direct Hub-to-Hub CrayLink cable joining the two modules, per the
+          Owner's Guide's Connecting Two Modules procedure and this machine's
+          own documentation (origin200-dual.md). Neither module has a Router
+          or a Star/Null Router card, so this is not the numbered Origin 2000
+          Router-to-Router cable the link.kind schema description names;
+          "cable" is selected as the closest of the five kinds to an external
+          direct connector, not a claim that a Router is present.
+        provenance: vendor-document
+        sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted", "007-3708-002 Table 1-1 printed page 5 PDF page 31, Setting a Module as a Slave printed pages 56-59 PDF pages 82-85, Connecting Two Modules printed page 77 PDF page 103, and module definition printed page 202 PDF page 228 mapping trusted"]
+    connections:
+      - {component: node0-cpu1, bus: node0-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]}
+      - {component: node1-cpu1, bus: node1-sysad, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]}
+      - {component: node0-hub, bus: peer-craylink, role: master, provenance: vendor-document, sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]}
+      - {component: node1-hub, bus: peer-craylink, role: endpoint, provenance: vendor-document, sources: ["007-3708-002 Figure 1-2 printed page 3 PDF page 29 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]}

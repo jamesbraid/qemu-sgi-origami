@@ -143,6 +143,8 @@ jobs:
                         mkdir -p build-ci; cd build-ci; \
                         ../configure --target-list=mips64-softmmu --disable-docs \
                           --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg; \
+                        pyvenv/bin/python3 ../python/scripts/mkvenv.py ensuregroup \
+                          --online ../pythondeps.toml sgi-model; \
                         ninja'
 
       - name: smoke checks
@@ -152,6 +154,16 @@ jobs:
               -e PR_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               "$IMAGE_ID" sh -euxc '
+            for suite in \
+              test_sgi_model_generator.py \
+              test_sgi_model_resolution.py \
+              test_sgi_model_export_contract.py \
+              test_sgi_model_validation_contract.py \
+              test_sgi_model_compiler_contract.py \
+              test_sgi_model_goldens.py \
+              test_sgi_model_resolution_contract.py; do
+              /src/build-ci/pyvenv/bin/python3 -B "/src/scripts/tests/$suite"
+            done
             meson=/src/build-ci/pyvenv/bin/meson
             ninja -C /src/build-ci tests/functional/mips64-linux_kernel.tstamp
             python3 - <<"PYTESTS"

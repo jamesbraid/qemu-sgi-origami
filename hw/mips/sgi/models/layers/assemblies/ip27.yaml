@@ -1,0 +1,36 @@
+# Four-node Origin 2000 module and per-node slot capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip27
+  platform: ip27
+  contract: {board_ip: IP27}
+  requires:
+    architecture: sn0
+  capacity:
+    cpu_slots_per_node: 2
+    dimm_slots_per_node: 32
+    main_memory_slots_per_node: 16
+    main_memory_dimm_positions_per_node: 32
+    directory_memory_slots_per_node: 8
+    memory_banks_per_node: 8
+    dimms_per_bank: 2
+    # 16-Mb parts give 64 or 128 MB banks, 64-Mb parts 512 MB ones; no part
+    # gives a 256 MB bank, and the stock IP27 PROM disables one ("256 MB dimm
+    # banks not allowed on IP27 node boards", PROM 6.156 string table).
+    supported_bank_sizes_mib: [64, 128, 512]
+    provenance: vendor-document
+    sources: ["007-3439-002 Figure 2-1 and Memory Specifications/Figure 2-4 printed pages 32-36 PDF pages 46-50 mapping trusted", "007-3439-002 printed p.35: 16-Mb parts support up to 1 GB per node in increments of 64 or 128 MB, 64-Mb parts up to 4 GB in increments of 512 MB, always in DIMM pairs", "IP27 PROM 6.156 string \"256 MB dimm banks not allowed on IP27 node boards\", printed as it disables such a bank"]
+  memory_kits:
+    - id: kit-64
+      dimms: 2
+      dimm_mib: 32
+      banks: [64]
+      provenance: vendor-document
+      sources: ["007-3439-002 Memory Specifications printed page 35 PDF page 49; 108-0170-001 printed page 1-4 PDF page 18"]
+    - id: kit-256
+      dimms: 4
+      dimm_mib: 64
+      banks: [128, 128]
+      provenance: observed-hardware
+      sources: ["docs/library/ip27-real-machine-enumeration.md: a real Origin 2000's hinv -v reports node n1 as \"Memory on board, 256 MBytes (Standard)\" in \"Bank 0, 128 MBytes (Standard)\" and \"Bank 1, 128 MBytes (Standard)\"", "007-3439-002 printed p.35: 16-Mb parts give 128 MB increments in DIMM pairs"]

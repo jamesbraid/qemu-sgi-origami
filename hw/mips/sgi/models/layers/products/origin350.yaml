@@ -1,0 +1,43 @@
+# Origin 350 reference: IP53, PIC at widget 0xF, IO9 devices.
+layer_version: 1
+layer:
+  kind: product
+  id: origin350
+  requires: {assembly: ip53}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    provenance: vendor-document
+    sources: ["007-4566-001 p.68-75, 114-119: 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 2U compute module"]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    fitted_memory:
+      status: unknown
+      reason: The closure record establishes the DIMM slot and kit-size range but not an installed memory population for this reference configuration.
+      provenance: derived
+      sources: ["007-4566-001 p.68-75, 114-119: 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 2U compute module"]
+    provenance: vendor-document
+    sources: ["007-4566-001 p.68-75, 114-119: 2 or 4 R16000 600/700 (E), 800 and 1000 (O); 2U compute module"]
+  data:
+    machine:
+      name: Origin 350
+      model_role: reference
+      notes: >-
+        One Origin 350 compute module (IP53): the posted PROM inventory reports
+        Bedrock ASIC revision 2 and separately reports ASIC XBOW revision 3.
+        Bedrock's crossbar-facing XIO widget on this board is unverified. The PIC at
+        widget 0xF has two heads that share that one widget number. The second
+        head's registers start at offset +0x800000. IO9 is on the PIC's first
+        head, PCI devices 1 (IOC4), 3 (QLogic ISP12160) and 4
+        (BCM5701), the PROM's device numbers running one
+        higher than the PIC's internal slots 0-3. No processors-catalogue entry
+        for R16000 exists in the shared SN1 architecture layer, so this
+        composition asserts no processor clock or cache identity, even though
+        the closure record names 600 and 700 MHz at 4 MiB as established; adding
+        that catalogue entry is left to a step that also re-baselines the
+        existing origin300 goldens it would otherwise perturb. This
+        configuration never compiles: Origami's QEMU consumer has no Origin 350
+        machine today. Device 2 remains unspecified until an Origin 350 IO9
+        revision and its PCI population are identified.
+    evidence_policy: strict

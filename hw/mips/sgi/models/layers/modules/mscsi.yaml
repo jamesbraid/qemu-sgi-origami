@@ -1,0 +1,71 @@
+# The SGI MSCSI XIO board: a Bridge and four QLogic ISP1040 SCSI
+# controllers. It fits an Origin 2000 XIO slot or an Origin 200
+# GIGAchannel XIO position. A composition fits it into a slot connector
+# with a product-level module_instances entry whose parent is that
+# connector and selects the connector occupied; the connector supplies the
+# XIO widget and controlling node. The Bridge's upstream attachment
+# names the placeholder bus `upstream`, which the instance binds to its
+# connector's XIO bus. docs/datasheets/sgi-mscsi.md owns the board's
+# evidence, its model selections and its open questions.
+layer_version: 1
+layer:
+  kind: module
+  id: mscsi
+  data:
+    components:
+      - id: mscsi
+        name: MSCSI four-channel SCSI XIO board
+        kind: board
+        hardware_kind: mscsi
+        identity:
+          part: "030-1243-001"
+          notes: >-
+            SGI's parts catalogue lists 030-1243-001 as PCA MSCSI B.
+            Real inventories print it at revisions F, G and M, and a second
+            part number, 030-1281-001 rev D, under the same MSCSI name. The
+            model presents 030-1243-001 rev F, the board the one-module
+            GIGAchannel inventory lists at io4, with the Bridge revision
+            that inventory reports.
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/sgi-mscsi.md]
+        sources: ["sgi-hw/hmm-408-b-origin2000-onyx2-illustrated-parts-catalog.pdf printed page 33, XIO Options: 030-1243-001 PCA MSCSI B", "wiki/preterhuman-sgi-origin-200.html one-module hinv -vm: Location /hw/module/1/slot/io4/mscsi, MSCSI Board part 030-1243-001 rev F; Origin MSCSI board, module 1 slot 4: Revision 3"]
+      - id: bridge
+        name: Bridge
+        kind: pci-host-bridge
+        hardware_kind: bridge
+        pci_host_bridge: {heads: 1}
+        identity:
+          widget_part: "0xc002"
+          widget_mfg: "0x36"
+          widget_revision: 3
+          notes: >-
+            Real MSCSI boards report Bridge revisions 3 and 4; the one-module
+            GIGAchannel inventory the model copies reports 3 for both of its
+            boards. The model implements Bridge D behavior at either
+            revision.
+        datasheet_contracts: [docs/datasheets/bridge.md]
+        provenance: derived
+        parent: mscsi
+        sources: ["wiki/preterhuman-sgi-origin-200.html Origin MSCSI board, module 1 slot 2: Revision 3 and slot 4: Revision 3", "forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: MSCSI IO Board, Module 1, Slot io7, ASIC BRIDGE Rev 3, (widget 14)"]
+      - {id: scsi-0, name: SCSI controller 0, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, docs/datasheets/isp1040.md], provenance: derived, parent: mscsi, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-1, name: SCSI controller 1, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, docs/datasheets/isp1040.md], provenance: derived, parent: mscsi, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-2, name: SCSI controller 2, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, docs/datasheets/isp1040.md], provenance: derived, parent: mscsi, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: scsi-3, name: SCSI controller 3, kind: storage-hba, hardware_kind: isp1040, identity: {pci_revision: 5}, datasheet_contracts: [docs/datasheets/sgi-mscsi.md, docs/datasheets/isp1040.md], provenance: derived, parent: mscsi, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3 under the MSCSI IO Board"]}
+      - {id: bridge-nic, name: Bridge identity path, kind: subfunction, parent: bridge, provenance: derived}
+    buses:
+      - {id: pci, name: MSCSI PCI, kind: pci, master: bridge, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: four PCI-SCSI adapters behind the MSCSI board's Bridge"]}
+    connections:
+      - component: bridge
+        bus: upstream
+        role: bridge-upstream
+        provenance: vendor-document
+        sources: ["sgi-hw/hmm-408-b-origin2000-onyx2-illustrated-parts-catalog.pdf printed page 33, the MSCSI among the XIO options"]
+        notes: >-
+          A placeholder each instance binds to its connector's XIO bus
+          (bus_bindings); the connector's own attachment carries the widget and
+          controlling node.
+      - {component: bridge, bus: pci, role: bridge-downstream, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: four PCI-SCSI adapters behind the MSCSI board's Bridge"]}
+      - {component: scsi-0, bus: pci, role: endpoint, pci_device: 0, pci_function: 0, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3", "wiki/preterhuman-sgi-origin-200.html Origin MSCSI board, module 1 slot 4: PCI Adapter ID vendor 0x1077 device 0x1020 at PCI slots 0 to 3"]}
+      - {component: scsi-1, bus: pci, role: endpoint, pci_device: 1, pci_function: 0, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3", "wiki/preterhuman-sgi-origin-200.html Origin MSCSI board, module 1 slot 4: PCI Adapter ID vendor 0x1077 device 0x1020 at PCI slots 0 to 3"]}
+      - {component: scsi-2, bus: pci, role: endpoint, pci_device: 2, pci_function: 0, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3", "wiki/preterhuman-sgi-origin-200.html Origin MSCSI board, module 1 slot 4: PCI Adapter ID vendor 0x1077 device 0x1020 at PCI slots 0 to 3"]}
+      - {component: scsi-3, bus: pci, role: endpoint, pci_device: 3, pci_function: 0, provenance: derived, sources: ["forum/nekonomicon-thread-16727716-origin-is-sick-prom-pod.html PROM hinv -v: adapter PCI-SCSI Rev 5 at pci id 0 to 3", "wiki/preterhuman-sgi-origin-200.html Origin MSCSI board, module 1 slot 4: PCI Adapter ID vendor 0x1077 device 0x1020 at PCI slots 0 to 3"]}

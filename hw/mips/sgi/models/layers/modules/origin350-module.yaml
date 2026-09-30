@@ -1,0 +1,116 @@
+# Origin 350: IO9 is on PIC head 0; Bedrock's XIO widget is unverified.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; every fact above has moved to that direct form. The one key left
+# here backs three buses and six connections only, whose strict evidence policy
+# (tools/origami_lib/model_validation.py) requires non-empty sources for every one
+# regardless of provenance -- unlike a component, which may carry none. It cites
+# only the internal closure research note's family table, so the checker reports
+# it under "facts whose only sources are internal documents" rather than resolving
+# it; replacing it with an independently obtainable citation is follow-up work on
+# the evidence itself, not a citation-form change.
+sources:
+  sn-family-closure-origin350: "docs/research/sn-family-closure-20260913.md family table, Origin 350 row: Bedrock rev 2 (O); NUMAlink 3, one port; PIC, two heads on one widget (0xF; second head at +0x800000); IO9 in bus 1 slot 1: IOC4 config dev 1, ISP12160 dev 3, BCM5701 dev 4; L1 with display; L2 with the NUMAlink module"
+layer:
+  kind: module
+  id: origin350-module
+  requires: {architecture: sn1, assembly: ip53}
+  data:
+    components:
+      - id: bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        identity: {hardware_revision: 2, clock_mhz: 200}
+        provenance: observed-hardware
+        sources: ["https://nekonomicon.irixnet.org/forum/14/16729141/1.html: Origin 350 hinv -v reports ASIC BEDROCK Rev 2, 200 MHz"]
+        notes: >-
+          This is the Bedrock ASIC revision printed by the Origin 350 inventory.
+          The same inventory separately prints ASIC XBOW Rev 3. It does not
+          establish a Bedrock widget identity or register revision. This
+          reference model must not be compiled with the current Bedrock export,
+          which copies hardware_revision into the widget revision field.
+      - id: cpu0
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        provenance: vendor-document
+        sources: [sn-family-closure-origin350]
+        notes: >-
+          The closure record names 600 and 700 MHz at 4 MiB as established, and
+          800 and 1000 MHz as observed; no clock or cache identity is asserted
+          here (see the ip53 assembly's capacity notes).
+      - id: cpu1
+        name: R16000
+        kind: cpu
+        hardware_kind: r16000
+        provenance: vendor-document
+        sources: [sn-family-closure-origin350]
+      - id: node-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        description: Eight DIMM slots as four pairs, first pair required, 512 MB or 1 GB DIMMs, 1-8 GB.
+        sources: [sn-family-closure-origin350]
+      - id: pic
+        name: PIC
+        kind: pci-host-bridge
+        hardware_kind: pic
+        pci_host_bridge: {heads: 2}
+        identity: {widget_part: "0xd102", widget_mfg: "0x024"}
+        provenance: public-header
+        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs lines 18-58: PIC vendor SGI3 0x0024 and product 0xd102; sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]
+        notes: Two heads share this one widget number (0xF); the second head's registers sit at offset +0x800000 within it. No public PIC programming specification exists.
+      - id: ioc4
+        name: IOC4
+        kind: io-controller
+        hardware_kind: ioc4
+        identity: {pci_vendor: "0x10a9", pci_device: "0x100a"}
+        provenance: observed-hardware
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+      - id: scsi
+        name: QLogic ISP12160
+        kind: storage-hba
+        hardware_kind: isp12160
+        identity: {pci_vendor: "0x1077", pci_device: "0x1216", pci_revision: 6}
+        provenance: observed-hardware
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+      - id: ethernet
+        name: BCM5701
+        kind: io-controller
+        hardware_kind: bcm5701
+        identity: {pci_vendor: "0x14e4", pci_device: "0x1645", pci_revision: 21}
+        provenance: observed-hardware
+        sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        sources: [sn-family-closure-origin350]
+        notes: This Origin 350 L1 carries a display, unlike the Origin 300's.
+      - id: link-connector
+        name: LINK connector
+        kind: connector
+        provenance: vendor-document
+        connector: {interface: NUMAlink 3, location: rear panel, occupancy: empty, notes: One port; cabled to nothing on a single compute module. A NUMAlink module scales 4 to 32 processors.}
+        sources: [sn-family-closure-origin350]
+    buses:
+      - {id: sysad0, name: "SysAD, processor interface 0", kind: sysad, master: cpu0, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {id: xio, name: XIO, kind: xio, master: bedrock, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"]}
+      - {id: numalink, name: NUMAlink 3, kind: fabric, master: bedrock, provenance: vendor-document, sources: [sn-family-closure-origin350], notes: Cabled to nothing on a single compute module.}
+      - {id: io9-bus, name: "IO9, bus 1 (PIC head 0)", kind: pci, master: pic, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+    connections:
+      - {component: cpu0, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: cpu1, bus: sysad0, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: pic, bus: xio, role: bridge-upstream, widget: 15, provenance: vendor-document, sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridgereg.h lines 25-31, sys/arch/sgi/xbow/xbridge.c line 680: two heads share one widget number, the second at +0x800000; parts PIC 0xd102, second head 0xd112, Bedrock 0xc110", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c lines 274-281"], notes: Widget 0xF.}
+      - {component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: pic, bus: io9-bus, role: bridge-downstream, provenance: vendor-document, sources: [sn-family-closure-origin350]}
+      - {component: ioc4, bus: io9-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
+      - {component: scsi, bus: io9-bus, role: endpoint, pci_device: 3, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}
+      - {component: ethernet, bus: io9-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: ["linux-ip35:9f613a321ea0 asm/sn/pic.h lines 11-56: PIC is device 0 of its own configuration space and maps internal slots 0-3 to configuration devices 1-4", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1034-1039, 1117-1120"]}

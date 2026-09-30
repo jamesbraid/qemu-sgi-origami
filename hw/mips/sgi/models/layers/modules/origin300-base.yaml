@@ -1,0 +1,761 @@
+# Reusable fitted Origin 300 base module hardware.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; every fact above has moved to that direct form. The three keys left
+# here back a bus and two connections only, whose strict evidence policy
+# (tools/origami_lib/model_validation.py) requires non-empty sources for every one
+# regardless of provenance -- unlike a component, which may carry none. Each cites
+# only an internal datasheet or boot-log capture, so the checker reports them under
+# "facts whose only sources are internal documents" rather than resolving them;
+# replacing them with an independently obtainable citation, or moving the bus or
+# connection to `provenance: unsourced` with a stated `evidence_gap`, is follow-up
+# work on the evidence itself, not a citation-form change.
+sources:
+  ioc3-datasheet: "docs/datasheets/ioc3.md"
+  ioc3-datasheet-origin-300: "docs/datasheets/ioc3.md, Origin 300 IO-8 supplement"
+  timekeeper-datasheet: "docs/datasheets/timekeeper.md"
+  boot-logs-b: "docs/library/boot-logs.md, the Origin 300 captures (Nekochan threads 17314, 16724335, 16727514; IRIXnet thread 2737) and the Fuel dmesg"
+layer:
+  kind: module
+  id: origin300-base-module
+  requires: {architecture: sn1, assembly: ip45}
+  data:
+    components:
+      - id: cpu0
+        name: R14000
+        kind: cpu
+        processor_slice: A
+        hardware_kind: r14000
+        provenance: observed-hardware
+        identity:
+          <<: &r14000-identity {cache_clock_mhz: 250, processor_identification: "0x0f24"}
+          notes: >-
+            As real Origin 300s report it: IRIX hinv "500 MHz R14000 Rev 2.4,
+            Secondary Cache 2MB 250MHz" and the PROM's "Local master CPU A revision:
+            f24" (community captures of three machines, secondhand); 600 MHz boards
+            exist with part 030-1797-001. The scan-tools guide's configuration names
+            agree.
+        description: >-
+          Processor A on processor interface 0, the first slot of each interface
+          the two-processor population fits. A Bedrock carries two processor
+          interfaces of two processors each; the Origin 300 ships with two or
+          four, and the four-processor population fits all four slots below.
+        sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "108-0263-004 (Origin 300 scan tools guide), configuration names", "007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
+
+      - id: cpu1
+        name: R14000
+        kind: cpu
+        processor_slice: C
+        hardware_kind: r14000
+        provenance: observed-hardware
+        identity: *r14000-identity
+        description: >-
+          Processor C on processor interface 1, the first slot of that
+          interface; fitted in both the two- and four-processor populations.
+        sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]
+
+      - id: cpu2
+        name: R14000
+        kind: cpu
+        processor_slice: B
+        hardware_kind: r14000
+        provenance: vendor-document
+        identity: *r14000-identity
+        description: >-
+          Processor B, processor interface 0's second slot. Empty on the
+          documented two-processor population (only A and C are fitted there);
+          fitted only in the four-processor population the owner's manual and
+          the scan-tools field guide both name.
+        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-0 second slot B"]
+
+      - id: cpu3
+        name: R14000
+        kind: cpu
+        processor_slice: D
+        hardware_kind: r14000
+        provenance: vendor-document
+        identity: *r14000-identity
+        description: >-
+          Processor D, processor interface 1's second slot. Empty on the
+          documented two-processor population; fitted only in the
+          four-processor population.
+        sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors, each with a secondary cache, on one IP45 motherboard", "108-0263-004 Table 2-2 printed page 2-18: the field guide's own IP45 4 CPU R14K 500MHZ 2MB configuration name", "docs/datasheets/bedrock-processor-interface.md: PI0/B and PI1/B are empty on the observed two-processor board, naming the interface-1 second slot D"]
+
+      - id: node-memory
+        name: node memory
+        kind: memory
+        provenance: vendor-document
+        description: >-
+          Four DIMM slots as two pairs, each pair two banks; 512 MB to 4 GB per
+          chassis in kits of 512 MB, 1 GB and 2 GB with integrated directory memory;
+          the pairs may differ in size. Reported to a guest in 1 GB bank steps from
+          the node base, eight architectural banks per node in an 8 GB node window;
+          the interleave geometry the schema's memory_geometry block would carry is
+          not stated by any public source for this generation, so the block is left
+          out rather than filled with the Origin 200's values.
+        sources: ["007-4365-002 printed pages 10 to 12, Figure 1-5", "openbsd:2df91d80c1 sys/arch/sgi/sgi/sginode.c lines 549 to 590", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 47 and 53 to 54: eight slots per node, 1 GB slot shift"]
+
+      - id: bedrock
+        name: Bedrock
+        kind: node-asic
+        hardware_kind: bedrock
+        provenance: datasheet
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        aliases:
+          - "SNAC (mainline Linux arch/mips/include/asm/sn/agent.h line 6 names the hub and snac interfaces)"
+          - "SN1 Hub (descriptive, from SGI reusing the Hub's identifiers for it)"
+        description: >-
+          The node controller: two processor interfaces, the I/O interface that is
+          the XIO port, the local block, the network interface, the internal
+          crossbar and the memory and directory interface. Its registers are
+          XIO widget 1 of its own node, an 8 MB window with a local alias.
+        identity:
+          widget_part: "0xc110"
+          widget_mfg: "0x036"
+          hardware_revision: 2
+          clock_mhz: 200
+          notes: >-
+            The XIO identity the I/O interface presents; the local block's
+            revision register carries a different part number, 0x3012, with revision
+            1 for Bedrock 1.0 and 2 for 1.1. Real Origin 300s report "ASIC BEDROCK
+            Rev 2, 200 MHz" and the PROM prints "Bedrock Rev: 2" and "Configured
+            bedrock clock: 200.0 MHz". The manufacturer value is the one two public
+            widget tables give; the hardware word is unobserved.
+        regions:
+          - id: bedrock-pi0
+            name: processor interface 0
+            relative_to: bedrock
+            offset: "0x0"
+            size: "0x200000"
+          - id: bedrock-pi1
+            name: processor interface 1
+            relative_to: bedrock
+            offset: "0x200000"
+            size: "0x200000"
+            notes: Explicitly named through the node-named form; requester-local selection remains unmeasured.
+          - id: bedrock-io
+            name: I/O interface
+            relative_to: bedrock
+            offset: "0x400000"
+            size: "0x200000"
+          - id: bedrock-lb
+            name: local block
+            relative_to: bedrock
+            offset: "0x600000"
+            size: "0x80000"
+          - id: bedrock-ni
+            name: network interface
+            relative_to: bedrock
+            offset: "0x680000"
+            size: "0x80000"
+            notes: >-
+              Port status bit 18 reads clear on real Origin 300s, one chassis and two
+              cabled: OpenBSD prints "Machine is in M mode." (the OpenBSD capture in
+              docs/library/boot-logs.md).
+          - id: bedrock-xb
+            name: internal crossbar
+            relative_to: bedrock
+            offset: "0x700000"
+            size: "0x80000"
+          - id: bedrock-md
+            name: memory and directory interface
+            relative_to: bedrock
+            offset: "0x780000"
+            size: "0x80000"
+          - id: bedrock-registers-local
+            name: Bedrock registers, local alias
+            space: io
+            offset: "0x0100_0000"
+            size: "0x80_0000"
+            notes: Small window 1 of node 0, position-independent; the hub-relative regions above sit inside it.
+          - id: bedrock-registers-node
+            name: Bedrock registers, node-named form
+            space: io
+            offset: "0x0180_0000"
+            size: "0x80_0000"
+            notes: Address bit 23 set, access checks apply; this form names the second processor interface explicitly.
+          - id: hub-special-local-registers
+            name: Hub special local register window
+            space: hub-special
+            offset: "0x1000_0000"
+            size: "0x0800_0000"
+          - id: hub-special-local-memory
+            name: Hub special local memory view
+            space: hub-special
+            offset: "0x0"
+            size: "0x1000_0000"
+          - id: hub-special-remote-registers
+            name: Hub special remote register window
+            space: hub-special
+            offset: "0x3000_0000"
+            size: "0x0800_0000"
+        datasheet_contracts:
+          - docs/datasheets/ip35-address-map.md
+          - docs/datasheets/bedrock-processor-interface.md
+          - docs/datasheets/bedrock-local-block.md
+          - docs/datasheets/bedrock-network-interface.md
+          - docs/datasheets/bedrock-io-interface.md
+          - docs/datasheets/bedrock-memory-directory.md
+          - docs/datasheets/bedrock-crossbar.md
+        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 28 to 34, 85, 110 to 114, 180, 189, 208, 215, 233", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/ unit headers, first register of each", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20: four processors per node, two per interface"]
+        notes: >-
+          The unit bases are rearranged from the Hub's, not merely renumbered, and the
+          two public trees agree on every one. No public header states a reset value
+          for any register; the datasheets mark every reset value the model chooses
+          as a choice.
+
+      - id: bedrock-lb-scratch
+        name: Bedrock local block scratch register 2
+        kind: subfunction
+        provenance: datasheet
+        parent: bedrock
+        description: >-
+          The reboot hand-off mailbox: OpenBSD writes its firmware-operation request
+          (magic 0x0ead0000 with a command and options) to local-block scratch
+          register 2, hub offset 0x608010, before resetting the node through the
+          network interface. Secondary processors are launched through the PROM's
+          entry at compatibility address 0x1fc0_0038, not through a register. Whether
+          the firmware reads the scratch register after reset is open (the hand-off
+          register packet).
+        sources: ["openbsd:2df91d80c1 sys/arch/sgi/sgi/ip27_machdep.c lines 680 to 704 and 1083 to 1085", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/hublb.h line 155"]
+
+      - id: xbridge
+        name: XBridge
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: datasheet
+        description: >-
+          The SN1 XIO-to-PCI part: a Crossbow crossbar section fused with two
+          Bridge sections, one PCI bus each. A mode pin straps it as a crossbar with
+          the two bridges on internal ports 0xe and 0xf and six external ports
+          (XBridge mode), or as two independent bridges with the crossbar disabled
+          (Super Bridge mode). The IP45 runs XBridge mode: observed on three real
+          Origin 300s, whose inventories report a crossbar at widget 0 and bridges at
+          widgets 14 and 15.
+        identity:
+          widget_part: "0xd002"
+          widget_mfg: "0x024"
+          widget_revision: 2
+          part: "030-1673-003"
+          notes: >-
+            The bridge half's identity; real Origin 300s report both halves as
+            revision 2; the crossbar half is the separate component below. part
+            is the IO-8 board's own SGI part number (007-4365-002), the one
+            physical board both PCI heads below sit on.
+        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 17, 41, 44 to 46, 132", "007-4365-002 printed pages 8 to 10: one XBridge between the Bedrock and the PCI slots, an XIO connector"]
+        notes: >-
+          Same programming model as the Bridge with the deltas the XBridge datasheet
+          lists; the device-window layout is unchanged. The translation-table size is
+          a source conflict (512 in the specification, 1024 in the driver headers)
+          and the model serves 512, as its choice.
+
+      - id: xbridge-crossbar
+        name: XBridge crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: observed-hardware
+        parent: xbridge
+        description: >-
+          Widget 0 in XBridge mode: the chip's internal Crossbow, with the two PCI
+          bridges on ports 0xe and 0xf, six external XIO ports 8 to 0xd, and
+          the Bedrock entering at port 0xa. Real Origin 300s report it as "ASIC XBOW
+          Rev 2, on CBrick"; the verbose PROM trace prints "HUB at 0x0 attached as
+          widget 0xa" and "Check_master: link 10 is master".
+        identity:
+          widget_part: "0xd000"
+          widget_mfg: "0x000"
+          widget_revision: 2
+          notes: >-
+            Part and manufacturer as OpenBSD's device table and the specification give
+            them for a crossbar face; OpenBSD attaches the same chip as "XXBow
+            revision 2", the part 0xd000 identity, on a Fuel and on two real Origin
+            300s (the OpenBSD captures in docs/library/boot-logs.md).
+        datasheet_contracts: [docs/datasheets/xbridge.md]
+        regions:
+          - id: widget-0-registers
+            name: widget 0 registers
+            space: io
+            offset: "0x0"
+            size: "0x100_0000"
+            notes: Small window 0; every public consumer also reaches it through big window 6 (the widget-0 window packet).
+        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbowdevs line 33"]
+        notes: >-
+          Inferred first from the chip specification and the board's port list, then
+          observed in three owners' inventories and one verbose PROM trace; secondhand
+          captures, consistent with each other and with the sibling Fuel board.
+
+      - id: xbridge-bridge-e
+        name: XBridge bridge at port 0xe
+        kind: subfunction
+        provenance: observed-hardware
+        parent: xbridge
+        description: >-
+          The PCI bridge behind widget 14, carrying the two 64-bit universal option
+          slots. The base one-chassis machine leaves both slots empty. An empty bus
+          is observed at 66 MHz; a capture with cards associates device 1 with
+          XBridge interrupt number 1 and device 2 with interrupt number 2. The
+          cards' PCI Interrupt Pin fields and the riser's source-to-pin swizzles
+          remain unknown.
+        regions:
+          - id: bridge-e-registers
+            name: bridge 0xe registers
+            space: io
+            offset: "0x0e00_0000"
+            size: "0x100_0000"
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"]
+
+      - id: xbridge-bridge-f
+        name: XBridge bridge at port 0xf
+        kind: subfunction
+        provenance: observed-hardware
+        parent: xbridge
+        description: >-
+          The 33 MHz PCI bridge behind widget 15, carrying the IO-8's fixed devices:
+          ISP12160 at 00:01.0, IOC3 at 00:04.0 and the AT&T/Lucent OHCI controller
+          at 00:05.0. Their established physical interrupt pins are 0, 1, 4 and 5;
+          no fixed source was established for pins 2, 3, 6 or 7. The external flash
+          is behind this bridge in XBridge mode.
+        regions:
+          - id: bridge-f-registers
+            name: bridge 0xf registers
+            space: io
+            offset: "0x0f00_0000"
+            size: "0x100_0000"
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"]
+
+      - id: ioc3
+        name: IOC3
+        kind: io-controller
+        hardware_kind: ioc3
+        provenance: vendor-document
+        description: >-
+          The same chip the Origin 200 uses, on the IO-8 assembly at PCI device 4.
+          On the Origin 300 it exposes serial A and B, the parallel function, the
+          byte-bus Timekeeper and the board's 10/100 Ethernet, and no keyboard or
+          mouse controller. No rear-panel parallel connector is established by the
+          reviewed IO-8 connector inventory. The chip includes its one-wire engine,
+          but this board does not fit the IOC3 Ethernet-address identity part: the
+          address comes from the brick EEPROM through the L1. Serial A is the guest
+          console; serial B is the second rear-panel serial port. Emulator chardev index 0 is
+          reserved for the separate L1 management channel, with IOC3 A and B on
+          indexes 1 and 2. The integration contract uses explicit population mask
+          0x17 and selects M48T35-compatible timekeeper-kind 1 as a documented
+          compatibility choice whose clearance depends on the required Origin 300
+          qtest.
+        identity:
+          pci_vendor: "0x10a9"
+          pci_device: "0x0003"
+          pci_subsystem_id: "0x10a9_ffff"
+          pci_revision: 1
+          mii_phy: {address: 1, part: dp83843}
+          notes: >-
+            Function 00:04.0 and PCI revision 1 are observed. The exact IP45
+            subsystem device field is not observed. The initial emulator retains
+            the IOC3 class's public SGI subsystem vendor and exposes 0xffff as an
+            explicit device placeholder so it does not inherit the Origin 200
+            system-board value 0xc303. An Origin 300 configuration-space capture
+            replaces the placeholder.
+        datasheet_contracts: [docs/datasheets/ioc3.md, docs/datasheets/dp83840.md]
+        sources: ["108-0264-004 Table 2-4, printed page 2-11: the IO8 test's device numbers", "108-0264-004 printed pages 2-9 to 2-10: the IO8 test exercises the IOC3's own Ethernet", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and both interrupt sources", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 306 to 323: the sub-device population on the Origin 300 subtype", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 464 to 546: serial offsets, byte-bus clock and the L1-supplied Ethernet address"]
+
+      - {id: ioc3-ethernet, name: Ethernet MAC, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: datasheet}
+      - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: datasheet}
+      - {id: ioc3-serial-b, name: serial port B, kind: subfunction, hardware_kind: ioc3-serial-b, parent: ioc3, provenance: datasheet}
+      - {id: ioc3-parallel, name: parallel port, kind: subfunction, hardware_kind: ioc3-parallel, parent: ioc3, provenance: datasheet}
+      - id: ioc3-timekeeper
+        name: M48T35-compatible Timekeeper
+        kind: rtc
+        hardware_kind: m48t35
+        parent: ioc3
+        provenance: derived
+        datasheet_contracts: [docs/datasheets/timekeeper.md]
+        description: >-
+          Emulator compatibility choice for IOC3 byte-bus select 0. This does not
+          identify the physical IP45 package or establish its complete decode.
+
+      - id: scsi
+        name: QLogic ISP12160
+        kind: storage-hba
+        hardware_kind: isp12160
+        provenance: observed-hardware
+        description: >-
+          Ultra3 at 160 MB/s with one internal and one external channel, at PCI
+          device 1 on the IO-8's bus. Real Origin 300s report it as "QL12160, low
+          voltage differential" with PCI ids 0x1077:0x1216 (printed in decimal as
+          4215, 4630); OpenBSD names the same part on a Fuel.
+        identity:
+          pci_vendor: "0x1077"
+          pci_device: "0x1216"
+          pci_subsystem_id: "0xffff_ffff"
+          pci_revision: 6
+          notes: >-
+            The subsystem fields are unobserved. The emulator exposes unavailable
+            values instead of inheriting QEMU's unrelated generic PCI defaults.
+        datasheet_contracts: [docs/datasheets/isp12160.md]
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90: BDF, identity, revision and interrupt pin", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183: 33 MHz bus and matching function", "007-4365-002 printed pages 1, 12 and 14", "108-0264-004 Table 2-4, printed page 2-11"]
+
+      - id: usb
+        name: USB controller (OHCI)
+        kind: io-controller
+        hardware_kind: lucent-ohci
+        provenance: observed-hardware
+        description: >-
+          The board's two USB ports at 00:05.0 on the IO-8 bus. Real Origin 300s
+          report an AT&T/Lucent 0x11c1:0x5802 two-port controller at PCI revision
+          0x10, with OHCI revision 1.0 and legacy support.
+        identity:
+          pci_vendor: "0x11c1"
+          pci_device: "0x5802"
+          pci_subsystem_id: "0xffff_ffff"
+          pci_revision: 16
+          notes: >-
+            The hardware subsystem vendor and device fields are unobserved. The
+            initial emulator exposes 0xffff:0xffff as explicit compatibility
+            placeholders so current QEMU does not inject unrelated 0x1af4:0x1100
+            defaults. An Origin 300 configuration-space capture replaces them.
+        datasheet_contracts: [docs/datasheets/lucent-ohci.md]
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11", "007-4365-002 printed page 12"]
+
+      - id: pci-option-slot-1
+        name: PCI option slot 1
+        kind: connector
+        provenance: observed-hardware
+        connector:
+          interface: 64-bit universal PCI
+          location: PCI riser
+          occupancy: empty
+          notes: >-
+            Enumerates as head-E PCI device 1 when occupied. A public capture
+            associates that device with head-E XBridge interrupt number 1. The
+            card's PCI Interrupt Pin field and the riser's source-to-pin wiring are
+            not established.
+        sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"]
+
+      - id: pci-option-slot-2
+        name: PCI option slot 2
+        kind: connector
+        provenance: observed-hardware
+        connector:
+          interface: 64-bit universal PCI
+          location: PCI riser
+          occupancy: empty
+          notes: >-
+            Enumerates as head-E PCI device 2 when occupied. A public capture
+            associates that device with head-E XBridge interrupt number 2. The
+            card's PCI Interrupt Pin field and the riser's source-to-pin wiring are
+            not established.
+        sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"]
+
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: datasheet
+        description: >-
+          The per-chassis system controller: a packet protocol over the Bedrock's
+          UART, not a register file. It runs whenever the chassis has mains power,
+          shows "L1 running" before anything else is powered, powers the node up on
+          command, multiplexes the operator console, and answers the display,
+          board-identity and memory-module requests a guest sends.
+        regions:
+          - id: l1-uart
+            name: L1 UART
+            space: hub-special
+            offset: "0x1000_0080"
+            size: "0x40"
+            notes: >-
+              Eight 16550 registers at 8-byte stride inside the local register
+              window, accessed as 64-bit loads and stores with the low byte
+              significant; every consumer uses the remote form. Which Bedrock unit
+              decodes the window is open.
+        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        sources: ["openbsd:2df91d80c1 sys/arch/sgi/xbow/hub.h lines 68 to 73", "openbsd:2df91d80c1 sys/arch/sgi/sgi/l1.c", "007-4365-002 printed pages 6, 10, 12 and 35 to 41"]
+
+      - id: serial-id-eeprom
+        name: serial identity EEPROM
+        kind: identity
+        provenance: vendor-document
+        description: >-
+          The motherboard's serial-identity part, read by the L1 and reported to a
+          guest through the L1's board-identity request; the part is not named.
+        sources: ["007-4365-002 printed page 10"]
+
+      - id: xio-connector
+        name: XIO connector
+        kind: connector
+        provenance: vendor-document
+        connector:
+          interface: Crosstown2
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            An external cable port, not an XIO slot: an expansion enclosure's
+            NUMAlink 3 cable ends here, 800 MB/s to an InfiniteReality graphics
+            pipe per the manual, and no XIO board attaches directly. The
+            composition records whether a cable and enclosure are attached.
+        sources: ["007-4365-002 printed page 8"]
+
+      - id: link-connector
+        name: LINK connector
+        kind: connector
+        provenance: vendor-document
+        connector:
+          interface: NUMAlink 3
+          location: rear panel
+          occupancy: opaque
+          notes: >-
+            1.6 GB/s each way to a second Origin 300 or a PCI expansion module.
+            The composition says what is cabled here: nothing on one chassis,
+            where the numalink bus ends at this connector, and the other
+            chassis's LINK connector on a two-chassis system.
+        sources: ["007-4365-002 printed page 8"]
+
+    buses:
+      - id: sysad0
+        name: SysAD, processor interface 0
+        kind: sysad
+        master: cpu0
+        provenance: public-header
+        sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]
+
+      - id: sysad1
+        name: SysAD, processor interface 1
+        kind: sysad
+        master: cpu1
+        provenance: public-header
+        sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]
+
+      - id: xio
+        name: XIO
+        kind: xio
+        master: bedrock
+        provenance: datasheet
+        sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/xtalk/xtalkaddrs.h"]
+        notes: >-
+          The Bedrock's I/O interface is the port; the XBridge's crossbar section
+          routes by destination widget. A widget raises an interrupt by writing to
+          bit 47, node at 39, and the Bedrock's own register 0x1800090.
+
+      - id: pci-io8
+        name: PCI, the IO-8's bus
+        kind: pci
+        master: xbridge-bridge-f
+        provenance: observed-hardware
+        sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "108-0264-004 Table 2-4, printed page 2-11"]
+        notes: >-
+          OpenBSD reports it as a 33 MHz PCI bus on real Origin 300s. The fixed
+          functions are 00:01.0, 00:04.0 and 00:05.0 behind widget 15.
+
+      - id: pci-option
+        name: PCI, the option bus
+        kind: pci
+        master: xbridge-bridge-e
+        provenance: observed-hardware
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "007-4365-002 printed pages 1, 9 and 12"]
+        notes: >-
+          An empty bus is observed at 66 MHz. The two physical 64-bit universal
+          slots can run at 33 or 66 MHz and are empty on the base model.
+
+      - id: ioc3-byte-bus
+        name: IOC3 byte bus
+        kind: byte-bus
+        master: ioc3
+        provenance: datasheet
+        sources: [ioc3-datasheet]
+
+      - id: numalink
+        name: NUMAlink 3
+        kind: fabric
+        master: bedrock
+        provenance: vendor-document
+        sources: ["007-4365-002 printed page 14, Table 1-2"]
+        notes: >-
+          The fabric port, cabled to nothing on one chassis; the network interface
+          reports no link and carries the node reset.
+
+    connections:
+      - { component: cpu0, bus: sysad0, role: master, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: cpu1, bus: sysad1, role: master, provenance: observed-hardware, sources: ["origin300/nekonomicon-16726611-ip45-2cpu.html IP45_2CPU, processors A and C", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: cpu2, bus: sysad0, role: master, provenance: vendor-document, sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: cpu3, bus: sysad1, role: master, provenance: vendor-document, sources: ["007-4365-002 printed pages 1 and 10: two or four MIPS processors", "linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: bedrock, bus: sysad0, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - { component: bedrock, bus: sysad1, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"] }
+      - component: bedrock
+        bus: xio
+        role: master
+        widget: 10
+        provenance: observed-hardware
+        sources: [boot-logs-b]
+        notes: The Bedrock enters the XBridge's crossbar at port 0xa ("HUB at 0x0 attached as widget 0xa", the Origin 300 verbose PROM trace).
+      - component: xbridge-crossbar
+        bus: xio
+        role: bridge-upstream
+        widget: 0
+        provenance: observed-hardware
+        notes: Widget 0 in XBridge mode, reported as ASIC XBOW Rev 2 by real Origin 300s.
+        sources: ["asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 20, 31, 44 and 71"]
+      - { component: xbridge-bridge-e, bus: xio, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
+      - { component: xbridge-bridge-f, bus: xio, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
+      - { component: xio-connector, bus: xio, role: endpoint, widget: 11, provenance: derived, sources: ["007-4365-002 printed page 8", "108-0240-002 printed page 2-26: XBridge Crosstown2 ports A and B are 10 and 11"], notes: "Port 0xb is the model's existing approximation; the physical connector assignment has not been measured." }
+      - { component: xbridge-bridge-f, bus: pci-io8, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
+      - { component: xbridge-bridge-e, bus: pci-option, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "asic/sgi-xbridge-asic-spec-rev0.5.pdf printed pages 44 and 123"] }
+      - { component: scsi, bus: pci-io8, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"] }
+      - { component: ioc3, bus: pci-io8, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "108-0264-004 Table 2-4, printed page 2-11"] }
+      - { component: usb, bus: pci-io8, role: endpoint, pci_device: 5, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183"] }
+      - { component: ioc3, bus: ioc3-byte-bus, role: master, provenance: datasheet, sources: [ioc3-datasheet] }
+      - { component: ioc3-timekeeper, bus: ioc3-byte-bus, role: endpoint, chip_select: 0, provenance: derived, sources: [ioc3-datasheet-origin-300, timekeeper-datasheet] }
+      - { component: pci-option-slot-1, bus: pci-option, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"] }
+      - { component: pci-option-slot-2, bus: pci-option, role: endpoint, pci_device: 2, provenance: observed-hardware, sources: ["007-4365-002 printed pages 9 and 12", "boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90"] }
+      - { component: bedrock, bus: numalink, role: master, provenance: vendor-document, sources: ["007-4365-002 printed page 14, Table 1-2"] }
+      - { component: link-connector, bus: numalink, role: endpoint, provenance: vendor-document, sources: ["007-4365-002 printed page 8"] }
+
+    interrupts:
+      - id: scsi-interrupt
+        source: scsi
+        provenance: observed-hardware
+        description: >-
+          The fixed board route is ISP12160 INTA to head-F physical pin 1. Every
+          pending-bit and processor destination after that pin is programmed by
+          the guest.
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        chain:
+          - { at: scsi, as: "PCI INTA at 00:01.0", mechanism: level }
+          - { at: xbridge-bridge-f, as: "physical interrupt pin 1", mechanism: wire }
+          - &io8-route-program { at: xbridge-bridge-f, as: "guest-programmed set and optional clear XIO writes", mechanism: xio-write }
+          - &io8-route-crossbar { at: xbridge-crossbar, as: "route to Bedrock host port 0xa", mechanism: xio-write }
+          - &io8-route-pending { at: bedrock, as: "guest-selected pending bit", mechanism: pending-bit, notes: "The processor mask and hardware interrupt line are also guest-selected and are not fixed machine-chain endpoints." }
+
+      - id: ioc3-superio-interrupt
+        source: ioc3
+        provenance: observed-hardware
+        description: >-
+          The IOC3 SuperIO block has a separate board output to head-F physical pin
+          0. It does not share the Ethernet function's PCI INTA route.
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        chain:
+          - { at: ioc3, as: "SuperIO interrupt output", mechanism: level }
+          - { at: xbridge-bridge-f, as: "physical interrupt pin 0", mechanism: wire }
+          - *io8-route-program
+          - *io8-route-crossbar
+          - *io8-route-pending
+
+      - id: ioc3-ethernet-interrupt
+        source: ioc3
+        provenance: observed-hardware
+        description: >-
+          The IOC3 Ethernet PCI function asserts INTA at 00:04.0, wired to head-F
+          physical pin 4 independently of the SuperIO output.
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        chain:
+          - { at: ioc3, as: "Ethernet PCI INTA at 00:04.0", mechanism: level }
+          - { at: xbridge-bridge-f, as: "physical interrupt pin 4", mechanism: wire }
+          - *io8-route-program
+          - *io8-route-crossbar
+          - *io8-route-pending
+
+      - id: usb-interrupt
+        source: usb
+        provenance: observed-hardware
+        description: >-
+          The OHCI controller's INTA at 00:05.0 is wired to head-F physical pin 5.
+          The observed Bedrock interrupt number 59 is a guest allocation, not board
+          wiring.
+        sources: ["boot-logs/openbsd-sgi-list/marc-125897882029839-origin-300-installation-issues.html lines 55 to 90", "boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 150 to 183", "openbsd:2df91d80c1 sys/arch/sgi/xbow/xbridge.c lines 1220 to 1290 and 1336 to 1411", "linux-ip35:9f613a321ea0 arch/mips/pci/pci-sgipic.c"]
+        chain:
+          - { at: usb, as: "PCI INTA at 00:05.0", mechanism: level }
+          - { at: xbridge-bridge-f, as: "physical interrupt pin 5", mechanism: wire }
+          - *io8-route-program
+          - *io8-route-crossbar
+          - *io8-route-pending
+
+    open_questions:
+      - id: option-slot-intx-swizzle
+        question: Which PCI INTx source and riser swizzle produce each observed head-E device-to-XBridge interrupt number?
+        about: [xbridge-bridge-e, pci-option-slot-1, pci-option-slot-2]
+        candidates:
+          - answer: Record only device 1 to XBridge interrupt number 1 and device 2 to interrupt number 2.
+            source: The retained 2009 Origin 300 OpenBSD capture observes those associations but does not report either card's PCI Interrupt Pin field.
+            notes: Current model position; no PCI INTx source or unsupported swizzle is invented.
+          - answer: Apply the conventional rotating PCI swizzle for all four INTx inputs.
+            source: A generic PCI convention would suggest it, but no board source read for this handoff establishes the IO-8 trace.
+            notes: Rejected until this exact riser wiring is observed or documented.
+        consequence: >-
+          Empty slots and their observed device numbers are represented. No option
+          card interrupt source can be wired from this observation alone because
+          the asserted PCI INTx input and riser swizzle are unknown.
+        settled_by: An IO-8 riser schematic or a public hardware capture that identifies the occupied slot, asserted INTx input and resulting head-E physical pin.
+      - id: io8-pci-subsystem-identities
+        question: What subsystem vendor and device values do the IP45 ISP12160, IOC3 and OHCI functions expose?
+        about: [scsi, ioc3, usb]
+        candidates:
+          - answer: Expose 0xffff:0xffff on ISP12160 and Lucent OHCI, and 0x10a9:0xffff on IOC3.
+            source: Bounded hardware review plus current QEMU inventory showing that unset fields acquire unrelated generic PCI defaults and an unset IOC3 instance inherits the Origin 200 system-board device value 0xc303.
+            notes: Current emulator policy; 0xffff device values mean unobserved and unavailable, not IP45 hardware. IOC3 retains the public class-wide SGI subsystem vendor.
+          - answer: Program exact values from an Origin 300 PCI configuration-space capture.
+            source: No such capture was resolved during this bounded research.
+        consequence: >-
+          The ISP12160 and Lucent identity qtests must read 0xffff:0xffff and
+          reject unrelated generic PCI defaults. The placeholders do not establish IP45
+          hardware and must be replaced when an Origin 300 capture supplies exact
+          subsystem values. The IOC3 identity qtest must read 0x10a9:0xffff and
+          reject the inherited Origin 200 system-board value 0x10a9:0xc303.
+        settled_by: A public full PCI configuration-space dump from the fixed ISP12160, IOC3 and OHCI functions on an Origin 300 IO-8.
+      - id: io8-timekeeper-decode
+        question: Which Timekeeper package and complete NVRAM decode are fitted behind IOC3 byte-bus select 0 on IP45?
+        about: [ioc3]
+        candidates:
+          - answer: Model the existing M48T35-compatible 32 KB byte-wide device as an explicit compatibility choice.
+            source: Current QEMU sgi-ioc3 inventory; OpenBSD's IP35 consumer attaches a DS1742W-compatible interface at select 0.
+            notes: Does not identify the physical IP45 package or prove its capacity.
+          - answer: Use the exact physical package, capacity and decode once a board-specific source establishes them.
+            source: No retained board document or capture read for this handoff settles those fields.
+        consequence: >-
+          Time and persistent NVRAM can be exposed for guest integration only with
+          an Origin 300 qtest that realizes population 0x17 with timekeeper-kind 1,
+          verifies select 0 and the consumer-used clock-register placement, checks
+          persistence, and migrates the state between identical builds. Existing
+          Origin 200 qtests cover the emulator M48T35 class's 32 KB storage, top
+          clock registers, persistence, reset and explicit kind selection; they do
+          not establish the IP45 package or full decode.
+        settled_by: >-
+          The compatibility boundary is protected by the required Origin 300 qtest.
+          An IP45 IO-8 schematic, parts list or bounded hardware decode and package
+          capture is still required to establish the physical package and full decode.
+      - id: board-identification-decode
+        question: How should IP45 board identification be modeled without independent decoder evidence?
+        about: [bedrock]
+        candidates:
+          - {answer: "leave the region unassigned pending independent IP45 evidence", source: "James, 2026-09-05; docs/library/origin300-identity-evidence.md", notes: "current model position"}
+          - {answer: "propose a guest-specific compatibility response", source: "OpenBSD consumer observation recorded in docs/library/origin300-identity-evidence.md", notes: "not approved; cannot be presented as a fitted ASIC or a hardware reset value"}
+        consequence: OpenBSD has an identification read, but its register name and a boot banner do not establish the physical decoder, complete register value, or a second register on IP45. No identity region is assigned from that evidence alone.
+        settled_by: Independent IP45 hardware documentation or a hardware register capture with address, width and value. A PROM trace can establish firmware use, not the physical decoder.
+      - id: physical-reset-decoder
+        question: How does an IP45 processor reset request select the fitted PROM?
+        candidates:
+          - answer: A board or Bedrock decoder selects a physical flash device.
+            source: No retained public source establishes the decoder, fitted part, complete selected range or priority over RAM.
+          - answer: The observed software views require a different physical route.
+            source: A hardware access capture or published IP45 decoder specification must identify it.
+        consequence: The emulator maps one exact stock payload into four bounded views as compatibility policy and makes no physical decoder claim.
+        settled_by: A published IP45 decoder specification or a hardware measurement that identifies the responding device, selected range and alias behavior.
+      - id: widget-zero-remap
+        question: Is the widget-0 remap through translation entry 6 still needed on a Bedrock?
+        about: [bedrock, xbridge-crossbar]
+        candidates:
+          - {answer: "yes; every consumer applies it and OpenBSD never allocates entry 6", source: "OpenBSD ip27_machdep.c lines 478 to 486 and 535 to 536"}
+          - {answer: "no; the raw small window answers", source: "refs/linux-ip35 ip35-xtalk.c lines 49, 86 and 169 read widget 0 through the raw window, with no record of it working"}
+        consequence: The model answers both forms until settled.
+        settled_by: Reading entry 6 after a stock PROM boot on the emulated machine, which observes what the PROM programs.
+      - id: firmware-configuration-block
+        question: Does an IP45 firmware configuration block exist at boot window offset 0x60?
+        about: [bedrock]
+        candidates:
+          - {answer: "yes, as the Itanium port reads it", source: "Linux v2.5.40 sn1/ip27config.h lines 23 to 28; io/hubspc.c lines 149 to 150"}
+          - {answer: "no MIPS consumer depends on it", source: "OpenBSD reads the block on its IP27 branch only, ip27_machdep.c lines 194 to 198"}
+        consequence: Which configuration data the stock PROM exposes to the guest; no synthesized replacement is in scope.
+        settled_by: A PROM trace or a memory read after boot.

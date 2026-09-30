@@ -1,0 +1,100 @@
+# A GIGAchannel-converted Origin 200 module looped back on itself.
+layer_version: 1
+layer:
+  kind: product
+  id: origin200-gigachannel-loopback
+  requires: {assembly: ip29}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1], [2]]
+    provenance: vendor-document
+    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and printed pages 109-110 PDF pages 135-136 mapping trusted"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    provenance: derived
+    sources: ["007-3709-002 printed pages 46, 48, and 53, establishes paired DIMMs and bank 0 in sockets 1-2"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu0]
+  memory_kits_per_node: [kit-64]
+  data:
+    machine:
+      name: Origin 200 GIGAchannel loopback
+      model_role: emulation-target
+      firmware_config:
+        machine_type: 1
+        flash_read_cycles: 15
+        flash_write_cycles: 4
+        provenance: derived
+        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+      emulation:
+        machine_name: origin200
+        display_description: SGI Origin 200 (IP29)
+        profile: gigachannel-loopback
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512, 256, 128, 64]
+        synthetic_identities:
+          - component: base-hub
+            serial: "0x0c0b0a090807"
+            reason: Stable synthetic node identity; the base Origin 200 value.
+          - component: base-bridge
+            serial: "0x060504030201"
+            reason: Stable synthetic I/O board identity; the base Origin 200 value.
+          - component: base-ioc3
+            serial: "0x5e7000000001"
+            reason: Stable synthetic IOC3 identity; the base Origin 200 value.
+      notes: >-
+        A converted module with no cabinet. The upgrade guide's loopback test
+        shows the PROM inventory of the base machine plus one added
+        030-1264-001 record, with the base I/O Bridge back at widget 8. That
+        example prints the record as 2G_MPLN rev B; this configuration fits
+        the same rev C board, printing XBOX_EXT, as its GIGAchannel sibling,
+        since one converted module carries one Crosstown board whichever way
+        it is cabled. The rev C board's name in loopback is not captured.
+    evidence_policy: strict
+    components:
+      - id: origin200-system
+        name: Origin 200 system
+        kind: chassis
+        provenance: vendor-document
+        description: >-
+          One converted module. In loopback the one XIO cable joins the
+          Crosstown board's own two connectors, so the Hub reaches its own
+          Bridge with no Crossbow between, over the module's own XIO
+          link.
+        sources: ["007-3708-002 printed pages 109-110 PDF pages 135-136 mapping trusted", "108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25 mapping trusted"]
+      - id: crosstown-cpu
+        name: Crosstown adapter
+        kind: board
+        hardware_kind: crosstown
+        provenance: vendor-document
+        parent: base-ip29-system-board
+        description: >-
+          CPU-side adapter replacing the passive XTalk jumper board, PCA XBOX
+          EXTENSION BOARD O200, with its XIO A and XIO B connectors joined by
+          one loopback cable.
+        identity:
+          part: "030-1264-001"
+        sources: ["108-0187-001 Tables 1-1 and 1-2 section page 1-2 PDF page 14 mapping trusted", "007-3708-002 printed pages 109-110 PDF pages 135-136 mapping trusted"]
+      - id: crosstown-identity
+        name: Crosstown board-identity NIC
+        kind: identity
+        provenance: observed-hardware
+        parent: crosstown-cpu
+        identity:
+          part: "030-1264-001"
+        description: >-
+          The Crosstown board's record, which the upgrade guide's loopback
+          example lists in the PROM inventory beside the base machine's. That
+          it answers on the IP29 Bridge's own one-wire line is inferred, the
+          way the BaseIO-G's MIO record shares its Bridge's line.
+        sources: ["108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25 mapping trusted"]
+    connections:
+      - component: crosstown-identity
+        bus: base-bridge-one-wire
+        role: endpoint
+        provenance: derived
+        sources: ["108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25 mapping trusted"]

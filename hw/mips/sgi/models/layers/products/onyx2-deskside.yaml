@@ -1,0 +1,169 @@
+# The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
+# IO1 and one InfiniteReality pipe on XIO4 (docs/datasheets/onyx2.md,
+# Deskside). layers/modules/onyx2-deskside-module.yaml holds the chassis.
+layer_version: 1
+layer:
+  kind: product
+  id: onyx2-deskside
+  requires:
+    assembly: ip27
+  topology:
+    min_nodes: 1
+    max_nodes: 2
+    supported_cpu_populations:
+    - [2, 2]
+    provenance: vendor-document
+    sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors"]
+    # One or two node boards, node slot 1 first (docs/datasheets/onyx2.md,
+    # Node-board populations). The deskside's one Crossbow carries every
+    # XIO slot, so a single node board controls all of them.
+    node_populations:
+    - node_slots: [1]
+      routers: []
+      fabric_links: []
+      xio_slots: {xio-slot-2: 1, xio-slot-3: 1, xio-slot-5: 1, xio-slot-6: 1}
+      supported_cpu_populations: [[2], [1]]
+      grade: inferred
+      sources: ["007-3454-005 printed page 1 PDF page 19: the standard deskside has one Node board, the entry level one processor", "007-3454-005 printed page 21 PDF page 39: the first Node board is always installed in the right-hand slot"]
+      notes: >-
+        Node 1 controlling every widget is inferred from its being the only
+        Hub on the one Crossbow. A one-node deskside probably still carries
+        the Null Router (007-3457-005 printed page 46), whose other end is
+        then an empty slot; fitting no link is inferred to be the same to
+        firmware.
+    - node_slots: [1, 2]
+      routers: []
+      fabric_links: [null-router]
+      xio_slots: {xio-slot-2: 1, xio-slot-3: 1, xio-slot-5: 1, xio-slot-6: 1}
+      supported_cpu_populations: [[2, 2], [1, 1], [2, 1]]
+      grade: established
+      sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors", "007-3454-005 printed page 19 PDF page 37: the Null-Router board joins the node boards"]
+  population:
+    nodes: 2
+    cpus_per_node: [2, 2]
+    provenance: derived
+    sources: ["007-3454-005 printed pages 1-2 PDF pages 19-20: one or two node boards and up to four processors"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu-a, cpu-b]
+  memory_kits_per_node: [kit-64, kit-64]
+  data:
+    machine:
+      name: Onyx2 deskside with one InfiniteReality pipe
+      model_role: emulation-target
+      notes: >-
+        Selected installation of two node boards, each with two processors
+        and one 64 MiB bank, joined by the midplane's Null Router. IO1 holds
+        a BaseIO-G with its MediaIO daughtercard; the graphics board set
+        takes XIO4 directly, with a geometry board, one raster manager with
+        texture memory and a display generator, and no Ktown, so the pipe's
+        one-wire chain answers the geometry record alone. The other XIO
+        slots are empty. This is a selected population, not a captured
+        machine inventory. The full processor mode word is not the full CP0
+        Config register; only the reviewed low 25 bits transfer. Stock image
+        configuration must agree and is never rewritten by descriptor
+        generation.
+      firmware_config:
+        cpu_clock_hz: 180000000
+        hub_clock_hz: 90000000
+        processor_reset_mode:
+          kseg0_cache_algorithm: cacheable-coherent-exclusive-on-write
+          processor_device_number: 0
+          coherent_request_target: external-agent
+          processor_eliminate_requests: false
+          maximum_outstanding_processor_requests: 4
+          system_clock_divisor: 2
+          secondary_cache_block_words: 32
+          secondary_cache_error_correction: retry-access-through-corrector
+          memory_endianness: big
+          secondary_cache_size_kib: 1024
+          secondary_cache_clock_divisor: 1.5
+          secondary_cache_clock_tap: 9
+          open_drain_system_interface: false
+          cache_test_mode: false
+        machine_type: 0
+        flash_read_cycles: 8
+        flash_write_cycles: 1
+        provenance: derived
+        sources: ["docs/datasheets/origin2000-cpu-reset-mode.md selects the documented 180 MHz R10000, 90 MHz Hub, 1 MiB cache composition matching the unchanged stock mode word.", "docs/reviews/origin2000-firmware-configuration-review-20260905.md independently cleared the stock firmware record and flash controller fields.", "docs/datasheets/hub-processor-interface.md shared RTC contract specifies 1250000 Hz.", "docs/datasheets/onyx2.md Node slot codes: the deskside codes need configuration-flags bit 0 clear, which the stock image carries."]
+      emulation:
+        machine_name: onyx2
+        display_description: SGI Onyx2 deskside, one InfiniteReality pipe on XIO4
+        profile: onyx2-deskside
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 64
+        initial_module_numbers:
+        - component: compute-module
+          number: 1
+          reason: >-
+            Selected initial identity, matching the Origin 2000 module. With 0
+            the stock PROM votes a module number and resets once more before
+            it settles.
+        initially_operational_crossbow_links:
+        - component: crossbow-0
+          widgets: [8, 9, 10, 15]
+          reason: >-
+            Static emulator startup health for the pipe at widget 8, the two
+            Hub links at 9 and A, and the BaseIO-G at F. Machine launch and
+            whole-machine reset reapply it; migration restores runtime link
+            state instead. This does not model Crossbow training or
+            establish diagnostic acceptance.
+        hub_ni_revision_overrides:
+        - component: node-board-1-hub
+          ni_revision: 5
+          reason: >-
+            Graphics-capable SN0 nodes report Hub NI revision code 5 in every
+            capture found, as the onyx2-rack product layer records.
+            docs/datasheets/hub-network-interface.md holds the citation chain.
+        - component: node-board-2-hub
+          ni_revision: 5
+          reason: Matches node-board-1-hub; a module's Hubs share one manufactured revision.
+        module_semantic_serials:
+        - component: compute-module
+          serial: SGIMODULE3
+          reason: >-
+            Stable synthetic module identity for this selected emulated
+            installation, distinct from the Origin 2000 module's.
+        module_responder_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000009'
+          reason: Stable synthetic node-local module responder identity.
+        - component: node-board-2-hub
+          serial: '0x10000000000a'
+          reason: Stable synthetic node-local module responder identity.
+        synthetic_identities:
+        - component: node-board-1-hub
+          serial: '0x100000000001'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+        - component: node-board-2-hub
+          serial: '0x100000000002'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+        - component: baseio-bridge
+          serial: '0x100000000007'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+        - component: baseio-ioc3
+          serial: '0x100000000008'
+          reason: Stable synthetic identity for this selected physical component; not hardware evidence.
+        - component: mediaio-ioc3
+          serial: '0x10000000000d'
+          reason: Stable synthetic identity for the MediaIO daughtercard's own IOC3; not hardware evidence.
+        - component: io4-xg
+          serial: '0x100000000009'
+          reason: Stable synthetic identity for the pipe's XG; not hardware evidence.
+      harness:
+        console: ioc3-serial-a
+        prom_dialogue: ip27-menu
+        default_cpu_model: R10000
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_firmware_asset: assets/firmware/6.5.30/ip27prom.payload.bin
+        default_topology: onyx2-deskside
+        requires_per_node_flash: true
+        has_managed_boot_flash: false
+        supported_guests: [irix]
+        install_media: [disk-image]
+        provenance: derived
+        sources: ["tools/origami_lib/node_prom.py: node_prom_drives, the harness's own requirement that every launch seed one independent node flash image per node because the machine takes no -bios", "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module"]
+    evidence_policy: strict

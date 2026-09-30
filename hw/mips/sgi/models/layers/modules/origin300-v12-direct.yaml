@@ -1,0 +1,35 @@
+# One synthetic Odyssey widget on the Origin 300's rear XIO cable port.
+layer_version: 1
+layer:
+  kind: module
+  id: origin300-v12-direct
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: v12
+        name: Direct VPro V12 board
+        kind: board
+        hardware_kind: odyssey
+        provenance: derived
+        identity:
+          widget_revision: 10
+          notes: >-
+            Revision 0xa is the QEMU Odyssey device's selected default, not
+            a measurement of a board attached to an Origin 300.
+        datasheet_contracts: [docs/datasheets/odyssey.md]
+        sources: ["docs/datasheets/odyssey.md, Configuration identity", "007-4365-002 printed page 8"]
+        notes: >-
+          This direct widget is an emulator approximation. No graphics
+          enclosure, extra XBridge or L1 is represented here. The Odyssey
+          device separately supplies a synthetic NIC and a default 128 MiB
+          two-bank memory configuration; physical fit and display output
+          remain unknown.
+    connections:
+      - component: v12
+        bus: cable-xio
+        role: endpoint
+        provenance: derived
+        sources: ["007-4365-002 printed page 8", "docs/datasheets/odyssey.md, Configuration identity"]
+        notes: >-
+          The model connects Odyssey directly to the Origin 300 XBridge;
+          no reviewed physical configuration establishes this route.

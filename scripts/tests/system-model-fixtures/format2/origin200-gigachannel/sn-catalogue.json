@@ -1,0 +1,470 @@
+{
+  "offerings": [
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 200 GIGAchannel",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": false,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512,
+          256,
+          128,
+          64
+        ],
+        "default": 128
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        }
+      ],
+      "smp": 2,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-gigachannel"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:junk",
+          "kind": "junk-uart",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin200",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 200 GIGAchannel",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": false,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512,
+          256,
+          128,
+          64
+        ],
+        "default": 128
+      },
+      "needs-debug-leds-off": true,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "origin200",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        }
+      ],
+      "smp": 1,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix",
+        "linux",
+        "openbsd",
+        "gentoo"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin200-gigachannel"
+    }
+  ],
+  "schema": "sgi-sn-catalogue",
+  "topologies": [
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [
+        {
+          "id": "crossbow",
+          "kind": "xbow",
+          "module-index": 1,
+          "widget-revision": 2
+        }
+      ],
+      "description": "SGI Origin 200 (IP29)",
+      "generation": "sn0",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "onboard",
+          "id": "baseio",
+          "ioc3-serial": 103835129348097,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1244-001",
+          "preset": "ip29-io-crosstown",
+          "revision": 4,
+          "serial": 6618611909121
+        },
+        {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "gigachannel-midplane",
+          "module-index": 1,
+          "other-identity-parts": [],
+          "part": "030-1252-001",
+          "preset": "gigachannel",
+          "revision": 4,
+          "serial": 6618611909128
+        }
+      ],
+      "junk-uart": 0,
+      "modules": [
+        {
+          "controller-index": -1,
+          "id": "base-cpu-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        },
+        {
+          "controller-index": -1,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [],
+          "serial": ""
+        }
+      ],
+      "name": "origin200-gigachannel",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                2
+              ]
+            },
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": [
+            {
+              "controlling-node": 0,
+              "slot": 0
+            },
+            {
+              "controlling-node": 0,
+              "slot": 1
+            },
+            {
+              "controlling-node": 0,
+              "slot": 2
+            },
+            {
+              "controlling-node": 0,
+              "slot": 3
+            },
+            {
+              "controlling-node": 0,
+              "slot": 4
+            }
+          ]
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512,
+            256,
+            128,
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            128,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "base-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 3,
+            "serial": 13241552537607,
+            "system-controller": true,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "origin200",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 10
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 9
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        }
+      ],
+      "xio-slots": [
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-position-io2",
+          "label": "io2",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-position-io3",
+          "label": "io3",
+          "widget": 12
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-position-io4",
+          "label": "io4",
+          "widget": 13
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-position-io5",
+          "label": "io5",
+          "widget": 14
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-position-io6",
+          "label": "io6",
+          "widget": 15
+        }
+      ]
+    }
+  ],
+  "version": 1
+}

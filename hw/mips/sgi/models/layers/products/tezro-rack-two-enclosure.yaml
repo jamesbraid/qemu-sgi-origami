@@ -1,0 +1,52 @@
+# Rack Tezro's second enclosure adds memory and I/O capacity, but no CPUs.
+layer_version: 1
+layer:
+  kind: product
+  id: tezro-rack-two-enclosure
+  requires: {assembly: ip53-tezro}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1], [2], [4]]
+    provenance: vendor-document
+    sources: ["007-4643-003 printed pages 21, 24-28: second enclosure adds memory and slots, contains no processors"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    fitted_memory:
+      status: unknown
+      reason: Installed DIMMs in either enclosure are unspecified by the guide.
+      provenance: derived
+      sources: ["007-4643-003 printed pages 21 and 28: up to 16 GB in a dual-enclosure workstation"]
+    provenance: vendor-document
+    sources: ["007-4643-003 printed pages 21 and 28: one-processor first enclosure and processor-free second enclosure"]
+  data:
+    machine:
+      name: Tezro rack, two enclosures
+      model_role: reference
+      notes: >-
+        One selected R16000 remains in the first enclosure. The second
+        enclosure has no processors; it adds memory and four PCI/PCI-X
+        slots, joined to the first by the documented system interconnect.
+        Its IO9 is absent in this reference; the guide limits the rack
+        workstation to one IO9 card. The guide does
+        not identify the second enclosure as another processor node.
+        ASIC revisions, widget placement, PCI device numbers, fitted
+        DIMMs and interconnect register behavior are unknown. Graphics
+        hardware is outside this reference.
+    evidence_policy: strict
+    components:
+      - {id: first-enclosure, name: first rack enclosure, kind: chassis, provenance: vendor-document, sources: ["007-4643-003 printed pages 21-22: first enclosure"]}
+      - {id: second-enclosure, name: second rack enclosure, kind: chassis, provenance: vendor-document, sources: ["007-4643-003 printed pages 21-22: optional second enclosure"]}
+      - {id: cpu0, name: R16000, kind: cpu, hardware_kind: r16000, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed page 28: processor only in first enclosure"]}
+      - {id: first-memory, name: first enclosure memory, kind: memory, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed page 28: first enclosure memory"]}
+      - {id: second-memory, name: second enclosure memory, kind: memory, parent: second-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed pages 21 and 28: optional second enclosure adds memory"]}
+      - {id: first-io9, name: IO9 card, kind: io-controller, parent: first-enclosure, provenance: vendor-document, sources: ["007-4643-003 printed page 24: IO9 in first enclosure"]}
+    buses:
+      - {id: first-pci, name: first enclosure PCI/PCI-X slots, kind: pci, provenance: vendor-document, sources: ["007-4643-003 printed page 24: four slots on two buses"]}
+      - {id: second-pci, name: second enclosure PCI/PCI-X slots, kind: pci, provenance: vendor-document, sources: ["007-4643-003 printed pages 21 and 25: four additional slots"]}
+      - {id: system-interconnect, name: enclosure interconnect, kind: fabric, provenance: vendor-document, sources: ["007-4643-003 printed pages 24-26: system interconnect cable at 1.6 GB/s each direction"]}
+    connections:
+      - {component: first-io9, bus: first-pci, role: endpoint, provenance: vendor-document, sources: ["007-4643-003 printed page 24: IO9 in first enclosure bottom slot"]}
+      - {component: first-enclosure, bus: system-interconnect, role: master, provenance: vendor-document, sources: ["007-4643-003 printed page 24: first enclosure interconnect connector"]}
+      - {component: second-enclosure, bus: system-interconnect, role: endpoint, provenance: vendor-document, sources: ["007-4643-003 printed page 25: second enclosure interconnect connector"]}

@@ -1,0 +1,21 @@
+# Tezro's processor-bearing IP53 board and enclosure capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip53-tezro
+  platform: ip35
+  requires: {architecture: sn1}
+  contract: {board_ip: IP53}
+  capacity:
+    cpu_slots_per_node: 4
+    dimm_slots_per_node: 8
+    provenance: vendor-document
+    sources:
+      - "007-4564-001 printed pages 26-28: Tezro tower IP53 board, one/two/four R16000 and eight DIMM slots"
+      - "007-4643-003 printed pages 28-29: rack first enclosure one/two/four R16000 and eight DIMM slots"
+    notes: >-
+      The tower and rack first enclosure accept one, two or four processors.
+      One processor requires at least 512 MB; two or four require at least
+      1 GB. The optional rack second enclosure adds memory without processors.
+      The slot limits describe the processor-bearing board, not all memory
+      positions across two rack enclosures.

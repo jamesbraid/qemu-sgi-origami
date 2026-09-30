@@ -1,0 +1,22 @@
+# An Origin 200 converted for a GIGAchannel cabinet and running in loopback:
+# the Crosstown board fitted in place of the XTalk jumper, one XIO cable from
+# its own XIO A to its own XIO B, and no cabinet.
+# Launch it with -M origin200,topology=origin200-gigachannel-loopback.
+configuration_version: 1
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip29.yaml
+  - layers/products/origin200-gigachannel-loopback.yaml
+module_instances:
+  - model: layers/modules/logic-carrier.yaml
+    prefix: base-
+    module_role: MASTER
+    parent: origin200-system
+    omit_buses: [craylink]
+    observed_hardware:
+      mode: projected
+      sources: ["108-0187-001 section pages 2-9 to 2-11 PDF pages 23-25, loopback test inventory", "boot-logs/dmesgd-ip27/dmesgd-8994.html SHA-256 bce07195c21b8750189c22adb5b68a525fc60ab8f113105b1765a59cc740060f"]
+      note: >-
+        Module population and placement are projected from the captured
+        single-module system; the loopback example adds only the Crosstown
+        board's record.

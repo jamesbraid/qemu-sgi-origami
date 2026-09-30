@@ -1,0 +1,29 @@
+# IP45 board identity and documented slot capacity.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip45
+  platform: ip35
+  requires: {architecture: sn1}
+  contract: {board_ip: IP45}
+  capacity:
+    cpu_slots_per_node: 4
+    dimm_slots_per_node: 4
+    memory_banks_per_node: 8
+    # One locational bank per fitted DIMM: the reviewed placement maps the
+    # guide's two populated DIMM slots straight onto two locational banks
+    # (docs/reviews/bedrock-fitted-bank-presence-contract-review-20260912.md),
+    # not the paired two-DIMMs-per-bank rule the Hub family's IP27/IP29
+    # boards use.
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [256]
+    provenance: vendor-document
+    sources: ["007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB", "007-4365-002 printed pages 10 to 12, Figure 1-5"]
+  memory_kits:
+    - id: kit-512-at-banks-2-3
+      dimms: 2
+      dimm_mib: 256
+      banks: [256, 256]
+      bank_positions: [2, 3]
+      provenance: derived
+      sources: ["007-4365-001 printed pages 9 to 11 and 75 to 76: matched-pair DIMM population rule and the example SPD records reported at DIMM 2 and DIMM 3, each a 256 MiB registered ECC DDR-200 module"]

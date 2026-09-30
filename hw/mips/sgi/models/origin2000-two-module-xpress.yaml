@@ -1,0 +1,13 @@
+# Two-module Origin 2000 reference composition. Resolve before validation or generation.
+configuration_version: 1
+layers:
+  - layers/architectures/sn0.yaml
+  - layers/assemblies/ip27.yaml
+  - layers/products/origin2000-two-module-xpress.yaml
+module_instances:
+  - model: layers/modules/origin2000-module.yaml
+    prefix: module0-
+    parent: two-module-system
+  - model: layers/modules/origin2000-module.yaml
+    prefix: module1-
+    parent: two-module-system

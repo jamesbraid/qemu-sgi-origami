@@ -1,0 +1,94 @@
+# Origin 200 product topology and default runtime population.
+layer_version: 1
+layer:
+  kind: product
+  id: origin200
+  requires:
+    assembly: ip29
+    module: logic-carrier
+  excluded_components:
+    - match: {kind: crossbar}
+      reason: The base Origin 200 connects Hub directly to Bridge and contains no physical Crossbow.
+      provenance: vendor-document
+      sources: ["007-3708-002 Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1], [2]]
+    provenance: vendor-document
+    sources: ["007-3708-002 Table 1-1 printed page 5 PDF page 31 and Figure 1-4 printed page 6 PDF page 32 mapping trusted"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    provenance: derived
+    sources: ["007-3709-002 printed pages 46, 48, and 53, establishes paired DIMMs and bank 0 in sockets 1-2"]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [cpu0]
+  memory_kits_per_node: [kit-64]
+  data:
+    machine:
+      name: Origin 200 (one-module form)
+      model_role: emulation-target
+      firmware_config:
+        machine_type: 1
+        flash_read_cycles: 15
+        flash_write_cycles: 4
+        provenance: derived
+        sources: ["docs/datasheets/firmware-structures.md boot-flash configuration-block field table and Origin 200 values", "docs/datasheets/address-map.md reviewed Origin 200 firmware and flash address carriers"]
+      emulation:
+        machine_name: origin200
+        display_description: SGI Origin 200 (IP29)
+        profile: base
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512, 256, 128, 64]
+        synthetic_identities:
+          - component: hub
+            serial: "0x0c0b0a090807"
+            reason: >-
+              Stable synthetic node identity for this selected emulated
+              installation, in the one shape the schema still carries
+              (synthetic_serials, the KLCONFIG-era per-kind base/stride
+              form, went with synthesized firmware; format 2 needs this
+              value the same explicit way Origin 2000 already authors
+              its own). The value itself is unchanged from before that
+              removal.
+          - component: bridge
+            serial: "0x060504030201"
+            reason: >-
+              Stable synthetic I/O board identity for this selected
+              emulated installation, restored in the schema's one
+              remaining shape; value unchanged from before synthetic_serials
+              was removed with synthesized firmware.
+          - component: ioc3
+            serial: "0x5e7000000001"
+            reason: >-
+              Stable synthetic IOC3 identity for this selected emulated
+              installation, restored in the schema's one remaining shape;
+              value unchanged from before synthetic_serials was removed
+              with synthesized firmware.
+      harness:
+        console: ioc3-serial-a
+        prom_dialogue: ip27-menu
+        default_cpu_model: R10000
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_firmware_asset: assets/firmware/6.5.30/ip27prom.payload.bin
+        default_topology: single-node
+        requires_per_node_flash: false
+        has_managed_boot_flash: false
+        has_synthesized_firmware_toggle: false
+        needs_debug_leds_off: true
+        supported_guests: [irix, linux, openbsd, gentoo]
+        install_media: [disk-image, netboot]
+        provenance: derived
+        sources: ["tools/origami_lib/prom.py: IOC3_CONSOLE and DEFAULT_FIRMWARE, the harness's own existing per-machine console and firmware defaults", "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/irix_network_suite.py:37: historical DEFAULT_MACHINE harness default", "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection", "tools/origami_lib/sash.py: the debug-leds=off machine option this harness already sets for Origin 200 and no other product", "QEMU commit bd935b711b0d71244c1e59fb1e18e7b73d8a3dfa (\"hw/mips/sgi/sn0: delete the node's synthesized-firmware hooks\") deletes the synthesized-firmware property from the SN0 machine class entirely; origin200-machine no longer has it under any value"]
+      notes: >-
+        This model covers the one-module Origin 200 and QEMU's base profile. The
+        Owner's Guide also documents a two-module form with three or four CPUs.
+        [Dual-module Origin 200](origin200-dual.md) records that form separately.
+        The node number occupies physical address bits 39:32 and a node owns 4 GB,
+        so every offset below is node-relative and a second node is a different
+        base rather than a different map.
+    evidence_policy: strict

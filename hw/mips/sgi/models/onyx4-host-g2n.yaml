@@ -1,0 +1,5 @@
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip53.yaml
+  - layers/products/onyx4-host-g2n.yaml

@@ -1,0 +1,81 @@
+# The Onyx2 rack's graphics-module end of one pipe: the Xtown board in a
+# compute-module XIO slot, and the graphics module holding the Ktown board
+# the Crosstown cable reaches (docs/datasheets/onyx2.md, Graphics module and
+# How a pipe reaches the compute module). A composition fits this layer
+# into the XIO connector the Xtown occupies, with adopt_roots so both roots
+# land there, after a layers/modules/kona-pipe.yaml instance fitted to the
+# same connector. The containment graph has no cable edge: the graphics
+# module and its pipe hang under the XIO connector because that
+# connector's link is the one the pipe answers on, and IRIX names the pipe
+# under the Xtown's slot (/hw/module/1/slot/io3/kona on the real rack).
+#
+# The Xtown and Ktown are link extenders with no widget identity a host can
+# read, so the pipe's XG is still the widget on the connector's link. The
+# Ktown's one-wire record joins the pipe's own chain after the geometry
+# board's: a composition binds the placeholder `pipe-one-wire` bus to that
+# pipe instance's one-wire bus.
+layer_version: 1
+layer:
+  kind: module
+  id: ir-graphics-module
+  requires:
+    assembly: ip27
+  data:
+    components:
+      - id: xtown
+        name: Xtown Crosstown XIO board
+        kind: board
+        hardware_kind: xtown
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board", "007-3439-002 printed page 73 PDF page 87: the Crosstown conversion board"]
+        notes: >-
+          Presents no board record: the real rack's board list has none,
+          and no capture or disassembly reads a widget identity from it
+          (docs/datasheets/onyx2.md, One-wire records).
+
+      - id: graphics-module
+        name: Onyx2 graphics module
+        kind: chassis
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 14 PDF page 38 and printed page 31 PDF page 55: two pipes per graphics module, Ktown connectors"]
+        notes: >-
+          Holds up to two pipes; this layer fits one. No capture shows the
+          graphics-module midplane's own board record.
+
+      - id: ktown
+        name: Ktown board
+        kind: board
+        hardware_kind: ktown
+        parent: graphics-module
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 14 PDF page 38 and printed page 31 PDF page 55: the Ktown board between the two board sets"]
+
+      - id: ktown-identity
+        name: Ktown one-wire identity
+        kind: identity
+        parent: ktown
+        provenance: datasheet
+        identity:
+          part: "030-1067-001"
+        sources: ["docs/datasheets/onyx2.md One-wire records: the true-wombat rack capture lists KTOWN 030-1067-001 rev F under the pipe's slot"]
+
+    connections:
+      - component: xtown
+        bus: upstream
+        role: endpoint
+        provenance: vendor-document
+        sources: ["007-3457-005 printed page 48 PDF page 72: each pipe needs its own crosstown cable from a crosstown XIO board"]
+        notes: >-
+          A placeholder the composition binds to the XIO connector's
+          XIO link. The Xtown extends that link over the cable to the
+          pipe; it answers no widget of its own, so the compiler reads the
+          pipe's XG, not this board, as the link's widget.
+      - component: ktown-identity
+        bus: pipe-one-wire
+        role: endpoint
+        provenance: datasheet
+        sources: ["docs/datasheets/onyx2.md One-wire records"]
+        notes: >-
+          A placeholder the composition binds to its pipe's own one-wire
+          bus. The real rack's IRIX lists this record beside the geometry
+          board's at the pipe's path.

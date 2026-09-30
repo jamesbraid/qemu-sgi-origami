@@ -1,0 +1,93 @@
+# Origin 3000 I-brick: an XBridge, host port A into the C-brick, IO7 on bus 1.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; every fact above has moved to that direct form (or, where the
+# closure record's I-brick I/O paragraph was its only source, dropped sources: in
+# favour of an honest provenance). The one key left here backs bus io7-bus and its
+# four connections only, whose strict evidence policy
+# (tools/origami_lib/model_validation.py) requires non-empty sources for every one
+# regardless of provenance -- unlike a component, which may carry none. It cites
+# only the internal closure research note and a board part number, so the checker
+# reports it under "facts whose only sources are internal documents" rather than
+# resolving it; replacing it with an independently obtainable citation is follow-up
+# work on the evidence itself, not a citation-form change.
+sources:
+  sn-family-closure-i-brick-io7: "docs/research/sn-family-closure-20260913.md, same paragraph: three owners' IRIX inventories print the same base I/O bus at /hw/module/<c>/Ibrick/xtalk/15: QLogic 2200 Fibre Channel 1077:2200 at PCI slot 1, IOC3 10a9:0003 at 4, Lucent USB 11c1:5802 at 5, Texas Instruments TSB12LV22 IEEE 1394 OHCI 104c:8009 at 6; I-brick board 030-1557-007 (revisions A, D, F seen); Fibre Channel also at xtalk/14/pci/1"
+layer:
+  kind: module
+  id: i-brick
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: brick
+        name: I-brick
+        kind: chassis
+        provenance: vendor-document
+        sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+      - id: xbridge
+        name: XBridge
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: vendor-document
+        parent: brick
+        sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+        notes: The I-brick's own XBridge revision line is not established by any source read for this record.
+      - id: xbridge-crossbar
+        name: XBridge crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        provenance: vendor-document
+        parent: xbridge
+        sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+      - id: fibre-channel
+        name: QLogic 2200 Fibre Channel
+        kind: storage-hba
+        hardware_kind: qlogic-isp2200
+        identity: {pci_vendor: "0x1077", pci_device: "0x2200"}
+        provenance: observed-hardware
+        parent: brick
+      - id: ioc3
+        name: IOC3
+        kind: io-controller
+        hardware_kind: ioc3
+        identity: {pci_vendor: "0x10a9", pci_device: "0x0003"}
+        provenance: observed-hardware
+        parent: brick
+      - id: usb
+        name: USB controller (OHCI)
+        kind: io-controller
+        hardware_kind: lucent-ohci
+        identity: {pci_vendor: "0x11c1", pci_device: "0x5802"}
+        provenance: observed-hardware
+        parent: brick
+      - id: firewire
+        name: TI TSB12LV22 IEEE 1394 OHCI
+        kind: io-controller
+        hardware_kind: ti-tsb12lv22
+        identity: {pci_vendor: "0x104c", pci_device: "0x8009"}
+        provenance: observed-hardware
+        parent: brick
+        notes: A CD-ROM sits behind this controller's SBP-2 path on a real I-brick; not modeled as a separate component here.
+    buses:
+      - {id: io7-bus, name: "IO7, bus 1 (head F)", kind: pci, master: xbridge, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
+      - id: host-port-a-attach
+        name: Host port A XIO attach
+        kind: xio
+        master: bedrock
+        provenance: vendor-document
+        sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]
+        notes: >-
+          "bedrock" names the C-brick's own Bedrock component, merged ahead of
+          this module instance; deliberately unprefixed so this bus reaches
+          outside the I-brick. Host port A, one of the two the closure record
+          establishes; which port a boot I-brick actually uses is unknown.
+    connections:
+      - {component: fibre-channel, bus: io7-bus, role: endpoint, pci_device: 1, provenance: observed-hardware, sources: [sn-family-closure-i-brick-io7]}
+      - {component: ioc3, bus: io7-bus, role: endpoint, pci_device: 4, provenance: observed-hardware, sources: [sn-family-closure-i-brick-io7]}
+      - {component: usb, bus: io7-bus, role: endpoint, pci_device: 5, provenance: observed-hardware, sources: [sn-family-closure-i-brick-io7]}
+      - {component: firewire, bus: io7-bus, role: endpoint, pci_device: 6, provenance: observed-hardware, sources: [sn-family-closure-i-brick-io7]}
+      - {component: bedrock, bus: host-port-a-attach, role: master, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"]}
+      - {component: xbridge-crossbar, bus: host-port-a-attach, role: bridge-upstream, widget: 10, provenance: vendor-document, sources: ["108-0240-002 p.2-27..2-29: host ports A = 10 (0xA) and B = 11 (0xB); IO7 on port F bus 1, bus 2 on port E; the I-brick XBridge revision line and which host port a boot I-brick uses: unknown"], notes: "Host port A, widget 0xA (10 decimal)."}

@@ -1,0 +1,120 @@
+# Shared SN0 address architecture. Product and board facts do not belong here.
+layer_version: 1
+layer:
+  kind: architecture
+  id: sn0
+  contract: {generation: SN0, architecture_ip: IP27, kernel_ip: IP27}
+  data:
+    model_version: 1
+    space_selection:
+      mechanism: processor-attribute
+      bits: "58:57"
+      count: 4
+      provenance: public-header
+      sources: ["linux:arch/mips/include/asm/mach-ip27/spaces.h, public GPL header, names the SN0 uncached-attribute mechanism and uncached memory selector"]
+      notes: >-
+        Two bits the processor drives beside the address, not part of it. All four
+        spaces decode to the same 40-bit physical address and the attribute is what
+        tells them apart. Emulator carrier addresses are target implementation
+        metadata and do not belong in this shared hardware layer.
+    processors:
+      - part: r10000
+        variants:
+          - clock_mhz: 180
+            cache_mib: 1
+            processor_identification: "0x0926"
+            fpu_identification: "0x0900"
+            cache_clock_mhz: 90
+            notes: >-
+              Identity registers and cache clock corroborated as the same
+              R10000/1 MiB assembly Origin 200 already catalogues (a real
+              Origin 200 hinv reports "Rev 2.6"; boot-logs records this as
+              the same variant on both products).
+            reset_mode:
+              kseg0_cache_algorithm: cacheable-coherent-exclusive-on-write
+              processor_device_number: 0
+              coherent_request_target: external-agent
+              processor_eliminate_requests: false
+              maximum_outstanding_processor_requests: 4
+              system_clock_divisor: 2
+              secondary_cache_block_words: 32
+              secondary_cache_error_correction: retry-access-through-corrector
+              memory_endianness: big
+              secondary_cache_size_kib: 1024
+              secondary_cache_clock_divisor: 1.5
+              secondary_cache_clock_tap: 9
+              open_drain_system_interface: false
+              cache_test_mode: false
+          - clock_mhz: 195
+            cache_mib: 4
+            notes: >-
+              Reset mode cleared by the independent firmware-configuration
+              review (candidate 7a0508cb6f18b5d8441b8e0dca30f8e386d503fd,
+              docs/reviews/origin2000-firmware-configuration-review-20260905.md)
+              recomputed from IRIX 6.5.7 configuration data and reconciled
+              with the public processor manual and SGI service procedure;
+              docs/datasheets/origin2000-cache-configuration.md records the
+              clearance. This is not the product's selected default (that
+              is 180 MHz/1 MiB); no product here authors it. Identity
+              registers and cache clock for this SKU are not established
+              by any held source and are absent here.
+            reset_mode:
+              kseg0_cache_algorithm: cacheable-coherent-exclusive-on-write
+              processor_device_number: 0
+              coherent_request_target: external-agent
+              processor_eliminate_requests: false
+              maximum_outstanding_processor_requests: 4
+              system_clock_divisor: 2
+              secondary_cache_block_words: 32
+              secondary_cache_error_correction: retry-access-through-corrector
+              memory_endianness: big
+              secondary_cache_size_kib: 4096
+              secondary_cache_clock_divisor: 1.5
+              secondary_cache_clock_tap: 9
+              open_drain_system_interface: false
+              cache_test_mode: false
+        provenance: vendor-document
+        sources: ["108-0175-001 Figures 3-5 printed pages 4-8 PDF pages 18-22 mapping trusted", "sgi-hw/origin-onyx2-hardware-quick-reference-booklet.pdf printed page 93 documents the 180 MHz R10000 and 1 MiB cache assembly"]
+    address_spaces:
+      - id: memory
+        name: uncached memory
+        provenance: public-header
+        sources: ["linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows", "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation", "108-0170-001 address-entry shortcuts for the SN0 spaces"]
+        selector: 3
+        unmapped_base: "0x9600_0000_0000_0000"
+        node_stride: "0x1_0000_0000"
+        notes: Placed at carrier window zero so a plain physical address still means memory.
+
+      - id: hub-special
+        name: Hub special
+        provenance: public-header
+        sources: ["linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows", "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation", "108-0170-001 address-entry shortcuts for the SN0 spaces"]
+        selector: 0
+        unmapped_base: "0x9000_0000_0000_0000"
+        node_stride: "0x1_0000_0000"
+        notes: Boot flash window, the node's own uncached memory alias, directory and ECC access.
+
+      - id: io
+        name: I/O
+        provenance: public-header
+        sources: ["linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows", "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation", "108-0170-001 address-entry shortcuts for the SN0 spaces"]
+        selector: 1
+        unmapped_base: "0x9200_0000_0000_0000"
+        node_stride: "0x1_0000_0000"
+        notes: >-
+          Sixteen small windows of 16 MB fill offsets 0x0000_0000 to 0x0fff_ffff,
+          widget N at N times 16 MB. Seven big windows of 512 MB start at
+          0x2000_0000. Small window 0 and big window 6 are two views of the same
+          widget, and both decode: Linux reads widget 0's identification register
+          through the small window by its raw address, OpenBSD reaches the same
+          device through the big window, so both paths have to work. See
+          docs/datasheets/address-map.md for the small-window-0 reversal history.
+
+      - id: memory-special
+        name: memory special
+        provenance: public-header
+        sources: ["linux:arch/mips/include/asm/mach-ip27/spaces.h, arch/mips/include/asm/sn/addrs.h, and arch/mips/include/asm/sn/sn0/addrs.h, public GPL headers, define the SN0 space bases, node stride, and XIO windows", "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/include/mnode.h and sys/arch/sgi/xbow/hub.h, public ISC sources, independently define node and widget address formation", "108-0170-001 address-entry shortcuts for the SN0 spaces"]
+        selector: 2
+        unmapped_base: "0x9400_0000_0000_0000"
+        node_stride: "0x1_0000_0000"
+        notes: Fetch-and-op and other special memory operations. Not on the first-boot path.

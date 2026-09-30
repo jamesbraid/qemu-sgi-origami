@@ -1,0 +1,1 @@
+'Origin 2000' is model_role 'reference', not an emulation target; format 2 carries no facts for a configuration nobody has committed to emulating

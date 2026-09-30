@@ -1,0 +1,77 @@
+# Two-module Origin 2000 reference: sixteen processors over an Xpress pair.
+layer_version: 1
+# The catalogue citation checker (tools/check-citations) resolves a sources: entry
+# directly against docs/library/docs.tsv or docs/library/techpubs.tsv, or against a
+# public commit; the one component fact above has moved to that direct form (by
+# dropping sources: in favour of an honest provenance, the closure record being its
+# only source). The key left here backs topology, population, and fitted_memory
+# only, whose strict evidence policy (tools/origami_lib/model_validation.py)
+# requires non-empty sources regardless of provenance -- unlike a component, which
+# may carry none. It cites only the internal closure research note's family table,
+# so the checker reports it under "facts whose only sources are internal
+# documents" rather than resolving it; replacing it with an independently
+# obtainable citation is follow-up work on the evidence itself, not a
+# citation-form change. The other four keys the table previously carried backed no
+# fact in this file -- their content already lives in machine.notes and the
+# open_questions candidates below -- and are dropped with the rest of the table.
+sources:
+  sn-family-closure-family-table: "docs/research/sn-family-closure-20260913.md family table, Origin 2000 row: two modules per rack, Link 2 Xpress, Xpress links only at 16 or 32 CPUs"
+layer:
+  kind: product
+  id: origin2000-two-module-xpress
+  requires: {assembly: ip27}
+  topology:
+    min_nodes: 8
+    max_nodes: 8
+    provenance: vendor-document
+    sources: [sn-family-closure-family-table]
+  population:
+    nodes: 8
+    cpus_per_node: [2, 2, 2, 2, 2, 2, 2, 2]
+    fitted_memory:
+      status: unknown
+      reason: >-
+        The closure record establishes the module's DIMM slots and bank sizes but
+        does not state an installed memory population for a two-module reference
+        pairing; no fitted-memory value is asserted here.
+      provenance: derived
+      sources: [sn-family-closure-family-table]
+    provenance: vendor-document
+    sources: [sn-family-closure-family-table]
+  cpu_selection:
+    default: {clock_mhz: 180, cache_mib: 1}
+    slots: [node-board-1-cpu-a, node-board-1-cpu-b, node-board-2-cpu-a, node-board-2-cpu-b,
+      node-board-3-cpu-a, node-board-3-cpu-b, node-board-4-cpu-a, node-board-4-cpu-b]
+  data:
+    machine:
+      name: Two-module Origin 2000
+      model_role: reference
+      notes: >-
+        Two four-node Origin 2000 modules, each the reused four-node module
+        template, cross-cabled on the Xpress link (Link 2): the closure record's
+        cabling paragraph establishes that the two inter-module cables must cross
+        (module 0 Router 1 to module 1 Router 2, module 0 Router 2 to module 1
+        Router 1) and names the external port class (1, 2 or 3, top to bottom) but
+        not which numbered port carries which cable for a specific pairing, and
+        sixteen processors is stated only as the population at which Xpress links
+        apply, not as a wiring diagram this record can redraw. Each module's three
+        external Router connectors therefore stay the reused template's opaque
+        connector components; no cross-module bus connects two module instances
+        directly, and the crossing pattern above is documentary, not a modeled
+        graph edge. Module-major node numbering here (module0- before module1-)
+        follows the closure record's sixteen-processor NASID witness, a real
+        two-module Onyx2 in which module 1 held NASIDs 0-3 and module 2 held NASIDs
+        4-7; NASID itself is a firmware-discovery value this static composition
+        does not assign. The Router revision each module's template selects
+        (hardware_revision 1) is a selected supported value, not a captured raw
+        register value; every posted real-machine inventory reports IRIX's
+        "Revision 2" string, and the closure record's residual-unknowns table
+        records that no capture reads the raw register behind it. This
+        configuration never compiles: two-module topologies are reference-only
+        until a QEMU routed builder consumes more than one physical module.
+    evidence_policy: strict
+    components:
+      - id: two-module-system
+        name: Two-module Origin 2000 system
+        kind: chassis
+        provenance: derived
