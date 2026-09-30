@@ -770,6 +770,8 @@ static const Corruption corruptions[] = {
     BAD(color_material_face, 0, "colour material face"),
     BAD(color_material_mode, SGI_GL_SHININESS, "colour material parameter"),
     BAD(point_size, 0, "point size"),
+    BAD(point_size, 0x7f800000 /* infinity */, "point size"),
+    BAD(line_width, 0x7f800000 /* infinity */, "line width"),
     BAD(line_width, 0xbf800000 /* -1 */, "line width"),
     BAD(line_width, 0x7fc00000 /* NaN */, "line width"),
     BAD(line_stipple_repeat, 0, "line stipple"),

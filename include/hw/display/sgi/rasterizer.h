@@ -229,6 +229,9 @@ typedef struct SGIRasterTarget {
 /*
  * Rasterize a draw into the target, under the draw's state and the head's
  * rules. A rule set sgi_raster_rules_supported() refuses draws nothing.
+ * Aliased dimensions round half up to at least one; zero defaults to one.
+ * Rounded widths above INT32_MAX exceed the internal arithmetic domain, not
+ * an established hardware maximum. Stipple and smoothing are omitted.
  */
 void sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
                    const SGIGLDraw *d);
