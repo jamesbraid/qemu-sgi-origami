@@ -1539,6 +1539,108 @@ static void test_sharp_flash(gconstpointer data)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
+static void sharp_assert_read_view(QTestState *qts, bool enabled)
+{
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    g_autofree char *expected = g_strdup_printf(
+        ", %s): sgi-bridge.flash-read", enabled ? "romd" : "i/o");
+
+    g_assert_nonnull(strstr(mtree, expected));
+}
+
+static void test_sharp_flash_view_transitions(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sharp-view-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
+    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
+    g_autofree char *image = g_malloc(1 * MiB);
+    QTestState *qts;
+
+    memset(image, 0xff, 1 * MiB);
+    image[64 * KiB] = 0xab;
+    image[64 * KiB + 1] = 0xcd;
+    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
+    qts = octane_start_sharp(path, marker, 0, 0);
+    sharp_assert_read_view(qts, true);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0x90), ==, MEMTX_ERROR);
+    sharp_assert_read_view(qts, true);
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_writew(qts, FLASH, 0x90);
+    sharp_assert_read_view(qts, false);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x00b066a8);
+    qtest_writew(qts, FLASH, 0x70);
+    sharp_assert_read_view(qts, false);
+    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x80);
+    qtest_writew(qts, FLASH, 0x71);
+    sharp_assert_read_view(qts, false);
+    g_assert_cmphex(qtest_readl(qts, FLASH + 2), ==, 0x00800086);
+    qtest_writew(qts, FLASH, 0xff);
+    sharp_assert_read_view(qts, true);
+    qtest_writew(qts, FLASH + 0x20, 0x40);
+    qtest_writew(qts, FLASH + 0x20, 0x1234);
+    sharp_assert_read_view(qts, false);
+    qtest_clock_step(qts, 8000);
+    sharp_assert_read_view(qts, false);
+    qtest_writew(qts, FLASH, 0xff);
+    sharp_assert_read_view(qts, true);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1234);
+    qtest_writew(qts, FLASH + 64 * KiB, 0x20);
+    qtest_writew(qts, FLASH + 64 * KiB, 0xd0);
+    sharp_assert_read_view(qts, false);
+    qtest_writew(qts, FLASH, 0xb0);
+    qtest_writew(qts, FLASH, 0xff);
+    sharp_assert_read_view(qts, true);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 64 * KiB), ==, 0xabcd);
+    qtest_writew(qts, FLASH, 0xd0);
+    sharp_assert_read_view(qts, false);
+    qtest_clock_step(qts, 700000000);
+    qtest_writew(qts, FLASH, 0xff);
+    sharp_assert_read_view(qts, true);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 64 * KiB), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1234);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_sharp_flash_unrealize_access(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sharp-unrealize-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
+    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
+    g_autofree char *image = g_malloc(1 * MiB);
+    QTestState *qts;
+    MemTxResult setup, data;
+    uint16_t value;
+
+    memset(image, 0xff, 1 * MiB);
+    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
+    qts = octane_start_sharp(path, marker, 0, 0);
+    sharp_assert_read_view(qts, true);
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
+        "'property':'realized','value':false}}");
+    sharp_assert_read_view(qts, false);
+    setup = qtest_writew_tx(qts, FLASH + 0x20, 0x40);
+    data = qtest_writew_tx(qts, FLASH + 0x20, 0x1234);
+    g_assert_cmpuint(setup, ==, MEMTX_ERROR);
+    g_assert_cmpuint(data, ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH, &value), ==, MEMTX_ERROR);
+    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 0);
+    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 1);
+    qtest_clock_step(qts, 700000000);
+    sharp_assert_read_view(qts, false);
+    g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0xff), ==, MEMTX_ERROR);
+    g_assert_cmpuint(qtest_readw_tx(qts, FLASH, &value), ==, MEMTX_ERROR);
+    qtest_quit(qts);
+    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_sharp_flash_initial_rp(void)
 {
     g_autofree char *dir = g_dir_make_tmp("sharp-initial-rp-XXXXXX", NULL);
@@ -1557,13 +1659,17 @@ static void test_sharp_flash_initial_rp(void)
         marker, path);
     /* Board power-up does not synthesize an RP transition at time zero. */
     g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xabab);
+    sharp_assert_read_view(qts, true);
     qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 0);
     g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xffff);
+    sharp_assert_read_view(qts, false);
     qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 1);
     qtest_clock_step(qts, 399);
+    sharp_assert_read_view(qts, false);
     g_assert_cmpuint(qtest_readw_tx(qts, FLASH, &value), ==, MEMTX_ERROR);
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xabab);
+    sharp_assert_read_view(qts, true);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
@@ -1641,6 +1747,165 @@ static void test_sharp_flash_execute(gconstpointer data)
         }
     }
     qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void sharp_cpu_wait_result(QTestState *qts, unsigned sequence,
+                                  uint32_t expected)
+{
+    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    uint32_t result, observed;
+
+    qtest_writel(qts, RAM + 0x5000, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    do {
+        observed = qtest_readl(qts, RAM + 0x5004);
+        result = qtest_readl(qts, RAM + 0x5000);
+        if (observed == sequence && result == expected) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    g_assert_cmphex(result, ==, expected);
+    g_assert_cmpuint(observed, ==, sequence);
+}
+
+static void sharp_cpu_refetch(QTestState *qts, bool repeat, unsigned sequence,
+                              uint32_t expected)
+{
+    qtest_writel(qts, RAM + 0x5020, repeat ? 0xbfd10000 : 0xbfc10000);
+    /* Jump to the RAM return code. */
+    qtest_writel(qts, RAM + 0x4010, 0x08001010);
+    sharp_cpu_wait_result(qts, sequence, expected);
+}
+
+static unsigned sharp_assert_cached_execution(QTestState *qts)
+{
+    g_autofree char *jit = qtest_hmp(qts, "info jit");
+    const char *size_line = strstr(jit, "TB avg target size");
+    const char *hash_line = strstr(jit, "TB hash buckets");
+    const char *flush_line = strstr(jit, "TB flush count");
+    size_t average, maximum, used, total;
+    unsigned flushes;
+
+    g_assert_nonnull(size_line);
+    g_assert_nonnull(hash_line);
+    g_assert_nonnull(flush_line);
+    g_assert_cmpint(sscanf(size_line, "TB avg target size %zu max=%zu",
+                          &average, &maximum), ==, 2);
+    g_assert_cmpint(sscanf(hash_line, "TB hash buckets %zu/%zu",
+                          &used, &total), ==, 2);
+    g_assert_cmpint(sscanf(flush_line, "TB flush count %u", &flushes), ==, 1);
+    g_test_message("array fetch: max TB %zu bytes, buckets %zu/%zu, flushes %u",
+                   maximum, used, total, flushes);
+    /* The RAM loop, return code and reset jump are at most 16 bytes. */
+    g_assert_cmpuint(maximum, >, 16);
+    g_assert_cmpuint(used, >, 0);
+    return flushes;
+}
+
+static void sharp_cpu_complete_flash(QTestState *qts, unsigned timeout)
+{
+    int64_t started = g_get_monotonic_time();
+    int64_t deadline = started + timeout * G_TIME_SPAN_SECOND;
+    uint64_t count = qtest_readq(qts, HEART + 0x20000);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    while (qtest_readw(qts, FLASH) != 0x80) {
+        if (g_get_monotonic_time() >= deadline) {
+            g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+            g_test_message("flash wait timed out: HEART count %" PRIu64
+                           " -> %" PRIu64, count,
+                           qtest_readq(qts, HEART + 0x20000));
+            g_test_message("%s", registers);
+            g_assert_not_reached();
+        }
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    g_test_message("flash wait: HEART advanced %" PRIu64
+                   " counts in %" PRIi64 " us",
+                   qtest_readq(qts, HEART + 0x20000) - count,
+                   g_get_monotonic_time() - started);
+    qtest_writew(qts, FLASH, 0xff);
+}
+
+static void test_sharp_flash_cached_execute(gconstpointer data)
+{
+    bool icount = GPOINTER_TO_UINT(data);
+    static const uint32_t code[] = {
+        0x400a6000, 0x354a0080, 0x408a6000, /* Status.KX = 1 */
+        0, 0, 0, 0,
+        0x3c089600, 0x0008403c,
+        0x3c092000, 0x35295000, 0x01094025, /* t0 = RAM + 0x5000, XKPHYS */
+        0x340a1357,                         /* t2 = result */
+        0x3c0c1000, 0x358cfffd, 0xad0cf010, /* Restore the RAM loop branch. */
+        0x8d0d0004, 0x25ad0001,             /* t5 = next result sequence */
+        0x6509f008, 0x01200008, 0,          /* Return to the RAM loop. */
+    };
+    g_autofree char *dir = g_dir_make_tmp("sharp-cached-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
+    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
+    g_autofree char *image = g_malloc(1 * MiB);
+    QTestState *qts;
+    unsigned flushes;
+
+    memset(image, 0xff, 1 * MiB);
+    stl_be_p(image, 0x3c0bbfc1);
+    stl_be_p(image + 4, 0x01600008);
+    stl_be_p(image + 8, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+        stl_be_p(image + 64 * KiB + 4 * i, code[i]);
+        stl_be_p(image + 0x380 + 4 * i, i == 12 ? 0x340abeef : code[i]);
+    }
+    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
+    qts = qtest_initf(
+        "-M %s,flash-profile=sharp-lh28f800su,flash-select=0,"
+        "flash-strap=0,flash-drive=flash0,flash-marker=%s "
+        "-m %uM -cpu %s -drive if=none,id=flash0,file=%s,format=raw "
+        "-accel tcg,thread=single -S %s", icount ? "octane2" : "octane",
+        marker, icount ? 256 : 128,
+        icount ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
+                 "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
+                 "r12000-scache-block-words=32" : "R10000", path,
+        icount ? "-icount shift=3,align=off,sleep=off -rtc clock=host" : "");
+    /* Result data has no translated code on its page. */
+    qtest_writel(qts, RAM + 0x5004, 0);
+    qtest_writel(qts, RAM + 0x4008, 0xad0a0000);
+    qtest_writel(qts, RAM + 0x400c, 0xad0d0004);
+    qtest_writel(qts, RAM + 0x4010, 0x1000fffd);
+    qtest_writel(qts, RAM + 0x4014, 0);
+    qtest_writel(qts, RAM + 0x4040, 0x8d0b0020);
+    qtest_writel(qts, RAM + 0x4044, 0x01600008);
+    qtest_writel(qts, RAM + 0x4048, 0);
+    sharp_cpu_wait_result(qts, 1, 0x1357);
+    sharp_cpu_refetch(qts, true, 2, 0x1357);
+    flushes = sharp_assert_cached_execution(qts);
+
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_writew(qts, FLASH + 64 * KiB + 50, 0x40);
+    qtest_writew(qts, FLASH + 64 * KiB + 50, 0x0357);
+    sharp_cpu_complete_flash(qts, 5);
+    g_assert_cmphex(qtest_readl(qts, FLASH + 64 * KiB + 48), ==, 0x340a0357);
+    sharp_cpu_refetch(qts, false, 3, 0x0357);
+    sharp_cpu_refetch(qts, true, 4, 0x0357);
+    g_assert_cmpuint(sharp_assert_cached_execution(qts), ==, flushes);
+
+    qtest_writew(qts, FLASH + 1 * MiB + 64 * KiB, 0x20);
+    qtest_writew(qts, FLASH + 1 * MiB + 64 * KiB, 0xd0);
+    sharp_cpu_complete_flash(qts, 30);
+    g_assert_cmphex(qtest_readl(qts, FLASH + 64 * KiB), ==, UINT32_MAX);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x3c0bbfc1);
+    /* Erased instructions trap to the unchanged block-zero handler. */
+    sharp_cpu_refetch(qts, false, 5, 0xbeef);
+    sharp_cpu_refetch(qts, true, 6, 0xbeef);
+    g_assert_cmpuint(sharp_assert_cached_execution(qts), ==, flushes);
+    qtest_quit(qts);
+    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -1913,6 +2178,7 @@ static void test_sharp_flash_backend_error(gconstpointer data)
             g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0);
             qtest_writew(qts, FLASH, 0xff);
             g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, old);
+            sharp_assert_read_view(qts, false);
             g_assert_cmpuint(qtest_writew_tx(qts, FLASH, 0x40), ==,
                              MEMTX_ERROR);
         }
@@ -1920,6 +2186,7 @@ static void test_sharp_flash_backend_error(gconstpointer data)
             qtest_qmp_assert_success(qts,
                 "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
                 "'property':'realized','value':false}}");
+            sharp_assert_read_view(qts, false);
         }
         qtest_set_expected_status(qts, EXIT_FAILURE);
         qtest_qmp_assert_success(qts, "{'execute':'quit'}");
@@ -2084,6 +2351,7 @@ static void test_sharp_flash_shutdown_pending(gconstpointer data)
             "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
             "'property':'realized','value':false}}");
         qtest_clock_step(qts, 700000000);
+        sharp_assert_read_view(qts, false);
     }
     qtest_quit(qts);
     g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
@@ -3221,11 +3489,19 @@ int main(int argc, char **argv)
                         test_sharp_flash);
     qtest_add_data_func("/octane/sharp-select1-strap1", GUINT_TO_POINTER(3),
                         test_sharp_flash);
+    qtest_add_func("/octane/sharp-view-transitions",
+                   test_sharp_flash_view_transitions);
+    qtest_add_func("/octane/sharp-unrealize-access",
+                   test_sharp_flash_unrealize_access);
     qtest_add_func("/octane/sharp-initial-rp", test_sharp_flash_initial_rp);
     qtest_add_data_func("/octane/sharp-execute", GUINT_TO_POINTER(0),
                         test_sharp_flash_execute);
     qtest_add_data_func("/octane2/sharp-execute-icount", GUINT_TO_POINTER(1),
                         test_sharp_flash_execute);
+    qtest_add_data_func("/octane/sharp-execute-cached", GUINT_TO_POINTER(0),
+                        test_sharp_flash_cached_execute);
+    qtest_add_data_func("/octane2/sharp-execute-repeat-cached",
+                        GUINT_TO_POINTER(1), test_sharp_flash_cached_execute);
     qtest_add_func("/octane/sharp-persistent-migration-rejected",
                    test_sharp_flash_migration_rejected);
     qtest_add_func("/octane/sharp-persistent-restore-rejected",

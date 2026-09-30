@@ -318,6 +318,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = NULL;
     MemoryRegion *alternate_flash = NULL;
+    DeviceState *flash_chip = NULL;
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
     MemoryRegion *short_view = g_new0(MemoryRegion, 1);
@@ -373,7 +374,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 0), 1);
         qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 1), 1);
         qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 2), 1);
-        object_unref(OBJECT(chip));
+        flash_chip = chip;
     } else {
         if (strcmp(s->flash_profile, "raw") || s->flash_drive ||
             s->flash_marker || s->flash_select != UINT64_MAX ||
@@ -520,9 +521,20 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
     }
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
-    if (!sharp_flash &&
-        !sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge), flash_image,
-                                            OCTANE_FLASH_SIZE, &error_fatal)) {
+    if (sharp_flash) {
+        if (!sgi_bridge_install_flash_device_read_view(
+                SGI_BRIDGE(bridge), firmware, &error_fatal)) {
+            return;
+        }
+        qdev_connect_gpio_out_named(flash_chip, "array-read", 0,
+            qdev_get_gpio_in_named(bridge, "flash-array-read", 0));
+        /* Re-drive the established level after wiring the derived read view. */
+        qemu_set_irq(qdev_get_gpio_in_named(flash_chip, "pins", 2), 1);
+        object_unref(OBJECT(flash_chip));
+    } else if (!sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge),
+                                                  flash_image,
+                                                  OCTANE_FLASH_SIZE,
+                                                  &error_fatal)) {
         return;
     }
 

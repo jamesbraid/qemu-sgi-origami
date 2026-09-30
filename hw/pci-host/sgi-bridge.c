@@ -1584,11 +1584,22 @@ static MemTxResult sgi_bridge_flash_view_write(void *opaque, hwaddr addr,
 {
     SGIBridgeState *s = opaque;
 
-    return memory_region_dispatch_write(&s->flash_window, addr, value,
-                                        size_memop(size) | MO_BE, attrs);
+    return sgi_bridge_flash_write(s, addr + s->flash_read_view_offset, value,
+                                  size, attrs);
+}
+
+static MemTxResult sgi_bridge_flash_view_read(void *opaque, hwaddr addr,
+                                              uint64_t *value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
+
+    return sgi_bridge_flash_read(s, addr + s->flash_read_view_offset, value,
+                                 size, attrs);
 }
 
 static const MemoryRegionOps sgi_bridge_flash_view_ops = {
+    .read_with_attrs = sgi_bridge_flash_view_read,
     .write_with_attrs = sgi_bridge_flash_view_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
@@ -1623,25 +1634,57 @@ static const MemoryRegionOps sgi_bridge_flash_boundary_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
-                                        const uint8_t *image, size_t size,
-                                        Error **errp)
+static void sgi_bridge_flash_array_read(void *opaque, int n, int level)
+{
+    SGIBridgeState *s = opaque;
+    MemoryRegion *part = s->flash_read_source;
+    uint64_t size, view_size;
+    uint8_t *source, *target;
+
+    if (!part) {
+        return;
+    }
+    memory_region_rom_device_set_romd(&s->flash_read_view, false);
+    if (!level) {
+        return;
+    }
+    size = memory_region_size(part);
+    view_size = memory_region_size(&s->flash_read_view);
+    source = memory_region_get_ram_ptr(part);
+    target = memory_region_get_ram_ptr(&s->flash_read_view);
+    for (uint64_t offset = 0; offset < view_size; offset += size) {
+        memcpy(target + offset, source, MIN(size, view_size - offset));
+    }
+    memory_region_flush_rom_device(&s->flash_read_view, 0, view_size);
+    memory_region_rom_device_set_romd(&s->flash_read_view, true);
+}
+
+static bool sgi_bridge_install_flash_view(SGIBridgeState *s,
+                                          MemoryRegion *part,
+                                          const uint8_t *image,
+                                          Error **errp)
 {
     size_t view_size = BRIDGE_FLASH_SELECT_SIZE - 8;
-    hwaddr view_offset = s->flash_select ? BRIDGE_FLASH_SELECT_SIZE : 0;
+    bool select1 = part == s->flash_select1;
 
-    if (size != BRIDGE_FLASH_SELECT_SIZE || !s->flash) {
-        error_setg(errp, "flash read view requires a 2 MB first-select part");
-        return false;
-    }
+    s->flash_read_view_offset = (select1 ^ s->flash_select) ?
+                                BRIDGE_FLASH_SELECT_SIZE : 0;
     if (!memory_region_init_rom_device(&s->flash_read_view, OBJECT(s),
                                        &sgi_bridge_flash_view_ops, s,
                                        "sgi-bridge.flash-read", view_size,
                                        errp)) {
         return false;
     }
-    memcpy(memory_region_get_ram_ptr(&s->flash_read_view), image, view_size);
-    memory_region_add_subregion(&s->flash_window, view_offset,
+    memory_region_rom_device_set_romd(&s->flash_read_view, false);
+    if (image) {
+        memcpy(memory_region_get_ram_ptr(&s->flash_read_view), image,
+               view_size);
+        memory_region_flush_rom_device(&s->flash_read_view, 0, view_size);
+        memory_region_rom_device_set_romd(&s->flash_read_view, true);
+    } else {
+        s->flash_read_source = part;
+    }
+    memory_region_add_subregion(&s->flash_window, s->flash_read_view_offset,
                                 &s->flash_read_view);
     /* Keep wide reads crossing the selects out of the fast array view. */
     memory_region_init_io(&s->flash_boundary, OBJECT(s),
@@ -1650,6 +1693,29 @@ bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
     memory_region_add_subregion_overlap(&s->flash_window, view_size,
                                         &s->flash_boundary, 1);
     return true;
+}
+
+bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
+                                        const uint8_t *image, size_t size,
+                                        Error **errp)
+{
+    if (size != BRIDGE_FLASH_SELECT_SIZE || !s->flash) {
+        error_setg(errp, "flash read view requires a 2 MB first-select part");
+        return false;
+    }
+    return sgi_bridge_install_flash_view(s, s->flash, image, errp);
+}
+
+bool sgi_bridge_install_flash_device_read_view(SGIBridgeState *s,
+                                               MemoryRegion *part,
+                                               Error **errp)
+{
+    if (!part || !part->rom_device || memory_region_size(part) != MiB ||
+        (part != s->flash && part != s->flash_select1)) {
+        error_setg(errp, "live flash view requires a fitted 1 MiB ROM device");
+        return false;
+    }
+    return sgi_bridge_install_flash_view(s, part, NULL, errp);
 }
 
 /*
@@ -2645,6 +2711,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      */
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
+
+    qdev_init_gpio_in_named(dev, sgi_bridge_flash_array_read,
+                            "flash-array-read", 1);
 
     memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
