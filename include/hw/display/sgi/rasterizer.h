@@ -162,6 +162,27 @@ unsigned sgi_volume_clip_triangle(const SGIVolumeVertex in[3],
  */
 bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b);
 
+#define SGI_GL_TEX_LEVELS_MAX 31u
+
+/* Absolute level identities in a borrowed, immutable normalized image view. */
+typedef struct SGIGLTexLevel {
+    uint32_t level;
+    uint32_t width, height;
+    uint32_t base_format;
+    uint32_t internal_format;
+    uint32_t border;
+    bool (*read_texel)(void *opaque, uint32_t level,
+                       uint32_t x, uint32_t y, uint32_t *rgba);
+    void *opaque;
+} SGIGLTexLevel;
+
+typedef struct SGIGLTexPyramid {
+    const SGIGLTexLevel *levels;
+    uint32_t count;
+    uint32_t base_level, max_level;
+    double min_lod, max_lod;
+} SGIGLTexPyramid;
+
 /*
  * One family-owned level-zero image and its texture object's sampler.
  * Dimensions count interior texels; row zero has the lowest T. read_texel
@@ -181,6 +202,11 @@ typedef struct SGIGLTexImage {
     float border_color[4];
     bool (*read_texel)(void *opaque, uint32_t x, uint32_t y, uint32_t *rgba);
     void *opaque;
+    /*
+     * NULL preserves the level-zero interface; otherwise image fields above
+     * are ignored. The sampler fields still apply to every selected level.
+     */
+    const SGIGLTexPyramid *pyramid;
 } SGIGLTexImage;
 
 /*

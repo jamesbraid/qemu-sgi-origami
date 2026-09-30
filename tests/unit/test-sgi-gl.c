@@ -6885,9 +6885,717 @@ static void test_polygon_mode_activation_oom(void)
     sgi_gl_cleanup(&f.c);
 }
 
+/* Synthetic family-owned images with observable level identities and reads. */
+typedef struct MipmapRecordPixels {
+    uint32_t level, width, height;
+    uint32_t pixels[16];
+    unsigned reads;
+    bool fail;
+} MipmapRecordPixels;
+
+typedef struct MipmapFixture {
+    FragScene scene;
+    MipmapRecordPixels pixels[4];
+    SGIGLTexLevel levels[4];
+    SGIGLTexPyramid pyramid;
+    SGIGLTexImage image;
+} MipmapFixture;
+
+static bool mipmap_read(void *opaque, uint32_t level, uint32_t x, uint32_t y,
+                        uint32_t *rgba)
+{
+    MipmapRecordPixels *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    g_assert_cmpuint(x, <, p->width);
+    g_assert_cmpuint(y, <, p->height);
+    p->reads++;
+    if (p->fail) {
+        return false;
+    }
+    *rgba = p->pixels[y * p->width + x];
+    return true;
+}
+
+/* An opt-in pyramid must never consult ignored legacy image properties. */
+static bool mipmap_legacy_read(void *opaque, uint32_t x, uint32_t y,
+                               uint32_t *rgba)
+{
+    g_assert_not_reached();
+    return false;
+}
+
+static void mipmap_init(MipmapFixture *f, uint32_t min, uint32_t mag,
+                        double min_lod, double max_lod)
+{
+    static const uint32_t colours[3] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff,
+    };
+
+    memset(f, 0, sizeof(*f));
+    frag_init(&f->scene);
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t n = 4 >> i;
+        MipmapRecordPixels *p = &f->pixels[i];
+
+        p->level = i;
+        p->width = p->height = n;
+        for (unsigned j = 0; j < n * n; j++) {
+            p->pixels[j] = colours[i];
+        }
+        f->levels[i] = (SGIGLTexLevel) {
+            .level = i, .width = n, .height = n,
+            .base_format = SGI_GL_RGBA, .internal_format = SGI_GL_RGBA,
+            .read_texel = mipmap_read, .opaque = p,
+        };
+    }
+    f->pyramid = (SGIGLTexPyramid) {
+        .levels = f->levels, .count = 3, .base_level = 0, .max_level = 2,
+        .min_lod = min_lod, .max_lod = max_lod,
+    };
+    f->image = (SGIGLTexImage) {
+        /* These are ignored even though the sampler and pyramid are valid. */
+        .width = 3, .height = 0, .base_format = 0, .border = 1,
+        .read_texel = mipmap_legacy_read,
+        .min_filter = min, .mag_filter = mag,
+        .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .pyramid = &f->pyramid,
+    };
+    f->scene.rec.target.texture = &f->image;
+    enable(&f->scene.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f->scene, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    texture_coord(&f->scene, 0.5f, 0.5f, 0, 1);
+}
+
+static void mipmap_point(MipmapFixture *f)
+{
+    frag_command(&f->scene, SGI_GL_OP_COLOR4F,
+                 (uint32_t[]) { bits(1), 0, bits(1), bits(1) }, 4);
+    frag_command(&f->scene, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_POINTS }, 1);
+    frag_command(&f->scene, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+    frag_command(&f->scene, SGI_GL_OP_END, NULL, 0);
+}
+
+/* Fixed bounds make the discrete lambda boundary exact, independent of log2. */
+static void test_mipmap_filter_boundaries(void)
+{
+    const struct {
+        uint32_t min, mag;
+        double lambda;
+        uint32_t rgb;
+        unsigned reads[3];
+    } cases[] = {
+        { SGI_GL_NEAREST, SGI_GL_NEAREST, 2, 0xff0000, { 1, 0, 0 } },
+        { SGI_GL_LINEAR, SGI_GL_NEAREST, 2, 0xff0000, { 4, 0, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+          0.5, 0xff0000, { 1, 0, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+          0.500001, 0x00ff00, { 0, 1, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+          1.5, 0x00ff00, { 0, 1, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+          1.500001, 0x0000ff, { 0, 0, 1 } },
+        { SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_NEAREST,
+          1, 0x00ff00, { 0, 4, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          0.25, 0xbf4000, { 1, 1, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          1.5, 0x008080, { 0, 1, 1 } },
+        { SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          0.25, 0xbf4000, { 4, 4, 0 } },
+        /* LINEAR mag changes c to 0.5 for nearest-within mip filters. */
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_LINEAR,
+          0.25, 0xff0000, { 4, 0, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_LINEAR,
+          0.5, 0xff0000, { 4, 0, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_LINEAR,
+          0.5, 0xff0000, { 4, 0, 0 } },
+        /* alpha=0 and final clamp must not call the unused image. */
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          1, 0x00ff00, { 0, 1, 0 } },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          DBL_MAX, 0x0000ff, { 0, 0, 1 } },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+          -DBL_MAX, 0xff0000, { 1, 0, 0 } },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        MipmapFixture f;
+
+        mipmap_init(&f, cases[i].min, cases[i].mag,
+                    cases[i].lambda, cases[i].lambda);
+        mipmap_point(&f);
+        g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, cases[i].rgb);
+        for (unsigned j = 0; j < 3; j++) {
+            g_assert_cmpuint(f.pixels[j].reads, ==, cases[i].reads[j]);
+        }
+    }
+}
+
+/* Different texels distinguish each within-level filter at the same LOD. */
+static void test_mipmap_asymmetric_filters(void)
+{
+    const struct {
+        uint32_t min, rgb;
+        unsigned level1_reads;
+    } cases[] = {
+        { SGI_GL_NEAREST_MIPMAP_NEAREST, 0x0000ff, 1 },
+        { SGI_GL_LINEAR_MIPMAP_NEAREST, 0x404040, 4 },
+        { SGI_GL_NEAREST_MIPMAP_LINEAR, 0x4040ff, 1 },
+        { SGI_GL_LINEAR_MIPMAP_LINEAR, 0x707070, 4 },
+    };
+    static const uint32_t pixels[] = {
+        0x000000ff, 0xff0000ff, 0x00ff00ff, 0x0000ffff,
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        MipmapFixture f;
+
+        mipmap_init(&f, cases[i].min, SGI_GL_NEAREST, 1.25, 1.25);
+        memcpy(f.pixels[1].pixels, pixels, sizeof(pixels));
+        f.pixels[2].pixels[0] = 0xffffffff;
+        mipmap_point(&f);
+        g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, cases[i].rgb);
+        g_assert_cmpuint(f.pixels[1].reads, ==, cases[i].level1_reads);
+    }
+}
+
+/* A required missing image disables texturing even on magnification. */
+static void test_mipmap_missing_level(void)
+{
+    MipmapFixture f;
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, -1, -1);
+    f.levels[1].read_texel = NULL;
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, 0xff00ff);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmpuint(f.pixels[i].reads, ==, 0);
+    }
+}
+
+/* A constant coordinate's zero rho still passes through the LOD clamp. */
+static void test_mipmap_zero_footprint(void)
+{
+    MipmapFixture f;
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST, 2, 1000);
+    frag_quad(&f.scene, 1, 0, 1, 1);
+    g_assert_cmphex(frag_pixel(&f.scene, 16, 16), ==, 0x0000ff);
+    g_assert_cmpuint(f.pixels[0].reads, ==, 0);
+    g_assert_cmpuint(f.pixels[1].reads, ==, 0);
+    g_assert_cmpuint(f.pixels[2].reads, >, 0);
+}
+
+/* Translate the reviewed two-pixel triangle to a covered pixel centre. */
+static void test_mipmap_projective_triangle(void)
+{
+    MipmapFixture f;
+    const double a = log2(32.0 / 25);
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, -1000, 1000);
+    frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
+    /* Window vertices (16,16),(18,16),(16,18); sample at (16.5,16.5). */
+    texture_vertex(&f.scene, -0.5f, -0.5f, 1, 0, 0, 1);
+    texture_vertex(&f.scene, -0.4375f, -0.5f, 1, 1, 0, 2);
+    texture_vertex(&f.scene, -0.5f, -0.4375f, 1, 0, 0, 1);
+    frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f.scene, 16, 16), ==,
+                   texture_rgb(1 - a, a, 0));
+}
+
+#ifdef SGI_GL_TEXTURE_TEST
+#include "tests/unit/sgi-gl-texture-test.h"
+
+static void mipmap_close(double actual, double expected)
+{
+    g_assert_true(isfinite(actual));
+    g_assert_cmpfloat(fabs(actual - expected), <=,
+                      0.000000000001 * MAX(1, fabs(expected)));
+}
+
+static void test_mipmap_numeric_derivatives(void)
+{
+    const int64_t xy[3][2] = { { 0, 0 }, { 512, 0 }, { 0, 512 } };
+    const double coords[3][4] = {
+        { 0, 0, 0, 1 }, { 1, 0, 0, 2 }, { 0, 0, 0, 1 },
+    };
+    const double iw[3] = { 1, 1, 1 };
+    double value[3], dx[3], dy[3], result[5];
+
+    g_assert_true(sgi_gl_texture_test_plane(xy, 8, coords, iw, value, dx, dy));
+    mipmap_close(dx[0], 0.5);
+    mipmap_close(dx[2], 0.5);
+    mipmap_close(dy[0], 0);
+    mipmap_close(dy[2], 0);
+    for (unsigned k = 0; k < 3; k++) {
+        value[k] += 0.5 * dx[k] + 0.5 * dy[k];
+    }
+    g_assert_true(sgi_gl_texture_test_derivatives(value, dx, dy, 4, 4, result));
+    mipmap_close(result[0], 8.0 / 25);
+    mipmap_close(result[1], 0);
+    mipmap_close(result[2], 0);
+    mipmap_close(result[3], 0);
+    mipmap_close(result[4], 32.0 / 25);
+
+    /* Line z=.5: A=.5, D=1.5, A'=D'=1, length=2. */
+    g_assert_true(sgi_gl_texture_test_derivatives(
+        (double[]) { 0.5, 0, 1.5 }, (double[]) { 1, 0, 1 },
+        (double[]) { 0, 0, 0 }, 8, 1, result));
+    mipmap_close(result[0], 4.0 / 9);
+    mipmap_close(result[4] / 2, 16.0 / 9);
+    /* Oblique, rectangular footprint: max(hypot(3,4),hypot(0,2))=5. */
+    g_assert_true(sgi_gl_texture_test_derivatives(
+        (double[]) { 0, 0, 1 }, (double[]) { 0.75, 2, 0 },
+        (double[]) { 0, 1, 0 }, 4, 2, result));
+    mipmap_close(result[4], 5);
+    for (unsigned bad = 0; bad < 4; bad++) {
+        double v[3] = { 0, 0, 1 }, x[3] = { 1, 0, 0 };
+
+        if (bad == 0) {
+            v[2] = 0;
+        } else if (bad == 1) {
+            v[2] = DBL_MIN;
+        } else if (bad == 2) {
+            x[0] = INFINITY;
+        } else {
+            x[0] = DBL_MAX;
+        }
+        g_assert_false(sgi_gl_texture_test_derivatives(v, x,
+            (double[]) { 0, 0, 0 }, 4, 4, result));
+    }
+}
+
+static void test_mipmap_numeric_selection(void)
+{
+    MipmapFixture f;
+    double numeric[2];
+    uint32_t out[3];
+    const double ties[] = { nextafter(0.5, 0), 0.5,
+                           nextafter(0.5, INFINITY) };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(ties); i++) {
+        mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+                    ties[i], ties[i]);
+        g_assert_true(sgi_gl_texture_test_select(f.image.min_filter,
+            f.image.mag_filter, &f.pyramid, 2, 1, out, numeric));
+        g_assert_cmpuint(out[0], ==, i == 2 ? 1 : 0);
+        mipmap_close(numeric[0], ties[i]);
+    }
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, -1000, 1000);
+    g_assert_true(sgi_gl_texture_test_select(f.image.min_filter,
+        f.image.mag_filter, &f.pyramid, 2, 32.0 / 25, out, numeric));
+    mipmap_close(numeric[0], log2(32.0 / 25));
+    mipmap_close(numeric[1], log2(32.0 / 25));
+    g_assert_cmpuint(out[0], ==, 0);
+    g_assert_cmpuint(out[1], ==, 1);
+    f.pyramid.min_lod = 2;
+    g_assert_true(sgi_gl_texture_test_select(f.image.min_filter,
+        f.image.mag_filter, &f.pyramid, 2, 0, out, numeric));
+    mipmap_close(numeric[0], 2);
+    g_assert_cmpuint(out[0], ==, 2);
+    g_assert_false(sgi_gl_texture_test_select(f.image.min_filter,
+        f.image.mag_filter, &f.pyramid, 2, INFINITY, out, numeric));
+}
+
+static void test_mipmap_numeric_samples(void)
+{
+    MipmapFixture f;
+    double sample[4], other[4] = { 1, 1, 1, 1 };
+    const uint32_t pixels[4] = { 0x000000ff, 0xff0000ff,
+                                0x00ff00ff, 0x0000ffff };
+
+    mipmap_init(&f, SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_NEAREST, 0, 2);
+    memcpy(f.pixels[1].pixels, pixels, sizeof(pixels));
+    g_assert_true(sgi_gl_texture_test_sample(&f.image, &f.levels[1],
+        SGI_GL_LINEAR, 0.5, 0.5, sample));
+    for (unsigned k = 0; k < 3; k++) {
+        mipmap_close(sample[k], 0.25);
+    }
+    mipmap_close(sample[3], 1);
+    sgi_gl_texture_test_mix(sample, other, 0.25);
+    for (unsigned k = 0; k < 3; k++) {
+        mipmap_close(sample[k], 7.0 / 16);
+    }
+    mipmap_close(sample[3], 1);
+}
+#endif
+
+static MipmapFixture mipmap_logged;
+
+static void mipmap_logged_draw(void)
+{
+    frag_quad(&mipmap_logged.scene, 1, 0, 1, 1);
+}
+
+static void mipmap_expect_log(const char *reason, bool fallback)
+{
+    g_autofree char *log = logged_by(mipmap_logged_draw);
+    const char *at = strstr(log, reason);
+
+    g_assert_nonnull(at);
+    g_assert_null(strstr(at + strlen(reason), reason));
+    g_assert_cmphex(frag_pixel(&mipmap_logged.scene, 16, 16), ==,
+                   fallback ? 0xff00ff : 0);
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(mipmap_logged.pixels[i].reads, ==, 0);
+    }
+}
+
+static void test_mipmap_validation(void)
+{
+    for (unsigned bad = 0; bad < 12; bad++) {
+        MipmapFixture *f = &mipmap_logged;
+
+        mipmap_init(f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+                    -1000, 1000);
+        switch (bad) {
+        case 0:
+            f->pyramid.count = SGI_GL_TEX_LEVELS_MAX + 1;
+            break;
+        case 1:
+            f->pyramid.levels = NULL;
+            break;
+        case 2:
+            f->levels[1].level = 0;
+            break;
+        case 3:
+            f->levels[0].level = 2;
+            break;
+        case 4:
+            f->pyramid.min_lod = NAN;
+            break;
+        case 5:
+            f->pyramid.max_lod = INFINITY;
+            break;
+        case 6:
+            f->pyramid.min_lod = 1001;
+            break;
+        case 7:
+            f->image.min_filter = 0;
+            break;
+        case 8:
+            f->image.mag_filter = SGI_GL_NEAREST_MIPMAP_LINEAR;
+            break;
+        case 9:
+            f->levels[1].internal_format = 0;
+            break;
+        case 10:
+            f->levels[1].border = 1;
+            break;
+        case 11:
+            f->levels[1].internal_format = SGI_GL_ALPHA8;
+            break;
+        }
+        mipmap_expect_log("unsupported texture state", false);
+    }
+    for (unsigned missing = 0; missing < 6; missing++) {
+        MipmapFixture *f = &mipmap_logged;
+
+        mipmap_init(f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, -1, -1);
+        switch (missing) {
+        case 0:
+            f->pyramid.count = 0;
+            f->pyramid.levels = NULL;
+            break;
+        case 1:
+            f->levels[1].read_texel = NULL;
+            break;
+        case 2:
+            f->pyramid.count = 2;
+            break;
+        case 3:
+            f->levels[1].width = 1;
+            break;
+        case 4:
+            f->levels[0].internal_format = SGI_GL_RGBA4;
+            f->levels[1].internal_format = SGI_GL_RGBA8;
+            break;
+        case 5:
+            f->levels[0].width = 3;
+            break;
+        }
+        mipmap_expect_log("incomplete texture image", true);
+    }
+    /* Invalid sampler policy must not hide behind a missing base image. */
+    mipmap_init(&mipmap_logged, 0, SGI_GL_NEAREST, 0, 0);
+    mipmap_logged.pyramid.count = 0;
+    mipmap_logged.pyramid.levels = NULL;
+    mipmap_expect_log("unsupported texture state", false);
+}
+
+static void test_mipmap_absolute_levels(void)
+{
+    for (unsigned range = 0; range < 3; range++) {
+        MipmapFixture f;
+        uint32_t base = range == 0 ? 2 :
+                        range == 1 ? UINT32_MAX - 1 : UINT32_MAX;
+
+        mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 1, 1);
+        f.pyramid.base_level = base;
+        f.pyramid.max_level = range == 0 ? 4 : UINT32_MAX;
+        f.pyramid.count = range == 2 ? 1 : range == 1 ? 2 : 3;
+        for (unsigned i = 0; i < f.pyramid.count; i++) {
+            f.levels[i].level = f.pixels[i].level = base + i;
+        }
+        mipmap_point(&f);
+        g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==,
+                       range == 2 ? 0xff0000 : 0x00ff00);
+    }
+    for (unsigned mipmap = 0; mipmap < 2; mipmap++) {
+        MipmapFixture f;
+
+        mipmap_init(&f, mipmap ? SGI_GL_NEAREST_MIPMAP_LINEAR : SGI_GL_NEAREST,
+                    SGI_GL_NEAREST, 1, 1);
+        f.pyramid.base_level = 1;
+        f.pyramid.max_level = 0;
+        mipmap_point(&f);
+        g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==,
+                       mipmap ? 0xff00ff : 0x00ff00);
+    }
+    /* An inactive record's image properties are not consulted. */
+    MipmapFixture f;
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 1, 1);
+    f.pyramid.max_level = 1;
+    f.levels[2].internal_format = 0;
+    f.levels[2].border = 1;
+    f.levels[2].width = 0;
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, 0x00ff00);
+    g_assert_cmpuint(f.pixels[2].reads, ==, 0);
+}
+
+static void mipmap_rectangular(MipmapFixture *f)
+{
+    static const uint32_t colours[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t w = 8 >> i;
+
+        f->pixels[i] = (MipmapRecordPixels) {
+            .level = i, .width = w, .height = 1,
+        };
+        for (unsigned j = 0; j < w; j++) {
+            f->pixels[i].pixels[j] = colours[i];
+        }
+        f->levels[i] = (SGIGLTexLevel) {
+            .level = i, .width = w, .height = 1,
+            .base_format = SGI_GL_RGBA, .internal_format = SGI_GL_RGBA,
+            .read_texel = mipmap_read, .opaque = &f->pixels[i],
+        };
+    }
+    f->pyramid.count = 4;
+    f->pyramid.max_level = 3;
+}
+
+static void test_mipmap_projective_line(void)
+{
+    for (unsigned width = 1; width <= 3; width += 2) {
+        MipmapFixture f;
+        const double a = log2(16.0 / 9);
+
+        mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST,
+                    -1000, 1000);
+        mipmap_rectangular(&f);
+        frag_command(&f.scene, SGI_GL_OP_LINE_WIDTH,
+                     (uint32_t[]) { bits(width) }, 1);
+        frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                     (uint32_t[]) { SGI_GL_LINES }, 1);
+        texture_vertex(&f.scene, -0.484375f, -0.484375f, 1, 0, 0, 1);
+        texture_vertex(&f.scene, -0.421875f, -0.484375f, 1, 1, 0, 2);
+        frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+        for (int y = 16 - width / 2; y <= 16 + width / 2; y++) {
+            g_assert_cmphex(frag_pixel(&f.scene, 17, y), ==,
+                           texture_rgb(1 - a, a, 0));
+        }
+    }
+}
+
+static void test_mipmap_second_read_failure(void)
+{
+    MipmapFixture f;
+    Planes before;
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 0.25, 0.25);
+    memset(&f.scene.p, 0x5a, sizeof(f.scene.p));
+    before = f.scene.p;
+    f.pixels[1].fail = true;
+    enable(&f.scene.c, SGI_GL_DEPTH_TEST, true);
+    enable(&f.scene.c, SGI_GL_STENCIL_TEST, true);
+    frag_command(&f.scene, SGI_GL_OP_DEPTH_FUNC,
+                 (uint32_t[]) { SGI_GL_ALWAYS }, 1);
+    frag_stencil(&f.scene, SGI_GL_ALWAYS, 1, 0xff,
+                 SGI_GL_REPLACE, SGI_GL_REPLACE, SGI_GL_REPLACE);
+    mipmap_point(&f);
+    g_assert_cmpmem(&before, sizeof(before), &f.scene.p, sizeof(f.scene.p));
+    g_assert_cmpuint(f.pixels[0].reads, ==, 1);
+    g_assert_cmpuint(f.pixels[1].reads, ==, 1);
+    /* At an exact level, an unavailable zero-weight neighbour is untouched. */
+    memset(&f.scene.p, 0, sizeof(f.scene.p));
+    f.pyramid.min_lod = f.pyramid.max_lod = 0;
+    f.pixels[0].reads = f.pixels[1].reads = 0;
+    mipmap_point(&f);
+    g_assert_cmpuint(f.pixels[0].reads, ==, 1);
+    g_assert_cmpuint(f.pixels[1].reads, ==, 0);
+}
+
+static void test_mipmap_rebinding_and_degenerate(void)
+{
+    MipmapFixture first, second;
+
+    mipmap_init(&first, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 1, 1);
+    mipmap_init(&second, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 2, 2);
+    mipmap_point(&first);
+    first.pixels[1].fail = true;
+    first.scene.rec.target.texture = &second.image;
+    mipmap_point(&first);
+    g_assert_cmphex(frag_pixel(&first.scene, 32, 32), ==, 0x0000ff);
+    g_assert_cmpuint(second.pixels[2].reads, ==, 1);
+    mipmap_point(&second);
+    g_assert_cmpuint(second.pixels[2].reads, ==, 2);
+    for (unsigned mode = 0; mode < 2; mode++) {
+        MipmapFixture f;
+
+        mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, 0, 2);
+        frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                     (uint32_t[]) {
+                         mode ? SGI_GL_TRIANGLES : SGI_GL_LINES }, 1);
+        for (unsigned i = 0; i < (mode ? 3 : 2); i++) {
+            frag_command(&f.scene, SGI_GL_OP_VERTEX2F,
+                         (uint32_t[]) { 0, 0 }, 2);
+        }
+        frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+        for (unsigned i = 0; i < 3; i++) {
+            g_assert_cmpuint(f.pixels[i].reads, ==, 0);
+        }
+        g_assert_cmpuint(frag_count(&f.scene, 0), ==, W * H);
+    }
+}
+
+/* Blend the levels before applying the per-format environment and fog. */
+static void test_mipmap_format_pipeline(void)
+{
+    const double l = 80.0 / 255, b = 112.0 / 255, u = 80.0 / 255;
+    const struct {
+        uint32_t format, mode;
+        double rgb[3], alpha;
+    } cases[] = {
+        { SGI_GL_ALPHA, SGI_GL_REPLACE, { 0.25, 0.5, 0.75 }, u },
+        { SGI_GL_ALPHA, SGI_GL_MODULATE, { 0.25, 0.5, 0.75 }, 0.8 * u },
+        { SGI_GL_ALPHA, SGI_GL_BLEND, { 0.25, 0.5, 0.75 }, 0.8 * u },
+        { SGI_GL_LUMINANCE, SGI_GL_REPLACE, { l, l, l }, 0.8 },
+        { SGI_GL_LUMINANCE, SGI_GL_MODULATE,
+          { 0.25 * l, 0.5 * l, 0.75 * l }, 0.8 },
+        { SGI_GL_LUMINANCE, SGI_GL_BLEND,
+          { 0.25 * (1 - l), 0.5 * (1 - l) + l, 0.75 * (1 - l) }, 0.8 },
+        { SGI_GL_LUMINANCE_ALPHA, SGI_GL_REPLACE, { l, l, l }, u },
+        { SGI_GL_LUMINANCE_ALPHA, SGI_GL_MODULATE,
+          { 0.25 * l, 0.5 * l, 0.75 * l }, 0.8 * u },
+        { SGI_GL_LUMINANCE_ALPHA, SGI_GL_BLEND,
+          { 0.25 * (1 - l), 0.5 * (1 - l) + l, 0.75 * (1 - l) }, 0.8 * u },
+        { SGI_GL_INTENSITY, SGI_GL_REPLACE, { l, l, l }, l },
+        { SGI_GL_INTENSITY, SGI_GL_MODULATE,
+          { 0.25 * l, 0.5 * l, 0.75 * l }, 0.8 * l },
+        { SGI_GL_INTENSITY, SGI_GL_BLEND,
+          { 0.25 * (1 - l), 0.5 * (1 - l) + l, 0.75 * (1 - l) },
+          0.8 * (1 - l) + 0.2 * l },
+        { SGI_GL_RGB, SGI_GL_REPLACE, { l, 0, b }, 0.8 },
+        { SGI_GL_RGB, SGI_GL_MODULATE, { 0.25 * l, 0, 0.75 * b }, 0.8 },
+        { SGI_GL_RGB, SGI_GL_BLEND,
+          { 0.25 * (1 - l), 0.5, 0.75 * (1 - b) }, 0.8 },
+        { SGI_GL_RGBA, SGI_GL_REPLACE, { l, 0, b }, u },
+        { SGI_GL_RGBA, SGI_GL_MODULATE, { 0.25 * l, 0, 0.75 * b }, 0.8 * u },
+        { SGI_GL_RGBA, SGI_GL_BLEND,
+          { 0.25 * (1 - l), 0.5, 0.75 * (1 - b) }, 0.8 * u },
+        { SGI_GL_RGB, SGI_GL_DECAL, { l, 0, b }, 0.8 },
+        { SGI_GL_RGBA, SGI_GL_DECAL,
+          { 0.25 * (1 - u) + l * u, 0.5 * (1 - u),
+            0.75 * (1 - u) + b * u }, 0.8 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned operation = 0; operation < 4; operation++) {
+            MipmapFixture f;
+            double expected[3];
+
+            mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR,
+                        SGI_GL_NEAREST, 0.25, 0.25);
+            for (unsigned level = 0; level < 3; level++) {
+                f.levels[level].base_format = cases[i].format;
+                f.levels[level].internal_format = cases[i].format;
+                for (unsigned j = 0; j < 16; j++) {
+                    f.pixels[level].pixels[j] = level ? 0x80004080 : 0x40008040;
+                }
+            }
+            texture_env(&f.scene, SGI_GL_TEXTURE_ENV_MODE,
+                        cases[i].mode, 0, 0, 0);
+            texture_env(&f.scene, SGI_GL_TEXTURE_ENV_COLOR, 0, 1, 0, 0.2f);
+            memcpy(expected, cases[i].rgb, sizeof(expected));
+            if (operation == 1 || operation == 2) {
+                float ref = floor(cases[i].alpha * 255 + 0.5) / 255;
+
+                ref += operation == 1 ? -1.0 / 255 : 1.0 / 255;
+                enable(&f.scene.c, SGI_GL_ALPHA_TEST, true);
+                frag_command(&f.scene, SGI_GL_OP_ALPHA_FUNC,
+                    (uint32_t[]) { SGI_GL_NEVER_ENUM + SGI_GL_GREATER,
+                                   bits(ref) }, 2);
+            }
+            if (operation == 3) {
+                frag_fog(&f.scene, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
+                frag_fog(&f.scene, SGI_GL_FOG_END, 1, 0, 0, 0);
+                frag_fog(&f.scene, SGI_GL_FOG_COLOR, 0, 0, 1, 0);
+                enable(&f.scene.c, SGI_GL_FOG, true);
+                for (unsigned k = 0; k < 3; k++) {
+                    expected[k] = 0.5 * expected[k] + (k == 2 ? 0.5 : 0);
+                }
+            }
+            frag_quad_at(&f.scene, 0.25f, 0.5f, 0.75f, 0.8f, -0.5f);
+            g_assert_cmphex(frag_pixel(&f.scene, 16, 16), ==,
+                operation == 2 ? 0 :
+                texture_rgb(expected[0], expected[1], expected[2]));
+            g_assert_cmpuint(f.pixels[0].reads, >, 0);
+            g_assert_cmpuint(f.pixels[1].reads, >, 0);
+            g_assert_cmpuint(f.pixels[2].reads, ==, 0);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-gl/mipmap-format-pipeline",
+                    test_mipmap_format_pipeline);
+    g_test_add_func("/sgi-gl/mipmap-numeric-derivatives",
+                    test_mipmap_numeric_derivatives);
+    g_test_add_func("/sgi-gl/mipmap-numeric-selection",
+                    test_mipmap_numeric_selection);
+    g_test_add_func("/sgi-gl/mipmap-numeric-samples",
+                    test_mipmap_numeric_samples);
+    g_test_add_func("/sgi-gl/mipmap-validation",
+                    test_mipmap_validation);
+    g_test_add_func("/sgi-gl/mipmap-absolute-levels",
+                    test_mipmap_absolute_levels);
+    g_test_add_func("/sgi-gl/mipmap-projective-line",
+                    test_mipmap_projective_line);
+    g_test_add_func("/sgi-gl/mipmap-second-read-failure",
+                    test_mipmap_second_read_failure);
+    g_test_add_func("/sgi-gl/mipmap-rebinding-and-degenerate",
+                    test_mipmap_rebinding_and_degenerate);
+    g_test_add_func("/sgi-gl/mipmap-filter-boundaries",
+                    test_mipmap_filter_boundaries);
+    g_test_add_func("/sgi-gl/mipmap-asymmetric-filters",
+                    test_mipmap_asymmetric_filters);
+    g_test_add_func("/sgi-gl/mipmap-missing-level",
+                    test_mipmap_missing_level);
+    g_test_add_func("/sgi-gl/mipmap-zero-footprint",
+                    test_mipmap_zero_footprint);
+    g_test_add_func("/sgi-gl/mipmap-projective-triangle",
+                    test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
