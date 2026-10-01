@@ -11,6 +11,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIOrigin300PciExpansionState,
 
 #define SGI_ORIGIN300_PCI_HEADS 6
 
+/* Synthetic device indices 1 and 2; pins A/B/C/D select head inputs 0..7. */
+typedef struct SGIOrigin300PciIntxMap {
+    uint8_t pin[SGI_ORIGIN300_PCI_HEADS][2][PCI_NUM_PINS];
+} SGIOrigin300PciIntxMap;
+
+bool sgi_origin300_pci_expansion_set_intx_map(
+    SGIOrigin300PciExpansionState *s, const SGIOrigin300PciIntxMap *map,
+    Error **errp);
+
 bool sgi_origin300_pci_expansion_enable_ni_route(
     SGIOrigin300PciExpansionState *s, Error **errp);
 

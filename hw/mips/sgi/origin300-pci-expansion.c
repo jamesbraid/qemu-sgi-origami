@@ -6,6 +6,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -25,6 +26,12 @@ struct SGIOrigin300PciExpansionState {
     SGIXioLink head_link[4];
     SN1FabricEndpoint endpoint;
     uint8_t ni_route;
+    uint8_t intx_enabled;
+    uint8_t intx_map[SGI_ORIGIN300_PCI_HEADS * 2 * PCI_NUM_PINS];
+    uint32_t intx_raw[SGI_ORIGIN300_PCI_HEADS];
+    uint8_t intx_levels[SGI_ORIGIN300_PCI_HEADS];
+    qemu_irq *intx_inputs;
+    qemu_irq intx_outputs[SGI_ORIGIN300_PCI_HEADS][SGI_XBRIDGE_HEAD_PINS];
     bool ni_initialized;
     AddressSpace bic_registers;
     AddressSpace bic_pio;
@@ -90,6 +97,139 @@ bool sgi_origin300_pci_expansion_enable_ni_route(
     }
     s->ni_route = true;
     return true;
+}
+
+bool sgi_origin300_pci_expansion_set_intx_map(
+    SGIOrigin300PciExpansionState *s, const SGIOrigin300PciIntxMap *map,
+    Error **errp)
+{
+    if (DEVICE(s)->realized || s->intx_enabled) {
+        error_setg(errp, "PCI INTx board map must be selected once before "
+                   "realization");
+        return false;
+    }
+    for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
+        for (unsigned device = 0; device < 2; device++) {
+            for (unsigned pin = 0; pin < PCI_NUM_PINS; pin++) {
+                if (map->pin[head][device][pin] >= SGI_XBRIDGE_HEAD_PINS) {
+                    error_setg(errp, "PCI INTx board map head %u device %u "
+                               "pin %u has no head input %u", head,
+                               device + 1, pin, map->pin[head][device][pin]);
+                    return false;
+                }
+            }
+        }
+    }
+    memcpy(s->intx_map, map->pin, sizeof(s->intx_map));
+    s->intx_enabled = 1;
+    return true;
+}
+
+static uint8_t expansion_intx_levels(SGIOrigin300PciExpansionState *s,
+                                     unsigned head)
+{
+    uint8_t levels = 0;
+
+    for (unsigned device = 1; device <= 2; device++) {
+        for (unsigned pin = 0; pin < PCI_NUM_PINS; pin++) {
+            unsigned raw = device * PCI_NUM_PINS + pin;
+            unsigned index = (head * 2 + device - 1) * PCI_NUM_PINS + pin;
+
+            if (s->intx_raw[head] & (1U << raw)) {
+                levels |= 1U << s->intx_map[index];
+            }
+        }
+    }
+    return levels;
+}
+
+static void expansion_intx(void *opaque, int line, int level)
+{
+    SGIOrigin300PciExpansionState *s = opaque;
+    unsigned head = line / SGI_XBRIDGE_HEAD_RAW_PCI_IRQS;
+    unsigned raw = line % SGI_XBRIDGE_HEAD_RAW_PCI_IRQS;
+    unsigned device = raw / PCI_NUM_PINS;
+    uint8_t levels, changed;
+
+    s->intx_raw[head] = (s->intx_raw[head] & ~(1U << raw)) |
+                       (level ? 1U << raw : 0);
+    if (device != 1 && device != 2) {
+        if (level) {
+            qemu_log_mask(LOG_UNIMP, "sgi-pci-expansion-module: PCI head %u "
+                          "device index %u has no experiment INTx map\n",
+                          head, device);
+        }
+        return;
+    }
+    levels = expansion_intx_levels(s, head);
+    changed = levels ^ s->intx_levels[head];
+    s->intx_levels[head] = levels;
+    for (unsigned pin = 0; pin < SGI_XBRIDGE_HEAD_PINS; pin++) {
+        if (changed & (1U << pin)) {
+            qemu_set_irq(s->intx_outputs[head][pin], !!(levels & (1U << pin)));
+        }
+    }
+}
+
+static void expansion_intx_clear(SGIOrigin300PciExpansionState *s)
+{
+    memset(s->intx_raw, 0, sizeof(s->intx_raw));
+    memset(s->intx_levels, 0, sizeof(s->intx_levels));
+    if (s->intx_inputs) {
+        for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
+            for (unsigned pin = 0; pin < SGI_XBRIDGE_HEAD_PINS; pin++) {
+                qemu_set_irq(s->intx_outputs[head][pin], 0);
+            }
+        }
+    }
+}
+
+static void expansion_reset_hold(Object *obj, ResetType type)
+{
+    expansion_intx_clear(SGI_ORIGIN300_PCI_EXPANSION(obj));
+}
+
+static void expansion_unrealize(DeviceState *dev)
+{
+    SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(dev);
+
+    expansion_intx_clear(s);
+    if (s->intx_inputs) {
+        for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
+            const char *name = head % 2 ? "head-f-pci-intx" : "head-e-pci-intx";
+
+            for (unsigned raw = 0; raw < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; raw++) {
+                qdev_connect_gpio_out_named(s->chip[head / 2], name, raw, NULL);
+            }
+        }
+        qemu_free_irqs(s->intx_inputs,
+                      SGI_ORIGIN300_PCI_HEADS * SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+        s->intx_inputs = NULL;
+    }
+}
+
+static int expansion_post_load(void *opaque, int version)
+{
+    SGIOrigin300PciExpansionState *s = opaque;
+
+    if (version < 2 && s->intx_enabled) {
+        return -EINVAL;
+    }
+    if (s->intx_enabled) {
+        for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
+            uint8_t levels = expansion_intx_levels(s, head);
+
+            if (levels != s->intx_levels[head]) {
+                return -EINVAL;
+            }
+            /* Migrated head pins suppress repeated packets on equal levels. */
+            for (unsigned pin = 0; pin < SGI_XBRIDGE_HEAD_PINS; pin++) {
+                qemu_set_irq(s->intx_outputs[head][pin],
+                             !!(levels & (1U << pin)));
+            }
+        }
+    }
+    return 0;
 }
 
 static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
@@ -230,6 +370,23 @@ static void expansion_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+    if (s->intx_enabled) {
+        s->intx_inputs = qemu_allocate_irqs(expansion_intx, s,
+            SGI_ORIGIN300_PCI_HEADS * SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+        for (i = 0; i < SGI_ORIGIN300_PCI_HEADS; i++) {
+            const char *input = i % 2 ? "head-f-pin" : "head-e-pin";
+            const char *output = i % 2 ? "head-f-pci-intx" : "head-e-pci-intx";
+
+            for (j = 0; j < SGI_XBRIDGE_HEAD_PINS; j++) {
+                s->intx_outputs[i][j] = qdev_get_gpio_in_named(
+                    s->chip[i / 2], input, j);
+            }
+            for (j = 0; j < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; j++) {
+                qdev_connect_gpio_out_named(s->chip[i / 2], output, j,
+                    s->intx_inputs[i * SGI_XBRIDGE_HEAD_RAW_PCI_IRQS + j]);
+            }
+        }
+    }
     for (i = 0; i < ARRAY_SIZE(widgets); i++) {
         unsigned widget = widgets[i];
         g_autofree char *name = g_strdup_printf("widget-%u", widget);
@@ -340,8 +497,9 @@ static const Property expansion_properties[] = {
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(ni_route, SGIOrigin300PciExpansionState),
         VMSTATE_UINT32_EQUAL(placement, SGIOrigin300PciExpansionState),
@@ -350,6 +508,15 @@ static const VMStateDescription vmstate_expansion = {
         VMSTATE_UINT8_EQUAL(xbridge_revision, SGIOrigin300PciExpansionState),
         VMSTATE_ARRAY(port, SGIOrigin300PciExpansionState, 4, 0,
                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_SINGLE(intx_enabled, SGIOrigin300PciExpansionState, 2,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_ARRAY(intx_map, SGIOrigin300PciExpansionState,
+                      SGI_ORIGIN300_PCI_HEADS * 2 * PCI_NUM_PINS, 2,
+                      vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT32_ARRAY_V(intx_raw, SGIOrigin300PciExpansionState,
+                              SGI_ORIGIN300_PCI_HEADS, 2),
+        VMSTATE_UINT8_ARRAY_V(intx_levels, SGIOrigin300PciExpansionState,
+                             SGI_ORIGIN300_PCI_HEADS, 2),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -358,10 +525,13 @@ static void expansion_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SN1FabricClass *fc = SGI_SN1_FABRIC_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "Origin 300 PCI expansion, inferred revision 2, "
                "no NI data route";
     dc->realize = expansion_realize;
+    dc->unrealize = expansion_unrealize;
+    rc->phases.hold = expansion_reset_hold;
     dc->vmsd = &vmstate_expansion;
     dc->user_creatable = false;
     device_class_set_props(dc, expansion_properties);

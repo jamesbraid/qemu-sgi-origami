@@ -29,6 +29,7 @@ struct NICardState {
     uint32_t result;
     uint32_t signature;
     uint8_t pin;
+    uint8_t interrupt_pin;
 };
 
 static uint64_t card_read(void *opaque, hwaddr offset, unsigned size)
@@ -133,6 +134,7 @@ static const VMStateDescription card_vmstate = {
         VMSTATE_UINT64(payload, NICardState),
         VMSTATE_UINT32(result, NICardState),
         VMSTATE_UINT32_EQUAL(signature, NICardState),
+        VMSTATE_UINT8_EQUAL(interrupt_pin, NICardState),
         VMSTATE_UINT8(pin, NICardState),
         VMSTATE_END_OF_LIST()
     },
@@ -142,13 +144,18 @@ static void card_realize(PCIDevice *dev, Error **errp)
 {
     NICardState *s = NI_CARD(dev);
 
-    dev->config[PCI_INTERRUPT_PIN] = 1;
+    if (s->interrupt_pin < 1 || s->interrupt_pin > PCI_NUM_PINS) {
+        error_setg(errp, "NI card needs an interrupt pin from 1 to 4");
+        return;
+    }
+    dev->config[PCI_INTERRUPT_PIN] = s->interrupt_pin;
     memory_region_init_io(&s->bar, OBJECT(s), &card_ops, s,
                           "ni-card.bar", 4096);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
 }
 
 static const Property card_properties[] = {
+    DEFINE_PROP_UINT8("interrupt-pin", NICardState, interrupt_pin, 1),
     DEFINE_PROP_UINT32("signature", NICardState, signature, 0),
     DEFINE_PROP_UINT64("dma-address", NICardState, address, 0),
     DEFINE_PROP_UINT64("dma-payload", NICardState, payload, 0),
@@ -193,7 +200,12 @@ struct NIFixtureState {
     uint8_t compute_number;
     uint8_t bic_number;
     bool connected;
+    uint8_t intx_map;
     uint64_t compute_device_mask;
+    uint64_t interrupt_count;
+    uint64_t interrupt_address;
+    uint64_t interrupt_data;
+    uint64_t interrupt_source;
 };
 
 static MemTxResult fixture_processor_rw(SN1FabricEndpoint *endpoint,
@@ -245,6 +257,14 @@ static MemTxResult fixture_destination_rw(SN1FabricEndpoint *endpoint,
         /* Only PI0/PI1, never BIC-local memory or unsupported units. */
         if (offset >= 0x400000 || size > 0x400000 - offset) {
             return MEMTX_DECODE_ERROR;
+        }
+        if (write && size == 8) {
+            s->interrupt_count++;
+            s->interrupt_address = address;
+            s->interrupt_data = ldq_be_p(buffer);
+            s->interrupt_source = source->widget |
+                ((uint64_t)source->widget_known << 8) |
+                ((uint64_t)source->device_known << 9);
         }
         as = &SGI_BEDROCK(s->compute)->io.hub_as;
     } else {
@@ -323,7 +343,21 @@ static uint64_t status_read(void *opaque, hwaddr offset, unsigned size)
 {
     NIFixtureState *s = opaque;
 
-    return s->requester[(offset / 8) & 1].result;
+    switch (offset / 8) {
+    case 0:
+    case 1:
+        return s->requester[offset / 8].result;
+    case 2:
+        return s->interrupt_count;
+    case 3:
+        return s->interrupt_address;
+    case 4:
+        return s->interrupt_data;
+    case 5:
+        return s->interrupt_source;
+    default:
+        return 0;
+    }
 }
 
 static const MemoryRegionOps status_ops = {
@@ -393,6 +427,26 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     for (i = 0; i < 4; i++) {
         qdev_prop_set_uint8(s->chassis, port_props[i], ports[i]);
     }
+    if (s->intx_map) {
+        SGIOrigin300PciIntxMap map;
+
+        for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
+            for (unsigned device = 0; device < 2; device++) {
+                map.pin[head][device][0] = device + 1;
+                map.pin[head][device][1] = device + 5;
+                map.pin[head][device][2] = device + 1;
+                map.pin[head][device][3] = device + 5;
+            }
+        }
+        if (s->intx_map == 2) {
+            map.pin[0][0][0] = 3;
+            map.pin[0][0][2] = 3;
+        }
+        if (!sgi_origin300_pci_expansion_set_intx_map(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), &map, errp)) {
+            return;
+        }
+    }
     if (!sgi_origin300_pci_expansion_enable_ni_route(
             SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
@@ -423,8 +477,40 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         object_property_add_child(OBJECT(s), name, OBJECT(card));
         qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
         qdev_prop_set_uint32(card, "addr", PCI_DEVFN(1, 0));
+        if (s->intx_map) {
+            qdev_prop_set_bit(card, "multifunction", true);
+        }
         if (!qdev_realize(card, BUS(bus), errp)) {
             return;
+        }
+    }
+    if (s->intx_map) {
+        for (i = 0; i < SGI_ORIGIN300_PCI_HEADS; i++) {
+            PCIBus *bus = sgi_origin300_pci_expansion_bus(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), i);
+
+            for (unsigned device = 1;
+                 device <= (s->intx_map == 3 ? 3 : 2); device++) {
+                for (unsigned pin = 0; pin < PCI_NUM_PINS; pin++) {
+                    DeviceState *card;
+                    g_autofree char *name = NULL;
+
+                    if (device == 1 && pin == 0) {
+                        continue;
+                    }
+                    card = qdev_new(TYPE_NI_CARD);
+                    name = g_strdup_printf("card%u-dev%u-pin%u",
+                                           i, device, pin);
+                    object_property_add_child(OBJECT(s), name, OBJECT(card));
+                    qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
+                    qdev_prop_set_uint8(card, "interrupt-pin", pin + 1);
+                    qdev_prop_set_bit(card, "multifunction", true);
+                    qdev_prop_set_uint32(card, "addr", PCI_DEVFN(device, pin));
+                    if (!qdev_realize(card, BUS(bus), errp)) {
+                        return;
+                    }
+                }
+            }
         }
     }
     for (i = 0; i < 2; i++) {
@@ -438,7 +524,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &r->view);
     }
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "ni-fixture.status", 16);
+                          "ni-fixture.status", 48);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
         "ni-fixture.ram-observation", &s->ram, 0, RAM_BYTES);
@@ -450,6 +536,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_UINT8("intx-map", NIFixtureState, intx_map, 0),
     DEFINE_PROP_UINT8("compute-number", NIFixtureState, compute_number, 3),
     DEFINE_PROP_UINT8("bic-number", NIFixtureState, bic_number, 7),
     DEFINE_PROP_BOOL("connected", NIFixtureState, connected, true),
