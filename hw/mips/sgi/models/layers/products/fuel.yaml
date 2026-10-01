@@ -42,11 +42,19 @@ layer:
         device 5. Its widget 15 placement is inferred from another Fuel
         capture with an unidentified board revision. Other Fuel revisions
         may use a different controller.
-        This experimental target can be selected for a QEMU catalogue export.
+        This target can be selected for a QEMU catalogue export.
         An installed IRIX 6.5.30 guest reached IOC3-A serial login with
-        explicit experimental board inputs and synthetic node records.
+        explicit board inputs and synthetic node records.
         Physical board wiring and factory identity remain unverified.
       emulation:
+        system_timekeepers:
+          ip34-system-board:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: [docs/datasheets/ip34-system-timekeeper.md]
+            notes: Flat independent 32 KiB storage is a compatibility assumption. Physical part, capacity, decode and wiring are unknown.
         machine_name: fuel
         display_description: SGI Fuel (IP34)
         profile: base

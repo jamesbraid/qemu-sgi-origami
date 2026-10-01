@@ -299,7 +299,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
         qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                     "fuel-ioc3-subsystem-id=0xc30a,"
                     "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
-                    "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
+                    "fuel-mac-eeprom=%s "
                     "-bios %s -S -nic %s",
                     g_getenv("FUEL_MAC_PATH"), (const char *)data,
                     g_getenv("FUEL_MAC_NIC"));
@@ -338,7 +338,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
                       "fuel-ioc3-subsystem-id=0xc30a,"
                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
-                      "fuel-mac-eeprom=%s,fuel-rtc-decode=low11-mirror "
+                      "fuel-mac-eeprom=%s "
                       "-bios %s -S -nic user", path,
                       (const char *)data);
     g_autoptr(QDict) response = qtest_qmp(qts,
@@ -382,18 +382,6 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     g_unsetenv("FUEL_MAC_PATH");
     g_unsetenv("FUEL_MAC_NIC");
     unlink(path);
-}
-
-static QTestState *fuel_start_rtc(const char *prom, const char *extra)
-{
-    g_autofree char *quoted = g_shell_quote(prom);
-
-    return qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                       "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
-                       "fuel-rtc-decode=low11-mirror "
-                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
-                       quoted, extra);
 }
 
 static QTestState *fuel_start_running(const char *prom)
@@ -1401,26 +1389,6 @@ static void test_fuel_serial_bytes(const void *data)
     g_assert_cmpint(close(b[0]), ==, 0);
 }
 
-static void test_fuel_system_timekeeper_conflict(const void *data)
-{
-    if (g_test_subprocess()) {
-        g_autofree char *quoted = g_shell_quote(data);
-        QTestState *qts = qtest_initf(
-            "-M fuel,topology=fuel-m48t35-compatible,"
-            "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
-            "fuel-l1-type-code=0x61,fuel-bedrock-revision=2,"
-            "fuel-rtc-decode=low11-mirror "
-            "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
-
-        qtest_quit(qts);
-        return;
-    }
-    g_test_trap_subprocess(NULL, 0, 0);
-    g_test_trap_assert_failed();
-    g_test_trap_assert_stderr("*system Timekeeper conflicts with*"
-                            "fuel-rtc-decode*");
-}
-
 static QTestState *fuel_start_system_timekeeper_args(const char *prom,
                                                      const char *base,
                                                      const char *extra)
@@ -1428,7 +1396,7 @@ static QTestState *fuel_start_system_timekeeper_args(const char *prom,
     g_autofree char *quoted = g_shell_quote(prom);
 
     return qtest_initf(
-        "-M fuel,topology=fuel-m48t35-compatible,"
+        "-M fuel,"
         "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
         "fuel-l1-type-code=0x61,fuel-bedrock-revision=2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s "
@@ -1751,165 +1719,6 @@ static void test_fuel_timekeeper_elapsed_rollover(const void *data)
     fuel_timekeeper_files_free(&files);
 }
 
-static void test_fuel_rtc_decode(const void *data)
-{
-    QTestState *qts = fuel_start(data);
-    uint8_t frozen;
-
-    fuel_map_ioc3(qts);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0);
-    qtest_writeb(qts, FUEL_RTC + 0x100, 0x5a);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0);
-    qtest_quit(qts);
-
-    qts = fuel_start_rtc(data, "");
-    fuel_map_ioc3(qts);
-    qtest_writeb(qts, FUEL_RTC + 0x100, 0x5a);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0x5a);
-    qtest_writeb(qts, FUEL_RTC + 0x900, 0xa5);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0xa5);
-    qtest_writeb(qts, FUEL_RTC, 0x42);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7800), ==, 0x42);
-    qtest_writeb(qts, FUEL_RTC + 0x7f7, 0x69);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff7), ==, 0x69);
-
-    qtest_writeb(qts, FUEL_RTC + 0x7f8, 0x80);
-    qtest_writeb(qts, FUEL_RTC + 0x7f9, 0x10);
-    qtest_writeb(qts, FUEL_RTC + 0x7fa, 0x20);
-    qtest_writeb(qts, FUEL_RTC + 0x7fb, 0x12);
-    qtest_writeb(qts, FUEL_RTC + 0x7fc, 0x01);
-    qtest_writeb(qts, FUEL_RTC + 0x7fd, 0x01);
-    qtest_writeb(qts, FUEL_RTC + 0x7fe, 0x01);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff, 0x24);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x20);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f8), ==, 0x20);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x20);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff), ==, 0x24);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7fff), ==, 0x24);
-    qtest_clock_step(qts, 2 * NS_PER_SEC);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x12);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x40);
-    frozen = qtest_readb(qts, FUEL_RTC + 0x7f9);
-    qtest_clock_step(qts, 2 * NS_PER_SEC);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, frozen);
-    qtest_system_reset(qts);
-    fuel_map_ioc3(qts);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0xa5);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff7), ==, 0x69);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x60);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, frozen);
-    qtest_quit(qts);
-}
-
-static void test_fuel_rtc_backing_reopen(const void *data)
-{
-    g_autofree char *path = NULL;
-    g_autofree char *quoted = NULL;
-    g_autofree char *extra = NULL;
-    QTestState *qts;
-    int fd;
-
-    fd = g_file_open_tmp("fuel-rtc-nvram-XXXXXX", &path, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 0x800), ==, 0);
-    g_assert_cmpint(close(fd), ==, 0);
-    quoted = g_shell_quote(path);
-    extra = g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw",
-                            quoted);
-
-    qts = fuel_start_rtc(data, extra);
-    fuel_map_ioc3(qts);
-    qtest_writeb(qts, FUEL_RTC + 0x100, 0xa5);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff7, 0x5a);
-    qtest_writeb(qts, FUEL_RTC + 0x7f8, 0x80);
-    qtest_writeb(qts, FUEL_RTC + 0x7f9, 0x34);
-    qtest_writeb(qts, FUEL_RTC + 0x7fa, 0x23);
-    qtest_writeb(qts, FUEL_RTC + 0x7fb, 0x10);
-    qtest_writeb(qts, FUEL_RTC + 0x7fc, 0x02);
-    qtest_writeb(qts, FUEL_RTC + 0x7fd, 0x25);
-    qtest_writeb(qts, FUEL_RTC + 0x7fe, 0x09);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff, 0x26);
-    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x20);
-    qtest_quit(qts);
-
-    qts = fuel_start_rtc(data, extra);
-    fuel_map_ioc3(qts);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0xa5);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f7), ==, 0x5a);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x20);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x34);
-    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7fff), ==, 0x26);
-    qtest_quit(qts);
-
-    g_assert_cmpint(g_unlink(path), ==, 0);
-}
-
-static void test_fuel_rtc_rejects_wrong_size(const void *data)
-{
-    const char *path;
-    g_autofree char *created = NULL;
-    g_autofree char *quoted = NULL;
-    g_autofree char *extra = NULL;
-    QTestState *qts;
-    int fd;
-
-    if (g_test_subprocess()) {
-        path = g_getenv("FUEL_RTC_BAD_IMAGE");
-        g_assert_nonnull(path);
-        quoted = g_shell_quote(path);
-        extra = g_strdup_printf(
-            "-drive if=none,id=sgi-nvram0,file=%s,format=raw", quoted);
-        qts = fuel_start_rtc(data, extra);
-        qtest_quit(qts);
-        return;
-    }
-
-    fd = g_file_open_tmp("fuel-rtc-bad-nvram-XXXXXX", &created, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 0x400), ==, 0);
-    g_assert_cmpint(close(fd), ==, 0);
-    g_assert_true(g_setenv("FUEL_RTC_BAD_IMAGE", created, true));
-    g_test_trap_subprocess(NULL, 0, 0);
-    g_test_trap_assert_failed();
-    g_test_trap_assert_stderr(
-        "*ds1742: backing drive must be exactly 2048 bytes*");
-    g_unsetenv("FUEL_RTC_BAD_IMAGE");
-    g_assert_cmpint(g_unlink(created), ==, 0);
-}
-
-static void test_fuel_rtc_migration(const void *data)
-{
-    g_autoptr(GError) error = NULL;
-    g_autofree char *directory = g_dir_make_tmp("fuel-rtc-XXXXXX", &error);
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    QTestState *from, *to;
-
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    from = fuel_start_rtc(data, "");
-    to = fuel_start_rtc(data, "-incoming defer");
-    fuel_map_ioc3(from);
-    fuel_map_ioc3(to);
-    qtest_writeb(from, FUEL_RTC + 0x100, 0x5a);
-    qtest_writeb(from, FUEL_RTC + 0x7ff7, 0x69);
-    qtest_writeb(from, FUEL_RTC + 0x7ff8, 0x40);
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed", 30);
-    sgi_wait_migration_status(to, "completed", 30);
-    g_assert_cmphex(qtest_readb(to, FUEL_RTC + 0x900), ==, 0x5a);
-    g_assert_cmphex(qtest_readb(to, FUEL_RTC + 0x7f7), ==, 0x69);
-    g_assert_cmphex(qtest_readb(to, FUEL_RTC + 0x7ff8) & 0xc0, ==, 0x40);
-    qtest_quit(from);
-    qtest_quit(to);
-    g_assert_cmpint(rmdir(directory), ==, 0);
-}
-
 int main(int argc, char **argv)
 {
     g_autofree char *prom = NULL;
@@ -1928,12 +1737,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/board-id-migration", prom,
                         test_fuel_board_id_migration);
     qtest_add_data_func("fuel/pci", prom, test_fuel_pci);
-    qtest_add_data_func("fuel/rtc-decode", prom, test_fuel_rtc_decode);
-    qtest_add_data_func("fuel/rtc-migration", prom, test_fuel_rtc_migration);
-    qtest_add_data_func("fuel/rtc-backing-reopen", prom,
-                        test_fuel_rtc_backing_reopen);
-    qtest_add_data_func("fuel/rtc-rejects-wrong-size", prom,
-                        test_fuel_rtc_rejects_wrong_size);
     qtest_add_data_func("fuel/ioc3-identity", prom,
                         test_fuel_ioc3_identity);
     qtest_add_data_func("fuel/ioc3-phy", prom, test_fuel_ioc3_phy);
@@ -1982,8 +1785,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/serial-bytes", prom, test_fuel_serial_bytes);
     qtest_add_data_func("fuel/system-timekeeper", prom,
                         test_fuel_system_timekeeper);
-    qtest_add_data_func("fuel/system-timekeeper-conflict", prom,
-                        test_fuel_system_timekeeper_conflict);
     qtest_add_data_func("fuel/system-timekeeper-clock", prom,
                         test_fuel_system_timekeeper_clock);
     qtest_add_data_func("fuel/system-timekeeper-migration/running", prom,

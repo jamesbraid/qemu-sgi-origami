@@ -15,7 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = "c8a2239612082cf39ae089ef88368d8bb648b3a228c1782199471bad25bc7c4f"
+EXPECTED_CATALOGUE_SHA256 = "8043bfb395b001443f62184bb80d514fc119dabae097671b57272aebb8fd34fc"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -130,9 +130,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 94)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 29)
-        self.assertEqual(len(layers), 65)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 92)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 28)
+        self.assertEqual(len(layers), 64)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {
@@ -172,7 +172,7 @@ class FuelTests(unittest.TestCase):
         offerings = [row for row in catalogue["offerings"]
                      if row["product"] == "fuel"]
         self.assertEqual({row["topology"] for row in offerings},
-                         {"fuel", "fuel-m48t35-compatible"})
+                         {"fuel"})
         expected = [
             {"kind": "system-controller", "node": 0,
              "argument": "-serial chardev:l1"},
@@ -186,17 +186,14 @@ class FuelTests(unittest.TestCase):
                 self.assertEqual(row["console"], "ioc3-serial-a")
                 self.assertEqual(row["consoles"], expected)
 
-    def test_fuel_export_has_explicit_system_timekeeper(self):
+    def test_fuel_export_has_system_timekeeper(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sn-catalogue.json"])
         topologies = {row["name"]: row for row in catalogue["topologies"]}
         self.assertIn("fuel", topologies)
-        self.assertIn("fuel-m48t35-compatible", topologies)
-        base = topologies["fuel"]["io-boards"]
-        fitted = topologies["fuel-m48t35-compatible"]["io-boards"]
-        self.assertEqual(len(base), 1)
+        self.assertNotIn("fuel-m48t35-compatible", topologies)
+        fitted = topologies["fuel"]["io-boards"]
         self.assertEqual(len(fitted), 1)
-        self.assertNotIn("system-timekeeper", base[0])
         self.assertEqual(fitted[0]["preset"], "fuel")
         self.assertEqual(fitted[0]["system-timekeeper"], {
             "kind": "m48t35-compatible", "year-base": 1968,
@@ -211,26 +208,19 @@ class FuelTests(unittest.TestCase):
             resource = resources[0]
             self.assertEqual(resource["board-indices"], [0])
             self.assertEqual(resource["drive-indices"], [0])
-            if row["topology"] == "fuel-m48t35-compatible":
-                self.assertEqual(resource["part"], "m48t35")
-                self.assertEqual(resource["size"], 32768)
-                self.assertIs(resource["clock-reference"], True)
-                self.assertEqual(resource["year-base"], 1968)
-                self.assertIs(resource["initial-ip27-fixture"], False)
-                self.assertEqual(resource["system-timekeeper-kind"],
-                                 "m48t35-compatible")
-                self.assertEqual(resource["conflicts-machine-option"],
-                                 "fuel-rtc-decode")
-            else:
-                self.assertEqual(resource["part"], "ds1742")
-                self.assertEqual(resource["size"], 2048)
-                self.assertIs(resource["clock-reference"], False)
-                self.assertEqual(resource["requires-machine-option"],
-                                 "fuel-rtc-decode=low11-mirror")
+            self.assertEqual(resource["part"], "m48t35")
+            self.assertEqual(resource["size"], 32768)
+            self.assertIs(resource["clock-reference"], True)
+            self.assertEqual(resource["year-base"], 1968)
+            self.assertIs(resource["initial-ip27-fixture"], False)
+            self.assertEqual(resource["system-timekeeper-kind"],
+                             "m48t35-compatible")
+            self.assertNotIn("requires-machine-option", resource)
+            self.assertNotIn("conflicts-machine-option", resource)
 
     def test_system_timekeeper_requires_fitted_fuel_board(self):
         model = load_checked_system_model(
-            INPUTS / "fuel-m48t35-compatible.yaml", model_schema=schema(INPUTS))
+            INPUTS / "fuel.yaml", model_schema=schema(INPUTS))
         for field, value in (("generation", "SN0"), ("board_ip", "IP29")):
             altered = copy.deepcopy(model)
             altered["machine"][field] = value
@@ -245,7 +235,7 @@ class FuelTests(unittest.TestCase):
 
     def test_system_timekeeper_rejects_unknown_clock_policy(self):
         model = load_checked_system_model(
-            INPUTS / "fuel-m48t35-compatible.yaml", model_schema=schema(INPUTS))
+            INPUTS / "fuel.yaml", model_schema=schema(INPUTS))
         for field, value in (("kind", "ds1742"), ("year_base", 1970),
                              ("year_base", True),
                              ("initial_ip27_fixture", True)):

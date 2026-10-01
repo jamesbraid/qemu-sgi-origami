@@ -1,8 +1,0 @@
-# SPDX-License-Identifier: BSD-3-Clause
-# Fuel composition. Resolve before validating the board description.
-configuration_version: 1
-layers:
-  - layers/architectures/sn1.yaml
-  - layers/assemblies/ip34.yaml
-  - layers/modules/fuel-base.yaml
-  - layers/products/fuel-m48t35-compatible.yaml
