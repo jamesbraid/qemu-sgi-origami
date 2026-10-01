@@ -100,7 +100,7 @@ class Feature:
     """One representative program for one drawing feature."""
     name: str
     command: str          # run as root on the serial console
-    process: str          # killall target once the frame is taken
+    processes: tuple      # killall targets once the frame is taken
     settle_seconds: float
     applies: str          # 'all', 'textured' or 'double_buffered'
 
@@ -114,9 +114,9 @@ class Feature:
 
 # The programs run from the root shell against the display :0 session
 # that guest logged in to. DISPLAY and XAUTHORITY are set once by
-# DISPLAY_SETUP. The names are the stock demo programs; the commands
-# first try the PATH and then the demo directory, because where an
-# installed disk puts them has not been confirmed on root-si.qcow2.
+# DISPLAY_SETUP. Each is a program and data file listed on the matrix
+# disk: the stock OpenGL demos (amesh, i3dm and the like) are not
+# installed there, but Performer's demos and data and the eoe viewers are.
 DISPLAY_SETUP = ('setenv DISPLAY :0.0; '
                  'setenv XAUTHORITY /usr/people/guest/.Xauthority')
 
@@ -127,29 +127,34 @@ def program_log(name):
     return f'/tmp/mgras-{name}.out'
 
 
-def _demo(name, args=''):
+PERFORMER_DATA = '/usr/share/Performer/data'
+
+
+def _program(feature_name, path, args=''):
     tail = f' {args}' if args else ''
-    return (f'( {name}{tail} || /usr/demos/bin/{name}{tail} ) '
-            f'>& {program_log(name)} &')
+    return f'{path}{tail} >& {program_log(feature_name)} &'
 
 
 FEATURES = (
     # The 2D desktop is checked by lib_mgras_regions before any of these
     # run, so it is not a program here.
-    Feature('lit3d', _demo('amesh'), 'amesh', 20.0, 'all'),
-    # A textured Inventor scene. The scene file is one the stock Inventor
-    # demos ship; the exact path is unconfirmed on the disk.
-    Feature('texture', _demo('ivview', '/usr/share/data/models/'
-                             'Textures/earth.iv'),
-            'ivview', 40.0, 'textured'),
-    # Pixel transfer: i3dm writes and reads back pixel rectangles as it
-    # draws. A snapshot of a desktop region would exercise the read path
-    # alone but needs pointer interaction.
-    Feature('pixels', _demo('i3dm'), 'i3dm', 30.0, 'all'),
-    # clock redraws every second and swaps buffers, which only a board
-    # with the second raster engine does in hardware.
-    Feature('doublebuffer', _demo('clock'), 'clock', 20.0,
-            'double_buffered'),
+    # A lit Inventor scene: Performer's windmill through the eoe viewer.
+    Feature('lit3d', _program('lit3d', '/usr/sbin/ivview',
+                              f'{PERFORMER_DATA}/windmill.iv'),
+            ('ivview',), 30.0, 'all'),
+    # A textured Performer model: the CH-53, whose textures load from the
+    # data directory beside it. perfly runs as several processes, and
+    # killall -9 perfly alone left its window up.
+    Feature('texture', _program('texture', '/usr/sbin/perfly',
+                                f'{PERFORMER_DATA}/ch53.pfb'),
+            ('perfly', 'perfly_N32'), 60.0, 'textured'),
+    # Pixel transfer: imgview writes an SGI image to the window.
+    Feature('pixels', _program('pixels', '/usr/sbin/imgview',
+                               f'{PERFORMER_DATA}/brick.rgb'),
+            ('imgview',), 30.0, 'all'),
+    # clock redraws every second and swaps buffers.
+    Feature('doublebuffer', _program('doublebuffer', '/usr/sbin/clock'),
+            ('clock',), 20.0, 'double_buffered'),
 )
 
 

@@ -139,9 +139,13 @@ def _run_feature(test, vm, board, feature, desktop_frame):
                 test.fail(f'{feature.name}: reference {ref_path} is '
                           f'missing and {REQUIRE_REFERENCES_ENV} is set')
     finally:
+        # One killall per name: IRIX killall with no name signals every
+        # process. The ps line shows any target that survived.
+        kills = ''.join(f'killall -9 {p}; ' for p in feature.processes)
+        names = '|'.join(feature.processes)
         _serial(test, vm, f'{feature.name}-stop',
-                f'killall -9 {feature.process}; '
-                f'cat {matrix.program_log(feature.process)}', 'STOP-END')
+                f'{kills}cat {matrix.program_log(feature.name)}; '
+                f"ps -e | egrep '{names}'", 'STOP-END')
     return result
 
 
