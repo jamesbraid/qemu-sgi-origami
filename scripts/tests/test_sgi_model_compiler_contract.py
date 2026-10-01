@@ -420,6 +420,114 @@ class RecordShapeTests(unittest.TestCase):
         })
         return model
 
+    def _expansion_descriptor_model(self):
+        model = self._synthetic_io_peer_model()
+        model["components"].append({
+            "id": "io-l1", "kind": "system-controller", "parent": "io-enclosure",
+            "system_controller": {"kind": "l1"},
+        })
+        model["machine"]["emulation"]["io_assemblies"] = [{
+            "version": 1, "kind": "origin300-pci-expansion", "peer": "io-bedrock",
+            "module": "io-enclosure", "controller": "io-l1", "placement": 1,
+            "initial_node_number": 0, "bedrock_revision": 2, "xbridge_revision": 2,
+            "head_ports": [8, 9, 12, 13], "controller_profile": "pci-expansion",
+            "bic_identity": 0xc000,
+        }]
+        return model
+
+    def test_expansion_descriptor_retains_reset_zero_separately_from_placement(self):
+        model = self._expansion_descriptor_model()
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertEqual(descriptor["kind"], "ORIGIN300_PCI_EXPANSION")
+        self.assertEqual(descriptor["peer_index"], 0)
+        self.assertEqual(descriptor["module_index"], 1)
+        self.assertEqual(descriptor["initial_node_number"], 0)
+        self.assertEqual(descriptor["placement"], 1)
+        self.assertNotIn("initial_latch", descriptor)
+        self.assertNotIn("intx_map", descriptor)
+
+    def test_management_ownership_and_attachment_are_separate_from_ni(self):
+        model = self._expansion_descriptor_model()
+        controllers = compile_model(model)["controllers"]
+        raw = {
+            "owners": [{"controller": c["id"], "identity": i + 101}
+                       for i, c in enumerate(controllers)],
+            "associations": [{"from": 0, "to": 1, "reachable": False}],
+            "attachments": [{"issuer": 0, "owner": 1}],
+        }
+        model["machine"]["emulation"]["l1_management"] = raw
+        management = compile_model(model)["l1_management"]
+        self.assertEqual(management["owners"][1], {"controller_index": 1, "identity": 102})
+        self.assertFalse(management["associations"][0]["reachable"])
+        self.assertEqual(management["attachments"], raw["attachments"])
+        emitted = json.loads(render_catalogue_json([model]))["topologies"][0]["l1-management"]
+        self.assertEqual(emitted["owners"][1]["controller-index"], 1)
+        self.assertFalse(emitted["associations"][0]["reachable"])
+        for mutation in ("duplicate_identity", "missing_owner", "self_association", "unassociated_attachment"):
+            with self.subTest(mutation=mutation):
+                changed = copy.deepcopy(model)
+                m = changed["machine"]["emulation"]["l1_management"]
+                if mutation == "duplicate_identity":
+                    m["owners"][1]["identity"] = 101
+                elif mutation == "missing_owner":
+                    m["owners"].pop()
+                elif mutation == "self_association":
+                    m["associations"][0]["to"] = 0
+                else:
+                    m["attachments"][0] = {"issuer": 1, "owner": 0}
+                with self.assertRaises(CompileError):
+                    compile_model(changed)
+
+    def test_expansion_descriptor_emits_typed_catalogue(self):
+        model = self._expansion_descriptor_model()
+        model["machine"]["emulation"]["io_assemblies"][0]["bic_identity"] = 0x123400000000c000
+        model["machine"]["emulation"]["io_assemblies"][0]["initial_latch"] = 0
+        model["machine"]["emulation"]["io_assemblies"][0]["intx_map"] = list(range(8)) * 6
+        descriptor = json.loads(render_catalogue_json([model]))["topologies"][0]["io-assemblies"][0]
+        self.assertEqual(descriptor["kind"], "origin300-pci-expansion")
+        self.assertEqual(descriptor["initial-node-number"], 0)
+        self.assertEqual(descriptor["bic-identity"], 0x123400000000c000)
+        self.assertEqual(descriptor["initial-latch"], 0)
+        self.assertEqual(descriptor["intx-map"], list(range(8)) * 6)
+
+    def test_expansion_descriptor_rejects_duplicates_and_missing_version(self):
+        model = self._expansion_descriptor_model()
+        raw = model["machine"]["emulation"]["io_assemblies"]
+        raw.append(copy.deepcopy(raw[0]))
+        with self.assertRaisesRegex(CompileError, "duplicate"):
+            compile_model(model)
+        raw.pop()
+        del raw[0]["version"]
+        with self.assertRaisesRegex(CompileError, "version"):
+            compile_model(model)
+
+    def test_expansion_descriptor_rejects_sibling_compute_resources(self):
+        for kind in ("cpu", "memory", "flash"):
+            with self.subTest(kind=kind):
+                model = self._expansion_descriptor_model()
+                peer = next(c for c in model["components"] if c["id"] == "io-bedrock")
+                peer["parent"] = "bic-board"
+                model["components"].extend([
+                    {"id": "bic-board", "kind": "board", "parent": "io-enclosure"},
+                    {"id": "sibling", "kind": kind, "parent": "io-enclosure"},
+                ])
+                with self.assertRaisesRegex(CompileError, "expansion module.*" + kind):
+                    compile_model(model)
+
+    def test_expansion_descriptor_rejects_invalid_construction_inputs(self):
+        for field, value in (("peer", "bedrock"), ("module", "enclosure"),
+                             ("controller", "absent"), ("placement", 0),
+                             ("initial_node_number", 128), ("bedrock_revision", 1),
+                             ("xbridge_revision", 1), ("head_ports", [9, 9, 11, 12]),
+                             ("head_ports", [8, 9, 10, 12]),
+                             ("controller_profile", "compute"), ("bic_identity", 0xa000),
+                             ("intx_map", [8] * 48)):
+            with self.subTest(field=field):
+                model = self._expansion_descriptor_model()
+                model["machine"]["emulation"]["io_assemblies"][0][field] = value
+                with self.assertRaises(CompileError):
+                    compile_model(model)
+
     def test_io_peer_l1_belongs_to_its_module(self):
         model = self._synthetic_io_peer_model()
         model["components"].append({

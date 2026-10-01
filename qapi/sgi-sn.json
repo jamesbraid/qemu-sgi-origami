@@ -464,6 +464,141 @@
             'identity': 'SGIModelAsicIdentity' } }
 
 ##
+# @SGIModelIoAssemblyKind:
+#
+# Explicit experimental I/O assembly implementation.
+#
+# @origin300-pci-expansion: CPU-free Origin 300 PCI expansion assembly
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelIoAssemblyKind', 'data': ['origin300-pci-expansion'] }
+
+##
+# @SGIModelIoAssembly:
+#
+# Versioned synthetic construction policy, separate from physical
+#     topology.
+#
+# @version: Descriptor version; only 1 is supported.
+#
+# @kind: Explicit assembly implementation.
+#
+# @peer-index: Position in the topology I/O peer array.
+#
+# @module-index: Owning module position, cross-checked with the peer.
+#
+# @controller-index: Owning module L1 controller position.
+#
+# @placement: Immutable address-space placement, separate from LB
+#     identity.
+#
+# @initial-node-number: Explicit guest-visible LB reset number; zero
+#     is unassigned.
+#
+# @bedrock-revision: Explicit inferred Bedrock revision 2.
+#
+# @xbridge-revision: Explicit inferred XBridge revision 2.
+#
+# @head-ports: Four distinct U1 E/F and U2 E/F upstream ports.
+#
+# @controller-profile: Explicit pci-expansion controller profile.
+#
+# @bic-identity: Synthetic whole BIC identity with expansion field
+#     0xc000.
+#
+# @initial-latch: Optional synthetic latch; omission starts unknown.
+#
+# @intx-map: Optional 48-entry synthetic board-owned PCI interrupt
+#     map.
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIoAssembly',
+  'data': { 'version': 'uint32',
+            'kind': 'SGIModelIoAssemblyKind',
+            'peer-index': 'uint32',
+            'module-index': 'uint32',
+            'controller-index': 'uint32',
+            'placement': 'uint32',
+            'initial-node-number': 'uint8',
+            'bedrock-revision': 'uint8',
+            'xbridge-revision': 'uint8',
+            'head-ports': ['uint8'],
+            'controller-profile': 'str',
+            'bic-identity': 'uint64',
+            '*initial-latch': 'uint16',
+            '*intx-map': ['uint8'] } }
+
+##
+# @SGIModelL1Owner:
+#
+# Immutable controller registry ownership.
+#
+# @controller-index: Controller position in the topology controller
+#     list.
+#
+# @identity: Nonzero immutable synthetic owner identity.
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Owner',
+  'data': { 'controller-index': 'uint32',
+            'identity': 'uint64' } }
+
+##
+# @SGIModelL1Association:
+#
+# Directed management reachability, independent of NI state.
+#
+# @from: Issuer position in the owner list.
+#
+# @to: Destination position in the owner list.
+#
+# @reachable: Explicit initial reachability; mutable after
+#     construction.
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Association',
+  'data': { 'from': 'uint32',
+            'to': 'uint32',
+            'reachable': 'bool' } }
+
+##
+# @SGIModelL1Attachment:
+#
+# Explicit attached-controller selection for one issuer.
+#
+# @issuer: Issuer position in the owner list.
+#
+# @owner: Attached owner position, requiring a directed association.
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Attachment',
+  'data': { 'issuer': 'uint32',
+            'owner': 'uint32' } }
+
+##
+# @SGIModelL1Management:
+#
+# Separately owned synthetic management composition.
+#
+# @owners: Complete controller ownership registry.
+#
+# @associations: Directed association records.
+#
+# @attachments: Explicit issuer attachment selections.
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Management',
+  'data': { 'owners': ['SGIModelL1Owner'],
+            'associations': ['SGIModelL1Association'],
+            'attachments': ['SGIModelL1Attachment'] } }
+
+##
 # @SGIModelLinkEndKind:
 #
 # What a cable's end plugs into.
@@ -1004,6 +1139,12 @@
 #
 # @io-peers: I/O-only network endpoints, omitted when none are fitted
 #
+# @io-assemblies: explicit experimental construction policy for I/O
+#     peers
+#
+# @l1-management: independent synthetic controller management
+#     composition
+#
 # @routers: every Router any of this chassis's node counts fits
 #
 # @cables: every cable any of this chassis's node counts fits
@@ -1042,6 +1183,8 @@
             'nodes': ['SGIModelNode'],
             'modules': ['SGIModelModule'],
             '*io-peers': ['SGIModelIoPeer'],
+            '*io-assemblies': ['SGIModelIoAssembly'],
+            '*l1-management': 'SGIModelL1Management',
             'routers': ['SGIModelRouter'],
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],
