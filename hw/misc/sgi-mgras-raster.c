@@ -1621,23 +1621,60 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  */
 #define MGRAS_RSS_XFRCONTROL 0x102
 #define MGRAS_RSS_XFRSIZE 0x153
+#define MGRAS_RSS_XFRCOUNTERS 0x158
 #define MGRAS_XFRCONTROL_PIO_READ 0xa
 #define MGRAS_XFRMODE_PIO_READ 0x8000
 
-static void mgras_pio_read_start(SGIMgrasState *s)
+/*
+ * The two callers disagree about the box's row order, so the start takes
+ * which one is asking. The X server's BLOCKXYSTARTI is the box's high
+ * hardware row and its BLOCKXYENDI the low one (established, run
+ * irix-20260930T234501-dc3029); the OpenGL client writes the low row first
+ * and the high one second (established as words from the client's
+ * listing, with the axis assignment inferred; see the pixel read-back and
+ * copy contract). Approximated for the client: the box is the rows
+ * between the two, its top row comes first as the server's read has it,
+ * and a transfer mode with bits 7:4 equal to 8, the client's RGBA and
+ * GL_ABGR_EXT form, reads the same 4-byte pixels; the alignment fields in
+ * bits 10:8 and 16:14 are ignored. Which order the board returns rows in
+ * for the client, and what its other mode values return, are unknown, so
+ * the model logs them and reads zero.
+ */
+#define MGRAS_XFRMODE_GL_FORMAT_MASK 0xf0
+#define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
+#define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
+
+static void mgras_pio_read_start(SGIMgrasState *s, bool client)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
     uint32_t size = s->rss[MGRAS_RSS_XFRSIZE];
+    uint32_t mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
     uint32_t x0 = xy0 >> 16, y0 = xy0 & 0xffff;
     uint32_t x1 = xy1 >> 16, y1 = xy1 & 0xffff;
     uint32_t w = size & 0xffff, h = size >> 16;
 
     s->pio_read_active = false;
-    if (s->rss[MGRAS_RSS_BYTE_XFER_PACKING] != MGRAS_XFRMODE_PIO_READ) {
+    if (client) {
+        uint32_t low = y0;
+
+        if ((mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
+            MGRAS_XFRMODE_GL_FORMAT_RGBA) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read for the "
+                          "OpenGL client, mode 0x%x, not modelled; reads "
+                          "return zero\n", mode);
+            return;
+        }
+        if (mode & MGRAS_XFRMODE_GL_ALIGN_MASK) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read mode 0x%x "
+                          "has alignment bits the model ignores\n", mode);
+        }
+        /* The client's start is the low row: swap into the server's. */
+        y0 = y1;
+        y1 = low;
+    } else if (mode != MGRAS_XFRMODE_PIO_READ) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read, mode 0x%x, "
-                      "not modelled; reads return zero\n",
-                      s->rss[MGRAS_RSS_BYTE_XFER_PACKING]);
+                      "not modelled; reads return zero\n", mode);
         return;
     }
     if (x0 > x1 || y1 > y0 || x1 >= s->width || y0 >= s->height ||
@@ -1654,6 +1691,37 @@ static void mgras_pio_read_start(SGIMgrasState *s)
     s->pio_read_h = h;
     s->pio_read_next = 0;
     s->pio_read_low = 0;
+}
+
+void sgi_mgras_raster_pio_read_trigger(SGIMgrasState *s)
+{
+    mgras_pio_read_start(s, true);
+}
+
+/*
+ * The raster register records the OpenGL client batches into 0x7c08 and
+ * 0x7f08 packets (established as words; the packets and their registers
+ * are in the pixel read-back and copy contract). A record stores its
+ * value as a state write does, so a later execute sees it. Approximated:
+ * it does not also touch the glyph arming or the query flag a direct write
+ * to the box registers does, since the client's records are not the X
+ * server's glyph traffic. Only the registers a read writes are applied;
+ * the draw path's other records, and 0xc and 0x15f whose meaning is
+ * unknown, are left, and the caller logs them.
+ */
+bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
+{
+    switch (reg) {
+    case MGRAS_RSS_BLOCKXYSTARTI:
+    case MGRAS_RSS_BLOCKXYENDI:
+    case MGRAS_RSS_XFRSIZE:
+    case MGRAS_RSS_XFRCOUNTERS:
+    case MGRAS_RSS_BYTE_XFER_PACKING:
+        s->rss[reg] = value;
+        return true;
+    default:
+        return false;
+    }
 }
 
 /* Bank 0's pixel at screen (x, y) as the data port gives it. */
@@ -1731,7 +1799,7 @@ static void mgras_raster_command_execute(
          */
         if ((s->rss[MGRAS_RSS_XFRCONTROL] & MGRAS_XFRCONTROL_PIO_READ) ==
             MGRAS_XFRCONTROL_PIO_READ) {
-            mgras_pio_read_start(s);
+            mgras_pio_read_start(s, false);
         }
         return;
     case MGRAS_RSS_CHAR_H:
