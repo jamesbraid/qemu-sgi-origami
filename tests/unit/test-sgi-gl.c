@@ -2132,6 +2132,9 @@ static void test_lighting_both_at_infinity(void)
     assert_rgba(&cap.v[0][SGI_GL_V_COLOR], 0.5f, 0.5f, 0.5f, 1);
 }
 
+/* Past a count of 12, where a device's count may have wrapped. */
+#define RESUME_VERTS 14
+
 /* Vertex i of the resume tests, with its own colour. */
 static void resume_send(SGIGLContext *c, const SGIGLSink *sink,
                         const float (*pos)[2], int i)
@@ -2234,19 +2237,21 @@ static void resume_positions(float (*pos)[2], int n)
 static void test_resume_primitive_matches(void)
 {
     static Planes whole, split;
-    float pos[NVERTS][2];
+    float pos[RESUME_VERTS][2];
 
-    resume_positions(pos, NVERTS);
+    resume_positions(pos, RESUME_VERTS);
     for (uint32_t mode = SGI_GL_POINTS; mode <= SGI_GL_POLYGON; mode++) {
         for (int cull = 0; cull < 2; cull++) {
-            unsigned draws = resume_whole(mode, cull, pos, NVERTS, &whole);
+            unsigned draws = resume_whole(mode, cull, pos, RESUME_VERTS,
+                                          &whole);
 
             g_assert_cmpuint(draws, >, 0);
-            for (int at = 0; at <= NVERTS; at++) {
+            for (int at = 0; at <= RESUME_VERTS; at++) {
                 unsigned by_resume;
 
-                g_assert_cmpuint(resume_split(mode, cull, pos, NVERTS, at, 0,
-                                              &split, &by_resume), ==, draws);
+                g_assert_cmpuint(resume_split(mode, cull, pos, RESUME_VERTS,
+                                              at, 0, &split, &by_resume),
+                                 ==, draws);
                 g_assert_cmpuint(by_resume, ==, 0);
                 g_assert(memcmp(&whole, &split, sizeof(whole)) == 0);
             }
@@ -2323,6 +2328,14 @@ static void test_resume_primitive_refuses(void)
     g_assert_false(c.in_begin);
     command(&c, NULL, SGI_GL_OP_BEGIN, &word, 1);
     g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_TRIANGLES, v, 0, 0));
+
+    /* Polygon assembly holds every vertex, so a polygon cannot resume. */
+    context_init(&c);
+    c.polygon.enabled = true;
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_POLYGON, v, 2, 2));
+    g_assert_false(c.in_begin);
+    c.polygon.enabled = false;
+    g_assert_true(sgi_gl_resume_primitive(&c, SGI_GL_POLYGON, v, 2, 2));
 }
 
 /* A resume leaves the line stipple phase as it found it. */
@@ -2334,6 +2347,12 @@ static void test_resume_primitive_keeps_stipple_phase(void)
     context_init(&c);
     c.line_phase = 5;
     g_assert_true(sgi_gl_resume_primitive(&c, SGI_GL_LINE_STRIP, v, 1, 3));
+    g_assert_cmpuint(c.line_phase, ==, 5);
+
+    /* A loop with its closing segment pending does not advance it. */
+    context_init(&c);
+    c.line_phase = 5;
+    g_assert_true(sgi_gl_resume_primitive(&c, SGI_GL_LINE_LOOP, v, 2, 2));
     g_assert_cmpuint(c.line_phase, ==, 5);
 }
 

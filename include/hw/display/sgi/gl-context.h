@@ -1098,7 +1098,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
  * Resume a primitive a context switch interrupted inside glBegin/glEnd:
  * begin mode and take k of the vertices the primitive held, oldest first,
  * as the context itself held them, without drawing. count is how many
- * vertices had been sent since glBegin, k <= count. The context uses
+ * vertices had been sent since glBegin; k may exceed a count that
+ * wrapped. The context uses
  * only count mod 2 (strip winding), mod 3 and mod 4 (how far into a
  * triangle or quad it was) and whether k is all the mode ever holds, so
  * a count exact only modulo 12 will do. Held, oldest first: none for
