@@ -406,8 +406,11 @@ enum {
     MGRAS_ERAM_READ_KICKED,
     MGRAS_ERAM_WRITE_ARMED,
     MGRAS_ERAM_WRITE_KICKED,
+    MGRAS_ERAM_WRITE_INLINE,
     MGRAS_ERAM_STATES,
 };
+/* An inline data block's header bit (mgras-gl-commands.md, "Word framing"). */
+#define MGRAS_GL_INLINE_BLOCK    0x80000000u
 
 /* Vertex-attribute headers: the class names the source format. */
 #define MGRAS_GL_VERTEX2F        0x40000008
@@ -1185,7 +1188,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->gl_current = 0;
     s->gl_ge_port_logged = false;
     s->eram_state = MGRAS_ERAM_IDLE;
-    s->eram_host = s->eram_next_host = 0;
+    s->eram_host = 0;
     s->eram_rows = s->eram_bpr = s->eram_next_addr = 0;
     /* The value every captured GL context image restores. */
     s->gl_banks[0] = s->gl_banks[1] = 1;
@@ -1294,21 +1297,28 @@ static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
                                 uint32_t words)
 {
     uint64_t host = s->eram_host;
+    bool inline_data = s->eram_state == MGRAS_ERAM_WRITE_INLINE;
 
-    if (s->eram_state != MGRAS_ERAM_WRITE_KICKED) {
+    if (s->eram_state != MGRAS_ERAM_WRITE_KICKED && !inline_data) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: ERAM write of %u words "
-                      "at 0x%x with no DMA kicked before it\n", words, addr);
+                      "at 0x%x with no data before it\n", words, addr);
         return;
     }
     s->eram_state = MGRAS_ERAM_IDLE;
-    if (s->eram_next_host && host == s->eram_next_host &&
-        addr == s->eram_next_addr) {
-        /* The next chunk of the image being written back. */
-        s->eram_next_host += (uint64_t)words * sizeof(uint32_t);
+    /*
+     * A later chunk of the image being written back follows the last in
+     * ERAM; in host memory it may sit on a page the list does not put
+     * next to the last one's.
+     */
+    if (s->eram_next_addr && addr == s->eram_next_addr) {
         s->eram_next_addr += words;
         return;
     }
-    s->eram_next_host = s->eram_next_addr = 0;
+    s->eram_next_addr = 0;
+    if (inline_data) {
+        /* A few words from the port itself: no context image moves. */
+        return;
+    }
     for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         if (!s->gl_selected[i] || s->gl_saved[i] != host) {
             continue;
@@ -1326,7 +1336,6 @@ static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
         s->gl_saved[i] = 0;
         s->gl_slot[i] = addr;
         s->gl[i].hw_id = addr;
-        s->eram_next_host = host + (uint64_t)words * sizeof(uint32_t);
         s->eram_next_addr = addr + words;
         return;
     }
@@ -1369,14 +1378,21 @@ void sgi_mgras_gl_eram_header(SGIMgrasState *s, uint32_t header)
         }
         break;
     case MGRAS_ERAM_WRITE_ARMED:
-        /* The write's descriptor and kick come between count and kick. */
-        if (header >> 16 != MGRAS_GL_DMA_DESC_CLASS) {
+        /*
+         * The write's descriptor and kick come between count and address,
+         * or, for a few words, an inline block carries them instead
+         * (0xfd04 1, an 8-byte block, 0xfb08 at 0xb26 in run
+         * irix-20261001T020627-d15779).
+         */
+        if (header & MGRAS_GL_INLINE_BLOCK) {
+            s->eram_state = MGRAS_ERAM_WRITE_INLINE;
+        } else if (header >> 16 != MGRAS_GL_DMA_DESC_CLASS) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: ERAM write count "
-                          "with no DMA kick after it, header 0x%08x\n",
-                          header);
+                          "with no data after it, header 0x%08x\n", header);
             s->eram_state = MGRAS_ERAM_IDLE;
         }
         break;
+    case MGRAS_ERAM_WRITE_INLINE:
     case MGRAS_ERAM_WRITE_KICKED:
         if (header != MGRAS_GL_ERAM_WRITE) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA to the GE kicked "
@@ -3760,7 +3776,6 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_eram_write(s, payload[0], payload[1]);
         return;
     case MGRAS_GL_ERAM_END:
-        s->eram_next_host = 0;
         s->eram_next_addr = 0;
         return;
     case MGRAS_GL_COLOR3F:
