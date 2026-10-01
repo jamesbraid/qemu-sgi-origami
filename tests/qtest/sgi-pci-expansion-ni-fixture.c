@@ -7,8 +7,10 @@
 #include "hw/core/sysbus.h"
 #include "hw/pci/pci_device.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/misc/sgi-l1.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qobject/qlist.h"
 #include "../../hw/mips/sgi/sn1-fabric.h"
 #include "../../hw/mips/sgi/origin300-pci-expansion.h"
 
@@ -189,6 +191,16 @@ struct NIFixtureState {
     DeviceState *compute;
     DeviceState *chassis;
     DeviceState *cable;
+    DeviceState *l1[2];
+    DeviceState *uart[2];
+    MemoryRegion uart_view[2];
+    bool management;
+    char *record[2];
+    MemoryRegion management_control;
+    SGIL1QueryOwner owners[2];
+    SGIL1QueryAssociation associations[2];
+    SGIL1QueryAttachment attachment;
+    SGIL1QueryRouter router;
     SN1FabricEndpoint endpoint;
     MemoryRegion ram;
     MemoryRegion ram_observation;
@@ -376,10 +388,112 @@ static SN1FabricEndpoint *fixture_endpoint(Object *obj)
     return &NI_FIXTURE(obj)->endpoint;
 }
 
+/* Composer controls, not registers of a physical management transport. */
+static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
+{
+    NIFixtureState *s = opaque;
+
+    return offset == 0 ? s->associations[0].reachable |
+                        (s->associations[1].reachable << 1) : 0;
+}
+
+static void management_write(void *opaque, hwaddr offset, uint64_t value,
+                             unsigned size)
+{
+    NIFixtureState *s = opaque;
+
+    if (offset == 0) {
+        s->associations[0].reachable = value & 1;
+        s->associations[1].reachable = value & 2;
+    } else if (offset == 8 && value < 2) {
+        resettable_reset(OBJECT(s->l1[value]), RESET_TYPE_COLD);
+    }
+}
+
+static const MemoryRegionOps management_ops = {
+    .read = management_read,
+    .write = management_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
+};
+
+static void fixture_reset_hold(Object *obj, ResetType type)
+{
+    NIFixtureState *s = NI_FIXTURE(obj);
+
+    s->router.active = false;
+    s->associations[0].reachable = true;
+    s->associations[1].reachable = true;
+}
+
+static void fixture_unrealize(DeviceState *dev)
+{
+    sgi_l1_query_router_destroy(&NI_FIXTURE(dev)->router);
+}
+
+static int fixture_pre_save(void *opaque)
+{
+    return NI_FIXTURE(opaque)->router.active ? -EBUSY : 0;
+}
+
+static const VMStateDescription vmstate_management_owner = {
+    .name = TYPE_NI_FIXTURE "/management-owner",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_EQUAL(identity, SGIL1QueryOwner),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_management_association = {
+    .name = TYPE_NI_FIXTURE "/management-association",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(from, SGIL1QueryAssociation),
+        VMSTATE_UINT32_EQUAL(to, SGIL1QueryAssociation),
+        VMSTATE_BOOL(reachable, SGIL1QueryAssociation),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_management_attachment = {
+    .name = TYPE_NI_FIXTURE "/management-attachment",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(issuer, SGIL1QueryAttachment),
+        VMSTATE_UINT32_EQUAL(owner, SGIL1QueryAttachment),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_fixture = {
+    .name = TYPE_NI_FIXTURE,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = fixture_pre_save,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(management, NIFixtureState, 0,
+                       vmstate_info_uint8_equal, bool),
+        VMSTATE_STRUCT_ARRAY(owners, NIFixtureState, 2, 0,
+                             vmstate_management_owner, SGIL1QueryOwner),
+        VMSTATE_STRUCT_ARRAY(associations, NIFixtureState, 2, 0,
+                             vmstate_management_association,
+                             SGIL1QueryAssociation),
+        VMSTATE_STRUCT(attachment, NIFixtureState, 0,
+                       vmstate_management_attachment, SGIL1QueryAttachment),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void fixture_realize(DeviceState *dev, Error **errp)
 {
     NIFixtureState *s = NI_FIXTURE(dev);
     SGIBedrockState *compute;
+    Error *local_error = NULL;
     SN1FabricEndpoint *bic_endpoint;
     static const char *const port_props[] = {
         "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
@@ -533,9 +647,70 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             SYS_BUS_DEVICE(s->compute), 0), 0, SGI_BEDROCK_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->ram_observation);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->compute_observation);
+    if (s->management) {
+        for (i = 0; i < 2; i++) {
+            g_autofree char *controller = g_strdup_printf("l1%u", i);
+            g_autofree char *uart = g_strdup_printf("uart%u", i);
+            g_autofree char *view = g_strdup_printf("ni-fixture.uart%u", i);
+
+            s->l1[i] = qdev_new(TYPE_SGI_L1);
+            object_property_add_child(OBJECT(s), controller, OBJECT(s->l1[i]));
+            qdev_prop_set_string(s->l1[i], "brick-type",
+                                 i ? "pci-expansion" : "ip45");
+            qdev_prop_set_uint32(s->l1[i], "rack", 1);
+            qdev_prop_set_uint32(s->l1[i], "bay", i + 1);
+            qdev_prop_set_bit(s->l1[i], "auto-power", false);
+            qdev_prop_set_bit(s->l1[i], "network-422", false);
+            if (s->record[i]) {
+                QList *records = qlist_new();
+
+                qlist_append_str(records, s->record[i]);
+                qdev_prop_set_array(s->l1[i], "board-record-eeprom", records);
+            }
+            if (!qdev_realize(s->l1[i], NULL, errp)) {
+                return;
+            }
+            s->owners[i].controller = SGI_L1(s->l1[i]);
+            s->uart[i] = qdev_new(TYPE_SGI_L1_UART);
+            object_property_add_child(OBJECT(s), uart, OBJECT(s->uart[i]));
+            if (!object_property_set_link(OBJECT(s->uart[i]), "controller",
+                                          OBJECT(s->l1[i]), errp) ||
+                !sysbus_realize(SYS_BUS_DEVICE(s->uart[i]), errp)) {
+                return;
+            }
+            /* Observation port, not a claimed BIC guest UART aperture. */
+            memory_region_init_alias(&s->uart_view[i], OBJECT(s), view,
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(s->uart[i]), 0),
+                0, SGI_L1_SIZE);
+            sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->uart_view[i]);
+        }
+        s->associations[0] = (SGIL1QueryAssociation) { 0, 1, true };
+        s->associations[1] = (SGIL1QueryAssociation) { 1, 0, true };
+        sgi_l1_query_router_init(&s->router, s->owners, 2,
+                                s->associations, 2, &local_error);
+        if (local_error) {
+            error_propagate(errp, local_error);
+            return;
+        }
+        if (!sgi_l1_query_router_set_attached(&s->router, &s->attachment,
+                                              1, errp)) {
+            sgi_l1_query_router_destroy(&s->router);
+            return;
+        }
+        memory_region_init_io(&s->management_control, OBJECT(s),
+                              &management_ops, s, "ni-fixture.management", 16);
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->management_control);
+    }
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_BOOL("management", NIFixtureState, management, false),
+    DEFINE_PROP_STRING("record0", NIFixtureState, record[0]),
+    DEFINE_PROP_STRING("record1", NIFixtureState, record[1]),
+    DEFINE_PROP_UINT64("identity0", NIFixtureState, owners[0].identity, 101),
+    DEFINE_PROP_UINT64("identity1", NIFixtureState, owners[1].identity, 102),
+    DEFINE_PROP_UINT32("attached-issuer", NIFixtureState, attachment.issuer, 0),
+    DEFINE_PROP_UINT32("attached-owner", NIFixtureState, attachment.owner, 1),
     DEFINE_PROP_UINT8("intx-map", NIFixtureState, intx_map, 0),
     DEFINE_PROP_UINT8("compute-number", NIFixtureState, compute_number, 3),
     DEFINE_PROP_UINT8("bic-number", NIFixtureState, bic_number, 7),
@@ -548,8 +723,12 @@ static void fixture_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SN1FabricClass *fc = SGI_SN1_FABRIC_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->realize = fixture_realize;
+    dc->unrealize = fixture_unrealize;
+    dc->vmsd = &vmstate_fixture;
+    rc->phases.hold = fixture_reset_hold;
     dc->desc = "Synthetic compute/BIC direct NI fixture";
     dc->user_creatable = true;
     device_class_set_props(dc, fixture_properties);
