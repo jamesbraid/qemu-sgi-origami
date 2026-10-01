@@ -222,3 +222,6 @@ system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT_TEST',
 system_ss.add(when: 'CONFIG_SGI_KONA_PORTS', if_true: files('sgi-kona-ports.c'))
 system_ss.add(when: 'CONFIG_SGI_DEVICES', if_true: files('sgi-heart.c'))
 system_ss.add(when: 'CONFIG_SGI_DEVICES', if_true: files('sgi-heart-xtalk-test.c'))
+
+system_ss.add(when: 'CONFIG_MEMORY_TRANSACTION_TEST',
+              if_true: files('memory-transaction-test.c'))

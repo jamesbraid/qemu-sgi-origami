@@ -3829,6 +3829,7 @@ M: Laurent Vivier <lvivier@redhat.com>
 R: Paolo Bonzini <pbonzini@redhat.com>
 S: Maintained
 F: system/qtest.c
+F: hw/misc/memory-transaction-test.c
 F: include/system/qtest.h
 F: accel/qtest/
 F: tests/qtest/

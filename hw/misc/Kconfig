@@ -433,3 +433,8 @@ config SGI_COMMAND_PORT_TEST
 config SGI_KONA_PORTS
     bool
     select SGI_COMMAND_PORT
+
+config MEMORY_TRANSACTION_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES

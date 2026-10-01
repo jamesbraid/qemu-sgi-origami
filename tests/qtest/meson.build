@@ -516,11 +516,15 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test'] + \
-  (config_all_devices.has_key('CONFIG_SGI_DEVICES') ?
+  (config_all_devices.has_key('CONFIG_SGI_DEVICES') and
+   config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['sgi-heart-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
-    ['octane-test', 'octane-mgras-test', 'sgi-heart-cpu-test', 'r10000-identity-test', 'lh28f800su-test',
-     'sgi-bridge-sharp-flash-test', 'ics1890-test'] : []) + \
+    ['sgi-heart-cpu-test', 'r10000-identity-test', 'ics1890-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
+   config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
+    ['octane-test', 'octane-mgras-test', 'lh28f800su-test',
+     'sgi-bridge-sharp-flash-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

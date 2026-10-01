@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "memtx.h"
 #include "sgi-launch.h"
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
@@ -30,7 +31,8 @@ static QTestState *start(bool octane2, const char *graphics, const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
 
-    return qtest_initf("-M %s%s -m %uM -cpu %s -bios %s -S %s",
+    return qtest_initf(MEMTX_TEST_DEVICE
+                       "-M %s%s -m %uM -cpu %s -bios %s -S %s",
                       octane2 ? "octane2" : "octane", graphics,
                       octane2 ? 256 : 128,
                       octane2 ? OCTANE2_CPU : "R10000", quoted, extra);
@@ -58,13 +60,13 @@ static void assert_identity(QTestState *qts)
     uint32_t word;
     uint64_t value;
 
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_SHORT + 4, &word), ==, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_SHORT + 4, &word), ==, 0);
     g_assert_cmphex(word, ==, SI_ID);
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_LONG + 4, &word), ==, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_LONG + 4, &word), ==, 0);
     g_assert_cmphex(word, ==, SI_ID);
-    g_assert_cmpuint(qtest_readq_tx(qts, SI_SHORT, &value), ==, 0);
+    g_assert_cmpuint(memtx_readq(qts, SI_SHORT, &value), ==, 0);
     g_assert_cmphex(value, ==, SI_HQ_REVISION);
-    g_assert_cmpuint(qtest_readq_tx(qts, SI_LONG, &value), ==, 0);
+    g_assert_cmpuint(memtx_readq(qts, SI_LONG, &value), ==, 0);
     g_assert_cmphex(value, ==, SI_HQ_REVISION);
 }
 
@@ -75,7 +77,7 @@ static void assert_core(QTestState *qts, bool octane2)
     g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + 4), ==,
                     octane2 ? 0x6c00106d : 0x4c00106d);
 
-    g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, 0);
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), ==, 0);
 }
 
 static void test_absent(gconstpointer data)
@@ -91,8 +93,8 @@ static void test_absent(gconstpointer data)
                         ==, CORE_LINKS);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, CORE_LINKS);
-        g_assert_cmpuint(qtest_readl_tx(qts, SI_SHORT + 4, &value), !=, 0);
-        g_assert_cmpuint(qtest_readl_tx(qts, SI_LONG + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, SI_SHORT + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, SI_LONG + 4, &value), !=, 0);
         assert_core(qts, octane2);
         qtest_quit(qts);
     }
@@ -157,8 +159,8 @@ static void test_widths_and_holes(gconstpointer data)
     g_assert_cmphex(qtest_readl(qts, SI_LONG + 0x040000), ==, 0x1a2b3c4d);
     g_assert_cmphex(qtest_readl(qts, SI_LONG + 0x040004), ==, 0x5e6f7081);
     for (unsigned i = 0; i < G_N_ELEMENTS(holes); i++) {
-        g_assert_cmpuint(qtest_readl_tx(qts, holes[i], &value), !=, 0);
-        g_assert_cmpuint(qtest_writel_tx(qts, holes[i], 0xffffffff), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, holes[i], &value), !=, 0);
+        g_assert_cmpuint(memtx_writel(qts, holes[i], 0xffffffff), !=, 0);
         g_assert_cmphex(qtest_readl(qts, SI_SHORT + CONTROL), ==, 0x39a562d7);
     }
     assert_core(qts, octane2);
@@ -173,10 +175,10 @@ static void test_liveness(gconstpointer data)
 
     qtest_writel(qts, SI_SHORT + CONTROL, 0x5d3a81c6);
     set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_SHORT + CONTROL, &value), !=, 0);
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_LONG + CONTROL, &value), !=, 0);
-    g_assert_cmpuint(qtest_writel_tx(qts, SI_SHORT + CONTROL, 0), !=, 0);
-    g_assert_cmpuint(qtest_writel_tx(qts, SI_LONG + CONTROL, 0), !=, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_SHORT + CONTROL, &value), !=, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_LONG + CONTROL, &value), !=, 0);
+    g_assert_cmpuint(memtx_writel(qts, SI_SHORT + CONTROL, 0), !=, 0);
+    g_assert_cmpuint(memtx_writel(qts, SI_LONG + CONTROL, 0), !=, 0);
     assert_core(qts, octane2);
     set_property(qts, "/machine/crossbow", "links-alive", SI_LINKS);
     g_assert_cmphex(qtest_readl(qts, SI_SHORT + CONTROL), ==, 0x5d3a81c6);
@@ -199,7 +201,7 @@ static void assert_link_alive(QTestState *qts, unsigned widget, bool alive)
 
 static void reset_link(QTestState *qts, unsigned widget)
 {
-    g_assert_cmpuint(qtest_writel_tx(qts, link_register(widget, 0x30), 0),
+    g_assert_cmpuint(memtx_writel(qts, link_register(widget, 0x30), 0),
                      ==, 0);
 }
 
@@ -207,8 +209,8 @@ static void assert_si_unreachable(QTestState *qts)
 {
     uint32_t value;
 
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_SHORT + 4, &value), !=, 0);
-    g_assert_cmpuint(qtest_readl_tx(qts, SI_LONG + 4, &value), !=, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_SHORT + 4, &value), !=, 0);
+    g_assert_cmpuint(memtx_readl(qts, SI_LONG + 4, &value), !=, 0);
 }
 
 static void assert_link_masks(QTestState *qts, unsigned links)
@@ -298,7 +300,7 @@ static void assert_bridge(QTestState *qts, uint32_t expected)
 {
     uint32_t value;
 
-    g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, 0);
+    g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), ==, 0);
     g_assert_cmphex(value, ==, expected);
 }
 
@@ -346,13 +348,13 @@ static void test_core_link_reset_recovery(gconstpointer data)
         assert_link_alive(qts, 15, false);
         uint32_t value;
 
-        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), !=, 0);
         qtest_clock_step(qts, 19);
         assert_link_alive(qts, 15, false);
-        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), !=, 0);
         qtest_clock_step(qts, 1);
         assert_link_alive(qts, 15, false);
-        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), !=, 0);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, links & ~0x8000);
         qtest_system_reset(qts);
@@ -362,12 +364,12 @@ static void test_core_link_reset_recovery(gconstpointer data)
 
         /* A dead CPU ingress cannot deliver its own reset command. */
         set_property(qts, "/machine/crossbow", "links-alive", links & ~0x100);
-        g_assert_cmpuint(qtest_writel_tx(qts, link_register(8, 0x30), 0),
+        g_assert_cmpuint(memtx_writel(qts, link_register(8, 0x30), 0),
                          !=, 0);
         qtest_clock_step(qts, 20);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, links & ~0x100);
-        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        g_assert_cmpuint(memtx_readl(qts, BRIDGE + 4, &value), !=, 0);
         qtest_system_reset(qts);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, links);
@@ -479,7 +481,7 @@ static void test_local_dma(gconstpointer data)
     uint8_t returned[sizeof(source)];
 
     /* Split the two pixels across two ordinary HEART SDRAM pages. */
-    g_assert_cmpuint(qtest_writel_tx(qts, 0x20008018, 0), ==, 0);
+    g_assert_cmpuint(memtx_writel(qts, 0x20008018, 0), ==, 0);
     qtest_writeq(qts, 0x20008018, 0x20010);
     qtest_writeq(qts, 0x20008020, 0x20011);
     qtest_memwrite(qts, 0x20010ffc, source, sizeof(source));
