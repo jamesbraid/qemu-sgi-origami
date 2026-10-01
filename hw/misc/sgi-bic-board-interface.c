@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Isolated synthetic board interface; no physical controller transport. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bic-board-interface.h"

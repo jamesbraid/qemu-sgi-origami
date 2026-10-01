@@ -113,6 +113,8 @@ hw/mips/sgi/models/layers/modules/numalink-module.yaml
 hw/mips/sgi/models/layers/modules/onyx2-deskside-module.yaml
 hw/mips/sgi/models/layers/modules/origin2000-module.yaml
 hw/mips/sgi/models/layers/modules/origin300-base.yaml
+hw/mips/sgi/models/layers/modules/origin300-pci-expansion-experiment.yaml
+hw/mips/sgi/models/layers/modules/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/layers/modules/origin300-v12-direct.yaml
 hw/mips/sgi/models/layers/modules/origin300-vbrick.yaml
 hw/mips/sgi/models/layers/modules/origin350-module.yaml
@@ -133,6 +135,9 @@ hw/mips/sgi/models/layers/products/origin2000-rack.yaml
 hw/mips/sgi/models/layers/products/origin2000-two-module-xpress.yaml
 hw/mips/sgi/models/layers/products/origin2000.yaml
 hw/mips/sgi/models/layers/products/origin300-numalink-module.yaml
+hw/mips/sgi/models/layers/products/origin300-pci-expansion-configuration-storage-experiment.yaml
+hw/mips/sgi/models/layers/products/origin300-pci-expansion-experiment.yaml
+hw/mips/sgi/models/layers/products/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/layers/products/origin300-two-chassis.yaml
 hw/mips/sgi/models/layers/products/origin300-v12-direct.yaml
 hw/mips/sgi/models/layers/products/origin300-vbrick.yaml
@@ -158,6 +163,9 @@ hw/mips/sgi/models/origin2000-rack.yaml
 hw/mips/sgi/models/origin2000-two-module-xpress.yaml
 hw/mips/sgi/models/origin2000.yaml
 hw/mips/sgi/models/origin300-numalink-module.yaml
+hw/mips/sgi/models/origin300-pci-expansion-configuration-storage-experiment.yaml
+hw/mips/sgi/models/origin300-pci-expansion-experiment.yaml
+hw/mips/sgi/models/origin300-pci-expansion-module.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
 hw/mips/sgi/models/origin300-v12-direct.yaml
 hw/mips/sgi/models/origin300-vbrick.yaml
@@ -172,6 +180,8 @@ hw/mips/sgi/models/tezro-tower-multi.yaml
 hw/mips/sgi/models/tezro-tower-one.yaml
 hw/mips/sgi/net-cable.c
 hw/mips/sgi/net-port.c
+hw/mips/sgi/origin300-pci-expansion.c
+hw/mips/sgi/origin300-pci-expansion.h
 hw/mips/sgi/pi-gfx-state.c
 hw/mips/sgi/pi-gfx.c
 hw/mips/sgi/sn-catalogue-qmp-stub.c
@@ -181,6 +191,8 @@ hw/mips/sgi/sn-machine.c
 hw/mips/sgi/sn-model.json
 hw/mips/sgi/sn-promdata.c
 hw/mips/sgi/sn-promdata.h
+hw/mips/sgi/sn1-fabric.c
+hw/mips/sgi/sn1-fabric.h
 hw/mips/sgi/sn1-node.c
 hw/mips/sgi/sn1-node.h
 hw/mips/sgi/sn1-topology.c
@@ -198,6 +210,7 @@ hw/misc/sgi-bedrock-ni.c
 hw/misc/sgi-bedrock-pi.c
 hw/misc/sgi-bedrock-xb.c
 hw/misc/sgi-bedrock.c
+hw/misc/sgi-bic-board-interface.c
 hw/misc/sgi-board-record.c
 hw/misc/sgi-bridge-dma-test.c
 hw/misc/sgi-command-port-test.c
@@ -273,6 +286,7 @@ include/hw/misc/sgi-bedrock-ni.h
 include/hw/misc/sgi-bedrock-pi.h
 include/hw/misc/sgi-bedrock-xb.h
 include/hw/misc/sgi-bedrock.h
+include/hw/misc/sgi-bic-board-interface.h
 include/hw/misc/sgi-board-record.h
 include/hw/misc/sgi-command-port.h
 include/hw/misc/sgi-elsc.h
@@ -573,9 +587,12 @@ tests/functional/mips64/test_sn1_l1_reset.py
 tests/functional/mips64/test_timer_stall.py
 tests/functional/mips64/test_xframe_pci.py
 tests/qtest/bcm570x-test.c
+tests/qtest/bic-board-interface-fixture.c
 tests/qtest/board-test-fixture.c
 tests/qtest/ds1742-test.c
 tests/qtest/ioc3-release-fixture.c
+tests/qtest/l1-bic-startup-fixture.c
+tests/qtest/l1-query-routing-fixture.c
 tests/qtest/libqos/libqos-sgi-bridge.c
 tests/qtest/libqos/libqos-sgi-bridge.h
 tests/qtest/libqos/pci-sgi-bridge.c
@@ -587,14 +604,18 @@ tests/qtest/psitech-rad4-mode0-fixture.h
 tests/qtest/psitech-rad4-test.c
 tests/qtest/qlogic-isp-test.c
 tests/qtest/scsi-tape-test.c
+tests/qtest/sgi-bic-board-interface-test.c
 tests/qtest/sgi-board-test.c
 tests/qtest/sgi-bridge-bus-test.c
 tests/qtest/sgi-command-port-test.c
 tests/qtest/sgi-debug-tools-test.c
 tests/qtest/sgi-ioc3-eth-test.c
+tests/qtest/sgi-l1-test.h
 tests/qtest/sgi-launch.h
 tests/qtest/sgi-migrate.h
 tests/qtest/sgi-mips-emit.h
+tests/qtest/sgi-pci-expansion-ni-fixture.c
+tests/qtest/sgi-pci-expansion-ni-test.c
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-test.h
 tests/qtest/sn-builder-fault-test.c
@@ -668,6 +689,7 @@ tests/qtest/sn1-directory-state-test.c
 tests/qtest/sn1-io8-scsi-test.c
 tests/qtest/sn1-l1-test.c
 tests/qtest/sn1-odyssey-test.c
+tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c
 tests/qtest/sn1-presence-test.c
 tests/qtest/sn1-system-request-test.c
@@ -676,6 +698,7 @@ tests/qtest/sn1-xbridge-chip-test.c
 tests/qtest/sn1-xbridge-test.c
 tests/qtest/sn1-xbridge-xbow-test.c
 tests/qtest/tigon-test.c
+tests/qtest/xbridge-assembly-fixture.c
 tests/qtest/xframe-test.c
 tests/unit/sgi-gl-texture-test.h
 tests/unit/test-i2c-masters.c

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Direct LINK/NI connection to the Origin 300 PCI expansion module.
 configuration_version: 1
 layers:

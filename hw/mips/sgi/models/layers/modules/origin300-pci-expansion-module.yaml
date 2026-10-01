@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Published Origin 300 PCI expansion module. Runtime routes are unresolved.
 layer_version: 1
 layer:

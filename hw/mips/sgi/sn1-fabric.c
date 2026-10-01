@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Directly cabled Bedrock endpoints, independent of processor population. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Synthetic controller associations; these registers are not an L1 bus. */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"

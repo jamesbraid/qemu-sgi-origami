@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Direct NI transport; no firmware or physical slot wiring. */
 #include "qemu/osdep.h"
 #include "libqtest.h"

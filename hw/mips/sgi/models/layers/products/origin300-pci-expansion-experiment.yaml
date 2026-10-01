@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Experimental direct NI attachment of the PCI expansion assembly.
 layer_version: 1
 sources:

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Synthetic six-head assembly; the caller chooses every external cable. */
 #include "qemu/osdep.h"
 #include "hw/core/qdev-properties.h"

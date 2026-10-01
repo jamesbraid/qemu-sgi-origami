@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Synthetic placement and head pairing, without a compute NI data route. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
