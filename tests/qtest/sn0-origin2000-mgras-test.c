@@ -11015,18 +11015,32 @@ static void test_gl_pixels_inline_rgb(void)
 #define GL_PIX_DMA_SRC        0x7000u
 #define GL_PIX_DMA_WIDGET     9u
 
-static void gl_pixels_dma(QTestState *qts, const uint8_t *image, uint32_t len,
-                          uint32_t pitch, uint32_t rows, uint32_t bpr,
-                          uint32_t kick)
+/*
+ * The transfer's page list names pages 7 and 8 of node nasid, and the
+ * image is written there; on a node other than 0 the same offset on node
+ * 0 holds 0xee bytes, which is what a transfer that dropped the node
+ * bits of a page address would read.
+ */
+static void gl_pixels_dma_on(QTestState *qts, unsigned int nasid,
+                             const uint8_t *image, uint32_t len,
+                             uint32_t pitch, uint32_t rows, uint32_t bpr,
+                             uint32_t kick)
 {
     static const uint8_t header[24] = { 0 };
-    static const uint8_t list[16] = {
-        0, 0, 0, 0, 0, 0, 0, 0x07, 0, 0, 0, 0, 0, 0, 0, 0x08,
-    };
+    uint64_t node = (uint64_t)nasid << 20;
+    uint8_t list[16];
 
+    stq_be_p(list, node | 0x07);
+    stq_be_p(list + 8, node | 0x08);
     qtest_memwrite(qts, GL_PIX_DMA_LIST, header, sizeof(header));
     qtest_memwrite(qts, GL_PIX_DMA_LIST + 0x18, list, sizeof(list));
-    qtest_memwrite(qts, GL_PIX_DMA_SRC, image, len);
+    if (nasid) {
+        g_autofree uint8_t *decoy = g_malloc(len);
+
+        memset(decoy, 0xee, len);
+        qtest_memwrite(qts, GL_PIX_DMA_SRC, decoy, len);
+    }
+    qtest_memwrite(qts, ((uint64_t)nasid << 32) | GL_PIX_DMA_SRC, image, len);
     /* DMA-map slot 3: registers 0x26/0x27, 0x33 and 0x4e. */
     qtest_writel(qts, MGRAS_REG(0x130400), 0x00482608);
     qtest_writeq(qts, MGRAS_REG(0x130400), GL_PIX_DMA_LIST + 0x18);
@@ -11048,6 +11062,13 @@ static void gl_pixels_dma(QTestState *qts, const uint8_t *image, uint32_t len,
     qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
     gl_word(qts, 0x00080b04);
     gl_word(qts, kick);
+}
+
+static void gl_pixels_dma(QTestState *qts, const uint8_t *image, uint32_t len,
+                          uint32_t pitch, uint32_t rows, uint32_t bpr,
+                          uint32_t kick)
+{
+    gl_pixels_dma_on(qts, 0, image, len, pitch, rows, bpr, kick);
 }
 
 /*
@@ -11498,9 +11519,10 @@ static void tex_record(QTestState *t, uint32_t reg, uint32_t value)
  * goes out only when send_mode is set, as the client skips it on a
  * reload; box is the destination rectangle and size word.
  */
-static void tex_load_as(QTestState *t, bool send_mode, uint32_t mode,
-                        uint32_t spec, const uint8_t *texels, uint32_t w,
-                        uint32_t h, const uint32_t box[6], bool bracket)
+static void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
+                          uint32_t spec, const uint8_t *texels, uint32_t w,
+                          uint32_t h, const uint32_t box[6], bool bracket,
+                          unsigned int nasid, uint32_t src_bytes)
 {
     static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
     uint32_t bytes = w * h * 4;
@@ -11531,12 +11553,24 @@ static void tex_load_as(QTestState *t, bool send_mode, uint32_t mode,
     for (int i = 1; i < 8; i++) {
         gl_word(t, draw[i]);
     }
-    gl_pixels_dma(t, texels, bytes, bytes, 1, bytes, 0xa7);
+    if (src_bytes) {
+        /* Pitch 0 rereads the one source row for every row of the level. */
+        gl_pixels_dma_on(t, nasid, texels, src_bytes, 0, h, w * 4, 0xa7);
+    } else {
+        gl_pixels_dma_on(t, nasid, texels, bytes, bytes, 1, bytes, 0xa7);
+    }
     if (bracket) {
         gl_word(t, TEX_LOAD_CLOSE);
     }
     gl_word(t, TEX_RESTORE_RSS);
     tex_record(t, TEX_TXSIZE, 0);
+}
+
+static void tex_load_as(QTestState *t, bool send_mode, uint32_t mode,
+                        uint32_t spec, const uint8_t *texels, uint32_t w,
+                        uint32_t h, const uint32_t box[6], bool bracket)
+{
+    tex_load_full(t, send_mode, mode, spec, texels, w, h, box, bracket, 0, 0);
 }
 
 static void tex_load(QTestState *t, uint32_t mode, const uint8_t *texels)
@@ -11824,6 +11858,45 @@ static void test_gl_texture_textureless_board_ignores(void)
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
     gl_pixels_fence(t);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A level's texels come from DMA pages on node 1, the page list naming
+ * the frame as (1 << 20) | f as for a display list (gl-list-page-on-
+ * another-node); node 0 holds 0xee bytes at the same offset. A transfer
+ * that dropped the node bits would draw the 0xee bytes.
+ */
+#define TEX_NODE_ARGS \
+    "-M origin2000,topology=origin2000-deskside,nodes=2 -smp 4 -m 128M " \
+    "-device sgi-mgras,slot=io3 -global sgi-mgras.board=si-t " \
+    "-global sgi-mgras.x-unimplemented-board=on"
+
+static void test_gl_texture_load_from_another_node(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    QTestState *t = qtest_init(TEX_NODE_ARGS);
+    uint8_t texels[32];
+
+    sn0_program_nasid(t, 1);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_texels(texels);
+    tex_load_full(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, texels, 4, 2, box,
+                  true, 1, 0);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
 }
@@ -18459,6 +18532,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-textureless-board-ignores",
                    test_gl_texture_textureless_board_ignores);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-from-another-node",
+                   test_gl_texture_load_from_another_node);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
                    test_gl_texture_migration);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
