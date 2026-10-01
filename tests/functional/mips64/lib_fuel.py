@@ -13,6 +13,7 @@ from qemu_test import LocalAsset
 
 
 MANIFEST_REL = 'assets/functional/fuel-irix-6.5.30.json'
+TOPOLOGY = 'fuel-m48t35-compatible'
 # Pin the regression fixture so CI can discover its inputs before boot.
 ASSET_SPECS = {
     'manifest': (MANIFEST_REL.removeprefix('assets/'),
@@ -100,13 +101,15 @@ def launch_args(fixture, files, scratch):
     """Copy the supplied flash before constructing the Fuel launch."""
     private_flash = os.path.join(scratch, 'fuel-boot-flash.raw')
     shutil.copyfile(files['boot_flash'], private_flash)
+    # Preserve the pinned fixture while replacing its legacy RTC experiment.
     properties = [
         f'{key}={value}'
         for key, value in sorted(fixture['machine_properties'].items())
+        if key != 'fuel-rtc-decode'
     ]
     for key in sorted({'fuel-mac-eeprom', *_IDENTITY_PAYLOADS} & set(files)):
         properties.append(f'{key}={files[key]}')
-    machine = 'fuel,' + ','.join(properties)
+    machine = f'fuel,topology={TOPOLOGY},' + ','.join(properties)
     argv = [
         '-cpu', 'R14000', '-smp', '1', '-m', '512M',
         '-accel', 'tcg,thread=multi',

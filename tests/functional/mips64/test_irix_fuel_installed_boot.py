@@ -165,6 +165,7 @@ class IrixFuelInstalledBoot(QemuSystemTest):
                     'console': {'name': 'ioc3-a', 'index': 1,
                                 'required_prom_setting': 'console=d'},
                     'machine': machine,
+                    'topology': lib_fuel.TOPOLOGY,
                     'qemu_argv': list(self.vm._qemu_full_args),
                     'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                     'scsi_scratch': {
