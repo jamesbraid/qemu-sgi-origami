@@ -29,6 +29,7 @@ struct SGIOrigin300PciExpansionState {
     DeviceState *bic;
     SGIBICBoardInterfaceState *board_interface;
     uint8_t board_attached;
+    uint8_t processor_absence_selected;
     DeviceState *chip[3];
     SGIXioLink host_link;
     SGIXioLink head_link[4];
@@ -383,6 +384,20 @@ bool sgi_origin300_pci_expansion_attach_board_interface(
     return true;
 }
 
+bool sgi_origin300_pci_expansion_enable_processor_absence(
+    SGIOrigin300PciExpansionState *s, Error **errp)
+{
+    if (DEVICE(s)->realized || s->processor_absence_selected ||
+        !s->board_interface || !DEVICE(s->board_interface)->realized ||
+        !s->ni_route) {
+        error_setg(errp, "processor-absence experiment needs an attached BIC "
+                   "and NI route, selected once before realization");
+        return false;
+    }
+    s->processor_absence_selected = true;
+    return true;
+}
+
 bool sgi_origin300_pci_expansion_enable_ni_route(
     SGIOrigin300PciExpansionState *s, Error **errp)
 {
@@ -522,7 +537,8 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
-    if ((version < 5 && s->storage_selected) ||
+    if ((version < 6 && s->processor_absence_selected) ||
+        (version < 5 && s->storage_selected) ||
         (version < 4 && s->power_selected) ||
         s->requested_power > 1 || s->completed_power > 1) {
         return -EINVAL;
@@ -628,8 +644,23 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
          local - UINT64_C(0x20001800000) < SGI_BEDROCK_SIZE)) {
         offset = local >= UINT64_C(0x20001800000) ?
             local - UINT64_C(0x20001800000) : local - UINT64_C(0x10030000000);
-        /* BIC has no PI. Its LB/NI/II identity and controls remain readable. */
-        if (offset < 0x400000 || size > SGI_BEDROCK_SIZE - offset) {
+        /* Only the selected remote-I/O experiment exposes PI absence words. */
+        if (offset < 0x400000) {
+            if (!s->processor_absence_selected ||
+                local < UINT64_C(0x20001800000) ||
+                (offset != 0x40 && offset != 0x48 &&
+                 offset != 0x200040 && offset != 0x200048)) {
+                return MEMTX_DECODE_ERROR;
+            }
+            if (size != 8 || (offset & 7)) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "pci-expansion: unsupported processor-absence "
+                              "transfer at 0x%" HWADDR_PRIx " size %zu\n",
+                              offset, size);
+                return MEMTX_ERROR;
+            }
+        }
+        if (size > SGI_BEDROCK_SIZE - offset) {
             return MEMTX_DECODE_ERROR;
         }
         as = &s->bic_registers;
@@ -907,11 +938,14 @@ static const Property expansion_properties[] = {
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(processor_absence_selected,
+                       SGIOrigin300PciExpansionState, 6,
+                       vmstate_info_uint8_equal, uint8_t),
         VMSTATE_SINGLE(storage_selected, SGIOrigin300PciExpansionState, 5,
                        vmstate_info_uint8_equal, uint8_t),
         VMSTATE_SINGLE(storage_size, SGIOrigin300PciExpansionState, 5,

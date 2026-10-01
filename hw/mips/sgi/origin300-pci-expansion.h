@@ -45,6 +45,10 @@ bool sgi_origin300_pci_expansion_attach_board_interface(
     SGIOrigin300PciExpansionState *s, SGIBICBoardInterfaceState *interface,
     Error **errp);
 
+/* Functional absence visibility; requires an attached BIC and NI route. */
+bool sgi_origin300_pci_expansion_enable_processor_absence(
+    SGIOrigin300PciExpansionState *s, Error **errp);
+
 bool sgi_origin300_pci_expansion_enable_ni_route(
     SGIOrigin300PciExpansionState *s, Error **errp);
 

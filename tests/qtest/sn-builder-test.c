@@ -1887,6 +1887,62 @@ static void test_expansion_storage_provider_refusals(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_processor_absence(void)
+{
+    static const uint64_t offsets[] = { 0x40, 0x48, 0x200040, 0x200048 };
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[8];
+    int fd = g_file_open_tmp("expansion-presence-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
+        "-d unimp -D %s", prom, log);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned word = 0; word < G_N_ELEMENTS(offsets); word++) {
+            uint64_t address = UINT64_C(0x20201800000) + offsets[word];
+
+            g_assert_true(qtest_memread_cpu(qts, cpu, address,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+            stq_be_p(bytes, 0xfeed0000 + cpu * 4 + word);
+            g_assert_true(qtest_memwrite_cpu(qts, cpu, address,
+                                            bytes, sizeof(bytes)));
+            g_assert_true(qtest_memread_cpu(qts, cpu, address,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+            g_assert_true(qtest_memread_cpu(qts, cpu,
+                UINT64_C(0x20001800000) + offsets[word], bytes, sizeof(bytes)));
+            /* The product populates slots 0 and 2 before slots 1 and 3. */
+            g_assert_cmphex(ldq_be_p(bytes), ==, !(word & 1));
+        }
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    /* Zero reads alone cannot distinguish qtest's discarded decode result. */
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned word = 0; word < G_N_ELEMENTS(offsets); word++) {
+            g_autofree char *expected = g_strdup_printf(
+                "sgi-bedrock-pi: write of 0x%x to hardware-set register "
+                "0x%" PRIx64 " ignored", 0xfeed0000 + cpu * 4 + word,
+                offsets[word] & 0x1fffff);
+
+            g_assert_nonnull(strstr(contents, expected));
+        }
+    }
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_storage_composed_read(void)
 {
     g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
@@ -2652,6 +2708,8 @@ int main(int argc, char **argv)
                    test_expansion_storage_backend_refusals);
     qtest_add_func("sn/builder/expansion/storage/provider-refusals",
                    test_expansion_storage_provider_refusals);
+    qtest_add_func("sn/builder/expansion/processor-absence",
+                   test_expansion_processor_absence);
     qtest_add_func("sn/builder/expansion/storage/composed-read",
                    test_expansion_storage_composed_read);
     qtest_add_func("sn/builder/expansion/storage/binding-required",
