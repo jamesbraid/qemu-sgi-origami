@@ -54,6 +54,10 @@
  *   restore through the kernel's DMA paths are not modelled. Two textures
  *   of one context under one base replace each other's levels. A context
  *   keeps at most one TRAM's 4 MiB of texels and the board four TRAMs'.
+ *   A context opener discards that context's levels and texture state,
+ *   approximated: whether the board's TRAM and TE1 survive a context
+ *   switch or an opener is unknown, so a client that relied on texels
+ *   outliving its opener would lose them here.
  *
  * - Depth. Approximated, the model's choice: an 8-bit host component
  *   kept at 4 bits is truncated (v >> 4) and widened back to 8 bits by
