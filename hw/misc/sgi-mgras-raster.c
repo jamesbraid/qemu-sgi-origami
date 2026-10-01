@@ -135,7 +135,7 @@
  * same sense as XYWIN's y field. That a pixel outside the box is not
  * written is inferred: the per-box redraw only makes sense if the
  * hardware drops what falls outside, and in a scripted desktop session
- * (run irix-20260927T102421-204445) all 99,540 clipped CHAR_L executes
+ * (a captured run) all 99,540 clipped CHAR_L executes
  * (glyph rows and byte-transfer units) and 1,738 clipped IR_ALIAS
  * transfer heads meet their box under this reading and none under an
  * unflipped one. Line boxes hold after the XYWIN origin, so the
@@ -254,8 +254,8 @@
  * is odd, which keeps the checkerboard fixed to the screen only if the
  * pattern restarts at each span. That parity is the server's stipple
  * origin, not a hardware rule: the desktop capture flips it from one
- * drawable's batch of spans to the next. Every stippled line in the captures is
- * horizontal and preceded by its own RE_POINT and pattern, so stepping
+ * drawable's batch of spans to the next. Every stippled line in the captures
+ * is horizontal and preceded by its own RE_POINT and pattern, so stepping
  * one bit per drawn pixel along a diagonal or vertical line, and
  * restarting at an RE_LINE chained from the previous one, are untested
  * assumptions.
@@ -694,14 +694,14 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
  * depth 12, visual 0x29). The server gives it a display ID of its own
  * whose XMAP mode it writes as 0x405 when the window opens, clears it
  * under 0xc804 with COLORMASKLSBSA 0xffffff, and draws every fill, line
- * and glyph row in it under 0x4004 with COLORMASKLSBSA 0xfff (run
- * irix-20260927T035120-7dd191, seq 3803845-3829697). Its fill colours
- * are whole nibbles (FILLCOLOR 0x500/0x800/0xa00), which is what a
- * four-bit channel keeps of the 8-bit-in-12-bit registers. Read as CI8,
- * each of those paints stored index 0 and the pane showed black. What
- * the three fields mean on their own, and what bit 11 adds to the clear,
- * is not known; only these encodings are recognised. The server also
- * offers 12-bit PseudoColor visuals, which no capture draws to.
+ * and glyph row in it under 0x4004 with COLORMASKLSBSA 0xfff (a captured run,
+ * seq 3803845-3829697). Its fill colours are whole nibbles (FILLCOLOR
+ * 0x500/0x800/0xa00), which is what a four-bit channel keeps of the
+ * 8-bit-in-12-bit registers. Read as CI8, each of those paints stored index 0
+ * and the pane showed black. What the three fields mean on their own, and what
+ * bit 11 adds to the clear, is not known; only these encodings are recognised.
+ * The server also offers 12-bit PseudoColor visuals, which no capture draws
+ * to.
  */
 #define MGRAS_PP1FILLMODE_RGB 0x2000
 #define MGRAS_PP1FILLMODE_RGB12_MASK 0x6700
@@ -724,10 +724,9 @@ static uint8_t mgras_pixel_format(SGIMgrasState *s)
  * A 12-bit pixel keeps each 0x00RRGGBB channel's top four bits, red in
  * bits 3:0, green in bits 7:4 and blue in bits 11:8: the red, green and
  * blue masks 0xf, 0xf0 and 0xf00 the server's xdpyinfo reports for its
- * 12-bit TrueColor visuals, 0x29 and 0x2a (run
- * irix-20260927T045444-f4307c, where xwininfo gives the Icon Catalog's
- * pane depth 12 and visual 0x29). No capture reads a 12-bit pixel back,
- * so the masks are the only evidence of the stored layout.
+ * 12-bit TrueColor visuals, 0x29 and 0x2a (a captured run, where xwininfo
+ * gives the Icon Catalog's pane depth 12 and visual 0x29). No capture reads a
+ * 12-bit pixel back, so the masks are the only evidence of the stored layout.
  */
 static uint32_t mgras_rgb12_from_rgb(uint32_t rgb)
 {
@@ -760,11 +759,10 @@ static uint32_t mgras_format_color(uint8_t format, uint32_t index,
  * offset 0, the same word in PACKEDCOLOR and in its image blits) all use
  * that layout. The IRIX 6.5.30 Icon Catalog's 12-bit pane agrees: the
  * soffice icon's stipples carry PACKEDCOLOR 0xf00000 and show blue on
- * the RAD4 reference, and nedit's carry 0xf0f0 and show yellow (run
- * irix-20260927T035120-7dd191). The model stores 0x00RRGGBB, so such a
- * word is swapped on the way in, and a 12-bit window's paint swaps it
- * before keeping its nibbles. FILLCOLOR_R/G/B and BKGRD are per-channel
- * registers and need no swap.
+ * the RAD4 reference, and nedit's carry 0xf0f0 and show yellow (a captured
+ * run). The model stores 0x00RRGGBB, so such a word is swapped on the way in,
+ * and a 12-bit window's paint swaps it before keeping its nibbles.
+ * FILLCOLOR_R/G/B and BKGRD are per-channel registers and need no swap.
  */
 static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
 {
@@ -1588,7 +1586,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 /*
  * Host reads through the raster engine's data port. The IRIX 6.5.30 X
  * server's mgrasReadPixels (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
- * reads a box this way; run irix-20260930T234501-dc3029 caught it 214 times
+ * reads a box this way; a captured run caught it 214 times
  * while oglsnoop showed the pixel under the pointer, two pixels each
  * time (the first at seq 4088838). Established from that
  * listing and the trace: the server waits for 0x02c578 bit 8, writes
@@ -1606,7 +1604,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  * Inferred: that XFRCONTROL bit 1 selects the data port, the only bit the
  * two read forms differ in, and bit 3 the read, since the server's
  * transfers to the screen through the port set bit 1 alone (XFRCONTROL
- * 2, run irix-20261001T020627-d15779); that a unit carries two 4-byte
+ * 2, a captured run); that a unit carries two 4-byte
  * pixels, since a
  * two-pixel box took exactly one; that each row starts a unit, since the
  * listing counts each row's bytes down by eight; and that the box and
@@ -1629,17 +1627,16 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 /*
  * The two callers disagree about the box's row order, so the start takes
  * which one is asking. The X server's BLOCKXYSTARTI is the box's high
- * hardware row and its BLOCKXYENDI the low one (established, run
- * irix-20260930T234501-dc3029); the OpenGL client writes the low row first
- * and the high one second (established as words from the client's
- * listing, with the axis assignment inferred; see the pixel read-back and
- * copy contract). Approximated for the client: the box is the rows
- * between the two, its top row comes first as the server's read has it,
- * and a transfer mode with bits 7:4 equal to 8, the client's RGBA and
- * GL_ABGR_EXT form, reads the same 4-byte pixels; the alignment fields in
- * bits 10:8 and 16:14 are ignored. Which order the board returns rows in
- * for the client, and what its other mode values return, are unknown, so
- * the model logs them and reads zero.
+ * hardware row and its BLOCKXYENDI the low one (established, a captured run);
+ * the OpenGL client writes the low row first and the high one second
+ * (established as words from the client's listing, with the axis assignment
+ * inferred; see the pixel read-back and copy contract). Approximated for the
+ * client: the box is the rows between the two, its top row comes first as the
+ * server's read has it, and a transfer mode with bits 7:4 equal to 8, the
+ * client's RGBA and GL_ABGR_EXT form, reads the same 4-byte pixels; the
+ * alignment fields in bits 10:8 and 16:14 are ignored. Which order the board
+ * returns rows in for the client, and what its other mode values return, are
+ * unknown, so the model logs them and reads zero.
  */
 #define MGRAS_XFRMODE_GL_FORMAT_MASK 0xf0
 #define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
@@ -1894,7 +1891,7 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * other field in the slot could). Every single-node capture has entries
  * below 2^20, which cannot tell this reading from the model's earlier
  * one, which took the node from the list's address and masked entries to
- * 20 bits. On four nodes (run irix-20260929T044029-961bba) that reading
+ * 20 bits. On four nodes (a captured run) that reading
  * sent list fetches for pool pages off node 0 to node 0's memory, whose
  * zeros, floats and user-space pointers the list grammar then parsed.
  * The 28-bit mask keeps the 40-bit node physical space and nothing above
@@ -2342,7 +2339,7 @@ static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
  * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
  * it with (slot << 1) | 0xa1 (__glMgr_WriteDMAHQSetup, 0xd9c2b10 in the
  * IRIX 6.5.30 IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
- * of ipaste, imgview and i3dm (run irix-20260929T063522-625ddc), where the
+ * of ipaste, imgview and i3dm (a captured run), where the
  * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
  * reads bit 4 clear as the GE's port only with a draw waiting, inferred
  * from that split: the kernel's GE-memory transfers (0xa5) also clear it,
@@ -2470,7 +2467,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * execute arrives, and change it as the same words on the port would.
  *
  * A list longer than a pool page is a chain of ranges, and the board
- * follows it. Established from run irix-20260928T111944-b1644a (seq
+ * follows it. Established from a captured run (seq
  * 7576878-7576887): for a 1,024-triangle list the client installed the
  * page list once and sent one execute, offset 0x1000 and size 0x3fa,
  * which covers the first of the list's 14 pool pages, and nothing else
@@ -2836,7 +2833,7 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
      * 0xa104 query, sent for GL_CURRENT_COLOR and the other current
      * attributes, and its two-argument 0x8b08 histogram query clear flag
      * 17 and wait on it like 0xa20c. perfly waited forever on 0xa104 in
-     * run irix-20260928T063220-a9945b. Approximated as for 0xa20c: the
+     * a captured run. Approximated as for 0xa20c: the
      * flag is set once the query's own arguments arrive, and the answer
      * is the model's (sgi_mgras_gl_attribute_answer()). The
      * discriminating test is hq-attribute-queries-set-flag-after-arguments.

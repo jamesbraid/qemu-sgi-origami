@@ -221,7 +221,7 @@ static void test_rgb_pixel_words_read_back_unchanged(void)
 /*
  * The IRIX 6.5.30 Icon Catalog paints one colour both ways: its pane's
  * olive fill as FILLCOLOR_R/G/B 0x800/0x800/0x300 and the icons' stipple
- * over it as PACKEDCOLOR 0x308080 (trace irix-20260927T035120-7dd191).
+ * over it as PACKEDCOLOR 0x308080 (a captured trace).
  * The two agree only if the PACKEDCOLOR word has red in bits 7:0.
  */
 static void test_packedcolor_matches_fillcolor_channels(void)
@@ -2360,7 +2360,7 @@ static void test_hq_flags_set_and_clear(void)
  * GL_CURRENT_COLOR (indices 4 to 7, read as floats) and the other
  * current attributes, and 0x8b08 with two words, one per histogram bin.
  * Each sets the flag once its own arguments have arrived. perfly waited
- * forever on an 0xa104 query in run irix-20260928T063220-a9945b.
+ * forever on an 0xa104 query in a captured run.
  * Approximated: the answer to indices 4 to 7 is the loaded context's
  * current colour, which is what the client reads them as; every other
  * answer is zero.

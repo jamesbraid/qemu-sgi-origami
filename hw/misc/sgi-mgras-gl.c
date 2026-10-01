@@ -132,12 +132,11 @@
  *   0xb90, 0xd980354): 0x6f04 and 1 or 0.
  *
  * Every visual the X server offers with a depth buffer has 24 depth bits
- * and 8 stencil bits (glxinfo on the model, run
- * irix-20260928T004550-1040f3), so the board has an 8-bit stencil buffer
- * beside the 24-bit depth buffer (inferred). The model keeps it in bits
- * 31:24 of each pixel's depth word, an internal layout: how the board
- * packs the two is unknown. That the board tests and updates it as
- * OpenGL 1.2.1, 4.1.5 says is inferred. A context whose visual has no
+ * and 8 stencil bits (glxinfo on the model, in a captured run), so the board
+ * has an 8-bit stencil buffer beside the 24-bit depth buffer (inferred). The
+ * model keeps it in bits 31:24 of each pixel's depth word, an internal layout:
+ * how the board packs the two is unknown. That the board tests and updates it
+ * as OpenGL 1.2.1, 4.1.5 says is inferred. A context whose visual has no
  * stencil buffer still tests against the planes, which the specification
  * says pass every fragment; the model cannot tell the visual. The
  * discriminating tests are gl-stencil-masks-drawing and
@@ -540,11 +539,11 @@ enum {
  * more, from the word holding the first byte. A zero word follows when
  * the number of words sent is odd: when the length is odd for an aligned
  * image, and when it is even for one with an offset (0xd9c1e3c-0xd9c1e50
- * and 0xd9c1d00-0xd9c1d14). gr_osview's 94 bitmaps in the survey run
- * (irix-20260928T004550-1040f3) are all this form: flags 0x1800f, width
- * 16, height 1 or 2, one data word and the zero word. The other paths,
- * for a larger image or other unpack state (0x9114, 0x9008 with raster
- * register records, then 0x9208 with xmove and ymove), are not modelled.
+ * and 0xd9c1d00-0xd9c1d14). gr_osview's 94 bitmaps in the survey run are all
+ * this form: flags 0x1800f, width 16, height 1 or 2, one data word and the
+ * zero word. The other paths, for a larger image or other unpack state
+ * (0x9114, 0x9008 with raster register records, then 0x9208 with xmove and
+ * ymove), are not modelled.
  *
  * Established from the listing: the packet's words and their order,
  * the block's length and offset, and the bytes' order in the stream.
@@ -660,7 +659,7 @@ enum {
  *
  * The draw-buffer triple's first word: 1 in the context setup of the
  * probe's single-buffered visual, 2 in that of its double-buffered one
- * (run irix-20260927T172059-fdbada), where OpenGL's default draw buffer is
+ * (a captured run), where OpenGL's default draw buffer is
  * the front and the back buffer respectively. Reading it as a bit mask of
  * the front and back buffers, SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK, is
  * inferred from those two values. Bits 2 and 3 name slots 2 and 3 of a
@@ -671,7 +670,7 @@ enum {
  * The window the current context draws into, from the 63-word image the
  * IRIX kernel's MgrasCtxsw writes at each context switch. In the image of
  * the probe's GL context, whose window's top-left pixel is at screen (256,
- * 256) and which is 128 pixels square (run irix-20260927T135825-92207b,
+ * 256) and which is 128 pixels square (a captured run,
  * seq 3959112), word 2 is 0x02800100, the window's lower-left corner as
  * (y << 16) | x with y counted up from the bottom of the screen (640 =
  * 1024 - 256 - 128), the packing OpenBSD's impact(4) gives XYWIN. Words 11
@@ -701,7 +700,7 @@ enum {
  * - The kernel's null clip (MgrasSetNullClip, a window of no size and no
  *   rectangles) gets mode 2 with rectangles 0 and 1 both the whole
  *   screen, 0x23, and word 2 then puts the origin at row 1024. Every
- *   image of perfly's context 0x84c6 in run irix-20260928T000530-78d0c5
+ *   image of perfly's context 0x84c6 in a captured run
  *   is this form.
  *
  * Inferred: that the board draws only inside the enabled rectangles in
@@ -724,7 +723,7 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 
 /*
  * Words 16 and 17 of every captured GL context image are 1, those of the
- * X server's images 0 (run irix-20260927T172059-fdbada). The kernel's
+ * X server's images 0 (a captured run). The kernel's
  * bank token 0x9808 carries two words of the same form, 0 at a window's
  * first swap and 1 at its second, and the swaps then show first the frame
  * drawn before the first swap and then the one drawn between them. Both
@@ -1022,7 +1021,7 @@ bool sgi_mgras_gl_header(uint32_t header)
 
 /*
  * glColor3ub's and glColor4ub's bytes in one word, the first component in
- * bits 31:24: colorbars' bars (run irix-20260928T004550-1040f3, from seq
+ * bits 31:24: colorbars' bars (a captured run, from seq
  * 26371573) are 0x87878700, 0x87870000, 0x00878700, 0x00870000,
  * 0x87008700 and 0x87000000, white, yellow, cyan, green, magenta and red.
  * Alpha in bits 7:0 follows from that component order; noof's constant
@@ -1037,13 +1036,12 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
 }
 
 /*
- * Context image word 0 names the context's GL state. In run
- * irix-20260927T191513-b4997c it is 0x3bcd and 0x5420 for two GL clients,
- * 0x237a for the X server and 0xb27 for the kernel's default context.
- * These are allocations observed in that run, not published values, and
- * MGRAS_GL_DEFAULT_SLOT is the one observed there. The IRIX 6.5.30 kernel
- * allocates the word as the context's slot in GE external RAM and writes
- * -1 for a context with no GL state. The image
+ * Context image word 0 names the context's GL state. In a captured run it is
+ * 0x3bcd and 0x5420 for two GL clients, 0x237a for the X server and 0xb27 for
+ * the kernel's default context. These are allocations observed in that run,
+ * not published values, and MGRAS_GL_DEFAULT_SLOT is the one observed there.
+ * The IRIX 6.5.30 kernel allocates the word as the context's slot in GE
+ * external RAM and writes -1 for a context with no GL state. The image
  * carries no other GL state, the clients never re-send theirs after a
  * switch, and nothing touches the GE ports at those switches, so the board
  * keeps each context's state under its slot.
@@ -1067,11 +1065,10 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * 0 to -1 and ORs 0xc0000000 into word 1. After writing the image
  * MgrasCtxsw clears bit 27 of word 1 for every context and bits 31, 30,
  * 29 and 26 for every context but the default, whose image keeps bit 31
- * (established from the client's code). In run
- * irix-20260930T204826-66052a each of the 36 openers the clients sent
- * follows exactly one image with both bits in its slot since that slot's
- * previous opener, and the default context's images carry 0x90000000 or
- * 0x98000000.
+ * (established from the client's code). In a captured run each of the 36
+ * openers the clients sent follows exactly one image with both bits in its
+ * slot since that slot's previous opener, and the default context's images
+ * carry 0x90000000 or 0x98000000.
  *
  * The kernel gives a dead client's slot to the next new context, so the
  * entry kept under that slot can hold a packet the dead client never
@@ -1296,7 +1293,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
  * descriptor and its kick, then 0xfb08 with the ERAM address and count,
  * and ends with 0xfa00.
  *
- * Established from run irix-20260930T234501-dc3029 (i3dm, seq 3906430 to
+ * Established from a captured run (i3dm, seq 3906430 to
  * 3962650): three read-outs of 0x1854 words, from addresses 0x3bcd,
  * 0x84c6 and 0x9d19, each kicked 0xbd from DMA-map slot 2 to offsets
  * 0x9000, 0x21000 and 0x29000 of one kernel buffer; then one write-back,
@@ -1435,8 +1432,7 @@ void sgi_mgras_gl_eram_header(SGIMgrasState *s, uint32_t header)
         /*
          * The write's descriptor and kick come between count and address,
          * or, for a few words, an inline block carries them instead
-         * (0xfd04 1, an 8-byte block, 0xfb08 at 0xb26 in run
-         * irix-20261001T020627-d15779).
+         * (0xfd04 1, an 8-byte block, 0xfb08 at 0xb26 in a captured run).
          */
         if (header & MGRAS_GL_INLINE_BLOCK) {
             s->eram_state = MGRAS_ERAM_WRITE_INLINE;
@@ -1464,16 +1460,15 @@ bool sgi_mgras_gl_eram_valid(SGIMgrasState *s)
 
 /*
  * A context switch can land inside a packet, and each context's words
- * continue its own packet when it is loaded again. In run
- * irix-20260928T000530-78d0c5 (seq 12929748 to 12930582) perfly's context
- * 0x84c6 was switched out 33 words into the 156 data words of a GE table
- * load, context 0x5420 was loaded and sent one glFlush header, and 0x84c6
- * came back and sent its remaining 123 data words. With one parser for
- * the board the glFlush was consumed as table data and 0x84c6's words then
- * parsed as headers, which later left the X server polling HQ flag bit 16
- * forever. The client cannot know where a switch falls, so the board
- * keeps the position per context (inferred). Approximated: the model
- * keeps it with the context's GL state, keyed the same way, not in
+ * continue its own packet when it is loaded again. In a captured run (seq
+ * 12929748 to 12930582) perfly's context 0x84c6 was switched out 33 words into
+ * the 156 data words of a GE table load, context 0x5420 was loaded and sent
+ * one glFlush header, and 0x84c6 came back and sent its remaining 123 data
+ * words. With one parser for the board the glFlush was consumed as table data
+ * and 0x84c6's words then parsed as headers, which later left the X server
+ * polling HQ flag bit 16 forever. The client cannot know where a switch falls,
+ * so the board keeps the position per context (inferred). Approximated: the
+ * model keeps it with the context's GL state, keyed the same way, not in
  * whatever HQ state the board saves. The discriminating tests are
  * gl-parser-follows-the-context and gl-packet-split-by-a-context-switch.
  */
@@ -2765,7 +2760,7 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * colour or index unchanged (3.6.5), which is what the model draws:
  * inferred, as the GE program is not read.
  *
- * Evidence: run irix-20260929T063522-625ddc, a trace of ipaste, imgview,
+ * Evidence: a captured run, a trace of ipaste, imgview,
  * mandel, snapshot and i3dm on the SI. The discriminating tests are
  * gl-pixels-inline-colour-index, gl-pixels-inline-rgb, gl-pixels-dma-abgr,
  * gl-pixels-dma-rgba-and-rgb, gl-pixels-unmodelled-draw-nothing,
@@ -3684,7 +3679,7 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         /*
          * glEnable(GL_DEPTH_TEST) sent 0x6604 with 1 and no other word in
          * the probe's depth case, and every context setup sends it with 0
-         * (run irix-20260927T172059-fdbada).
+         * (a captured run).
          */
         word[0] = SGI_GL_DEPTH_TEST;
         mgras_gl_command(s, payload[0] ? SGI_GL_OP_ENABLE :

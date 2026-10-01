@@ -5,7 +5,7 @@ head sgi-mgras
 # words in the retained replay mgras-target-first-rerun-20260921.codex/qemu/
 # xsgi-mask-dynamic-0x81.replay (group ROOT, lines 1681546-1681847), plus a
 # companion Toolchest cascade-arrow box (group TOOLCHEST, from the separate
-# capture irix-20260922T055519-8b72de/qemu.trace, lines 2915440-2915586, the
+# capture's trace, lines 2915440-2915586, the
 # same group already covered by wp5/charl-rule/charl-rule.md/charl-rule.replay)
 # placed beside it so both halves of the reported defect are in one file. Every
 # 'write 8 0x120400' word is the guest's own command word, copied by line

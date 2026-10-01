@@ -1309,11 +1309,10 @@ static void test_direct_pio_pixel_pairs(void)
  * Display lists. The probe's list case compiles a 16 by 16 grid of
  * triangles, one in each 8-pixel cell, alternately yellow and white, and
  * glCallList sends 0x00080c08, a pool byte offset and a size, after the
- * kernel installs the pool's page list in DMA-map slot 4 (run
- * irix-20260928T023038-8a94ce). The pool words below are laid out the way
- * the board read them at the execute in run irix-20260928T111944-b1644a
- * (its sgi_mgras_dma_chunk records): each range begins with the header
- * the client's func_d970cf0 writes, 0x00080c08 and the next range's
+ * kernel installs the pool's page list in DMA-map slot 4 (a captured run). The
+ * pool words below are laid out the way the board read them at the execute in
+ * a captured run (its sgi_mgras_dma_chunk records): each range begins with the
+ * header the client's func_d970cf0 writes, 0x00080c08 and the next range's
  * offset and size, or 0x00083904 and 0 on a list's last range, then the
  * port words the list stores, packets whole. The page list is the
  * kernel's (three zero header words, then big-endian page frame
@@ -1516,7 +1515,7 @@ static void test_gl_list_follows_the_chain(void)
 }
 
 /*
- * The probe's list-big case as run irix-20260928T111944-b1644a sent it
+ * The probe's list-big case as a captured run sent it
  * and its pool dump holds it. A small list with cell (0, 0)'s triangle
  * alone sits at offset 0: two header words, its 15 words and 15
  * 0x000e0100 words, size 32. The big list, 1,024 triangles in 4-pixel
@@ -1590,7 +1589,7 @@ static void test_gl_list_big_matches_the_reference(void)
 
 /*
  * A page-list entry is the page's whole frame number, node included. On
- * more than one node, as run irix-20260929T044029-961bba had four, a
+ * more than one node, as a captured run had four, a
  * pool page on node 1 is frame (1 << 20) | f: SN0's node number is
  * physical address bits 39:32. Two nodes are enough; the peer Hub is
  * given node number 1, as the PROM would, before anything reaches it.
@@ -2939,7 +2938,7 @@ static void test_gl_eviction_chunks_need_not_be_adjacent(void)
 
 /*
  * A few words go to ERAM inline: 0xfd04 with count 1, an 8-byte inline
- * block, then 0xfb08 with the address (run irix-20261001T020627-d15779).
+ * block, then 0xfb08 with the address (a captured run).
  * No context image moves, so b keeps its state and nothing is logged.
  */
 static void test_gl_eviction_inline_write_moves_nothing(void)

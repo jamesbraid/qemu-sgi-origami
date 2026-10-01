@@ -3,7 +3,7 @@
  * SI+T MGRAS texture: one TE1 engine and its TRAM, as the IRIX 6.5.30
  * OpenGL client drives them.
  * Every word below is established as what that client and kernel sent
- * to the model, in run irix-20260930T224203-2e96c4 (ivview drawing one
+ * to the model, in a captured run (ivview drawing one
  * textured quad); what the board does with each is inferred.
  *
  * What the model does, and the approximations it makes:

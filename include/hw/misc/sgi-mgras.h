@@ -171,7 +171,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
  * and reads it back under index byte 0 (all 32 bits, the main buffer
  * select) and index byte 4 (low 8 bits, which it calls the overlay buffer
  * select); the kernel reading takes index 4 as a second swap-mask word.
- * The probe's swap captures (run irix-20260927T172059-fdbada) write
+ * The probe's swap captures (a captured run) write
  * 0x4000 under index byte 0 at the first swap of a window with display ID
  * 14 and 0 at its second, and those swaps must show first the frame drawn
  * before them and then the next. Scanout therefore shows bank 1 for a

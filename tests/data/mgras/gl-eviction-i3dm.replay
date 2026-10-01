@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # The kernel moving i3dm's top view's GL context to another ERAM
-# address, assembled from run irix-20260930T234501-dc3029 (QEMU
+# address, assembled from a captured run (QEMU
 # sgi-origami-mgras-image-paths at b0c49a11de, four-node Origin 2000,
 # SI, i3dm through the IGLOO libgl.so and the IP27GR532 libGLcore.so).
 # Kept: the context images of the top view under 0x9d19 (seq 3877096),

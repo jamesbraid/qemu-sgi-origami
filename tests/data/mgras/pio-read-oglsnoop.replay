@@ -3,7 +3,7 @@ sgi-replay 2
 head sgi-mgras
 # The IRIX 6.5.30 X server reading two pixels through the raster
 # engine's data port while oglsnoop showed the pixel under the pointer,
-# from run irix-20260930T234501-dc3029 (QEMU sgi-origami-mgras-image-
+# from a captured run (QEMU sgi-origami-mgras-image-
 # paths at b0c49a11de, four-node Origin 2000, SI). Kept: the kernel's
 # switch to the server's context 0x237a with its captured 63-word image,
 # in the handshake gl-pixels-rectwrite.replay uses, and the server's
