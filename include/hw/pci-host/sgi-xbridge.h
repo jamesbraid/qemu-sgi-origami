@@ -5,6 +5,7 @@
 
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -116,6 +117,9 @@ unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
  *   "warm-reset", "warm-reset-out": one line per external port, index
  *       port - 8; unused in Super Bridge mode
  */
+/* Select explicit-source transport before realization; no silicon mode. */
+bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp);
+
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
 PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget);
 
@@ -157,6 +161,10 @@ struct SGIXBridgeHeadState {
     uint32_t pci_levels;
     /* Rebuilt from the fixed PCI population before migration state loads. */
     uint32_t self_ordered_slots;
+    MemTxResult (*packet_sender)(void *opaque, SGIXBridgeHeadState *head,
+                                 hwaddr address, void *buffer, size_t size,
+                                 bool write, const SGIXioSource *source);
+    void *packet_opaque;
     MemoryRegion *target[16];
     struct XBridgeTarget {
         AddressSpace as;
@@ -168,6 +176,13 @@ struct SGIXBridgeHeadState {
         AddressSpace as;
         SGIXBridgeHeadState *head;
         unsigned slot;
+        struct XBridgeSourceDMA {
+            SGIXBridgeHeadState *head;
+            unsigned slot;
+            bool swap;
+            MemoryRegion mr;
+            AddressSpace as;
+        } source[2];
     } dma[8];
     MemoryRegion denied;
     AddressSpace denied_as;

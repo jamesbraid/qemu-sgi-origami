@@ -1144,9 +1144,163 @@ static void test_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void test_explicit_source_context(void)
+{
+    const uint64_t source = UINT64_C(0x40000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = io_start(
+        "-global sgi-bedrock-io.device-mask-reset=0xfffdffffffffffff "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=io,source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0);
+    /* Device-mask writes reenable sources; they cannot clear a bit. */
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 49);
+    qtest_writeq(s, source + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0x12345678);
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_E);
+    qtest_writeq(s, source + 0x1000, 0x87654321);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
+static void test_partial_source_context(void)
+{
+    const uint64_t source = UINT64_C(0x40000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = io_start(
+        "-global sgi-bedrock-io.device-mask-reset=0xffdfffffffffffff "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=io,source-widget=14");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 53);
+    qtest_writeq(s, source + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
+static void test_unknown_source_context(void)
+{
+    const uint64_t source = UINT64_C(0x40000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = io_start(
+        "-device sgi-xio-test-target,id=source,target-port=io");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + 0x1000), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_remote_source_permission(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    const uint64_t peer_regs = UINT64_C(0x70000000);
+    uint64_t remote = source + XIO_REGISTER + XIO_NODE(1) + HUB_REMOTE + 0x1000;
+    QTestState *s = io_start(
+        "-device sgi-bedrock-io,id=peer,node-number=1,"
+        "device-mask-reset=0xfffdffffffffffff,"
+        "dma-memory=/objects/dma/dma[0],hub-registers=/objects/hub/hub[0] "
+        "-device sgi-xio-test-target,id=source,target-port=io,"
+        "target-peer=peer,source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/peer", 0, peer_regs);
+    qtest_writeq(s, remote, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + XIO_REGISTER +
+                               HUB_REMOTE + 0x1000), ==, 0);
+    qtest_writeq(s, peer_regs + DEVICE_MASK, UINT64_C(1) << 49);
+    qtest_writeq(s, remote, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, IN_BASE + XIO_REGISTER +
+                               HUB_REMOTE + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
+static void test_source_context_keeps_guard(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = io_start_loopback(MACHINE_LOOPBACK_HUB,
+        "-device sgi-xio-test-target,id=source,target-port=io,"
+        "source-widget=14,source-device=1");
+
+    program_loopback_entries(s);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + XIO_REGISTER + HUB_REMOTE + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, PIO_MEMORY_FORM(0x1000)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_source_context_address_bounds(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    uint64_t address = source + XIO_REGISTER + HUB_REMOTE + 0x1000;
+    QTestState *s = io_start(
+        "-device sgi-xio-test-target,id=source,target-port=io,"
+        "source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, address, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    qtest_writeq(s, address + (UINT64_C(1) << 48), 0x87654321);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0x12345678);
+    qtest_quit(s);
+}
+
+static void test_source_destination_callback(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    const uint64_t address = XIO_REGISTER | HUB_REMOTE | 0x1000;
+    QTestState *s = io_start(
+        "-device sgi-xio-test-target,id=source,target-port=io,"
+        "source-widget=14,source-device=1,destination-callback=on");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, REG_BASE + 0x118, 0);
+    qtest_writeq(s, source + address, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status + 8), ==, 0);
+    qtest_writeq(s, REG_BASE + 0x118, UINT64_MAX);
+    qtest_writeq(s, source + address, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    g_assert_cmpuint(qtest_readq(s, status + 8), ==, 1);
+    g_assert_cmphex(qtest_readq(s, status + 16), ==, address);
+    g_assert_cmpuint(qtest_readq(s, status + 24), ==, 14);
+    g_assert_cmpuint(qtest_readq(s, status + 32), ==, 1);
+    g_assert_cmpuint(qtest_readq(s, status + 40), ==, 1);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sn1/bedrock-io/source-destination-callback",
+                   test_source_destination_callback);
     qtest_add_func("sn1/bedrock-io/dma-link-required",
                    test_dma_link_required);
     qtest_add_func("sn1/bedrock-io/identity-registers",
@@ -1159,6 +1313,18 @@ int main(int argc, char **argv)
                    test_probe_and_retained_registers);
     qtest_add_func("sn1/bedrock-io/pio-translation",
                    test_pio_translation_and_protection);
+    qtest_add_func("sn1/bedrock-io/source-context-address-bounds",
+                   test_source_context_address_bounds);
+    qtest_add_func("sn1/bedrock-io/source-context-keeps-guard",
+                   test_source_context_keeps_guard);
+    qtest_add_func("sn1/bedrock-io/remote-source-permission",
+                   test_remote_source_permission);
+    qtest_add_func("sn1/bedrock-io/partial-source-context",
+                   test_partial_source_context);
+    qtest_add_func("sn1/bedrock-io/unknown-source-context",
+                   test_unknown_source_context);
+    qtest_add_func("sn1/bedrock-io/explicit-source-context",
+                   test_explicit_source_context);
     qtest_add_func("sn1/bedrock-io/inbound-protection",
                    test_inbound_protection);
     qtest_add_func("sn1/bedrock-io/inbound-source-widgets",

@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "hw/misc/iommu-testdev.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
@@ -744,15 +745,19 @@ static void test_six_head_interrupts(void)
     qtest_quit(qts);
 }
 
-static void test_six_head_dma(void)
+static void run_six_head_dma(bool context)
 {
-    QTestState *qts = assembly_start(
+    g_autofree char *extra = g_strdup_printf("%s %s",
+        context ?
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on" : "",
+
         "-device sgi-bridge-dma-test,bus=fixture0-head-e.0,addr=0 "
         "-device sgi-bridge-dma-test,bus=fixture0-head-f.0,addr=0 "
         "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0 "
         "-device sgi-bridge-dma-test,bus=fixture1-head-f.0,addr=0 "
         "-device sgi-bridge-dma-test,bus=fixture2-head-e.0,addr=0 "
         "-device sgi-bridge-dma-test,bus=fixture2-head-f.0,addr=0");
+    QTestState *qts = assembly_start(extra);
     unsigned i;
 
     for (i = 0; i < 6; i++) {
@@ -775,13 +780,135 @@ static void test_six_head_dma(void)
     qtest_quit(qts);
 }
 
-static void test_assembly_migration(void)
+static void test_six_head_dma(void)
+{
+    run_six_head_dma(false);
+}
+
+static void test_six_head_source_dma(void)
+{
+    run_six_head_dma(true);
+}
+
+static void test_head_source_interrupts(void)
+{
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-bedrock-io.device-mask-reset=0xfffffffffffffffd");
+
+    /* Head-pin transport only: no physical PCI slot wiring is installed. */
+    for (unsigned head = 0; head < 2; head++) {
+        g_autofree char *path = g_strdup_printf(
+            ASSEMBLY "/chip0/head-%c", head ? 'f' : 'e');
+        uint64_t scratch = SCRATCH + head * 8;
+
+        qtest_writel(s, VIEW(head) + 0x24, 0x0f003208 + head);
+        qtest_writel(s, VIEW(head) + 0x34, 0xa << 16);
+        qtest_writel(s, VIEW(head) + 0x3c, scratch);
+        qtest_writel(s, VIEW(head) + 0x14c, 0x80 + head);
+        qtest_writel(s, VIEW(head) + 0x10c, 8);
+        qtest_writel(s, VIEW(head) + 0x11c, 8);
+        qtest_set_irq_in(s, path, NULL, 3, 1);
+        g_assert_cmphex(qtest_readq(s, FABRIC + scratch), ==,
+                        head ? 0x181 : 0);
+        qtest_set_irq_in(s, path, NULL, 3, 0);
+        g_assert_cmphex(qtest_readq(s, FABRIC + scratch), ==,
+                        head ? 0x81 : 0);
+    }
+    qtest_quit(s);
+}
+
+static uint32_t source_tx(QTestState *s, uint64_t card, uint32_t address)
+{
+    qtest_writel(s, card + ITD_REG_DMA_GVA_LO, address);
+    qtest_writel(s, card + ITD_REG_DMA_GVA_HI, 0);
+    qtest_writel(s, card + ITD_REG_DMA_LEN, 8);
+    qtest_writel(s, card + ITD_REG_DMA_GPA_LO, FABRIC + SCRATCH);
+    qtest_writel(s, card + ITD_REG_DMA_DBELL, ITD_DMA_DBELL_ARM);
+    qtest_readl(s, card + ITD_REG_DMA_TRIGGERING);
+    return qtest_readl(s, card + ITD_REG_DMA_RESULT);
+}
+
+static void test_slot_source_dma(void)
+{
+    QTestState *s;
+    uint64_t head = VIEW(2);
+    const uint64_t sentinel = UINT64_C(0x1122334455667788);
+    const uint32_t address[] = { 0x80008000, 0x40000000 };
+
+    if (!qtest_has_device("iommu-testdev")) {
+        g_test_skip("iommu-testdev is not built");
+        return;
+    }
+    s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-bedrock-io.device-mask-reset=0xfffffffffffffffe "
+        "-device iommu-testdev,bus=fixture1-head-e.0,addr=0 "
+        "-device iommu-testdev,bus=fixture1-head-e.0,addr=1");
+    qtest_writel(s, head + 0x24, 0x0f003208);
+    qtest_writel(s, head + 0x20010, 0x01000000);
+    qtest_writel(s, head + 0x20004, 6);
+    qtest_writel(s, head + 0x21010, 0x01200000);
+    qtest_writel(s, head + 0x21004, 6);
+    qtest_writel(s, head + 0x204, 0x81010);
+    qtest_writel(s, head + 0x20c, 0x81012);
+    qtest_writel(s, head + 0x84, 0xa << 20);
+    qtest_writeq(s, head + 0x10000, 0x8a21);
+    qtest_writeq(s, FABRIC + 0x9000, 0xfeedfacecafebeefULL);
+    for (unsigned i = 0; i < ARRAY_SIZE(address); i++) {
+        qtest_writeq(s, FABRIC + SCRATCH, sentinel);
+        g_assert_cmphex(source_tx(s, head + 0x200000, address[i]), ==,
+                        ITD_DMA_ERR_TX_FAIL);
+        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==, sentinel);
+        g_assert_cmphex(source_tx(s, head + 0x400000, address[i]), ==, 0);
+        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), !=, sentinel);
+    }
+    qtest_quit(s);
+}
+
+static void test_source_dma_byte_lanes(void)
+{
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0");
+    uint64_t head = VIEW(2), card = head + 0x200000;
+    const uint32_t address[] = { 0x80008000, 0x40000000 };
+    const uint64_t expected[] = { 0x4342414047464544ULL,
+                                 0x4041424344454647ULL };
+
+    qtest_writel(s, head + 0x20010, 0x01000000);
+    qtest_writel(s, head + 0x20004, 6);
+    qtest_writel(s, head + 0x204, 0x1010);
+    qtest_writel(s, head + 0x84, 0xa << 20);
+    qtest_writeq(s, head + 0x10000, 0x8a21);
+    for (unsigned i = 0; i < ARRAY_SIZE(address); i++) {
+        qtest_writel(s, card, address[i]);
+        qtest_writel(s, card + 0x18, 0);
+        qtest_writel(s, card + 4, 8);
+        qtest_writel(s, card + 8, 0x40);
+        qtest_writel(s, card + 0xc, 1);
+        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==, expected[i]);
+        qtest_writel(s, card + 0x14, address[i]);
+        qtest_writel(s, card + 0x1c, 0);
+        qtest_writel(s, card, 0x80009000);
+        qtest_writel(s, card + 0xc, 2);
+        g_assert_cmphex(qtest_readq(s, FABRIC + 0x9000), ==,
+                        0x4342414047464544ULL);
+    }
+    qtest_quit(s);
+}
+
+static void run_assembly_migration(bool context)
 {
     GError *error = NULL;
     g_autofree char *dir = g_dir_make_tmp("xbridge-assembly-XXXXXX", &error);
     g_autofree char *socket = NULL, *uri = NULL;
-    QTestState *from = assembly_start("");
-    QTestState *to = assembly_start("-incoming defer");
+    const char *extra = context ?
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0" : "";
+    g_autofree char *incoming = g_strdup_printf("%s -incoming defer", extra);
+    QTestState *from = assembly_start(extra);
+    QTestState *to = assembly_start(incoming);
     unsigned i;
 
     g_assert_no_error(error);
@@ -790,6 +917,16 @@ static void test_assembly_migration(void)
     for (i = 0; i < 6; i++) {
         qtest_writel(from, VIEW(i) + 0x24, 0x0f003208 + i);
         qtest_writel(from, VIEW(i) + 0x4c, 0x123400 + i);
+    }
+    if (context) {
+        qtest_sysbus_mmio_map(from, ASSEMBLY, 14, 0x70000000);
+        qtest_sysbus_mmio_map(to, ASSEMBLY, 14, 0x70000000);
+        qtest_writeq(from, 0x70000118, UINT64_MAX & ~(UINT64_C(1) << 10));
+        qtest_writeq(from, FABRIC + SCRATCH, 0xfeedfacecafebeefULL);
+        qtest_writel(from, VIEW(2) + 0x20010, 0x01000000);
+        qtest_writel(from, VIEW(2) + 0x20004, 6);
+        qtest_writel(from, VIEW(2) + 0x204, 0x81010);
+        qtest_writel(from, VIEW(2) + 0x84, 0xa << 20);
     }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -801,7 +938,26 @@ static void test_assembly_migration(void)
     }
     g_assert_cmphex(qtest_readl(to, VIEW(6) + 4), ==, 0);
     g_assert_cmphex(qtest_readl(to, VIEW(7) + 4), ==, 0);
+    if (context) {
+        uint64_t card = VIEW(2) + 0x200000;
+
+        g_assert_cmphex(qtest_readq(to, 0x70000118), ==,
+                        UINT64_MAX & ~(UINT64_C(1) << 10));
+        qtest_writel(to, card, 0x80000000 | SCRATCH);
+        qtest_writel(to, card + 4, 8);
+        qtest_writel(to, card + 8, 0x40);
+        qtest_writel(to, card + 0xc, 1);
+        g_assert_cmphex(qtest_readq(to, FABRIC + SCRATCH), ==,
+                        0xfeedfacecafebeefULL);
+        qtest_writeq(to, 0x70000118, UINT64_MAX);
+        qtest_writel(to, card + 0xc, 1);
+        g_assert_cmphex(qtest_readq(to, FABRIC + SCRATCH), ==,
+                        0x4041424344454647ULL);
+    }
     qtest_system_reset(to);
+    if (context) {
+        g_assert_cmphex(qtest_readq(to, 0x70000118), ==, UINT64_MAX);
+    }
     for (i = 0; i < 6; i++) {
         g_assert_cmphex(qtest_readl(to, VIEW(i) + 0x24) & 0xf, ==, 0xf);
     }
@@ -809,6 +965,16 @@ static void test_assembly_migration(void)
     qtest_quit(to);
     unlink(socket);
     rmdir(dir);
+}
+
+static void test_assembly_migration(void)
+{
+    run_assembly_migration(false);
+}
+
+static void test_source_context_migration(void)
+{
+    run_assembly_migration(true);
 }
 
 static void test_assembly_duplicate_port(void)
@@ -874,9 +1040,83 @@ static void test_assembly_rejects_host_port(void)
     g_test_trap_assert_stderr("*other than host port a*");
 }
 
+static void test_explicit_context_crossbar(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=/machine/peripheral/assembly/chip0,target-index=8,"
+        "source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + (UINT64_C(0xa) << 48) + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FABRIC + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
+static void test_context_nested_dma(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0 "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=/machine/peripheral/assembly/chip0,target-index=9,"
+        "source-widget=14,source-device=1");
+    uint64_t head = VIEW(2), card = head + 0x200000;
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writel(s, head + 0x20010, 0x01000000);
+    qtest_writel(s, head + 0x20004, 6);
+    qtest_writel(s, head + 0x204, 0x1010);
+    qtest_writel(s, head + 0x84, 0xa << 20);
+    qtest_writel(s, card, 0x80008000);
+    qtest_writel(s, card + 0x18, 0);
+    qtest_writel(s, card + 4, 8);
+    qtest_writel(s, card + 8, 0x40);
+    g_assert_cmphex(qtest_readl(s, card), ==, 0x80008000);
+    g_assert_cmpuint(qtest_readl(s, card + 4), ==, 8);
+    qtest_writel(s, source + (UINT64_C(8) << 48) + 0x20000c, 1);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==,
+                    0x4342414047464544ULL);
+    qtest_quit(s);
+}
+
+static void test_context_crossbar_loop(void)
+{
+    const uint64_t source = UINT64_C(0x1000000000000000);
+    const uint64_t status = UINT64_C(0x60000000);
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-xbridge-assembly-fixture.context-loop=on "
+        "-device sgi-xio-test-target,id=source,"
+        "target-port=/machine/peripheral/assembly/chip0,target-index=8,"
+        "source-widget=14,source-device=1");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 1, source);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/source", 2, status);
+    qtest_writeq(s, source + (UINT64_C(0xb) << 48) + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), !=, 0);
+    qtest_writeq(s, source + (UINT64_C(0xa) << 48) + 0x1000, 0x12345678);
+    g_assert_cmpuint(qtest_readq(s, status), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FABRIC + 0x1000), ==, 0x12345678);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sn1/xbridge-chip/context-nested-dma",
+                   test_context_nested_dma);
+    qtest_add_func("/sn1/xbridge-chip/context-crossbar-loop",
+                   test_context_crossbar_loop);
     qtest_add_func("/sn1/xbridge-chip/widgets", test_widgets);
     qtest_add_func("/sn1/xbridge-chip/space-above-face",
                    test_space_above_face);
@@ -919,7 +1159,18 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/six-heads", test_six_heads);
     qtest_add_func("/sn1/xbridge-chip/six-head-interrupts",
                    test_six_head_interrupts);
+    qtest_add_func("/sn1/xbridge-chip/explicit-context-crossbar",
+                   test_explicit_context_crossbar);
+    qtest_add_func("/sn1/xbridge-chip/slot-source-dma", test_slot_source_dma);
+    qtest_add_func("/sn1/xbridge-chip/source-dma-byte-lanes",
+                   test_source_dma_byte_lanes);
+    qtest_add_func("/sn1/xbridge-chip/six-head-source-dma",
+                   test_six_head_source_dma);
+    qtest_add_func("/sn1/xbridge-chip/head-source-interrupts",
+                   test_head_source_interrupts);
     qtest_add_func("/sn1/xbridge-chip/six-head-dma", test_six_head_dma);
+    qtest_add_func("/sn1/xbridge-chip/source-context-migration",
+                   test_source_context_migration);
     qtest_add_func("/sn1/xbridge-chip/assembly-migration",
                    test_assembly_migration);
     qtest_add_func("/sn1/xbridge-chip/assembly-duplicate-port",
