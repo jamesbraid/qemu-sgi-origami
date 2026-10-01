@@ -94,6 +94,14 @@ static void xbow_packet(SGIXBridgeXbowState *s, bool set)
     }
 }
 
+void sgi_xbridge_xbow_reevaluate_assertion(SGIXBridgeXbowState *s)
+{
+    if (s->status & REG(s, 0x20) & STATUS_CONDITIONS) {
+        s->status |= STATUS_WIDGET0_REQUEST;
+        xbow_packet(s, true);
+    }
+}
+
 /* One assertion is outstanding at a time; later conditions only accumulate. */
 static void xbow_condition(SGIXBridgeXbowState *s, uint32_t condition)
 {

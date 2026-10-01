@@ -1,4 +1,6 @@
 slow_qtests = {
+  # Expansion routing plus power reset/migration exceeds the 60s default.
+  'sgi-pci-expansion-ni-test': 120,
   'ahci-test': 150,
   'aspeed_smc-test': 360,
   'bios-tables-test' : 910,

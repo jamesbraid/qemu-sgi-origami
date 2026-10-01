@@ -11,6 +11,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/misc/sgi-l1.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -35,6 +36,19 @@ struct SGIOrigin300PciExpansionState {
     uint8_t intx_levels[SGI_ORIGIN300_PCI_HEADS];
     qemu_irq *intx_inputs;
     qemu_irq intx_outputs[SGI_ORIGIN300_PCI_HEADS][SGI_XBRIDGE_HEAD_PINS];
+    uint8_t power_selected;
+    uint8_t initial_power;
+    uint8_t requested_power;
+    uint8_t completed_power;
+    uint64_t power_owner_identity;
+    SGIL1State *power_owner;
+    SGIOrigin300PowerOperation power_operation;
+    void *power_opaque;
+    bool power_active;
+    struct ExpansionView {
+        SGIOrigin300PciExpansionState *assembly;
+        AddressSpace target;
+    } view_target[12];
     bool ni_initialized;
     AddressSpace bic_registers;
     AddressSpace bic_pio;
@@ -77,12 +91,149 @@ static const MemoryRegionOps expansion_denied_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+bool sgi_origin300_pci_expansion_main_power_available(
+    SGIOrigin300PciExpansionState *s)
+{
+    return !s->power_selected || s->completed_power;
+}
+
+bool sgi_origin300_pci_expansion_power_requested(
+    SGIOrigin300PciExpansionState *s)
+{
+    return !s->power_selected || s->requested_power;
+}
+
+static bool expansion_available(void *opaque)
+{
+    return sgi_origin300_pci_expansion_main_power_available(opaque);
+}
+
+bool sgi_origin300_pci_expansion_bind_power(
+    SGIOrigin300PciExpansionState *s, SGIL1State *owner,
+    uint64_t identity, bool initial_on, SGIOrigin300PowerOperation operation,
+    void *opaque, Error **errp)
+{
+    if (DEVICE(s)->realized || s->power_selected || !owner || !identity ||
+        !owner->brick_type || strcmp(owner->brick_type, "pci-expansion")) {
+        error_setg(errp, "expansion power needs one immutable "
+                   "expansion L1 owner");
+        return false;
+    }
+    object_ref(OBJECT(owner));
+    s->power_owner = owner;
+    s->power_owner_identity = identity;
+    s->power_selected = 1;
+    s->initial_power = initial_on;
+    s->requested_power = initial_on;
+    s->completed_power = initial_on;
+    s->power_operation = operation;
+    s->power_opaque = opaque;
+    object_property_add_const_link(OBJECT(s), "power-owner", OBJECT(owner));
+    return true;
+}
+
+bool sgi_origin300_pci_expansion_request_power(
+    SGIOrigin300PciExpansionState *s, SGIL1State *issuer,
+    uint64_t identity, bool on, Error **errp)
+{
+    if (!s->power_selected || s->power_owner != issuer ||
+        s->power_owner_identity != identity || s->power_active ||
+        !DEVICE(s)->realized) {
+        error_setg(errp, "expansion main-power owner refused");
+        return false;
+    }
+    s->requested_power = on;
+    if (s->completed_power == on) {
+        return true;
+    }
+    s->power_active = true;
+    if (s->power_operation &&
+        !s->power_operation(s->power_opaque, on, errp)) {
+        s->power_active = false;
+        return false;
+    }
+    s->completed_power = on;
+    if (on) {
+        for (unsigned chip = 0; chip < 3; chip++) {
+            sgi_xbridge_reevaluate_assertions(SGI_XBRIDGE(s->chip[chip]));
+        }
+    }
+    s->power_active = false;
+    return true;
+}
+
+static MemTxResult expansion_view_read(void *opaque, hwaddr addr,
+    uint64_t *value, unsigned size, MemTxAttrs attrs)
+{
+    struct ExpansionView *view = opaque;
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result;
+
+    if (!expansion_available(view->assembly)) {
+        *value = 0;
+        return MEMTX_ACCESS_ERROR;
+    }
+    result = address_space_read(&view->target, addr, attrs, bytes, size);
+    switch (size) {
+    case 1:
+        *value = bytes[0];
+        break;
+    case 2:
+        *value = lduw_be_p(bytes);
+        break;
+    case 4:
+        *value = ldl_be_p(bytes);
+        break;
+    case 8:
+        *value = ldq_be_p(bytes);
+        break;
+    }
+    return result;
+}
+
+static MemTxResult expansion_view_write(void *opaque, hwaddr addr,
+    uint64_t value, unsigned size, MemTxAttrs attrs)
+{
+    struct ExpansionView *view = opaque;
+    uint8_t bytes[8];
+
+    if (!expansion_available(view->assembly)) {
+        return MEMTX_ACCESS_ERROR;
+    }
+    switch (size) {
+    case 1:
+        bytes[0] = value;
+        break;
+    case 2:
+        stw_be_p(bytes, value);
+        break;
+    case 4:
+        stl_be_p(bytes, value);
+        break;
+    case 8:
+        stq_be_p(bytes, value);
+        break;
+    }
+    return address_space_write(&view->target, addr, attrs, bytes, size);
+}
+
+static const MemoryRegionOps expansion_view_ops = {
+    .read_with_attrs = expansion_view_read,
+    .write_with_attrs = expansion_view_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
 static void expansion_view(SGIOrigin300PciExpansionState *s, unsigned index,
                             MemoryRegion *target, uint64_t size)
 {
     g_autofree char *name = g_strdup_printf("pci-expansion.view%u", index);
 
-    memory_region_init_alias(&s->view[index], OBJECT(s), name, target, 0, size);
+    s->view_target[index].assembly = s;
+    address_space_init(&s->view_target[index].target, target, name);
+    memory_region_init_io(&s->view[index], OBJECT(s), &expansion_view_ops,
+                           &s->view_target[index], name, size);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->view[index]);
 }
 
@@ -205,6 +356,20 @@ static void expansion_intx_clear(SGIOrigin300PciExpansionState *s)
     }
 }
 
+static void expansion_reset_enter(Object *obj, ResetType type)
+{
+    SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(obj);
+
+    s->requested_power = s->initial_power;
+    s->completed_power = s->initial_power;
+    s->power_active = false;
+}
+
+static int expansion_pre_save(void *opaque)
+{
+    return SGI_ORIGIN300_PCI_EXPANSION(opaque)->power_active ? -EBUSY : 0;
+}
+
 static void expansion_reset_hold(Object *obj, ResetType type)
 {
     expansion_intx_clear(SGI_ORIGIN300_PCI_EXPANSION(obj));
@@ -233,6 +398,10 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
+    if ((version < 4 && s->power_selected) ||
+        s->requested_power > 1 || s->completed_power > 1) {
+        return -EINVAL;
+    }
     if (version < 3 && s->board_attached) {
         return -EINVAL;
     }
@@ -267,6 +436,10 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
     hwaddr offset;
     AddressSpace *as;
 
+    if (!expansion_available(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "pci-expansion: main power off\n");
+        return MEMTX_ACCESS_ERROR;
+    }
     if ((local >= UINT64_C(0x34000000) && local < UINT64_C(0x36000000)) ||
         (local >= UINT64_C(0x10034000000) &&
          local < UINT64_C(0x10036000000)) ||
@@ -387,6 +560,8 @@ static void expansion_realize(DeviceState *dev, Error **errp)
     bic = SGI_BEDROCK(s->bic);
     qdev_prop_set_uint32(s->bic, "processor-count", 0);
     qdev_prop_set_uint32(s->bic, "processor-mask", 0);
+    bic->available = expansion_available;
+    bic->available_opaque = s;
     qdev_prop_set_uint32(s->bic, "cpu-enable-initial-mask", 0);
     qdev_prop_set_uint8(s->bic, "installed-bank-mask", 0);
     qdev_prop_set_uint8(s->bic, "revision", s->bedrock_revision);
@@ -528,6 +703,15 @@ static void expansion_finalize(Object *obj)
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(obj);
     unsigned i;
 
+    for (unsigned view = 0; view < 12; view++) {
+        if (s->view_target[view].assembly) {
+            address_space_destroy(&s->view_target[view].target);
+        }
+    }
+    if (s->power_owner) {
+        object_unref(OBJECT(s->power_owner));
+    }
+
     if (s->ni_initialized) {
         address_space_destroy(&s->bic_pio);
         address_space_destroy(&s->bic_registers);
@@ -563,10 +747,19 @@ static const Property expansion_properties[] = {
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
+    .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(power_selected, SGIOrigin300PciExpansionState, 4,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_SINGLE(initial_power, SGIOrigin300PciExpansionState, 4,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_SINGLE(power_owner_identity, SGIOrigin300PciExpansionState, 4,
+                       vmstate_info_uint64_equal, uint64_t),
+        VMSTATE_UINT8_V(requested_power, SGIOrigin300PciExpansionState, 4),
+        VMSTATE_UINT8_V(completed_power, SGIOrigin300PciExpansionState, 4),
         VMSTATE_SINGLE(board_attached, SGIOrigin300PciExpansionState, 3,
                        vmstate_info_uint8_equal, uint8_t),
         VMSTATE_UINT8_EQUAL(ni_route, SGIOrigin300PciExpansionState),
@@ -599,6 +792,7 @@ static void expansion_class_init(ObjectClass *oc, const void *data)
                "no NI data route";
     dc->realize = expansion_realize;
     dc->unrealize = expansion_unrealize;
+    rc->phases.enter = expansion_reset_enter;
     rc->phases.hold = expansion_reset_hold;
     dc->vmsd = &vmstate_expansion;
     dc->user_creatable = false;

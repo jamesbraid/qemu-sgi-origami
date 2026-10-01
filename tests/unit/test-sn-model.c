@@ -740,7 +740,7 @@ static void test_expansion_offering(void)
     g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
     const SGIModelTopology *t = NULL;
-    const SGIModelIoAssembly *a;
+    SGIModelIoAssembly *a;
     const uint8List *port;
     static const uint8_t ports[] = { 8, 9, 12, 13 };
     unsigned int index = 0;
@@ -764,6 +764,13 @@ static void test_expansion_offering(void)
     g_assert_cmpuint(a->bedrock_revision, ==, 2);
     g_assert_cmpuint(a->xbridge_revision, ==, 2);
     g_assert_cmphex(a->bic_identity, ==, 0xc000);
+    g_assert_true(a->has_main_power);
+    g_assert_cmpint(a->main_power, ==,
+                    SGI_MODEL_MAIN_POWER_FUNCTIONAL_EXPERIMENT);
+    g_assert_true(a->has_initial_main_power);
+    g_assert_true(a->initial_main_power);
+    g_assert_true(a->has_power_command_issuer);
+    g_assert_cmpuint(a->power_command_issuer, ==, 0);
     g_assert_false(a->has_initial_latch);
     g_assert_true(a->has_intx_map);
     g_assert_cmpuint(QAPI_LIST_LENGTH(a->intx_map), ==, 48);
@@ -776,6 +783,20 @@ static void test_expansion_offering(void)
     g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->owners), ==, 2);
     g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->associations), ==, 2);
     g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->attachments), ==, 2);
+    g_assert_true(sgi_model_check_runtime_endpoints(t, &err));
+    g_assert_null(err);
+    a->has_initial_main_power = false;
+    g_assert_false(sgi_model_check_runtime_endpoints(t, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    a->has_initial_main_power = true;
+    a->has_main_power = false;
+    g_assert_false(sgi_model_check_runtime_endpoints(t, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    a->has_main_power = true;
     g_assert_true(sgi_model_check_runtime_endpoints(t, &err));
     g_assert_null(err);
 }

@@ -24,6 +24,8 @@
 #define COMPUTE_HUB (HUB + NODE(3))
 static const unsigned widget[] = { 0xe, 0xf, 8, 9, 0xc, 0xd };
 
+static QTestState *management_start(const char *extra);
+
 static QTestState *start(const char *extra)
 {
     QTestState *qts = qtest_initf(FIXTURE " %s", extra);
@@ -795,7 +797,8 @@ static QTestState *isp_start(const char *extra)
     g_autofree char *options = g_strdup_printf(
         "-global sgi-pci-expansion-ni-fixture.intx-map=1 "
         "-global sgi-pci-expansion-ni-fixture.isp-head=4 %s", extra);
-    QTestState *qts = start(options);
+    QTestState *qts = strstr(extra, "power=on") ?
+                      management_start(options) : start(options);
     uint64_t h = head(0, ISP_HEAD);
 
     g_assert_cmphex(qtest_readl(qts, h + 0x21000), ==, 0x10201077);
@@ -1257,9 +1260,544 @@ static void test_management_data(void)
     qtest_quit(qts);
 }
 
+static void test_power_pio(void)
+{
+    QTestState *qts = management_start(
+        "-global sgi-pci-expansion-ni-fixture.power=on");
+
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(qts, head(0, i) + 4), ==, 0x2d002049);
+        result(qts, 0, MEMTX_OK);
+    }
+    /* Explicit fixture request to the owning controller, not guest MMIO. */
+    qtest_writeq(qts, 0x31002000 + 16, 0);
+    for (unsigned i = 0; i < 6; i++) {
+        qtest_readl(qts, head(0, i) + 4);
+        result(qts, 0, MEMTX_ACCESS_ERROR);
+    }
+    management_query(qts, 0, 0x4ffff006, 19);
+    management_identity(qts, 0, 19, 1);
+    qtest_writeq(qts, 0x31002000 + 16, 1);
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmphex(qtest_readl(qts, head(0, i) + 4), ==, 0x2d002049);
+        result(qts, 0, MEMTX_OK);
+    }
+    qtest_quit(qts);
+}
+
+#define POWER_OPTIONS "-global sgi-pci-expansion-ni-fixture.power=on"
+
+static void power_set(QTestState *qts, bool on)
+{
+    qtest_writeq(qts, MANAGEMENT + 16, on);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 64), ==, 1);
+}
+
+static void test_power_owner(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+
+    qtest_writeq(qts, MANAGEMENT + 24, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 64), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    qtest_writeq(qts, MANAGEMENT + 32, 1);
+    qtest_writeq(qts, MANAGEMENT + 16, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 64), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, head(0, 0) + 4), ==, 0x2d002049);
+    g_assert_cmpint((int32_t)qtest_readq(qts, STATUS + 88), ==, -EBUSY);
+    qtest_writeq(qts, MANAGEMENT + 32, 0);
+    power_set(qts, false);
+    qtest_writeq(qts, MANAGEMENT + 24, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 0);
+    qtest_writeq(qts, MANAGEMENT + 8, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_power_dma_irq(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.intx-map=1");
+    uint64_t sentinel = UINT64_C(0x0123456789abcdef);
+    uint64_t pending = UINT64_C(1) << 40;
+
+    qtest_writeq(qts, COMPUTE + 0x90, 0x100 | 40);
+    for (unsigned i = 0; i < 6; i++) {
+        uint64_t h = head(0, i);
+
+        configure_card(qts, i);
+        configure_irq_pin(qts, i, 1, 16 + i);
+        qtest_writeq(qts, h + 0x10000, NODE(3) | 0x8021 | (0xa << 8));
+        qtest_writel(qts, h + 0x84, (0xa << 20) | 12);
+    }
+    qtest_writel(qts, head(0, 5) + 0x10c, 0);
+    power_set(qts, false);
+    qtest_writeq(qts, RAM + 0x8000, sentinel);
+    for (unsigned i = 0; i < 6; i++) {
+        uint64_t control = MANAGEMENT + 0x100 + i * 0x40;
+        const uint64_t addresses[] = {
+            UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
+            0x40000000,
+            0x80008000,
+        };
+
+        for (unsigned mode = 0; mode < G_N_ELEMENTS(addresses); mode++) {
+            qtest_writeq(qts, control + 8, addresses[mode]);
+            qtest_writeq(qts, control + 16, sentinel ^ 1);
+            qtest_writeq(qts, control + 24, 1);
+            g_assert_cmphex(qtest_readq(qts, control + 24), ==,
+                            MEMTX_ACCESS_ERROR);
+            qtest_writeq(qts, control + 24, 2);
+            g_assert_cmphex(qtest_readq(qts, control + 24), ==,
+                            MEMTX_ACCESS_ERROR);
+            g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel);
+        }
+        qtest_writeq(qts, control + 32, 1);
+        g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 5);
+    for (unsigned i = 0; i < 5; i++) {
+        pending |= UINT64_C(1) << (16 + i);
+    }
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 5);
+    qtest_writel(qts, head(0, 5) + 0x10c, 2);
+    power_set(qts, false);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
+    pending |= UINT64_C(1) << 21;
+    power_set(qts, false);
+    for (unsigned i = 0; i < 6; i++) {
+        qtest_writeq(qts, MANAGEMENT + 0x100 + i * 0x40 + 32, 0);
+    }
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 11);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
+    for (unsigned i = 0; i < 6; i++) {
+        dma(qts, i, 0x40000000, sentinel + i, true, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel + i);
+    }
+    qtest_quit(qts);
+}
+
+static void test_power_bte_completion(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+    uint64_t bte = REQUESTER(0) + BIC_HUB + 0x410000;
+    uint64_t sentinel = UINT64_C(0x0123456789abcdef);
+
+    /* The BIC has no local DMA RAM; its existing failure still queues IRQ. */
+    qtest_writeq(qts, RAM + 0x8000, sentinel);
+    qtest_writeq(qts, bte + 0x28, (25U << 16) | (3U << 1));
+    qtest_writeq(qts, bte, 1 | (1U << 20));
+    qtest_writeq(qts, MANAGEMENT + 56, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 96), ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==,
+                    UINT64_C(1) << 25);
+    qtest_writeq(qts, COMPUTE + 0x90, 25);
+    qtest_writeq(qts, bte, 1 | (1U << 20));
+    qtest_writeq(qts, MANAGEMENT + 56, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 96), ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    power_set(qts, true);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_power_errors(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-power-errors-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *qts = management_start(POWER_OPTIONS);
+    QTestState *to = management_start(POWER_OPTIONS " -incoming defer");
+    uint64_t h = head(0, 0);
+    uint64_t xbow = UINT64_C(0x60000000);
+    uint64_t address = (UINT64_C(1) << 47) |
+                       (UINT64_C(3) << 39) | 0x1800090;
+
+    g_assert_no_error(error);
+    qtest_sysbus_mmio_map(qts, PATH "/chassis", 11, xbow);
+    qtest_writel(qts, h + 0x24,
+                 (qtest_readl(qts, h + 0x24) & ~15U) | widget[0]);
+    qtest_writel(qts, h + 0x34, (0xa << 16) | (address >> 32));
+    qtest_writel(qts, h + 0x3c, address);
+    qtest_writel(qts, h + 0x12c, 26);
+    qtest_writel(qts, h + 0x7c, 0);
+    qtest_writel(qts, xbow + 0x34,
+                 (27U << 24) | (0xa << 16) | (address >> 32));
+    qtest_writel(qts, xbow + 0x3c, address);
+    qtest_readl(qts, xbow + 0xd4);
+    g_assert_cmphex(qtest_readl(qts, h + 0x104) & (1U << 24), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, xbow + 0xc) & (1U << 5), !=, 0);
+    power_set(qts, false);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    qtest_writel(qts, h + 0x10c, 1U << 24);
+    qtest_writel(qts, xbow + 0x24, 1U << 5);
+    g_assert_cmphex(qtest_readl(qts, h + 0x10c), ==, 1U << 24);
+    g_assert_cmphex(qtest_readl(qts, xbow + 0x24) & (1U << 5), !=, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    power_set(qts, false);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==,
+                    (UINT64_C(1) << 26) | (UINT64_C(1) << 27));
+    qtest_writeq(qts, COMPUTE + 0x90, 26);
+    qtest_writeq(qts, COMPUTE + 0x90, 27);
+    power_set(qts, false);
+    qtest_writeq(qts, MANAGEMENT + 64, 0);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 1);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 2);
+    qtest_writeq(qts, COMPUTE + 0x90, 26);
+    qtest_writeq(qts, COMPUTE + 0x90, 27);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 2);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(qts, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
+    g_assert_cmphex(qtest_readq(to, COMPUTE + 0x98), ==, 0);
+    power_set(to, true);
+    g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
+    g_assert_cmphex(qtest_readq(to, COMPUTE + 0x98), ==, 0);
+    power_set(to, false);
+    power_set(to, true);
+    g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 1);
+    g_assert_cmphex(qtest_readq(to, COMPUTE + 0x98), ==,
+                    (UINT64_C(1) << 26) | (UINT64_C(1) << 27));
+    qtest_quit(qts);
+    qtest_quit(to);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_power_error_permissions(void)
+{
+    const uint64_t denied = UINT64_C(0xfffeffffffffffff);
+    uint64_t address = (UINT64_C(1) << 47) |
+                       (UINT64_C(3) << 39) | 0x1800090;
+
+    for (unsigned target = 0; target < 2; target++) {
+        const char *options = target ?
+            " -global sgi-pci-expansion-ni-fixture.compute-device-mask="
+            "0xfffeffffffffffff" :
+            " -global sgi-bedrock.device-mask-reset=0xfffeffffffffffff";
+        g_autofree char *extra = g_strdup_printf(POWER_OPTIONS "%s", options);
+        QTestState *qts = management_start(extra);
+        uint64_t h = head(0, 0);
+        uint64_t mask = target ? COMPUTE + 0x400120 :
+                               REQUESTER(0) + BIC_HUB + 0x400120;
+
+        g_assert_cmphex(qtest_readq(qts, mask), ==, denied);
+        qtest_writel(qts, h + 0x24,
+                     (qtest_readl(qts, h + 0x24) & ~15U) | 0xe);
+        qtest_writel(qts, h + 0x34, (0xa << 16) | (address >> 32));
+        qtest_writel(qts, h + 0x3c, address);
+        qtest_writel(qts, h + 0x12c, 26);
+        qtest_writel(qts, h + 0x10c, 1U << 24);
+        qtest_writel(qts, h + 0x7c, 0);
+        g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+        power_set(qts, false);
+        power_set(qts, true);
+        g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+        /* The programmed source ID selects F's permitted row, not E's. */
+        qtest_writel(qts, h + 0x24,
+                     (qtest_readl(qts, h + 0x24) & ~15U) | 0xf);
+        power_set(qts, false);
+        power_set(qts, true);
+        g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 1);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==,
+                        UINT64_C(1) << 26);
+        g_assert_cmphex(qtest_readq(qts, STATUS + 40), ==, 0x10f);
+        qtest_writeq(qts, COMPUTE + 0x90, 26);
+        qtest_writeq(qts, mask, UINT64_MAX);
+        qtest_writel(qts, h + 0x24,
+                     (qtest_readl(qts, h + 0x24) & ~15U) | 0xe);
+        power_set(qts, false);
+        power_set(qts, true);
+        g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 2);
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==,
+                        UINT64_C(1) << 26);
+        g_assert_cmphex(qtest_readq(qts, STATUS + 40), ==, 0x10e);
+        qtest_quit(qts);
+    }
+}
+
+static void test_power_vector(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+
+    qtest_readq(qts, COMPUTE + 0x60c038);
+    qtest_writeq(qts, COMPUTE + 0x60c008, 0);
+    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600000);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, ==, 0);
+    power_set(qts, false);
+    qtest_readq(qts, COMPUTE + 0x60c038);
+    qtest_writeq(qts, COMPUTE + 0x60c008, 0);
+    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600000);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, !=, 0);
+    qtest_readq(qts, COMPUTE + 0x60c038);
+    qtest_writeq(qts, COMPUTE + 0x60c010, UINT64_C(9) << 32);
+    qtest_writeq(qts, COMPUTE + 0x60c000, 0x600001);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x60c020) & 7, !=, 1);
+    power_set(qts, true);
+    g_assert_cmphex((qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000)
+                     >> 32) & 0xff, ==, 7);
+    qtest_quit(qts);
+}
+
+static void power_command(QTestState *qts, unsigned owner,
+                           const char *text, int expected)
+{
+    uint8_t request[128] = { 17, 0x0f, 0xff, 0xf0, 3, 0, 0, 1, 1 };
+    uint8_t reply[256];
+    size_t length = strlen(text) + 1;
+
+    memcpy(request + 9, text, length);
+    sgi_l1_test_send(qts, L1_UART(owner), request, 9 + length, false);
+    g_assert_cmpuint(sgi_l1_test_receive(qts, L1_UART(owner), reply,
+                                        sizeof(reply)), >=, 6);
+    g_assert_cmphex(reply[0], ==, 0x20 | 17);
+    g_assert_cmpint((int32_t)ldl_be_p(reply + 1), ==, expected);
+    management_empty(qts, 1 - owner);
+}
+
+static bool reject_power_lifecycle_event(QTestState *qts, const char *name,
+                                         QDict *event, void *opaque)
+{
+    g_assert_cmpstr(name, !=, "RESET");
+    g_assert_cmpstr(name, !=, "SHUTDOWN");
+    g_assert_cmpstr(name, !=, "STOP");
+    g_assert_cmpstr(name, !=, "RESUME");
+    return false;
+}
+
+static void test_power_commands(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+
+    qtest_qmp_set_event_callback(qts, reject_power_lifecycle_event, NULL);
+
+    power_command(qts, 1, "pwr d", 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 0);
+    power_command(qts, 0, "ctc pwr u", 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    qtest_writeq(qts, MANAGEMENT + 40, 0);
+    power_command(qts, 0, "ctc pwr d", -1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    qtest_writeq(qts, MANAGEMENT + 40, 1);
+    qtest_writeq(qts, MANAGEMENT + 32, 1);
+    power_command(qts, 0, "ctc pwr d", -1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 1);
+    power_command(qts, 0, "ctc ctc pwr d", -1);
+    qtest_quit(qts);
+}
+
+static void test_power_views(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+    uint64_t identity = REQUESTER(0) + NODE(7) + 0x34000000;
+    uint64_t latch = REQUESTER(0) + NODE(7) + 0x35000000;
+
+    g_assert_cmphex(qtest_readq(qts, identity), ==, 0xc000);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readw(qts, latch), ==, 0x1234);
+    result(qts, 0, MEMTX_OK);
+    power_set(qts, false);
+    for (unsigned view = 0; view < 12; view++) {
+        qtest_writeq(qts, MANAGEMENT + 0x400 + view * 8, view == 0 ?
+                     0x600000 : view >= 3 && view < 9 ? 4 : 0);
+        g_assert_cmphex(qtest_readq(qts, STATUS + 72), ==, MEMTX_ACCESS_ERROR);
+    }
+    qtest_readq(qts, identity);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    qtest_readw(qts, latch);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    qtest_writeq(qts, MANAGEMENT + 48, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 0);
+    power_set(qts, true);
+    g_assert_cmphex(qtest_readq(qts, identity), ==, 0xc000);
+    g_assert_cmphex(qtest_readw(qts, latch), ==, 0x1234);
+    for (unsigned head = 0; head < 6; head++) {
+        qtest_writeq(qts, MANAGEMENT + 0x400 + (3 + head) * 8, 4);
+        g_assert_cmphex(qtest_readq(qts, STATUS + 72), ==, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, STATUS + 80), ==, 0x2d002049);
+    }
+    qtest_quit(qts);
+}
+
+static void test_power_initial_off(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.initial-power=off");
+
+    qtest_readl(qts, head(0, 0) + 4);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    management_query(qts, 0, 0x4ffff006, 19);
+    management_identity(qts, 0, 19, 1);
+    power_set(qts, true);
+    g_assert_cmphex(qtest_readl(qts, head(0, 0) + 4), ==, 0x2d002049);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 48), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 56), ==, 0);
+    qtest_readl(qts, head(0, 0) + 4);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_power_migration(void)
+{
+    for (unsigned mode = 0; mode < 3; mode++) {
+        GError *error = NULL;
+        g_autofree char *dir =
+            g_dir_make_tmp("ni-power-migrate-XXXXXX", &error);
+        g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+        g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+        QTestState *from = management_start(POWER_OPTIONS
+            " -global sgi-pci-expansion-ni-fixture.intx-map=1");
+        QTestState *to = management_start(POWER_OPTIONS
+            " -global sgi-pci-expansion-ni-fixture.intx-map=1 -incoming defer");
+
+        g_assert_no_error(error);
+        configure_card(from, 0);
+        configure_irq_pin(from, 0, 1, 16);
+        card_pin(from, 0, 1, 0, true);
+        if (mode == 1) {
+            power_set(from, false);
+        } else if (mode == 2) {
+            qtest_writeq(from, MANAGEMENT + 32, 1);
+            qtest_writeq(from, MANAGEMENT + 16, 0);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration_status(to, "completed", 30);
+        g_assert_cmpuint(qtest_readq(to, STATUS + 48), ==, mode == 0);
+        g_assert_cmpuint(qtest_readq(to, STATUS + 56), ==, mode != 1);
+        g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
+        power_set(to, mode != 1);
+        g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 0);
+        if (mode == 1) {
+            power_set(to, true);
+            g_assert_cmpuint(qtest_readq(to, STATUS + 16), ==, 1);
+        }
+        qtest_quit(from);
+        qtest_quit(to);
+        unlink(socket);
+        g_rmdir(dir);
+    }
+}
+
+static void test_power_migration_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-power-mismatch-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = management_start(POWER_OPTIONS);
+    QTestState *to = management_start(POWER_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.initial-power=off -incoming defer");
+
+    g_assert_no_error(error);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
+static void adapter_work_write(QTestState *qts, unsigned offset, uint16_t value)
+{
+    qtest_writeq(qts, MANAGEMENT + 0x600 + offset * 8, value);
+}
+
+static void test_power_adapter(void)
+{
+    QTestState *qts = isp_start(POWER_OPTIONS);
+    uint64_t h = head(0, ISP_HEAD);
+    uint64_t sentinel = UINT64_C(0x0123456789abcdef);
+
+    qtest_writeq(qts, h + 0x10000, NODE(3) | 0x8021 | (0xa << 8));
+    configure_irq_pin(qts, ISP_HEAD, 1, 16);
+    isp_writew(qts, 0x08, 6);
+    isp_word(qts, ISP_RAM_WORD, 0x1357);
+    isp_ack(qts);
+    qtest_writeq(qts, RAM + 0x8000, sentinel);
+    power_set(qts, false);
+    adapter_work_write(qts, ISP_MAILBOX(0), 3);
+    adapter_work_write(qts, ISP_MAILBOX(1), ISP_RAM_WORD);
+    adapter_work_write(qts, ISP_MAILBOX(2), 0x4000);
+    adapter_work_write(qts, ISP_MAILBOX(3), 0);
+    adapter_work_write(qts, ISP_MAILBOX(4), 1);
+    adapter_work_write(qts, ISP_MAILBOX(6), 0);
+    adapter_work_write(qts, ISP_MAILBOX(7), 0);
+    adapter_work_write(qts, 0xc0, 5 << 12);
+    g_assert_cmphex(qtest_readq(qts,
+        MANAGEMENT + 0x600 + ISP_MAILBOX(0) * 8), ==, ISP_INTERFACE_ERROR);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, sentinel);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 2);
+    power_set(qts, true);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 3);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, UINT64_C(1) << 16);
+    isp_ack(qts);
+    isp_block(qts, 3, ISP_RAM_WORD, 0x40000000, 1, ISP_COMPLETE);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), !=, sentinel);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/power-adapter", test_power_adapter);
+    qtest_add_func("/sgi/pci-expansion-ni/power-pio", test_power_pio);
+    qtest_add_func("/sgi/pci-expansion-ni/power-owner", test_power_owner);
+    qtest_add_func("/sgi/pci-expansion-ni/power-dma-irq", test_power_dma_irq);
+    qtest_add_func("/sgi/pci-expansion-ni/power-vector", test_power_vector);
+    qtest_add_func("/sgi/pci-expansion-ni/power-bte-completion",
+                   test_power_bte_completion);
+    qtest_add_func("/sgi/pci-expansion-ni/power-errors", test_power_errors);
+    qtest_add_func("/sgi/pci-expansion-ni/power-error-permissions",
+                   test_power_error_permissions);
+    qtest_add_func("/sgi/pci-expansion-ni/power-commands", test_power_commands);
+    qtest_add_func("/sgi/pci-expansion-ni/power-views", test_power_views);
+    qtest_add_func("/sgi/pci-expansion-ni/power-initial-off",
+                   test_power_initial_off);
+    qtest_add_func("/sgi/pci-expansion-ni/power-migration",
+                   test_power_migration);
+    qtest_add_func("/sgi/pci-expansion-ni/power-migration-mismatch",
+                   test_power_migration_mismatch);
     qtest_add_func("/sgi/pci-expansion-ni/isp-dma", test_isp_dma);
     qtest_add_func("/sgi/pci-expansion-ni/isp-dma-denied", test_isp_dma_denied);
     qtest_add_func("/sgi/pci-expansion-ni/isp-interrupt", test_isp_interrupt);

@@ -2621,6 +2621,26 @@ static void sgi_machine_set_association(Object *obj, Visitor *v,
     }
 }
 
+static bool sgi_machine_expansion_power_request(Object *receiver,
+    SGIL1State *issuer, uint64_t identity, bool on, Error **errp)
+{
+    return sgi_origin300_pci_expansion_request_power(
+        SGI_ORIGIN300_PCI_EXPANSION(receiver), issuer, identity, on, errp);
+}
+
+static uint64_t sgi_machine_controller_identity(const SGIModelTopology *t,
+                                                unsigned controller)
+{
+    const SGIModelL1OwnerList *owner;
+
+    for (owner = t->l1_management->owners; owner; owner = owner->next) {
+        if (owner->value->controller_index == controller) {
+            return owner->value->identity;
+        }
+    }
+    return 0;
+}
+
 static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
@@ -2717,6 +2737,26 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             qemu_register_resettable(OBJECT(l1));
             s->controller_reset_registered[a->controller_index] = true;
         }
+        if (a->has_main_power) {
+            uint64_t identity = sgi_machine_controller_identity(
+                t, a->controller_index);
+
+            if (!sgi_origin300_pci_expansion_bind_power(assembly, SGI_L1(l1),
+                    identity, a->initial_main_power, NULL, NULL, errp) ||
+                !sgi_l1_bind_expansion_power(SGI_L1(l1), OBJECT(dev), identity,
+                    sgi_machine_expansion_power_request, errp)) {
+                object_unref(OBJECT(interface));
+                object_unref(OBJECT(dev));
+                return false;
+            }
+            if (!s->controller_reset_registered[a->controller_index]) {
+                s->controller_bics[a->controller_index] = interface;
+                object_ref(OBJECT(interface));
+                qemu_register_resettable(OBJECT(interface));
+                qemu_register_resettable(OBJECT(l1));
+                s->controller_reset_registered[a->controller_index] = true;
+            }
+        }
         if (!sgi_machine_set_expansion_inputs(s, a->controller_index,
                                               l1, errp) ||
             !qdev_realize(l1, NULL, errp)) {
@@ -2773,6 +2813,17 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             .peer = a->peer_index, .module = a->module_index,
             .controller = a->controller_index,
         };
+    }
+    for (entry = t->io_assemblies; entry; entry = entry->next) {
+        const SGIModelIoAssembly *a = entry->value;
+
+        if (a->has_power_command_issuer &&
+            !sgi_l1_bind_power_command(SGI_L1(s->controllers[
+                a->power_command_issuer]), SGI_L1(s->controllers[
+                a->controller_index]), sgi_machine_controller_identity(t,
+                a->controller_index), errp)) {
+            return false;
+        }
     }
     for (index = 0; index < s->controller_count; index++) {
         if (!s->controllers[index]) {
@@ -4342,6 +4393,13 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     CPUState *cs;
     unsigned int node, slice;
 
+    for (unsigned int i = 0; i < s->controller_count; i++) {
+        SGIL1State *l1 = SGI_L1(s->controllers[i]);
+
+        if (l1->power_command_owner) {
+            l1->power_command_reachable = true;
+        }
+    }
     for (unsigned int i = 0; i < s->association_count; i++) {
         s->query_associations[i].reachable = s->initial_reachability[i];
     }

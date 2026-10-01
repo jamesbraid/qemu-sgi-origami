@@ -41,6 +41,8 @@ struct SGIXBridgeXbowState {
  * for a port a machine attaches to after that, and takes a widget number
  * (8 to 0xf) rather than a link index.
  */
+void sgi_xbridge_xbow_reevaluate_assertion(SGIXBridgeXbowState *s);
+
 void sgi_xbridge_xbow_set_link_present(SGIXBridgeXbowState *s,
                                        unsigned int widget, bool present);
 

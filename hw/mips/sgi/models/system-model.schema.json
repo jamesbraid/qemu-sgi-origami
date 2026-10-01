@@ -406,6 +406,11 @@
                   "controller_profile",
                   "bic_identity"
                 ],
+                "dependentRequired": {
+                  "power_command_issuer": ["main_power"],
+                  "main_power": ["initial_main_power"],
+                  "initial_main_power": ["main_power"]
+                },
                 "properties": {
                   "version": {
                     "const": 1
@@ -456,6 +461,9 @@
                     "minimum": 0,
                     "maximum": 18446744073709551615
                   },
+                  "power_command_issuer": { "$ref": "#/$defs/identifier" },
+                  "main_power": { "enum": ["functional-experiment"] },
+                  "initial_main_power": { "type": "boolean" },
                   "controller_startup": {
                     "enum": ["bic-functional-experiment"]
                   },

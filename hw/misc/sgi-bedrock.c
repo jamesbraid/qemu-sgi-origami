@@ -954,6 +954,9 @@ static MemTxResult bedrock_io_registers_write(void *opaque, hwaddr addr,
 {
     SGIBedrockState *s = opaque;
 
+    if (!sgi_bedrock_available(s)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     switch (addr) {
     case BEDROCK_PI_MODIFY_OFFSET:
         sgi_bedrock_pi_io_modify(&s->pi[0], value, s->local_region);
@@ -1847,6 +1850,11 @@ static const char *bedrock_net_describe(Object *port, unsigned int index)
  * fails, so the inner launch latches an address error and QEMU warns once.
  * The firmware never builds such a bounce.
  */
+bool sgi_bedrock_available(SGIBedrockState *s)
+{
+    return !s || !s->available || s->available(s->available_opaque);
+}
+
 static SGINetPacketResult bedrock_net_receive(Object *port,
                                               unsigned int index,
                                               SGINetPacket *packet,
@@ -1855,6 +1863,10 @@ static SGINetPacketResult bedrock_net_receive(Object *port,
     SGIBedrockState *s = SGI_BEDROCK(port);
     bool write;
 
+    if (!sgi_bedrock_available(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: main power off\n");
+        return SGI_NET_PACKET_ERROR;
+    }
     if (packet->vector) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock: vector route 0x%" PRIx64
                       " continues past a Bedrock, which does not forward\n",

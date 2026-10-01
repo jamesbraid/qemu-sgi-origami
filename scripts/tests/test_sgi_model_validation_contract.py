@@ -49,6 +49,37 @@ class CheckSystemModelTests(unittest.TestCase):
         )
 
 
+    def test_expansion_main_power_schema_requires_both_fields(self):
+        schema = self.checker_module.schema(INPUTS)
+        item = schema["properties"]["machine"]["properties"]["emulation"][
+            "properties"]["io_assemblies"]["items"]
+        validator = self.checker_module.jsonschema.Draft202012Validator(
+            dict(item, **{"$defs": schema["$defs"]}))
+        entry = {
+            "version": 1, "kind": "origin300-pci-expansion", "peer": "io-peer",
+            "module": "io-module", "controller": "io-l1", "placement": 1,
+            "initial_node_number": 0, "bedrock_revision": 2,
+            "xbridge_revision": 2, "head_ports": [8, 9, 12, 13],
+            "controller_profile": "pci-expansion", "bic_identity": 49152,
+        }
+        self.assertEqual(list(validator.iter_errors(entry)), [])
+        self.assertTrue(list(validator.iter_errors(dict(
+            entry, power_command_issuer="compute-l1"))))
+        self.assertEqual(list(validator.iter_errors(dict(
+            entry, main_power="functional-experiment", initial_main_power=True,
+            power_command_issuer="compute-l1"))), [])
+        for initial in (True, False):
+            self.assertEqual(list(validator.iter_errors(dict(
+                entry, main_power="functional-experiment",
+                initial_main_power=initial))), [])
+        for fields in (
+            {"main_power": "functional-experiment"},
+            {"initial_main_power": True},
+            {"main_power": "physical", "initial_main_power": True},
+            {"main_power": "functional-experiment", "initial_main_power": 1},
+        ):
+            self.assertTrue(list(validator.iter_errors(dict(entry, **fields))))
+
     def test_initial_module_number_schema(self):
         model = self.checker_module.load_system_model(
             INPUTS / "origin2000-rack.yaml")

@@ -121,6 +121,7 @@ unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
 bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp);
 
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget);
+void sgi_xbridge_reevaluate_assertions(SGIXBridgeState *s);
 PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget);
 
 /* The PCI ranges above the face: two memory aliases and I/O space. */

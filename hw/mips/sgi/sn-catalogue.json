@@ -12846,6 +12846,7 @@
             12,
             13
           ],
+          "initial-main-power": true,
           "initial-node-number": 0,
           "intx-map": [
             0,
@@ -12898,9 +12899,11 @@
             7
           ],
           "kind": "origin300-pci-expansion",
+          "main-power": "functional-experiment",
           "module-index": 1,
           "peer-index": 0,
           "placement": 1,
+          "power-command-issuer": 0,
           "version": 1,
           "xbridge-revision": 2
         }

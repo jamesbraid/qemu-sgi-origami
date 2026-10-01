@@ -895,6 +895,36 @@ static void l1_peer_reset(SGIL1State *peer)
  * the prompt or the return to console mode follows; the request interpreter
  * collects the output instead.
 */
+bool sgi_l1_bind_expansion_power(SGIL1State *s, Object *receiver,
+    uint64_t identity, SGIL1PowerRequest request, Error **errp)
+{
+    if (DEVICE(s)->realized || s->power_receiver || !receiver || !identity ||
+        !request || !s->brick_type || strcmp(s->brick_type, "pci-expansion")) {
+        error_setg(errp, "L1 power needs one pre-realization "
+                   "expansion binding");
+        return false;
+    }
+    s->power_receiver = receiver;
+    s->power_identity = identity;
+    s->power_request = request;
+    return true;
+}
+
+bool sgi_l1_bind_power_command(SGIL1State *issuer, SGIL1State *owner,
+                               uint64_t identity, Error **errp)
+{
+    if (!owner || issuer == owner || issuer->power_command_owner ||
+        !owner->power_receiver || owner->power_identity != identity ||
+        !issuer->profile || !issuer->profile->compute_services) {
+        error_setg(errp, "L1 power command needs a distinct bound owner");
+        return false;
+    }
+    issuer->power_command_owner = owner;
+    issuer->power_command_identity = identity;
+    issuer->power_command_reachable = true;
+    return true;
+}
+
 static int l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
@@ -949,6 +979,55 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             l1_prompt(s);
         }
         return 0;
+    }
+    if (s->power_request && argc == 2 && !broadcast &&
+        !strcmp(argv[0], "pwr") &&
+        (!strcmp(argv[1], "u") || !strcmp(argv[1], "d"))) {
+        Error *error = NULL;
+        bool on = !strcmp(argv[1], "u");
+
+        result = s->power_request(s->power_receiver, s, s->power_identity,
+                                  on, &error) ? 0 : -1;
+        if (result) {
+            l1_printf(s, "ERROR: expansion main-power operation failed.%s",
+                      console ? "\r\n" : "\n");
+        } else {
+            l1_printf(s, "Expansion main power %s.%s", on ? "on" : "off",
+                      console ? "\r\n" : "\n");
+        }
+        if (error) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: %s\n",
+                          error_get_pretty(error));
+            error_free(error);
+        }
+        goto complete;
+    }
+    if (!strcmp(argv[0], "ctc") && argc > 1 &&
+        !strcmp(argv[1], "pwr") && s->power_command_owner) {
+        SGIL1State *owner = s->power_command_owner;
+        GString *output;
+
+        if (argc != 3 || strcmp(argv[1], "pwr") ||
+            (strcmp(argv[2], "u") && strcmp(argv[2], "d")) ||
+            !s->power_command_reachable || s->power_command_active ||
+            owner->power_command_active || owner->capture) {
+            l1_printf(s, "ERROR: expansion power command route refused.%s",
+                      console ? "\r\n" : "\n");
+            result = -1;
+            goto complete;
+        }
+        /* This synchronous request owns its output until the issuer replies. */
+        output = g_string_new(NULL);
+        s->power_command_active = true;
+        owner->power_command_active = true;
+        owner->capture = output;
+        result = l1_run_line(owner, original + (argv[1] - line), false);
+        owner->capture = NULL;
+        owner->power_command_active = false;
+        s->power_command_active = false;
+        l1_printf(s, "%s", output->str);
+        g_string_free(output, TRUE);
+        goto complete;
     }
     if (!s->profile->compute_services &&
         (l1_word(argv[0], "power", "pwr") ||
@@ -2359,7 +2438,7 @@ static int l1_pre_save(void *opaque)
 {
     SGIL1State *s = opaque;
 
-    return s->bic_operation_active ||
+    return s->power_command_active || s->bic_operation_active ||
            (s->query_router && s->query_router->active) ? -EBUSY : 0;
 }
 
@@ -2372,6 +2451,9 @@ static const VMStateDescription vmstate_l1 = {
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
+        VMSTATE_UINT64_EQUAL(power_identity, SGIL1State),
+        VMSTATE_UINT64_EQUAL(power_command_identity, SGIL1State),
+        VMSTATE_BOOL(power_command_reachable, SGIL1State),
         VMSTATE_UINT32_EQUAL(bic_startup, SGIL1State),
         VMSTATE_UINT64_EQUAL(bic_endpoints[0].identity, SGIL1State),
         VMSTATE_UINT64_EQUAL(bic_endpoints[1].identity, SGIL1State),
@@ -2990,9 +3072,31 @@ static const Property l1_properties[] = {
     DEFINE_PROP_BOOL("network-422", SGIL1State, network_422, true),
 };
 
+static bool l1_power_command_reachable_get(Object *obj, Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+
+    return s->power_command_owner && s->power_command_reachable;
+}
+
+static void l1_power_command_reachable_set(Object *obj, bool reachable,
+                                           Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+
+    if (!s->power_command_owner || s->power_command_active) {
+        error_setg(errp, "power command association is absent or active");
+        return;
+    }
+    s->power_command_reachable = reachable;
+}
+
 static void l1_init(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
+
+    object_property_add_bool(obj, "power-command-reachable",
+        l1_power_command_reachable_get, l1_power_command_reachable_set);
 
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
     g_strlcpy(s->usb_test_descriptor_result, "none",

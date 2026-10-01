@@ -86,6 +86,13 @@ bool sgi_l1_bind_bic_startup(SGIL1State *s, SGIL1BICStartup selection,
                            const SGIL1BICEndpoint endpoints[2],
                            SGIL1BICOperation operation, Error **errp);
 
+typedef bool (*SGIL1PowerRequest)(Object *receiver, SGIL1State *issuer,
+                                  uint64_t identity, bool on, Error **errp);
+bool sgi_l1_bind_expansion_power(SGIL1State *s, Object *receiver,
+    uint64_t identity, SGIL1PowerRequest request, Error **errp);
+bool sgi_l1_bind_power_command(SGIL1State *issuer, SGIL1State *owner,
+                               uint64_t identity, Error **errp);
+
 typedef struct SGIL1EEPROM {
     uint32_t length;
     uint8_t *data;
@@ -124,6 +131,13 @@ struct SGIL1State {
     struct SGIL1State *peer;
     bool network_422;
     SGIL1QueryRouter *query_router;
+    Object *power_receiver;
+    uint64_t power_identity;
+    SGIL1PowerRequest power_request;
+    SGIL1State *power_command_owner;
+    uint64_t power_command_identity;
+    bool power_command_reachable;
+    bool power_command_active;
     uint32_t bic_startup;
     SGIL1BICEndpoint bic_endpoints[2];
     SGIL1BICOperation bic_operation;
