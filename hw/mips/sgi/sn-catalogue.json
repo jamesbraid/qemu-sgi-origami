@@ -12,6 +12,223 @@
           "argument": "-serial chardev:ioc3_b",
           "kind": "second-port",
           "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "octane",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi",
+      "display-name": "Octane serial profile",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip30-prom",
+        "per-node-flash": false,
+        "size": 2097152
+      },
+      "identity-inputs": [],
+      "install-media": [],
+      "memory-per-node-mib": {
+        "accepted": [
+          128
+        ],
+        "default": 128
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "none",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 195000000,
+        "part": "R10000"
+      },
+      "product": "octane",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-nvram0,...",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 512
+        },
+        {
+          "argument": "-drive if=none,id=sgi-nvram0-clock,...",
+          "count": 1,
+          "kind": "rtc-clock",
+          "scope": "board",
+          "size": 24
+        }
+      ],
+      "smp": 1,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "octane"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R12000",
+      "default-topology": "octane2",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi",
+      "display-name": "Octane2 serial profile",
+      "firmware": {
+        "argument": "-bios",
+        "kind": "ip30-prom",
+        "per-node-flash": false,
+        "size": 2097152
+      },
+      "identity-inputs": [],
+      "install-media": [],
+      "memory-per-node-mib": {
+        "accepted": [
+          256
+        ],
+        "default": 256
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "none",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 360000000,
+        "part": "R12000",
+        "required-properties": [
+          "r12000-prid",
+          "r12000-fpu-id",
+          "r12000-reset-mode",
+          "r12000-scache-bytes",
+          "r12000-scache-block-words"
+        ]
+      },
+      "product": "octane2",
+      "prom-dialogue": "none",
+      "resources": [
+        {
+          "argument": "-drive if=none,id=sgi-nvram0,...",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 512
+        },
+        {
+          "argument": "-drive if=none,id=sgi-nvram0-clock,...",
+          "count": 1,
+          "kind": "rtc-clock",
+          "scope": "board",
+          "size": 24
+        }
+      ],
+      "smp": 1,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "octane2"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
         },
         {
           "argument": "-serial chardev:elsc",
@@ -7716,6 +7933,356 @@
   ],
   "schema": "sgi-sn-catalogue",
   "topologies": [
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [
+        {
+          "id": "crossbow",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 4
+        }
+      ],
+      "description": "SGI Octane (IP30)",
+      "generation": "ip30",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "onboard",
+          "id": "ip30-board",
+          "ioc3-serial": 103835129348097,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-0887-003",
+          "preset": "ip30",
+          "revision": 3,
+          "serial": 134346593796098
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": -1,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "octane",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-bank-layouts": [
+            {
+              "bank-mib": [
+                128,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "bank-mib": [
+                64,
+                64,
+                0,
+                0
+              ]
+            }
+          ],
+          "accepted-memory-mib": [
+            128
+          ],
+          "asic-kind": "heart",
+          "bank-mib": [
+            128,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 1,
+                "clock-hz": 195000000,
+                "id": "cpu0",
+                "kind": "R10000",
+                "prid": 2343
+              },
+              "interface": 0,
+              "slot": 0
+            }
+          ],
+          "flash": {
+            "kind": "operator-prom",
+            "size": 2097152
+          },
+          "heart": {
+            "board-records": [
+              {
+                "barcode": "SIM3010001",
+                "name": "PM10",
+                "part": "030-0888-004",
+                "revision": "B",
+                "role": "processor",
+                "serial": 134346593796097
+              },
+              {
+                "barcode": "SIM3010002",
+                "name": "IP30",
+                "part": "030-0887-003",
+                "revision": "F",
+                "role": "system-board",
+                "serial": 134346593796098
+              },
+              {
+                "barcode": "SIM3010003",
+                "name": "FP1",
+                "part": "030-0891-003",
+                "revision": "A",
+                "role": "frontplane",
+                "serial": 134346593796099
+              },
+              {
+                "barcode": "SIM3010004",
+                "name": "PWR.SPPLY.SR",
+                "part": "060-0028-003",
+                "revision": "A",
+                "role": "power-supply",
+                "serial": 134346593796100
+              }
+            ],
+            "gpio-classic": true,
+            "widget-id-64": 1275072621,
+            "widget-revision": 4,
+            "widget-status-f-measured": false
+          },
+          "id": "heart",
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "octane",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [
+        {
+          "id": "crossbow",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 5
+        }
+      ],
+      "description": "SGI Octane2 (IP30)",
+      "generation": "ip30",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "onboard",
+          "id": "ip30-board",
+          "ioc3-serial": 103835129348097,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1467-001",
+          "preset": "ip30",
+          "revision": 3,
+          "serial": 134346610573314
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": -1,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "octane2",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-bank-layouts": [
+            {
+              "bank-mib": [
+                256,
+                0,
+                0,
+                0
+              ]
+            },
+            {
+              "bank-mib": [
+                128,
+                128,
+                0,
+                0
+              ]
+            },
+            {
+              "bank-mib": [
+                64,
+                64,
+                64,
+                64
+              ]
+            }
+          ],
+          "accepted-memory-mib": [
+            256
+          ],
+          "asic-kind": "heart",
+          "bank-mib": [
+            256,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 2,
+                "clock-hz": 360000000,
+                "id": "cpu0",
+                "kind": "R12000",
+                "required-properties": [
+                  "r12000-prid",
+                  "r12000-fpu-id",
+                  "r12000-reset-mode",
+                  "r12000-scache-bytes",
+                  "r12000-scache-block-words"
+                ]
+              },
+              "interface": 0,
+              "slot": 0
+            }
+          ],
+          "flash": {
+            "kind": "operator-prom",
+            "size": 2097152
+          },
+          "heart": {
+            "board-records": [
+              {
+                "barcode": "SIM3020001",
+                "name": "PM10360MHZ",
+                "part": "030-1590-002",
+                "revision": "B",
+                "role": "processor",
+                "serial": 134346610573313
+              },
+              {
+                "barcode": "SIM3020002",
+                "name": "IP30",
+                "part": "030-1467-001",
+                "revision": "B",
+                "role": "system-board",
+                "serial": 134346610573314
+              },
+              {
+                "barcode": "SIM3020003",
+                "name": "FP1",
+                "part": "030-0891-003",
+                "revision": "H",
+                "role": "frontplane",
+                "serial": 134346610573315
+              },
+              {
+                "barcode": "SIM3020004",
+                "name": "PWR.SPPLY.ER",
+                "part": "060-0035-002",
+                "revision": "A",
+                "role": "power-supply",
+                "serial": 134346610573316
+              }
+            ],
+            "gpio-classic": false,
+            "widget-id-64": 1811943533,
+            "widget-revision": 6,
+            "widget-status-f-measured": true
+          },
+          "id": "heart",
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "octane2",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
     {
       "cables": [
         {

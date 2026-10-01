@@ -256,6 +256,8 @@ def check_population_capacity(model: dict, components: dict[str, dict]) -> list[
         node_asics = [c for c in model["components"] if c.get("kind") == "node-asic"]
         if len(node_asics) == len(cpus_per_node):
             for node, (comp, count) in enumerate(zip(node_asics, cpus_per_node)):
+                if comp.get("hardware_kind") == "heart":
+                    continue
                 facts = comp["node_asic"]
                 interfaces = facts["processor_interfaces"]
                 per_interface = facts["cpus_per_interface"]

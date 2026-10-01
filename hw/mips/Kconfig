@@ -43,8 +43,12 @@ config SGI_DEVICES
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
 
+config SGI_CATALOGUE
+    bool
+
 config SGI_OCTANE
     bool
+    select SGI_CATALOGUE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     select QLOGIC_ISP_SCSI_PCI
@@ -57,6 +61,7 @@ config SGI_OCTANE
 
 config SGI_SN0
     bool
+    select SGI_CATALOGUE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES

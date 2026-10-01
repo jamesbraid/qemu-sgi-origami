@@ -101,6 +101,17 @@ def _flash(raw: dict) -> dict:
 
 
 def _node(raw: dict) -> dict:
+    if raw["asic_kind"] == "HEART":
+        return {
+            "id": raw["id"], "module-index": raw["module_index"],
+            "slot": raw["slot"], "asic-kind": "heart",
+            "heart": _kebab_keys(raw["heart"]),
+            "cpu-slots": _kebab_keys(raw["cpu_slots"]),
+            "bank-mib": raw["bank_mib"],
+            "accepted-memory-mib": raw["accepted_memory_mib"],
+            "accepted-bank-layouts": _kebab_keys(raw["accepted_bank_layouts"]),
+            "flash": _flash(raw["flash"]), "slave-role": False,
+        }
     return {
         "id": raw["id"],
         "module-index": raw["module_index"],
@@ -192,6 +203,7 @@ def _xio_slot(raw: dict) -> dict:
 # `ioc3-serial`, absent where this preset's IOC3 head carries no
 # population (Origin 300's second XBridge head).
 _IO_BOARD_CARRIER = {
+    "IP30": "onboard",
     "IP29_IO": "onboard",
     "IP29_IO_CROSSTOWN": "onboard",
     "BASEIO": "xio-slot",
@@ -216,6 +228,7 @@ _IO_BOARD_CARRIER = {
 # the `_enum()`-derived `baseio`/`baseio-g`. Every other board kind's
 # preset still matches its `_enum()`-derived form.
 _IO_BOARD_PRESET = {
+    "IP30": "ip30",
     "IP29_IO": "ip29-io",
     "IP29_IO_CROSSTOWN": "ip29-io-crosstown",
     "BASEIO": "io6",
@@ -374,6 +387,11 @@ def _consoles_for(topology: dict) -> list[dict]:
     neighbouring comment): the console port, the second IOC3 port, the
     ELSC or L1 line, then the junk UART where this topology wires one.
     """
+    if topology["generation"] == "IP30":
+        return [
+            {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
+            {"kind": "second-port", "node": 0, "argument": "-serial chardev:ioc3_b"},
+        ]
     if topology["generation"] == "SN1":
         # Every chassis has its own L1 on its own block of five serial
         # lines; the first chassis's is the console, a further chassis's
@@ -453,6 +471,8 @@ def _product_facts(machine_name: str, product_models: dict[str, dict]) -> dict:
     elif firmware_payload is not None:
         firmware_asset = "assets/" + firmware_payload["path"]
         firmware_sha256 = firmware_payload["sha256"]
+    elif harness.get("operator_firmware"):
+        firmware_asset = firmware_sha256 = None
     else:
         raise ValueError(
             f"{machine_name} carries neither "
@@ -484,6 +504,13 @@ def _resources_for(topology: dict, harness: dict, product: dict,
     a launch fitting `nodes` of the topology's node boards.
     """
     resources = []
+    if topology["generation"] == "IP30":
+        resources.extend([
+            {"kind": "nvram", "scope": "board", "count": 1,
+             "size": 512, "argument": "-drive if=none,id=sgi-nvram0,..."},
+            {"kind": "rtc-clock", "scope": "board", "count": 1,
+             "size": 24, "argument": "-drive if=none,id=sgi-nvram0-clock,..."},
+        ])
     timekeeper_boards = sum(
         1 for board in topology["io_boards"]
         if board["board_kind"] in _TIMEKEEPER_BOARD_KINDS
@@ -560,7 +587,7 @@ def _offerings_for(model: dict, topology: dict,
             f"{default_memory}; the catalogue's offerings need one default"
         )
     firmware = {
-        "kind": "ip27-prom" if topology["generation"] == "SN0" else "ip35-prom",
+        "kind": {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}[topology["generation"]],
         "argument": product["firmware_argument"],
         "asset": product["firmware_asset"],
         "size": node["flash"]["size"],
@@ -596,6 +623,8 @@ def _offerings_for(model: dict, topology: dict,
                 "processor": {
                     "part": assembly["kind"], "clock-hz": assembly["clock_hz"],
                     "cache-mib": assembly["cache_mib"],
+                    **({"required-properties": list(assembly["required_properties"])}
+                       if "required_properties" in assembly else {}),
                 },
                 "firmware": firmware,
                 "resources": resources,

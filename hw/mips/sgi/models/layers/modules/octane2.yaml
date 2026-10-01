@@ -1,0 +1,266 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: module
+  id: octane2-module
+  requires:
+    architecture: ip30
+    assembly: ip30
+  data:
+    components:
+    - id: ip30-board
+      name: ip30-board
+      kind: board
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      hardware_kind: ip30
+      identity:
+        part: 030-1467-001
+    - id: cpu0
+      name: cpu0
+      kind: cpu
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: r12000
+      identity:
+        required_properties:
+        - r12000-prid
+        - r12000-fpu-id
+        - r12000-reset-mode
+        - r12000-scache-bytes
+        - r12000-scache-block-words
+    - id: heart
+      name: heart
+      kind: node-asic
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: heart
+      identity:
+        widget_revision: 6
+        widget_id_64: '0x6c00106d'
+        widget_status_f_measured: true
+    - id: memory
+      name: memory
+      kind: memory
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+    - id: crossbow
+      name: crossbow
+      kind: crossbar
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: xbow
+      crossbar:
+        kind: xbow
+      identity:
+        widget_revision: 5
+    - id: bridge
+      name: bridge
+      kind: pci-host-bridge
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: bridge
+      identity:
+        widget_revision: 3
+        notes: Existing emulator compatibility choice; not a measured Octane2 Bridge revision.
+      pci_host_bridge:
+        heads: 1
+    - id: isp1040-internal
+      name: isp1040-internal
+      kind: storage-hba
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: isp1040
+    - id: isp1040-external
+      name: isp1040-external
+      kind: storage-hba
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: isp1040
+    - id: ioc3
+      name: ioc3
+      kind: io-controller
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: ioc3
+      identity:
+        gpio_classic: false
+    - id: ethernet
+      name: ethernet
+      kind: subfunction
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ioc3
+      hardware_kind: ioc3-ethernet
+    - id: rtc
+      name: rtc
+      kind: rtc
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ioc3
+      hardware_kind: ds1685
+    - id: rad
+      name: rad
+      kind: io-controller
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      parent: ip30-board
+      hardware_kind: rad1
+    - id: record-0
+      name: record-0
+      kind: identity
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-board-identity.md
+      parent: ip30-board
+      board_record:
+        role: processor
+        barcode: SIM3020001
+        part: 030-1590-002
+        revision: B
+        name: PM10360MHZ
+        serial: '0x7a3002000001'
+    - id: record-1
+      name: record-1
+      kind: identity
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-board-identity.md
+      parent: ip30-board
+      board_record:
+        role: system-board
+        barcode: SIM3020002
+        part: 030-1467-001
+        revision: B
+        name: IP30
+        serial: '0x7a3002000002'
+    - id: record-2
+      name: record-2
+      kind: identity
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-board-identity.md
+      parent: ip30-board
+      board_record:
+        role: frontplane
+        barcode: SIM3020003
+        part: 030-0891-003
+        revision: H
+        name: FP1
+        serial: '0x7a3002000003'
+    - id: record-3
+      name: record-3
+      kind: identity
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-board-identity.md
+      parent: ip30-board
+      board_record:
+        role: power-supply
+        barcode: SIM3020004
+        part: 060-0035-002
+        revision: A
+        name: PWR.SPPLY.ER
+        serial: '0x7a3002000004'
+    buses:
+    - id: sysad
+      kind: sysad
+      master: cpu0
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      name: sysad
+    - id: xio
+      kind: xio
+      master: crossbow
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      name: xio
+    - id: pci
+      kind: pci
+      master: bridge
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+      name: pci
+    connections:
+    - component: cpu0
+      bus: sysad
+      role: master
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: heart
+      bus: sysad
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: heart
+      bus: xio
+      widget: 8
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: bridge
+      bus: xio
+      widget: 15
+      controlled_by: ip30-board
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: isp1040-internal
+      bus: pci
+      pci_device: 0
+      pci_function: 0
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: isp1040-external
+      bus: pci
+      pci_device: 1
+      pci_function: 0
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: ioc3
+      bus: pci
+      pci_device: 2
+      pci_function: 0
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md
+    - component: rad
+      bus: pci
+      pci_device: 3
+      pci_function: 0
+      role: endpoint
+      provenance: derived
+      sources:
+      - docs/datasheets/ip30-octane2-machine.md

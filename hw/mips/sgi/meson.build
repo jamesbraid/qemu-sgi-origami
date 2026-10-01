@@ -17,6 +17,6 @@ sn_catalogue_embed_c = custom_target('sn-catalogue-embed.c.inc',
 # directory to the include path of whatever target its result feeds into,
 # the way ui/shader/meson.build's generated headers reach ui/shader.c
 # through the shared genh list.
-mips_ss.add(when: 'CONFIG_SGI_SN0',
+mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
             if_true: [files('sn-catalogue.c'), sn_catalogue_embed_c],
             if_false: files('sn-catalogue-qmp-stub.c'))

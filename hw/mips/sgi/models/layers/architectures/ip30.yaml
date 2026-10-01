@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: architecture
+  id: ip30
+  contract:
+    generation: IP30
+    architecture_ip: IP30
+    kernel_ip: IP30
+  data:
+    model_version: 1
+    evidence_policy: strict
+    space_selection:
+      mechanism: processor-attribute
+      bits: '58:57'
+      count: 4
+      provenance: derived
+      sources: &id001
+      - docs/datasheets/ip30-machine.md
+      - docs/datasheets/ip30-octane2-machine.md
+    processors:
+    - part: r10000
+      variants:
+      - clock_mhz: 195
+        cache_mib: 1
+      provenance: derived
+      sources: *id001
+    - part: r12000
+      variants:
+      - clock_mhz: 360
+        cache_mib: 2
+      provenance: derived
+      sources: *id001
+    address_spaces:
+    - id: physical
+      name: IP30 physical address space
+      provenance: derived
+      sources: *id001
