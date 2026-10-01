@@ -247,7 +247,6 @@ struct SGIMachineState {
     bool fuel_l1_revision_set;
     uint8_t fuel_bedrock_revision;
     bool fuel_bedrock_revision_set;
-    char *fuel_rtc_decode;
     char *fuel_mac_eeprom;
 };
 
@@ -1762,25 +1761,16 @@ static bool sgi_machine_instantiate_bedrock_io(
             error_setg(errp, "unsupported fitted system Timekeeper policy");
             return false;
         }
-        if (s->fuel_rtc_decode) {
-            error_setg(errp, "system Timekeeper conflicts with "
-                       "fuel-rtc-decode");
-            return false;
-        }
         qdev_prop_set_uint8(baseio, "system-timekeeper-kind",
                             SGI_IOC3_TIMEKEEPER_M48T35);
         qdev_prop_set_uint32(baseio, "system-timekeeper-year-base",
                              clock->year_base);
-        qdev_prop_set_bit(baseio, "system-timekeeper-initial-ip27-fixture",
-                          clock->initial_ip27_fixture);
     }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
         uint8_t mac[6];
 
         qdev_prop_set_uint32(baseio, "fuel-subsystem-id",
                              s->fuel_ioc3_subsystem_id);
-        qdev_prop_set_bit(baseio, "fuel-rtc-low11-mirror",
-                          s->fuel_rtc_decode != NULL);
         if (sgi_l1_fuel_mac(node->l1, mac)) {
             g_autofree char *address = g_strdup_printf(
                 "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -2515,18 +2505,18 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
     if (is_fuel && !s->fuel_board_id_word_set) {
-        error_setg(errp, "fuel requires an experimental fuel-board-id-word "
+        error_setg(errp, "fuel requires a fuel-board-id-word "
                    "launch input; the physical reset word is unknown");
         return false;
     }
     if (is_fuel &&
         (s->fuel_board_id_word & 0xf000) != 0x4000) {
         error_setg(errp, "fuel-board-id-word must identify Fuel in bits "
-                   "15:12 (0x4); the remaining bits are experimental");
+                   "15:12 (0x4); the remaining bits must be supplied");
         return false;
     }
     if (is_fuel && !s->fuel_ioc3_subsystem_id_set) {
-        error_setg(errp, "fuel requires an experimental "
+        error_setg(errp, "fuel requires a "
                    "fuel-ioc3-subsystem-id launch input; the physical "
                    "PCI subsystem identity is unknown");
         return false;
@@ -2547,15 +2537,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
     if (is_fuel && !s->fuel_l1_type_code) {
         error_setg(errp, "fuel-l1-type-code must be nonzero");
-        return false;
-    }
-    if (s->fuel_rtc_decode &&
-        strcmp(s->fuel_rtc_decode, "low11-mirror")) {
-        error_setg(errp, "fuel-rtc-decode accepts only low11-mirror");
-        return false;
-    }
-    if (!is_fuel && s->fuel_rtc_decode) {
-        error_setg(errp, "fuel-rtc-decode applies only to -M fuel");
         return false;
     }
     if (!is_fuel && s->fuel_mac_eeprom) {
@@ -2862,7 +2843,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
                                  requested[node_index]);
             if (is_fuel) {
-                qdev_prop_set_bit(DEVICE(node), "fuel-experiment", true);
+                qdev_prop_set_bit(DEVICE(node), "fuel-board", true);
                 qdev_prop_set_uint64(DEVICE(node), "board-id-word",
                                      s->fuel_board_id_word);
                 qdev_prop_set_uint32(DEVICE(node), "fuel-l1-type-code",
@@ -3696,11 +3677,6 @@ static void sgi_machine_set_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
     }
 }
 
-static char *sgi_machine_get_fuel_rtc_decode(Object *obj, Error **errp)
-{
-    return g_strdup(SGI_MACHINE(obj)->fuel_rtc_decode);
-}
-
 static char *sgi_machine_get_fuel_mac_eeprom(Object *obj, Error **errp)
 {
     return g_strdup(SGI_MACHINE(obj)->fuel_mac_eeprom);
@@ -3713,15 +3689,6 @@ static void sgi_machine_set_fuel_mac_eeprom(Object *obj, const char *value,
 
     g_free(s->fuel_mac_eeprom);
     s->fuel_mac_eeprom = g_strdup(value);
-}
-
-static void sgi_machine_set_fuel_rtc_decode(Object *obj, const char *value,
-                                             Error **errp)
-{
-    SGIMachineState *s = SGI_MACHINE(obj);
-
-    g_free(s->fuel_rtc_decode);
-    s->fuel_rtc_decode = g_strdup(value);
 }
 
 static void sgi_machine_get_fuel_l1_type_code(Object *obj, Visitor *v,
@@ -3890,7 +3857,6 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->topology_name);
     g_free(s->population);
     g_free(s->baseio_preset);
-    g_free(s->fuel_rtc_decode);
     g_free(s->fuel_mac_eeprom);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
@@ -4016,13 +3982,6 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "fuel-bedrock-revision",
         "Fitted Fuel Bedrock revision, 0 through 15; required because the "
         "revision of the selected board is unknown.");
-
-    object_class_property_add_str(oc, "fuel-rtc-decode",
-                                  sgi_machine_get_fuel_rtc_decode,
-                                  sgi_machine_set_fuel_rtc_decode);
-    object_class_property_set_description(oc, "fuel-rtc-decode",
-        "Optional Fuel DS1742 bytebus experiment; accepts low11-mirror. "
-        "Absent by default because physical address decoding is unknown.");
 
     object_class_property_add_str(oc, "fuel-mac-eeprom",
                                   sgi_machine_get_fuel_mac_eeprom,

@@ -535,21 +535,15 @@ def _resources_for(topology: dict, harness: dict, product: dict,
             "kind": "nvram", "scope": "board", "count": 1,
             "board-indices": [index], "drive-indices": [0],
         }
-        if selected:
-            resource.update({
-                "argument": _TIMEKEEPER_ARGUMENT, "part": "m48t35",
-                "size": 32768, "clock-reference": True,
-                "system-timekeeper-kind": selected["kind"],
-                "year-base": selected["year_base"],
-                "initial-ip27-fixture": selected["initial_ip27_fixture"],
-                "conflicts-machine-option": "fuel-rtc-decode",
-            })
-        else:
-            resource.update({
-                "argument": "-drive if=none,id=sgi-nvramN", "part": "ds1742",
-                "size": 2048, "clock-reference": False,
-                "requires-machine-option": "fuel-rtc-decode=low11-mirror",
-            })
+        if not selected:
+            raise ValueError("Fuel requires a fitted system Timekeeper")
+        resource.update({
+            "argument": _TIMEKEEPER_ARGUMENT, "part": "m48t35",
+            "size": 32768, "clock-reference": True,
+            "system-timekeeper-kind": selected["kind"],
+            "year-base": selected["year_base"],
+            "initial-ip27-fixture": selected["initial_ip27_fixture"],
+        })
         resources.append(resource)
     timekeeper_boards = sum(
         1 for board in topology["io_boards"]

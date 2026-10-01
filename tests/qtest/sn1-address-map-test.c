@@ -3690,7 +3690,7 @@ static void test_fuel_config0_cold_reset(const void *data)
     path = create_config0_reset_prom((~CONFIG0_RESET_READBACK & ~7u) | 2);
     quoted = g_shell_quote(path);
     qts = qtest_initf(
-        "-M fuel,topology=fuel-m48t35-compatible,"
+        "-M fuel,"
         "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
         "fuel-l1-type-code=0x61,fuel-bedrock-revision=2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s "

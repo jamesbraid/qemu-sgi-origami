@@ -937,7 +937,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * The board-identification register both consumers read: OpenBSD through the
  * remote form and the stock firmware through the local one, each taking the
  * product code from bits 15 through 12. Fuel's full response is an explicit
- * experimental launch input because its physical reset value is unknown.
+ * supplied launch input because its physical reset value is unknown.
  * Only the aligned 64-bit read is answered; everything else is refused and
  * said out loud, because nothing establishes what the other bits or widths
  * do.
@@ -1269,6 +1269,26 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
+static bool sn1_node_validate_processors(SN1NodeState *node,
+                                         MachineState *machine, Error **errp)
+{
+    if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R14000"))) {
+        error_setg(errp, TYPE_SGI_SN1_NODE " requires R14000, requested %s",
+                   machine->cpu_type);
+        return false;
+    }
+    for (unsigned int i = 0; i < node->nr_cpus; i++) {
+        uint32_t prid = sn1_cpu_processor(node->model_node, i)->prid;
+
+        if (prid != 0x0f23 && prid != 0x0f24) {
+            error_setg(errp, TYPE_SGI_SN1_NODE " processor %u has unsupported "
+                       "R14000 PRId 0x%08x", i, prid);
+            return false;
+        }
+    }
+    return true;
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -1299,11 +1319,11 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             g_strdup_printf("sn1.node%u.cpu%u.system", node->nasid, i);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
-        DeviceState *cpu_dev = qdev_new(machine->cpu_type);
+        uint32_t prid = sn1_cpu_processor(node->model_node, i)->prid;
+        const char *cpu_type = prid == 0x0f23 ?
+            MIPS_CPU_TYPE_NAME("sgi-r14000-rev23") : machine->cpu_type;
+        DeviceState *cpu_dev = qdev_new(cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
-
-        qdev_prop_set_uint32(cpu_dev, "prid",
-                             sn1_cpu_processor(node->model_node, i)->prid);
 
         /*
          * Every existing address still resolves through this alias exactly as
@@ -1454,7 +1474,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
-    if (node->fuel_experiment) {
+    if (node->is_fuel) {
         qdev_prop_set_uint32(node->l1, "brick-type-code",
                              node->fuel_l1_type_code);
         if (sgi_machine_fuel_mac_eeprom(machine)) {
@@ -1478,7 +1498,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
     }
     /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
-    if (!node->fuel_experiment) {
+    if (!node->is_fuel) {
         qdev_prop_set_int32(node->l1, "revision-major", 1);
         qdev_prop_set_int32(node->l1, "revision-minor", 18);
         qdev_prop_set_int32(node->l1, "revision-patch", 5);
@@ -1540,14 +1560,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
     qdev_prop_set_uint8(node->bedrock, "revision",
-                        node->fuel_experiment ? node->fuel_bedrock_revision :
+                        node->is_fuel ? node->fuel_bedrock_revision :
                         SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
                         SN1_BEDROCK_LOCAL_REGION);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
                         SN1_BEDROCK_INITIATOR_REGION);
     /* Fuel's provisional bank placement is explicit in its descriptor. */
-    if (node->fuel_experiment) {
+    if (node->is_fuel) {
         const uint64List *bank = node->model_node->bank_mib;
         uint8_t mask = 0;
 
@@ -1890,6 +1910,9 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
     SN1NodeState *node = SN1_NODE(dev);
     MachineState *machine = MACHINE(qdev_get_machine());
 
+    if (!sn1_node_validate_processors(node, machine, errp)) {
+        return;
+    }
     sn1_node_map_memory(node);
     sn1_node_create_cpus(node, machine);
     if (!sn1_node_create_bedrock(node, machine, errp)) {
@@ -2005,7 +2028,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
     DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word,
                        SN1_BOARD_ID_VALUE),
-    DEFINE_PROP_BOOL("fuel-experiment", SN1NodeState, fuel_experiment, false),
+    DEFINE_PROP_BOOL("fuel-board", SN1NodeState, is_fuel, false),
     DEFINE_PROP_UINT32("fuel-l1-type-code", SN1NodeState,
                        fuel_l1_type_code, 0),
     DEFINE_PROP_INT32("fuel-l1-revision-major", SN1NodeState,

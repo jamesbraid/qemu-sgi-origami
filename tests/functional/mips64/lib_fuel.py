@@ -13,7 +13,7 @@ from qemu_test import LocalAsset
 
 
 MANIFEST_REL = 'assets/functional/fuel-irix-6.5.30.json'
-TOPOLOGY = 'fuel-m48t35-compatible'
+TOPOLOGY = 'fuel'
 # Pin the regression fixture so CI can discover its inputs before boot.
 ASSET_SPECS = {
     'manifest': (MANIFEST_REL.removeprefix('assets/'),
@@ -52,7 +52,7 @@ def load_fixture(test):
     if type(fixture['schema']) is not int or fixture['schema'] != 1:
         raise ValueError('Fuel fixture requires schema 1')
     if fixture['experimental_inputs'] is not True:
-        raise ValueError('Fuel fixture must identify experimental supplied inputs')
+        raise ValueError('Fuel fixture must identify supplied board inputs')
     if (not isinstance(fixture['provenance'], str)
             or not fixture['provenance'].strip()):
         raise ValueError('Fuel fixture requires an input provenance description')

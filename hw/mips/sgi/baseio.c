@@ -106,10 +106,8 @@ struct SGIBaseioState {
     uint32_t revision_override;
     uint64_t onewire_serial;
     uint32_t fuel_subsystem_id;
-    bool fuel_rtc_low11_mirror;
     uint8_t system_timekeeper_kind;
     uint32_t system_timekeeper_year_base;
-    bool system_timekeeper_initial_ip27_fixture;
     char *fuel_mac;
     char *nvram_drive_id;
     char *chardev_a_id;
@@ -744,14 +742,12 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 
     if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
         (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_M48T35 ||
-         s->system_timekeeper_year_base != 1968 ||
-         s->system_timekeeper_initial_ip27_fixture ||
-         s->fuel_rtc_low11_mirror)) {
+         s->system_timekeeper_year_base != 1968)) {
         error_setg(errp, "unsupported or conflicting system Timekeeper policy");
         return false;
     }
     if (s->fuel_subsystem_id > UINT16_MAX) {
-        error_setg(errp, "fuel preset requires an experimental IOC3 "
+        error_setg(errp, "fuel preset requires an explicit IOC3 "
                    "subsystem ID");
         return false;
     }
@@ -773,13 +769,12 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
                          SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
                          SGI_IOC3_POPULATION_PARALLEL);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
-                        s->fuel_rtc_low11_mirror ?
-                        SGI_IOC3_TIMEKEEPER_DS1742 : s->system_timekeeper_kind);
+                        s->system_timekeeper_kind);
     if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
         qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
                              s->system_timekeeper_year_base);
         qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
-                          s->system_timekeeper_initial_ip27_fixture);
+                          false);
         if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
             object_unparent(OBJECT(ioc3));
             return false;
@@ -794,23 +789,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     }
     qdev_prop_set_uint16(DEVICE(&SGI_IOC3(ioc3)->parallel_dev),
                         "parallel-part", SGI_IOC3_PAR_PART_TL16PIR552);
-    qdev_prop_set_uint16(DEVICE(&SGI_IOC3(ioc3)->parallel_dev),
-                        "fifo-depth", SGI_IOC3_PAR_TL16_FIFO_DEPTH);
     qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", 1);
     object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
                              &error_abort);
-    if (s->fuel_rtc_low11_mirror && s->nvram_drive_id) {
-        BlockBackend *blk = blk_by_name(s->nvram_drive_id);
-
-        if (!blk) {
-            error_setg(errp, "sgi-baseio: no drive backend named '%s' for "
-                       "nvram-drive", s->nvram_drive_id);
-            object_unparent(OBJECT(ioc3));
-            return false;
-        }
-        qdev_prop_set_drive(DEVICE(ioc3), "ds1742-drive", blk);
-        baseio_note_claim(s, s->nvram_drive_id);
-    }
     if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
                              errp) ||
         !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
@@ -846,11 +827,6 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     }
     baseio_wire_xbridge_intx(chip, 5, 5);
 
-    warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
-                "interrupt wiring is approximate and RTC decode is %s",
-                s->fuel_rtc_low11_mirror ? "experimental Dallas mirror" :
-                s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35 ?
-                "experimental M48T35-compatible" : "absent");
     return true;
 }
 
@@ -990,8 +966,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_NONE &&
-        (s->system_timekeeper_year_base != 1970 ||
-         !s->system_timekeeper_initial_ip27_fixture)) {
+        s->system_timekeeper_year_base != 1970) {
         error_setg(errp, "system Timekeeper properties require "
                    "an explicit kind");
         return;
@@ -1037,15 +1012,11 @@ static const Property baseio_properties[] = {
                        SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_UINT32("fuel-subsystem-id", SGIBaseioState, fuel_subsystem_id,
                        UINT32_MAX),
-    DEFINE_PROP_BOOL("fuel-rtc-low11-mirror", SGIBaseioState,
-                     fuel_rtc_low11_mirror, false),
     DEFINE_PROP_STRING("fuel-mac", SGIBaseioState, fuel_mac),
     DEFINE_PROP_UINT8("system-timekeeper-kind", SGIBaseioState,
                       system_timekeeper_kind, SGI_IOC3_TIMEKEEPER_NONE),
     DEFINE_PROP_UINT32("system-timekeeper-year-base", SGIBaseioState,
                        system_timekeeper_year_base, 1970),
-    DEFINE_PROP_BOOL("system-timekeeper-initial-ip27-fixture", SGIBaseioState,
-                     system_timekeeper_initial_ip27_fixture, true),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),

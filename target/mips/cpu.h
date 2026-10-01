@@ -1516,7 +1516,6 @@ struct ArchCPU {
     /* Properties */
     bool is_big_endian;
     R10KCPUProfile *r10k_profile;
-    uint32_t reset_prid;
     /*
      * Where an uncached or uncached-accelerated reference resolves when a
      * board links one: a second address space, selected by the
