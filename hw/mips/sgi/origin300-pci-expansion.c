@@ -267,15 +267,17 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
     hwaddr offset;
     AddressSpace *as;
 
-    if (local >= UINT64_C(0x30034000000) &&
-        local < UINT64_C(0x30036000000)) {
+    if ((local >= UINT64_C(0x34000000) && local < UINT64_C(0x36000000)) ||
+        (local >= UINT64_C(0x30034000000) &&
+         local < UINT64_C(0x30036000000))) {
         uint64_t value = 0;
         MemTxResult result;
 
         if (!s->board_interface || size > 8) {
             return MEMTX_DECODE_ERROR;
         }
-        offset = local - UINT64_C(0x30000000000);
+        offset = local >= UINT64_C(0x30000000000) ?
+            local - UINT64_C(0x30000000000) : local;
         if (write) {
             switch (size) {
             case 1:

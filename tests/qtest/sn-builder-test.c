@@ -1852,6 +1852,46 @@ static void test_expansion_management_migration(const void *data)
     g_unlink(prom);
 }
 
+static void test_expansion_physical_board_lookup(const void *data)
+{
+    g_autofree char *prom = expansion_prom();
+
+    for (unsigned compute_number = 0; compute_number < 2; compute_number++) {
+        unsigned peer_number = compute_number ^ 1;
+        QTestState *qts = qtest_initf(
+            "-M origin300,topology=origin300-pci-expansion-experiment "
+            "-cpu R14000 -bios %s -nodefaults -display none", prom);
+        uint64_t compute_identity = qtest_readq(qts, UINT64_C(0x10014000000));
+        uint64_t compute_revision = qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                               EXPANSION_LB_REVISION);
+        uint64_t peer_revision = expansion_vector(qts, EXPANSION_LB_REVISION,
+                                                  false, 0);
+        uint64_t physical = ((uint64_t)peer_number << 33) + 0x34000000;
+
+        g_assert_cmphex((compute_revision >> 32) & 0xff, ==, 0);
+        g_assert_cmphex((peer_revision >> 32) & 0xff, ==, 0);
+        g_assert_cmphex(compute_identity, !=, 0);
+        if (compute_number) {
+            qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                         compute_revision | (UINT64_C(1) << 32));
+        } else {
+            expansion_vector(qts, EXPANSION_LB_REVISION, true,
+                             peer_revision | (UINT64_C(1) << 32));
+        }
+        g_assert_cmphex((qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                    EXPANSION_LB_REVISION) >> 32) & 0xff,
+                        ==, compute_number);
+        g_assert_cmphex((expansion_vector(qts, EXPANSION_LB_REVISION,
+                                         false, 0) >> 32) & 0xff,
+                        ==, peer_number);
+        g_assert_cmphex(qtest_readq(qts, UINT64_C(0x10014000000)),
+                        ==, compute_identity);
+        g_assert_cmphex(qtest_readq(qts, physical), ==, 0xc000);
+        qtest_quit(qts);
+    }
+    g_unlink(prom);
+}
+
 static void test_expansion_management_mismatch(const void *data)
 {
     const char *option = data;
@@ -2077,6 +2117,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion/experimental-offering",
                         "origin300,topology=origin300-pci-expansion-experiment",
                         test_expansion_builder);
+    qtest_add_data_func("sn/builder/expansion/physical-board-lookup",
+                        NULL, test_expansion_physical_board_lookup);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",
                         NULL, test_expansion_controller_inputs);
     qtest_add_data_func("sn/builder/expansion/controller-refusals",
