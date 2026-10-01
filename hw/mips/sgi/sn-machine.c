@@ -326,6 +326,7 @@ struct SGIMachineState {
     char *fuel_mac_eeprom;
     strList *controller_board_eeprom;
     strList *controller_chardev;
+    strList *controller_brick_serial;
 };
 
 /*
@@ -362,6 +363,12 @@ static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
     {
         "controller-chardev", offsetof(SGIMachineState, controller_chardev),
         "Expansion host console as controller-index=chardev-id",
+        true,
+    },
+    {
+        "controller-brick-serial",
+        offsetof(SGIMachineState, controller_brick_serial),
+        "Expansion L1 brick serial as controller-index=serial (1 to 32 bytes)",
         true,
     },
 };
@@ -450,6 +457,7 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
 }
 
 static bool sgi_machine_controller_input(const char *text, bool component,
+    const char *format,
     unsigned *owner, unsigned *slot, const char **payload, Error **errp)
 {
     const char *end;
@@ -471,7 +479,7 @@ static bool sgi_machine_controller_input(const char *text, bool component,
 
 invalid:
     error_setg(errp, "invalid controller input '%s'; expected %s", text,
-               component ? "owner/component=path" : "owner=chardev-id");
+               format);
     return false;
 }
 
@@ -494,18 +502,24 @@ static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
     size_t count = QAPI_LIST_LENGTH(t->controllers);
     g_autofree bool *boards = g_new0(bool, MAX(count * 4, 1));
     g_autofree bool *consoles = g_new0(bool, MAX(count, 1));
+    g_autofree bool *serials = g_new0(bool, MAX(count, 1));
     const strList *entry, *prior;
 
-    for (unsigned kind = 0; kind < 2; kind++) {
-        const strList *head = kind ? s->controller_chardev :
-                                   s->controller_board_eeprom;
+    for (unsigned kind = 0; kind < 3; kind++) {
+        const strList *heads[] = { s->controller_board_eeprom,
+                                  s->controller_chardev,
+                                  s->controller_brick_serial };
+        const char *formats[] = { "owner/component=path", "owner=chardev-id",
+                                  "owner=serial" };
+        const strList *head = heads[kind];
 
         for (entry = head; entry; entry = entry->next) {
             unsigned owner, slot = 0;
             const char *payload;
             bool *used;
 
-            if (!sgi_machine_controller_input(entry->value, !kind, &owner,
+            if (!sgi_machine_controller_input(entry->value, !kind,
+                                               formats[kind], &owner,
                                                &slot, &payload, errp)) {
                 return false;
             }
@@ -514,13 +528,22 @@ static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
                            owner);
                 return false;
             }
-            used = kind ? &consoles[owner] : &boards[owner * 4 + slot];
+            used = kind == 2 ? &serials[owner] :
+                   kind == 1 ? &consoles[owner] : &boards[owner * 4 + slot];
             if (*used) {
                 error_setg(errp, "duplicate controller input for owner %u",
                            owner);
                 return false;
             }
             *used = true;
+            if (kind == 2) {
+                if (strlen(payload) > 32) {
+                    error_setg(errp,
+                               "controller brick serial exceeds 32 bytes");
+                    return false;
+                }
+                continue;
+            }
             for (prior = head; prior != entry; prior = prior->next) {
                 if (!strcmp(strchr(prior->value, '=') + 1, payload)) {
                     error_setg(errp, "controller inputs reuse '%s'", payload);
@@ -570,7 +593,8 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
         unsigned selected, slot;
         const char *payload;
 
-        if (!sgi_machine_controller_input(entry->value, true, &selected,
+        if (!sgi_machine_controller_input(entry->value, true,
+                                           "owner/component=path", &selected,
                                            &slot, &payload, errp)) {
             return false;
         }
@@ -591,13 +615,26 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
         unsigned selected, slot;
         const char *payload;
 
-        if (!sgi_machine_controller_input(entry->value, false, &selected,
+        if (!sgi_machine_controller_input(entry->value, false,
+                                           "owner=chardev-id", &selected,
                                            &slot, &payload, errp)) {
             return false;
         }
         if (selected == owner &&
             !object_property_set_str(OBJECT(l1), "chardev", payload, errp)) {
             return false;
+        }
+    }
+    for (entry = s->controller_brick_serial; entry; entry = entry->next) {
+        unsigned selected, slot;
+        const char *payload;
+
+        if (!sgi_machine_controller_input(entry->value, false, "owner=serial",
+                                           &selected, &slot, &payload, errp)) {
+            return false;
+        }
+        if (selected == owner) {
+            qdev_prop_set_string(l1, "brick-serial", payload);
         }
     }
     return true;

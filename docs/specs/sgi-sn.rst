@@ -217,6 +217,29 @@ instead exposes ``chassis-eeprom``, ``board-eeprom`` and
 ``spd-eeprom``, each a list of files holding one identification record
 per file for its L1 to serve.
 
+Expansion L1 serial input
+=========================
+
+``controller-brick-serial`` is a machine string list for expansion L1
+controllers. Each element is ``controller-index=serial``, using the
+zero-based controller index in the selected topology, as
+``controller-board-eeprom`` and ``controller-chardev`` do. For example::
+
+  -M origin300,topology=origin300-pci-expansion-experiment,controller-brick-serial.0=1=EXP-A
+
+This sets the expansion controller's existing ``brick-serial`` property
+before realization. The serial must contain 1 to 32 bytes. Everything
+after the first ``=`` is preserved, including further ``=`` characters.
+The machine rejects malformed entries, indices outside the selected
+topology, compute controller indices and duplicate controller indices.
+Different controllers may have equal serial values.
+
+Omitting an entry preserves that controller's existing serial setting,
+including a value supplied with ``-global sgi-l1.brick-serial=SERIAL``.
+Without either input, its serial remains absent. Compute L1 controllers
+continue to use the global property. An expansion entry overrides the
+global value only for its selected controller.
+
 Board devices
 =============
 
