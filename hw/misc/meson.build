@@ -231,3 +231,6 @@ system_ss.add(when: 'CONFIG_SGI_BIC_BOARD_INTERFACE',
               if_true: files('sgi-bic-board-interface.c'))
 system_ss.add(when: ['CONFIG_SGI_BIC_BOARD_INTERFACE', 'CONFIG_TEST_DEVICES'],
               if_true: files('../../tests/qtest/bic-board-interface-fixture.c'))
+
+system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_TEST_DEVICES'],
+              if_true: files('../../tests/qtest/l1-query-routing-fixture.c'))

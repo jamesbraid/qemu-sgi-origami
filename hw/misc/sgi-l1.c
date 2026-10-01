@@ -438,7 +438,8 @@ static uint16_t l1_fcs(uint16_t value, uint8_t byte)
     return value;
 }
 
-static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
+static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
+                           unsigned length)
 {
     uint8_t encoded[2 * SGI_L1_FRAME_SIZE + 2];
     uint16_t crc = 0xffff;
@@ -446,9 +447,6 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
 
     /* The firmware's frame is 128 payload bytes including the header. */
     assert(length <= 128);
-    if (s->reply_to) {
-        s = s->reply_to;
-    }
     if (!s->uart) {
         qemu_log_mask(LOG_UNIMP, "sgi-l1: no UART window attached\n");
         return;
@@ -472,8 +470,14 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
     l1_uart_queue(s->uart, encoded, n);
 }
 
-static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
-                     unsigned count, const uint8_t *fields, unsigned length)
+static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
+{
+    l1_emit_direct(s->reply_to ? s->reply_to : s, payload, length);
+}
+
+static void l1_reply_direct(SGIL1State *s, uint8_t channel, int32_t code,
+                            unsigned count, const uint8_t *fields,
+                            unsigned length)
 {
     uint8_t payload[128];
 
@@ -484,7 +488,14 @@ static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
     if (length) {
         memcpy(payload + 6, fields, length);
     }
-    l1_emit(s, payload, length + 6);
+    l1_emit_direct(s, payload, length + 6);
+}
+
+static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
+                     unsigned count, const uint8_t *fields, unsigned length)
+{
+    l1_reply_direct(s->reply_to ? s->reply_to : s, channel, code, count,
+                    fields, length);
 }
 
 /* Reject malformed typed arguments before any command changes state. */
@@ -521,7 +532,8 @@ static bool l1_arguments(const uint8_t *p, unsigned length, unsigned count)
     return offset == length;
 }
 
-static void l1_selected_read(SGIL1State *s, uint8_t channel,
+static void l1_selected_read(SGIL1State *s, SGIL1State *recipient,
+                             uint8_t channel,
                              unsigned component, uint32_t area,
                              uint32_t offset, uint32_t requested)
 {
@@ -530,41 +542,42 @@ static void l1_selected_read(SGIL1State *s, uint8_t channel,
     uint32_t length;
 
     if (area > 4) {
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     if ((record->kind == 1 && area == 4) ||
         (record->kind == 2 && area != 4)) {
-        l1_reply(s, channel, -104, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
     if (record->status[area]) {
-        l1_reply(s, channel, -107, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -107, 0, NULL, 0);
         return;
     }
     if (offset >= record->length[area]) {
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     length = MIN(requested, record->length[area] - offset);
     fields[0] = 0;
     stl_be_p(fields + 1, record->length[area] - offset - length);
     if (!requested) {
-        l1_reply(s, channel, 0, 1, fields, 5);
+        l1_reply_direct(recipient, channel, 0, 1, fields, 5);
         return;
     }
     if (length > 116) {
         /* The selected serializer counts the field it cannot fit. */
-        l1_reply(s, channel, 0, 2, fields, 5);
+        l1_reply_direct(recipient, channel, 0, 2, fields, 5);
         return;
     }
     fields[5] = 0x80 | length;
     memcpy(fields + 6, record->image + record->start[area] + offset,
            length);
-    l1_reply(s, channel, 0, 2, fields, 6 + length);
+    l1_reply_direct(recipient, channel, 0, 2, fields, 6 + length);
 }
 
-static void l1_selected_format(SGIL1State *s, uint8_t channel,
+static void l1_selected_format(SGIL1State *s, SGIL1State *recipient,
+                               uint8_t channel,
                                uint32_t component)
 {
     uint8_t fields[45];
@@ -574,11 +587,11 @@ static void l1_selected_format(SGIL1State *s, uint8_t channel,
 
     if ((component & 0xff) >= 6 ||
         !s->selected[component & 0xff].present) {
-        l1_reply(s, channel, -104, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
     if (component >= 6) {
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     record = &s->selected[component];
@@ -602,10 +615,11 @@ static void l1_selected_format(SGIL1State *s, uint8_t channel,
         fields[i * 5] = 0;
         stl_be_p(fields + i * 5 + 1, values[i]);
     }
-    l1_reply(s, channel, 0, count, fields, count * 5);
+    l1_reply_direct(recipient, channel, 0, count, fields, count * 5);
 }
 
-static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
+static void l1_eeprom(SGIL1State *s, SGIL1State *recipient, uint8_t channel,
+                      const uint8_t *args)
 {
     uint32_t component = ldl_be_p(args + 1);
     uint32_t area = ldl_be_p(args + 6);
@@ -616,48 +630,49 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
     uint8_t fields[122];
 
     if (args[0] || args[5] || args[10] || args[15]) {
-        l1_reply(s, channel, -100, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
         return;
     }
     if (component < 6 && s->selected[component].present) {
-        l1_selected_read(s, channel, component, area, offset, requested);
+        l1_selected_read(s, recipient, channel, component, area, offset,
+                          requested);
         return;
     }
     if (component >= 16 || (!s->records[component].length &&
                             !s->records[16 + component].length &&
                             !s->records[32 + component].length)) {
-        l1_reply(s, channel, -104, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
     if (area > 4) {
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     if (area != 1 && area != 2 && area != 4) {
         /* Areas 0 and 3 carry no file-backed record in this model. */
-        l1_reply(s, channel, -104, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
     index = area == 1 ? 0 : area == 2 ? 1 : 2;
     record = &s->records[index * 16 + component];
     if (!record->length) {
-        l1_reply(s, channel, -104, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
         return;
     }
     if (record->invalid) {
-        l1_reply(s, channel, -107, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -107, 0, NULL, 0);
         return;
     }
     /* An offset at or past the area is out of range. */
     if (offset >= record->length) {
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     length = MIN(requested, record->length - offset);
     if (length > 116) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: EEPROM reply exceeds frame capacity\n");
-        l1_reply(s, channel, -105, 0, NULL, 0);
+        l1_reply_direct(recipient, channel, -105, 0, NULL, 0);
         return;
     }
     fields[0] = 0;
@@ -665,9 +680,47 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
     if (requested) {
         fields[5] = 0x80 | length;
         memcpy(fields + 6, record->data + offset, length);
-        l1_reply(s, channel, 0, 2, fields, 6 + length);
+        l1_reply_direct(recipient, channel, 0, 2, fields, 6 + length);
     } else {
-        l1_reply(s, channel, 0, 1, fields, 5);
+        l1_reply_direct(recipient, channel, 0, 1, fields, 5);
+    }
+}
+
+static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
+                          uint8_t channel, uint16_t command,
+                          const uint8_t *args, unsigned args_len,
+                          unsigned count)
+{
+    uint8_t fields[10] = { 0 };
+
+    switch (command) {
+    case 3:
+        if (!s->brick_type_code && !strcmp(s->brick_type, "unknown")) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: brick identity not configured\n");
+            l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+            return true;
+        }
+        stl_be_p(fields + 1, (s->rack << 6) | s->bay);
+        stl_be_p(fields + 6, l1_brick_type_character(s));
+        l1_reply_direct(recipient, channel, 0, 2, fields, sizeof(fields));
+        return true;
+    case 6:
+        if (count < 4 || args_len < 20) {
+            l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
+        } else {
+            l1_eeprom(s, recipient, channel, args);
+        }
+        return true;
+    case 7:
+        if (count < 1 || args_len < 5) {
+            l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
+        } else {
+            l1_selected_format(s, recipient, channel, ldl_be_p(args + 1));
+        }
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -1129,6 +1182,134 @@ static void l1_router_error(SGIL1State *s, uint8_t channel)
     l1_emit(s, payload, sizeof(payload));
 }
 
+void sgi_l1_query_router_init(SGIL1QueryRouter *router,
+                             SGIL1QueryOwner *owners, unsigned owner_count,
+                             SGIL1QueryAssociation *associations,
+                             unsigned association_count, Error **errp)
+{
+    if (!owners || !owner_count || (association_count && !associations)) {
+        error_setg(errp, "L1 query registry needs explicit owners "
+                   "and associations");
+        return;
+    }
+    for (unsigned i = 0; i < owner_count; i++) {
+        if (!owners[i].controller || !owners[i].identity ||
+            owners[i].controller->query_router) {
+            error_setg(errp, "Invalid or already registered L1 query owner %u",
+                       i);
+            return;
+        }
+        for (unsigned j = 0; j < i; j++) {
+            if (owners[i].controller == owners[j].controller ||
+                owners[i].identity == owners[j].identity) {
+                error_setg(errp, "Duplicate L1 query owner %u", i);
+                return;
+            }
+        }
+    }
+    for (unsigned i = 0; i < association_count; i++) {
+        SGIL1QueryAssociation *a = &associations[i];
+        if (a->from >= owner_count || a->to >= owner_count ||
+            a->from == a->to) {
+            error_setg(errp, "Invalid L1 query association %u", i);
+            return;
+        }
+        for (unsigned j = 0; j < i; j++) {
+            if (a->from == associations[j].from &&
+                a->to == associations[j].to) {
+                error_setg(errp, "Duplicate L1 query association %u", i);
+                return;
+            }
+        }
+    }
+    router->owners = owners;
+    router->owner_count = owner_count;
+    router->associations = associations;
+    router->association_count = association_count;
+    router->active = false;
+    for (unsigned i = 0; i < owner_count; i++) {
+        owners[i].controller->query_router = router;
+        owners[i].controller->query_owner_identity = owners[i].identity;
+    }
+}
+
+void sgi_l1_query_router_destroy(SGIL1QueryRouter *router)
+{
+    for (unsigned i = 0; i < router->owner_count; i++) {
+        SGIL1State *s = router->owners[i].controller;
+        if (s->query_router == router) {
+            s->query_router = NULL;
+            s->query_owner_identity = 0;
+        }
+    }
+    memset(router, 0, sizeof(*router));
+}
+
+void sgi_l1_query_route(SGIL1QueryRouter *router,
+                       const SGIL1QueryRequest *request)
+{
+    SGIL1State *serving = NULL;
+    unsigned issuer = router->owner_count;
+    unsigned matches = 0;
+    bool reachable = false;
+    uint32_t key = request->destination >> 12;
+    const uint8_t *p = request->payload;
+    unsigned length = request->length;
+    uint16_t command;
+    unsigned count, args_len;
+    const uint8_t *args;
+    uint8_t failure[] = { 0x20 | request->channel,
+                         0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
+
+    if (router->active || length < 7 || (p[0] & 0xe0) ||
+        ldl_be_p(p + 1) != request->destination ||
+        (p[0] & 0x1f) != request->channel ||
+        request->destination >> 28 || (key >> 6) == 0x3ff ||
+        (key & 0x3f) == 0x3f || (request->destination & 0x1f) != 6) {
+        goto refused;
+    }
+    command = lduw_be_p(p + 5);
+    if (command != 3 && command != 6 && command != 7) {
+        goto refused;
+    }
+    for (unsigned i = 0; i < router->owner_count; i++) {
+        if (router->owners[i].controller == request->issuer) {
+            issuer = i;
+            break;
+        }
+    }
+    for (unsigned i = 0; i < router->association_count; i++) {
+        SGIL1QueryAssociation *a = &router->associations[i];
+        SGIL1State *candidate = router->owners[a->to].controller;
+        if (a->from == issuer &&
+            key == ((candidate->rack << 6) | candidate->bay)) {
+            matches++;
+            serving = candidate;
+            reachable = a->reachable;
+        }
+    }
+    if (matches != 1 || !reachable) {
+        goto refused;
+    }
+    count = length == 7 ? 0 : p[7];
+    args = p + MIN(length, 8);
+    args_len = length > 8 ? length - 8 : 0;
+    router->active = true;
+    if (!l1_arguments(args, args_len, count)) {
+        l1_reply_direct(request->recipient, request->channel, -100, 0, NULL, 0);
+    } else {
+        l1_read_query(serving, request->recipient, request->channel,
+                      command, args, args_len, count);
+    }
+    router->active = false;
+    return;
+
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-l1: isolated query route refused 0x%08x%s\n",
+                  request->destination, router->active ? " (nested)" : "");
+    l1_emit_direct(request->recipient, failure, sizeof(failure));
+}
+
 /*
  * Task 18 echoes the request: its code as the reply code, up to three args.
  */
@@ -1271,6 +1452,18 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
     if (!l1_local(s, address)) {
+        if (s->query_router && (address >> 28) == 0) {
+            SGIL1QueryRequest request = {
+                .issuer = s,
+                .recipient = s,
+                .destination = address,
+                .payload = p,
+                .length = length,
+                .channel = channel,
+            };
+            sgi_l1_query_route(s->query_router, &request);
+            return;
+        }
         if (!s->reply_to && l1_forward_to_peer(s, p, length, address)) {
             return;
         }
@@ -1359,6 +1552,10 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
     }
+    if (l1_read_query(s, s->reply_to ? s->reply_to : s, channel,
+                      command, args, args_len, count)) {
+        return;
+    }
     switch (command) {
     case 1:
     case 9:
@@ -1423,13 +1620,6 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         field_length = 2 + strlen((char *)fields + 1);
         break;
     }
-    case 7:
-        if (count < 1) {
-            error = -100;
-            break;
-        }
-        l1_selected_format(s, channel, ldl_be_p(args + 1));
-        return;
     case 0x1001:
     case 0x1006:
     case 0x1008:
@@ -1569,24 +1759,10 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         break;
     }
     case 2:
-    case 3:
-        if (command == 3 && !s->brick_type_code &&
-            !strcmp(s->brick_type, "unknown")) {
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-l1: brick identity not configured\n");
-            error = -104;
-            break;
-        }
         fields[0] = 0;
         stl_be_p(fields + 1, (s->rack << 6) | s->bay);
         field_count = 1;
         field_length = 5;
-        if (command == 3) {
-            fields[5] = 0;
-            stl_be_p(fields + 6, l1_brick_type_character(s));
-            field_count = 2;
-            field_length = 10;
-        }
         break;
     case 5:
         if (s->revision_major < 0) {
@@ -1602,13 +1778,6 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         field_count = 3;
         field_length = 15;
         break;
-    case 6:
-        if (count < 4 || args_len < 20) {
-            error = -100;
-            break;
-        }
-        l1_eeprom(s, channel, args);
-        return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-l1: request 0x%04x unavailable\n",
                       command);
@@ -2014,14 +2183,23 @@ static const VMStateDescription vmstate_l1_selected = {
     },
 };
 
-/* The selected record cache and raw identity code are controller state. */
+static int l1_pre_save(void *opaque)
+{
+    SGIL1State *s = opaque;
+
+    return s->query_router && s->query_router->active ? -EBUSY : 0;
+}
+
+/* Product identity must match before loading the selected record cache. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 11,
-    .minimum_version_id = 11,
+    .version_id = 13,
+    .minimum_version_id = 13,
+    .pre_save = l1_pre_save,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
+        VMSTATE_UINT64_EQUAL(query_owner_identity, SGIL1State),
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
         VMSTATE_STRUCT_ARRAY(selected, SGIL1State, 6, 8,

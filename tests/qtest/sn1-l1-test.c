@@ -9,7 +9,8 @@
 #include <poll.h>
 #include <sys/socket.h>
 
-#define BASE 0x11000000ULL
+static uint64_t l1_test_base = 0x11000000ULL;
+#define BASE l1_test_base
 
 static void expect_router_error(QTestState *s, uint8_t subchannel);
 static void expect_raw_reply(QTestState *s, const uint8_t *expected,
@@ -3341,6 +3342,327 @@ static void test_usb_software_migration(void)
 }
 
 
+
+#define QUERY_FIXTURE_BASE 0x12000000ULL
+#define QUERY_TOPOLOGY 0x33cc
+
+static void query_uart(unsigned owner)
+{
+    l1_test_base = 0x11000000ULL + owner * 0x1000;
+}
+
+static QTestState *query_start(char **paths, uint32_t topology,
+                               uint64_t last_identity, const char *extra)
+{
+    GString *args = g_string_new("-M none -cpu R10000 -S ");
+    QTestState *s;
+
+    for (unsigned i = 0; i < 4; i++) {
+        g_string_append_printf(args,
+            "-device '{\"driver\":\"sgi-l1\",\"id\":\"qc%u\","
+            "\"rack\":1,\"bay\":%u,\"auto-power\":false,"
+            "\"network-422\":false%s",
+            i, i + 1, i >= 2 ? ",\"brick-type\":\"pci-expansion\"" : "");
+        if (paths) {
+            g_string_append_printf(args,
+                ",\"board-record-eeprom\":[\"%s\"]", paths[i]);
+        }
+        g_string_append_printf(args,
+            "}' -device '{\"driver\":\"sgi-l1-uart\","
+            "\"id\":\"qu%u\",\"controller\":\"qc%u\"}' ", i, i);
+    }
+    g_string_append_printf(args,
+        "-device '{\"driver\":\"sgi-l1-query-routing-fixture\","
+        "\"id\":\"query\",\"owner0\":\"qc0\",\"owner1\":\"qc1\","
+        "\"owner2\":\"qc2\",\"owner3\":\"qc3\",\"identity0\":101,"
+        "\"identity1\":102,\"identity2\":103,\"identity3\":%" PRIu64 ","
+        "\"topology\":%u,\"reachable\":%u}' %s", last_identity, topology,
+        topology, extra);
+    s = qtest_init(args->str);
+    g_string_free(args, true);
+    for (unsigned i = 0; i < 4; i++) {
+        g_autofree char *path = g_strdup_printf("/machine/peripheral/qu%u", i);
+        query_uart(i);
+        qtest_sysbus_mmio_map(s, path, 0, BASE);
+    }
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/query", 0,
+                          QUERY_FIXTURE_BASE);
+    query_uart(0);
+    return s;
+}
+
+static void query_send(QTestState *s, unsigned issuer, uint32_t address,
+                        uint16_t command, uint8_t channel,
+                        const uint8_t *args, unsigned args_len, unsigned count)
+{
+    uint8_t request[128] = { channel };
+
+    query_uart(issuer);
+    set_destination(request, address);
+    request[5] = command >> 8;
+    request[6] = command;
+    request[7] = count;
+    if (args_len) {
+        memcpy(request + 8, args, args_len);
+    }
+    send_frame(s, request, 8 + args_len, false);
+}
+
+static uint32_t query_address(unsigned owner, unsigned task)
+{
+    return (1u << 18) | ((owner + 1) << 12) | task;
+}
+
+static void query_identity(QTestState *s, unsigned issuer, unsigned serving,
+                            uint8_t channel)
+{
+    uint8_t reply[131];
+
+    query_send(s, issuer, query_address(serving, 6), 3, channel, NULL, 0, 0);
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    g_assert_cmphex(reply[0], ==, 0x20 | channel);
+    g_assert_cmphex(reply[5], ==, 2);
+    g_assert_cmphex(reply[10], ==, 0x41 + serving);
+    g_assert_cmphex(reply[15], ==, serving >= 2 ? 0x25 : '4');
+}
+
+static void query_empty_except(QTestState *s, unsigned issuer)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        if (i != issuer) {
+            query_uart(i);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+        }
+    }
+    query_uart(issuer);
+}
+
+static void query_local_command(QTestState *s, unsigned owner, const char *text)
+{
+    uint8_t args[128] = { 1 }, reply[131];
+
+    pstrcpy((char *)args + 1, sizeof(args) - 1, text);
+    query_send(s, owner, 0x0ffff003, 0, 16, args, strlen(text) + 2, 1);
+    g_assert_cmpuint(receive(s, reply), >=, 6);
+    g_assert_cmphex(reply[1], ==, 0);
+}
+
+static void test_query_owners(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("l1-query-records-XXXXXX", &error);
+    char *paths[4];
+    uint8_t images[4][64] = { { 0 } };
+    uint8_t args[20], reply[131];
+    QTestState *s;
+
+    g_assert_no_error(error);
+    for (unsigned i = 0; i < 4; i++) {
+        paths[i] = g_strdup_printf("%s/owner%u.bin", dir, i);
+        images[i][0] = 1;
+        images[i][1] = 2;
+        images[i][7] = 0xfd;
+        images[i][18] = 4;
+        images[i][20] = i + 1;
+        images[i][31] = -(4 + i + 1);
+        g_assert_true(g_file_set_contents(paths[i], (char *)images[i], 64,
+                                          &error));
+        g_assert_no_error(error);
+    }
+    s = query_start(paths, QUERY_TOPOLOGY, 104, "");
+    for (unsigned issuer = 0; issuer < 4; issuer++) {
+        for (unsigned serving = 0; serving < 4; serving++) {
+            if ((issuer < 2) == (serving < 2)) {
+                continue;
+            }
+            query_identity(s, issuer, serving, issuer * 7 + serving);
+            query_empty_except(s, issuer);
+            integer(args, 0);
+            integer(args + 5, 3);
+            integer(args + 10, 0);
+            integer(args + 15, 16);
+            query_send(s, issuer, query_address(serving, 6) | 0xfe0,
+                       6, 23, args, sizeof(args), 4);
+            g_assert_cmpuint(receive(s, reply), ==, 28);
+            g_assert_cmphex(reply[0], ==, 0x37);
+            g_assert_cmpmem(reply + 12, 16, images[serving] + 16, 16);
+            query_empty_except(s, issuer);
+            query_send(s, issuer, query_address(serving, 6), 7, 31,
+                       args, 5, 1);
+            g_assert_cmpuint(receive(s, reply), ==, 51);
+            g_assert_cmphex(reply[0], ==, 0x3f);
+            g_assert_cmphex(reply[5], ==, 9);
+            g_assert_cmphex(reply[10], ==, 1);
+            query_empty_except(s, issuer);
+        }
+    }
+    qtest_quit(s);
+    query_uart(0);
+    for (unsigned i = 0; i < 4; i++) {
+        unlink(paths[i]);
+        g_free(paths[i]);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_query_refusals_reset(void)
+{
+    QTestState *s = query_start(NULL, QUERY_TOPOLOGY, 104, "");
+    const uint16_t commands[] = { 0x2001, 0x2005, 0x2006, 0x1002, 0x1003 };
+    const unsigned tasks[] = { 3, 5, 14, 18 };
+    const uint32_t addresses[] = { 0x0007f006, 0x0ffc3006, 0x00049006,
+                                   0x4ffff006, 0x3ffff006 };
+    uint8_t arg[5];
+
+    qtest_qmp_set_event_callback(s, reject_expansion_lifecycle_event, NULL);
+    integer(arg, 0x41);
+    for (unsigned issuer = 0; issuer < 4; issuer += 2) {
+        unsigned serving = issuer ? 0 : 2;
+        for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
+            query_send(s, issuer, query_address(serving, 6), commands[i], 17,
+                       arg, sizeof(arg), 1);
+            expect_router_error(s, 17);
+        }
+        for (unsigned i = 0; i < G_N_ELEMENTS(tasks); i++) {
+            query_send(s, issuer, query_address(serving, tasks[i]), 3, 9,
+                       arg, sizeof(arg), 1);
+            expect_router_error(s, 9);
+        }
+        query_empty_except(s, issuer);
+    }
+    g_assert_cmpstr(status(s), ==, "prelaunch");
+    for (unsigned i = 0; i < 4; i++) {
+        g_autofree char *path = g_strdup_printf("/machine/peripheral/qc%u", i);
+        g_autoptr(QDict) display = qtest_qmp(s,
+            "{'execute':'qom-get','arguments':{'path':%s,"
+            "'property':'display-line-2'}}", path);
+        g_assert_cmpstr(qdict_get_str(display, "return"), ==, "L1 running");
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        query_send(s, 0, addresses[i], 3, 4, NULL, 0, 0);
+        expect_router_error(s, 4);
+    }
+    query_send(s, 0, 0x0ffff004, 3, 2, NULL, 0, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    query_identity(s, 0, 0, 0);
+    qtest_writeq(s, QUERY_FIXTURE_BASE, QUERY_TOPOLOGY & ~(1 << 2));
+    query_send(s, 0, query_address(2, 6), 3, 7, NULL, 0, 0);
+    expect_router_error(s, 7);
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 0);
+    g_assert_cmphex(qtest_readq(s, QUERY_FIXTURE_BASE), ==,
+                    QUERY_TOPOLOGY & ~(1 << 2));
+    qtest_qmp_set_event_callback(s, NULL, NULL);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, QUERY_FIXTURE_BASE), ==, QUERY_TOPOLOGY);
+    query_identity(s, 0, 2, 7);
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 8, 1);
+    query_send(s, 0, query_address(2, 6), 3, 13, NULL, 0, 0);
+    expect_router_error(s, 13);
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 8, 0);
+    query_identity(s, 0, 2, 13);
+    qtest_quit(s);
+    query_uart(0);
+}
+
+static void test_query_coordinates(void)
+{
+    QTestState *s = query_start(NULL, QUERY_TOPOLOGY, 104, "");
+    uint8_t reply[131];
+
+    query_local_command(s, 2, "brick slot 8");
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 2);
+    query_send(s, 0, query_address(2, 6), 3, 8, NULL, 0, 0);
+    expect_router_error(s, 8);
+    query_send(s, 0, (1 << 18) | (8 << 12) | 6, 3, 8, NULL, 0, 0);
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    g_assert_cmphex(reply[10], ==, 0x48);
+    g_assert_cmphex(reply[15], ==, 0x25);
+    g_assert_cmpuint(qtest_readq(s, QUERY_FIXTURE_BASE + 48), ==, 103);
+    g_assert_cmphex(qtest_readq(s, QUERY_FIXTURE_BASE), ==, QUERY_TOPOLOGY);
+    query_local_command(s, 3, "brick slot 8");
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 3);
+    query_send(s, 0, (1 << 18) | (8 << 12) | 6, 3, 8, NULL, 0, 0);
+    expect_router_error(s, 8);
+    qtest_quit(s);
+    query_uart(0);
+}
+
+static void test_query_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("l1-query-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+    uint8_t reply[131];
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = query_start(NULL, QUERY_TOPOLOGY, 104, "");
+    to = query_start(NULL, QUERY_TOPOLOGY, 104, "-incoming defer");
+    query_local_command(from, 2, "brick slot 8");
+    qtest_writeq(from, QUERY_FIXTURE_BASE + 16, 2);
+    qtest_writeq(from, QUERY_FIXTURE_BASE, QUERY_TOPOLOGY & ~(1 << 3));
+    query_send(from, 0, (1 << 18) | (8 << 12) | 6, 3, 19, NULL, 0, 0);
+    query_send(from, 1, query_address(3, 6), 3, 29, NULL, 0, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    query_uart(0);
+    g_assert_cmpuint(receive(to, reply), ==, 16);
+    g_assert_cmphex(reply[0], ==, 0x33);
+    g_assert_cmphex(reply[10], ==, 0x48);
+    query_uart(1);
+    g_assert_cmpuint(receive(to, reply), ==, 16);
+    g_assert_cmphex(reply[0], ==, 0x3d);
+    g_assert_cmphex(reply[10], ==, 0x44);
+    g_assert_cmphex(qtest_readq(to, QUERY_FIXTURE_BASE), ==,
+                    QUERY_TOPOLOGY & ~(1 << 3));
+    query_send(to, 0, query_address(3, 6), 3, 3, NULL, 0, 0);
+    expect_router_error(to, 3);
+    query_send(to, 0, (1 << 18) | (8 << 12) | 6, 3, 3, NULL, 0, 0);
+    g_assert_cmpuint(receive(to, reply), ==, 16);
+    g_assert_cmphex(reply[10], ==, 0x48);
+    qtest_quit(from);
+    qtest_quit(to);
+    query_uart(0);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_query_migration_mismatch(void)
+{
+    for (unsigned mismatch = 0; mismatch < 2; mismatch++) {
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("l1-query-mismatch-XXXXXX",
+                                            &error);
+        g_autofree char *socket = NULL, *uri = NULL;
+        QTestState *from, *to;
+
+        g_assert_no_error(error);
+        socket = g_build_filename(dir, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        from = query_start(NULL, QUERY_TOPOLOGY, 104, "");
+        to = query_start(NULL, mismatch ? QUERY_TOPOLOGY & ~(1 << 3) :
+                          QUERY_TOPOLOGY, mismatch ? 104 : 105,
+                          "-incoming defer");
+        qtest_set_expected_status(to, EXIT_FAILURE);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        qtest_quit(from);
+        unlink(socket);
+        g_assert_cmpint(rmdir(dir), ==, 0);
+    }
+    query_uart(0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3353,6 +3675,13 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
     qtest_add_func("sn1/l1/eeprom-six-entries", test_eeprom_six_entries);
+    qtest_add_func("sn1/l1/query-routing/owners", test_query_owners);
+    qtest_add_func("sn1/l1/query-routing/refusals-reset",
+                   test_query_refusals_reset);
+    qtest_add_func("sn1/l1/query-routing/coordinates", test_query_coordinates);
+    qtest_add_func("sn1/l1/query-routing/migration", test_query_migration);
+    qtest_add_func("sn1/l1/query-routing/migration-mismatch",
+                   test_query_migration_mismatch);
     qtest_add_func("sn1/l1/expansion/lifecycle-refusal",
                    test_expansion_lifecycle_refusal);
     qtest_add_func("sn1/l1/expansion/records", test_expansion_records);
