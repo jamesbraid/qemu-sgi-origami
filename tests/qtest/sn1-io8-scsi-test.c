@@ -22,6 +22,8 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "libqos/libqos.h"
+#include "qobject/qdict.h"
 #include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
@@ -121,6 +123,7 @@
 #define ISP_MBOX_NOT_READY 0x0004
 
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST 0x0006
+#define ISP_MBOX_CMD_ABORT_COMMAND 0x0015
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_COMPLETE 0x4000
@@ -151,6 +154,7 @@
 #define ISP_STATUS_OFF_RESID 20
 
 #define ISP_IOCB_COMPLETE 0x0000
+#define ISP_IOCB_DATA_UNDERRUN 0x0015
 
 /* One bit per SCSI phase the command reached. */
 #define ISP_STATE_FLAG_GOT_BUS 0x0100
@@ -996,6 +1000,294 @@ static void test_completion_raises_head_f_pin(const void *data)
     disks_remove(&disks);
 }
 
+
+/* Backend errors have returned; these requests wait for VM resume to retry. */
+typedef struct RetryEvents {
+    bool error[2];
+    bool stopped;
+    const char *operation;
+} RetryEvents;
+
+static bool retry_event(QTestState *qts, const char *name, QDict *event,
+                        void *opaque)
+{
+    RetryEvents *events = opaque;
+    QDict *data;
+    const char *device;
+    unsigned channel;
+
+    if (!strcmp(name, "STOP")) {
+        events->stopped = true;
+        return true;
+    }
+    if (strcmp(name, "BLOCK_IO_ERROR")) {
+        return false;
+    }
+    data = qdict_get_qdict(event, "data");
+    g_assert_cmpstr(qdict_get_str(data, "operation"), ==, events->operation);
+    g_assert_cmpstr(qdict_get_str(data, "action"), ==, "stop");
+    device = qdict_get_str(data, "device");
+    if (!strcmp(device, "d0")) {
+        channel = 0;
+    } else {
+        g_assert_cmpstr(device, ==, "d1");
+        channel = 1;
+    }
+    g_assert_false(events->error[channel]);
+    events->error[channel] = true;
+    return true;
+}
+
+static QTestState *fuel_start_with_retry_disks(DiskPair *disks,
+                                              char **config, bool write)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    char *file[2];
+    QTestState *qts;
+    unsigned i;
+
+    disks_create(disks);
+    for (i = 0; i < 2; i++) {
+        g_autofree char *name = g_strdup_printf("error%u.conf", i);
+        g_autofree char *uri = NULL;
+
+        config[i] = g_build_filename(disks->dir, name, NULL);
+        prepare_blkdebug_script(config[i], write ? "write_aio" : "read_aio");
+        if (write) {
+            FILE *script = fopen(config[i], "a");
+
+            /* Fail a second attempt before permitting the third to succeed. */
+            g_assert_nonnull(script);
+            g_assert_cmpint(fputs("[inject-error]\n"
+                                  "event = \"write_aio\"\n"
+                                  "errno = \"5\"\n"
+                                  "state = \"2\"\n"
+                                  "immediately = \"off\"\n"
+                                  "once = \"on\"\n", script), >=, 0);
+            g_assert_cmpint(fclose(script), ==, 0);
+        }
+        uri = g_strdup_printf("blkdebug:%s:%s", config[i], disks->path[i]);
+        file[i] = g_shell_quote(uri);
+    }
+    /* Geometry probing reads sector zero and would consume the injection. */
+    qts = qtest_initf("%s -bios %s"
+                      " -drive if=none,id=d0,format=raw,file=%s"
+                      " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,"
+                      "drive=d0,rerror=stop,werror=stop,cyls=4,heads=16,secs=32"
+                      " -drive if=none,id=d1,format=raw,file=%s"
+                      " -device scsi-hd,bus=scsi.1,scsi-id=1,lun=0,"
+                      "drive=d1,rerror=stop,werror=stop,cyls=4,heads=16,secs=32",
+                      fuel.args, prom, file[0], file[1]);
+    g_free(file[0]);
+    g_free(file[1]);
+    qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG, fuel.memory_config);
+    io8_scsi_attach(qts);
+    init_queues(qts);
+    absorb_unit_attention(qts, 0, 0xd0);
+    absorb_unit_attention(qts, 1, 0xd1);
+    return qts;
+}
+
+static void submit_retry_io(QTestState *qts, uint32_t handle,
+                            unsigned channel, bool write, bool short_read)
+{
+    uint8_t cdb[SCSI_CDB10_LEN] = { write ? SCSI_WRITE_10 : SCSI_READ_10 };
+    uint32_t buffer = BUF_PHYS + channel * SECTOR_BYTES;
+    const RingSeg seg = { DIRECT64(buffer), SECTOR_BYTES };
+
+    put_lba10(cdb, write ? SCRATCH_LBA : 0, short_read ? 2 : 1);
+    if (write) {
+        uint8_t sector[SECTOR_BYTES];
+        unsigned i;
+
+        for (i = 0; i < SECTOR_BYTES; i++) {
+            sector[i] = disk_byte(channel, i);
+        }
+        qtest_memwrite(qts, buffer, sector, sizeof(sector));
+    } else {
+        qtest_memset(qts, buffer, BUFFER_SENTINEL, SECTOR_BYTES);
+    }
+    submit_command(qts, handle, channel, DISK_TARGET, 0, cdb, sizeof(cdb),
+                   write ? ISP_REQ_CONTROL_DATA_OUT : ISP_REQ_CONTROL_DATA_IN,
+                   &seg);
+}
+
+static void expect_no_status(QTestState *qts)
+{
+    g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==,
+                    ring.resp_next);
+}
+
+/* QMP round trips preserve both error events even when STOP interleaves. */
+static void wait_for_retry_stop(QTestState *qts, RetryEvents *events)
+{
+    gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+
+    for (;;) {
+        QDict *reply = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+        QDict *status = qdict_get_qdict(reply, "return");
+        bool stopped = !qdict_get_bool(status, "running") &&
+                       !strcmp(qdict_get_str(status, "status"), "io-error");
+
+        if (g_get_monotonic_time() >= deadline) {
+            g_test_message("retry state: errors=%u,%u stop=%u running=%u "
+                           "status=%s response=%u consumer=%u",
+                           events->error[0], events->error[1],
+                           events->stopped, qdict_get_bool(status, "running"),
+                           qdict_get_str(status, "status"),
+                           isp_readw(qts, ISP_REG_RESPONSE_QUEUE),
+                           ring.resp_next);
+        }
+        qobject_unref(reply);
+        if (events->error[0] && events->error[1] && events->stopped &&
+            stopped) {
+            break;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    }
+    /* This reply arrives after the backend error callbacks have returned. */
+    expect_no_status(qts);
+}
+
+static void expect_retry_payload(QTestState *qts, unsigned channel)
+{
+    uint8_t sector[SECTOR_BYTES];
+
+    qtest_memread(qts, BUF_PHYS + channel * SECTOR_BYTES, sector,
+                  sizeof(sector));
+    expect_first_sector(sector, channel);
+}
+
+static void expect_retry_complete(const uint8_t *status)
+{
+    if (get16le(status + ISP_STATUS_OFF_COMPLETION) != ISP_IOCB_COMPLETE) {
+        g_test_message("retry completion: handle=%x completion=%x resid=%u",
+                       get32le(status + ISP_STATUS_OFF_HANDLE),
+                       get16le(status + ISP_STATUS_OFF_COMPLETION),
+                       get32le(status + ISP_STATUS_OFF_RESID));
+    }
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, 0);
+}
+
+typedef enum PendingRetryCase {
+    RETRY_READ_RESUME,
+    RETRY_READ_ABORT,
+    RETRY_WRITE_RESUME,
+    RETRY_SHORT_READ,
+} PendingRetryCase;
+
+static void test_pending_retry(const void *data)
+{
+    PendingRetryCase test_case = GPOINTER_TO_INT(data);
+    bool abort = test_case == RETRY_READ_ABORT;
+    bool write = test_case == RETRY_WRITE_RESUME;
+    bool short_read = test_case == RETRY_SHORT_READ;
+    const uint32_t handles[] = { 0x12345671, 0x89abcd72 };
+    DiskPair disks;
+    char *config[2];
+    RetryEvents events = { .operation = write ? "write" : "read" };
+    QTestState *qts = fuel_start_with_retry_disks(&disks, config, write);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t victim[SECTOR_BYTES], after[SECTOR_BYTES];
+    unsigned i;
+
+    qtest_qmp_set_event_callback(qts, retry_event, &events);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    {
+        QDict *reply = qtest_qmp(qts, "{ 'execute': 'query-status' }");
+
+        g_assert_true(qdict_get_bool(qdict_get_qdict(reply, "return"),
+                                     "running"));
+        qobject_unref(reply);
+    }
+    submit_retry_io(qts, handles[0], 0, write, short_read);
+    submit_retry_io(qts, handles[1], 1, write, short_read);
+    wait_for_retry_stop(qts, &events);
+    if (write) {
+        events.error[0] = events.error[1] = events.stopped = false;
+        qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+        wait_for_retry_stop(qts, &events);
+    }
+
+    if (abort) {
+        const uint16_t in[] = {
+            ISP_DEVICE_WORD(1, DISK_TARGET, 0),
+            handles[1] >> 16, (uint16_t)handles[1],
+        };
+
+        g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
+                                 ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+        isp_mbox_ack(qts);
+        wait_for_completion(qts);
+        take_status(qts, handles[1], status);
+        expect_no_status(qts);
+        qtest_memread(qts, BUF_PHYS + SECTOR_BYTES, victim, sizeof(victim));
+    }
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    if (abort) {
+        wait_for_completion(qts);
+        take_status(qts, handles[0], status);
+        expect_retry_complete(status);
+        expect_retry_payload(qts, 0);
+    } else {
+        unsigned seen = 0;
+
+        for (i = 0; i < 2; i++) {
+            uint32_t handle;
+            unsigned channel;
+
+            wait_for_completion(qts);
+            qtest_memread(qts, RESP_PHYS + ring.resp_next *
+                          ISP_QUEUE_ENTRY_SIZE, status, sizeof(status));
+            handle = get32le(status + ISP_STATUS_OFF_HANDLE);
+            channel = handle == handles[0] ? 0 : 1;
+            g_assert_cmphex(handle, ==, handles[channel]);
+            g_assert_false(seen & (1U << channel));
+            seen |= 1U << channel;
+            take_status(qts, handle, status);
+            if (short_read) {
+                g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION),
+                                ==, ISP_IOCB_DATA_UNDERRUN);
+                g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS),
+                                ==, 0);
+                g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==,
+                                 SECTOR_BYTES);
+            } else {
+                expect_retry_complete(status);
+            }
+            expect_retry_payload(qts, channel);
+        }
+        g_assert_cmpuint(seen, ==, 3);
+    }
+    expect_no_status(qts);
+    if (write) {
+        for (i = 0; i < 2; i++) {
+            read_sector(qts, 0xf0 + i, i, SCRATCH_LBA, after, status);
+            expect_retry_complete(status);
+            expect_first_sector(after, i);
+        }
+        expect_no_status(qts);
+    }
+    /* New work proves progress beyond the retried survivor. */
+    read_sector(qts, 0xe0, 0, 0, after, status);
+    expect_retry_complete(status);
+    expect_first_sector(after, 0);
+    expect_no_status(qts);
+    if (abort) {
+        qtest_memread(qts, BUF_PHYS + SECTOR_BYTES, after, sizeof(after));
+        g_assert_cmpmem(after, sizeof(after), victim, sizeof(victim));
+    }
+    qtest_quit(qts);
+    for (i = 0; i < 2; i++) {
+        g_assert_cmpint(unlink(config[i]), ==, 0);
+        g_free(config[i]);
+    }
+    disks_remove(&disks);
+}
+
 int main(int argc, char **argv)
 {
     static const InboundMaskCase inbound_masks[] = {
@@ -1054,6 +1346,16 @@ int main(int argc, char **argv)
                         test_write_transfer_from_memory);
     qtest_add_data_func("fuel/scsi/completion-raises-pin", &fuel,
                         test_completion_raises_head_f_pin);
+
+    qtest_add_data_func("fuel/scsi/pending-retry-resume", NULL,
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-command-abort",
+                        GINT_TO_POINTER(RETRY_READ_ABORT), test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-write-resume",
+                        GINT_TO_POINTER(RETRY_WRITE_RESUME),
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-short-read",
+                        GINT_TO_POINTER(RETRY_SHORT_READ), test_pending_retry);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
