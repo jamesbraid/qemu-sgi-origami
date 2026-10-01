@@ -220,6 +220,58 @@ static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
     return true;
 }
 
+static void baseio_configure_ioc3_timekeeper(SGIBaseioState *s,
+                                             PCIDevice *ioc3,
+                                             uint8_t timekeeper)
+{
+    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind", timekeeper);
+    if (timekeeper == SGI_IOC3_TIMEKEEPER_M48T35 &&
+        s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
+        qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
+                             s->system_timekeeper_year_base);
+        qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
+                          false);
+    }
+}
+
+static bool baseio_connect_ioc3_chardevs(SGIBaseioState *s, PCIDevice *ioc3,
+                                         uint32_t population,
+                                         const char *chardev_a_id,
+                                         const char *chardev_b_id,
+                                         const char *record_a_id,
+                                         const char *record_b_id,
+                                         Error **errp)
+{
+    if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", chardev_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", chardev_b_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-a", record_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-b", record_b_id,
+                             errp)) {
+        object_unparent(OBJECT(ioc3));
+        return false;
+    }
+    if ((population & SGI_IOC3_POPULATION_PARALLEL) &&
+        !baseio_pass_chardev(DEVICE(ioc3), "parallel-chardev",
+                             s->parallel_chardev_id, errp)) {
+        object_unparent(OBJECT(ioc3));
+        return false;
+    }
+    return true;
+}
+
+static bool baseio_realize_ioc3(SGIBaseioState *s, PCIDevice *ioc3,
+                                Error **errp)
+{
+    if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
+        object_unparent(OBJECT(ioc3));
+        return false;
+    }
+    return true;
+}
+
 /*
  * The IOC3 child every preset creates, differing only by population.
  * has_subsystem_id is false for ip29 and io8 (whose own PCI subsystem
@@ -280,14 +332,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
 
     object_property_add_child(OBJECT(s), child_name, OBJECT(ioc3));
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
-    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind", timekeeper);
-    if (timekeeper == SGI_IOC3_TIMEKEEPER_M48T35 &&
-        s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
-        qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
-                             s->system_timekeeper_year_base);
-        qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
-                          false);
-    }
+    baseio_configure_ioc3_timekeeper(s, ioc3, timekeeper);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", onewire_serial);
     if (has_subsystem_id) {
         qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", subsystem_id);
@@ -302,21 +347,9 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
         object_unparent(OBJECT(ioc3));
         return NULL;
     }
-    if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", chardev_a_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", chardev_b_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-a", record_a_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-b", record_b_id,
-                             errp)) {
-        object_unparent(OBJECT(ioc3));
-        return NULL;
-    }
-    if ((population & SGI_IOC3_POPULATION_PARALLEL) &&
-        !baseio_pass_chardev(DEVICE(ioc3), "parallel-chardev",
-                             s->parallel_chardev_id, errp)) {
-        object_unparent(OBJECT(ioc3));
+    if (!baseio_connect_ioc3_chardevs(s, ioc3, population, chardev_a_id,
+                                     chardev_b_id, record_a_id, record_b_id,
+                                     errp)) {
         return NULL;
     }
     if (population & SGI_IOC3_POPULATION_PARALLEL) {
@@ -329,8 +362,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     baseio_note_claim(s, chardev_b_id);
     baseio_note_claim(s, record_a_id);
     baseio_note_claim(s, record_b_id);
-    if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
-        object_unparent(OBJECT(ioc3));
+    if (!baseio_realize_ioc3(s, ioc3, errp)) {
         return NULL;
     }
     pci_set_byte(ioc3->config + PCI_REVISION_ID, revision);
@@ -746,6 +778,11 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     PCIDevice *scsi;
     PCIDevice *ioc3;
     PCIDevice *usb;
+    uint32_t population = SGI_IOC3_POPULATION_ETHERNET |
+                          SGI_IOC3_POPULATION_SERIAL_A |
+                          SGI_IOC3_POPULATION_SERIAL_B |
+                          SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
+                          SGI_IOC3_POPULATION_PARALLEL;
 
     if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
         (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_M48T35 ||
@@ -769,19 +806,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 
     ioc3 = pci_new(PCI_DEVFN(4, 0), TYPE_SGI_IOC3);
     object_property_add_child(OBJECT(s), "ioc3", OBJECT(ioc3));
-    qdev_prop_set_uint32(DEVICE(ioc3), "population",
-                         SGI_IOC3_POPULATION_ETHERNET |
-                         SGI_IOC3_POPULATION_SERIAL_A |
-                         SGI_IOC3_POPULATION_SERIAL_B |
-                         SGI_IOC3_POPULATION_KEYBOARD_MOUSE |
-                         SGI_IOC3_POPULATION_PARALLEL);
-    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
-                        s->system_timekeeper_kind);
+    qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
+    baseio_configure_ioc3_timekeeper(s, ioc3, s->system_timekeeper_kind);
     if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
-        qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
-                             s->system_timekeeper_year_base);
-        qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
-                          false);
         if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
             object_unparent(OBJECT(ioc3));
             return false;
@@ -799,22 +826,12 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", 1);
     object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
                              &error_abort);
-    if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
-                             errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "parallel-chardev",
-                             s->parallel_chardev_id,
-                             errp)) {
-        object_unparent(OBJECT(ioc3));
+    if (!baseio_connect_ioc3_chardevs(s, ioc3, population, s->chardev_a_id,
+                                     s->chardev_b_id, s->record_a_id,
+                                     s->record_b_id, errp)) {
         return false;
     }
-    if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
-        object_unparent(OBJECT(ioc3));
+    if (!baseio_realize_ioc3(s, ioc3, errp)) {
         return false;
     }
     s->parallel_claimed = true;
