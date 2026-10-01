@@ -410,7 +410,7 @@ sn1_pci_expansion_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') and
    config_all_devices.has_key('CONFIG_IOMMU_TESTDEV') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-pci-expansion-module-test'] : [])
+    ['sn1-pci-expansion-module-test', 'sgi-pci-expansion-ni-test'] : [])
 
 sn0_mgras_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?

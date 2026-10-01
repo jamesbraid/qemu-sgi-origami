@@ -167,6 +167,12 @@ typedef struct SN1NodeState {
     Notifier cached_alias_notifier[2];
     bool cable_notifier_added;
     SN1FabricEndpoint endpoint;
+    SN1FabricProcessorView ni_processor[SGI_SN1_NODE_MAX_CPUS][SN1_NODE_SPACES];
+    MemoryRegion ni_target[2];
+    MemoryRegion ni_target_part[2][2];
+    AddressSpace ni_ram_as;
+    AddressSpace ni_hub_as;
+    AddressSpace ni_pio_as;
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"

@@ -24,6 +24,10 @@ struct SGIOrigin300PciExpansionState {
     SGIXioLink host_link;
     SGIXioLink head_link[4];
     SN1FabricEndpoint endpoint;
+    uint8_t ni_route;
+    bool ni_initialized;
+    AddressSpace bic_registers;
+    AddressSpace bic_pio;
     MemoryRegion denied;
     MemoryRegion view[12];
     uint32_t placement;
@@ -75,6 +79,65 @@ static void expansion_view(SGIOrigin300PciExpansionState *s, unsigned index,
 /* This structural endpoint installs no NI address claims. */
 static void expansion_place_claims(SN1FabricEndpoint *endpoint)
 {
+}
+
+bool sgi_origin300_pci_expansion_enable_ni_route(
+    SGIOrigin300PciExpansionState *s, Error **errp)
+{
+    if (DEVICE(s)->realized) {
+        error_setg(errp, "NI composition must be selected before realization");
+        return false;
+    }
+    s->ni_route = true;
+    return true;
+}
+
+static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
+    unsigned origin, hwaddr address, void *buffer, size_t size, bool write,
+    MemTxAttrs attrs)
+{
+    SGIOrigin300PciExpansionState *s =
+        SGI_ORIGIN300_PCI_EXPANSION(endpoint->owner);
+    hwaddr base = (uint64_t)s->placement << SN1_FABRIC_ADDRESS_SHIFT;
+    hwaddr local = address - base;
+    hwaddr offset;
+    AddressSpace *as;
+
+    if ((local >= UINT64_C(0x10030000000) &&
+         local - UINT64_C(0x10030000000) < SGI_BEDROCK_SIZE) ||
+        (local >= UINT64_C(0x20001800000) &&
+         local - UINT64_C(0x20001800000) < SGI_BEDROCK_SIZE)) {
+        offset = local >= UINT64_C(0x20001800000) ?
+            local - UINT64_C(0x20001800000) : local - UINT64_C(0x10030000000);
+        /* BIC has no PI. Its LB/NI/II identity and controls remain readable. */
+        if (offset < 0x400000 || size > SGI_BEDROCK_SIZE - offset) {
+            return MEMTX_DECODE_ERROR;
+        }
+        as = &s->bic_registers;
+    } else if (local >= UINT64_C(0x20000000000) &&
+               local - UINT64_C(0x20000000000) < SGI_BEDROCK_IO_PIO_SIZE) {
+        offset = local - UINT64_C(0x20000000000);
+        if (size > SGI_BEDROCK_IO_PIO_SIZE - offset) {
+            return MEMTX_DECODE_ERROR;
+        }
+        as = &s->bic_pio;
+    } else {
+        return MEMTX_DECODE_ERROR;
+    }
+    return write ? address_space_write(as, offset, attrs, buffer, size) :
+                   address_space_read(as, offset, attrs, buffer, size);
+}
+
+static SGIBedrockIOState *expansion_io_claimant(void *opaque, unsigned number)
+{
+    SN1FabricEndpoint *target = sn1_fabric_resolve_named(opaque, number);
+
+    if (!target) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "sgi-pci-expansion-module: NI register packet has no node %u\n",
+            number);
+    }
+    return target ? &target->bedrock->io : NULL;
 }
 
 static void expansion_realize(DeviceState *dev, Error **errp)
@@ -136,6 +199,10 @@ static void expansion_realize(DeviceState *dev, Error **errp)
 
         s->chip[i] = qdev_new(TYPE_SGI_XBRIDGE);
         object_property_add_child(OBJECT(s), name, OBJECT(s->chip[i]));
+        if (s->ni_route && !sgi_xbridge_enable_packet_context(
+                SGI_XBRIDGE(s->chip[i]), errp)) {
+            return;
+        }
         qdev_prop_set_string(s->chip[i], "bus-prefix", prefix);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-e", 1);
         qdev_prop_set_uint8(s->chip[i], "pci-speed-f", 1);
@@ -184,6 +251,21 @@ static void expansion_realize(DeviceState *dev, Error **errp)
         .ready = true,
         .place_claims = expansion_place_claims,
     };
+    if (s->ni_route) {
+        s->endpoint.isolated_route = true;
+        s->endpoint.processor_rw = expansion_processor_rw;
+        address_space_init(&s->bic_registers,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bic), 0),
+            "pci-expansion.bic-registers");
+        address_space_init(&s->bic_pio,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bic), 1),
+            "pci-expansion.bic-pio");
+        s->ni_initialized = true;
+        sgi_bedrock_io_set_claimant(&bic->io, expansion_io_claimant,
+                                    &s->endpoint);
+        sgi_bedrock_io_set_destination(&bic->io, sn1_fabric_destination_rw,
+                                      &s->endpoint);
+    }
     expansion_view(s, 0, sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bic), 0),
                    SGI_BEDROCK_SIZE);
     expansion_view(s, 1, sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bic), 1),
@@ -226,6 +308,10 @@ static void expansion_finalize(Object *obj)
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(obj);
     unsigned i;
 
+    if (s->ni_initialized) {
+        address_space_destroy(&s->bic_pio);
+        address_space_destroy(&s->bic_registers);
+    }
     g_free(s->host_link.name);
     for (i = 0; i < 4; i++) {
         g_free(s->head_link[i].name);
@@ -257,6 +343,7 @@ static const VMStateDescription vmstate_expansion = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(ni_route, SGIOrigin300PciExpansionState),
         VMSTATE_UINT32_EQUAL(placement, SGIOrigin300PciExpansionState),
         VMSTATE_UINT8_EQUAL(node_number, SGIOrigin300PciExpansionState),
         VMSTATE_UINT8_EQUAL(bedrock_revision, SGIOrigin300PciExpansionState),
