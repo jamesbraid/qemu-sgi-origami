@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI R14000 revision 2.3 identity under the reviewed R14000 policy. */
 
 #include "qemu/osdep.h"

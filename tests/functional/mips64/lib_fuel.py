@@ -1,6 +1,6 @@
 # Supplied inputs for the Fuel installed-IRIX functional test
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Use an identified Fuel fixture without manufacturing board defaults."""
 
 import json

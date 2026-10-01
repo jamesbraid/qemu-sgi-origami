@@ -1,3 +1,7 @@
+SPDX-License-Identifier: BSD-3-Clause
+The license above covers the new patch contributions; existing libslirp
+code retains its original copyright and license notices.
+
 From: origami QEMU bring-up
 Subject: [PATCH] bootp: optionally return the requested boot filename
 

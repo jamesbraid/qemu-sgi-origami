@@ -2,7 +2,7 @@
 #
 # Boot the supplied Fuel IRIX disk through its stock PROM on IOC3-A
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Require a Fuel IRIX 6.5.30 shell and shutdown back to the PROM menu."""
 
 import json

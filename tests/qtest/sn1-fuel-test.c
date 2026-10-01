@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Fuel boot-spike wiring. The board ID word and bank placement are inputs. */
 
 #include "qemu/osdep.h"
