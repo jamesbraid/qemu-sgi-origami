@@ -160,6 +160,12 @@ static void test_device3_programmed_lanes(void)
     qtest_writel(qts, window + 0x24, 0x12345678);
     g_assert_cmphex(qtest_readl(qts, raw + 0x24), ==, 0x78563412);
 
+    /* The second PCI-32 read must not sign-extend into the first word. */
+    qtest_writel(qts, window + 0x24, 0xfedcba98);
+    g_assert_cmphex(qtest_readl(qts, window + 0x24), ==, 0xfedcba98);
+    g_assert_cmphex(qtest_readq(qts, window + 0x20), ==,
+                    UINT64_C(0xfedcba9878563412));
+
     g_free(dev);
     qpci_free_sgi_bridge(bus);
     qtest_quit(qts);
