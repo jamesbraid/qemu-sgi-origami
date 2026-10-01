@@ -1338,6 +1338,9 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     }
     memset(s->front, 0, s->width * s->height * sizeof(*s->front));
     memset(s->back, 0, s->width * s->height * sizeof(*s->back));
+    for (int i = 0; i < 2 && s->slot[i]; i++) {
+        memset(s->slot[i], 0, s->slot_count * sizeof(*s->slot[i]));
+    }
     memset(s->depth, 0, s->width * s->height * sizeof(*s->depth));
     memset(s->format, 0, s->width * s->height);
     memset(s->back_format, 0, s->width * s->height);
@@ -1563,6 +1566,11 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->depth = g_new0(uint32_t, s->width * s->height);
     s->front_count = s->back_count = s->width * s->height;
     s->depth_count = s->width * s->height;
+    if (s->board->re_count == 2) {
+        s->slot_count = s->width * s->height;
+        s->slot[0] = g_new0(uint32_t, s->slot_count);
+        s->slot[1] = g_new0(uint32_t, s->slot_count);
+    }
     s->format = g_new0(uint8_t, s->width * s->height);
     s->back_format = g_new0(uint8_t, s->width * s->height);
     s->overlay = g_new0(uint8_t, s->width * s->height);
@@ -1629,6 +1637,9 @@ static void mgras_unrealize(DeviceState *dev)
     sgi_scanout_cleanup(&s->scanout);
     address_space_destroy(&s->fabric_as);
     sgi_board_memory_cleanup(&s->mem);
+    g_free(s->slot[0]);
+    g_free(s->slot[1]);
+    s->slot[0] = s->slot[1] = NULL;
     g_free(s->depth); g_free(s->format);
     g_free(s->back_format);
     g_free(s->overlay);
@@ -1690,6 +1701,38 @@ static bool mgras_front_count_valid(void *opaque, int version_id)
 
     return s->front_count == s->width * s->height;
 }
+
+static bool mgras_slots_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->slot_count != 0;
+}
+
+static bool mgras_slot_count_valid(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->slot_count == s->width * s->height;
+}
+
+/* Only a two-RE board has the slots, so a one-RE stream carries none. */
+static const VMStateDescription vmstate_sgi_mgras_slots = {
+    .name = TYPE_SGI_MGRAS "/slots",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_slots_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(slot_count, SGIMgrasState),
+        VMSTATE_VALIDATE("slot plane length is fixed",
+                         mgras_slot_count_valid),
+        VMSTATE_VARRAY_UINT32(slot[0], SGIMgrasState, slot_count, 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_VARRAY_UINT32(slot[1], SGIMgrasState, slot_count, 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static bool mgras_back_count_valid(void *opaque, int version_id)
 {
@@ -1970,6 +2013,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_mgras_timing,
+        &vmstate_sgi_mgras_slots,
         &vmstate_sgi_mgras_gl_contexts,
         &vmstate_sgi_mgras_gl_readback,
         &vmstate_sgi_mgras_gl_block,
@@ -2187,6 +2231,21 @@ static void mgras_test_get_back_pixel(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static void mgras_test_get_slot_pixel(Object *obj, Visitor *v,
+                                      const char *name, void *opaque,
+                                      Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_slot < 2 && s->slot[s->test_slot] &&
+        s->test_pixel_x < s->width && s->test_pixel_y < s->height) {
+        value = s->slot[s->test_slot][s->test_pixel_y * s->width +
+                                      s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -2198,6 +2257,10 @@ static void mgras_instance_init(Object *obj)
                         mgras_test_get_depth_stencil, NULL, NULL, NULL);
     object_property_add(obj, "x-test-back-pixel", "uint32",
                         mgras_test_get_back_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-slot-pixel", "uint32",
+                        mgras_test_get_slot_pixel, NULL, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-slot", &s->test_slot,
+                                   OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-polygon-contexts", "uint32",
                         mgras_test_get_polygon_contexts, NULL, NULL, NULL);
     object_property_add(obj, "x-test-polygon-vertices", "uint64",

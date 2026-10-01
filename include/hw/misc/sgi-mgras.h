@@ -508,7 +508,11 @@ struct SGIMgrasState {
     bool retrace_no_dest_logged;
     /* A timing table was refused since reset; not migrated. */
     bool timing_problem_logged;
-    /* Host-only qtest introspection. Not guest state and not migrated. */
+    /*
+     * Host-only qtest introspection. Not guest state and not migrated.
+     * test_slot picks which of slots 2 and 3 x-test-slot-pixel reads.
+     */
+    uint32_t test_slot;
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
     uint64_t test_last_interrupt_addr;
@@ -530,6 +534,14 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
+    /*
+     * Colour-buffer slots 2 and 3 of a two-RE board, written by GL's
+     * draw-buffer bits 2 and 3 (hw/misc/sgi-mgras-gl.c); NULL, with a zero
+     * slot_count, on a one-RE board. Direct colour or an index, with no
+     * format tag, and never scanned out.
+     */
+    uint32_t *slot[2];
+    uint32_t slot_count;
     /*
      * The same two banks as board memory: front and back point into its
      * bytes, and bank_plane[] names each bank's plane, so the shared DMA

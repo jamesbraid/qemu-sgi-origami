@@ -639,7 +639,8 @@ enum {
  * (run irix-20260927T172059-fdbada), where OpenGL's default draw buffer is
  * the front and the back buffer respectively. Reading it as a bit mask of
  * the front and back buffers, SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK, is
- * inferred from those two values; the other bits are not modelled.
+ * inferred from those two values. Bits 2 and 3 name slots 2 and 3 of a
+ * two-RE board (mgras_gl_bind()); bits above 3 are not modelled.
  */
 
 /*
@@ -1112,6 +1113,17 @@ static void mgras_gl_bind(SGIMgrasState *s)
         .origin = { origin & 0xffff, origin >> 16 },
         .front = 1u << (back ^ 1),
         .back = 1u << back,
+        /*
+         * Draw-buffer bits 2 and 3 name colour-buffer slots 2 and 3 where
+         * the board has them (mgras-dual-re.md, "What IRIX sends a
+         * two-engine board"): a deep double-buffered visual sends bit 2
+         * for its back buffer and a stereo one for FRONT_LEFT, so the bit
+         * has no fixed front or back meaning. Drawing honours them.
+         * Limitation: swap and scanout still use banks 0 and 1 only. Which
+         * slot a window displays after a swap is unknown until traced, so
+         * the model shows nothing a bit-2 draw wrote.
+         */
+        .extra = { s->slot[0] ? 4 : 0, s->slot[1] ? 8 : 0 },
     };
 
     for (int i = 0; mode == MGRAS_GL_CLIP_INSIDE && i < MGRAS_GL_CLIP_RECTS;
@@ -2317,6 +2329,11 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
         s->back[idx] = rgb;
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
     }
+    for (int i = 0; i < 2; i++) {
+        if ((banks & (4u << i)) && s->slot[i]) {
+            s->slot[i][idx] = rgb;
+        }
+    }
 }
 
 /* The pixel's depth word: the depth in bits 23:0, the stencil in 31:24. */
@@ -2342,7 +2359,13 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
     SGIMgrasState *s = opaque;
     unsigned int idx = (s->height - 1 - y) * s->width + x;
 
-    return (target & 1 ? s->front[idx] : s->back[idx]) & 0xffffff;
+    if (target & 1) {
+        return s->front[idx] & 0xffffff;
+    }
+    if (target & 2) {
+        return s->back[idx] & 0xffffff;
+    }
+    return s->slot[target & 4 ? 0 : 1][idx] & 0xffffff;
 }
 
 /*
@@ -2384,6 +2407,12 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
     if (target & 2) {
         s->back[idx] = ((s->back[idx] & ~mask) | (index & mask)) & 0xff;
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
+    }
+    for (int i = 0; i < 2; i++) {
+        if ((target & (4u << i)) && s->slot[i]) {
+            s->slot[i][idx] = ((s->slot[i][idx] & ~mask) | (index & mask)) &
+                              0xff;
+        }
     }
 }
 
