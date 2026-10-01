@@ -1581,6 +1581,137 @@ static void sn1_node_bedrock_reset(void *opaque, int n, int level)
     }
 }
 
+static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
+{
+    size_t i;
+
+    /*
+     * The XBridge is a fitted part of the IP45 node board itself, as the
+     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
+     * "Node devices"): this file creates it directly, the family builder's
+     * own device like every other product's onboard base I/O. An XIO
+     * link joins it to the Bedrock's own XIO port before either
+     * realizes: the link (hw/mips/sgi/xio-link.c) hands the XBridge the
+     * Bedrock's packet face as the chip's "fabric" -- what its own
+     * widget-0 conditions and both heads' interrupts reach the host
+     * through. The IO-8's fixed devices
+     * are a separate sgi-baseio (the "io8" preset) the machine places on
+     * the chip's own head F, through the same board path every other
+     * product's base I/O goes through (sgi_machine_instantiate_io_board()
+     * in sn-machine.c, via sn1_node_xbridge_pci_bus() below) once the
+     * chip itself has realized.
+     */
+    node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
+    object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
+    qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
+    qdev_prop_set_uint8(node->xbridge, "xio-port", node->xbridge_xio_port);
+    /*
+     * The first node's buses keep the names they have always had; a second
+     * node's carry its index, since PCI devices on same-named buses collide
+     * in the migration stream.
+     */
+    if (node->nasid) {
+        g_autofree char *prefix = g_strdup_printf("node%u-", node->nasid);
+
+        qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
+    }
+    /*
+     * The PCI riser card's two option slots, head E devices 1 and 2, are
+     * sold as 64-bit universal slots, so they are taken to drive REQ64#
+     * (inferred). The riser connects the IP45 motherboard to the IO-8
+     * (007-4365-002, printed page 12), so the model fits it with the IO-8
+     * at widget 15. Head F's own devices are left 32-bit, an
+     * approximation: no held document gives that bus's width.
+     */
+    if (node->io_board_part && node->io_board_widget == 15 &&
+        !strcmp(node->io_board_part, SN1_IO8_BOARD_PART)) {
+        qdev_prop_set_uint8(node->xbridge, "req64-slots-e", BIT(1) | BIT(2));
+    }
+    if (node->io_board_part) {
+        g_assert(node->io_board_widget == 14 || node->io_board_widget == 15);
+        qdev_prop_set_string(node->xbridge,
+                             node->io_board_widget == 14 ?
+                             "board-part-e" : "board-part-f",
+                             node->io_board_part);
+        /* Each chassis's IO-8 answers with its own serial. */
+        qdev_prop_set_uint64(node->xbridge,
+                             node->io_board_widget == 14 ?
+                             "onewire-serial-e" : "onewire-serial-f",
+                             node->io_board_serial);
+    }
+    sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
+                      OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
+                      OBJECT(node->xbridge), SN1_XBRIDGE_HOST_PORT);
+    if (!sgi_xio_link_connect(&node->xbridge_link, errp)) {
+        return false;
+    }
+    if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
+        return false;
+    }
+
+    /*
+     * Every widget the crossbar decodes: the host's local view (widget zero)
+     * plus one per XIO attachment, including a board slot with nothing
+     * plugged in; its head still answers "no PCI device here" through the
+     * chip itself, which a widget left undecoded could not. Read through the
+     * XIO port interface, as any other widget attachment in this tree
+     * does, rather than the chip's view accessor directly.
+     */
+    for (i = 0; i < node->xbridge_widget_count; i++) {
+        g_autofree char *property =
+            g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
+        MemoryRegion *face = sgi_xio_port_cpu_face(OBJECT(node->xbridge),
+                                                   node->xbridge_widgets[i]);
+
+        if (!face) {
+            error_setg(errp, "XBridge widget %u has no XIO face",
+                       node->xbridge_widgets[i]);
+            return false;
+        }
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(face), &error_abort);
+    }
+    /*
+     * Origin 300 has a rear XIO cable connector (007-4365-002, page 8).
+     * Fuel's rear-panel diagram (007-4480-001, page 6) shows none, but its
+     * graphics board answers at widget 13, which the machine selects as
+     * the external port when its topology fits one. Without a graphics
+     * board the shared model still decodes the default external port
+     * (SGI_XBRIDGE_XIO_PORT_DEFAULT) through Bedrock; Fuel's unused-port
+     * wiring and register response are unknown.
+     */
+    {
+        unsigned int port = sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge));
+        g_autofree char *property = g_strdup_printf("widget-%u", port);
+
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(sgi_xio_port_cpu_face(
+                                     OBJECT(node->xbridge), port)),
+                                 &error_abort);
+    }
+    /*
+     * A widget scan addresses the board by the physical XIO port
+     * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
+     * the widget-zero local-CPU shortcut wired above; both name the same
+     * chip, seen through its single upstream link either way. Without this, a
+     * probe of Bedrock's port SN1_XBRIDGE_HOST_PORT decodes to nothing
+     * (sgi-bedrock-io.c's widget_as_initialized stays false there), so
+     * firmware and diagnostics that walk Bedrock's ports rather than using
+     * the shortcut never learn the IO-8 is present.
+     */
+    {
+        g_autofree char *host_port_property =
+            g_strdup_printf("widget-%u", SN1_XBRIDGE_HOST_PORT);
+
+        object_property_set_link(
+            OBJECT(node->bedrock), host_port_property,
+            OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(node->xbridge), 0)),
+            &error_abort);
+    }
+
+    return true;
+}
+
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                     Error **errp)
 {
@@ -1593,7 +1724,6 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     unsigned int cpu;
     uint32_t slot_order;
     uint32_t grant = 0;
-    size_t i;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
@@ -1716,125 +1846,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                 qdev_get_gpio_in_named(DEVICE(node),
                                                        "bedrock-reset", 0));
 
-    /*
-     * The XBridge is a fitted part of the IP45 node board itself, as the L1
-     * and the boot flash are: this file creates it directly, the family
-     * builder's own device like every other product's onboard base I/O. An XIO
-     * link joins it to the Bedrock's own XIO port before either realizes: the
-     * link (hw/mips/sgi/xio-link.c) hands the XBridge the Bedrock's packet
-     * face as the chip's "fabric" -- what its own widget-0 conditions and both
-     * heads' interrupts reach the host through. The IO-8's fixed devices are a
-     * separate sgi-baseio (the "io8" preset) the machine places on the chip's
-     * own head F, through the same board path every other product's base I/O
-     * goes through (sgi_machine_instantiate_io_board() in sn-machine.c, via
-     * sn1_node_xbridge_pci_bus() below) once the chip itself has realized.
-     */
-    node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
-    object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
-    qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
-    qdev_prop_set_uint8(node->xbridge, "xio-port", node->xbridge_xio_port);
-    /*
-     * The first node's buses keep the names they have always had; a second
-     * node's carry its index, since PCI devices on same-named buses collide
-     * in the migration stream.
-     */
-    if (node->nasid) {
-        g_autofree char *prefix = g_strdup_printf("node%u-", node->nasid);
-
-        qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
-    }
-    /*
-     * The PCI riser card's two option slots, head E devices 1 and 2, are
-     * sold as 64-bit universal slots, so they are taken to drive REQ64#
-     * (inferred). The riser connects the IP45 motherboard to the IO-8
-     * (007-4365-002, printed page 12), so the model fits it with the IO-8
-     * at widget 15. Head F's own devices are left 32-bit, an
-     * approximation: no held document gives that bus's width.
-     */
-    if (node->io_board_part && node->io_board_widget == 15 &&
-        !strcmp(node->io_board_part, SN1_IO8_BOARD_PART)) {
-        qdev_prop_set_uint8(node->xbridge, "req64-slots-e", BIT(1) | BIT(2));
-    }
-    if (node->io_board_part) {
-        g_assert(node->io_board_widget == 14 || node->io_board_widget == 15);
-        qdev_prop_set_string(node->xbridge,
-                             node->io_board_widget == 14 ?
-                             "board-part-e" : "board-part-f",
-                             node->io_board_part);
-        /* Each chassis's IO-8 answers with its own serial. */
-        qdev_prop_set_uint64(node->xbridge,
-                             node->io_board_widget == 14 ?
-                             "onewire-serial-e" : "onewire-serial-f",
-                             node->io_board_serial);
-    }
-    sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
-                      OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
-                      OBJECT(node->xbridge), SN1_XBRIDGE_HOST_PORT);
-    if (!sgi_xio_link_connect(&node->xbridge_link, errp)) {
+    if (!sn1_node_create_ip45_xbridge(node, errp)) {
         return false;
-    }
-    if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
-        return false;
-    }
-
-    /*
-     * Every widget the crossbar decodes: the host's local view (widget zero)
-     * plus one per XIO attachment, including a board slot with nothing
-     * plugged in; its head still answers "no PCI device here" through the
-     * chip itself, which a widget left undecoded could not. Read through the
-     * XIO port interface, as any other widget attachment in this tree
-     * does, rather than the chip's view accessor directly.
-     */
-    for (i = 0; i < node->xbridge_widget_count; i++) {
-        g_autofree char *property =
-            g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
-        MemoryRegion *face = sgi_xio_port_cpu_face(OBJECT(node->xbridge),
-                                                   node->xbridge_widgets[i]);
-
-        if (!face) {
-            error_setg(errp, "XBridge widget %u has no XIO face",
-                       node->xbridge_widgets[i]);
-            return false;
-        }
-        object_property_set_link(OBJECT(node->bedrock), property,
-                                 OBJECT(face), &error_abort);
-    }
-    /*
-     * Origin 300 has a rear XIO cable connector (007-4365-002, page 8).
-     * Fuel's rear-panel diagram (007-4480-001, page 6) shows none, but its
-     * graphics board answers at widget 13, which the machine selects as
-     * the external port when its topology fits one. Without a graphics
-     * board the shared model still decodes the default external port
-     * (SGI_XBRIDGE_XIO_PORT_DEFAULT) through Bedrock; Fuel's unused-port
-     * wiring and register response are unknown.
-     */
-    {
-        unsigned int port = sgi_xbridge_xio_port(SGI_XBRIDGE(node->xbridge));
-        g_autofree char *property = g_strdup_printf("widget-%u", port);
-
-        object_property_set_link(OBJECT(node->bedrock), property,
-                                 OBJECT(sgi_xio_port_cpu_face(
-                                     OBJECT(node->xbridge), port)),
-                                 &error_abort);
-    }
-    /*
-     * A widget scan addresses the board by the physical XIO port
-     * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
-     * the widget-zero local-CPU shortcut wired above; both name the same
-     * chip, seen through its single upstream link either way. Without this, a
-     * probe of Bedrock's port SN1_XBRIDGE_HOST_PORT decodes to nothing
-     * (sgi-bedrock-io.c's widget_as_initialized stays false there), so
-     * firmware and diagnostics that walk Bedrock's ports rather than using
-     * the shortcut never learn the IO-8 is present.
-     */
-    {
-        g_autofree char *host_port_property =
-            g_strdup_printf("widget-%u", SN1_XBRIDGE_HOST_PORT);
-
-        object_property_set_link(
-            OBJECT(node->bedrock), host_port_property,
-            OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(node->xbridge), 0)),
-            &error_abort);
     }
 
     /*
