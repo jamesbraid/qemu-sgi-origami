@@ -107,6 +107,9 @@ struct SGIBaseioState {
     uint64_t onewire_serial;
     uint32_t fuel_subsystem_id;
     bool fuel_rtc_low11_mirror;
+    uint8_t system_timekeeper_kind;
+    uint32_t system_timekeeper_year_base;
+    bool system_timekeeper_initial_ip27_fixture;
     char *fuel_mac;
     char *nvram_drive_id;
     char *chardev_a_id;
@@ -739,6 +742,14 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     PCIDevice *ioc3;
     PCIDevice *usb;
 
+    if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
+        (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_M48T35 ||
+         s->system_timekeeper_year_base != 1968 ||
+         s->system_timekeeper_initial_ip27_fixture ||
+         s->fuel_rtc_low11_mirror)) {
+        error_setg(errp, "unsupported or conflicting system Timekeeper policy");
+        return false;
+    }
     if (s->fuel_subsystem_id > UINT16_MAX) {
         error_setg(errp, "fuel preset requires an experimental IOC3 "
                    "subsystem ID");
@@ -763,8 +774,18 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
                          SGI_IOC3_POPULATION_PARALLEL);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         s->fuel_rtc_low11_mirror ?
-                        SGI_IOC3_TIMEKEEPER_DS1742 :
-                        SGI_IOC3_TIMEKEEPER_NONE);
+                        SGI_IOC3_TIMEKEEPER_DS1742 : s->system_timekeeper_kind);
+    if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
+        qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
+                             s->system_timekeeper_year_base);
+        qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
+                          s->system_timekeeper_initial_ip27_fixture);
+        if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
+            object_unparent(OBJECT(ioc3));
+            return false;
+        }
+        baseio_note_claim(s, s->nvram_drive_id);
+    }
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          s->fuel_subsystem_id);
@@ -827,7 +848,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
 
     warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
                 "interrupt wiring is approximate and RTC decode is %s",
-                s->fuel_rtc_low11_mirror ? "experimental" : "absent");
+                s->fuel_rtc_low11_mirror ? "experimental Dallas mirror" :
+                s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35 ?
+                "experimental M48T35-compatible" : "absent");
     return true;
 }
 
@@ -960,6 +983,19 @@ static void baseio_realize(DeviceState *dev, Error **errp)
                   "populates");
         return;
     }
+    if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
+        strcmp(s->preset, "fuel")) {
+        error_setg(errp, "system Timekeeper selection requires "
+                   "the fuel preset");
+        return;
+    }
+    if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_NONE &&
+        (s->system_timekeeper_year_base != 1970 ||
+         !s->system_timekeeper_initial_ip27_fixture)) {
+        error_setg(errp, "system Timekeeper properties require "
+                   "an explicit kind");
+        return;
+    }
     if (!preset->build(s, errp)) {
         return;
     }
@@ -1004,6 +1040,12 @@ static const Property baseio_properties[] = {
     DEFINE_PROP_BOOL("fuel-rtc-low11-mirror", SGIBaseioState,
                      fuel_rtc_low11_mirror, false),
     DEFINE_PROP_STRING("fuel-mac", SGIBaseioState, fuel_mac),
+    DEFINE_PROP_UINT8("system-timekeeper-kind", SGIBaseioState,
+                      system_timekeeper_kind, SGI_IOC3_TIMEKEEPER_NONE),
+    DEFINE_PROP_UINT32("system-timekeeper-year-base", SGIBaseioState,
+                       system_timekeeper_year_base, 1970),
+    DEFINE_PROP_BOOL("system-timekeeper-initial-ip27-fixture", SGIBaseioState,
+                     system_timekeeper_initial_ip27_fixture, true),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),

@@ -1401,6 +1401,54 @@ static void test_fuel_serial_bytes(const void *data)
     g_assert_cmpint(close(b[0]), ==, 0);
 }
 
+static void test_fuel_system_timekeeper_conflict(const void *data)
+{
+    if (g_test_subprocess()) {
+        g_autofree char *quoted = g_shell_quote(data);
+        QTestState *qts = qtest_initf(
+            "-M fuel,topology=fuel-m48t35-compatible,"
+            "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
+            "fuel-l1-type-code=0x61,fuel-bedrock-revision=2,"
+            "fuel-rtc-decode=low11-mirror "
+            "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*system Timekeeper conflicts with*"
+                            "fuel-rtc-decode*");
+}
+
+static void test_fuel_system_timekeeper(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts = qtest_initf(
+        "-M fuel,topology=fuel-m48t35-compatible,"
+        "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=2 "
+        "-cpu R14000 -smp 1 -m 512M -bios %s -S "
+        "-rtc base=2026-01-02T03:04:05,clock=vm", quoted);
+
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0);
+    qtest_writeb(qts, FUEL_RTC + 0x100, 0x5a);
+    qtest_writeb(qts, FUEL_RTC + 0x900, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0xa5);
+    qtest_writeb(qts, FUEL_RTC + 0x7f8, 0x69);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff, 0x42);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7fff), ==, 0x58);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f8), ==, 0x69);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff), ==, 0x42);
+    qtest_system_reset(qts);
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0xa5);
+    qtest_quit(qts);
+}
+
 static void test_fuel_rtc_decode(const void *data)
 {
     QTestState *qts = fuel_start(data);
@@ -1630,6 +1678,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/serial-backends", prom,
                         test_fuel_serial_backends);
     qtest_add_data_func("fuel/serial-bytes", prom, test_fuel_serial_bytes);
+    qtest_add_data_func("fuel/system-timekeeper", prom,
+                        test_fuel_system_timekeeper);
+    qtest_add_data_func("fuel/system-timekeeper-conflict", prom,
+                        test_fuel_system_timekeeper_conflict);
     status = g_test_run();
     g_assert_cmpint(g_unlink(prom), ==, 0);
     return status;
