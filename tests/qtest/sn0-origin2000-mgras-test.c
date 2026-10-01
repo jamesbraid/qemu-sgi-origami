@@ -17967,13 +17967,14 @@ static void test_credit_uncounted_store_returns_nothing(void)
 #define GL_ERAM_READ_KICK     0xbd
 #define GL_ERAM_WRITE_KICK    0xa5
 
-static void gl_eram_map(QTestState *qts)
+/* The page list's entries name node nasid's frames (entry bits 27:20). */
+static void gl_eram_map_node(QTestState *qts, unsigned int nasid)
 {
     static const uint8_t header[24] = { 0 };
     uint8_t list[8 * 8] = { 0 };
 
     for (int i = 0; i < 8; i++) {
-        list[8 * i + 7] = 7 + i;
+        stq_be_p(list + 8 * i, ((uint64_t)nasid << 20) | (7 + i));
     }
     qtest_memwrite(qts, GL_EVICT_LIST, header, sizeof(header));
     qtest_memwrite(qts, GL_EVICT_LIST + 0x18, list, sizeof(list));
@@ -17983,6 +17984,11 @@ static void gl_eram_map(QTestState *qts)
     qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483204 << 32) | 8);
     qtest_writeq(qts, MGRAS_REG(0x130400),
                  ((uint64_t)0x00484d04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+}
+
+static void gl_eram_map(QTestState *qts)
+{
+    gl_eram_map_node(qts, 0);
 }
 
 /* One row of bpr bytes at offset in slot 2's pages, kicked with kick. */
@@ -18101,6 +18107,146 @@ static void test_gl_eviction_needs_the_read_token(void)
     g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0x00ff00);
     g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The model's own log of an ERAM transfer it could not place: these
+ * tests count what it says as the only visible difference, since a
+ * chunk the model misreads changes no GL state.
+ */
+static char *gl_eviction_log_start(QTestState **t, const char *args)
+{
+    g_autoptr(GError) error = NULL;
+    char *log_path = NULL;
+    g_autofree char *full = NULL;
+    int fd = g_file_open_tmp("sgi-mgras-eram-XXXXXX.log", &log_path, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    full = g_strdup_printf("%s -d unimp,guest_errors -D %s", args, log_path);
+    *t = qtest_init(full);
+    return log_path;
+}
+
+static char *gl_eviction_log_end(QTestState *t, char *log_path)
+{
+    g_autoptr(GError) error = NULL;
+    char *log = NULL;
+
+    qtest_quit(t);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    unlink(log_path);
+    g_free(log_path);
+    return log;
+}
+
+/*
+ * A write-back's later chunk follows the last in ERAM but need not in
+ * host memory: here the second chunk comes from the list's fourth page,
+ * not the one after the first chunk's. The model continues by ERAM
+ * address and logs nothing; the context still moves.
+ */
+static void test_gl_eviction_chunks_need_not_be_adjacent(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *t;
+    char *path = gl_eviction_log_start(&t, MACHINE_ARGS);
+
+    gl_eviction_contexts(t);
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_eram_map(t);
+    gl_eram_read(t, GL_EVICT_FROM);
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_one(t, GL_ERAM_COUNT_HDR, GL_EVICT_CHUNK);
+    gl_eram_kick(t, 0, GL_EVICT_CHUNK * 4, GL_ERAM_WRITE_KICK);
+    gl_word(t, GL_ERAM_WRITE_HDR);
+    gl_word(t, GL_EVICT_TO);
+    gl_word(t, GL_EVICT_CHUNK);
+    gl_one(t, GL_ERAM_COUNT_HDR, GL_EVICT_CHUNK);
+    gl_eram_kick(t, 0x3000, GL_EVICT_CHUNK * 4, GL_ERAM_WRITE_KICK);
+    gl_word(t, GL_ERAM_WRITE_HDR);
+    gl_word(t, GL_EVICT_TO + GL_EVICT_CHUNK);
+    gl_word(t, GL_EVICT_CHUNK);
+    gl_word(t, GL_ERAM_END);
+
+    gl_enter_slot(t, GL_EVICT_TO);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(t, 100, 100), ==, 0xff0000);
+    log = gl_eviction_log_end(t, path);
+    g_assert_null(strstr(log, "saw no context"));
+    g_assert_null(strstr(log, "no data before"));
+}
+
+/*
+ * A few words go to ERAM inline: 0xfd04 with count 1, an 8-byte inline
+ * block, then 0xfb08 with the address (run irix-20261001T020627-d15779).
+ * No context image moves, so b keeps its state and nothing is logged.
+ */
+static void test_gl_eviction_inline_write_moves_nothing(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *t;
+    char *path = gl_eviction_log_start(&t, MACHINE_ARGS);
+
+    gl_eviction_contexts(t);
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_one(t, GL_ERAM_COUNT_HDR, 1);
+    gl_word(t, 0x80000008);
+    gl_word(t, 0x12345678);
+    gl_word(t, 0);
+    gl_word(t, GL_ERAM_WRITE_HDR);
+    gl_word(t, 0xb26);
+    gl_word(t, 1);
+    gl_word(t, GL_ERAM_END);
+
+    gl_enter_slot(t, GL_EVICT_TO);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(t, 2, 2), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(t, 100, 100), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    log = gl_eviction_log_end(t, path);
+    g_assert_null(strstr(log, "no data"));
+    g_assert_null(strstr(log, "no DMA"));
+    g_assert_null(strstr(log, "saw no context"));
+}
+
+/*
+ * The host buffer is a node-qualified address: the same frames on node 1
+ * and node 0 are different buffers. Context a is read out into node
+ * read_node's pages and written back from node write_node's; the read
+ * and write-back match only when the nodes do. Returns the pixel the
+ * moved context's clear leaves under b's scissor.
+ */
+static uint32_t gl_eviction_across_nodes(unsigned int read_node,
+                                         unsigned int write_node)
+{
+    QTestState *t = qtest_init(GL_LIST_NODE_ARGS);
+    uint32_t pixel;
+
+    sn0_program_nasid(t, 1);
+    gl_eviction_contexts(t);
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_eram_map_node(t, read_node);
+    gl_eram_read(t, GL_EVICT_FROM);
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_eram_map_node(t, write_node);
+    gl_eram_write(t, GL_EVICT_TO);
+    gl_enter_slot(t, GL_EVICT_TO);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    pixel = gl_window_pixel(t, 100, 100);
+    qtest_quit(t);
+    return pixel;
+}
+
+static void test_gl_eviction_buffer_on_another_node(void)
+{
+    /* Same node: a's state comes back, red outside b's old scissor. */
+    g_assert_cmphex(gl_eviction_across_nodes(1, 1), ==, 0xff0000);
+    /* Another node's frames are not the buffer a went to: b is as it was. */
+    g_assert_cmphex(gl_eviction_across_nodes(1, 0), ==, 0);
+    g_assert_cmphex(gl_eviction_across_nodes(0, 1), ==, 0);
 }
 
 /*
@@ -18806,6 +18952,12 @@ int main(int argc, char **argv)
                    test_gl_eviction_needs_the_read_token);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-migration",
                    test_gl_eviction_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
+                   test_gl_eviction_chunks_need_not_be_adjacent);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-inline-write",
+                   test_gl_eviction_inline_write_moves_nothing);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-buffer-on-another-node",
+                   test_gl_eviction_buffer_on_another_node);
     qtest_add_func("sn0/origin2000/mgras/pio-read-returns-the-box",
                    test_pio_read_returns_the_box);
     qtest_add_func("sn0/origin2000/mgras/pio-read-rows-start-a-unit",
