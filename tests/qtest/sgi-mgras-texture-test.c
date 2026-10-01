@@ -1480,6 +1480,66 @@ static void test_gl_texture_raster_records_are_not_logged(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * MXI and EMXI: a TE1 and its TRAM on each of two REs, each RE owning
+ * alternate rows. The model keeps one texture store for both, so texture
+ * state must reach every row alike. Rows 16 and 17 stand for an even and
+ * an odd row; a quad two pixels tall with t from 0 to 0.25 keeps both in
+ * texel row 0 of the 4-by-2 level, so each must read that row's texels.
+ */
+#define MXI_BOARD_FLAG " -global sgi-mgras.x-unimplemented-board=on"
+
+#define MXI_ROW_EVEN          16
+#define MXI_ROW_ODD           17
+
+static QTestState *mxi_start(const char *board)
+{
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s" MXI_BOARD_FLAG, board);
+
+    return tex_start(args);
+}
+
+static void mxi_two_row_quad(QTestState *t)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 },
+        { 48, 18, 1, 0.25f }, { 16, 18, 0, 0.25f },
+    };
+
+    tex_quad_rect(t, white, v);
+}
+
+/* Both rows hold texel row 0's colours, or the quad's white when not. */
+static void mxi_expect_rows(QTestState *t, const uint8_t texels[32],
+                            bool textured)
+{
+    for (int x = 0; x < 4; x++) {
+        const uint8_t *p = &texels[4 * x];
+        uint32_t want = textured ? p[0] << 16 | p[1] << 8 | p[2] : TEX_WHITE;
+
+        g_assert_cmphex(gl_window_pixel(t, 20 + 8 * x, MXI_ROW_EVEN), ==,
+                        want);
+        g_assert_cmphex(gl_window_pixel(t, 20 + 8 * x, MXI_ROW_ODD), ==,
+                        want);
+    }
+}
+
+static void test_mxi_texture_rows_match(gconstpointer data)
+{
+    QTestState *t = mxi_start(data);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    mxi_two_row_quad(t);
+    mxi_expect_rows(t, texels, true);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1556,6 +1616,10 @@ int main(int argc, char **argv)
                     test_gl_native_texcoord_raster);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/contexts",
                     test_gl_native_texcoord_contexts);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-texture-rows-match",
+                        "mxi", test_mxi_texture_rows_match);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-texture-rows-match/emxi",
+                        "emxi", test_mxi_texture_rows_match);
 
     ret = g_test_run();
     qtest_quit(qts);

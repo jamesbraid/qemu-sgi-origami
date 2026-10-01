@@ -57,6 +57,13 @@
  *   restore through the kernel's DMA paths are not modelled. Two textures
  *   of one context under one base replace each other's levels. A context
  *   keeps at most one TRAM's 4 MiB of texels and the board four TRAMs'.
+ *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
+ *   keeps one store per context for both, approximated: each path
+ *   holding the full texture is inferred, so a load, a base write and a
+ *   draw reach the rows of both REs, and the capacity stays one TRAM's
+ *   4 MiB, not 8. The software cannot tell the difference; only the
+ *   diagnostics' per-RE TRAM tests could. Save and restore are not
+ *   modelled there either.
  *   A context opener discards that context's levels and texture state,
  *   approximated: whether the board's TRAM and TE1 survive a context
  *   switch or an opener is unknown, so a client that relied on texels
