@@ -4015,6 +4015,30 @@ static void push_triangle_3f(QTestState *qts, uint32_t r, uint32_t g,
     user_cmd_push(qts, ODSY_CMD_GL_END);
 }
 
+#define ODSY_GL_COLOR_4F 0xc580d015 /* 4 floats: R, G, B, A */
+
+/* One flat glVertex3f triangle in colour (r, g, b, a); v holds 3 x, y, z. */
+static void push_triangle_4f(QTestState *qts, uint32_t r, uint32_t g,
+                             uint32_t b, uint32_t a, const uint32_t v[9])
+{
+    unsigned i;
+
+    user_cmd_push(qts, ODSY_GL_COLOR_4F);
+    user_cmd_push(qts, r);
+    user_cmd_push(qts, g);
+    user_cmd_push(qts, b);
+    user_cmd_push(qts, a);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_TRIANGLES);
+    for (i = 0; i < 3; i++) {
+        user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+        user_cmd_push(qts, v[3 * i]);
+        user_cmd_push(qts, v[3 * i + 1]);
+        user_cmd_push(qts, v[3 * i + 2]);
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
 /* Synthetic perspective coordinates test the shared clipping approximation. */
 static void test_command_fifo_gl_crossing_eye(void)
 {
@@ -4121,6 +4145,50 @@ static void test_command_fifo_gl_depth_test(void)
     push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
                      odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Alpha test (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
+ * 0x0404 bit 14 is GL_ALPHA_TEST, and 0x041e carries the function in bits
+ * 14:12 (GL_NEVER = 0 through GL_ALWAYS = 7) and the reference in bits 11:0
+ * under the depth comparison's own 12-bit rule (value / 4096.0).
+ */
+#define ODSY_MODE_ALPHA_TEST (1u << 14)
+#define ODSY_REG_ALPHA_FUNC 0x0001041e
+/* A stored fragment keeps its own alpha: round(0.25 * 255) (odyssey_float_channel). */
+#define ODSY_PLANE_YELLOW_QUARTER_ALPHA 0xffff0040u
+
+static void test_command_fifo_gl_alpha_test(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+
+    /* GL_GREATER, ref 0.5: alpha 0.25 fails, the blue clear stays. */
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_ALPHA_TEST);
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4800);
+    push_triangle_4f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, 0x3e800000,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    /* Same function, ref 0.125: alpha 0.25 now passes. */
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4200);
+    push_triangle_4f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, 0x3e800000,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
+                    ODSY_PLANE_YELLOW_QUARTER_ALPHA);
+
+    /* Test off: the same near-failing function and reference draw anyway. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4fff);
+    push_triangle_4f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, 0x3e800000,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
+                    ODSY_PLANE_YELLOW_QUARTER_ALPHA);
 
     qtest_quit(qts);
 }
@@ -9333,6 +9401,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_dither);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-test",
                    test_command_fifo_gl_depth_test);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-alpha-test",
+                   test_command_fifo_gl_alpha_test);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
