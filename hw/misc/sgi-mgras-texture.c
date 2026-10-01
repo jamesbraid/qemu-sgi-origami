@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SI+T MGRAS texture: one TE1 engine and its TRAM, as the IRIX 6.5.30
  * OpenGL client drives them.
