@@ -46,6 +46,7 @@
 #include "hw/mips/sgi/baseio.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/misc/sgi-bedrock-io.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/pci/pci.h"
 #include "migration/vmstate.h"
@@ -83,8 +84,11 @@ struct SGIBoardTestFixtureState {
     char *bus_prefix;
 
     MemoryRegion sink;
+    MemoryRegion cascade_leaf;
+    bool cascade_ii_late;
     SGIXioLink cascade_link;
     MemoryRegion flash_select0;
+    SGIXioLink cascade_host_link;
     MemoryRegion flash_select1;
     uint8_t *flash_select0_bytes;
     uint8_t *flash_select1_bytes;
@@ -92,25 +96,52 @@ struct SGIBoardTestFixtureState {
 
 /* Test-only composition of two XBridge ports, with no graphics device. */
 static bool board_test_fixture_realize_cascade(SGIBoardTestFixtureState *s,
-                                               bool attach, Error **errp)
+                                               bool attach, bool project,
+                                               Error **errp)
 {
     DeviceState *node = qdev_new(TYPE_SGI_XBRIDGE);
     DeviceState *remote;
+    DeviceState *ii = NULL;
 
     object_property_add_child(OBJECT(s), "chip", OBJECT(node));
     qdev_prop_set_uint8(node, "host-port", 0xa);
-    object_property_set_link(OBJECT(node), "fabric", OBJECT(&s->sink),
-                             &error_abort);
+    if (project) {
+        ii = qdev_new(TYPE_SGI_BEDROCK_IO);
+        object_property_add_child(OBJECT(s), "ii", OBJECT(ii));
+        object_property_set_link(OBJECT(ii), "dma-memory", OBJECT(&s->sink),
+                                 &error_abort);
+        object_property_set_link(OBJECT(ii), "hub-registers", OBJECT(&s->sink),
+                                 &error_abort);
+        sgi_xio_link_init(&s->cascade_host_link, OBJECT(s), "cascade-host",
+                          OBJECT(ii), 0, OBJECT(node), 0xa);
+        if (!sgi_xio_link_connect(&s->cascade_host_link, errp)) {
+            return false;
+        }
+    } else {
+        object_property_set_link(OBJECT(node), "fabric", OBJECT(&s->sink),
+                                 &error_abort);
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(node), errp)) {
         return false;
     }
     if (!attach) {
         return true;
     }
+    if (project) {
+        if (!object_property_set_link(OBJECT(ii), "widget-11",
+                OBJECT(sgi_xio_port_cpu_face(OBJECT(node), 0xb)), errp) ||
+            (!s->cascade_ii_late &&
+             !sysbus_realize(SYS_BUS_DEVICE(ii), errp))) {
+            return false;
+        }
+    }
 
     remote = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(s), "remote", OBJECT(remote));
     qdev_prop_set_uint8(remote, "host-port", 0xa);
+    if (project) {
+        qdev_prop_set_uint8(remote, "xio-port", 8);
+    }
     sgi_xio_link_init(&s->cascade_link, OBJECT(s), "cascade-link",
                       OBJECT(node), 0xb, OBJECT(remote), 0xa);
     if (!sgi_xio_link_connect(&s->cascade_link, errp) ||
@@ -121,6 +152,25 @@ static bool board_test_fixture_realize_cascade(SGIBoardTestFixtureState *s,
     if (!sgi_xio_link_complete(&s->cascade_link)) {
         error_setg(errp, "two-XBridge XIO link is incomplete");
         return false;
+    }
+    if (project) {
+        if (!memory_region_init_ram(&s->cascade_leaf, OBJECT(s),
+                                    "cascade-leaf", 8 * MiB, errp) ||
+            !sgi_xbridge_attach_xio_port(SGI_XBRIDGE(remote), 8,
+                                         &s->cascade_leaf, &s->cascade_leaf,
+                                         errp)) {
+            return false;
+        }
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->cascade_leaf);
+        sysbus_init_mmio(SYS_BUS_DEVICE(s),
+                         sysbus_mmio_get_region(SYS_BUS_DEVICE(ii), 1));
+        sgi_xbridge_project_vbrick_pio(SGI_XBRIDGE(node),
+            sgi_xbridge_widget_view(SGI_XBRIDGE(remote), 8),
+            sgi_xbridge_widget_view(SGI_XBRIDGE(remote), 0), 8 * MiB);
+        if (s->cascade_ii_late &&
+            !sysbus_realize(SYS_BUS_DEVICE(ii), errp)) {
+            return false;
+        }
     }
     return true;
 }
@@ -256,9 +306,11 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
                        1ULL << 52);
 
     if (g_str_equal(s->board_type, "xbridge-cascade") ||
-        g_str_equal(s->board_type, "xbridge-cascade-empty")) {
+        g_str_equal(s->board_type, "xbridge-cascade-empty") ||
+        g_str_equal(s->board_type, "xbridge-cascade-projection")) {
         board_test_fixture_realize_cascade(s,
-            g_str_equal(s->board_type, "xbridge-cascade"), errp);
+            !g_str_equal(s->board_type, "xbridge-cascade-empty"),
+            g_str_equal(s->board_type, "xbridge-cascade-projection"), errp);
         return;
     }
 
@@ -337,6 +389,8 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property board_test_fixture_properties[] = {
+    DEFINE_PROP_BOOL("cascade-ii-late", SGIBoardTestFixtureState,
+                     cascade_ii_late, false),
     DEFINE_PROP_UINT32("placement", SGIBoardTestFixtureState,
                        placement, UINT32_MAX),
     DEFINE_PROP_UINT8("node-number", SGIBoardTestFixtureState,

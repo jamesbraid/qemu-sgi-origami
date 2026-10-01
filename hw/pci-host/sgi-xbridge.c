@@ -2130,7 +2130,8 @@ static void chip_init(Object *obj)
         memory_region_init(&port->packets, obj, name, SGI_XIO_PACKET_SIZE);
         memory_region_init(&port->routes, obj, name,
                            SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
-        memory_region_init_alias(&port->view, obj, name, &port->face, 0,
+        memory_region_init_alias(&port->view, obj, name, &s->xio,
+                                 (uint64_t)(i + 8) << CHIP_WIDGET_SHIFT,
                                  CHIP_WIDGET_SPACE);
         memory_region_add_subregion(&s->xio,
                                     (uint64_t)(i + 8) << CHIP_WIDGET_SHIFT,

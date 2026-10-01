@@ -566,6 +566,50 @@ static void test_two_xbridges(void)
     qtest_quit(qts);
 }
 
+static void test_two_xbridges_projection(const void *data)
+{
+    unsigned view = GPOINTER_TO_UINT(data);
+    const uint64_t leaf = 0x40000000;
+    const uint64_t upper = WIDGET(CASCADE_PORT) + 8 * 1024 * 1024;
+    const uint64_t ii = 0x50000000;
+    const uint64_t ii_widget = ii + CASCADE_PORT * FACE;
+    const uint64_t remote = view >= 2 ? ii_widget + 8 * 1024 * 1024 :
+                            view == 1 ? upper : VIEW(0);
+    const uint64_t projected_leaf = view >= 2 ? ii_widget :
+                                    WIDGET(CASCADE_PORT);
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-device sgi-board-test-fixture,id=cascade,"
+        "board-type=xbridge-cascade-projection,cascade-ii-late=%s",
+        view == 3 ? "on" : "off");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade/chip", 0, BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade/remote", 0,
+                          VIEW(0));
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade", 0, leaf);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/cascade", 1, ii);
+    g_assert_cmphex(qtest_readl(qts, remote + 4), ==, XBOW_ID);
+    g_assert_cmphex(qtest_readl(qts, remote + 0x13c) & (1U << 5), ==,
+                    1U << 5);
+    g_assert_cmphex(qtest_readl(qts, remote + 0x114) & (1U << 31), ==,
+                    1U << 31);
+    g_assert_cmphex(qtest_readl(qts, remote + 0x17c) & (1U << 5), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, remote + 0x154) & (1U << 31), ==, 0);
+
+    /* A mutable register distinguishes the remote crossbar from the node. */
+    qtest_writel(qts, VIEW(0) + 0x5c, 0x1f);
+    g_assert_cmphex(qtest_readl(qts, remote + 0x5c), ==, 0x1f);
+    g_assert_cmphex(reg_read(qts, 0, 0x58), ==, 2);
+
+    qtest_writeq(qts, leaf + 0x1000, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, projected_leaf + 0x1000), ==,
+                    0x0123456789abcdefULL);
+    qtest_writeq(qts, projected_leaf + 0x1008,
+                 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, leaf + 0x1008), ==,
+                    0xfedcba9876543210ULL);
+    qtest_quit(qts);
+}
+
 /*
  * A reset the crossbar sends down the external link -- the port's link
  * reset one-shot, or a warm reset propagated from the host's port -- leaves
@@ -1149,6 +1193,14 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/xio-widget-routes",
                    test_xio_widget_routes);
     qtest_add_func("/sn1/xbridge-chip/two-xbridges", test_two_xbridges);
+    qtest_add_data_func("/sn1/xbridge-chip/projection/direct",
+                        GUINT_TO_POINTER(0), test_two_xbridges_projection);
+    qtest_add_data_func("/sn1/xbridge-chip/projection/nested",
+                        GUINT_TO_POINTER(1), test_two_xbridges_projection);
+    qtest_add_data_func("/sn1/xbridge-chip/projection/ii",
+                        GUINT_TO_POINTER(2), test_two_xbridges_projection);
+    qtest_add_data_func("/sn1/xbridge-chip/projection/ii-late",
+                        GUINT_TO_POINTER(3), test_two_xbridges_projection);
     qtest_add_func("/sn1/xbridge-chip/xio-port-sends-resets",
                    test_xio_port_sends_resets);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
