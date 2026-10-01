@@ -36,6 +36,9 @@ slow_qtests = {
   'sn0-pi-gfx-test': 180,
   # Six cases run processors under TCG; one boots two chassis.
   'sn1-pi-gfx-test': 180,
+  # The 38-case Fuel suite took 59.71s before backed clock migration
+  # added two cases taking 27.99s. Keep headroom beyond the 60s default.
+  'sn1-fuel-test': 180,
   # The MTTCG primitives run several thread=multi TCG cases, and the R10000
   # performance test adds live migration and a stream analysis pass. Both fit
   # under 60s unloaded but need headroom under parallel CI load.
@@ -184,6 +187,8 @@ slow_qtests = {
 }
 
 qtest_priorities = {
+  # Keep Fuel's scheduling order unchanged by its larger clock-test budget.
+  'sn1-fuel-test': 60,
   # Keep the Hub suite's scheduling order independent of its larger budget.
   'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
