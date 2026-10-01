@@ -128,6 +128,7 @@ static const ReplayHead *find_head(const char *codename)
 #define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
 #define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
 #define GL_DEEP_SWAP_CLOCK_SSI "gl-deep-swap-clock-ssi.replay"
+#define GL_SWAP_TMESH_SPHERE "gl-swap-tmesh-sphere.replay"
 #define GL_NEW_CONTEXT_SLOT_REUSE \
     "gl-new-context-slot-reuse.replay"
 #define GL_TEXTURE_RGBA4_QUAD \
@@ -1008,6 +1009,16 @@ static void test_gl_deep_swap_clock_ssi(void)
 }
 
 /*
+ * The first strips of mview's lit atom sphere on the SI, each broken by
+ * twenty-three triangle-mesh swap words. The pixels the swap redirects
+ * keep the clear colour when the word is ignored.
+ */
+static void test_gl_swap_tmesh_sphere(void)
+{
+    run_fixture(GL_SWAP_TMESH_SPHERE, NULL);
+}
+
+/*
  * ivview's context dies four words short in slot 0x5420, and the next
  * ivview's new context in the same slot sets up and answers its queries
  * (run irix-20260930T204826-66052a).
@@ -1380,6 +1391,8 @@ int main(int argc, char **argv)
                    test_gl_pixels_rectwrite);
     qtest_add_func("sgi-replay/mgras/gl-deep-swap-clock-ssi",
                    test_gl_deep_swap_clock_ssi);
+    qtest_add_func("sgi-replay/mgras/gl-swap-tmesh-sphere",
+                   test_gl_swap_tmesh_sphere);
     qtest_add_func("sgi-replay/mgras/gl-new-context-slot-reuse",
                    test_gl_new_context_slot_reuse);
     qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",

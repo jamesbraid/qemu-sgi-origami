@@ -60,6 +60,7 @@
 #define MGRAS_GL_CLEAR_DEPTH_BUF 0x00004a00
 #define MGRAS_GL_VIEWPORT        0x00003310
 #define MGRAS_GL_FLUSH           0x00003600
+#define MGRAS_GL_SWAP_TMESH      0x0000dc00
 #define MGRAS_GL_SHADE_MODEL     0x00004704
 #define MGRAS_GL_CLEAR_COLOR     0x0000ba10
 #define MGRAS_GL_CLEAR_DEPTH     0x0000bc04
@@ -882,6 +883,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_CLEAR_DEPTH_BUF:
     case MGRAS_GL_VIEWPORT:
     case MGRAS_GL_FLUSH:
+    case MGRAS_GL_SWAP_TMESH:
     case MGRAS_GL_SHADE_MODEL:
     case MGRAS_GL_CLEAR_COLOR:
     case MGRAS_GL_CLEAR_DEPTH:
@@ -3989,6 +3991,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_RASTER_POS3F:
         mgras_gl_command(s, SGI_GL_OP_RASTER_POS3F, payload, 3);
+        return;
+    case MGRAS_GL_SWAP_TMESH:
+        mgras_gl_command(s, SGI_GL_OP_SWAP_TMESH, payload, 0);
         return;
     case MGRAS_GL_FLUSH:
         /* Approximated: every command has already run to completion. */

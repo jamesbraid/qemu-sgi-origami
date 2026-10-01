@@ -429,6 +429,7 @@ tests/data/mgras/gl-deep-swap-clock-ssi.replay
 tests/data/mgras/gl-eviction-i3dm.replay
 tests/data/mgras/gl-new-context-slot-reuse.replay
 tests/data/mgras/gl-pixels-rectwrite.replay
+tests/data/mgras/gl-swap-tmesh-sphere.replay
 tests/data/mgras/gl-texture-rgba4-quad.replay
 tests/data/mgras/invalid-bounds.replay
 tests/data/mgras/invalid-dma-extra.replay
