@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Isolated Bedrock I/O register, PIO, inbound and DMA tests. */
 #include "qemu/osdep.h"
 #include "libqtest.h"

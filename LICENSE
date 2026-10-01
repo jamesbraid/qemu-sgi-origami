@@ -25,3 +25,18 @@ or directories: bsd-user/, linux-user/, hw/vfio/, hw/xen/xen_pt*.
 4) QEMU is a trademark of Fabrice Bellard.
 
 Fabrice Bellard and the QEMU team
+
+Origami additions
+-----------------
+
+Original code, tests, tooling, documentation and model data listed in
+LICENSE.origami.paths are available under BSD-3-Clause. See LICENSE.origami
+for the copyright notice and license terms. An explicit additional license
+in a listed file continues to apply to its third-party portions.
+
+James Braid's independently authored additions to existing files are also
+available under BSD-3-Clause. This grant covers only his original work.
+It does not relicense pre-existing code or code copied or adapted from other
+authors. Those portions retain their notices and licenses, including the
+GPL/LGPL MIPS helpers, I2C bus helpers, SCSI tape skeleton and catalogue
+embedding script. The combined QEMU emulator remains GPL as stated above.

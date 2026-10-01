@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Convert SGI graphics replay fixtures to the current format, in place.
 
 Usage: sgi-replay-convert.py FILE...

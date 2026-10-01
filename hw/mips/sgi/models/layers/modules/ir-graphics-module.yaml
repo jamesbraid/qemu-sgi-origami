@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 rack's graphics-module end of one pipe: the Xtown board in a
 # compute-module XIO slot, and the graphics module holding the Ktown board
 # the Crosstown cable reaches (docs/datasheets/onyx2.md, Graphics module and

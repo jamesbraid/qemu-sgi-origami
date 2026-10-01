@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Controlled resolved START events, not a multi-master arbitration model. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"

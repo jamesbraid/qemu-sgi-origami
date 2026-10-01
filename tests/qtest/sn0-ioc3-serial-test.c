@@ -3,7 +3,7 @@
  * share a write-only base; inspect DMA memory to catch wrong ring addresses.
  * Each test requests the I/O Bridge needed to decode IOC3's address.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

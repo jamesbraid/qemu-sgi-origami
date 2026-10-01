@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * The Hub's graphics credits. A credit is paid by a processor's
  * uncached I/O store into its slot's graphics page, on the processor's own

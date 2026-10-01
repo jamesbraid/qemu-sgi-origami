@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml

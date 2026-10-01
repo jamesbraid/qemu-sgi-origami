@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 rack: the eight-processor compute module with a BaseIO-G in IO1
 # and one InfiniteReality pipe whose Xtown occupies IO3, Crossbow 0 widget F,
 # where the real rack capture has it (docs/datasheets/onyx2.md, Rack).

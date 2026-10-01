@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The GE16-4 geometry board of an InfiniteReality pipe, with its one-wire
 # record, part 030-1398-001 in the real rack (true-wombat) capture
 # (docs/datasheets/onyx2.md, One-wire records). A composition fits it beside

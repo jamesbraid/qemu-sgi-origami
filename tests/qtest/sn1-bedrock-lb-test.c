@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Isolated Bedrock local-block MMIO; the empty machine supplies only an
  * address space and does not represent an Origin 300.

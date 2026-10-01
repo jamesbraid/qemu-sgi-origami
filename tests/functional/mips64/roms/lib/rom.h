@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Each ROM defines rom_name and rom_main. Returning from rom_main reports a
  * pass; assertion IDs are per ROM and identify failures in output and status.

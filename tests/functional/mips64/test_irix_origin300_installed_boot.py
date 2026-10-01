@@ -2,7 +2,7 @@
 #
 # Boot installed IRIX 6.5.30 on the two-processor Origin 300
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot the installed IP35 disk beyond the stock PROM menu.
 
 The test uses the same boot-flash and identity inputs as the PROM test,

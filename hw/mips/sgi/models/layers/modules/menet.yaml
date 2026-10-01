@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The SGI MENET (MENET/MSER) XIO board: a Bridge and four IOC3s giving four
 # Fast Ethernet ports and six serial ports. It fits any XIO slot, an
 # Origin 2000 module's or an Origin 200 GIGAchannel cabinet's. A

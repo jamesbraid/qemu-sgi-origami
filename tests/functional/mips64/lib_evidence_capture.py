@@ -1,7 +1,7 @@
 # Generic graphics-device evidence capture: log in, open Console, resize
 # it, run a command, screendump
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The sequence is: log in through the graphical greeter, open the desktop's
 Console, resize it to hold command output, type a command, and save a

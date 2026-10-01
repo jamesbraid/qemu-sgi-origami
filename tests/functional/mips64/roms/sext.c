@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Word operations must leave a sign-extended 64-bit result. Inputs to
  * arithmetic word operations are sign-extended; shifts also check

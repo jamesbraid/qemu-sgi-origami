@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # One-processor tower Tezro has a distinct interface board.
 layer_version: 1
 layer:

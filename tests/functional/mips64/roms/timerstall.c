@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* The host test must confirm its GDB stall as well as this ROM's PASS. */
 
 #include "rom.h"

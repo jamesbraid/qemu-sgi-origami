@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The network port: a QOM interface for anything a network cable can join to
  * a peer: the Hub's one network interface port, and each of a Router's six

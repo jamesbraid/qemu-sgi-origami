@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bedrock NI register state; no link protocol is implemented. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-ni-regs.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bedrock memory/directory unit: bank mapping, ECC, directory state and
  * atomic memory operations. */
 #include "qemu/osdep.h"

@@ -5,7 +5,7 @@
  * reset value; it must report transmit FIFO empty and not full or the driver
  * never attaches. Console boot does not exercise the port.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

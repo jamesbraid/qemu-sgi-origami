@@ -6,7 +6,7 @@
  * ISP1040s and its IOC3, so every access here crosses the same byte-lane
  * correction and XIO decode a guest driver would.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

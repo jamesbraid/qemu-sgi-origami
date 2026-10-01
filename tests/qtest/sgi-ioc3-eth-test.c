@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The IOC3 ethernet engine on the Bridge head: a behaviour reproduced here
  * belongs to the device, not to a populated SGI machine. The head is one

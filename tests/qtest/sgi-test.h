@@ -10,7 +10,7 @@
  * address. Spelling differences do not matter, values do. Names two tests
  * give genuinely different values stay local to each test.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef SGI_TEST_H

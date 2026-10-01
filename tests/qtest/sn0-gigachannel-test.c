@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Register-contract tests for the Origin 200 GIGAchannel expansion cabinet
  * as the origin200-gigachannel topology builds it, and for the converted

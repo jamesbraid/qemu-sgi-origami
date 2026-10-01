@@ -2,7 +2,7 @@
 # with, the ordered-progression scorer their verdicts are built from, and
 # the wire-level DHCP counting that decides whether a lease really happened
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Every test here that moves bytes over an emulated adapter does the same
 three things: drive a console to a shell, run commands through it with an

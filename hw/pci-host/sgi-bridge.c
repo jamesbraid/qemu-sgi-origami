@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI Bridge crosstalk-to-PCI host bridge. */
 /*
  * SGI Bridge XIO-to-PCI host bridge.

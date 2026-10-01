@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Check exception vectors, recorded state, codes, and return behavior. */
 
 #include "rom.h"

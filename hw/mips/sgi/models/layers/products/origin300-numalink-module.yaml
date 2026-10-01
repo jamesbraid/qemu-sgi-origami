@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 300 with the NUMAlink module: one base module on the eight-port SN1 router.
 layer_version: 1
 layer:

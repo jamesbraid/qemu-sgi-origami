@@ -4,7 +4,7 @@
 # table fires once per rule, in order, and the end condition, timeout and
 # a closed socket each end the loop the way the netboot tests rely on;
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, runnable with just
 `build/run python3 tests/functional/mips64/test_lib_prom.py`. The guest

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI XBridge register and PCI head definitions. */
 #ifndef HW_PCI_HOST_SGI_XBRIDGE_H
 #define HW_PCI_HOST_SGI_XBRIDGE_H

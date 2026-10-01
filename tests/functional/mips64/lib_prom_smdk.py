@@ -2,7 +2,7 @@
 # processor population, the monitor dialogue that runs one, and the reading
 # of its status row
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 sMDK is the Origin 300 generation's standalone diagnostic monitor, the
 `field_diags_stand` package of Internal Support Tools 2.7 in its IRIX

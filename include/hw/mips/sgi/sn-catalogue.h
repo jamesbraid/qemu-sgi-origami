@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The SGI Scalable Node family's compiled catalogue: hw/mips/sgi/
  * sn-catalogue.json, embedded into the emulator at build time and parsed once,

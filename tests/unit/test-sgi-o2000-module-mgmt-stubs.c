@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later AND MIT */
+/* SPDX-License-Identifier: BSD-3-Clause AND MIT */
 /*
  * Host tests link the real coordinator, adapters, endpoints and bus. Stubs
  * supply the unused address space, monitor, network, block, audio and

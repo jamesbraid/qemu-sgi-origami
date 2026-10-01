@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Test the SGI PCI-XTALK adapter with a Cad Duo IOC3 input card. */
 /*
  * Register-contract tests for the SGI PCI-XTALK ADAPTER (the "PCI shoehorn",

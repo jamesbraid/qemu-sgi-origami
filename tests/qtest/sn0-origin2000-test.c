@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* The published module wiring and programmed-route contract. */
 
 #include "qemu/osdep.h"

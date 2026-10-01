@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The SGI MSCSI XIO board: a Bridge and four QLogic ISP1040 SCSI
 # controllers. It fits an Origin 2000 XIO slot or an Origin 200
 # GIGAchannel XIO position. A composition fits it into a slot connector

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI Origin 300 (IP35/Bedrock, "SN1") node device: the CPUs, Bedrock, L1 and
  * its UART, boot flash and PROM views one Origin 300 chassis carries. The

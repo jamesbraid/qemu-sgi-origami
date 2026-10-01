@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Origin 2000 deskside: the eight-processor module in a deskside
 # enclosure (docs/datasheets/onyx2.md, Telling an Onyx2 from an Origin 2000),
 # with one to four node boards, the Router boards that count takes, and a

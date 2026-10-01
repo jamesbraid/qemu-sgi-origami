@@ -3,7 +3,7 @@
 # the recorded boot mark, how a transcript is scored, and the run-record
 # helpers every netboot test writes its provenance with
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Everything here has no import-time qemu_test dependency, on purpose:
 the *_verdict.py companions of the boot tests in this directory import

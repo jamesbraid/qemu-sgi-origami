@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The BaseIO-G MediaIO daughtercard: a second IOC3 fitted only to the
 # BaseIO-G board variant, carrying the PS/2 keyboard and mouse controller a
 # plain BaseIO's own IOC3 lacks. docs/datasheets/baseio.md's "BaseIO-G and

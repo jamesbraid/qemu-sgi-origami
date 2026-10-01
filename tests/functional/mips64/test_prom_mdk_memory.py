@@ -3,7 +3,7 @@
 # MDK memory battery: netboot memory.mdk BY PATH and require every one of
 # its eight built-in tests to report its own pass and completion
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 memory.mdk is the second MDK 1.6 package: the secondary-cache test and
 seven memory tests (mapped and unmapped), each started by name at the

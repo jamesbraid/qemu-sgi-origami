@@ -4,7 +4,7 @@
  * Four-node Hub, router and topology tests are in sn0-origin2000-test.c.
  * Local start_module()/program_module() helpers follow other qtests.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bridge qtest PCI device for DMA, IRQ levels and programmable identity. */
 /*
  * Seeded DMA crosses pages; IRQ level is held. Like pci-testdev, no machine

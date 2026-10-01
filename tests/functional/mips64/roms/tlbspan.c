@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Replacing a large-page TLB entry must invalidate cached translations
  * across its full span. Each smallest-page quarter is read before and

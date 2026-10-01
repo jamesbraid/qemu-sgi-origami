@@ -4,7 +4,7 @@
 # embedded userspace stub through the stock PROM and require Linux's own
 # dying-init exit status
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 This test boots the mainline Linux/IP27 kernel
 (linux-ip27/vmlinux, built by tools/linux-userspace with an

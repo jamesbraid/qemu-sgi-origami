@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * R10000-family migration state
  *
@@ -7,8 +8,6 @@
  * carry the extra secondary-cache capacity of the larger caches, gated on the
  * same cache-size tests the flat subsections used before the state moved.
  *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
  */
 
 #include "qemu/osdep.h"

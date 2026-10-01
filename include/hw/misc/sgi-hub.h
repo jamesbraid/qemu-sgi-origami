@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI SN0 Hub ASIC: one 8 MB register window per node, reached through either
  * half of the crossbar's widget 1 window.

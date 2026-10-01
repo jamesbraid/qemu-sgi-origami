@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The shared GL context and software rasterizer, on paths a family's
  * replay fixtures need not reach: whole batches of every primitive mode,

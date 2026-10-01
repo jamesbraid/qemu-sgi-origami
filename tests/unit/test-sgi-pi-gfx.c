@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The processor interface's graphics credit block, without a device: the
  * field widths, the page match, the count and return, the wrap, and the

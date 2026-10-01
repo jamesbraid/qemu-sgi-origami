@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Rack Tezro's second enclosure adds memory and I/O capacity, but no CPUs.
 layer_version: 1
 layer:

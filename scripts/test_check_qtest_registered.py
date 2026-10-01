@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 """Contract tests for the fork's qtest registration check."""
 
 import unittest

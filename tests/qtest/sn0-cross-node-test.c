@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Two-node, four-CPU Origin 200 TCG tests: node-one CPUs execute and a
  * running CPU addresses both nodes. The low-probability initialization race

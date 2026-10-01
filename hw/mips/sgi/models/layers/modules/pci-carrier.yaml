@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Origin 2000 PCI Carrier Assembly ("PCI module"): an XIO board whose
 # Bridge serves three PCI slots for third-party cards, two full-size and one
 # half-size, fitted in XIO slot 2 (007-3456-003 printed pages 34 and 98).

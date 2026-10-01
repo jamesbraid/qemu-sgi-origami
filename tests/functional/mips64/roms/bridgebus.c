@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check the bridge identity, register window, and translation-table access
  * through crosstalk. This does not test DMA translation.

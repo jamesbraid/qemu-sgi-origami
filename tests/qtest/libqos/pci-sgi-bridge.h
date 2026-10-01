@@ -1,7 +1,7 @@
 /*
  * libqos PCI interface for the SGI Bridge.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef LIBQOS_PCI_SGI_BRIDGE_H

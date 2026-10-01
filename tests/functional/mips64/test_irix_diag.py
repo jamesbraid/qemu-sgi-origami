@@ -4,7 +4,7 @@
 # flavour: boot the installed IRIX disk with SGI's online diagnostics,
 # log in, and run every check irix-diag-matrix marks for the flavour
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Run IRIX online diagnostics on the emulated machine and check each
 flavour's supported commands and IOC3 ports.
 

@@ -3,7 +3,7 @@
 # Boots the real IP27 PROM on an Origin 200 with a GIGAchannel expansion
 # cabinet, and on the same converted module in loopback
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """On QEMU's origin200-gigachannel topology, the stock IP27 PROM 6.156
 prints the XBOX load line and loads the supplied BASEIO PROM image from
 the cabinet flash. The test checks the flash build's BASEIO PROM banner

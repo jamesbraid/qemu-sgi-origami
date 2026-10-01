@@ -2,7 +2,7 @@
 #
 # Boots the real IP35 PROM on the two-chassis Origin 300 to its menu
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Two Origin 300 chassis joined by one NUMAlink cable, each with its own
 four processors, boot flash, identity records and L1
 (topology=origin300-two-chassis). Each chassis's stock IP35 PROM runs from

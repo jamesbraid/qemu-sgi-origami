@@ -2,7 +2,7 @@
  * QOS graph for PCI cards on mips64 through a Bridge on -M none; card
  * registers use their native bus.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

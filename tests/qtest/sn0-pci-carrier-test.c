@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Test Origin 2000 PCI Carrier Assembly placement and access. */
 /*
  * Register-contract tests for the Origin 2000 PCI Carrier Assembly fitted in

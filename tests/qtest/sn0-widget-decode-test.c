@@ -7,7 +7,7 @@
  * Widgets 2-7 and 9-15 answer as one chip; widget 0 keeps its alias;
  * widget 1 stays the Hub.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

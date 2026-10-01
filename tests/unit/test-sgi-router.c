@@ -2,7 +2,7 @@
  * SGI Router register tests use its vector target, not processor MMIO. A
  * fabric qtest can cover Hub-to-Router transport when that adapter exists.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

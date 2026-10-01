@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI host command-port framing; device behavior belongs to the owner. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-command-port.h"

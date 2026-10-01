@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 350 reference composition. Resolve before validation or generation.
 configuration_version: 1
 layers:

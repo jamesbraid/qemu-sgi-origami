@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 model_version: 1
 evidence_policy: strict
 composition:

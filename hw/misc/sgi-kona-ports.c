@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* InfiniteReality command-port selector tables. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-kona-ports.h"

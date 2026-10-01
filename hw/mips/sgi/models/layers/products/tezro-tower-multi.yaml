@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Two-processor selection of the two/four-processor tower interface board.
 layer_version: 1
 layer:

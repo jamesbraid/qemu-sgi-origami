@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * DS1685/DS1687 real-time clock: the industry-standard PC clock's fourteen
  * registers plus a second, software-selected bank carrying everything the

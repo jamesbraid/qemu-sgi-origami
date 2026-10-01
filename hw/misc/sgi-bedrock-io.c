@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bedrock I/O interface: Crosstalk inbound access, widget PIO and block
  * transfer engines. */
 #include "qemu/osdep.h"

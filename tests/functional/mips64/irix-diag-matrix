@@ -4,7 +4,7 @@
 # lib_irix_diag.FLAVOURS holds each row's launch and device names;
 # test_irix_diag.py and test_irix_diag_<flavour>.py boot each row once.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # The four-node Origin 2000's plain BaseIO (io6) is the IO1 board of the
 # PCI shoehorn and PCI carrier rows, so it has no row of its own. The

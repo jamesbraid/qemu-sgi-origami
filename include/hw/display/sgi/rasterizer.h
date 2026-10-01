@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The software rasterizer the SGI graphics heads share: GL draws turned
  * into fragments and stored through the family's planes.

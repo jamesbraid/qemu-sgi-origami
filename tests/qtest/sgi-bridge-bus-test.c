@@ -8,7 +8,7 @@
  * memory the allocator hands out, which is the claim a card cannot check for
  * itself: whether a card can reach an allocated address.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

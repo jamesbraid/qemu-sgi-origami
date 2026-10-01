@@ -3,7 +3,7 @@
 # IRIX online diagnostics and IOC3 port checks on the two-chassis
 # Origin 300
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The origin300_pair row of irix-diag-matrix, in its own meson
 target so the nightly runs it beside the other flavours.

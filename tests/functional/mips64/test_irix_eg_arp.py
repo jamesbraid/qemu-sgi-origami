@@ -2,7 +2,7 @@
 #
 # Peer-originated ARP reply on an IRIX eg adapter.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot installed IRIX and require eg0 to answer one peer ARP request."""
 
 import os

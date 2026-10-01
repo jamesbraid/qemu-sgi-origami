@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* DS2501 and DS2502 add-only EPROM memory commands. */
 #include "qemu/osdep.h"
 #include "qemu/module.h"

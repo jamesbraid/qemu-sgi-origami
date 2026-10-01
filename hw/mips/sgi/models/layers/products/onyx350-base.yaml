@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # One Onyx 350 base compute module; graphics hardware is outside this model.
 layer_version: 1
 layer:

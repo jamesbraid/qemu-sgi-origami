@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Dual-module Origin 200 fabric tests: reachable Hubs resolve by their
  * programmed node numbers, never board position. The two CrayLink-connected

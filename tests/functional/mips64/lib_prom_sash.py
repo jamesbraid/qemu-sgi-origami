@@ -2,7 +2,7 @@
 # and the argv it boots with, factored out so test_prom_diagnostics_verdict.py
 # can exercise them without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 This module holds the fixed assertions, asset digests and verdict helpers
 shared by the stock-PROM netboot tests. NETBOOT_PATH records the file path

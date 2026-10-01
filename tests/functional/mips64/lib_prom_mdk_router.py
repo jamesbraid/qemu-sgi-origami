@@ -2,7 +2,7 @@
 # against, factored out so test_prom_mdk_router_verdict.py can exercise
 # it without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 test_prom_mdk_router.py's docstring gives the account of the package and
 why its leg is red on current trunk. No qemu_test import, so the verdict

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 sgi-replay 2
 head sgi-mgras
 read 4 0x008000 0x2 0x2

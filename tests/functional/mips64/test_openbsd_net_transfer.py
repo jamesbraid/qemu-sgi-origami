@@ -5,7 +5,7 @@
 # move a payload three ways over the guest's own network interface, each
 # leg checked by SHA-256 and byte count
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Boot OpenBSD/sgi 6.9 through the stock IP27 PROM, require an authenticated
 root shell, then check DHCP and three network transfers. The guest reads a

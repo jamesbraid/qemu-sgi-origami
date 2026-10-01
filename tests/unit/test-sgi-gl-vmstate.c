@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Migration of the shared GL context: every byte of SGIGLContext is
  * described, a populated context survives the trip exactly, an open

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Four real adapters, the real controller and the real management NVRAM on
  * one shared module wire, driven the way firmware drives them.

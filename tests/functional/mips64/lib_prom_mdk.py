@@ -2,7 +2,7 @@
 # asset digests and argv the MDK family of tests shares, factored out so
 # test_prom_mdk_verdict.py can exercise them without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 test_prom_mdk.py's docstring gives the account of MDK and its transcripts.
 No qemu_test import, so the verdict companions of the whole MDK family

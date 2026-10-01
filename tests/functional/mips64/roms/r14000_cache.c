@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check the R14000 model's selected 2 MiB secondary-cache behavior and
  * Diagnostic register compatibility. These are emulator expectations;

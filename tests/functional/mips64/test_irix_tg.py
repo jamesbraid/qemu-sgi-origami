@@ -6,7 +6,7 @@
 # tg1's Ipkts and Opkts climbing (with no input errors) is the device-level
 # proof that frames crossed both the adapter's receive and transmit rings.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 This is the tg (bcm570x) counterpart of test_irix_eg_net.py: same real IP27
 PROM, same installed IRIX disk, same SLIRP wiring, driven the same way. It is

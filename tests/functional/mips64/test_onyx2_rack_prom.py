@@ -3,7 +3,7 @@
 # Boots the real IP27 PROM on the Onyx2 rack and checks the slots it
 # names
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot the IP27 PROM with the rack topology and check its `hinv -v`
 output for the expected node, BaseIO, and graphics entries. This verifies
 the emulated configuration and PROM interaction.

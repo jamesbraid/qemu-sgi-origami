@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Two-chassis Origin 300 authoring composition. Resolve before validation or generation.
 configuration_version: 1
 layers:

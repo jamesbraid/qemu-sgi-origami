@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # An Origin 200 converted for a GIGAchannel cabinet and running in loopback:
 # the Crosstown board fitted in place of the XTalk jumper, one XIO cable from
 # its own XIO A to its own XIO B, and no cabinet.

@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Origin 200 BCM570x Bridge DMA tests. Big-endian scalar access through plain
  * DMA preserves descriptor and status words without swap-window dispatch;

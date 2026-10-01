@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 350 reference: IP53, PIC at widget 0xF, IO9 devices.
 layer_version: 1
 layer:

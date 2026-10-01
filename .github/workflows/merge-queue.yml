@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Rebase and land one eligible pull request at a time on the fast-forward-only trunk.
 # Green pull requests land unless they are drafts or carry the `hold` label.
 # The schedule backs up the green-build dispatch and catches changes that do

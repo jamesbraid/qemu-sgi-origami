@@ -4,7 +4,7 @@
 # the sMDK monitor and run each diagnostic smdk-matrix marks for the
 # processor population, one boot per diagnostic
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The layer below IRIX's online diagnostics: sMDK, the Origin 300
 generation's standalone diagnostic monitor, which the stock IP35 PROM

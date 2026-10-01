@@ -3,7 +3,7 @@
 # MDK random-instruction generator: netboot cpu.mdk on TWO CPUs and
 # require a thousand self-checking instgen passes with no miscompare
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 instgen is the vendor's own CPU fuzzer: a random instruction generator
 that exercises the R10000 pipeline, ALU, FPU, branches, register

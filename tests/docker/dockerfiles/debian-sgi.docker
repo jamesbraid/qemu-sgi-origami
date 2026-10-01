@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 # Minimal public build environment for the maintained SGI machine tests.
 FROM docker.io/library/debian:trixie-slim
 

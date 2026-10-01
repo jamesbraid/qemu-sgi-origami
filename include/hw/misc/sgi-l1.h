@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Origin 300 L1 controller and node-side UART state. */
 #ifndef HW_MISC_SGI_L1_H
 #define HW_MISC_SGI_L1_H

@@ -9,7 +9,7 @@
  * ring engine, and the descriptor byte order are all proven on the fabric the
  * card actually sits on rather than a generic PCI bus that has no Bridge.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

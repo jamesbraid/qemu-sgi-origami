@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* PsiTech RAD1 PCI graphics head on an Origin 200 Bridge slot. */
 /*
  * Primary PCI Vendor/Device ID is 3d3d:0009, the 3Dlabs-badged TI/3Dlabs

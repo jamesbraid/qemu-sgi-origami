@@ -4,7 +4,7 @@
 # single-CPU Origin 200, log in as root, and require the system to have
 # reached run level 2
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot the installed IRIX 6.5.30 disk on a single-CPU Origin 200.
 
 The test starts from `irix/6.5.30/root.qcow2`; it does not run the

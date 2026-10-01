@@ -2,7 +2,7 @@
 #
 # The graphics device test matrix, thorough rows: the real-disk boots
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 One test method per row of graphics-matrix whose speed column says
 thorough, run from meson's thorough list. test_graphics_matrix.py owns

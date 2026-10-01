@@ -2,7 +2,7 @@
  * SGI Router: register target, route lookup and six vector-forwarding ports;
  * no CPU register window. Host tests call it directly; ports reach it at
  * vector zero. Reply-source encoding is unknown, so arrival ports do not
- * construct replies. SPDX-License-Identifier: GPL-2.0-or-later
+ * construct replies. SPDX-License-Identifier: BSD-3-Clause
 */
 
 #include "qemu/osdep.h"
