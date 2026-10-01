@@ -189,8 +189,19 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 
 extern const VMStateDescription vmstate_mips_cpu;
 
+/* r10k_cpu.c: family properties and lifecycle, also used in linux-user. */
+void mips_r10k_cpu_init(MIPSCPU *cpu);
+bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp);
+void mips_r10k_cpu_realize(MIPSCPU *cpu);
+void mips_r10k_cpu_reset(MIPSCPU *cpu);
+void mips_r10k_cpu_unrealize(MIPSCPU *cpu);
+void mips_r10k_cpu_finalize(MIPSCPU *cpu);
+
 /* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
 extern const VMStateDescription mips_vmstate_r10k;
+extern const VMStateDescription mips_vmstate_r12000_profile;
+void mips_r10k_profile_pre_save(MIPSCPU *cpu);
+int mips_r10k_profile_post_load(MIPSCPU *cpu);
 extern const VMStateDescription mips_vmstate_r14k_scache;
 extern const VMStateDescription mips_vmstate_r12000_extra;
 extern const VMStateDescription mips_vmstate_r10k_scache_4m;

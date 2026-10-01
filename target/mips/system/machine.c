@@ -20,10 +20,7 @@ static int cpu_pre_save(void *opaque)
             now_ticks - cpu->env.timer_adjacent_start_ticks;
     }
 
-    if (cpu->r12000_profile_valid) {
-        memcpy(cpu->r12000_migration_profile, cpu->r12000_values,
-               sizeof(cpu->r12000_values));
-    }
+    mips_r10k_profile_pre_save(cpu);
     if (cpu->env.cfg.performance_counter_pairs == 4) {
         /* Serialize R14000 guest-visible values, not running clock biases. */
         cpu_mips_r10k_perf_freeze(&cpu->env);
@@ -46,9 +43,7 @@ static int cpu_post_load(void *opaque, int version_id)
     MIPSCPU *cpu = opaque;
     CPUMIPSState *env = &cpu->env;
 
-    /* PRId is immutable configuration, including the value used by reset. */
-    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
-        env->CP0_PRid != cpu->r10000_prid) {
+    if (mips_r10k_profile_post_load(cpu)) {
         return -EINVAL;
     }
     if (env->timer_adjacent_pending) {
@@ -57,12 +52,6 @@ static int cpu_post_load(void *opaque, int version_id)
 
         env->timer_adjacent_start_ticks =
             now_ticks - env->timer_adjacent_migration_age_ticks;
-    }
-
-    if (cpu->r12000_profile_valid &&
-        memcmp(cpu->r12000_migration_profile, cpu->r12000_values,
-               sizeof(cpu->r12000_values))) {
-        return -EINVAL;
     }
 
     restore_fp_status(env);
@@ -458,22 +447,6 @@ static bool mips_r14k_performance_needed(void *opaque)
 
     return cpu->env.cfg.performance_counter_pairs == 4;
 }
-
-static bool mips_r12000_profile_needed(void *opaque)
-{
-    return ((MIPSCPU *)opaque)->r12000_profile_valid;
-}
-
-static const VMStateDescription mips_vmstate_r12000_profile = {
-    .name = "cpu/r12000-profile",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r12000_profile_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(r12000_migration_profile, MIPSCPU, 5),
-        VMSTATE_END_OF_LIST()
-    }
-};
 
 static const VMStateDescription mips_vmstate_r14k_performance = {
     .name = "cpu/r14k-performance",

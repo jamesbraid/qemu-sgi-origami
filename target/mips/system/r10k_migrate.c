@@ -101,14 +101,16 @@ static bool mips_r14k_scache_needed(void *opaque)
 {
     const MIPSCPU *cpu = opaque;
 
-    return (!cpu->r12000_profile_valid &&
+    return ((!cpu->r10k_profile || !cpu->r10k_profile->valid) &&
             cpu->env.cfg.scache_size == R14K_SCACHE_SIZE) ||
            mips_r10k_scache_is_4m(cpu);
 }
 
 static bool mips_r12000_extra_needed(void *opaque)
 {
-    return ((MIPSCPU *)opaque)->r12000_profile_valid;
+    MIPSCPU *cpu = opaque;
+
+    return cpu->r10k_profile && cpu->r10k_profile->valid;
 }
 
 static const VMStateDescription vmstate_r12000_extra = {
@@ -194,3 +196,62 @@ const VMStateDescription mips_vmstate_r10k_scache_4m = {
         VMSTATE_END_OF_LIST()
     }
 };
+
+static const VMStateDescription vmstate_r12000_profile = {
+    .name = "mips/r12000-profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(migration_profile, R10KCPUProfile,
+                             R12000_PROFILE_FIELDS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r12000_profile_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->r10k_profile && cpu->r10k_profile->valid;
+}
+
+const VMStateDescription mips_vmstate_r12000_profile = {
+    .name = "cpu/r12000-profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r12000_profile_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(r10k_profile, MIPSCPU,
+                               vmstate_r12000_profile, R10KCPUProfile),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+void mips_r10k_profile_pre_save(MIPSCPU *cpu)
+{
+    R10KCPUProfile *profile = cpu->r10k_profile;
+
+    if (profile && profile->valid) {
+        memcpy(profile->migration_profile, profile->values,
+               sizeof(profile->values));
+    }
+}
+
+int mips_r10k_profile_post_load(MIPSCPU *cpu)
+{
+    CPUMIPSState *env = &cpu->env;
+    R10KCPUProfile *profile = cpu->r10k_profile;
+
+    /* PRId is immutable configuration, including the value used by reset. */
+    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
+        env->CP0_PRid != profile->r10000_prid) {
+        return -EINVAL;
+    }
+    if (profile && profile->valid &&
+        memcmp(profile->migration_profile, profile->values,
+               sizeof(profile->values))) {
+        return -EINVAL;
+    }
+
+    return 0;
+}

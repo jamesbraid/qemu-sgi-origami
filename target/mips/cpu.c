@@ -19,7 +19,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/visitor.h"
 #include "qemu/cutils.h"
 #include "qemu/qemu-print.h"
 #include "qemu/error-report.h"
@@ -263,34 +262,9 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     memset(env, 0, offsetof(CPUMIPSState, end_reset_fields));
     cpu->nmi_level = false;
 
-    /*
-     * This reset framework path is a cold initialization (or snapshot load).
-     * An R10000 soft reset enters EXCP_SRESET instead and preserves caches.
-     * The R10000-family state sits behind a pointer the top-level memset does
-     * not reach, so clear it here, all but the board's hook, then copy the
-     * writable-bit masks the family defines from the CPU model. Every other
-     * processor uses the shared inline masks at the dispatch points instead
-     * and has no env->r10k at all.
-     */
-    if (env->r10k) {
-        R10KState *r10k = env->r10k;
-
-        memset(r10k, 0, offsetof(R10KState, system_requests));
-        r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
-        r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
-        r10k->CP0_Config0_preserve_bitmask =
-            env->cpu_model->CP0_Config0_preserve_bitmask;
-        r10k->CP0_PageMask_rw_bitmask = env->cpu_model->CP0_PageMask_rw_bitmask;
-        r10k->CP0_Framemask_rw_bitmask =
-            env->cpu_model->CP0_Framemask_rw_bitmask;
-        r10k->CP0_EntryLo_extra_rw_bitmask =
-            env->cpu_model->CP0_EntryLo_extra_rw_bitmask;
-        r10k->xkseg_limit = env->cpu_model->xkseg_limit;
-    }
-
     /* Reset registers to their default values */
-    env->CP0_PRid = !strcmp(env->cpu_model->name, "R10000") ?
-        cpu->r10000_prid : env->cpu_model->CP0_PRid;
+    env->CP0_PRid = env->cpu_model->CP0_PRid;
+    mips_r10k_cpu_reset(cpu);
     env->CP0_Config0 = deposit32(env->cpu_model->CP0_Config0,
                                  CP0C0_BE, 1, cpu->is_big_endian);
     env->CP0_Config1 = env->cpu_model->CP0_Config1;
@@ -540,7 +514,7 @@ static void mips_cpu_finalize(Object *obj)
     MIPSCPU *cpu = MIPS_CPU(obj);
 
     mips_octeon_destroy_llm_state(&cpu->env.octeon_crypto);
-    g_free(cpu->r12000_cpu_model);
+    mips_r10k_cpu_finalize(cpu);
 }
 
 static void mips_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
@@ -615,127 +589,6 @@ static void mips_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
  */
 #define CPU_FREQ_HZ_DEFAULT     200000000
 
-enum {
-    R12000_PRID,
-    R12000_FPU_ID,
-    R12000_RESET_MODE,
-    R12000_SCACHE_BYTES,
-    R12000_SCACHE_BLOCK_WORDS,
-    R12000_PROFILE_FIELDS,
-};
-
-static void mips_r10000_prid_get(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
-{
-    uint32_t value = MIPS_CPU(obj)->r10000_prid;
-
-    visit_type_uint32(v, name, &value, errp);
-}
-
-static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
-{
-    uint32_t value;
-
-    if (DEVICE(obj)->realized) {
-        error_setg(errp, "%s cannot change after CPU realization", name);
-        return;
-    }
-    if (!visit_type_uint32(v, name, &value, errp)) {
-        return;
-    }
-    if ((value & ~0xffu) != 0x0900) {
-        error_setg(errp, "%s requires implementation 0x09 and zero upper bits",
-                   name);
-        return;
-    }
-    MIPS_CPU(obj)->r10000_prid = value;
-}
-
-static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
-    "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-    "r12000-scache-bytes", "r12000-scache-block-words",
-};
-
-static void mips_r12000_property_get(Object *obj, Visitor *v,
-                                      const char *name, void *opaque,
-                                      Error **errp)
-{
-    MIPSCPU *cpu = MIPS_CPU(obj);
-    unsigned int field = (uintptr_t)opaque;
-    uint32_t value = cpu->r12000_values[field];
-
-    visit_type_uint32(v, name, &value, errp);
-}
-
-static void mips_r12000_property_set(Object *obj, Visitor *v,
-                                      const char *name, void *opaque,
-                                      Error **errp)
-{
-    MIPSCPU *cpu = MIPS_CPU(obj);
-    unsigned int field = (uintptr_t)opaque;
-    uint32_t value;
-
-    if (DEVICE(obj)->realized) {
-        error_setg(errp, "%s cannot change after CPU realization", name);
-        return;
-    }
-    if (!visit_type_uint32(v, name, &value, errp)) {
-        return;
-    }
-    cpu->r12000_values[field] = value;
-    cpu->r12000_set[field] = true;
-}
-
-static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
-{
-    uint32_t mode, bytes, words, ec, sc, k0, dsd;
-
-    for (unsigned int i = 0; i < R12000_PROFILE_FIELDS; i++) {
-        if (!cpu->r12000_set[i]) {
-            error_setg(errp, "R12000 requires %s", r12000_property_names[i]);
-            return false;
-        }
-    }
-    mode = cpu->r12000_values[R12000_RESET_MODE];
-    bytes = cpu->r12000_values[R12000_SCACHE_BYTES];
-    words = cpu->r12000_values[R12000_SCACHE_BLOCK_WORDS];
-    ec = (mode >> CP0C0_R10K_EC) & 15;
-    sc = (mode >> CP0C0_R10K_SC) & 7;
-    k0 = mode & 7;
-    dsd = (mode >> 22) & 7;
-    if ((cpu->r12000_values[R12000_PRID] & 0xff00) != 0x0e00) {
-        error_setg(errp, "r12000-prid requires implementation 0x0e");
-    } else if (mode & ~0x01ffffffu) {
-        error_setg(errp, "r12000-reset-mode exceeds 25 bits");
-    } else if (k0 < 2 || k0 == 6 || ec < 3 || ec > 11 ||
-               sc < 2 || sc == 6 || (dsd != 0 && dsd != 4)) {
-        error_setg(errp, "r12000-reset-mode has a reserved encoding");
-    } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
-        error_setg(errp, "r12000-reset-mode endianness differs from CPU");
-    } else if ((bytes != 1024 * 1024 && bytes != 2 * 1024 * 1024) ||
-               ((mode >> CP0C0_R10K_SS) & 7) != (bytes >> 20)) {
-        error_setg(errp, "r12000-scache-bytes disagrees with Config SS");
-    } else if ((words != 16 && words != 32) ||
-               ((mode >> CP0C0_R10K_SB) & 1) != (words == 32)) {
-        error_setg(errp, "r12000-scache-block-words disagrees with Config SB");
-    } else {
-        cpu->r12000_cpu_model = g_new(mips_def_t, 1);
-        *cpu->r12000_cpu_model = *cpu->env.cpu_model;
-        cpu->r12000_cpu_model->CP0_PRid =
-            cpu->r12000_values[R12000_PRID];
-        cpu->r12000_cpu_model->CP1_fcr0 =
-            cpu->r12000_values[R12000_FPU_ID];
-        cpu->r12000_cpu_model->CP0_Config0 |= mode;
-        cpu->r12000_cpu_model->cfg.scache_size = bytes;
-        cpu->r12000_cpu_model->cfg.scache_line_size = words * 4;
-        cpu->env.cpu_model = cpu->r12000_cpu_model;
-        cpu->r12000_profile_valid = true;
-        return true;
-    }
-    return false;
-}
-
 static void mips_cp0_period_set(MIPSCPU *cpu)
 {
     CPUMIPSState *env = &cpu->env;
@@ -753,8 +606,7 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
-    if (!strcmp(mcc->cpu_def->name, "R12000") &&
-        !mips_r12000_validate(cpu, errp)) {
+    if (!mips_r10k_cpu_validate(cpu, errp)) {
         return;
     }
 
@@ -793,9 +645,7 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
 #endif
     fpu_init(env, env->cpu_model);
     mvp_init(env);
-    if (env->cpu_model->insn_flags & INSN_R10K) {
-        env->r10k = g_new0(R10KState, 1);
-    }
+    mips_r10k_cpu_realize(cpu);
 
     cpu_reset(cs);
 #ifndef CONFIG_USER_ONLY
@@ -821,10 +671,7 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
 
     g_free(cpu->mvp);
-    g_free(cpu->env.r10k);
-    cpu->env.cpu_model = mcc->cpu_def;
-    g_clear_pointer(&cpu->r12000_cpu_model, g_free);
-    cpu->r12000_profile_valid = false;
+    mips_r10k_cpu_unrealize(cpu);
 
     mcc->parent_unrealize(dev);
 }
@@ -851,26 +698,12 @@ static void mips_cpu_initfn(Object *obj)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
     CPUMIPSState *env = &cpu->env;
-    MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(obj);
 
     cpu->clock = qdev_init_clock_in(DEVICE(obj), "clk-in", NULL, cpu, 0);
     cpu->count_div = clock_new(OBJECT(obj), "clk-div-count");
     cpu->count_clock = clock_new(OBJECT(obj), "clk-count");
-    env->cpu_model = mcc->cpu_def;
-    if (!strcmp(mcc->cpu_def->name, "R10000")) {
-        cpu->r10000_prid = mcc->cpu_def->CP0_PRid;
-        object_property_add(obj, "r10000-prid", "uint32",
-                            mips_r10000_prid_get, mips_r10000_prid_set,
-                            NULL, NULL);
-    }
-    if (!strcmp(mcc->cpu_def->name, "R12000")) {
-        for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
-            object_property_add(obj, r12000_property_names[i], "uint32",
-                                mips_r12000_property_get,
-                                mips_r12000_property_set,
-                                NULL, (void *)i);
-        }
-    }
+    env->cpu_model = MIPS_CPU_GET_CLASS(cpu)->cpu_def;
+    mips_r10k_cpu_init(cpu);
 #ifndef CONFIG_USER_ONLY
     qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_set_nmi, "nmi", 1);
 #endif

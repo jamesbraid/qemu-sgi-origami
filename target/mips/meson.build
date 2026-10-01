@@ -6,6 +6,7 @@ mips_ss.add(files(
   'fpu.c',
   'gdbstub.c',
   'msa.c',
+  'r10k_cpu.c',
 ))
 mips_ss.add(zlib)
 
