@@ -323,6 +323,57 @@ typedef struct SGIMgrasGLPixels {
 } SGIMgrasGLPixels;
 
 /*
+ * The texture levels one GL context keeps, and the TXADDR-indexed tables
+ * (hw/misc/sgi-mgras-texture.c).
+ */
+#define SGI_MGRAS_TEX_LEVELS 16
+#define SGI_MGRAS_TEX_TABLE 32
+
+/*
+ * One loaded texture level, keyed by the base block and TL_SPEC's level
+ * number, in the model's own layout: two bytes a texel for a 4-bit depth,
+ * four for an 8-bit one.
+ */
+typedef struct SGIMgrasTexLevel {
+    uint32_t used;              /* 0 or 1 */
+    uint32_t base;
+    uint32_t level;
+    uint32_t log2w, log2h;
+    uint32_t mode;              /* TL_MODE when it was loaded */
+    uint32_t bytes;
+    uint8_t *texels;
+} SGIMgrasTexLevel;
+
+/*
+ * One GL context's SI+T texture state: the TE1 registers the client
+ * writes, the load under way, and the levels loaded so far.
+ */
+typedef struct SGIMgrasTexture {
+    uint32_t texmode1, texmode2;
+    uint32_t txsize, txlod, txclampsize;
+    uint32_t txbcolor[2];
+    uint32_t txaddr;
+    uint32_t txmipmap[SGI_MGRAS_TEX_TABLE];
+    uint32_t txborder[SGI_MGRAS_TEX_TABLE];
+    uint32_t tl_mode, tl_spec;
+    uint32_t tl_wbuffer, texrbuffer;
+    uint32_t base;
+    uint32_t t_offset;          /* the 0x5f04 float's bits */
+    uint32_t on;                /* 0x0b00 came after the last 0x0c00: 0/1 */
+    uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
+    /* A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads. */
+    uint32_t load;
+    uint32_t load_base, load_spec, load_mode;
+    /*
+     * Host-only: the host bytes of a transfer, gathered row by row inside
+     * the one port write that kicks it, so never migrated.
+     */
+    uint8_t *staging;
+    uint32_t staged, staging_bytes;
+    SGIMgrasTexLevel levels[SGI_MGRAS_TEX_LEVELS];
+} SGIMgrasTexture;
+
+/*
  * The family's side of one GL context-table entry: where the main-port
  * parser stood when the context was last switched out, beside the entry's
  * GL state. SGIGLContext is the GL state machine's; the parser position is
@@ -339,6 +390,8 @@ typedef struct SGIMgrasGLContext {
     uint32_t readback[4];
     /* A pixel draw under way in this context. */
     SGIMgrasGLPixels pixels;
+    /* Texture state, used on a board with TRAM. */
+    SGIMgrasTexture tex;
 } SGIMgrasGLContext;
 
 /*

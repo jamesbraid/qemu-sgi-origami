@@ -9,6 +9,7 @@
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/misc/sgi-mgras-texture.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
@@ -1437,10 +1438,11 @@ static void mgras_reset_exit(Object *obj, ResetType type)
 }
 
 /*
- * Select the descriptor. A board with TRAM would make IRIX drive texture
- * paths the model does not have, so it is refused unless
- * x-unimplemented-board asks for it anyway; then it is presented with a
- * LOG_UNIMP note naming what is missing.
+ * Select the descriptor. A board with TRAM makes IRIX drive texture paths
+ * the model has only in part (hw/misc/sgi-mgras-texture.c draws a loaded
+ * RGBA level nearest-sampled and modulated, nothing more), so it is
+ * refused unless x-unimplemented-board asks for it anyway; then it is
+ * presented with a LOG_UNIMP note naming what is missing.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
@@ -1944,6 +1946,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_block,
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
+        &vmstate_sgi_mgras_texture,
         NULL
     }
 };

@@ -11380,6 +11380,490 @@ static void test_gl_pixels_migration(void)
     g_rmdir(tmpfs);
 }
 
+/*
+ * One-engine texture on SI+T (hw/misc/sgi-mgras-texture.c), in the words
+ * the IRIX 6.5.30 IP27GR532 client sent when ivview loaded and drew one
+ * textured quad (run irix-20260930T224203-2e96c4; mgras-texture.md,
+ * "Upload, bind and draw as traced on SI+T"). Raster register records
+ * are 0x7c08, the record and word counts, and an inline block of
+ * (register, value, shadow) triples padded to an even count with a stale
+ * word. A load is TL_MODE and TL_SPEC, 0x9b00, the four-byte pixel
+ * program with the destination 0, 0, w, h and size word h << 16 | w,
+ * XFRMODE 0xc00080, 0x8d20 naming routine 0x511a with flags 0x98, the
+ * DMA transfer kicked 0xa7, then 0x9c00. The bind is TEXMODE2, 0x0b00,
+ * TEXMODE1 0x40859, 0x5f04, the border colour, TXADDR and TXMIPMAP by
+ * 0xec10, and TXSIZE, TXLOD and TXCLAMPSIZE.
+ */
+#define TEX_ARGS MACHINE_ARGS " -global sgi-mgras.board=si-t " \
+    "-global sgi-mgras.x-unimplemented-board=on"
+#define TEX_MIGRATION_ARGS MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
+    "-global sgi-mgras.x-unimplemented-board=on"
+#define TEX_RECORDS           0x00007c08
+#define TEX_ON                0x00000b00
+#define TEX_OFF               0x00000c00
+#define TEX_T_OFFSET          0x00005f04
+#define TEX_LOAD_OPEN         0x00009b00
+#define TEX_LOAD_CLOSE        0x00009c00
+#define TEX_TABLE             0x0000ec10
+#define TEX_SAVE_RSS          0x0000d214
+#define TEX_RESTORE_RSS       0x0000d300
+#define TEX_PAIRS             0x00007f08
+#define TEX_TEXMODE1          0x111
+#define TEX_TEXMODE2          0x180
+#define TEX_TXSIZE            0x181
+#define TEX_TXLOD             0x183
+#define TEX_TXCLAMPSIZE       0x18c
+#define TEX_TXADDR            0x190
+#define TEX_TXMIPMAP          0x191
+#define TEX_TL_MODE           0x1a1
+#define TEX_TL_SPEC           0x1a2
+/* The traced values: TEXMODE1 with texturing on, and the RGBA4 load. */
+#define TEX_TEXMODE1_ON       0x40859
+#define TEX_TL_MODE_RGBA4     0x34006
+#define TEX_TL_MODE_RGBA8     0x34026
+#define TEX_TEXMODE2_RGBA4    0x10000
+#define TEX_TEXMODE2_RGBA8    0x10004
+/* A 4-by-2 level 0, and TXSIZE's two copies of its log2 size. */
+#define TEX_SPEC_4X2          0x120
+#define TEX_TXSIZE_4X2        0x1212
+#define TEX_WHITE             0xffffff
+
+static QTestState *tex_start(const char *args)
+{
+    QTestState *t = qtest_init(args);
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    return t;
+}
+
+/* Raster register records, n (register, value) pairs, as __glMgrasWrite. */
+static void tex_records(QTestState *t, const uint32_t *pairs, uint32_t n)
+{
+    uint32_t words = (n * 3 + 1) & ~1u;
+
+    gl_word(t, TEX_RECORDS);
+    gl_word(t, n);
+    gl_word(t, words);
+    gl_word(t, GL_INLINE_BLOCK | words * 4);
+    for (uint32_t i = 0; i < n; i++) {
+        gl_word(t, pairs[2 * i]);
+        gl_word(t, pairs[2 * i + 1]);
+        gl_word(t, 0x18b);
+    }
+    if (n * 3 & 1) {
+        gl_word(t, pairs[0]);
+    }
+}
+
+static void tex_record(QTestState *t, uint32_t reg, uint32_t value)
+{
+    tex_records(t, (const uint32_t[]){ reg, value }, 1);
+}
+
+/*
+ * The client's load of one w-by-h level of RGBA unsigned bytes. TL_MODE
+ * goes out only when send_mode is set, as the client skips it on a
+ * reload; box is the destination rectangle and size word.
+ */
+static void tex_load_as(QTestState *t, bool send_mode, uint32_t mode,
+                        uint32_t spec, const uint8_t *texels, uint32_t w,
+                        uint32_t h, const uint32_t box[6], bool bracket)
+{
+    static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
+    uint32_t bytes = w * h * 4;
+
+    if (send_mode) {
+        tex_record(t, TEX_TL_MODE, mode);
+    }
+    tex_record(t, TEX_TL_SPEC, spec);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    if (bracket) {
+        gl_word(t, TEX_LOAD_OPEN);
+    }
+    gl_pixels_program(t, GL_PIX_4UB, bytes / 4, 0, 0, w - 1, h - 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, bytes / 4);
+    for (int i = 1; i < 8; i++) {
+        gl_word(t, draw[i]);
+    }
+    gl_pixels_dma(t, texels, bytes, bytes, 1, bytes, 0xa7);
+    if (bracket) {
+        gl_word(t, TEX_LOAD_CLOSE);
+    }
+    gl_word(t, TEX_RESTORE_RSS);
+    tex_record(t, TEX_TXSIZE, 0);
+}
+
+static void tex_load(QTestState *t, uint32_t mode, const uint8_t *texels)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+
+    tex_load_as(t, true, mode, TEX_SPEC_4X2, texels, 4, 2, box, true);
+}
+
+/* The draw setup for a 4-by-2 level 0, then texturing on. */
+static void tex_bind(QTestState *t, uint32_t texmode1, uint32_t texmode2)
+{
+    tex_record(t, TEX_TEXMODE2, texmode2);
+    gl_word(t, TEX_ON);
+    tex_record(t, TEX_TEXMODE1, texmode1);
+    gl_one(t, TEX_T_OFFSET, 0);
+    tex_records(t, (const uint32_t[]){ 0x184, 0, 0x185, 0, TEX_TXADDR, 0 },
+                3);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 0);
+    tex_records(t, (const uint32_t[]){ TEX_TXSIZE, TEX_TXSIZE_4X2,
+                                       TEX_TXLOD, 1,
+                                       TEX_TXCLAMPSIZE, 0x8002 }, 3);
+}
+
+/*
+ * A white quad over window pixels 16 to 47 across and 16 to 31 up,
+ * texture coordinates 0 to 1, so each texel of a 4-by-2 level covers 8
+ * by 8 pixels, then the client's close of the draw.
+ */
+static void tex_quad(QTestState *t)
+{
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 }, { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+
+    gl_color3f(t, 1, 1, 1);
+    gl_word(t, GL_BEGIN_QUADS);
+    for (int i = 0; i < 4; i++) {
+        gl_word(t, GL_TEX_COORD2F_HDR);
+        gl_float(t, v[i][2]);
+        gl_float(t, v[i][3]);
+        gl_vertex2f(t, v[i][0], v[i][1]);
+    }
+    gl_word(t, GL_END_OF(GL_BEGIN_QUADS));
+    gl_word(t, 0x0000e910);
+    for (int i = 0; i < 4; i++) {
+        gl_word(t, i == 0);
+    }
+    gl_one(t, TEX_T_OFFSET, 0);
+    gl_word(t, TEX_OFF);
+}
+
+/* The centre pixel of texel (x, y) under tex_quad(). */
+static uint32_t tex_texel_pixel(QTestState *t, int x, int y)
+{
+    return gl_window_pixel(t, 20 + 8 * x, 20 + 8 * y);
+}
+
+/* Texel i of a 4-by-2 level: R, G, B distinct in the high four bits. */
+static void tex_texels(uint8_t texels[32])
+{
+    for (int i = 0; i < 8; i++) {
+        texels[4 * i] = i << 4 | 0x3;
+        texels[4 * i + 1] = (7 - i) << 5;
+        texels[4 * i + 2] = 0x80 + i;
+        texels[4 * i + 3] = 0xff;
+    }
+}
+
+/*
+ * An RGBA8 level loaded and drawn nearest with modulate by white: each
+ * texel's centre pixel takes the texel's own bytes, the first row sent
+ * at t = 0, the bottom, and the quad's edges keep to its pixels.
+ */
+static void test_gl_texture_load_draws_the_level(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+    g_assert_cmphex(gl_window_pixel(t, 16, 16), ==, 0x03e080);
+    g_assert_cmphex(gl_window_pixel(t, 47, 31), ==, 0x730087);
+    g_assert_cmphex(gl_window_pixel(t, 15, 16), ==, 0);
+    g_assert_cmphex(gl_window_pixel(t, 48, 31), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The model keeps an RGBA4 level by truncating each 8-bit component to
+ * its high four bits and draws it widened by replication, its own choice
+ * (hw/misc/sgi-mgras-texture.c). The components chosen tell truncation
+ * from (v + 8) >> 4 (0x18, 0x7f, 0xf8) and from round(v * 15 / 255)
+ * (0x0f, 0xc0). The traced texels, 0x10 + i, 0x40 + i and 0x80 + i,
+ * come out 0x11, 0x44, 0x88 under all three.
+ */
+static void test_gl_texture_rgba4_truncates(void)
+{
+    static const uint8_t comp[] = {
+        0x0f, 0x18, 0x7f, 0xc0, 0xf8, 0x00, 0xff, 0x2a,
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    for (int i = 0; i < 8; i++) {
+        texels[4 * i] = comp[i];
+        texels[4 * i + 1] = comp[(i + 3) % 8];
+        texels[4 * i + 2] = comp[(i + 5) % 8];
+        texels[4 * i + 3] = 0xc0 + i;
+    }
+    tex_load(t, TEX_TL_MODE_RGBA4, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA4);
+    tex_quad(t);
+    for (int i = 0; i < 8; i++) {
+        uint32_t want = 0;
+
+        for (int k = 0; k < 3; k++) {
+            want = want << 8 | (texels[4 * i + k] >> 4) * 0x11;
+        }
+        g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==, want);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        texels[4 * i] = 0x10 + i;
+        texels[4 * i + 1] = 0x40 + i;
+        texels[4 * i + 2] = 0x80 + i;
+        texels[4 * i + 3] = 0xc0 + i;
+    }
+    tex_load(t, TEX_TL_MODE_RGBA4, texels);
+    gl_word(t, TEX_ON);
+    tex_record(t, TEX_TEXMODE1, TEX_TEXMODE1_ON);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_4X2);
+    tex_quad(t);
+    for (int i = 0; i < 8; i++) {
+        g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==, 0x114488);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The level's size is TL_SPEC's, checked against the size word, and the
+ * destination corners are not read: the traced 0, 0, 4, 2 loads a 4-by-2
+ * level (the image path would take 5 by 3 from them), so do inclusive
+ * corners, and a size word that disagrees with TL_SPEC stores nothing,
+ * so the quad draws untextured.
+ */
+static void test_gl_texture_size_from_tl_spec(void)
+{
+    static const uint32_t inclusive[6] = { 0, 0, 3, 1, 2 << 16 | 4, 1 };
+    static const uint32_t swapped[6] = { 0, 0, 4, 2, 4 << 16 | 2, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, texels, 4, 2,
+                inclusive, true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, 0x730087);
+    qtest_quit(t);
+
+    t = tex_start(TEX_ARGS);
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, texels, 4, 2,
+                swapped, true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * TL_MODE is state: a reload of the same image without it, as the
+ * client sends one, keeps the level in the kept format the earlier load
+ * named. Levels belong to their context: another context has none, and
+ * the first still draws its own after switching back. A 0x9c00 without
+ * its 0x9b00 and a 0x511a transfer outside a bracket are logged, not
+ * refused.
+ */
+static void test_gl_texture_tl_mode_persists(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    texels[0] = 0x55;
+    texels[1] = 0x66;
+    texels[2] = 0x77;
+    gl_word(t, TEX_LOAD_CLOSE);
+    tex_load_as(t, false, 0, TEX_SPEC_4X2, texels, 4, 2, box, false);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x556677);
+    g_assert_cmphex(tex_texel_pixel(t, 1, 0), ==, 0x13c081);
+
+    gl_enter_slot(t, GL_SLOT_B);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, TEX_ON);
+    tex_record(t, TEX_TEXMODE1, TEX_TEXMODE1_ON);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x556677);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * What the model does not draw stays untextured rather than drawn wrong:
+ * TEXMODE1 bit 0 clear, a linear magnification filter (TEXMODE2 bit 7),
+ * a clamp (bit 11), the decal environment (TEXMODE1 bits 2:1 = 1), a
+ * level kept at 12 bits, which is not stored, and 0x0c00 after the
+ * bind. Each quad is white.
+ */
+static void test_gl_texture_unsupported_draws_untextured(void)
+{
+    static const uint32_t cases[][3] = {
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON & ~1u, TEX_TEXMODE2_RGBA8 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x800 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 2, TEX_TEXMODE2_RGBA8 },
+        { 0x34046, TEX_TEXMODE1_ON, 0x10008 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        gl_word(t, GL_CONTEXT_OPENER);
+        gl_viewport(t, 0, 0, 128, 128);
+        gl_window_projection(t);
+        tex_load(t, cases[i][0], texels);
+        tex_bind(t, cases[i][1], cases[i][2]);
+        tex_quad(t);
+        g_assert_cmphex(tex_texel_pixel(t, 1, 1), ==, TEX_WHITE);
+    }
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    gl_word(t, TEX_OFF);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 1, 1), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The SI has no TRAM: the same words draw the quad white, the records'
+ * block and the transfer are consumed, and the fence after them parses.
+ */
+static void test_gl_texture_textureless_board_ignores(void)
+{
+    QTestState *t = tex_start(MACHINE_ARGS);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    gl_pixels_fence(t);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A stored level, the registers and a load waiting for its transfer
+ * cross a migration: the destination draws the stored RGBA4 level into
+ * a cleared window, then takes the transfer as the level's replacement
+ * at the 8-bit depth the waiting load's TL_MODE named.
+ */
+static void test_gl_texture_migration(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    static const uint32_t draw[8] = { 8, 0, 0, 1, 0, 1, 0x511a, 0x98 };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t texels[32];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-texture-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = tex_start(TEX_MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    tex_texels(texels);
+    tex_load(from, TEX_TL_MODE_RGBA4, texels);
+    tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA4);
+    tex_quad(from);
+    tex_record(from, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(from, TEX_TL_SPEC, TEX_SPEC_4X2);
+    gl_word(from, TEX_LOAD_OPEN);
+    gl_pixels_program(from, GL_PIX_4UB, 8, 0, 0, 3, 1, 1);
+    gl_ge_load(from, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(from, GL_PIXELS_HDR);
+    for (int i = 0; i < 8; i++) {
+        gl_word(from, draw[i]);
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_clear_color(to, 0, 0, 0, 0);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0);
+    gl_word(to, TEX_ON);
+    tex_quad(to);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x00ee88);
+    g_assert_cmphex(tex_texel_pixel(to, 3, 1), ==, 0x770088);
+
+    texels[0] = 0x55;
+    texels[1] = 0x66;
+    texels[2] = 0x77;
+    gl_pixels_dma(to, texels, sizeof(texels), 32, 1, 32, 0xa7);
+    gl_word(to, TEX_LOAD_CLOSE);
+    tex_record(to, TEX_TEXMODE2, TEX_TEXMODE2_RGBA8);
+    gl_word(to, TEX_ON);
+    tex_quad(to);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x556677);
+    g_assert_cmphex(tex_texel_pixel(to, 3, 1), ==, 0x730087);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_hq_flags_fence_token_sets_bit(void)
 {
     mgras_reset();
@@ -17602,6 +18086,22 @@ int main(int argc, char **argv)
                    test_gl_pixels_follow_the_context);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-migration",
                    test_gl_pixels_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-draws-the-level",
+                   test_gl_texture_load_draws_the_level);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
+                   test_gl_texture_rgba4_truncates);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-size-from-tl-spec",
+                   test_gl_texture_size_from_tl_spec);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-tl-mode-persists",
+                   test_gl_texture_tl_mode_persists);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-unsupported-draws-untextured",
+                   test_gl_texture_unsupported_draws_untextured);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-textureless-board-ignores",
+                   test_gl_texture_textureless_board_ignores);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
+                   test_gl_texture_migration);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
