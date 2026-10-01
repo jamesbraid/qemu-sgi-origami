@@ -310,6 +310,164 @@ class BedrockConfigurationTests(unittest.TestCase):
 class RecordShapeTests(unittest.TestCase):
     """Compile shape per record type, read off real resolved fixtures."""
 
+    def test_io_only_bedrock_is_a_module_owned_fabric_peer(self):
+        model = _resolved("origin300")
+        model["components"].extend([
+            {"id": "io-enclosure", "name": "Test I/O enclosure", "kind": "module"},
+            {"id": "io-bedrock", "name": "Test I/O-only Bedrock",
+             "kind": "bus-controller", "hardware_kind": "bedrock",
+             "parent": "io-enclosure"},
+        ])
+        next(bus for bus in model["buses"] if bus["id"] == "numalink")[
+            "link"] = {"kind": "cable"}
+        model["connections"].append({
+            "component": "io-bedrock", "bus": "numalink", "role": "endpoint",
+        })
+        model["components"].append({
+            "id": "fabric-connector", "kind": "connector",
+        })
+        model["connections"].append({
+            "component": "fabric-connector", "bus": "numalink", "role": "connector",
+        })
+        model["composition"].setdefault("connector_population", []).append({
+            "component": "fabric-connector", "occupancy": "occupied",
+            "occupant": "io-enclosure",
+        })
+
+        graph = index_graph(model)
+
+        self.assertEqual([node["id"] for node in graph["nodes"]], ["bedrock"])
+        self.assertEqual([(peer["id"], peer["module_index"])
+                          for peer in graph["io_peers"]], [("io-bedrock", 1)])
+        self.assertEqual(graph["links"], [{
+            "name": "numalink", "kind": "cable", "ends": [
+                {"kind": "NODE", "index": 0, "port": 0},
+                {"kind": "IO_PEER", "index": 0, "port": 0},
+            ],
+        }])
+
+    def test_io_peer_without_identity_is_not_compiled_as_a_compute_node(self):
+        model = _resolved("origin300")
+        model["components"].extend([
+            {"id": "io-enclosure", "name": "Test I/O enclosure", "kind": "module"},
+            {"id": "io-bedrock", "name": "Test I/O-only Bedrock",
+             "kind": "bus-controller", "hardware_kind": "bedrock",
+             "parent": "io-enclosure"},
+        ])
+        with self.assertRaisesRegex(CompileError, "I/O peer 'io-bedrock'.*identity"):
+            compile_model(model)
+
+    def test_explicit_synthetic_io_peer_exports_no_cpu_memory_or_flash(self):
+        model = _resolved("origin300")
+        model["components"].extend([
+            {"id": "io-enclosure", "name": "Test I/O enclosure", "kind": "module"},
+            {"id": "io-bedrock", "name": "Test I/O-only Bedrock",
+             "kind": "bus-controller", "hardware_kind": "bedrock",
+             "parent": "io-enclosure", "identity": {"hardware_revision": 1},
+             "datasheet_contracts": ["docs/datasheets/bedrock-network-interface.md"]},
+        ])
+        model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
+            "component": "io-bedrock", "kind": "bedrock", "serial": "0x123456",
+        })
+        entry = compile_model(model)
+        self.assertEqual(len(entry["nodes"]), 1)
+        self.assertEqual(entry["io_peers"], [{
+            "id": "io-bedrock", "module_index": 1, "slot": 0,
+            "asic_kind": "BEDROCK", "identity": {
+                "ni_revision": 1, "widget_revision": 1, "serial": 0x123456,
+                "i2c_controller": False, "system_controller": False,
+            },
+        }])
+        self.assertEqual(entry["modules"][1]["nodes"], [])
+        self.assertEqual(entry["modules"][1]["io_peers"], [0])
+        catalogue = json.loads(render_catalogue_json([model]))
+        peer = catalogue["topologies"][0]["io-peers"][0]
+        self.assertEqual(set(peer), {"id", "module-index", "slot", "asic-kind", "identity"})
+        self.assertEqual(peer["asic-kind"], "bedrock")
+        self.assertEqual(catalogue["topologies"][0]["modules"][1]["io-peers"], [0])
+        for missing in ("identity", "datasheet_contracts"):
+            with self.subTest(missing=missing):
+                changed = copy.deepcopy(model)
+                del changed["components"][-1][missing]
+                with self.assertRaises(CompileError):
+                    compile_model(changed)
+        changed = copy.deepcopy(model)
+        changed["machine"]["emulation"]["synthetic_identities"] = [
+            item for item in changed["machine"]["emulation"]["synthetic_identities"]
+            if item["component"] != "io-bedrock"]
+        with self.assertRaisesRegex(CompileError, "explicit synthetic identity"):
+            compile_model(changed)
+        for kind in ("cpu", "memory", "flash"):
+            with self.subTest(kind=kind):
+                changed = copy.deepcopy(model)
+                changed["components"].append({
+                    "id": "forbidden", "kind": kind, "parent": "io-enclosure",
+                })
+                with self.assertRaisesRegex(CompileError, "cannot own " + kind):
+                    compile_model(changed)
+
+    def _synthetic_io_peer_model(self, name="origin300"):
+        model = _resolved(name)
+        model["components"].extend([
+            {"id": "io-enclosure", "name": "Synthetic I/O module", "kind": "module"},
+            {"id": "io-bedrock", "name": "Synthetic I/O-only Bedrock",
+             "kind": "bus-controller", "hardware_kind": "bedrock",
+             "parent": "io-enclosure", "identity": {"hardware_revision": 1},
+             "datasheet_contracts": ["docs/datasheets/bedrock-network-interface.md"]},
+        ])
+        model["machine"]["emulation"].setdefault("synthetic_identities", []).append({
+            "component": "io-bedrock", "kind": "bedrock", "serial": "0x123456",
+        })
+        return model
+
+    def test_io_peer_l1_belongs_to_its_module(self):
+        model = self._synthetic_io_peer_model()
+        model["components"].append({
+            "id": "io-l1", "name": "Synthetic expansion controller",
+            "kind": "system-controller", "parent": "io-enclosure",
+            "system_controller": {"kind": "l1"},
+        })
+        entry = compile_model(model)
+        module = entry["modules"][1]
+        controller = entry["controllers"][module["controller_index"]]
+        self.assertEqual(module["nodes"], [])
+        self.assertEqual(module["io_peers"], [0])
+        self.assertEqual((controller["id"], controller["kind"], controller["module_index"]),
+                         ("io-l1", "L1", 1))
+        catalogue = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(catalogue["controllers"][module["controller_index"]], {
+            "id": "io-l1", "kind": "l1", "module-index": 1,
+        })
+        self.assertNotIn("node-number", catalogue["io-peers"][0])
+        self.assertNotIn("nasid", catalogue["io-peers"][0])
+
+    def test_io_peer_rejects_authored_compute_population_rows(self):
+        model = self._synthetic_io_peer_model()
+        model["composition"].setdefault("topology", {})["node_populations"] = [
+            {"nodes": [0]},
+        ]
+        with self.assertRaisesRegex(CompileError, "node-population rows with I/O peers"):
+            compile_model(model)
+
+    def test_io_peer_rejects_sn0_generation(self):
+        model = self._synthetic_io_peer_model("origin200")
+        with self.assertRaisesRegex(CompileError, "I/O-only Bedrock peers require generation SN1"):
+            compile_model(model)
+
+    def test_pci_expansion_reference_stays_out_of_runtime_compilation(self):
+        model = _resolved("origin300-pci-expansion-module")
+        components = {item["id"]: item for item in model["components"]}
+        peer = components["expansion-bedrock"]
+        self.assertEqual((peer["kind"], peer["hardware_kind"], peer["parent"]),
+                         ("bus-controller", "bedrock", "expansion-bic"))
+        self.assertEqual(components["expansion-bic"]["parent"], "expansion-enclosure")
+        self.assertNotIn("identity", peer)
+        self.assertEqual(sum(item["kind"] == "node-asic" for item in components.values()), 1)
+        self.assertFalse(any(item["kind"] in {"cpu", "memory", "flash"}
+                             for cid, item in components.items() if cid.startswith("expansion-")))
+        with self.assertRaisesRegex(CompileError, "model_role 'reference'"):
+            compile_model(model)
+
     def test_node_free_module_keeps_the_origin300_node_index(self):
         model = _resolved("origin300")
         model["components"].append({

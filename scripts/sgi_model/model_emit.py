@@ -133,6 +133,14 @@ def _node(raw: dict) -> dict:
     return node
 
 
+def _io_peer(raw: dict) -> dict:
+    return {
+        "id": raw["id"], "module-index": raw["module_index"], "slot": raw["slot"],
+        "asic-kind": _enum(raw["asic_kind"]), "identity": _identity(raw["identity"]),
+    }
+
+
+
 # A Router's port count is fixed by the chip (six ports on every fitted
 # Router this catalogue names) and unread by the builder already; dropped.
 def _router(raw: dict) -> dict:
@@ -317,7 +325,7 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
     the same structural rule this module's own default-topology lookup
     used to apply at compile time.
     """
-    return {
+    result = {
         "name": topology["name"],
         "product": machine_name,
         "generation": _enum(topology["generation"]),
@@ -338,6 +346,9 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
                              for row in topology["node_populations"]],
     }
 
+    if topology.get("io_peers"):
+        result["io-peers"] = [_io_peer(peer) for peer in topology["io_peers"]]
+    return result
 
 def _node_population(raw: dict) -> dict:
     """One node-population row. compile_model represents each accepted

@@ -1,0 +1,38 @@
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-pci-expansion-module
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    provenance: vendor-document
+    sources: ["007-4499-002 printed pages 12 and 38 to 40"]
+  population:
+    nodes: 1
+    cpus_per_node: [4]
+    fitted_memory:
+      status: unknown
+      reason: The guide does not specify the compute module's fitted memory for this configuration.
+      provenance: derived
+      sources: ["007-4499-002 printed page 12"]
+    provenance: vendor-document
+    sources: ["007-4365-002 printed pages 10 to 12"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu2, cpu1, cpu3]
+  data:
+    machine:
+      name: Origin 300 with PCI expansion module
+      model_role: reference
+      notes: >-
+        This reference graph selects a supported four-processor Origin 300
+        compute module to show its physical CPU slots. The PCI expansion guide
+        does not state the fitted CPU count of the compute module it depicts.
+        The compute module's LINK/NI connects directly to the PCI expansion
+        module's Bedrock interface card. The I/O-only Bedrock connects to
+        XBridge U0, then U1 and U2, supplying six PCI buses and twelve slots.
+        This graph records physical components only. BIC identity, NI routing,
+        XBridge forwarding, PCI enumeration, L1 behavior and PROM discovery
+        remain unresolved. It is absent from QEMU offerings.
+    evidence_policy: strict
