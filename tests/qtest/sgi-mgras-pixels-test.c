@@ -2819,6 +2819,29 @@ static void test_gl_eviction_moves_the_context(void)
 }
 
 /*
+ * A context read out to the buffer at host address 0 (node 0, frame 0)
+ * is still tracked as saved: the write-back from the same buffer moves
+ * it, as in the test above, and b does not keep its own state.
+ */
+static void test_gl_eviction_buffer_at_host_zero(void)
+{
+    mgras_reset();
+    gl_eviction_contexts(qts);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_eram_map_from(qts, 0, 0);
+    gl_eram_read(qts, GL_EVICT_FROM);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_eram_write(qts, GL_EVICT_TO);
+    gl_enter_slot(qts, GL_EVICT_TO);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0xff0000);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A read kick that any header but 0xfc08 follows is not a read-out: the
  * later 0xfc08 saves nothing, the write-back finds no context saved at
  * its host address, and b keeps its own state.
@@ -3556,6 +3579,8 @@ int main(int argc, char **argv)
                    test_gl_eviction_moves_the_context);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-needs-the-read-token",
                    test_gl_eviction_needs_the_read_token);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-buffer-at-host-zero",
+                   test_gl_eviction_buffer_at_host_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
                    test_gl_eviction_chunks_need_not_be_adjacent);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-oversized-row",

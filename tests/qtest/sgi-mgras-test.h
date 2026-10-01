@@ -2452,14 +2452,18 @@ static inline void gl_polygon_context_check(QTestState *s)
 #define GL_ERAM_READ_KICK     0xbd
 #define GL_ERAM_WRITE_KICK    0xa5
 
-/* The page list's entries name node nasid's frames (entry bits 27:20). */
-static inline void gl_eram_map_node(QTestState *qts, unsigned int nasid)
+/*
+ * The page list's entries name node nasid's frames (entry bits 27:20),
+ * from frame first.
+ */
+static inline void gl_eram_map_from(QTestState *qts, unsigned int nasid,
+                                    uint32_t first)
 {
     static const uint8_t header[24] = { 0 };
     uint8_t list[8 * 8] = { 0 };
 
     for (int i = 0; i < 8; i++) {
-        stq_be_p(list + 8 * i, ((uint64_t)nasid << 20) | (7 + i));
+        stq_be_p(list + 8 * i, ((uint64_t)nasid << 20) | (first + i));
     }
     qtest_memwrite(qts, GL_EVICT_LIST, header, sizeof(header));
     qtest_memwrite(qts, GL_EVICT_LIST + 0x18, list, sizeof(list));
@@ -2469,6 +2473,11 @@ static inline void gl_eram_map_node(QTestState *qts, unsigned int nasid)
     qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483204 << 32) | 8);
     qtest_writeq(qts, MGRAS_REG(0x130400),
                  ((uint64_t)0x00484d04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+}
+
+static inline void gl_eram_map_node(QTestState *qts, unsigned int nasid)
+{
+    gl_eram_map_from(qts, nasid, 7);
 }
 
 static inline void gl_eram_map(QTestState *qts)
