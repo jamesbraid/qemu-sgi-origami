@@ -409,7 +409,7 @@ static char *create_nmi_control_prom(void)
     return path;
 }
 
-static char *create_config0_reset_prom(void)
+static char *create_config0_reset_prom(uint32_t write_value)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
@@ -422,13 +422,14 @@ static char *create_config0_reset_prom(void)
     }
 
     stl_be_p(image + 0x400, 0x40108000); /* mfc0 s0, Config0 */
-    stl_be_p(image + 0x404, 0x34080002); /* ori t0, zero, 2 */
-    stl_be_p(image + 0x408, 0x40888000); /* mtc0 t0, Config0 */
-    stl_be_p(image + 0x40c, 0x000000c0); /* ehb */
-    stl_be_p(image + 0x410, 0x40118000); /* mfc0 s1, Config0 */
-    stl_be_p(image + 0x414, 0x3412c0f0); /* ori s2, zero, ready */
-    stl_be_p(image + 0x418, 0x1000ffff); /* beq zero, zero, self */
-    stl_be_p(image + 0x41c, 0x00000000); /* nop */
+    stl_be_p(image + 0x404, 0x3c080000 | (write_value >> 16));
+    stl_be_p(image + 0x408, 0x35080000 | (write_value & 0xffff));
+    stl_be_p(image + 0x40c, 0x40888000); /* mtc0 t0, Config0 */
+    stl_be_p(image + 0x410, 0x000000c0); /* ehb */
+    stl_be_p(image + 0x414, 0x40118000); /* mfc0 s1, Config0 */
+    stl_be_p(image + 0x418, 0x3412c0f0); /* ori s2, zero, ready */
+    stl_be_p(image + 0x41c, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x420, 0x00000000); /* nop */
 
     fd = g_file_open_tmp("sn1-config0-reset-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
@@ -3633,7 +3634,7 @@ static void test_config0_cold_reset(const void *data)
         return;
     }
 
-    path = create_config0_reset_prom();
+    path = create_config0_reset_prom(2);
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
@@ -3668,6 +3669,45 @@ static void test_config0_cold_reset(const void *data)
                         CONFIG0_RESET_READBACK);
         g_assert_cmphex(cpu_gpr(qts, cpu, "s1"), ==,
                         CONFIG0_MUTATED_READBACK);
+    }
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_fuel_config0_cold_reset(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    /* Complement all preserved bits, including those initially zero. */
+    path = create_config0_reset_prom((~CONFIG0_RESET_READBACK & ~7u) | 2);
+    quoted = g_shell_quote(path);
+    qts = qtest_initf(
+        "-M fuel,topology=fuel-m48t35-compatible,"
+        "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=2 "
+        "-cpu R14000 -smp 1 -m 512M -bios %s "
+        "-accel tcg,thread=multi -no-shutdown -S", quoted);
+
+    for (unsigned int pass = 0; pass < 2; pass++) {
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        wait_for_cpu_gpr(qts, 0, "s2", CONFIG0_READY_MARKER);
+        stop_vm(qts);
+        g_assert_cmphex(cpu_gpr(qts, 0, "s0"), ==, CONFIG0_RESET_READBACK);
+        g_assert_cmphex(cpu_gpr(qts, 0, "s1"), ==, CONFIG0_MUTATED_READBACK);
+        if (pass == 0) {
+            qtest_system_reset(qts);
+            g_assert_cmphex(cpu_gpr(qts, 0, "s0"), ==, 0);
+            g_assert_cmphex(cpu_gpr(qts, 0, "s1"), ==, 0);
+            g_assert_cmphex(cpu_gpr(qts, 0, "s2"), ==, 0);
+        }
     }
 
     qtest_quit(qts);
@@ -4288,6 +4328,8 @@ int main(int argc, char **argv)
                         test_cpu_c_enable_controls_bus_eligibility);
     qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
                         test_config0_cold_reset);
+    qtest_add_data_func("sn1/address-map/fuel-config0-cold-reset", NULL,
+                        test_fuel_config0_cold_reset);
     qtest_add_data_func("sn1/address-map/cpu-c-executes-across-enable-fall",
                         NULL, test_cpu_c_executes_across_enable_falling_edge);
     qtest_add_data_func("sn1/address-map/nmi-write-a-is-inert", &nmi_a,
