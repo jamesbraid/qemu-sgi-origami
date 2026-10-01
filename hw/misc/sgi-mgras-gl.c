@@ -1034,10 +1034,15 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * context in were not all traced to rule one out; a new slotless context
  * therefore keeps whatever entry 0 holds (approximated).
  *
+ * Both bits are required, not bit 31 alone: no captured slotted image
+ * has bit 31 without bit 30, so this is the model's choice of the
+ * narrower rule.
+ *
  * The discriminating tests are gl-new-context-starts-at-a-header,
  * gl-new-context-starts-in-the-initial-state,
- * gl-default-context-keeps-its-packet and
- * gl-new-context-without-a-slot-keeps-the-default.
+ * gl-bit-31-alone-keeps-the-packet,
+ * gl-new-context-without-a-slot-keeps-the-default and
+ * gl-default-context-keeps-its-packet.
  */
 #define MGRAS_GL_IMAGE_STATUS    1
 #define MGRAS_GL_IMAGE_NEW       0xc0000000u
