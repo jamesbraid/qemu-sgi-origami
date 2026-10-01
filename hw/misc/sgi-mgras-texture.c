@@ -79,13 +79,11 @@
  *   context's base when TXSIZE's base size is that level's, the level's
  *   layout and depth are TEXMODE1 bits 4:3 and TEXMODE2 bits 3:2, the
  *   environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
- *   modulate, decal or blend, and nothing in TEXMODE2
- *   asks for mipmapped filtering, detail, a volume or a
- *   one-dimensional texture: nearest or linear sampling by bits 8 and 7
- *   with the axes' wrap
- *   (mgras_tex_wrap), through
- *   the shared rasterizer's texture sampling. Anything else draws
- *   untextured, logged.
+ *   modulate, decal or blend, and nothing in TEXMODE2 asks for detail, a
+ *   volume, a one-dimensional texture or the multi-buffer read: sampling
+ *   by bits 5 to 8 and 19 (mgras_tex_pyramid), with the axes' wrap
+ *   (mgras_tex_wrap), through the shared rasterizer's texture sampling.
+ *   Anything else draws untextured, logged.
  *
  * - Class. A one-component level is stored once; TEXMODE1 11:9 of the
  *   draw says whether it is alpha (1), luminance (2) or intensity (3),
@@ -94,11 +92,25 @@
  *   every code. Established as words; the texel to fragment arithmetic
  *   is the shared rasterizer's, OpenGL 1.2.1, approximated.
  *
+ * Not implemented, and logged with the draw untextured: the multi-buffer
+ * read (TEXMODE2 bit 4 and TL_MODE bit 8), bordered textures (the
+ * register that carries a border width is not identified, so a bordered
+ * level draws as an unbordered one), detail, the texture colour table,
+ * one-dimensional and volume textures, texture-select groups and
+ * GL_ABGR_EXT loads.
+ *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
  * gl-texture-rgba4-truncates, gl-texture-unsupported-draws-untextured,
- * gl-texture-textureless-board-ignores, gl-texture-migration and the
- * replay fixture gl-texture-rgba4-quad.
+ * gl-texture-textureless-board-ignores, gl-texture-migration, the replay
+ * fixture gl-texture-rgba4-quad, and for the formats, environments, wraps
+ * and filters gl-texture-class-intensity-vs-luminance,
+ * gl-texture-class-alpha, gl-texture-env-blend-constant,
+ * gl-texture-replace-is-modulate, gl-texture-env-decal-rgba,
+ * gl-texture-clamp-border-nearest, gl-texture-wrap-mixed-axes,
+ * gl-texture-border-per-class, gl-texture-linear-midpoint,
+ * gl-texture-linear-edge-wrap, gl-texture-depth12-halfword,
+ * gl-texture-mip-level-select and gl-texture-trilinear-blend.
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
@@ -151,17 +163,24 @@
 #define MGRAS_TEXMODE1_SELECT    0x00000180u
 #define MGRAS_TEXMODE1_TABLE     0x0000f000u
 /*
- * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 5 and 6
- * mipmap filtering, 9 detail, 10 unknown, 19 mipmap control, 23 a volume
- * and 24 a one-dimensional texture. Bits 7 and 8 are the magnification
- * and minification filters and 11 to 14 the wrap bits, below.
+ * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 9
+ * detail, 10 unknown, 23 a volume and 24 a one-dimensional texture. Bits
+ * 5 and 19 together say a mipmap filter over more than one level, 6 and 8
+ * the blend between and within levels, 7 the magnification filter and 11
+ * to 14 the wrap bits, below. Only one of 5 and 19 is not drawn.
  */
+#define MGRAS_TEXMODE2_UNDRAWN   0x01800610u
+#define MGRAS_TEXMODE2_MIP       0x00080020u
+#define MGRAS_TEXMODE2_MIP_BETWEEN 0x00000040u
 #define MGRAS_TEXMODE2_MAG_LINEAR 0x00000080u
 #define MGRAS_TEXMODE2_MIN_LINEAR 0x00000100u
 #define MGRAS_TEXMODE2_WRAP_S    0x00000800u
 #define MGRAS_TEXMODE2_WRAP_T    0x00001000u
 #define MGRAS_TEXMODE2_CLAMP     0x00004000u
-#define MGRAS_TEXMODE2_UNDRAWN   0x01880670u
+
+/* TXLOD: bits 25:16 are 64 times the minimum LOD, 3:0 the last level. */
+#define MGRAS_TXLOD_MIN(v)       (((v) >> 16) & 0x3ff)
+#define MGRAS_TXLOD_LAST(v)      ((v) & 0xf)
 
 /* The pixel transfer's routine word in 0x8d20's payload, and its value. */
 #define MGRAS_TEX_ROUTINE_WORD   6
@@ -807,23 +826,80 @@ static bool mgras_tex_environment(SGIMgrasState *s, uint32_t cls)
     return true;
 }
 
+static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t level)
+{
+    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
+        if (t->levels[i].used && t->levels[i].base == t->base &&
+            t->levels[i].level == level) {
+            return &t->levels[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Mipmapped draws. The client sends bits 5 and 19 when a mipmap filter
+ * draws more than one level; bit 8 is then the blend within a level and
+ * bit 6 between levels, the four filters of the datasheet's table.
+ * TXLOD's last level (3:0) is the highest level drawn and its bits 25:16
+ * the minimum LOD in 64ths, clamped to the last level; both are the
+ * client's own arithmetic and established as words. A non-mipmap draw
+ * uses level 0 alone. The sampler derives lambda from the iterators as
+ * the board does, takes the nearest level d = ceil(lambda + 0.5) - 1
+ * floored at the base level, and for the blend between levels uses
+ * d1 = d2 = last at or past the last level, so no level beyond it is
+ * read: all OpenGL 1.2.1 3.8.5 (equations 3.21 to 3.23), approximated
+ * since the board's lambda, rounding and blend weights are unknown.
+ * SGIS_texture_lod, which the TXLOD bits follow, was not read. A level
+ * the draw selects but that was never loaded draws untextured, logged.
+ * Levels whose kept format differs from level 0's are left out, which
+ * leaves a hole.
+ */
+static void mgras_tex_pyramid(SGIMgrasTexture *t, const SGIMgrasTexLevel *l0,
+                              uint32_t format, bool mip)
+{
+    uint32_t n = 0, last = mip ? MGRAS_TXLOD_LAST(t->txlod) : 0;
+    double min_lod = mip ? MIN(MGRAS_TXLOD_MIN(t->txlod) / 64.0, last) : 0;
+
+    for (uint32_t level = 0; level < SGI_MGRAS_TEX_LEVELS; level++) {
+        SGIMgrasTexLevel *e = mgras_tex_find(t, level);
+
+        if (!e || e->mode != l0->mode) {
+            continue;
+        }
+        t->sampler_levels[n++] = (SGIGLTexLevel) {
+            .level = level,
+            .width = 1u << e->log2w,
+            .height = 1u << e->log2h,
+            .base_format = format,
+            .internal_format = format,
+            .read_texel = mgras_tex_read_texel,
+            .opaque = e,
+        };
+    }
+    t->pyramid = (SGIGLTexPyramid) {
+        .levels = t->sampler_levels,
+        .count = n,
+        .max_level = last,
+        .min_lod = min_lod,
+        .max_lod = last,
+    };
+}
+
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image)
 {
     SGIMgrasTexture *t = mgras_tex(s);
-    SGIMgrasTexLevel *l = NULL;
+    SGIMgrasTexLevel *l;
     uint32_t size, format, cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
+    uint32_t mip = t->texmode2 & MGRAS_TEXMODE2_MIP;
+    uint32_t min_filter;
 
     if (!mgras_tex_present(s) ||
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
         return NULL;
     }
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        if (t->levels[i].used && t->levels[i].base == t->base &&
-            t->levels[i].level == 0) {
-            l = &t->levels[i];
-        }
-    }
+    l = mgras_tex_find(t, 0);
     if (!l) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: textured draw with no level 0 "
                       "loaded under base %u\n", t->base);
@@ -842,6 +918,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         MGRAS_TEXMODE1_LAYOUT(t->texmode1) != MGRAS_TEX_LAYOUT(l->mode) ||
         !mgras_tex_format(MGRAS_TEX_LAYOUT(l->mode), cls, &format) ||
         (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
+        (mip && mip != MGRAS_TEXMODE2_MIP) ||
         ((t->texmode2 >> 2) & 3) != MGRAS_TEX_DEPTH(l->mode) ||
         t->t_offset) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture state TEXMODE1 0x%x "
@@ -851,19 +928,18 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                       t->t_offset, 1u << l->log2w, 1u << l->log2h, l->mode);
         return NULL;
     }
-    t->sampler_levels[0] = (SGIGLTexLevel) {
-        .level = 0,
-        .width = 1u << l->log2w,
-        .height = 1u << l->log2h,
-        .base_format = format,
-        .internal_format = format,
-        .read_texel = mgras_tex_read_texel,
-        .opaque = l,
-    };
-    t->pyramid = (SGIGLTexPyramid) {
-        .levels = t->sampler_levels,
-        .count = 1,
-    };
+    mgras_tex_pyramid(t, l, format, mip);
+    if (mip) {
+        min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
+            (t->texmode2 & MGRAS_TEXMODE2_MIP_BETWEEN ?
+             SGI_GL_LINEAR_MIPMAP_LINEAR : SGI_GL_LINEAR_MIPMAP_NEAREST) :
+            (t->texmode2 & MGRAS_TEXMODE2_MIP_BETWEEN ?
+             SGI_GL_NEAREST_MIPMAP_LINEAR : SGI_GL_NEAREST_MIPMAP_NEAREST);
+    } else {
+        /* Bit 6 without bits 5 and 19 is a one-level draw or a 3-D one. */
+        min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
+                     SGI_GL_LINEAR : SGI_GL_NEAREST;
+    }
     *image = (SGIGLTexImage) {
         /*
          * Bit 8 is linear inside a level and 7 linear magnification:
@@ -871,8 +947,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
          * OpenGL 1.2.1 3.8.5's, approximated since the board's blend
          * precision is unknown.
          */
-        .min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
-                      SGI_GL_LINEAR : SGI_GL_NEAREST,
+        .min_filter = min_filter,
         .mag_filter = t->texmode2 & MGRAS_TEXMODE2_MAG_LINEAR ?
                       SGI_GL_LINEAR : SGI_GL_NEAREST,
         .wrap_s = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_S),
