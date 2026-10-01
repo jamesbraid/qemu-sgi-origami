@@ -1894,8 +1894,9 @@ static void test_expansion_builder(const void *data)
     g_assert_no_error(error);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
-    qts = qtest_initf("-M sn-builder-expansion-test,activate=true "
-                      "-cpu R14000 -bios %s -nodefaults -display none", path);
+    qts = qtest_initf("-M %s -cpu R14000 -bios %s "
+                      "-nodefaults -display none", data ? (const char *)data :
+                      "sn-builder-expansion-test,activate=true", path);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly",
                                  "placement"), ==, 1);
     g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly/bic/lb",
@@ -1919,7 +1920,7 @@ static void test_expansion_builder(const void *data)
                         ==, assigned);
         g_assert_cmphex(qtest_readq(qts, UINT64_C(0x30034000000) +
                                    (UINT64_C(7) << 33)),
-                        ==, UINT64_C(0x123400000000c000));
+                        ==, data ? 0xc000 : UINT64_C(0x123400000000c000));
     }
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':'/machine',"
@@ -2073,6 +2074,9 @@ int main(int argc, char **argv)
         NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
     qtest_add_data_func("sn/builder/expansion/construction",
                         NULL, test_expansion_builder);
+    qtest_add_data_func("sn/builder/expansion/experimental-offering",
+                        "origin300,topology=origin300-pci-expansion-experiment",
+                        test_expansion_builder);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",
                         NULL, test_expansion_controller_inputs);
     qtest_add_data_func("sn/builder/expansion/controller-refusals",
