@@ -1366,6 +1366,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->pio_read_next = s->pio_read_low = 0;
     s->public_glyph_row = 0;
     s->public_glyph_armed = s->public_glyph_wide_valid = false;
+    s->gl_re_count_word = s->gl_re_count_tokens = 0;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1833,7 +1834,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 29, .minimum_version_id = 29,
+    .name = TYPE_SGI_MGRAS, .version_id = 30, .minimum_version_id = 30,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2014,6 +2015,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(pio_read_h, SGIMgrasState, 27),
         VMSTATE_UINT32_V(pio_read_next, SGIMgrasState, 27),
         VMSTATE_UINT32_V(pio_read_low, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(gl_re_count_word, SGIMgrasState, 30),
+        VMSTATE_UINT32_V(gl_re_count_tokens, SGIMgrasState, 30),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -2290,6 +2293,12 @@ static void mgras_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-value",
                                    &s->test_last_interrupt_value,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-gl-re-count-word",
+                                   &s->gl_re_count_word,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-gl-re-count-tokens",
+                                   &s->gl_re_count_tokens,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-retraces", &s->retraces,
                                    OBJ_PROP_FLAG_READ);

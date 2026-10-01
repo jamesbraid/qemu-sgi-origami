@@ -638,6 +638,12 @@ struct SGIMgrasState {
     uint32_t pio_read_h;
     uint32_t pio_read_next;
     uint32_t pio_read_low;
+    /*
+     * The RE-count token a context setup sends (0x8c04): its last payload
+     * and how many arrived since reset. Recorded, not acted on.
+     */
+    uint32_t gl_re_count_word;
+    uint32_t gl_re_count_tokens;
     /* Parser state preserves FIFO ordering across separate stores. */
     uint32_t cmd_token_class;
     uint32_t cmd_token_reg;

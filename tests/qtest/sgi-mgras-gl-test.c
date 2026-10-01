@@ -67,6 +67,7 @@ static void test_hq_query_flag_only_from_query(void)
 #define GL_MULT_MATRIX_HDR    0x00002d40
 #define GL_FRUSTUM_HDR        0x00003418
 #define GL_SWAP               0x00003700
+#define GL_RE_COUNT_HDR       0x00008c04
 #define GL_BANKS_HDR          0x00009808
 #define GL_DEPTH_EQUAL        2
 
@@ -1326,6 +1327,40 @@ static void test_gl_shallow_swap_still_shows_bank_one_ssi(void)
 }
 
 /*
+ * A context setup sends 0x8c04 after the opener with the RE count shifted
+ * right once: 0 on SI, 1 on SSI. The board consumes it as one word, records
+ * it, and the next word is a header again.
+ */
+static void gl_context_re_count_token(const char *args, uint32_t count)
+{
+    QTestState *s = qtest_init(args);
+
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-gl-re-count-tokens"), ==, 0);
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_one(s, GL_RE_COUNT_HDR, count);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-gl-re-count-tokens"), ==, 1);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-gl-re-count-word"), ==,
+                    count);
+    g_assert_cmphex(qtest_readl(s, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==, 0);
+    qtest_writel(s, REG_CONTEXT_COMMAND, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(s, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_gl_context_re_count_token_si(void)
+{
+    gl_context_re_count_token(MACHINE_ARGS, 0);
+}
+
+static void test_gl_context_re_count_token_ssi(void)
+{
+    gl_context_re_count_token(MACHINE_ARGS MGRAS_TWO_RE_ARGS, 1);
+}
+
+/*
  * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
  * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
  * 0x351, the raster colour's red. In a
@@ -1875,6 +1910,10 @@ int main(int argc, char **argv)
     qts = qtest_init(MACHINE_ARGS);
 
 
+    qtest_add_func("sn0/origin2000/mgras/gl-context-re-count-token/si",
+                   test_gl_context_re_count_token_si);
+    qtest_add_func("sn0/origin2000/mgras/gl-context-re-count-token/ssi",
+                   test_gl_context_re_count_token_ssi);
     qtest_add_func("sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
                    test_hq_query_sets_flag_after_arguments);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-matrices",
