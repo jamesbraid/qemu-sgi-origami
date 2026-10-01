@@ -65,6 +65,9 @@ slow_qtests = {
   # processes because a destination cannot share its source's. Its
   # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s.
   'sn0-migration-test': 180,
+  # The 59 RTC storage and register cases measured 49.02s alone.
+  # Three times that leaves room for the repeated QEMU launches under load.
+  'sn0-ds1685-test': 150,
   # Tigon reached 60.10s in the same loaded run without a failed assertion.
   'sn0-tigon-test': 120,
   # Bridge was the fourth most killed test in CI over Aug 30 - Sep 3, with
