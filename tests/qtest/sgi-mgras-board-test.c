@@ -1251,12 +1251,12 @@ static const MgrasBoardExpect mgras_board_expect[] = {
     { "si-t",  false, 1, 1, 4, "SI with texture option",
       0x45, 0x0c, 2, 2, 2, 0, 0, 3, 0 },
     { "ssi",   true,  2, 2, 0, "SSI", 0x46, 0x0f, 2, 2, 2, 0, 0, 3, 0 },
-    { "mxi",   true,  2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
+    { "mxi",   false, 2, 2, 4, "MXI", 0x46, 0x00, 2, 2, 2, 0, 0, 3, 0 },
     { "esi",   true,  1, 1, 0, "ESI", 0x51, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
     { "esi-t", false, 1, 1, 4, "ESI with texture option",
       0x51, 0x0c, 2, 3, 2, 4, 0, 3, 0 },
     { "essi",  true,  2, 2, 0, "ESSI", 0x52, 0x0f, 2, 3, 2, 4, 0, 3, 0 },
-    { "emxi",  true,  2, 2, 4, "EMXI", 0x52, 0x00, 2, 3, 2, 4, 0, 3, 0 },
+    { "emxi",  false, 2, 2, 4, "EMXI", 0x52, 0x00, 2, 3, 2, 4, 0, 3, 0 },
 };
 
 #define REG_GE_STATUS          MGRAS_REG(0x028000)
@@ -1286,10 +1286,10 @@ static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
     *tram1 = ((version0 >> 2) & 3) == 3 ? 0 : 4;
     /*
      * With two GEs the kernel logs a TRAM mismatch unless both paths hold
-     * the same count, so a board whose paths differ is no board.
+     * the same count; name that case so the caller's comparison fails.
      */
-    if (*ge == 2) {
-        g_assert_cmpuint(*tram0, ==, *tram1);
+    if (*ge == 2 && *tram0 != *tram1) {
+        return "TRAM mismatch";
     }
     if (*ge == 1 && *re == 1) {
         if (*tram0) {

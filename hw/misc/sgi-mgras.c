@@ -144,7 +144,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
-        .implemented = true,
     }, {
         /*
          * Approximated beyond identity: the model renders an E-series
@@ -187,7 +186,6 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
-        .implemented = true,
     },
 };
 
@@ -1502,8 +1500,9 @@ static void mgras_reset_exit(Object *obj, ResetType type)
  * RGBA level nearest-sampled and modulated, nothing more), so a board not
  * marked implemented is refused unless x-unimplemented-board asks for it
  * anyway; then it is presented with a LOG_UNIMP note naming what is
- * missing. MXI and EMXI are marked implemented: they have what SSI and
- * the texture model already have, and add no behaviour of their own.
+ * missing. MXI and EMXI stay refused with them: they need the same texture
+ * boards' paths, and their own save, restore and pixel-texture passes are
+ * not modelled.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
