@@ -6,6 +6,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sgi-migrate.h"
+#include "sgi-l1-test.h"
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -32,66 +33,22 @@ static QTestState *start(void)
 
 static uint16_t fcs(uint16_t v, uint8_t b)
 {
-    v ^= b;
-    for (unsigned i = 0; i < 8; i++) {
-        v = (v >> 1) ^ ((v & 1) ? 0x8408 : 0);
-    }
-    return v;
+    return sgi_l1_test_fcs(v, b);
 }
 
 static void put(QTestState *s, uint8_t b)
 {
-    if (b == 0x7e || b == 0x7d) {
-        qtest_writeq(s, BASE, 0x7d);
-        b ^= 0x20;
-    }
-    qtest_writeq(s, BASE, b);
+    sgi_l1_test_put(s, BASE, b);
 }
 
 static void send_frame(QTestState *s, const uint8_t *p, size_t n, bool corrupt)
 {
-    uint16_t crc = 0xffff;
-    qtest_writeq(s, BASE, 0x7e);
-    for (size_t i = 0; i < n; i++) {
-        crc = fcs(crc, p[i]);
-        put(s, p[i]);
-    }
-    crc = ~crc;
-    put(s, crc ^ corrupt);
-    put(s, crc >> 8);
-    qtest_writeq(s, BASE, 0x7e);
+    sgi_l1_test_send(s, BASE, p, n, corrupt);
 }
 
 static size_t receive(QTestState *s, uint8_t *p)
 {
-    size_t n = 0;
-    bool escape = false;
-    uint16_t crc = 0xffff;
-    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
-    g_assert_cmphex(qtest_readq(s, BASE), ==, 0x7e);
-    for (;;) {
-        uint8_t b;
-        g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
-        b = qtest_readq(s, BASE);
-        if (b == 0x7e) {
-            break;
-        }
-        if (b == 0x7d && !escape) {
-            escape = true;
-            continue;
-        }
-        if (escape) {
-            b ^= 0x20;
-            escape = false;
-        }
-        g_assert_cmpuint(n, <, 131);
-        p[n++] = b;
-        crc = fcs(crc, b);
-    }
-    g_assert_false(escape);
-    g_assert_cmpuint(n, >=, 3);
-    g_assert_cmphex(crc, ==, 0xf0b8);
-    return n - 2;
+    return sgi_l1_test_receive(s, BASE, p, 131);
 }
 
 static void test_uart(void)

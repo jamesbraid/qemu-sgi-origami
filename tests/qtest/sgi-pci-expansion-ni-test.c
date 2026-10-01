@@ -7,6 +7,7 @@
 #include <glib/gstdio.h>
 #include "system/memory.h"
 #include "sgi-migrate.h"
+#include "sgi-l1-test.h"
 
 #define FIXTURE "-M none -cpu R10000 -S " \
                 "-device sgi-pci-expansion-ni-fixture,id=ni"
@@ -783,9 +784,290 @@ static void test_intx_migration_mismatch(void)
     g_rmdir(dir);
 }
 
+#define MANAGEMENT UINT64_C(0x31002000)
+#define L1_UART(n) (UINT64_C(0x31000000) + (n) * 0x1000)
+
+static QTestState *management_start(const char *extra)
+{
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.management=on %s", extra);
+    QTestState *qts = start(options);
+
+    qtest_sysbus_mmio_map(qts, PATH, 5, L1_UART(0));
+    qtest_sysbus_mmio_map(qts, PATH, 6, L1_UART(1));
+    qtest_sysbus_mmio_map(qts, PATH, 7, MANAGEMENT);
+    return qts;
+}
+
+static void management_query(QTestState *qts, unsigned issuer,
+                             uint32_t address, uint8_t channel)
+{
+    uint8_t request[] = { channel, address >> 24, address >> 16,
+                          address >> 8, address, 0, 3, 0 };
+
+    sgi_l1_test_send(qts, L1_UART(issuer), request, sizeof(request), false);
+}
+
+static void management_identity(QTestState *qts, unsigned issuer,
+                                uint8_t channel, unsigned serving)
+{
+    uint8_t reply[131];
+
+    g_assert_cmpuint(sgi_l1_test_receive(qts, L1_UART(issuer), reply,
+                                        sizeof(reply)), ==, 16);
+    g_assert_cmphex(reply[0], ==, 0x20 | channel);
+    g_assert_cmphex(reply[5], ==, 2);
+    g_assert_cmphex(reply[10], ==, 0x41 + serving);
+    g_assert_cmphex(reply[15], ==, serving ? 0x25 : 0x34);
+
+}
+
+static void management_empty(QTestState *qts, unsigned issuer)
+{
+    g_assert_cmphex(qtest_readq(qts, L1_UART(issuer) + 0x28), ==, 0x60);
+}
+
+static uint32_t management_address(unsigned owner)
+{
+    return (1u << 18) | ((owner + 1) << 12) | 6;
+}
+
+static void management_refusal(QTestState *qts, unsigned issuer,
+                               uint8_t channel)
+{
+    uint8_t reply[131];
+
+    g_assert_cmpuint(sgi_l1_test_receive(qts, L1_UART(issuer), reply,
+                                        sizeof(reply)), ==, 9);
+    g_assert_cmphex(reply[0], ==, 0x20 | channel);
+    g_assert_cmphex((uint32_t)ldl_be_p(reply + 1), ==, UINT32_MAX);
+    g_assert_cmphex(ldl_be_p(reply + 5), ==, 8);
+}
+
+static void management_cable(QTestState *qts, bool down)
+{
+    if (down) {
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':'" PATH "/cable',"
+            "'property':'down','value':true}}");
+    } else {
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':'" PATH "/cable',"
+            "'property':'down','value':false}}");
+    }
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x680000) & 2, ==,
+                    down ? 0 : 2);
+}
+
+static void test_management_isolation(void)
+{
+    QTestState *qts = management_start("");
+
+    qtest_writel(qts, head(0, 0) + 0x2c, 0x12345);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, head(0, 0) + 0x2c), ==, 0x12345);
+    management_cable(qts, true);
+    qtest_writel(qts, head(0, 0) + 0x2c, 0xbad);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    management_query(qts, 0, 0x4ffff006, 19);
+    management_identity(qts, 0, 19, 1);
+    management_empty(qts, 1);
+    management_query(qts, 1, management_address(0), 7);
+    management_identity(qts, 1, 7, 0);
+    management_empty(qts, 0);
+    qtest_writeq(qts, MANAGEMENT, 0);
+    management_query(qts, 0, 0x4ffff006, 13);
+    management_refusal(qts, 0, 13);
+    management_query(qts, 1, management_address(0), 11);
+    management_refusal(qts, 1, 11);
+    qtest_writeq(qts, MANAGEMENT, 3);
+    management_query(qts, 0, management_address(1), 23);
+    management_identity(qts, 0, 23, 1);
+    qtest_readl(qts, head(0, 0) + 0x2c);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    management_cable(qts, false);
+    g_assert_cmphex(qtest_readl(qts, head(0, 0) + 0x2c), ==, 0x12345);
+    result(qts, 0, MEMTX_OK);
+    qtest_quit(qts);
+}
+
+static void test_management_reset(void)
+{
+    QTestState *qts = management_start("");
+
+    qtest_writeq(qts, MANAGEMENT, 0);
+    qtest_writeq(qts, MANAGEMENT + 8, 1);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT), ==, 0);
+    management_query(qts, 0, 0x4ffff006, 17);
+    management_refusal(qts, 0, 17);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT), ==, 3);
+    management_query(qts, 0, 0x4ffff006, 5);
+    management_identity(qts, 0, 5, 1);
+    qtest_quit(qts);
+}
+
+static void test_management_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-l1-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = management_start("");
+    QTestState *to = management_start("-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    management_query(from, 0, 0x4ffff006, 19);
+    management_query(from, 1, management_address(0), 7);
+    qtest_writeq(from, MANAGEMENT, 0);
+    management_cable(from, true);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    management_identity(to, 0, 19, 1);
+    management_identity(to, 1, 7, 0);
+    management_empty(to, 0);
+    management_empty(to, 1);
+    g_assert_cmphex(qtest_readq(to, MANAGEMENT), ==, 0);
+    g_assert_cmphex(qtest_readq(to, COMPUTE + 0x680000) & 2, ==, 0);
+    qtest_readl(to, head(0, 0) + 4);
+    result(to, 0, MEMTX_DECODE_ERROR);
+    management_query(to, 0, 0x4ffff006, 3);
+    management_refusal(to, 0, 3);
+    qtest_writeq(to, MANAGEMENT, 3);
+    management_query(to, 0, 0x4ffff006, 29);
+    management_identity(to, 0, 29, 1);
+    management_cable(to, false);
+    g_assert_cmphex(qtest_readl(to, head(0, 0) + 4), ==, 0x2d002049);
+    result(to, 0, MEMTX_OK);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
+static void management_mismatch(const char *extra)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-l1-mismatch-XXXXXX", &error);
+    g_autofree char *options = g_strdup_printf("-incoming defer %s", extra);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = management_start("");
+    QTestState *to = management_start(options);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_management_owner_mismatch(void)
+{
+    management_mismatch("-global sgi-pci-expansion-ni-fixture.identity1=103");
+}
+
+static void test_management_attachment_mismatch(void)
+{
+    management_mismatch(
+        "-global sgi-pci-expansion-ni-fixture.attached-issuer=1 "
+        "-global sgi-pci-expansion-ni-fixture.attached-owner=0");
+}
+
+static void test_management_records(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-l1-records-XXXXXX", &error);
+    g_autofree char *options = NULL;
+    char *paths[2];
+    uint8_t images[2][64] = { { 0 } };
+    uint8_t request[28] = { 23, 0x4f, 0xff, 0xf0, 6, 0, 6, 4 };
+    uint8_t reply[131];
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    for (unsigned i = 0; i < 2; i++) {
+        paths[i] = g_strdup_printf("%s/owner%u.bin", dir, i);
+        images[i][0] = 1;
+        images[i][1] = 2;
+        images[i][7] = 0xfd;
+        images[i][18] = 4;
+        images[i][20] = i + 1;
+        images[i][31] = -(4 + i + 1);
+        g_assert_true(g_file_set_contents(paths[i], (char *)images[i], 64,
+                                          &error));
+        g_assert_no_error(error);
+    }
+    options = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.record0=%s "
+        "-global sgi-pci-expansion-ni-fixture.record1=%s", paths[0], paths[1]);
+    qts = management_start(options);
+    /* Four typed integers: record 0, area 3, offset 0, length 16. */
+    for (unsigned i = 0; i < 4; i++) {
+        request[8 + i * 5] = 0;
+        stl_be_p(request + 9 + i * 5, i == 1 ? 3 : i == 3 ? 16 : 0);
+    }
+    for (unsigned issuer = 0; issuer < 2; issuer++) {
+        unsigned serving = 1 - issuer;
+
+        request[0] = issuer ? 11 : 23;
+        stl_be_p(request + 1, issuer ? management_address(0) : 0x4ffff006);
+        sgi_l1_test_send(qts, L1_UART(issuer), request, sizeof(request), false);
+        g_assert_cmpuint(sgi_l1_test_receive(qts, L1_UART(issuer), reply,
+                                            sizeof(reply)), ==, 28);
+        g_assert_cmphex(reply[0], ==, 0x20 | request[0]);
+        g_assert_cmpmem(reply + 12, 16, images[serving] + 16, 16);
+        management_empty(qts, serving);
+    }
+    qtest_quit(qts);
+    for (unsigned i = 0; i < 2; i++) {
+        unlink(paths[i]);
+        g_free(paths[i]);
+    }
+    g_rmdir(dir);
+}
+
+static void test_management_data(void)
+{
+    QTestState *qts = management_start("");
+
+    g_assert_cmphex(qtest_readl(qts, head(0, 0) + 4), ==, 0x2d002049);
+    result(qts, 0, MEMTX_OK);
+    management_query(qts, 0, 0x4ffff006, 19);
+    management_identity(qts, 0, 19, 1);
+    management_empty(qts, 1);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/management-isolation",
+                   test_management_isolation);
+    qtest_add_func("/sgi/pci-expansion-ni/management-reset",
+                   test_management_reset);
+    qtest_add_func("/sgi/pci-expansion-ni/management-records",
+                   test_management_records);
+    qtest_add_func("/sgi/pci-expansion-ni/management-migration",
+                   test_management_migration);
+    qtest_add_func("/sgi/pci-expansion-ni/management-owner-mismatch",
+                   test_management_owner_mismatch);
+    qtest_add_func("/sgi/pci-expansion-ni/management-attachment-mismatch",
+                   test_management_attachment_mismatch);
+    qtest_add_func("/sgi/pci-expansion-ni/management-data",
+                   test_management_data);
     qtest_add_func("/sgi/pci-expansion-ni/intx", test_intx);
     qtest_add_func("/sgi/pci-expansion-ni/intx-or", test_intx_or);
     qtest_add_func("/sgi/pci-expansion-ni/intx-masked", test_intx_masked);
