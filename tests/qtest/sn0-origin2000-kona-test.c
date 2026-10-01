@@ -75,7 +75,7 @@
  * size -- fine for every other case here, which shares one already-running
  * instance for plain register I/O, but too large to migrate twice (once
  * per instance) inside a single qtest's time budget. Pinned down the same
- * way sn0-origin2000-mgras-test.c's own MIGRATION_ARGS does, for the same
+ * way sgi-mgras-test.h's MIGRATION_ARGS does, for the same
  * machine type and the same reason.
  */
 #define MIGRATION_ARGS MACHINE_ARGS " -smp 8 -m 256M"
@@ -163,7 +163,7 @@ static uint32_t kona_mailbox_drain_one(QTestState *s, bool *more_pending)
 
 /*
  * Started once in main() and reset before each case, exactly as
- * sn0-origin2000-mgras-test.c's own si_reset() does: booting a machine
+ * the MGRAS qtests do: booting a machine
  * per case is the slowest way to get the same coverage.
  */
 static QTestState *qts;

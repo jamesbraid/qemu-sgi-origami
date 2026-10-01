@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # A host-to-screen DMA draw of a two-pixel row, translated from
-# sn0-origin2000-mgras-test.c's test_dma_image_transfer_paints_from_host_memory
+# sgi-mgras-pixels-test.c's test_dma_image_transfer_paints_from_host_memory
 # register sequence (widget 9, one page-list entry, an 8-byte source row).
 # The two 'dma' lines below are exactly the sgi_mgras_dma_chunk trace events
 # that same sequence produces under
