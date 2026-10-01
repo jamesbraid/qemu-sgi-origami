@@ -259,7 +259,8 @@ static void test_translations(void)
     qtest_quit(qts);
 }
 
-static void configure_irq(QTestState *qts, unsigned index, unsigned number)
+static void configure_irq_pin(QTestState *qts, unsigned index, unsigned pin,
+                              unsigned number)
 {
     unsigned nasid = (qtest_readq(qts, COMPUTE + 0x600000) >> 32) & 0xff;
     uint64_t address = (UINT64_C(1) << 47) |
@@ -270,9 +271,17 @@ static void configure_irq(QTestState *qts, unsigned index, unsigned number)
                  (qtest_readl(qts, h + 0x24) & ~15U) | widget[index]);
     qtest_writel(qts, h + 0x34, (0xa << 16) | (address >> 32));
     qtest_writel(qts, h + 0x3c, address);
-    qtest_writel(qts, h + 0x14c, ((address >> 38) << 8) | number);
-    qtest_writel(qts, h + 0x10c, 8);
-    qtest_writel(qts, h + 0x11c, 8);
+    qtest_writel(qts, h + 0x134 + pin * 8,
+                 ((address >> 38) << 8) | number);
+    qtest_writel(qts, h + 0x10c,
+                 qtest_readl(qts, h + 0x10c) | (1U << pin));
+    qtest_writel(qts, h + 0x11c,
+                 qtest_readl(qts, h + 0x11c) | (1U << pin));
+}
+
+static void configure_irq(QTestState *qts, unsigned index, unsigned number)
+{
+    configure_irq_pin(qts, index, 3, number);
 }
 
 static void pin(QTestState *qts, unsigned index, bool level)
@@ -474,9 +483,323 @@ static void test_migration(void)
     g_rmdir(dir);
 }
 
+static void configure_intx_card(QTestState *qts, unsigned index,
+                                unsigned device, unsigned pin)
+{
+    uint64_t h = head(0, index);
+    uint64_t config = h + 0x20000 + device * 0x1000 + pin * 0x100;
+
+    qtest_writel(qts, h + 0x24,
+                 (qtest_readl(qts, h + 0x24) & ~15U) | widget[index]);
+    qtest_writel(qts, config + 0x10,
+                 0x01000000 + device * 0x200000 + pin * 0x1000);
+    qtest_writel(qts, config + 4, 6);
+    qtest_writel(qts, h + 0x204 + device * 8,
+                 0x81000 | (0x10 + device * 2));
+}
+
+static uint64_t intx_card(unsigned index, unsigned device, unsigned pin)
+{
+    static const unsigned window[] = { 0, 0x400000, 0x600000, 0x700000 };
+
+    return head(0, index) + window[device] + pin * 0x1000;
+}
+
+static void card_pin(QTestState *qts, unsigned index, unsigned device,
+                     unsigned pin, bool level)
+{
+    uint64_t bar = intx_card(index, device, pin);
+
+    qtest_writel(qts, bar + 32, level);
+    g_assert_cmphex(qtest_readl(qts, bar + 32), ==, level);
+}
+
+static void intx_state(QTestState *qts, unsigned index, uint8_t inputs,
+                       uint64_t pending)
+{
+    g_assert_cmphex(qtest_readl(qts, head(0, index) + 0x104) & 0xff, ==,
+                    inputs);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, pending);
+}
+
+static void test_intx(void)
+{
+    static const unsigned inputs[2][4] = { { 1, 5, 1, 5 }, { 2, 6, 2, 6 } };
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+
+    set_number(qts, 11);
+    for (unsigned index = 0; index < 6; index++) {
+        for (unsigned device = 1; device <= 2; device++) {
+            for (unsigned pin = 0; pin < 4; pin++) {
+                unsigned input = inputs[device - 1][pin];
+                uint64_t count = qtest_readq(qts, STATUS + 16);
+
+                configure_intx_card(qts, index, device, pin);
+                configure_irq_pin(qts, index, input, 16);
+                card_pin(qts, index, device, pin, true);
+                intx_state(qts, index, 1U << input, UINT64_C(1) << 16);
+                g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count + 1);
+                g_assert_cmphex(qtest_readq(qts, STATUS + 24), ==,
+                    UINT64_C(0x858001800090));
+                g_assert_cmphex(qtest_readq(qts, STATUS + 32), ==, 0x110);
+                g_assert_cmphex(qtest_readq(qts, STATUS + 40), ==,
+                                0x100 | widget[index]);
+                for (unsigned other = 0; other < 6; other++) {
+                    if (other != index) {
+                        g_assert_cmphex(qtest_readl(qts,
+                            head(0, other) + 0x104) & 0xff, ==, 0);
+                    }
+                }
+                card_pin(qts, index, device, pin, false);
+                intx_state(qts, index, 0, 0);
+                g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count + 2);
+                g_assert_cmphex(qtest_readq(qts, STATUS + 32), ==, 0x10);
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_intx_or(void)
+{
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+
+    for (unsigned device = 1; device <= 2; device++) {
+        for (unsigned pair = 0; pair < 2; pair++) {
+            unsigned input = device + pair * 4;
+            uint64_t count = qtest_readq(qts, STATUS + 16);
+
+            configure_intx_card(qts, 0, device, pair);
+            configure_intx_card(qts, 0, device, pair + 2);
+            configure_irq_pin(qts, 0, input, 16);
+            card_pin(qts, 0, device, pair, true);
+            card_pin(qts, 0, device, pair + 2, true);
+            intx_state(qts, 0, 1U << input, UINT64_C(1) << 16);
+            g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count + 1);
+            card_pin(qts, 0, device, pair, false);
+            intx_state(qts, 0, 1U << input, UINT64_C(1) << 16);
+            g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count + 1);
+            card_pin(qts, 0, device, pair + 2, false);
+            intx_state(qts, 0, 0, 0);
+            g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count + 2);
+        }
+    }
+    /* Both device indices stay independently asserted on one head. */
+    configure_irq_pin(qts, 0, 1, 16);
+    configure_irq_pin(qts, 0, 2, 17);
+    card_pin(qts, 0, 1, 0, true);
+    card_pin(qts, 0, 2, 0, true);
+    intx_state(qts, 0, 6, UINT64_C(3) << 16);
+    card_pin(qts, 0, 1, 0, false);
+    intx_state(qts, 0, 4, UINT64_C(1) << 17);
+    card_pin(qts, 0, 2, 0, false);
+    intx_state(qts, 0, 0, 0);
+    qtest_quit(qts);
+}
+
+static void test_intx_masked(void)
+{
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+    uint64_t h = head(0, 0);
+
+    configure_intx_card(qts, 0, 1, 0);
+    configure_irq_pin(qts, 0, 1, 16);
+    qtest_writel(qts, h + 0x10c, 0);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 2, 0);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
+    qtest_writel(qts, h + 0x10c, 2);
+    intx_state(qts, 0, 2, 0);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
+    /* Unmasking alone emits no packet; the existing head force does. */
+    qtest_writel(qts, h + 0x1cc, 1);
+    intx_state(qts, 0, 2, UINT64_C(1) << 16);
+    card_pin(qts, 0, 1, 0, false);
+    intx_state(qts, 0, 0, 0);
+    qtest_writel(qts, h + 0x11c, 0);
+    card_pin(qts, 0, 1, 0, true);
+    card_pin(qts, 0, 1, 0, false);
+    intx_state(qts, 0, 0, UINT64_C(1) << 16);
+    qtest_writeq(qts, COMPUTE + 0x90, 16);
+    intx_state(qts, 0, 0, 0);
+    qtest_quit(qts);
+}
+
+static void test_intx_denied(void)
+{
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=1 "
+        "-global sgi-pci-expansion-ni-fixture.compute-device-mask="
+        "0xfffeffffffffffff");
+
+    configure_intx_card(qts, 0, 1, 0);
+    configure_irq_pin(qts, 0, 1, 16);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 2, 0);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
+    card_pin(qts, 0, 1, 0, false);
+    /* Device-1 DMA remains permitted despite unknown-device IRQ denial. */
+    configure_card(qts, 0);
+    dma(qts, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
+        0x12345678, true, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_intx_alternative(void)
+{
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=2");
+
+    configure_intx_card(qts, 0, 1, 0);
+    configure_irq_pin(qts, 0, 1, 16);
+    configure_irq_pin(qts, 0, 3, 17);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 8, UINT64_C(1) << 17);
+    card_pin(qts, 0, 1, 0, false);
+    intx_state(qts, 0, 0, 0);
+    qtest_quit(qts);
+}
+
+static void test_intx_reset(void)
+{
+    QTestState *qts = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+
+    configure_intx_card(qts, 0, 1, 0);
+    configure_intx_card(qts, 0, 1, 2);
+    configure_irq_pin(qts, 0, 1, 16);
+    card_pin(qts, 0, 1, 0, true);
+    card_pin(qts, 0, 1, 2, true);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    intx_state(qts, 0, 0, 0);
+    configure_intx_card(qts, 0, 1, 0);
+    configure_intx_card(qts, 0, 1, 2);
+    configure_irq_pin(qts, 0, 1, 16);
+    g_assert_cmphex(qtest_readl(qts, intx_card(0, 1, 0) + 32), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, intx_card(0, 1, 2) + 32), ==, 0);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 2, UINT64_C(1) << 16);
+    card_pin(qts, 0, 1, 0, false);
+    intx_state(qts, 0, 0, 0);
+    qtest_quit(qts);
+}
+
+static void test_intx_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("pci-expansion-intx-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+    QTestState *to = start("-global sgi-pci-expansion-ni-fixture.intx-map=1 "
+                          "-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    configure_intx_card(from, 0, 1, 0);
+    configure_intx_card(from, 0, 1, 2);
+    configure_irq_pin(from, 0, 1, 16);
+    card_pin(from, 0, 1, 0, true);
+    card_pin(from, 0, 1, 2, true);
+    g_assert_cmphex(qtest_readq(from, STATUS + 16), ==, 1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    intx_state(to, 0, 2, UINT64_C(1) << 16);
+    /* Destination-only observation catches even idempotent repeated packets. */
+    g_assert_cmphex(qtest_readq(to, STATUS + 16), ==, 0);
+    card_pin(to, 0, 1, 0, false);
+    intx_state(to, 0, 2, UINT64_C(1) << 16);
+    g_assert_cmphex(qtest_readq(to, STATUS + 16), ==, 0);
+    card_pin(to, 0, 1, 2, false);
+    intx_state(to, 0, 0, 0);
+    g_assert_cmphex(qtest_readq(to, STATUS + 16), ==, 1);
+    card_pin(to, 0, 1, 0, true);
+    intx_state(to, 0, 2, UINT64_C(1) << 16);
+    g_assert_cmphex(qtest_readq(to, STATUS + 16), ==, 2);
+    card_pin(to, 0, 1, 0, false);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_intx_unconnected(void)
+{
+    QTestState *qts = start("-d unimp");
+
+    configure_card(qts, 0);
+    configure_irq_pin(qts, 0, 1, 16);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 0, 0);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
+    card_pin(qts, 0, 1, 0, false);
+    qtest_quit(qts);
+}
+
+static void test_intx_unsupported(void)
+{
+    QTestState *qts = start("-d unimp "
+        "-global sgi-pci-expansion-ni-fixture.intx-map=3");
+
+    configure_intx_card(qts, 0, 3, 0);
+    configure_irq_pin(qts, 0, 3, 16);
+    card_pin(qts, 0, 3, 0, true);
+    intx_state(qts, 0, 0, 0);
+    g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
+    card_pin(qts, 0, 3, 0, false);
+    /* A supported card still drives its independent board input. */
+    configure_intx_card(qts, 0, 1, 0);
+    configure_irq_pin(qts, 0, 1, 16);
+    card_pin(qts, 0, 1, 0, true);
+    intx_state(qts, 0, 2, UINT64_C(1) << 16);
+    card_pin(qts, 0, 1, 0, false);
+    qtest_quit(qts);
+}
+
+static void test_intx_migration_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("pci-intx-map-mismatch-XXXXXX",
+                                        &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = start("-global sgi-pci-expansion-ni-fixture.intx-map=1");
+    QTestState *to = start("-global sgi-pci-expansion-ni-fixture.intx-map=2 "
+                          "-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/intx", test_intx);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-or", test_intx_or);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-masked", test_intx_masked);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-denied", test_intx_denied);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-alternative",
+                   test_intx_alternative);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-reset", test_intx_reset);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-migration", test_intx_migration);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-unsupported",
+                   test_intx_unsupported);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-unconnected",
+                   test_intx_unconnected);
+    qtest_add_func("/sgi/pci-expansion-ni/intx-migration-mismatch",
+                   test_intx_migration_mismatch);
     qtest_add_func("/sgi/pci-expansion-ni/pio", test_pio);
     qtest_add_func("/sgi/pci-expansion-ni/dma", test_dma);
     qtest_add_func("/sgi/pci-expansion-ni/live-number", test_live_number);
