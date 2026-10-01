@@ -320,7 +320,7 @@ static void test_gl_texture_tl_mode_persists(void)
 /*
  * What the model does not draw stays untextured rather than drawn wrong:
  * TEXMODE1 bit 0 clear, a linear magnification filter (TEXMODE2 bit 7),
- * a clamp (bit 11), the decal environment (TEXMODE1 bits 2:1 = 1), a
+ * a clamp (bit 11), environment code 3 on a colour class, a
  * level kept at 12 bits, which is not stored, and 0x0c00 after the
  * bind. Each quad is white.
  */
@@ -330,7 +330,7 @@ static void test_gl_texture_unsupported_draws_untextured(void)
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON & ~1u, TEX_TEXMODE2_RGBA8 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x800 },
-        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 2, TEX_TEXMODE2_RGBA8 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 6, TEX_TEXMODE2_RGBA8 },
         { 0x34046, TEX_TEXMODE1_ON, 0x10008 },
     };
     QTestState *t = tex_start(TEX_ARGS);
@@ -810,6 +810,147 @@ static void test_gl_texture_class_alpha(void)
     qtest_quit(t);
 }
 
+/*
+ * Blend is C = Cf (1 - Ct) + Cc Ct with the environment colour Cc, which
+ * the client sends as 0x142 = R12 | G12 << 12 and 0x143 = B12. A texel
+ * (0.5, 0.5, 0.5, 1) under a red fragment and a green Cc gives (0.5, 0.5,
+ * 0). Intensity blend takes alpha as Af (1 - At), the environment alpha
+ * being 0 because the client never sends one (approximated).
+ */
+static void test_gl_texture_env_blend_constant(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t rgba[32], inten[8];
+
+    for (int i = 0; i < 8; i++) {
+        rgba[4 * i] = rgba[4 * i + 1] = rgba[4 * i + 2] = 0x80;
+        rgba[4 * i + 3] = 0xff;
+        inten[i] = 0x80;
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .env = TEX_ENV_BLEND, .texels = rgba, .frag = { 1, 0, 0, 1 },
+            .extra = { { 0x142, 0xfff000 }, { 0x143, 0 } }, .n_extra = 2,
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 1, 1), 0x80 / 255.0, 1 - 0x80 / 255.0,
+                   0);
+        /* The texel alpha is 1, so the alpha is the fragment's 1. */
+        sc.over_white = true;
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 1, 1), 0x80 / 255.0, 1 - 0x80 / 255.0,
+                   0);
+    }
+    {
+        double i = 0x80 / 255.0;
+        TexScene sc = {
+            .layout = TEX_LAYOUT_ONE, .depth = 1, .cls = TEX_CLASS_INTENSITY,
+            .env = TEX_ENV_BLEND, .texels = inten, .frag = { 1, 0, 0, 1 },
+            .over_white = true,
+        };
+
+        tex_scene(t, &sc);
+        /* C = (1 - I, 0, 0) with Cc = 0, A = 1 - I; over white. */
+        tex_expect(tex_texel_pixel(t, 1, 1), (1 - i) * (1 - i) + i, i, i);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The client stores GL_REPLACE as modulate before sending, so the word
+ * for a replace draw is environment code 0 and the board gives the
+ * modulate colour: a non-white fragment shows through the texel. This
+ * differs from OpenGL replace unless the fragment is white, and is the
+ * model's stated limitation.
+ */
+static void test_gl_texture_replace_is_modulate(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t rgba[32];
+
+    for (int i = 0; i < 8; i++) {
+        rgba[4 * i] = 0xc0;
+        rgba[4 * i + 1] = 0x80;
+        rgba[4 * i + 2] = 0x40;
+        rgba[4 * i + 3] = 0xff;
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .env = TEX_ENV_MODULATE, .texels = rgba,
+            .frag = { 0.5f, 1, 0.25f, 1 },
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 2, 0), 0.5 * 0xc0 / 255.0, 0x80 / 255.0,
+                   0.25 * 0x40 / 255.0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * Decal on an RGBA texel is C = Cf (1 - At) + Ct At and keeps the
+ * fragment's alpha: texel (0, 1, 0, 0.5) under red gives (0.5, 0.5, 0)
+ * and alpha 1, which over white leaves the colour unmixed. An RGB texel
+ * under decal returns its own colour. Decal on a luminance texel is
+ * undefined in OpenGL; the model draws modulate, so the fragment is
+ * scaled by L.
+ */
+static void test_gl_texture_env_decal_rgba(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t rgba[32], rgb[24], lum[8];
+
+    for (int i = 0; i < 8; i++) {
+        rgba[4 * i] = 0;
+        rgba[4 * i + 1] = 0xff;
+        rgba[4 * i + 2] = 0;
+        rgba[4 * i + 3] = 0x80;
+        rgb[3 * i] = 0x33;
+        rgb[3 * i + 1] = 0x66;
+        rgb[3 * i + 2] = 0x99;
+        lum[i] = 0x40;
+    }
+    {
+        double a = 0x80 / 255.0;
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .env = TEX_ENV_DECAL, .texels = rgba, .frag = { 1, 0, 0, 1 },
+            .over_white = true,
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 3, 1), 1 - a, a, 0);
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGB, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .env = TEX_ENV_DECAL, .texels = rgb, .frag = { 1, 0, 0, 1 },
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 0, 0), 0x33 / 255.0, 0x66 / 255.0,
+                   0x99 / 255.0);
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_ONE, .depth = 1,
+            .cls = TEX_CLASS_LUMINANCE, .env = TEX_ENV_DECAL, .texels = lum,
+            .frag = { 1, 0.5f, 0, 1 },
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 0, 0), 0x40 / 255.0,
+                   0.5 * 0x40 / 255.0, 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -852,6 +993,12 @@ int main(int argc, char **argv)
                    test_gl_texture_class_intensity_vs_luminance);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-class-alpha",
                    test_gl_texture_class_alpha);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-env-blend-constant",
+                   test_gl_texture_env_blend_constant);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-replace-is-modulate",
+                   test_gl_texture_replace_is_modulate);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-env-decal-rgba",
+                   test_gl_texture_env_decal_rgba);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",

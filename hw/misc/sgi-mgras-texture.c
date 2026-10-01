@@ -73,7 +73,8 @@
  *   0x0c00 or bit 0 clear off. A draw is textured from level 0 under the
  *   context's base when TXSIZE's base size is that level's, the level's
  *   layout and depth are TEXMODE1 bits 4:3 and TEXMODE2 bits 3:2, the
- *   environment (TEXMODE1 bits 2:1) is modulate, and nothing in TEXMODE2
+ *   environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
+ *   modulate, decal or blend, and nothing in TEXMODE2
  *   asks for linear or mipmapped filtering, detail, clamping, a volume or
  *   a one-dimensional texture: nearest sampling with repeat wrap, through
  *   the shared rasterizer's texture sampling. Anything else draws
@@ -113,6 +114,8 @@
 #define MGRAS_TEX_TEXMODE2       0x180
 #define MGRAS_TEX_TXSIZE         0x181
 #define MGRAS_TEX_TXLOD          0x183
+#define MGRAS_TEX_TXENV_RG       0x142
+#define MGRAS_TEX_TXENV_B        0x143
 #define MGRAS_TEX_TXBCOLOR_RG    0x184
 #define MGRAS_TEX_TXBCOLOR_BA    0x185
 #define MGRAS_TEX_TEXRBUFFER     0x18b
@@ -133,6 +136,9 @@
 #define MGRAS_TEX_CLASS_INTENSITY  3
 #define MGRAS_TEX_CLASS_COLOUR     4
 #define MGRAS_TEX_ENV_MODULATE     0
+#define MGRAS_TEX_ENV_DECAL        1
+#define MGRAS_TEX_ENV_BLEND        2
+#define MGRAS_TEX_ENV_ALPHA        3
 
 #define MGRAS_TEXMODE1_ENABLE    0x00000001u
 #define MGRAS_TEXMODE1_SELECT    0x00000180u
@@ -277,6 +283,10 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
         return;
     case MGRAS_TEX_TXLOD:
         t->txlod = value;
+        return;
+    case MGRAS_TEX_TXENV_RG:
+    case MGRAS_TEX_TXENV_B:
+        t->txenv[reg - MGRAS_TEX_TXENV_RG] = value;
         return;
     case MGRAS_TEX_TXBCOLOR_RG:
     case MGRAS_TEX_TXBCOLOR_BA:
@@ -692,6 +702,50 @@ static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
     return *format;
 }
 
+/* A 12-bit colour field, 0 to 4095, as a fraction. */
+static float mgras_tex_c12(uint32_t v)
+{
+    return (v & 0xfff) / 4095.0f;
+}
+
+/*
+ * Give the shared draw state the environment the draw's TEXMODE1 names.
+ * The state's environment is the sampler's input and the board's is
+ * TEXMODE1 bits 2:1, so the two are made one here, at the draw.
+ *
+ * The client sends GL_REPLACE as modulate (code 0) and the model draws
+ * what the word says, which differs from OpenGL replace unless the
+ * fragment is white: a stated limitation. Alpha textures come with code
+ * 3, drawn as the OpenGL alpha function, which is modulate's. Decal on a
+ * one- or two-component texel is undefined in OpenGL; the model draws
+ * modulate. The environment colour is 0x142 = R12 | G12 << 12 and 0x143 =
+ * B12; the client never sends its alpha, so the model uses 0, which
+ * only an intensity texture under blend reads (approximated). Code 3 with
+ * a colour class is not one the client sends and is not drawn.
+ */
+static bool mgras_tex_environment(SGIMgrasState *s, uint32_t cls)
+{
+    SGIMgrasTexture *t = mgras_tex(s);
+    SGIGLDrawState *st = &s->gl_context[s->gl_current].gl->cur;
+    uint32_t env = MGRAS_TEXMODE1_ENV(t->texmode1);
+
+    if (cls == MGRAS_TEX_CLASS_ALPHA) {
+        env = MGRAS_TEX_ENV_MODULATE;
+    } else if (env == MGRAS_TEX_ENV_ALPHA) {
+        return false;
+    } else if (env == MGRAS_TEX_ENV_DECAL && cls != MGRAS_TEX_CLASS_COLOUR) {
+        env = MGRAS_TEX_ENV_MODULATE;
+    }
+    st->texture_env_mode = env == MGRAS_TEX_ENV_DECAL ? SGI_GL_DECAL :
+                           env == MGRAS_TEX_ENV_BLEND ? SGI_GL_BLEND :
+                                                        SGI_GL_MODULATE;
+    st->texture_env_color[0] = mgras_tex_c12(t->txenv[0]);
+    st->texture_env_color[1] = mgras_tex_c12(t->txenv[0] >> 12);
+    st->texture_env_color[2] = mgras_tex_c12(t->txenv[1]);
+    st->texture_env_color[3] = 0;
+    return true;
+}
+
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image)
 {
@@ -719,12 +773,11 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
      * The class is the draw's (TEXMODE1 11:9) and must suit the level's
      * layout. Class 1, alpha, comes with environment code 3 from the
      * client, whatever glTexEnv set; the model reads the alpha class as
-     * its function for every code. Any other environment is not drawn yet.
+     * its function for every code.
      */
     if ((t->txsize & 0xffff) != (size << 8 | size) ||
         (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||
-        (cls != MGRAS_TEX_CLASS_ALPHA &&
-         MGRAS_TEXMODE1_ENV(t->texmode1) != MGRAS_TEX_ENV_MODULATE) ||
+        !mgras_tex_environment(s, cls) ||
         MGRAS_TEXMODE1_LAYOUT(t->texmode1) != MGRAS_TEX_LAYOUT(l->mode) ||
         !mgras_tex_format(MGRAS_TEX_LAYOUT(l->mode), cls, &format) ||
         (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
@@ -838,14 +891,15 @@ static const VMStateDescription vmstate_sgi_mgras_tex_level = {
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
         VMSTATE_UINT32(txsize, SGIMgrasTexture),
         VMSTATE_UINT32(txlod, SGIMgrasTexture),
         VMSTATE_UINT32(txclampsize, SGIMgrasTexture),
+        VMSTATE_UINT32_ARRAY(txenv, SGIMgrasTexture, 2),
         VMSTATE_UINT32_ARRAY(txbcolor, SGIMgrasTexture, 2),
         VMSTATE_UINT32(txaddr, SGIMgrasTexture),
         VMSTATE_UINT32_ARRAY(txmipmap, SGIMgrasTexture, SGI_MGRAS_TEX_TABLE),
@@ -883,7 +937,8 @@ static const VMStateDescription vmstate_sgi_mgras_gl_context_tex = {
 static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
 {
     uint32_t any = t->texmode1 | t->texmode2 | t->txsize | t->txlod |
-                   t->txclampsize | t->txbcolor[0] | t->txbcolor[1] |
+                   t->txclampsize | t->txenv[0] | t->txenv[1] |
+                   t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
                    t->texrbuffer | t->base | t->t_offset | t->on |
                    t->bracket | t->load | t->load_base | t->load_spec |

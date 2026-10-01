@@ -353,6 +353,7 @@ typedef struct SGIMgrasTexLevel {
 typedef struct SGIMgrasTexture {
     uint32_t texmode1, texmode2;
     uint32_t txsize, txlod, txclampsize;
+    uint32_t txenv[2];          /* 0x142, 0x143 */
     uint32_t txbcolor[2];
     uint32_t txaddr;
     uint32_t txmipmap[SGI_MGRAS_TEX_TABLE];
