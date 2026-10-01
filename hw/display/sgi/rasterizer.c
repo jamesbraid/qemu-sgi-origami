@@ -1231,14 +1231,14 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
  * equal to end divides by zero; the model takes f as 1 before the end and
  * 0 from it, the limit of the equation from either side.
  */
-static void sgi_soft_fog(const SGIGLDrawState *st, SGISoftFrag *frag,
-                         double z)
+static void sgi_soft_fog(const SGISoftDraw *r, SGISoftFrag *frag, double z)
 {
+    const SGIGLDrawState *st = r->st;
     double c = frag->fog, f;
 
-    if (st->fog_factor) {
+    if (r->t->fog_factor) {
         /* A family's own curve replaces the mode; the blend is the same. */
-        f = st->fog_factor(st->fog_opaque, z, c);
+        f = r->t->fog_factor(r->t->opaque, z, c);
     } else if (st->fog_mode == SGI_GL_LINEAR) {
         f = st->fog_end == st->fog_start ? (c < st->fog_end ? 1 : 0) :
             (st->fog_end - c) / (st->fog_end - st->fog_start);
@@ -1309,7 +1309,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
         return;
     }
     if (r->st->fog) {
-        sgi_soft_fog(r->st, &fogged, z);
+        sgi_soft_fog(r, &fogged, z);
     }
     if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
         return;

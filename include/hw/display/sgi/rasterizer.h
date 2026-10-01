@@ -246,6 +246,21 @@ typedef struct SGIRasterTarget {
      */
     uint32_t (*load_stencil)(void *opaque, int x, int y);
     void (*store_stencil)(void *opaque, int x, int y, uint32_t value);
+    /*
+     * A fog factor the family supplies, for a board that takes fog as a
+     * compiled curve rather than glFog's mode, density, start and end.
+     * While fog is enabled and fog_factor is set, the rasterizer calls it
+     * once per fragment, after interpolation, with the fragment's window
+     * depth in [0, 1] (the z its depth test uses) and its eye distance
+     * |z| (the fog coordinate the built-in modes take), and uses the
+     * return value clamped to [0, 1] as f in place of the mode's. The
+     * blend with the fog colour and fog index is unchanged. With
+     * fog_factor NULL the built-in mode applies.
+     *
+     * Not GL state and not migrated: it is per draw, set by the family
+     * with the rest of the target, and gets the target's opaque.
+     */
+    float (*fog_factor)(void *opaque, float window_z, float eye_z);
     void *opaque;
     /*
      * Where a dither anchored to the screen counts its rows from: the
