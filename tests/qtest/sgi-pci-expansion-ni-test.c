@@ -1312,6 +1312,43 @@ static void storage_program(QTestState *qts, uint64_t base, uint64_t offset,
     storage_cycle(qts, base, offset * 4, value);
 }
 
+static void test_storage_cpu_carrier(void)
+{
+    g_autofree char *image = storage_image();
+    uint8_t bytes[8];
+    uint64_t address = STORAGE_BASE + UINT64_C(0x10000000000) +
+                       STORAGE_SECOND + 0x1e0000;
+    int fd = open(image, O_WRONLY);
+    QTestState *qts;
+
+    g_assert_cmpint(fd, >=, 0);
+    stq_be_p(bytes, UINT64_C(0xfedcba9876543210));
+    g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x9e0000),
+                    ==, sizeof(bytes));
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = storage_start(image, "");
+    g_assert_cmphex(qtest_readq(qts, address), ==,
+                    UINT64_C(0xfedcba9876543210));
+    result(qts, 0, MEMTX_OK);
+    qtest_readq(qts, REQUESTER(0) + UINT64_C(0x10000000000) +
+                NODE(8) + 0x3a1e0000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    power_set(qts, false);
+    qtest_readq(qts, address);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    power_set(qts, true);
+    g_assert_cmphex(qtest_readq(qts, address), ==,
+                    UINT64_C(0xfedcba9876543210));
+    result(qts, 0, MEMTX_OK);
+    qtest_quit(qts);
+    qts = storage_start(image,
+        "-global sgi-pci-expansion-ni-fixture.connected=off");
+    qtest_readq(qts, address);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
 static void test_storage_unsupported_transfer(void)
 {
     g_autofree char *image = storage_image();
@@ -2161,6 +2198,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/pci-expansion-ni/storage/read", test_storage_read);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/cpu-carrier",
+                   test_storage_cpu_carrier);
     qtest_add_func("/sgi/pci-expansion-ni/storage/unsupported-transfer",
                    test_storage_unsupported_transfer);
     qtest_add_func("/sgi/pci-expansion-ni/storage/late-binding",
