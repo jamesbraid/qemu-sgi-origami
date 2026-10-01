@@ -1727,8 +1727,9 @@ static bool sgi_machine_instantiate_vbrick(
  * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
  * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
- * XBridge always answers both heads. The board record selects the head
- * carrying the fitted I/O; the empty head has no board record. Resolves every
+ * XBridge always answers both heads. An IO8 record without an IOC3 serial
+ * names the empty head. Fuel records describe the fitted system board even
+ * when its IOC3 identity is unknown. Resolves every
  * backend id from this record and the command line, the policy
  * sn1_node_build_io8() applied before this step moved it here.
  */
@@ -1740,6 +1741,11 @@ static bool sgi_machine_instantiate_bedrock_io(
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     DeviceState *baseio;
     PCIBus *bus;
+
+    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+        !record->has_ioc3_serial) {
+        return true;
+    }
 
     bus = sn1_node_xbridge_pci_bus(node, attachment->widget);
     baseio = qdev_new(TYPE_SGI_BASEIO);
@@ -2795,6 +2801,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
                 if (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
                     board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+                    continue;
+                }
+                /* An IO8 record without an IOC3 serial is the empty head. */
+                if (board->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+                    !board->has_ioc3_serial) {
                     continue;
                 }
                 if (board->attachment >= attachment_count) {
