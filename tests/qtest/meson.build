@@ -39,6 +39,12 @@ slow_qtests = {
   # The 38-case Fuel suite took 59.71s before backed clock migration
   # added two cases taking 27.99s. Keep headroom beyond the 60s default.
   'sn1-fuel-test': 180,
+  # Fuel adds three migration cases. All 29 SCSI cases took 50.43s locally
+  # and exceeded the 60s default under parallel CI.
+  'sn1-io8-scsi-test': 180,
+  # FIFO snapshots expand parallel coverage to 45 cases. It took 47.31s
+  # alone and exceeded 60s alongside other device suites.
+  'sn0-ioc3-parallel-test': 180,
   # The MTTCG primitives run several thread=multi TCG cases, and the R10000
   # performance test adds live migration and a stream analysis pass. Both fit
   # under 60s unloaded but need headroom under parallel CI load.
@@ -189,6 +195,9 @@ slow_qtests = {
 qtest_priorities = {
   # Keep Fuel's scheduling order unchanged by its larger clock-test budget.
   'sn1-fuel-test': 60,
+  # Preserve the SCSI and parallel suites' order when enlarging their budgets.
+  'sn1-io8-scsi-test': 60,
+  'sn0-ioc3-parallel-test': 60,
   # Keep the Hub suite's scheduling order independent of its larger budget.
   'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
