@@ -422,12 +422,16 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_SPURIOUS_HEADER_0: return s->spurious_header[0];
     case PI_SPURIOUS_HEADER_1: return s->spurious_header[1];
     case PI_GFX_CREDIT_MODE: return s->gfx_credit_mode;
-    case PI_RT_COUNTER: {
+    case PI_RT_COUNTER:
+    case PI_RT_COUNTER + 4: {
         uint64_t count = pi_rt_count(s);
 
         /* Sampled first: a park the report starts cannot change it. */
         if (s->bedrock) {
             sgi_bedrock_rt_counter_read(s->bedrock);
+        }
+        if (size == 4) {
+            return (offset & 4) ? (uint32_t)count : count >> 32;
         }
         return count;
     }
@@ -729,12 +733,40 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     sgi_bedrock_pi_recompute(s);
 }
 
+/*
+ * SGI Performer maps PI_RT_COUNTER into user space as a fast clock and
+ * reads it 4 bytes at a time. Allow 4-byte reads for each 32-bit half of the
+ * counter, while retaining the 8-byte access contract for writes and all
+ * other registers.
+ */
+static bool pi_accepts(void *opaque, hwaddr addr, unsigned size,
+                       bool is_write, MemTxAttrs attrs)
+{
+    if (is_write) {
+        return size == 8;
+    }
+    if (size == 8) {
+        return true;
+    }
+    if (size == 4 && (addr == PI_RT_COUNTER || addr == PI_RT_COUNTER + 4)) {
+        return true;
+    }
+    return false;
+}
+
 static const MemoryRegionOps pi_ops = {
     .read = pi_read,
     .write = pi_write,
     .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 8, .max_access_size = 8 },
-    .impl = { .min_access_size = 8, .max_access_size = 8 },
+    .valid = {
+        .min_access_size = 4,
+        .max_access_size = 8,
+        .accepts = pi_accepts,
+    },
+    .impl = {
+        .min_access_size = 4,
+        .max_access_size = 8,
+    },
 };
 
 static void pi_reset_enter(Object *obj, ResetType type)
