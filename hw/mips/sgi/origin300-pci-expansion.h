@@ -3,6 +3,7 @@
 #define HW_MIPS_SGI_ORIGIN300_PCI_EXPANSION_H
 
 #include "hw/pci/pci.h"
+#include "hw/misc/sgi-bic-board-interface.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_ORIGIN300_PCI_EXPANSION "sgi-origin300-pci-expansion-module"
@@ -18,6 +19,11 @@ typedef struct SGIOrigin300PciIntxMap {
 
 bool sgi_origin300_pci_expansion_set_intx_map(
     SGIOrigin300PciExpansionState *s, const SGIOrigin300PciIntxMap *map,
+    Error **errp);
+
+/* Immutable attachment; caller supplies and realizes the interface. */
+bool sgi_origin300_pci_expansion_attach_board_interface(
+    SGIOrigin300PciExpansionState *s, SGIBICBoardInterfaceState *interface,
     Error **errp);
 
 bool sgi_origin300_pci_expansion_enable_ni_route(

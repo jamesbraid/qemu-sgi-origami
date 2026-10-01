@@ -1,0 +1,28 @@
+# Direct LINK/NI connection to the Origin 300 PCI expansion module.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/products/origin300-pci-expansion-experiment.yaml
+module_instances:
+  - model: layers/modules/origin300-base.yaml
+    prefix: compute-
+    module_role: MASTER
+    parent: compute-module
+    adopt_roots: true
+    observed_hardware:
+      mode: direct
+      sources: ["boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled pair's PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets 14 and 15", "boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled pair, module 001c01 node and IO-8 at xtalk 14 and 15"]
+      note: >-
+        Reuses the existing Origin 300 compute component observations. The
+        additional PCI expansion connection remains an explicit experiment.
+  - model: layers/modules/origin300-pci-expansion-experiment.yaml
+    prefix: expansion-
+    parent: compute-link-connector
+    bus_bindings: {upstream-numalink: expansion-cable}
+connector_population:
+  - component: compute-xio-connector
+    occupancy: empty
+    reason: The PCI expansion module uses LINK/NI rather than the rear XIO connector.
+    provenance: vendor-document
+    sources: ["007-4499-002 printed pages 12 and 38"]

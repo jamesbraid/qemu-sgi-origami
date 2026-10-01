@@ -396,9 +396,19 @@ def index_graph(model: dict) -> dict:
         modules,
     )
     routers = _positioned(components, lambda item: item.get("kind") == "router-asic", modules)
+    peer_ids = {peer["id"] for peer in io_peers}
+    assembly_modules = {
+        raw["module"]
+        for raw in model["machine"].get("emulation", {}).get("io_assemblies", [])
+        if raw.get("kind") == "origin300-pci-expansion"
+        and raw.get("peer") in peer_ids and raw.get("module") in components
+    }
     split_bridges = _split_bridge_parents(model, components)
     io_board_components = {cid: item for cid, item in components.items()
-                            if cid not in split_bridges}
+                            if cid not in split_bridges
+                            and not (item.get("hardware_kind") == "xbridge"
+                                     and any(_is_within(components, item, module)
+                                             for module in assembly_modules))}
     io_boards = _positioned(
         io_board_components,
         lambda item: _is_xio_occupant(item)
@@ -482,6 +492,20 @@ def index_graph(model: dict) -> dict:
             continue
         master = bus.get("master")
         master_component = components.get(master)
+        if (master_component is not None and
+                master_component.get("hardware_kind") in {"bedrock", "xbridge"}):
+            owning_assembly = next(
+                (module for module in assembly_modules
+                 if _is_within(components, master_component, module)), None)
+            if owning_assembly is not None:
+                # The typed assembly owns these internal XIO links and heads.
+                for attachment in _connections_for_bus(model, bus["id"]):
+                    component = components.get(attachment["component"])
+                    if (component is None or not
+                            _is_within(components, component, owning_assembly)):
+                        raise CompileError(
+                            f"I/O assembly XIO bus '{bus['id']}' leaves its module")
+                continue
         if master_component is not None and master_component.get("hardware_kind") == "bedrock":
             # The IO-8 heads are handled by the Bedrock compiler. An
             # occupied rear connector still places an external board on

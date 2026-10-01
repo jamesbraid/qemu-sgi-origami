@@ -5,30 +5,6 @@
 #include "qapi/util.h"
 #include "hw/mips/sgi/sn-catalogue.h"
 
-bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
-{
-    const SGIModelModuleList *module;
-    const SGIModelCableList *cable;
-    bool has_peers = t->io_peers != NULL;
-
-    for (module = t->modules; module; module = module->next) {
-        has_peers |= module->value->io_peers != NULL;
-    }
-    for (cable = t->cables; cable; cable = cable->next) {
-        const SGIModelLinkEndList *end;
-
-        for (end = cable->value->ends; end; end = end->next) {
-            has_peers |= end->value->kind == SGI_MODEL_LINK_END_KIND_IO_PEER;
-        }
-    }
-    if (has_peers) {
-        error_setg(errp, "topology '%s' names I/O-only network endpoints; "
-                   "their runtime construction is not supported", t->name);
-        return false;
-    }
-    return true;
-}
-
 /* The @index'th element of a QAPI list, which the caller has range-checked. */
 #define SGI_MODEL_NTH(list, index) ({                                  \
     typeof_strip_qual(list) nth_ = (list);                              \
@@ -37,6 +13,143 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     }                                                                   \
     nth_->value;                                                        \
 })
+
+bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
+{
+    const SGIModelIoAssemblyList *entry;
+    const SGIModelCableList *link;
+    size_t peers = QAPI_LIST_LENGTH(t->io_peers);
+    size_t nodes = QAPI_LIST_LENGTH(t->nodes);
+    size_t modules = QAPI_LIST_LENGTH(t->modules);
+    size_t controllers = QAPI_LIST_LENGTH(t->controllers);
+    g_autofree bool *assigned = g_new0(bool, MAX(peers, 1));
+    g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
+
+    if (!peers && !t->io_assemblies && !t->l1_management) {
+        const SGIModelModuleList *module;
+
+        for (module = t->modules; module; module = module->next) {
+            if (module->value->io_peers) {
+                goto unsupported;
+            }
+        }
+        for (link = t->cables; link; link = link->next) {
+            const SGIModelLinkEndList *end;
+
+            for (end = link->value->ends; end; end = end->next) {
+                if (end->value->kind == SGI_MODEL_LINK_END_KIND_IO_PEER) {
+                    goto unsupported;
+                }
+            }
+        }
+        return true;
+    }
+    if (!peers || t->generation != SGI_MODEL_GENERATION_SN1 || t->routers ||
+        QAPI_LIST_LENGTH(t->io_assemblies) != peers || !t->l1_management ||
+        QAPI_LIST_LENGTH(t->l1_management->owners) != controllers) {
+        goto unsupported;
+    }
+    for (entry = t->io_assemblies; entry; entry = entry->next) {
+        const SGIModelIoAssembly *a = entry->value;
+        const SGIModelIoPeer *peer;
+        const SGIModelModule *module;
+        const SGIModelController *controller;
+        const uint8List *port, *other_port;
+        const SGIModelIoAssemblyList *other;
+        const uint8List *pin;
+
+        if (a->version != 1 ||
+            a->kind != SGI_MODEL_IO_ASSEMBLY_KIND_ORIGIN300_PCI_EXPANSION ||
+            a->peer_index >= peers || assigned[a->peer_index] ||
+            a->module_index >= modules || a->controller_index >= controllers ||
+            a->placement < nodes || a->placement >= 128 ||
+            a->initial_node_number >= 128 || a->bedrock_revision != 2 ||
+            a->xbridge_revision != 2 || !a->controller_profile ||
+            strcmp(a->controller_profile, "pci-expansion") ||
+            (a->bic_identity & 0xf000) != 0xc000 ||
+            QAPI_LIST_LENGTH(a->head_ports) != 4 ||
+            (a->has_intx_map && QAPI_LIST_LENGTH(a->intx_map) != 48)) {
+            goto unsupported;
+        }
+        peer = SGI_MODEL_NTH(t->io_peers, a->peer_index);
+        module = SGI_MODEL_NTH(t->modules, a->module_index);
+        controller = SGI_MODEL_NTH(t->controllers, a->controller_index);
+        if (peer->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK ||
+            peer->module_index != a->module_index || module->nodes ||
+            QAPI_LIST_LENGTH(module->io_peers) != 1 ||
+            module->io_peers->value != a->peer_index ||
+            module->controller_index != a->controller_index ||
+            controller->kind != SGI_MODEL_CONTROLLER_KIND_L1 ||
+            controller->module_index != a->module_index) {
+            goto unsupported;
+        }
+        for (other = t->io_assemblies; other != entry; other = other->next) {
+            if (other->value->placement == a->placement ||
+                other->value->module_index == a->module_index ||
+                other->value->controller_index == a->controller_index) {
+                goto unsupported;
+            }
+        }
+        for (port = a->head_ports; port; port = port->next) {
+            if (port->value != 8 && port->value != 9 &&
+                port->value != 12 && port->value != 13) {
+                goto unsupported;
+            }
+            for (other_port = a->head_ports; other_port != port;
+                 other_port = other_port->next) {
+                if (other_port->value == port->value) {
+                    goto unsupported;
+                }
+            }
+        }
+        for (pin = a->intx_map; pin; pin = pin->next) {
+            if (pin->value >= 8) {
+                goto unsupported;
+            }
+        }
+        assigned[a->peer_index] = true;
+    }
+    for (link = t->cables; link; link = link->next) {
+        const SGIModelLinkEnd *first, *second;
+
+        if (QAPI_LIST_LENGTH(link->value->ends) != 2) {
+            goto unsupported;
+        }
+        first = link->value->ends->value;
+        second = link->value->ends->next->value;
+        if (first->kind == SGI_MODEL_LINK_END_KIND_IO_PEER) {
+            const SGIModelLinkEnd *swap = first;
+            first = second;
+            second = swap;
+        }
+        if (first->kind != SGI_MODEL_LINK_END_KIND_NODE ||
+            first->index >= nodes ||
+            first->port || second->port) {
+            goto unsupported;
+        }
+        if (second->kind == SGI_MODEL_LINK_END_KIND_IO_PEER) {
+            if (second->index >= peers || connected[second->index]) {
+                goto unsupported;
+            }
+            connected[second->index] = true;
+        } else if (second->kind != SGI_MODEL_LINK_END_KIND_NODE ||
+                   second->index >= nodes) {
+            goto unsupported;
+        }
+    }
+    for (size_t i = 0; i < peers; i++) {
+        if (!connected[i]) {
+            goto unsupported;
+        }
+    }
+    return true;
+
+unsupported:
+    error_setg(errp, "topology '%s' names I/O-only network endpoints; "
+               "their complete experimental runtime composition is not supported",
+               t->name);
+    return false;
+}
 
 /*
  * The position each chassis-wide list entry takes among the entries a
@@ -292,6 +405,9 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->controllers = t->controllers;
     view->has_io_peers = t->has_io_peers;
     view->io_peers = t->io_peers;
+    view->has_io_assemblies = t->has_io_assemblies;
+    view->io_assemblies = t->io_assemblies;
+    view->l1_management = t->l1_management;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;

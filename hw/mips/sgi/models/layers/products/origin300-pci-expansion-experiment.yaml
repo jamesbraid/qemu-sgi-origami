@@ -1,0 +1,185 @@
+# Experimental direct NI attachment of the PCI expansion assembly.
+layer_version: 1
+sources:
+  owner-2cpu: "Two-CPU Origin 300 inventory: https://nekonomicon.irixnet.org/forum/14/16726611/1.html (IP45_2CPU, slices A and C)"
+  007-4365-002: "007-4365-002 printed pages 1 and 10 to 12: two or four processors and 512 MB to 4 GB"
+  minimum-documented-origin300-decision: "D-0023: minimum documented Origin 300 product configuration"
+  108-0263-004: "108-0263-004 printed page 2-18: two- and four-processor 500 MHz R14000 configurations with 2 MB cache"
+  ip35-source-map: "docs/library/ip35-source-map.md: measured container, payload, load address, entry address and ten trampolines"
+  origin300-evidence-matrix: "docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact payload length"
+  origin300-reset-alias-evidence: "docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT address and offset"
+  bounded-emulator-carrier-decision: "D-0024: bounded emulator carrier with the physical decoder left unresolved"
+  tools-origami-lib-prom: "tools/origami_lib/prom.py: L1_CONSOLE, ORIGIN300_EEPROM_INPUTS, ORIGIN300_SPD_INPUTS, and PromLaunchRequest.brick_serial, the harness's own existing Origin 300 identity inputs"
+  tools-origami-lib-irix: "tools/origami_lib/irix.py: _select_irix_profile rejecting IRIX install mode on Origin 300 (\"Origin 300 currently supports IRIX boot mode\")"
+  tools-origami-lib-prom-b: "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/prom_netboot_test.py:49,138: historical stock-PROM netboot test's supported adapter and console selection"
+layer:
+  kind: product
+  id: origin300-pci-expansion-experiment
+  requires: {assembly: ip45}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[2], [4]]
+    provenance: derived
+    sources: [minimum-documented-origin300-decision, 007-4365-002, 108-0263-004]
+  population:
+    nodes: 1
+    cpus_per_node: [2]
+    provenance: derived
+    sources: [minimum-documented-origin300-decision, owner-2cpu, 007-4365-002, 108-0263-004]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0, cpu2, cpu1, cpu3]
+  memory_kits_per_node: [kit-512-at-banks-2-3]
+  data:
+    machine:
+      name: Origin 300
+      model_role: emulation-target
+      notes: >-
+        Experimental PCI expansion composition using the reviewed CPU-free
+        and RAM-free BIC, NI route and synthetic interrupt adapter. The BIC
+        resets with node number zero. Firmware must discover it by route
+        and assign its node number. Board records are optional operator
+        inputs; no BIC latch initialization or controller startup is supplied.
+        Construction support does not establish stock PROM or IRIX acceptance.
+      emulation:
+        machine_name: origin300
+        display_description: SGI Origin 300 (IP45), experimental PCI expansion
+        profile: pci-expansion-experiment
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - name: CPU reset view
+              address: "0x000_001fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: local Hub-special boot view
+              address: "0x100_18000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: bounded high local Hub-special boot view
+              address: "0x100_1fc00000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+            - name: node-zero remote Hub-special boot view
+              address: "0x100_38000000"
+              payload_offset: "0x0"
+              size: "0x1686a8"
+          second_selection:
+            address: "0x100_1a000000"
+            size: "0x0080_0000"
+          provenance: derived
+          sources: [ip35-source-map, origin300-evidence-matrix, origin300-reset-alias-evidence, bounded-emulator-carrier-decision]
+          notes: >-
+            The four views alias one operator-supplied payload. This is emulator
+            compatibility policy; it does not identify a fitted flash part, a
+            physical reset decoder, a repeating mask, or any decode beyond each
+            bounded payload-length view.
+        io_assemblies:
+          - version: 1
+            kind: origin300-pci-expansion
+            peer: expansion-bedrock
+            module: expansion-enclosure
+            controller: expansion-l1
+            placement: 1
+            initial_node_number: 0
+            bedrock_revision: 2
+            xbridge_revision: 2
+            head_ports: [8, 9, 12, 13]
+            controller_profile: pci-expansion
+            bic_identity: 49152
+            intx_map: [0, 1, 2, 3, 4, 5, 6, 7,
+                       0, 1, 2, 3, 4, 5, 6, 7,
+                       0, 1, 2, 3, 4, 5, 6, 7,
+                       0, 1, 2, 3, 4, 5, 6, 7,
+                       0, 1, 2, 3, 4, 5, 6, 7,
+                       0, 1, 2, 3, 4, 5, 6, 7]
+        l1_management:
+          owners:
+            - {controller: compute-l1, identity: 101}
+            - {controller: expansion-l1, identity: 102}
+          associations:
+            - {from: 0, to: 1, reachable: true}
+            - {from: 1, to: 0, reachable: true}
+          attachments:
+            - {issuer: 0, owner: 1}
+            - {issuer: 1, owner: 0}
+        synthetic_identities:
+          - component: expansion-bedrock
+            serial: "0x123456"
+            reason: Explicit synthetic BIC identity for the isolated NI experiment.
+          - component: compute-bedrock
+            serial: "0x0d0c0b0a0908"
+            reason: >-
+              Stable synthetic node identity for this selected emulated
+              installation, in the one shape the schema still carries
+              (synthetic_serials, the KLCONFIG-era per-kind base/stride
+              form, went with synthesized firmware; format 2 needs this
+              value the same explicit way every other product now
+              authors its own). Origin 300 has no prior generated value
+              to preserve, so this continues the existing descending-byte
+              pattern one step past Origin 200's own base value.
+          - component: compute-xbridge
+            serial: "0x0b0a090807"
+            reason: >-
+              Stable synthetic identity for the one physical IO-8 board
+              (both PCI heads, compute-xbridge-bridge-e and compute-xbridge-bridge-f, are
+              the same chip and share this value); continues the same
+              descending-byte pattern.
+          - component: compute-ioc3
+            serial: "0x5e7000000002"
+            reason: >-
+              Stable synthetic IOC3 identity for this selected emulated
+              installation, in the same "5e70..." shape Origin 200's own
+              IOC3 uses, one past its value.
+        initially_operational_crossbow_links:
+          - component: compute-xbridge-crossbar
+            widgets: [14, 15]
+            reason: >-
+              Static emulator startup health for the XBridge's two PCI
+              bridge heads, both part of the one physical chip and
+              always populated (unlike a Crossbow's cabled Hub links,
+              nothing here is removable). Machine launch and
+              whole-machine reset reapply it; this does not model
+              Crossbow-style link training.
+      harness:
+        console: l1-uart
+        prom_dialogue: ip35-l1-prompt
+        default_cpu_model: R14000
+        disk_bus: scsi.0
+        netboot_adapter: ioc3-ethernet
+        default_topology: one-chassis
+        requires_per_node_flash: false
+        has_managed_boot_flash: true
+        identity_inputs: [chassis-eeprom, board-eeprom, spd-eeprom, brick-serial, l1-debug-switches]
+        supported_guests: [irix]
+        install_media: [disk-image, netboot]
+        provenance: derived
+        sources: [tools-origami-lib-prom, tools-origami-lib-irix, tools-origami-lib-prom-b]
+    components:
+      - id: compute-module
+        name: Origin 300 compute server
+        kind: module
+        provenance: vendor-document
+        sources: ["007-4365-002 printed pages 1, 10 to 12 and 38"]
+    buses:
+      - id: expansion-cable
+        name: Experimental compute LINK to expansion NI cable
+        kind: fabric
+        master: compute-bedrock
+        link: {kind: cable}
+        provenance: derived
+        sources: ["docs/datasheets/origin300-pci-expansion-module.md"]
+    connections:
+      - component: compute-bedrock
+        bus: expansion-cable
+        role: master
+        provenance: derived
+        sources: ["docs/datasheets/origin300-pci-expansion-module.md"]
