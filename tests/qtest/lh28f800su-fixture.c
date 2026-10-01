@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Map the x16 chip without choosing an IP30 board or Bridge wiring. */
 #include "qemu/osdep.h"
 #include "qemu/module.h"

@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Indexed TLB replacement changes only the even half's uncached frame. */
 
 #include "r10000-remap.h"

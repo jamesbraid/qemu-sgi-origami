@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Host test requests use a CPU's physical address space through QOM. */
 #include "qemu/osdep.h"
 #include "system/memory.h"

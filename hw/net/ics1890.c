@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /*
  * ICS1890 revision 3. Register tables: ICS1890RevG 10/21/97, pp17-35.
  * Reviewed contract: Origami docs/datasheets/ics1890.md. Packet networking

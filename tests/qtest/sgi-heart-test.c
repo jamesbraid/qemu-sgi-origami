@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Synthetic bank populations for the standalone IP30 HEART profile. */
 #include "qemu/osdep.h"
 #include "libqtest.h"

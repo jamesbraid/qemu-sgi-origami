@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* CP0 identity using original synthetic instructions, without a guest image. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"

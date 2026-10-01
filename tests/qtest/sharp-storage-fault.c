@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Fault injection for the marker directory, confined to the QEMU child. */
 #include "qemu/osdep.h"
 #include <sys/syscall.h>
