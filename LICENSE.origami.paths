@@ -456,7 +456,9 @@ tests/functional/mips64/lib_graphics_matrix.py
 tests/functional/mips64/lib_host_cpus.py
 tests/functional/mips64/lib_input.py
 tests/functional/mips64/lib_irix_diag.py
+tests/functional/mips64/lib_mgras_boot.py
 tests/functional/mips64/lib_mgras_greeter.py
+tests/functional/mips64/lib_mgras_matrix.py
 tests/functional/mips64/lib_mgras_regions.py
 tests/functional/mips64/lib_mips.py
 tests/functional/mips64/lib_net.py
@@ -476,6 +478,7 @@ tests/functional/mips64/lib_screen.py
 tests/functional/mips64/lib_sgi_roms.py
 tests/functional/mips64/lib_sn_reset.py
 tests/functional/mips64/lib_translation_health.py
+tests/functional/mips64/mgras-reference/TODO
 tests/functional/mips64/origin200-matrix
 tests/functional/mips64/roms/README.rst
 tests/functional/mips64/roms/addrspace.c
@@ -564,6 +567,7 @@ tests/functional/mips64/test_lib_host_cpus.py
 tests/functional/mips64/test_lib_input.py
 tests/functional/mips64/test_lib_irix_diag.py
 tests/functional/mips64/test_lib_matrix.py
+tests/functional/mips64/test_lib_mgras_matrix.py
 tests/functional/mips64/test_lib_mgras_regions.py
 tests/functional/mips64/test_lib_mips.py
 tests/functional/mips64/test_lib_net.py
@@ -575,6 +579,10 @@ tests/functional/mips64/test_lib_translation_health.py
 tests/functional/mips64/test_linux_kernel.py
 tests/functional/mips64/test_linux_multiuser.py
 tests/functional/mips64/test_mgras_desktop.py
+tests/functional/mips64/test_mgras_matrix_essi.py
+tests/functional/mips64/test_mgras_matrix_si.py
+tests/functional/mips64/test_mgras_matrix_si_t.py
+tests/functional/mips64/test_mgras_matrix_ssi.py
 tests/functional/mips64/test_onyx2_deskside_prom.py
 tests/functional/mips64/test_onyx2_rack_prom.py
 tests/functional/mips64/test_openbsd_install.py
