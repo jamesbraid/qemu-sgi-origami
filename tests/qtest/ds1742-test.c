@@ -285,6 +285,130 @@ static void test_backed_migration_quit(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void assert_ram(QTestState *qts, const uint8_t *ram)
+{
+    for (unsigned int i = 0; i < 0x7f8; i++) {
+        g_assert_cmphex(rd(qts, i), ==, ram[i]);
+    }
+}
+
+static void test_backed_destination_persistence(const void *data)
+{
+    bool stopped = GPOINTER_TO_INT(data);
+    g_autofree char *dir = g_dir_make_tmp("ds1742-destination-XXXXXX", NULL);
+    g_autofree char *source = g_build_filename(dir, "source.img", NULL);
+    g_autofree char *source_ref = g_build_filename(dir, "source-ref.img", NULL);
+    g_autofree char *destination =
+        g_build_filename(dir, "destination.img", NULL);
+    g_autofree char *dest_ref =
+        g_build_filename(dir, "destination-ref.img", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *source_args = g_strdup_printf(
+        "-drive if=none,id=nvram,file=%s,format=raw "
+        "-drive if=none,id=reference,file=%s,format=raw "
+        "-device ds1742,id=clock,drive=nvram,clock-drive=reference",
+        source, source_ref);
+    g_autofree char *dest_args = g_strdup_printf(
+        "-drive if=none,id=nvram,file=%s,format=raw "
+        "-drive if=none,id=reference,file=%s,format=raw "
+        "-device ds1742,id=clock,drive=nvram,clock-drive=reference",
+        destination, dest_ref);
+    g_autofree char *before_image = NULL, *before_ref = NULL;
+    g_autofree char *after_image = NULL, *after_ref = NULL;
+    g_autofree char *saved_ref = NULL;
+    gsize before_image_len, before_ref_len, after_image_len, after_ref_len;
+    gsize saved_ref_len;
+    uint8_t contents[0x800] = { 0 }, reference[512] = { 0 };
+    uint8_t ordinary[0x7f8];
+    g_autoptr(QDict) status = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    g_assert_true(g_file_set_contents(source, (char *)contents,
+                                      sizeof(contents), NULL));
+    g_assert_true(g_file_set_contents(source_ref, (char *)reference,
+                                      sizeof(reference), NULL));
+    memset(contents, 0xcc, sizeof(ordinary));
+    g_assert_true(g_file_set_contents(destination, (char *)contents,
+                                      sizeof(contents), NULL));
+    g_assert_true(g_file_set_contents(dest_ref, (char *)reference,
+                                      sizeof(reference), NULL));
+    from = qtest_initf("-M none -cpu R10000 -S "
+                       "-rtc base=2024-01-01T00:00:00 %s", source_args);
+    qtest_sysbus_mmio_map(from, PATH, 0, BASE);
+    wr(from, 0, 0xa5);
+    wr(from, 0x100, 0x3c);
+    wr(from, 0x7f7, 0x5a);
+    set_time(from, (stopped ? 0x80 : 0) | 0x12,
+             0x23, 0x10, 0x25, 0x09, 0x26, 0x20);
+    for (unsigned int i = 0; i < sizeof(ordinary); i++) {
+        ordinary[i] = rd(from, i);
+    }
+    g_assert_cmphex(ordinary[0], ==, 0xa5);
+    g_assert_cmphex(ordinary[0x100], ==, 0x3c);
+    g_assert_cmphex(ordinary[0x7f7], ==, 0x5a);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    to = qtest_initf("-M none -cpu R10000 -incoming defer "
+                     "-rtc base=2024-01-01T00:00:00 %s", dest_args);
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+    g_clear_pointer(&status, qdict_unref);
+    status = qtest_qmp_assert_success_ref(from, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "postmigrate");
+    assert_ram(to, ordinary);
+
+    g_assert_true(g_file_get_contents(source, &before_image,
+                                      &before_image_len, NULL));
+    g_assert_true(g_file_get_contents(source_ref, &before_ref,
+                                      &before_ref_len, NULL));
+    qtest_qmp_assert_success(from, "{'execute':'quit'}");
+    qtest_wait_qemu(from);
+    qtest_quit(from);
+    g_assert_true(g_file_get_contents(source, &after_image,
+                                      &after_image_len, NULL));
+    g_assert_true(g_file_get_contents(source_ref, &after_ref,
+                                      &after_ref_len, NULL));
+    g_assert_cmpmem(after_image, after_image_len,
+                    before_image, before_image_len);
+    g_assert_cmpmem(after_ref, after_ref_len, before_ref, before_ref_len);
+
+    qtest_system_reset(to);
+    assert_ram(to, ordinary);
+    qtest_clock_step(to, NS_PER_SEC);
+    g_assert_cmphex(rd(to, 0x7f9), ==, stopped ? 0x92 : 0x13);
+    qtest_qmp_assert_success(to, "{'execute':'quit'}");
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    g_assert_true(g_file_get_contents(dest_ref, &saved_ref,
+                                      &saved_ref_len, NULL));
+    g_assert_cmpuint(saved_ref_len, >=, 16);
+    g_assert_cmpmem(saved_ref, 8, "DS1742R1", 8);
+    /* Keep real elapsed time from changing the expected reopened calendar. */
+    stq_le_p(saved_ref + 8, g_get_real_time() / G_USEC_PER_SEC + 3600);
+    g_assert_true(g_file_set_contents(dest_ref, saved_ref,
+                                      saved_ref_len, NULL));
+    to = qtest_initf("-M none -cpu R10000 -S "
+                     "-rtc base=2024-01-01T00:00:00 %s", dest_args);
+    qtest_sysbus_mmio_map(to, PATH, 0, BASE);
+    assert_ram(to, ordinary);
+    g_assert_cmphex(rd(to, 0x7f9), ==, stopped ? 0x92 : 0x13);
+    qtest_clock_step(to, NS_PER_SEC);
+    g_assert_cmphex(rd(to, 0x7f9), ==, stopped ? 0x92 : 0x14);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(unlink(source), ==, 0);
+    g_assert_cmpint(unlink(source_ref), ==, 0);
+    g_assert_cmpint(unlink(destination), ==, 0);
+    g_assert_cmpint(unlink(dest_ref), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_restart_persistence(void)
 {
     g_autofree char *dir = g_dir_make_tmp("ds1742-store-XXXXXX", NULL);
@@ -387,6 +511,11 @@ int main(int argc, char **argv)
     qtest_add_func("/ds1742/migration", test_migration);
     qtest_add_func("/ds1742/backed-migration-quit",
                    test_backed_migration_quit);
+    qtest_add_data_func("/ds1742/destination-persistence/running", NULL,
+                        test_backed_destination_persistence);
+    qtest_add_data_func("/ds1742/destination-persistence/stopped",
+                        GINT_TO_POINTER(1),
+                        test_backed_destination_persistence);
     qtest_add_func("/ds1742/restart-persistence", test_restart_persistence);
     return g_test_run();
 }
