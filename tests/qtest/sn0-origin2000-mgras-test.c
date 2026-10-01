@@ -17883,6 +17883,117 @@ static void test_gl_eviction_needs_the_read_token(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * The X server's host read through the raster engine's data port
+ * (mgrasReadPixels in the IRIX 6.5.30 impactsr.so): raster registers by
+ * 8-byte direct commands on the main port, an IR_ALIAS execute, then each
+ * 8-byte unit read as 0x02d1c0 and 0x02c1c4. The box is in hardware rows,
+ * counted up from the bottom of the screen.
+ */
+#define REG_RE_DATA_HI        MGRAS_REG(0x02d1c0)
+#define REG_RE_DATA_LO        MGRAS_REG(0x02c1c4)
+#define PIO_SCREEN_HEIGHT     1024
+
+static void rss_direct(QTestState *qts, uint32_t reg, uint32_t value,
+                       bool execute)
+{
+    uint64_t word = ((uint64_t)(0x00180004 | reg << 8) << 32) | value;
+
+    if (execute) {
+        word |= 0x0004000000000000ULL;
+    }
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, word);
+}
+
+/* Read screen columns x to x + w - 1 of rows y to y + h - 1. */
+static void pio_read_start(QTestState *qts, uint32_t x, uint32_t y,
+                           uint32_t w, uint32_t h, uint32_t mode)
+{
+    uint32_t top = PIO_SCREEN_HEIGHT - 1 - y;
+
+    rss_direct(qts, 0x112, 0xca4, false);
+    rss_direct(qts, 0x115, 0, false);
+    rss_direct(qts, 0x160, 2, false);
+    rss_direct(qts, 0x161, 0x500, false);
+    rss_direct(qts, 0x046, x << 16 | top, false);
+    rss_direct(qts, 0x047, (x + w - 1) << 16 | (top - h + 1), false);
+    rss_direct(qts, 0x153, h << 16 | w, false);
+    rss_direct(qts, 0x158, h << 16 | w, false);
+    rss_direct(qts, 0x159, mode, false);
+    rss_direct(qts, 0x110, 0x800000, false);
+    rss_direct(qts, 0x045, 0x18, false);
+    rss_direct(qts, 0x102, 0xa, false);
+    rss_direct(qts, 0x00c, 1, false);
+    rss_direct(qts, 0x045, 0x18, true);
+}
+
+/* Paint screen pixel (x, y) through the public port. */
+static void pio_paint(QTestState *qts, uint32_t x, uint32_t y,
+                      uint32_t packed)
+{
+    mgras_public_write(qts, 0x5b, packed, false);
+    mgras_public_rect(qts, x, y, 1, 1, true);
+}
+
+/*
+ * Two pixels, one unit: the first word is the left pixel's and the second
+ * the right's, each with red in bits 7:0 as the DMA read gives them.
+ */
+static void test_pio_read_returns_the_box(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    pio_paint(qts, 640, 512, 0x00332211);
+    pio_paint(qts, 641, 512, 0x00665544);
+    mgras_enter_context(qts);
+
+    pio_read_start(qts, 640, 512, 2, 1, 0x8000);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x332211);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x665544);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * Three columns by two rows: each row starts a unit, the third column's
+ * unit carrying zero in its second word, and the top row comes first.
+ */
+static void test_pio_read_rows_start_a_unit(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    for (uint32_t i = 0; i < 6; i++) {
+        pio_paint(qts, 100 + i % 3, 200 + i / 3, 0x00010101 * (i + 1));
+    }
+    mgras_enter_context(qts);
+
+    pio_read_start(qts, 100, 200, 3, 2, 0x8000);
+    for (uint32_t row = 0; row < 2; row++) {
+        uint32_t first = 0x010101 * (3 * row + 1);
+
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, first);
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==,
+                        first + 0x010101);
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==,
+                        first + 0x020202);
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/* A transfer mode no capture has shown reads zero rather than pixels. */
+static void test_pio_read_other_mode_reads_zero(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    pio_paint(qts, 640, 512, 0x00332211);
+    mgras_enter_context(qts);
+
+    pio_read_start(qts, 640, 512, 2, 1, 0x1c000);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+}
+
 /* A context read out before a migration is written back after it. */
 static void test_gl_eviction_migration(void)
 {
@@ -18443,6 +18554,12 @@ int main(int argc, char **argv)
                    test_gl_eviction_needs_the_read_token);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-migration",
                    test_gl_eviction_migration);
+    qtest_add_func("sn0/origin2000/mgras/pio-read-returns-the-box",
+                   test_pio_read_returns_the_box);
+    qtest_add_func("sn0/origin2000/mgras/pio-read-rows-start-a-unit",
+                   test_pio_read_rows_start_a_unit);
+    qtest_add_func("sn0/origin2000/mgras/pio-read-other-mode-reads-zero",
+                   test_pio_read_other_mode_reads_zero);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-context-opener-resets-only-its-context",
                    test_gl_context_opener_resets_only_its_context);

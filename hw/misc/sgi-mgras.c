@@ -832,6 +832,14 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x02c574: return 0x8;
     /* Bits 7:4 are the RE4 revision; the rest is approximated. */
     case 0x02c578: return 0x100 | (s->board->re4_revision & 0xf) << 4;
+    /* The data port of a host read (sgi-mgras-raster.c). */
+    case SGI_MGRAS_RE_DATA_HI:
+    case SGI_MGRAS_RE_DATA_LO:
+        if (size != 4) {
+            mgras_error(s, addr, size, "unsupported read width");
+            return 0;
+        }
+        return sgi_mgras_raster_pio_read(s, addr == SGI_MGRAS_RE_DATA_HI);
     /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
     case 0x071f00: return 1;
@@ -1347,6 +1355,9 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
     s->glyph_row = s->glyph_unit = s->pio_x = s->pio_y = 0;
+    s->pio_read_active = false;
+    s->pio_read_x = s->pio_read_y = s->pio_read_w = s->pio_read_h = 0;
+    s->pio_read_next = s->pio_read_low = 0;
     s->public_glyph_row = 0;
     s->public_glyph_armed = s->public_glyph_wide_valid = false;
     s->cmd_token_class = s->cmd_token_reg = 0;
@@ -1655,6 +1666,7 @@ static int mgras_post_load(void *opaque, int version_id)
                                     s->cmd_token_payload_count) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > s->width || s->pio_y > s->height ||
+        !sgi_mgras_raster_pio_read_valid(s) ||
         !sgi_mgras_raster_pending_valid(s) ||
         !mgras_xmap_indices_valid(s) ||
         s->dac_lut_load_channel >= 3 ||
@@ -1774,7 +1786,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 26, .minimum_version_id = 26,
+    .name = TYPE_SGI_MGRAS, .version_id = 27, .minimum_version_id = 27,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -1946,6 +1958,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(eram_bpr, SGIMgrasState, 26),
         VMSTATE_UINT64_V(eram_next_host, SGIMgrasState, 26),
         VMSTATE_UINT32_V(eram_next_addr, SGIMgrasState, 26),
+        /* A host read through the data port, between its reads. */
+        VMSTATE_BOOL_V(pio_read_active, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_x, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_y, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_w, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_h, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_next, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_low, SGIMgrasState, 27),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
