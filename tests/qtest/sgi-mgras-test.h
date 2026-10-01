@@ -1405,17 +1405,28 @@ static inline void gl_pixels_program(QTestState *qts, int kind, uint32_t bpr,
 #define GL_PIXELS_INLINE      0x18
 #define GL_PIXELS_BY_DMA      0x99
 
-static inline void gl_pixels_draw_as(QTestState *qts, uint32_t row_words,
-                                     uint32_t flags)
+/*
+ * 0x8d20 with a row's words in two parts, first and second, as imgview's
+ * client sends them on the SSI; on the SI the second is 0.
+ */
+static inline void gl_pixels_draw_parts(QTestState *qts, uint32_t first,
+                                        uint32_t second, uint32_t flags)
 {
-    static const uint32_t rest[6] = { 0, 0, 2, 0x2a, 1, 0x49d0 };
+    static const uint32_t rest[5] = { 0, 2, 0x2a, 1, 0x49d0 };
 
     gl_word(qts, GL_PIXELS_HDR);
-    gl_word(qts, row_words);
-    for (int i = 0; i < 6; i++) {
+    gl_word(qts, first);
+    gl_word(qts, second);
+    for (int i = 0; i < 5; i++) {
         gl_word(qts, rest[i]);
     }
     gl_word(qts, flags);
+}
+
+static inline void gl_pixels_draw_as(QTestState *qts, uint32_t row_words,
+                                     uint32_t flags)
+{
+    gl_pixels_draw_parts(qts, row_words, 0, flags);
 }
 
 static inline void gl_pixels_draw(QTestState *qts, uint32_t row_words)
