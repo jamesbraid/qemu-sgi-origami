@@ -6,7 +6,7 @@
  * and test pattern that more than one of them uses lives here; anything only
  * one binary uses stays in that binary's source file.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef SGI_MGRAS_TEST_H

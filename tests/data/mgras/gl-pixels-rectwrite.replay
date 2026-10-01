@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 sgi-replay 2
 head sgi-mgras
 # One row of mandel's first rectwrite, cut from the IRIX 6.5.30 session
