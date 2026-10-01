@@ -576,6 +576,18 @@ static unsigned int mgras_xmap_write_targets(SGIMgrasState *s)
 }
 
 /*
+ * The kernel and the IDE select one RE for direct reads by writing its
+ * number to RSS register 0x112, bits 1:0. Bit 2 and bits 11:3 mean something
+ * else and are ignored here.
+ */
+#define MGRAS_RSS_RE_SELECT 0x112
+
+static uint32_t mgras_selected_re(SGIMgrasState *s)
+{
+    return s->rss[MGRAS_RSS_RE_SELECT] & 3;
+}
+
+/*
  * The PP1 an XMAP read answers from, or NULL for one the board lacks. With
  * every PP1 selected the first answers; what real hardware returns then is
  * unknown.
@@ -833,8 +845,14 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x020200: return 0;
     /* Readback grammar is unsupported. These are fixed approximations. */
     case 0x02c574: return 0x8;
-    /* Bits 7:4 are the RE4 revision; the rest is approximated. */
-    case 0x02c578: return 0x100 | (s->board->re4_revision & 0xf) << 4;
+    /*
+     * Bits 7:4 are the RE4 revision, bits 3:2 the selected RE and bits 1:0
+     * the RE count less one. The rest is approximated.
+     */
+    case 0x02c578:
+        return 0x100 | (s->board->re4_revision & 0xf) << 4 |
+               (mgras_selected_re(s) & 3) << 2 |
+               ((s->board->re_count - 1) & 3);
     /* The data port of a host read (sgi-mgras-raster.c). */
     case SGI_MGRAS_RE_DATA_HI:
     case SGI_MGRAS_RE_DATA_LO:

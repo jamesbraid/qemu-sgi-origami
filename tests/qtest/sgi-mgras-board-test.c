@@ -1376,6 +1376,60 @@ static void test_board_identity(gconstpointer data)
     qtest_quit(s);
 }
 
+/* Select an RE for direct access: a raster write to RSS register 0x112. */
+static void board_select_re(QTestState *s, uint32_t value)
+{
+    qtest_writeq(s, REG_CONTEXT_COMMAND,
+                 ((uint64_t)(0x00180004 | 0x112 << 8) << 32) | value);
+}
+
+/*
+ * The RE4 status register reports the RE that register 0x112 bits 1:0
+ * select in bits 3:2 and the board's RE count less one in bits 1:0, which
+ * is what the IDE's status test expects after it selects each RE.
+ */
+static void test_board_re4_status_reports_selected_re(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+
+    g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
+                    e->re - 1);
+    for (uint32_t re = 0; re < e->re; re++) {
+        board_select_re(s, re);
+        g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
+                        re << 2 | (e->re - 1));
+        /* Bit 2 of the written value does not select anything. */
+        board_select_re(s, re | 4);
+        g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
+                        re << 2 | (e->re - 1));
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/* Selecting an RE leaves the revision in bits 7:4 and the ready bit 8. */
+static void test_board_re4_status_keeps_revision_bits(void)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
+        const MgrasBoardExpect *e = &mgras_board_expect[i];
+        QTestState *s;
+
+        if (!e->implemented) {
+            continue;
+        }
+        s = mgras_board_init(e);
+        for (uint32_t re = 0; re < e->re; re++) {
+            board_select_re(s, re);
+            g_assert_cmphex((qtest_readl(s, REG_DIRECT_COPY_READY) >> 4) & 0xf,
+                            ==, e->re4);
+            g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0x100, ==,
+                            0x100);
+        }
+        qtest_quit(s);
+    }
+}
+
 /*
  * The board's RE count, not a separate switch, decides how many PP1s answer
  * behind PP1SELECT: two per RE. A write
@@ -1699,6 +1753,16 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, e, test_board_identity);
         qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
         qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
+        if (e->implemented && (!strcmp(e->board, "si") ||
+                               !strcmp(e->board, "ssi") ||
+                               !strcmp(e->board, "essi"))) {
+            g_autofree char *re4 = g_strdup_printf(
+                "sn0/origin2000/mgras/re4-status-reports-selected-re/%s",
+                e->board);
+
+            qtest_add_data_func(re4, e,
+                                test_board_re4_status_reports_selected_re);
+        }
         if (!e->implemented) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);
@@ -1706,6 +1770,8 @@ int main(int argc, char **argv)
             qtest_add_data_func(refused, e, test_board_refused);
         }
     }
+    qtest_add_func("sn0/origin2000/mgras/re4-status-keeps-revision-bits",
+                   test_board_re4_status_keeps_revision_bits);
     qtest_add_func("sn0/origin2000/mgras/board-inventory-registers",
                    test_board_inventory_registers);
     qtest_add_func("sn0/origin2000/mgras/int-dest-alt-offset-aliases",
