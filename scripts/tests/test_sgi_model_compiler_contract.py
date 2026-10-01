@@ -310,6 +310,21 @@ class BedrockConfigurationTests(unittest.TestCase):
 class RecordShapeTests(unittest.TestCase):
     """Compile shape per record type, read off real resolved fixtures."""
 
+    def test_synthetic_expansion_uart_selection(self):
+        model = _resolved(
+            "origin300-pci-expansion-configuration-storage-experiment")
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        raw["unconnected_uart"] = True
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertTrue(descriptor["unconnected_uart"])
+        raw["unconnected_uart"] = False
+        with self.assertRaisesRegex(CompileError, "synthetic UART"):
+            compile_model(model)
+        raw["unconnected_uart"] = True
+        del raw["configuration_storage"]
+        with self.assertRaisesRegex(CompileError, "synthetic UART"):
+            compile_model(model)
+
     def test_io_only_bedrock_is_a_module_owned_fabric_peer(self):
         model = _resolved("origin300")
         model["components"].extend([

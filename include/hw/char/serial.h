@@ -101,6 +101,8 @@ extern const MemoryRegionOps serial_io_ops;
 #define TYPE_SERIAL "serial"
 OBJECT_DECLARE_SIMPLE_TYPE(SerialState, SERIAL)
 
+void serial_reset_device(SerialState *s);
+
 #define SERIAL_GPIO_TX_READY "tx-ready"
 
 #endif

@@ -12,6 +12,7 @@
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
+#include "hw/char/serial-mm.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -30,6 +31,11 @@ struct SGIOrigin300PciExpansionState {
     SGIBICBoardInterfaceState *board_interface;
     uint8_t board_attached;
     uint8_t processor_absence_selected;
+    bool unconnected_uart;
+    uint32_t uart_origin_count;
+    SerialMM *uart;
+    AddressSpace uart_space;
+    bool uart_initialized;
     DeviceState *chip[3];
     SGIXioLink host_link;
     SGIXioLink head_link[4];
@@ -276,6 +282,9 @@ bool sgi_origin300_pci_expansion_request_power(
         s->power_active = false;
         return false;
     }
+    if (s->uart) {
+        serial_reset_device(&s->uart->serial);
+    }
     s->completed_power = on;
     if (on) {
         for (unsigned chip = 0; chip < 3; chip++) {
@@ -498,6 +507,9 @@ static void expansion_reset_enter(Object *obj, ResetType type)
 {
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(obj);
 
+    if (s->uart) {
+        serial_reset_device(&s->uart->serial);
+    }
     s->requested_power = s->initial_power;
     s->completed_power = s->initial_power;
     s->power_active = false;
@@ -519,6 +531,10 @@ static void expansion_unrealize(DeviceState *dev)
 
     expansion_intx_clear(s);
     expansion_storage_cleanup(s);
+    if (s->uart && DEVICE(s->uart)->realized) {
+        qdev_unrealize(DEVICE(&s->uart->serial));
+        qdev_unrealize(DEVICE(s->uart));
+    }
     if (s->intx_inputs) {
         for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
             const char *name = head % 2 ? "head-f-pci-intx" : "head-e-pci-intx";
@@ -537,6 +553,12 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
+    if (version < 7 && s->unconnected_uart) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "pci-expansion: synthetic UART requires migration "
+                      "version 7\n");
+        return -EINVAL;
+    }
     if ((version < 6 && s->processor_absence_selected) ||
         (version < 5 && s->storage_selected) ||
         (version < 4 && s->power_selected) ||
@@ -580,6 +602,35 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
     if (!expansion_available(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "pci-expansion: main power off\n");
         return MEMTX_ACCESS_ERROR;
+    }
+    if (local >= UINT64_C(0x10030000080) &&
+        local < UINT64_C(0x100300000c0)) {
+        uint8_t bytes[8] = { 0 };
+        MemTxResult result;
+
+        if (!s->uart) {
+            return MEMTX_DECODE_ERROR;
+        }
+        if (origin >= s->uart_origin_count) {
+            return MEMTX_ACCESS_ERROR;
+        }
+        offset = local - UINT64_C(0x10030000080);
+        if (size != 8 || (offset & 7)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pci-expansion: unsupported synthetic UART "
+                          "transfer at 0x%" HWADDR_PRIx " size %zu\n",
+                          offset, size);
+            return MEMTX_ERROR;
+        }
+        if (write) {
+            stq_be_p(bytes, ldq_be_p(buffer) & 0xff);
+        }
+        result = address_space_rw(&s->uart_space, offset, attrs, bytes,
+                                  sizeof(bytes), write);
+        if (!write && result == MEMTX_OK) {
+            stq_be_p(buffer, ldq_be_p(bytes) & 0xff);
+        }
+        return result;
     }
     if ((local >= UINT64_C(0x38000000) && local < UINT64_C(0x40000000)) ||
         (local >= UINT64_C(0x10038000000) &&
@@ -827,6 +878,30 @@ static void expansion_realize(DeviceState *dev, Error **errp)
             "pci-expansion.configuration-storage");
         s->storage_space_initialized = true;
     }
+    if (s->unconnected_uart) {
+        if (!s->ni_route || !s->power_selected ||
+            (s->uart_origin_count != 2 && s->uart_origin_count != 4)) {
+            error_setg(errp, "synthetic UART requires NI, scoped power "
+                       "and two or four compute origins");
+            return;
+        }
+        s->uart = SERIAL_MM(qdev_new(TYPE_SERIAL_MM));
+        object_property_add_child(OBJECT(s), "unconnected-uart",
+                                  OBJECT(s->uart));
+        qdev_prop_set_uint8(DEVICE(s->uart), "regshift", 3);
+        qdev_prop_set_uint8(DEVICE(s->uart), "endianness", DEVICE_BIG_ENDIAN);
+        qdev_prop_set_uint32(DEVICE(s->uart), "baudbase", 115200);
+        if (!sysbus_realize(SYS_BUS_DEVICE(s->uart), errp)) {
+            return;
+        }
+        /* Check module compatibility before loading its owned UART state. */
+        vmstate_unregister(VMSTATE_IF(s->uart), &vmstate_serial_mm, s->uart);
+        address_space_init(&s->uart_space,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->uart), 0),
+            "pci-expansion.unconnected-uart");
+        s->uart_initialized = true;
+        serial_reset_device(&s->uart->serial);
+    }
     s->endpoint = (SN1FabricEndpoint) {
         .owner = OBJECT(s),
         .bedrock = bic,
@@ -892,6 +967,12 @@ static void expansion_finalize(Object *obj)
     unsigned i;
 
     expansion_storage_cleanup(s);
+    if (s->uart_initialized) {
+        address_space_destroy(&s->uart_space);
+    }
+    if (s->uart) {
+        object_unref(OBJECT(s->uart));
+    }
     g_free(s->storage_module_id);
     g_free(s->storage_controller_id);
     for (unsigned view = 0; view < 12; view++) {
@@ -917,6 +998,10 @@ static void expansion_finalize(Object *obj)
 }
 
 static const Property expansion_properties[] = {
+    DEFINE_PROP_UINT32("uart-origin-count", SGIOrigin300PciExpansionState,
+                       uart_origin_count, 0),
+    DEFINE_PROP_BOOL("unconnected-uart-experiment",
+                     SGIOrigin300PciExpansionState, unconnected_uart, false),
     DEFINE_PROP_UINT32("placement", SGIOrigin300PciExpansionState,
                        placement, UINT32_MAX),
     DEFINE_PROP_UINT8("node-number", SGIOrigin300PciExpansionState,
@@ -936,13 +1021,24 @@ static const Property expansion_properties[] = {
                       port[3], 0),
 };
 
+static bool expansion_uart_state_needed(void *opaque, int version)
+{
+    SGIOrigin300PciExpansionState *s = opaque;
+
+    return version >= 7 && s->unconnected_uart;
+}
+
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(unconnected_uart, SGIOrigin300PciExpansionState, 7,
+                       vmstate_info_uint8_equal, bool),
+        VMSTATE_SINGLE(uart_origin_count, SGIOrigin300PciExpansionState, 7,
+                       vmstate_info_uint32_equal, uint32_t),
         VMSTATE_SINGLE(processor_absence_selected,
                        SGIOrigin300PciExpansionState, 6,
                        vmstate_info_uint8_equal, uint8_t),
@@ -994,6 +1090,9 @@ static const VMStateDescription vmstate_expansion = {
                               SGI_ORIGIN300_PCI_HEADS, 2),
         VMSTATE_UINT8_ARRAY_V(intx_levels, SGIOrigin300PciExpansionState,
                              SGI_ORIGIN300_PCI_HEADS, 2),
+        VMSTATE_STRUCT_POINTER_TEST_V(uart, SGIOrigin300PciExpansionState,
+                                      expansion_uart_state_needed, 7,
+                                      vmstate_serial_mm, SerialMM),
         VMSTATE_END_OF_LIST()
     },
 };

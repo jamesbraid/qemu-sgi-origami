@@ -557,6 +557,10 @@
 #     Requires @main-power and an explicit runtime image
 #     binding.
 #
+# @unconnected-uart: Synthetic UART without a backend or packet
+#     service.
+#     Requires selected configuration storage.
+#
 # @initial-main-power: Explicit initial main-power state.
 #     Requires @main-power.
 #
@@ -586,6 +590,7 @@
             '*controller-startup': 'SGIModelControllerStartup',
             '*main-power': 'SGIModelMainPower',
             '*configuration-storage': 'SGIModelConfigurationStorage',
+            '*unconnected-uart': 'bool',
             '*power-command-issuer': 'uint32',
             '*initial-main-power': 'bool',
             '*initial-latch': 'uint16',

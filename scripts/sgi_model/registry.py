@@ -20,4 +20,5 @@ IMPLEMENTED_TOPOLOGIES = (
     "onyx2-deskside", "origin300-v12-direct", "origin300-vbrick",
     "origin300-pci-expansion-experiment",
     "origin300-pci-expansion-configuration-storage-experiment",
+    "origin300-pci-expansion-unconnected-uart-experiment",
 )

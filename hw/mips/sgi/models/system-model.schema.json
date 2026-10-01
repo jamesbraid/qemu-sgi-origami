@@ -409,6 +409,7 @@
                 "dependentRequired": {
                   "power_command_issuer": ["main_power"],
                   "configuration_storage": ["main_power"],
+                  "unconnected_uart": ["configuration_storage"],
                   "main_power": ["initial_main_power"],
                   "initial_main_power": ["main_power"]
                 },
@@ -465,6 +466,7 @@
                   "power_command_issuer": { "$ref": "#/$defs/identifier" },
                   "main_power": { "enum": ["functional-experiment"] },
                   "configuration_storage": { "enum": ["bedrock-flash-experiment"] },
+                  "unconnected_uart": { "const": true },
                   "initial_main_power": { "type": "boolean" },
                   "controller_startup": {
                     "enum": ["bic-functional-experiment"]

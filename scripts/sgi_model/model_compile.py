@@ -1431,6 +1431,12 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
                     "configuration storage requires its supported selection "
                     "and explicit main power")
             record["configuration_storage"] = raw["configuration_storage"]
+        if "unconnected_uart" in raw:
+            if (raw["unconnected_uart"] is not True
+                    or "configuration_storage" not in raw):
+                raise CompileError(
+                    "synthetic UART requires selected configuration storage")
+            record["unconnected_uart"] = True
         if "power_command_issuer" in raw:
             issuer = controller_indices.get(raw["power_command_issuer"])
             if ("main_power" not in raw or issuer is None

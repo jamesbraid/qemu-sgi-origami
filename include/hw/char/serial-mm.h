@@ -44,6 +44,8 @@ struct SerialMM {
     uint8_t endianness;
 };
 
+extern const VMStateDescription vmstate_serial_mm;
+
 SerialMM *serial_mm_init(MemoryRegion *address_space,
                          hwaddr base, int regshift,
                          qemu_irq irq, int baudbase,
