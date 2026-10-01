@@ -177,7 +177,7 @@ static void test_gl_texture_migration(void)
 
 /*
  * Rewrite the level number of the one level record in a migration stream
- * of a 4-by-2 level of base 0 with the number level.
+ * of a 4-by-2 level of base 0 and TXMIPMAP word 0 with the number level.
  */
 static void tex_patch_level_number(const char *path, uint32_t level,
                                    uint32_t to)
@@ -187,14 +187,18 @@ static void tex_patch_level_number(const char *path, uint32_t level,
     int found = 0;
 
     g_assert_true(g_file_get_contents(path, &data, &len, NULL));
-    for (gsize i = 0; i + 28 <= len; i++) {
+    for (gsize i = 0; i + 32 <= len; i++) {
         const uint8_t *p = (const uint8_t *)data + i;
 
-        /* used, base, level, log2 width 2, log2 height 1, mode, 32 bytes */
+        /*
+         * used, base, block 0, level, log2 width 2, log2 height 1, mode,
+         * 32 bytes
+         */
         if (ldl_be_p(p) == 1 && ldl_be_p(p + 4) == 0 &&
-            ldl_be_p(p + 8) == level && ldl_be_p(p + 12) == 2 &&
-            ldl_be_p(p + 16) == 1 && ldl_be_p(p + 24) == 32) {
-            stl_be_p(data + i + 8, to);
+            ldl_be_p(p + 8) == 0 && ldl_be_p(p + 12) == level &&
+            ldl_be_p(p + 16) == 2 && ldl_be_p(p + 20) == 1 &&
+            ldl_be_p(p + 28) == 32) {
+            stl_be_p(data + i + 12, to);
             found++;
         }
     }
@@ -203,9 +207,10 @@ static void tex_patch_level_number(const char *path, uint32_t level,
 }
 
 /*
- * Two levels of one base with one level number are not a state the model
- * can reach (a load replaces), so a stream carrying them is corrupt and
- * is refused; the stream as saved, with levels 0 and 1, loads.
+ * Two levels of one base and TXMIPMAP word with one level number are not
+ * a state the model can reach (a load replaces), so a stream carrying them
+ * is corrupt and is refused; the stream as saved, with levels 0 and 1,
+ * loads.
  */
 static void test_gl_texture_migration_rejects_duplicate_level(void)
 {
