@@ -516,7 +516,7 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test'] + \
-  (config_all_devices.has_key('CONFIG_SGI_DEVICES') and
+  (config_all_devices.has_key('CONFIG_SGI_HEART_XTALK_TEST') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['sgi-heart-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?

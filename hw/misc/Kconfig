@@ -434,6 +434,12 @@ config SGI_KONA_PORTS
     bool
     select SGI_COMMAND_PORT
 
+config SGI_HEART_XTALK_TEST
+    bool
+    default y if SGI_DEVICES
+    depends on TEST_DEVICES && SGI_DEVICES
+    select SGI_XBOW
+
 config MEMORY_TRANSACTION_TEST
     bool
     default y if TEST_DEVICES
