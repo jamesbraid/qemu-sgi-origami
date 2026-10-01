@@ -1155,8 +1155,10 @@ static void test_r12000_count_compare_ip7(void)
     g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
                     sizeof(image->bytes));
     close(fd);
+    /* Host delays must not consume the future Compare margin. */
     qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
-                      "-bios %s -accel tcg -S", R12000_CPU_1, path);
+                      "-bios %s -accel tcg,thread=single "
+                      "-icount shift=10,sleep=off -S", R12000_CPU_1, path);
     unlink(path);
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
     r12000_wait_mailbox(qts, 16);
