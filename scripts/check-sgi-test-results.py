@@ -22,11 +22,6 @@ _ROM_PARSER = importlib.util.module_from_spec(_ROM_PARSER_SPEC)
 sys.modules[_ROM_PARSER_SPEC.name] = _ROM_PARSER
 _ROM_PARSER_SPEC.loader.exec_module(_ROM_PARSER)
 
-# This cross-version migration case needs a separately supplied v9 QEMU.
-# Its explicit skip is expected when that reference binary is unavailable.
-_OPTIONAL_SKIP = ('qtest-mips64/sn0-origin2000-mgras-test',
-                  '/mips64/sn0/origin2000/mgras/migration-from-v9-format-default')
-
 
 class ResultError(Exception):
     pass
@@ -144,7 +139,7 @@ def read_report(path, optional_skips=()):
     suites = {}
     failures = []
     skips = []
-    allowed_skips = {_OPTIONAL_SKIP, *optional_skips}
+    allowed_skips = set(optional_skips)
     for case in cases:
         name = case.get('name')
         if not name:
