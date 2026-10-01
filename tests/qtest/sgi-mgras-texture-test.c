@@ -320,7 +320,7 @@ static void test_gl_texture_tl_mode_persists(void)
 /*
  * What the model does not draw stays untextured rather than drawn wrong:
  * TEXMODE1 bit 0 clear, a linear magnification filter (TEXMODE2 bit 7),
- * a clamp (bit 11), environment code 3 on a colour class, a
+ * a detail texture (bit 9), environment code 3 on a colour class, a
  * level kept at 12 bits, which is not stored, and 0x0c00 after the
  * bind. Each quad is white.
  */
@@ -329,7 +329,7 @@ static void test_gl_texture_unsupported_draws_untextured(void)
     static const uint32_t cases[][3] = {
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON & ~1u, TEX_TEXMODE2_RGBA8 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80 },
-        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x800 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x200 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 6, TEX_TEXMODE2_RGBA8 },
         { 0x34046, TEX_TEXMODE1_ON, 0x10008 },
     };
@@ -951,6 +951,149 @@ static void test_gl_texture_env_decal_rgba(void)
     qtest_quit(t);
 }
 
+#define TEX_WRAP_S            0x0800
+#define TEX_WRAP_T            0x1000
+#define TEX_WRAP_CLAMP        0x4000    /* bit 14: CLAMP, not to border */
+
+/* TXBCOLOR's two words for a colour of four 12-bit fields. */
+#define TEX_BORDER_RG(r, g)   { 0x184, (r) | (g) << 12 }
+#define TEX_BORDER_BA(b, a)   { 0x185, (b) | (a) << 12 }
+
+/* Texel i of a 4-by-2 RGBA level, as tex_texels() makes it. */
+static void tex_wrap_rgba(uint8_t texels[32])
+{
+    tex_texels(texels);
+}
+
+/*
+ * Coordinate 1.5 under a nearest filter: with bit 14 set (GL_CLAMP) the
+ * coordinate clamps to the edge texel, with it clear (clamp to border)
+ * the texel is TXBCOLOR. The quad runs s over 0 to 2 across 32 pixels,
+ * so pixel 42 is s = 1.6 and pixel 18 is inside the image.
+ */
+static void test_gl_texture_clamp_border_nearest(void)
+{
+    static const float wide[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 2, 0 }, { 48, 32, 2, 1 }, { 16, 32, 0, 1 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_wrap_rgba(texels);
+    for (int clamp = 0; clamp <= 1; clamp++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .texels = texels, .quad = wide,
+            .mode2 = TEX_WRAP_S | (clamp ? TEX_WRAP_CLAMP : 0),
+            .extra = { TEX_BORDER_RG(0xfff, 0),
+                       TEX_BORDER_BA(0xfff, 0xfff) },
+            .n_extra = 2,
+        };
+        const uint8_t *edge = &texels[4 * 3];
+
+        tex_scene(t, &sc);
+        tex_expect(gl_window_pixel(t, 18, 20), texels[0] / 255.0,
+                   texels[1] / 255.0, texels[2] / 255.0);
+        if (clamp) {
+            tex_expect(gl_window_pixel(t, 42, 20), edge[0] / 255.0,
+                       edge[1] / 255.0, edge[2] / 255.0);
+        } else {
+            tex_expect(gl_window_pixel(t, 42, 20), 1, 0, 1);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * S repeats while T clamps: s = 1.28 wraps to texel 1 and t = 2.34
+ * clamps to the top row, texel 5, where a shared clamp would give the
+ * edge texel 7 and a shared repeat texel 1. With bit 14 clear, T clamps
+ * to the border instead, which comes from the one flag all axes share.
+ */
+static void test_gl_texture_wrap_mixed_axes(void)
+{
+    static const float wide[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 2, 0 }, { 48, 32, 2, 3 }, { 16, 32, 0, 3 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
+
+    tex_wrap_rgba(texels);
+    for (int clamp = 0; clamp <= 1; clamp++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .texels = texels, .quad = wide,
+            .mode2 = TEX_WRAP_T | (clamp ? TEX_WRAP_CLAMP : 0),
+            .extra = { TEX_BORDER_RG(0xfff, 0),
+                       TEX_BORDER_BA(0xfff, 0xfff) },
+            .n_extra = 2,
+        };
+        const uint8_t *want = &texels[4 * 5];
+
+        tex_scene(t, &sc);
+        if (clamp) {
+            tex_expect(gl_window_pixel(t, 36, 28), want[0] / 255.0,
+                       want[1] / 255.0, want[2] / 255.0);
+        } else {
+            tex_expect(gl_window_pixel(t, 36, 28), 1, 0, 1);
+        }
+        /* Inside t, S still wraps: s = 1.28 is texel 1 of row 0. */
+        tex_expect(gl_window_pixel(t, 36, 17), texels[4] / 255.0,
+                   texels[5] / 255.0, texels[6] / 255.0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * One border colour, (0.8, 0.4, 0.2, 0.6), reduced to each class as the
+ * texture's own format (OpenGL 1.2.1 3.8.5, approximated): alpha takes
+ * A, luminance and intensity take R, luminance-alpha takes R and A, RGB
+ * takes R, G, B with alpha 1. Drawn outside a clamp-to-border texture
+ * under a red fragment over white, so the green channel is one minus
+ * the alpha.
+ */
+static void test_gl_texture_border_per_class(void)
+{
+    static const float wide[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 2, 0 }, { 48, 32, 2, 1 }, { 16, 32, 0, 1 },
+    };
+    static const struct {
+        uint32_t layout, cls;
+        double r, g, b;
+    } cases[] = {
+        { TEX_LAYOUT_ONE, TEX_CLASS_ALPHA, 1, 0.4, 0.4 },
+        { TEX_LAYOUT_ONE, TEX_CLASS_LUMINANCE, 0.8, 0, 0 },
+        { TEX_LAYOUT_ONE, TEX_CLASS_INTENSITY,
+          0.8 * 0.8 + 0.2, 0.2, 0.2 },
+        { TEX_LAYOUT_LA, TEX_CLASS_LUMINANCE,
+          0.8 * 0.6 + 0.4, 0.4, 0.4 },
+        { TEX_LAYOUT_RGB, TEX_CLASS_COLOUR, 0.8, 0, 0 },
+        { TEX_LAYOUT_RGBA, TEX_CLASS_COLOUR,
+          0.8 * 0.6 + 0.4, 0.4, 0.4 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[64] = { 0 };
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        TexScene sc = {
+            .layout = cases[i].layout, .depth = 1, .cls = cases[i].cls,
+            .texels = texels, .quad = wide, .frag = { 1, 0, 0, 1 },
+            .over_white = true, .mode2 = TEX_WRAP_S,
+            .extra = { TEX_BORDER_RG(0xccc, 0x666),
+                       TEX_BORDER_BA(0x333, 0x999) },
+            .n_extra = 2,
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(gl_window_pixel(t, 42, 20), cases[i].r, cases[i].g,
+                   cases[i].b);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -999,6 +1142,12 @@ int main(int argc, char **argv)
                    test_gl_texture_replace_is_modulate);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-env-decal-rgba",
                    test_gl_texture_env_decal_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-clamp-border-nearest",
+                   test_gl_texture_clamp_border_nearest);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-wrap-mixed-axes",
+                   test_gl_texture_wrap_mixed_axes);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-border-per-class",
+                   test_gl_texture_border_per_class);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",
