@@ -81,6 +81,25 @@
 #define R10K_BPT_LINE     8
 
 
+enum {
+    R12000_PRID,
+    R12000_FPU_ID,
+    R12000_RESET_MODE,
+    R12000_SCACHE_BYTES,
+    R12000_SCACHE_BLOCK_WORDS,
+    R12000_PROFILE_FIELDS,
+};
+
+/* Immutable configuration and the definition copy owned by this CPU. */
+typedef struct R10KCPUProfile {
+    uint32_t r10000_prid;
+    uint32_t values[R12000_PROFILE_FIELDS];
+    bool set[R12000_PROFILE_FIELDS];
+    uint32_t migration_profile[R12000_PROFILE_FIELDS];
+    struct mips_def_t *cpu_model;
+    bool valid;
+} R10KCPUProfile;
+
 typedef struct R10KState {
     /*
      * Writable-bit masks, copied from the CPU definition at reset. Not
