@@ -304,6 +304,176 @@
                 }
               }
             },
+            "l1_management": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "owners",
+                "associations",
+                "attachments"
+              ],
+              "properties": {
+                "owners": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "controller",
+                      "identity"
+                    ],
+                    "properties": {
+                      "controller": {
+                        "$ref": "#/$defs/identifier"
+                      },
+                      "identity": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 18446744073709551615
+                      }
+                    }
+                  }
+                },
+                "associations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "from",
+                      "to",
+                      "reachable"
+                    ],
+                    "properties": {
+                      "from": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4294967295
+                      },
+                      "to": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4294967295
+                      },
+                      "reachable": {
+                        "type": "boolean"
+                      }
+                    }
+                  }
+                },
+                "attachments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "issuer",
+                      "owner"
+                    ],
+                    "properties": {
+                      "issuer": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4294967295
+                      },
+                      "owner": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4294967295
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "io_assemblies": {
+              "type": "array",
+              "description": "Explicit experimental I/O assembly construction. Placement is immutable; initial node number is guest-visible reset state.",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "version",
+                  "kind",
+                  "peer",
+                  "module",
+                  "controller",
+                  "placement",
+                  "initial_node_number",
+                  "bedrock_revision",
+                  "xbridge_revision",
+                  "head_ports",
+                  "controller_profile",
+                  "bic_identity"
+                ],
+                "properties": {
+                  "version": {
+                    "const": 1
+                  },
+                  "kind": {
+                    "const": "origin300-pci-expansion"
+                  },
+                  "peer": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "module": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "controller": {
+                    "$ref": "#/$defs/identifier"
+                  },
+                  "placement": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 127
+                  },
+                  "initial_node_number": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 127
+                  },
+                  "bedrock_revision": {
+                    "const": 2
+                  },
+                  "xbridge_revision": {
+                    "const": 2
+                  },
+                  "head_ports": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "integer",
+                      "enum": [8, 9, 12, 13]
+                    }
+                  },
+                  "controller_profile": {
+                    "const": "pci-expansion"
+                  },
+                  "bic_identity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 18446744073709551615
+                  },
+                  "initial_latch": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535
+                  },
+                  "intx_map": {
+                    "type": "array",
+                    "minItems": 48,
+                    "maxItems": 48,
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 7
+                    }
+                  }
+                }
+              }
+            },
             "synthetic_identities": {
               "type": "array",
               "description": "Explicit outer-composition policy for synthetic physical chip identities. Component IDs are final resolved IDs; child module emulation defaults are not imported.",

@@ -1288,6 +1288,121 @@ def _compile_io_peer(model: dict, components: dict[str, dict], entry: dict,
     }
 
 
+def _compile_l1_management(model: dict, controllers: list[dict]) -> dict | None:
+    raw = model["machine"].get("emulation", {}).get("l1_management")
+    if raw is None:
+        return None
+    indices = {controller["id"]: i for i, controller in enumerate(controllers)}
+    owners = []
+    used_controllers, identities = set(), set()
+    for owner in raw.get("owners", []):
+        index = indices.get(owner.get("controller"))
+        identity = owner.get("identity")
+        if (index is None or controllers[index]["kind"] != "L1"
+                or index in used_controllers or type(identity) is not int
+                or not 0 < identity <= 0xffffffffffffffff or identity in identities):
+            raise CompileError("invalid or duplicate L1 management owner")
+        owners.append({"controller_index": index, "identity": identity})
+        used_controllers.add(index)
+        identities.add(identity)
+    if used_controllers != set(range(len(controllers))):
+        raise CompileError("L1 management needs one owner for every controller")
+    associations, endpoints = [], set()
+    for edge in raw.get("associations", []):
+        source, target = edge.get("from"), edge.get("to")
+        if (type(source) is not int or type(target) is not int
+                or not 0 <= source < len(owners) or not 0 <= target < len(owners)
+                or source == target or (source, target) in endpoints
+                or type(edge.get("reachable")) is not bool):
+            raise CompileError("invalid or duplicate L1 management association")
+        associations.append(dict(edge))
+        endpoints.add((source, target))
+    attachments, issuers = [], set()
+    for attachment in raw.get("attachments", []):
+        issuer, owner = attachment.get("issuer"), attachment.get("owner")
+        if (type(issuer) is not int or type(owner) is not int
+                or (issuer, owner) not in endpoints or issuer in issuers):
+            raise CompileError("invalid or unassociated L1 management attachment")
+        attachments.append(dict(attachment))
+        issuers.add(issuer)
+    return {"owners": owners, "associations": associations, "attachments": attachments}
+
+
+def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
+                           modules: list[dict], controllers: list[dict]) -> list[dict]:
+    records = []
+    peer_indices = {peer["id"]: i for i, peer in enumerate(peers)}
+    module_indices = {module["id"]: i for i, module in enumerate(modules)}
+    controller_indices = {controller["id"]: i for i, controller in enumerate(controllers)}
+    placements = set(range(len(index_graph(model)["nodes"])))
+    used_peers = set()
+    used_modules = set()
+    for raw in model["machine"].get("emulation", {}).get("io_assemblies", []):
+        def number(name, maximum):
+            value = raw.get(name)
+            if type(value) is not int or not 0 <= value <= maximum:
+                raise CompileError(f"I/O assembly has invalid {name}")
+            return value
+
+        if raw.get("version") != 1 or raw.get("kind") != "origin300-pci-expansion":
+            raise CompileError("unsupported I/O assembly version or kind")
+        peer_index = peer_indices.get(raw.get("peer"))
+        module_index = module_indices.get(raw.get("module"))
+        controller_index = controller_indices.get(raw.get("controller"))
+        if peer_index is None or module_index is None or controller_index is None:
+            raise CompileError("I/O assembly names an unknown peer, module or controller")
+        module = modules[module_index]
+        controller = controllers[controller_index]
+        if (peers[peer_index]["module_index"] != module_index
+                or controller["module_index"] != module_index
+                or module["controller_index"] != controller_index
+                or controller["kind"] != "L1" or module["nodes"]
+                or module.get("io_peers") != [peer_index]):
+            raise CompileError("I/O assembly has inconsistent module/controller ownership")
+        if peer_index in used_peers or module_index in used_modules:
+            raise CompileError("duplicate I/O assembly peer or module")
+        for component in components.values():
+            if (component.get("kind") in {"cpu", "memory", "flash"}
+                    and _is_within(components, component, module["id"])):
+                raise CompileError(f"expansion module cannot own {component['kind']}")
+        placement = number("placement", 127)
+        if placement in placements:
+            raise CompileError("I/O assembly placement aliases another endpoint")
+        ports = raw.get("head_ports")
+        if (not isinstance(ports, list) or len(ports) != 4
+                or any(type(port) is not int or port not in (8, 9, 12, 13) for port in ports)
+                or len(set(ports)) != 4):
+            raise CompileError("I/O assembly requires four distinct external head ports")
+        if (raw.get("bedrock_revision") != 2 or raw.get("xbridge_revision") != 2
+                or raw.get("controller_profile") != "pci-expansion"):
+            raise CompileError("unsupported I/O assembly revision or controller profile")
+        identity = number("bic_identity", 0xffffffffffffffff)
+        if identity & 0xf000 != 0xc000:
+            raise CompileError("I/O assembly requires synthetic expansion BIC identity")
+        record = {
+            "version": 1, "kind": "ORIGIN300_PCI_EXPANSION",
+            "peer_index": peer_index, "module_index": module_index,
+            "controller_index": controller_index, "placement": placement,
+            "initial_node_number": number("initial_node_number", 127),
+            "bedrock_revision": 2, "xbridge_revision": 2,
+            "head_ports": ports.copy(), "controller_profile": "pci-expansion",
+            "bic_identity": identity,
+        }
+        if "initial_latch" in raw:
+            record["initial_latch"] = number("initial_latch", 65535)
+        if "intx_map" in raw:
+            pins = raw["intx_map"]
+            if (not isinstance(pins, list) or len(pins) != 48
+                    or any(type(pin) is not int or not 0 <= pin < 8 for pin in pins)):
+                raise CompileError("I/O assembly requires 48 explicit PCI INTx inputs")
+            record["intx_map"] = pins.copy()
+        records.append(record)
+        used_peers.add(peer_index)
+        used_modules.add(module_index)
+        placements.add(placement)
+    return records
+
+
 def _one_wire_identities(model: dict, components: dict[str, dict],
                           master_id: str) -> list[str]:
     """Every `identity.part` an `identity`-kind component answers with on the
@@ -2168,4 +2283,10 @@ def compile_model(model: dict) -> dict:
     }
     if io_peers:
         topology["io_peers"] = io_peers
+    assemblies = _compile_io_assemblies(model, components, io_peers, modules, controllers)
+    if assemblies:
+        topology["io_assemblies"] = assemblies
+    management = _compile_l1_management(model, controllers)
+    if management is not None:
+        topology["l1_management"] = management
     return topology

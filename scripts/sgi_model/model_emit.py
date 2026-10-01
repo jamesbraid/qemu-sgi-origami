@@ -348,6 +348,12 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
 
     if topology.get("io_peers"):
         result["io-peers"] = [_io_peer(peer) for peer in topology["io_peers"]]
+    if topology.get("io_assemblies"):
+        result["io-assemblies"] = [
+            {**_kebab_keys(record), "kind": _enum(record["kind"])}
+            for record in topology["io_assemblies"]]
+    if "l1_management" in topology:
+        result["l1-management"] = _kebab_keys(topology["l1_management"])
     return result
 
 def _node_population(raw: dict) -> dict:
