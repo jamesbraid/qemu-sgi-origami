@@ -725,6 +725,31 @@ def validate_hub_ni_revision_overrides(model: dict[str, Any]) -> None:
             )
 
 
+def validate_system_timekeepers(model: dict[str, Any]) -> None:
+    selected = model.get("machine", {}).get("emulation", {}).get(
+        "system_timekeepers", {})
+    components = {c["id"]: c for c in model.get("components", [])}
+    for board, policy in selected.items():
+        fitted = components.get(board, {})
+        if fitted.get("kind") != "board" or not any(
+                c.get("parent") == board and c.get("hardware_kind") == "ioc3"
+                for c in components.values()):
+            raise ResolutionError(
+                f"system Timekeeper board '{board}' has no fitted IOC3")
+        machine = model["machine"]
+        if (machine.get("generation") != "SN1"
+                or machine.get("board_ip") != "IP34"
+                or machine["emulation"].get("machine_name") != "fuel"
+                or fitted.get("hardware_kind") != "ip34"):
+            raise ResolutionError(
+                "system Timekeeper selection requires Fuel's SN1 IP34 board")
+        if (policy.get("kind") != "m48t35-compatible"
+                or type(policy.get("year_base")) is not int
+                or policy["year_base"] != 1968
+                or policy.get("initial_ip27_fixture") is not False):
+            raise ResolutionError("unsupported system Timekeeper policy")
+
+
 def validate_board_identity_overrides(model: dict[str, Any]) -> None:
     """`machine.emulation.board_identity_overrides`, if present, corrects the
     compiled one-wire `identity.part` of a board component a product selects
@@ -862,5 +887,6 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_initial_module_numbers(model)
     validate_hub_ni_revision_overrides(model)
     validate_board_identity_overrides(model)
+    validate_system_timekeepers(model)
     component_exclusions([("model", model.get("excluded_components"))], model.get("components"))
     return model

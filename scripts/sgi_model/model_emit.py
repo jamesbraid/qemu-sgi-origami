@@ -82,13 +82,16 @@ def _kebab_keys(value):
 # addresses behind it (hw/misc/sgi-hub.c and sn0.c already carry those as
 # device constants; nothing in the builder reads them off the descriptor).
 def _identity(raw: dict) -> dict:
-    return {
-        "ni-revision": raw["ni_revision"],
-        "widget-revision": raw["widget_revision"],
+    identity = {
         "serial": raw["serial"],
         "i2c-controller": raw["i2c_controller"],
         "system-controller": raw["system_controller"],
     }
+    for source, target in (("ni_revision", "ni-revision"),
+                           ("widget_revision", "widget-revision")):
+        if source in raw:
+            identity[target] = raw[source]
+    return identity
 
 
 # Flash kind and size only: which named views (reset/lboot/rboot on SN0;
@@ -209,6 +212,7 @@ _IO_BOARD_CARRIER = {
     "BASEIO": "xio-slot",
     "BASEIO_G": "xio-slot",
     "IO8": "machine-placed",
+    "FUEL": "onboard",
     "IO9": "machine-placed",
     "PCI_SHOEHORN": "xio-slot",
     "PCI_CARRIER": "xio-slot",
@@ -234,6 +238,7 @@ _IO_BOARD_PRESET = {
     "BASEIO": "io6",
     "BASEIO_G": "io6g",
     "IO8": "io8",
+    "FUEL": "fuel",
     "IO9": "io9",
     "PCI_SHOEHORN": "pci-shoehorn",
     "PCI_CARRIER": "pci-carrier",
@@ -253,19 +258,24 @@ _TIMEKEEPER_BOARD_KINDS = {
 
 
 def _io_board(raw: dict) -> dict:
-    return {
+    board = {
         "id": raw["id"],
         "module-index": raw["module_index"],
         "preset": _IO_BOARD_PRESET[raw["board_kind"]],
         "carrier": _IO_BOARD_CARRIER[raw["board_kind"]],
         "attachment": raw["slot_index"],
-        "label": raw.get("label"),
-        "part": raw["part"],
         "other-identity-parts": raw["other_identities"],
-        "revision": raw["revision"],
-        "serial": raw["serial"],
-        "ioc3-serial": raw["ioc3_serial"],
     }
+    if raw.get("label") is not None:
+        board["label"] = raw["label"]
+    for name, key in (("part", "part"), ("revision", "revision"),
+                      ("serial", "serial"), ("ioc3-serial", "ioc3_serial")):
+        if raw[key] is not None:
+            board[name] = raw[key]
+    if "system_timekeeper" in raw:
+        board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
+
+    return board
 
 
 # A shared controller's MicroLAN/NVRAM addresses are fixed by the MSC
@@ -381,22 +391,17 @@ def _storage_for(topology: dict) -> list[dict]:
     return storage
 
 
-def _consoles_for(topology: dict) -> list[dict]:
-    """The serial lines a launch places, in the canonical order
-    `tools/podlib.py`'s `serial_args` documents (see `_SCSI_TARGETS`'
-    neighbouring comment): the console port, the second IOC3 port, the
-    ELSC or L1 line, then the junk UART where this topology wires one.
-    """
+def _consoles_for(topology: dict, harness: dict) -> list[dict]:
+    """Named serial endpoints exposed by the product's launch policy."""
     if topology["generation"] == "IP30":
         return [
             {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
             {"kind": "second-port", "node": 0, "argument": "-serial chardev:ioc3_b"},
         ]
     if topology["generation"] == "SN1":
-        # Every chassis has its own L1 on its own block of five serial
-        # lines; the first chassis's is the console, a further chassis's
-        # leads its node's block, left for the operator to attach.
-        consoles = [{"kind": "console", "node": 0,
+        # Each chassis has an L1 line. Fuel also exposes its two IOC3 ports.
+        consoles = [{"kind": "console" if harness["console"] == "l1-uart"
+                     else "system-controller", "node": 0,
                      "argument": "-serial chardev:l1"}]
         for controller in topology["controllers"]:
             nodes = topology["modules"][controller["module_index"]]["nodes"]
@@ -408,6 +413,13 @@ def _consoles_for(topology: dict) -> list[dict]:
                     "kind": "system-controller", "node": node,
                     "argument": f"-serial chardev:l1_node{node}",
                 })
+        if harness["console"] == "ioc3-serial-a":
+            consoles.extend([
+                {"kind": "second-port", "node": 0,
+                 "argument": "-serial chardev:ioc3_b"},
+                {"kind": "console", "node": 0,
+                 "argument": "-serial chardev:ioc3_a"},
+            ])
         return consoles
     consoles = [
         {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
@@ -511,6 +523,34 @@ def _resources_for(topology: dict, harness: dict, product: dict,
             {"kind": "rtc-clock", "scope": "board", "count": 1,
              "size": 24, "argument": "-drive if=none,id=sgi-nvram0-clock,..."},
         ])
+    fuel_boards = [(index, board)
+                   for index, board in enumerate(topology["io_boards"])
+                   if board["board_kind"] == "FUEL"]
+    if fuel_boards and harness.get("timekeeper_nvram", True):
+        if len(fuel_boards) != 1:
+            raise ValueError("Fuel requires exactly one fitted system board")
+        index, board = fuel_boards[0]
+        selected = board.get("system_timekeeper")
+        resource = {
+            "kind": "nvram", "scope": "board", "count": 1,
+            "board-indices": [index], "drive-indices": [0],
+        }
+        if selected:
+            resource.update({
+                "argument": _TIMEKEEPER_ARGUMENT, "part": "m48t35",
+                "size": 32768, "clock-reference": True,
+                "system-timekeeper-kind": selected["kind"],
+                "year-base": selected["year_base"],
+                "initial-ip27-fixture": selected["initial_ip27_fixture"],
+                "conflicts-machine-option": "fuel-rtc-decode",
+            })
+        else:
+            resource.update({
+                "argument": "-drive if=none,id=sgi-nvramN", "part": "ds1742",
+                "size": 2048, "clock-reference": False,
+                "requires-machine-option": "fuel-rtc-decode=low11-mirror",
+            })
+        resources.append(resource)
     timekeeper_boards = sum(
         1 for board in topology["io_boards"]
         if board["board_kind"] in _TIMEKEEPER_BOARD_KINDS
@@ -546,12 +586,14 @@ def _resources_for(topology: dict, harness: dict, product: dict,
                          if controller["kind"] == "L1"))
     if "chassis-eeprom" in identity_inputs:
         resources.append({
-            "kind": "identity-eeprom", "scope": "board", "count": 2 * chassis,
+            "kind": "identity-eeprom", "scope": "board",
+            "count": (1 if fuel_boards else 2) * chassis,
             "size": None, "argument": "chassis-eeprom.N=",
         })
     if "board-eeprom" in identity_inputs:
         resources.append({
-            "kind": "identity-eeprom", "scope": "board", "count": 2 * chassis,
+            "kind": "identity-eeprom", "scope": "board",
+            "count": (1 if fuel_boards else 2) * chassis,
             "size": None, "argument": "board-eeprom.N=",
         })
     if "spd-eeprom" in identity_inputs:
@@ -595,7 +637,7 @@ def _offerings_for(model: dict, topology: dict,
         "per-node-flash": harness["requires_per_node_flash"],
     }
     storage = _storage_for(topology)
-    consoles = _consoles_for(topology)
+    consoles = _consoles_for(topology, harness)
     networks = _networks_for(topology)
     identity_inputs = harness.get("identity_inputs", ())
     offerings = []

@@ -1,0 +1,240 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Fuel IP34's selected, unexpanded board population.
+layer_version: 1
+layer:
+  kind: module
+  id: fuel-base-module
+  requires: {architecture: sn1, assembly: ip34}
+  data:
+    components:
+      - id: ip34-system-board
+        name: IP34 system board
+        kind: board
+        hardware_kind: ip34
+        provenance: vendor-document
+        description: The integrated Fuel board carries the node and base I/O parts.
+        sources: ["007-4480-001 printed pages 30 to 32: Fuel system board and fitted processor and memory"]
+      - id: cpu0
+        name: R14000A
+        kind: cpu
+        parent: ip34-system-board
+        hardware_kind: r14000
+        provenance: vendor-document
+        description: One 500 MHz processor PIMM with 2 MiB secondary cache.
+        identity:
+          cache_clock_mhz: 250
+          processor_identification: "0x0f23"
+          notes: >-
+            A revision G Fuel software inventory reports a 250 MHz secondary
+            cache and processor revision 2.3. The PRId low byte 0x23 follows
+            the public MIPS revision encoding; the full CP0 word was not
+            captured, so zero upper bits are a compatibility choice.
+        sources: ["007-4480-001 printed page 30: Fuel processor options", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 98 to 110 and 138 to 151: revision G board and processor inventory", "linux:db2ddb87143519e20a95aa36c60b36107b736a58 arch/mips/include/asm/cpu.h lines 77 and 225 to 230: R14000 implementation and revision mask"]
+      - id: node-memory
+        name: node memory
+        kind: memory
+        parent: ip34-system-board
+        provenance: vendor-document
+        description: >-
+          Two 256 MiB DIMMs in paired sockets 0 and 2 supply the selected
+          512 MiB. The socket-to-Bedrock-bank map and SPD bytes are unknown.
+        sources: ["007-4480-001 printed pages 31 and 60: paired sockets and 512 MiB minimum", "openbsd:2df91d80c1 sys/arch/sgi/sgi/l1.c lines 997 to 1014: Fuel SPD component indices 4 plus DIMM number"]
+      - id: bedrock
+        name: Bedrock
+        kind: node-asic
+        parent: ip34-system-board
+        hardware_kind: bedrock
+        node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
+        provenance: vendor-document
+        description: The Fuel power-on test names Bedrock; its silicon revision is unknown.
+        datasheet_contracts: [docs/datasheets/bedrock-processor-interface.md, docs/datasheets/bedrock-local-block.md, docs/datasheets/bedrock-io-interface.md]
+        sources: ["007-4480-001 printed pages 127 to 130: power-on test components"]
+      - id: xbridge
+        name: XBridge
+        kind: pci-host-bridge
+        parent: ip34-system-board
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        provenance: observed-hardware
+        description: Two revision 2 heads at widgets 14 and 15 in the cited Fuel capture.
+        identity:
+          widget_revision: 2
+          notes: >-
+            Both bridge heads report revision 2 in the cited Fuel capture.
+            No Fuel board part number is established by this source.
+        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
+        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+      - id: xbridge-crossbar
+        name: XBridge crossbar section
+        kind: crossbar
+        hardware_kind: xbridge
+        crossbar: {kind: xbridge}
+        parent: xbridge
+        provenance: observed-hardware
+        description: The capture reports XXBow revision 2 at widget 0.
+        datasheet_contracts: [docs/datasheets/xbridge.md]
+        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+      - {id: xbridge-bridge-e, name: XBridge head at widget 14, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {id: xbridge-bridge-f, name: XBridge head at widget 15, kind: subfunction, parent: xbridge, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - id: scsi
+        name: QLogic ISP12160
+        kind: storage-hba
+        parent: ip34-system-board
+        hardware_kind: isp12160
+        provenance: observed-hardware
+        datasheet_contracts: [docs/datasheets/isp12160.md]
+        sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]
+      - id: ioc3
+        name: IOC3
+        kind: io-controller
+        parent: ip34-system-board
+        hardware_kind: ioc3
+        provenance: observed-hardware
+        description: >-
+          The integrated Ethernet, two serial ports, keyboard, mouse and parallel
+          port attach through IOC3. The Fuel PCI subsystem bytes and interrupt
+          wiring have not been observed.
+        datasheet_contracts: [docs/datasheets/ioc3.md]
+        sources: ["007-4480-001 printed pages 6 and 28: external ports", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135: integrated ef0 at PCI device 4"]
+      - {id: ioc3-ethernet, name: integrated Ethernet, kind: subfunction, hardware_kind: ioc3-ethernet, parent: ioc3, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 135", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 530 to 546"]}
+      - {id: ioc3-serial-a, name: serial port A, kind: subfunction, hardware_kind: ioc3-serial-a, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
+      - {id: ioc3-serial-b, name: serial port B, kind: subfunction, hardware_kind: ioc3-serial-b, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed pages 6 and 28"]}
+      - {id: ioc3-parallel, name: parallel port, kind: subfunction, hardware_kind: ioc3-parallel, parent: ioc3, provenance: vendor-document, sources: ["007-4480-001 printed page 28"]}
+      - {id: ioc3-keyboard, name: PS/2 keyboard, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
+      - {id: ioc3-mouse, name: PS/2 mouse, kind: subfunction, parent: ioc3, provenance: derived, sources: ["007-4480-001 printed page 28", "openbsd:2df91d80c1 sys/arch/sgi/pci/ioc.c lines 307 to 359"]}
+      - id: usb
+        name: USB controller (OHCI)
+        kind: io-controller
+        parent: ip34-system-board
+        hardware_kind: lucent-ohci
+        provenance: derived
+        description: >-
+          A revision G 030-1707-003 Fuel reports an 11c1:5802 OHCI
+          controller at PCI device 5. Widget 15 placement follows a separate
+          Fuel OpenBSD capture whose board revision is unknown. The
+          subsystem fields and physical interrupt route are unobserved.
+        identity:
+          pci_vendor: "0x11c1"
+          pci_device: "0x5802"
+          pci_subsystem_id: "0xffff_ffff"
+          pci_revision: 16
+          notes: >-
+            The controller model reuses the Origin 300 Lucent OHCI part.
+            Its revision and unavailable subsystem fields are emulator
+            compatibility choices; no Fuel PCI configuration dump confirms
+            those bytes.
+        datasheet_contracts: [docs/datasheets/lucent-ohci.md]
+        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312", "docs/reviews/fuel-usb-variants-review-20260927.md"]
+      - id: l1
+        name: L1 system controller
+        kind: system-controller
+        parent: ip34-system-board
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        provenance: vendor-document
+        description: Dedicated diagnostic connection, separate from external serial ports.
+        datasheet_contracts: [docs/datasheets/l1-controller.md]
+        sources: ["007-4480-001 printed pages 6 and 127 to 130"]
+    buses:
+      - {id: sysad0, name: processor interface, kind: sysad, master: cpu0, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
+      - {id: crosstalk, name: crosstalk, kind: xio, master: bedrock, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/xtalk/xtalkaddrs.h"]}
+      - {id: pci-widget-14, name: PCI at widget 14, kind: pci, master: xbridge-bridge-e, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {id: pci-widget-15, name: PCI at widget 15, kind: pci, master: xbridge-bridge-f, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+    connections:
+      - {component: cpu0, bus: sysad0, role: master, provenance: derived, sources: ["007-4480-001 printed page 30"]}
+      - {component: bedrock, bus: sysad0, role: endpoint, provenance: public-header, sources: ["linux-history:7570df54ef8c include/asm-ia64/sn/sn1/arch.h lines 19 to 20"]}
+      - {component: bedrock, bus: crosstalk, role: master, widget: 10, provenance: observed-hardware, sources: ["boot-logs/graphica-sgi-o350-chimera-notes.html raw HTML lines 1904 to 1905 and 2029 to 2030"]}
+      - {component: xbridge-crossbar, bus: crosstalk, role: bridge-upstream, widget: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-e, bus: crosstalk, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-f, bus: crosstalk, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-e, bus: pci-widget-14, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: xbridge-bridge-f, bus: pci-widget-15, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: scsi, bus: pci-widget-15, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]}
+      - {component: ioc3, bus: pci-widget-15, role: endpoint, pci_device: 4, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]}
+      - {component: usb, bus: pci-widget-15, role: endpoint, pci_device: 5, pci_function: 0, provenance: derived, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 152: revision G identity and PCI device 5", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541: widget 15 on an unidentified board revision"]}
+    interrupts:
+      - id: scsi-interrupt
+        source: scsi
+        provenance: derived
+        description: >-
+          The model routes ISP12160 INTA to head-F input 1. This is a
+          reviewed approximation from a Fuel OpenBSD handler report on an
+          unidentified board revision, not a measured revision G trace.
+        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        chain:
+          - {at: scsi, as: "PCI INTA at device 1", mechanism: level}
+          - {at: xbridge-bridge-f, as: "modeled input 1", mechanism: wire}
+          - &fuel-route-program {at: xbridge-bridge-f, as: "guest-programmed crosstalk interrupt write", mechanism: xio-write}
+          - &fuel-route-crossbar {at: xbridge-crossbar, as: "route to Bedrock host port 0xa", mechanism: xio-write}
+          - &fuel-route-pending {at: bedrock, as: "guest-selected pending bit", mechanism: pending-bit, notes: "The guest also selects the processor mask and hardware interrupt line."}
+      - id: ioc3-superio-interrupt
+        source: ioc3
+        provenance: derived
+        description: >-
+          The model routes the IOC3 SuperIO output to head-F input 0 under
+          the same reviewed, revision-unverified approximation.
+        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        chain:
+          - {at: ioc3, as: "separate SuperIO output", mechanism: level}
+          - {at: xbridge-bridge-f, as: "modeled input 0", mechanism: wire}
+          - *fuel-route-program
+          - *fuel-route-crossbar
+          - *fuel-route-pending
+      - id: ioc3-ethernet-interrupt
+        source: ioc3
+        provenance: derived
+        description: >-
+          The model routes IOC3 Ethernet INTA to head-F input 4 under the
+          same reviewed, revision-unverified approximation.
+        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        chain:
+          - {at: ioc3, as: "Ethernet PCI INTA at device 4", mechanism: level}
+          - {at: xbridge-bridge-f, as: "modeled input 4", mechanism: wire}
+          - *fuel-route-program
+          - *fuel-route-crossbar
+          - *fuel-route-pending
+      - id: usb-interrupt
+        source: usb
+        provenance: derived
+        description: >-
+          The model routes OHCI INTA to head-F input 5 under the same
+          reviewed, revision-unverified approximation.
+        sources: ["docs/datasheets/ip34-fuel.md: reviewed approximate interrupt routing", "docs/reviews/fuel-interrupt-wiring-approximation-review-20260927.md"]
+        chain:
+          - {at: usb, as: "PCI INTA at device 5", mechanism: level}
+          - {at: xbridge-bridge-f, as: "modeled input 5", mechanism: wire}
+          - *fuel-route-program
+          - *fuel-route-crossbar
+          - *fuel-route-pending
+
+    open_questions:
+      - id: fuel-board-identification
+        question: What full word does Fuel return from Synergy0 identification register 0 at reset?
+        about: [bedrock]
+        candidates:
+          - answer: Bits 15:12 are 4; leave all other bits unresolved.
+            source: OpenBSD maps this nibble to Fuel, without observing the full reset word.
+          - answer: Use a full constant chosen for a temporary boot experiment.
+            source: An emulator can provide this, but it would be a compatibility choice without hardware evidence.
+        consequence: OpenBSD identifies Fuel from bits 15:12 equal to 4; the remaining bits and decoder are not established.
+        settled_by: Published IP34 decoder information or a board register capture with width and reset value.
+      - id: fuel-memory-mapping
+        question: How do paired sockets 0 and 2 map to Bedrock bank positions and SPD bytes?
+        about: [node-memory]
+        candidates:
+          - answer: Test 256 MiB each in bank positions 0 and 1.
+            source: A revision F Fuel software inventory reports banks 0 and 1; it does not reveal socket wiring.
+          - answer: Use different Bedrock bank positions for sockets 0 and 2.
+            source: A board wiring record or register capture could establish another physical mapping.
+        consequence: The compiled 0 and 1 bank positions are a provisional emulator map, not a claim about physical wiring.
+        settled_by: Published IP34 memory wiring and revision-matched SPD data.
+      - id: fuel-board-io
+        question: What are the Fuel interrupt pins, RTC decode, and USB PCI identity on other board revisions?
+        about: [ioc3, scsi, usb]
+        candidates:
+          - answer: Keep interrupt pins and RTC decode unspecified; use 11c1:5802 USB only for the selected revision G board.
+            source: The reviewed Fuel USB variants record ties that PCI identity to revision G, while the other wiring remains open.
+          - answer: Choose explicit compatibility devices and routes for a guest experiment.
+            source: A temporary emulator configuration can test guest behavior but cannot establish the board wiring.
+        consequence: The selected revision G USB identity does not establish interrupt wiring or the RTC decode; QEMU substitutions need their own tests and review.
+        settled_by: Fuel board documentation or revision-matched register and PCI configuration captures.

@@ -2,6 +2,7 @@
 
 """Tests for the standalone SGI machine-model generator."""
 
+import copy
 import hashlib
 import json
 import os
@@ -14,10 +15,13 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = "706ff905d96db56ef30db39816d014814699111e80647a4dffafad2d4a1b0c69"
+EXPECTED_CATALOGUE_SHA256 = "c8a2239612082cf39ae089ef88368d8bb648b3a228c1782199471bad25bc7c4f"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from sgi_model import model_composition
+from sgi_model.exceptions import ResolutionError
+from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.model_qemu import generate_qemu_inputs, render_qemu_inputs
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
 from sgi_model.system_model import _layer
@@ -126,9 +130,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 88)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 27)
-        self.assertEqual(len(layers), 61)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 94)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 29)
+        self.assertEqual(len(layers), 65)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {
@@ -159,6 +163,98 @@ class GeneratorTests(unittest.TestCase):
                 "hw/mips/sgi/sn-catalogue.json", "hw/mips/sgi/sn-model.json"})
             self.assertFalse((tree / "docs/datasheets").exists())
             self.assertFalse((tree / "assets").exists())
+
+
+class FuelTests(unittest.TestCase):
+    def test_fuel_offerings_keep_all_console_ports(self):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sn-catalogue.json"])
+        offerings = [row for row in catalogue["offerings"]
+                     if row["product"] == "fuel"]
+        self.assertEqual({row["topology"] for row in offerings},
+                         {"fuel", "fuel-m48t35-compatible"})
+        expected = [
+            {"kind": "system-controller", "node": 0,
+             "argument": "-serial chardev:l1"},
+            {"kind": "second-port", "node": 0,
+             "argument": "-serial chardev:ioc3_b"},
+            {"kind": "console", "node": 0,
+             "argument": "-serial chardev:ioc3_a"},
+        ]
+        for row in offerings:
+            with self.subTest(topology=row["topology"]):
+                self.assertEqual(row["console"], "ioc3-serial-a")
+                self.assertEqual(row["consoles"], expected)
+
+    def test_fuel_export_has_explicit_system_timekeeper(self):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sn-catalogue.json"])
+        topologies = {row["name"]: row for row in catalogue["topologies"]}
+        self.assertIn("fuel", topologies)
+        self.assertIn("fuel-m48t35-compatible", topologies)
+        base = topologies["fuel"]["io-boards"]
+        fitted = topologies["fuel-m48t35-compatible"]["io-boards"]
+        self.assertEqual(len(base), 1)
+        self.assertEqual(len(fitted), 1)
+        self.assertNotIn("system-timekeeper", base[0])
+        self.assertEqual(fitted[0]["preset"], "fuel")
+        self.assertEqual(fitted[0]["system-timekeeper"], {
+            "kind": "m48t35-compatible", "year-base": 1968,
+            "initial-ip27-fixture": False})
+        for row in catalogue["offerings"]:
+            if row["product"] != "fuel":
+                continue
+            self.assertEqual(row["default-topology"], "fuel")
+            resources = [item for item in row["resources"]
+                         if item["kind"] == "nvram"]
+            self.assertEqual(len(resources), 1)
+            resource = resources[0]
+            self.assertEqual(resource["board-indices"], [0])
+            self.assertEqual(resource["drive-indices"], [0])
+            if row["topology"] == "fuel-m48t35-compatible":
+                self.assertEqual(resource["part"], "m48t35")
+                self.assertEqual(resource["size"], 32768)
+                self.assertIs(resource["clock-reference"], True)
+                self.assertEqual(resource["year-base"], 1968)
+                self.assertIs(resource["initial-ip27-fixture"], False)
+                self.assertEqual(resource["system-timekeeper-kind"],
+                                 "m48t35-compatible")
+                self.assertEqual(resource["conflicts-machine-option"],
+                                 "fuel-rtc-decode")
+            else:
+                self.assertEqual(resource["part"], "ds1742")
+                self.assertEqual(resource["size"], 2048)
+                self.assertIs(resource["clock-reference"], False)
+                self.assertEqual(resource["requires-machine-option"],
+                                 "fuel-rtc-decode=low11-mirror")
+
+    def test_system_timekeeper_requires_fitted_fuel_board(self):
+        model = load_checked_system_model(
+            INPUTS / "fuel-m48t35-compatible.yaml", model_schema=schema(INPUTS))
+        for field, value in (("generation", "SN0"), ("board_ip", "IP29")):
+            altered = copy.deepcopy(model)
+            altered["machine"][field] = value
+            with self.subTest(field=field), self.assertRaises(ResolutionError):
+                model_composition.validate_system_timekeepers(altered)
+        altered = copy.deepcopy(model)
+        altered["machine"]["emulation"]["system_timekeepers"]["absent"] = (
+            altered["machine"]["emulation"]["system_timekeepers"].pop(
+                "ip34-system-board"))
+        with self.assertRaises(ResolutionError):
+            model_composition.validate_system_timekeepers(altered)
+
+    def test_system_timekeeper_rejects_unknown_clock_policy(self):
+        model = load_checked_system_model(
+            INPUTS / "fuel-m48t35-compatible.yaml", model_schema=schema(INPUTS))
+        for field, value in (("kind", "ds1742"), ("year_base", 1970),
+                             ("year_base", True),
+                             ("initial_ip27_fixture", True)):
+            altered = copy.deepcopy(model)
+            altered["machine"]["emulation"]["system_timekeepers"][
+                "ip34-system-board"][field] = value
+            with self.subTest(field=field), self.assertRaises(ResolutionError):
+                model_composition.validate_system_timekeepers(altered)
+
 
 
 if __name__ == "__main__":

@@ -166,6 +166,47 @@
           "required": ["machine_name", "display_description", "profile", "lifecycle"],
           "additionalProperties": false,
           "properties": {
+            "system_timekeepers": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "year_base",
+                  "initial_ip27_fixture",
+                  "provenance",
+                  "sources",
+                  "notes"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "m48t35-compatible"
+                  },
+                  "year_base": {
+                    "const": 1968
+                  },
+                  "initial_ip27_fixture": {
+                    "const": false
+                  },
+                  "provenance": {
+                    "const": "derived"
+                  },
+                  "sources": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "notes": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
             "machine_name": { "type": "string", "description": "The -M name." },
             "display_description": { "type": "string", "description": "The product description exposed by the emulator." },
             "profile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Stable emulated population profile within this machine." },
@@ -348,6 +389,7 @@
             "default_topology": { "type": "string", "minLength": 1, "description": "Stable harness label for this product's one wiring shape today; not a selectable property." },
             "requires_per_node_flash": { "type": "boolean", "description": "True when each node needs its own writable flash image rather than one shared -bios payload." },
             "has_managed_boot_flash": { "type": "boolean", "description": "True when the harness prepares and can override one writable boot-flash image for this product, distinct from a plain -bios payload or per-node flash." },
+            "timekeeper_nvram": { "type": "boolean", "description": "Whether the selected board exposes a Timekeeper NVRAM store. Omitted means the documented base I/O board default applies." },
             "has_synthesized_firmware_toggle": { "type": "boolean", "description": "True when this product's QEMU machine accepts a synthesized-firmware= property a launcher can turn off. Omitted or false means the property does not exist on this machine." },
             "needs_debug_leds_off": { "type": "boolean", "description": "True when a launch with no -display needs debug-leds=off, since the firmware's indicator-code display has nothing to show them on. Independent of has_synthesized_firmware_toggle." },
             "identity_inputs": {
@@ -356,9 +398,14 @@
               "items": { "type": "string", "minLength": 1 },
               "description": "Optional identity inputs this product accepts (EEPROMs, system-controller switches, a brick serial). Omitted or empty means none."
             },
+            "identity_record_slots": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "Board positions per node whose L1 can receive chassis and board EEPROM records, in component-index order. Required when identity_inputs names either EEPROM kind."
+            },
             "supported_guests": {
               "type": "array",
-              "minItems": 1,
               "uniqueItems": true,
               "items": { "type": "string", "minLength": 1 },
               "description": "Guests the harness's own run commands support on this product today."

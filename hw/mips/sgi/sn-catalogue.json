@@ -531,16 +531,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -654,16 +646,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -777,16 +761,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -898,16 +874,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1019,16 +987,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1146,16 +1106,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1273,16 +1225,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1400,16 +1344,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1527,16 +1463,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1654,16 +1582,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1779,16 +1699,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -1904,16 +1816,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2029,16 +1933,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2154,16 +2050,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2277,16 +2165,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2400,16 +2280,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2523,16 +2395,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2644,16 +2508,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2765,16 +2621,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -2901,18 +2749,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0,
-            1
-          ],
-          "clock-reference": true,
           "count": 2,
-          "drive-indices": [
-            0,
-            1
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3055,16 +2893,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3181,16 +3011,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3307,16 +3129,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3433,16 +3247,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3559,16 +3365,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3685,16 +3483,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         }
@@ -3809,16 +3599,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -3937,16 +3719,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4065,16 +3839,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4193,16 +3959,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4321,16 +4079,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4447,16 +4197,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4573,16 +4315,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4699,16 +4433,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4825,16 +4551,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -4949,16 +4667,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5073,16 +4783,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5197,16 +4899,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5319,16 +5013,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5441,16 +5127,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5568,16 +5246,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5695,16 +5365,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5822,16 +5484,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -5949,16 +5603,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6076,16 +5722,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6201,16 +5839,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6326,16 +5956,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6451,16 +6073,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6576,16 +6190,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6699,16 +6305,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6822,16 +6420,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -6945,16 +6535,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7066,16 +6648,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7187,16 +6761,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7317,14 +6883,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0,
-            1
-          ],
-          "clock-reference": true,
           "count": 2,
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7479,14 +7039,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0,
-            1
-          ],
-          "clock-reference": true,
           "count": 2,
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7641,14 +7195,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0,
-            1
-          ],
-          "clock-reference": true,
           "count": 2,
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7803,14 +7351,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0,
-            1
-          ],
-          "clock-reference": true,
           "count": 2,
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -7954,16 +7496,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8086,16 +7620,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8218,16 +7744,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8350,16 +7868,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8482,16 +7992,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8614,16 +8116,8 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            0
-          ],
-          "clock-reference": true,
           "count": 1,
-          "drive-indices": [
-            0
-          ],
           "kind": "nvram",
-          "part": "m48t35",
           "scope": "board",
           "size": 32768
         },
@@ -8686,6 +8180,271 @@
   ],
   "schema": "sgi-sn-catalogue",
   "topologies": [
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Fuel (IP34), experimental system Timekeeper",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "onboard",
+          "id": "ip34-system-board",
+          "ioc3-serial": 103835129348099,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "preset": "fuel",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "fuel-m48t35-compatible",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            256,
+            256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3875
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "serial": 14345375975689,
+            "system-controller": false
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "fuel",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Fuel (IP34)",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "onboard",
+          "id": "ip34-system-board",
+          "ioc3-serial": 103835129348099,
+          "module-index": 0,
+          "other-identity-parts": [],
+          "preset": "fuel"
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "fuel",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            256,
+            256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3875
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "serial": 14345375975689,
+            "system-controller": false
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "fuel",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
     {
       "cables": [],
       "console": 0,
@@ -9030,271 +8789,6 @@
         },
         {
           "crossbar-index": 0,
-          "node-index": 0,
-          "widget": 15
-        }
-      ],
-      "xio-slots": []
-    },
-    {
-      "cables": [],
-      "console": 0,
-      "controllers": [
-        {
-          "id": "l1",
-          "kind": "l1",
-          "module-index": 0
-        }
-      ],
-      "crossbars": [],
-      "description": "SGI Fuel (IP34), experimental system Timekeeper",
-      "generation": "sn1",
-      "io-boards": [
-        {
-          "attachment": 1,
-          "carrier": "onboard",
-          "id": "ip34-system-board",
-          "ioc3-serial": 103835129348099,
-          "module-index": 0,
-          "other-identity-parts": [],
-          "preset": "fuel",
-          "system-timekeeper": {
-            "initial-ip27-fixture": false,
-            "kind": "m48t35-compatible",
-            "year-base": 1968
-          }
-        }
-      ],
-      "junk-uart": -1,
-      "modules": [
-        {
-          "controller-index": 0,
-          "id": "implicit-module",
-          "initial-module-number": 0,
-          "nodes": [
-            0
-          ],
-          "serial": ""
-        }
-      ],
-      "name": "fuel-m48t35-compatible",
-      "node-populations": [
-        {
-          "cables": [],
-          "grade": "established",
-          "nodes": [
-            0
-          ],
-          "routers": [],
-          "supported-cpu-populations": [
-            {
-              "cpus-per-node": [
-                1
-              ]
-            }
-          ],
-          "xio-slots": []
-        }
-      ],
-      "nodes": [
-        {
-          "accepted-memory-mib": [
-            512
-          ],
-          "asic-kind": "bedrock",
-          "bank-mib": [
-            256,
-            256,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 250000000,
-                "cache-mib": 2,
-                "clock-hz": 500000000,
-                "fpu-prid": 0,
-                "id": "r14000-500mhz",
-                "kind": "R14000",
-                "mode-bits": 10135941,
-                "prid": 3875
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "interface": 0,
-              "slot": 1
-            },
-            {
-              "interface": 1,
-              "slot": 0
-            },
-            {
-              "interface": 1,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1476264
-          },
-          "id": "bedrock",
-          "identity": {
-            "i2c-controller": false,
-            "serial": 14345375975689,
-            "system-controller": false
-          },
-          "module-index": 0,
-          "slave-role": false,
-          "slot": 0
-        }
-      ],
-      "product": "fuel",
-      "routers": [],
-      "xio-attachments": [
-        {
-          "crossbar-index": -1,
-          "node-index": 0,
-          "widget": 14
-        },
-        {
-          "crossbar-index": -1,
-          "node-index": 0,
-          "widget": 15
-        }
-      ],
-      "xio-slots": []
-    },
-    {
-      "cables": [],
-      "console": 0,
-      "controllers": [
-        {
-          "id": "l1",
-          "kind": "l1",
-          "module-index": 0
-        }
-      ],
-      "crossbars": [],
-      "description": "SGI Fuel (IP34)",
-      "generation": "sn1",
-      "io-boards": [
-        {
-          "attachment": 1,
-          "carrier": "onboard",
-          "id": "ip34-system-board",
-          "ioc3-serial": 103835129348099,
-          "module-index": 0,
-          "other-identity-parts": [],
-          "preset": "fuel"
-        }
-      ],
-      "junk-uart": -1,
-      "modules": [
-        {
-          "controller-index": 0,
-          "id": "implicit-module",
-          "initial-module-number": 0,
-          "nodes": [
-            0
-          ],
-          "serial": ""
-        }
-      ],
-      "name": "fuel",
-      "node-populations": [
-        {
-          "cables": [],
-          "grade": "established",
-          "nodes": [
-            0
-          ],
-          "routers": [],
-          "supported-cpu-populations": [
-            {
-              "cpus-per-node": [
-                1
-              ]
-            }
-          ],
-          "xio-slots": []
-        }
-      ],
-      "nodes": [
-        {
-          "accepted-memory-mib": [
-            512
-          ],
-          "asic-kind": "bedrock",
-          "bank-mib": [
-            256,
-            256,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0
-          ],
-          "cpu-slots": [
-            {
-              "assembly": {
-                "cache-clock-hz": 250000000,
-                "cache-mib": 2,
-                "clock-hz": 500000000,
-                "fpu-prid": 0,
-                "id": "r14000-500mhz",
-                "kind": "R14000",
-                "mode-bits": 10135941,
-                "prid": 3875
-              },
-              "interface": 0,
-              "slot": 0
-            },
-            {
-              "interface": 0,
-              "slot": 1
-            },
-            {
-              "interface": 1,
-              "slot": 0
-            },
-            {
-              "interface": 1,
-              "slot": 1
-            }
-          ],
-          "flash": {
-            "kind": "am29f080",
-            "size": 1476264
-          },
-          "id": "bedrock",
-          "identity": {
-            "i2c-controller": false,
-            "serial": 14345375975689,
-            "system-controller": false
-          },
-          "module-index": 0,
-          "slave-role": false,
-          "slot": 0
-        }
-      ],
-      "product": "fuel",
-      "routers": [],
-      "xio-attachments": [
-        {
-          "crossbar-index": -1,
-          "node-index": 0,
-          "widget": 14
-        },
-        {
-          "crossbar-index": -1,
           "node-index": 0,
           "widget": 15
         }
@@ -12951,24 +12445,50 @@
       "generation": "sn1",
       "io-boards": [
         {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "master-xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "master-io8-board",
+          "id": "master-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8"
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
+          "attachment": 2,
+          "carrier": "machine-placed",
+          "id": "slave-xbridge-bridge-e",
+          "module-index": 1,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004296
         },
         {
           "attachment": 3,
           "carrier": "machine-placed",
-          "id": "slave-io8-board",
+          "id": "slave-xbridge-bridge-f",
           "ioc3-serial": 103835129348099,
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8"
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004296
         }
       ],
       "junk-uart": -1,
@@ -13254,14 +12774,27 @@
       "generation": "sn1",
       "io-boards": [
         {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "io8-board",
+          "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8"
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
         },
         {
           "attachment": 2,
@@ -13444,14 +12977,27 @@
       "generation": "sn1",
       "io-boards": [
         {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "io8-board",
+          "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8"
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
         },
         {
           "attachment": 2,
@@ -13636,14 +13182,27 @@
       "generation": "sn1",
       "io-boards": [
         {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
           "attachment": 1,
           "carrier": "machine-placed",
-          "id": "io8-board",
+          "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
-          "preset": "io8"
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
         }
       ],
       "junk-uart": -1,
