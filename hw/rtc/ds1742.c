@@ -11,7 +11,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "block/block-io.h"
-#include "hw/rtc/ds1742.h"
+#include "hw/core/sysbus.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "qemu/bcd.h"
@@ -24,7 +24,9 @@
 #include "system/rtc.h"
 #include "system/runstate.h"
 
-#define SIZE DS1742_SIZE
+#define TYPE_DS1742 "ds1742"
+OBJECT_DECLARE_SIMPLE_TYPE(DS1742State, DS1742)
+#define SIZE 0x800
 #define CTRL 0x7f8
 #define W 0x80
 #define R 0x40
@@ -33,6 +35,18 @@
 #define BF 0x80
 #define CLOCK_REF_BYTES 16
 #define CLOCK_REF_MAGIC "DS1742R1"
+
+struct DS1742State {
+    SysBusDevice parent_obj;
+    MemoryRegion iomem;
+    BlockBackend *blk, *clock_blk;
+    VMChangeStateEntry *vmstate_change;
+    Notifier shutdown;
+    uint8_t ram[CTRL];
+    uint8_t control, weekday, migration_weekday, staged[8], frozen[8];
+    int64_t epoch, reference_ns, migration_epoch;
+    bool stopped, frozen_valid;
+};
 
 static int64_t ds1742_ns(void)
 {
