@@ -103,6 +103,9 @@ class Feature:
     processes: tuple      # killall targets once the frame is taken
     settle_seconds: float
     applies: str          # 'all', 'textured' or 'double_buffered'
+    # The share of the screen the program must change. A small window
+    # such as clock's covers under one percent of 1280x1024.
+    min_changed: float = MIN_CHANGED_FRACTION
 
     def runs_on(self, board):
         if self.applies == 'textured':
@@ -154,7 +157,7 @@ FEATURES = (
             ('imgview',), 30.0, 'all'),
     # clock redraws every second and swaps buffers.
     Feature('doublebuffer', _program('doublebuffer', '/usr/sbin/clock'),
-            ('clock',), 20.0, 'double_buffered'),
+            ('clock',), 20.0, 'double_buffered', min_changed=0.005),
 )
 
 

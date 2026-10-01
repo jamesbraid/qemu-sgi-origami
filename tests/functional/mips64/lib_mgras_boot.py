@@ -118,10 +118,10 @@ def _run_feature(test, vm, board, feature, desktop_frame):
     try:
         if NotAllBlackCheck().evaluate(width, height, data)[0] is False:
             test.fail(f'{feature.name}: the frame is all black -- {shot}')
-        if drawn < matrix.MIN_CHANGED_FRACTION:
+        if drawn < feature.min_changed:
             test.fail(f'{feature.name}: {feature.command!r} left the '
                       f'desktop unchanged ({drawn:.1%} of pixels differ, '
-                      f'need {matrix.MIN_CHANGED_FRACTION:.0%}) -- {shot}')
+                      f'need {feature.min_changed:.1%}) -- {shot}')
         ref_path = matrix.reference_path(board.option, feature.name)
         if os.path.exists(ref_path):
             passed, message = matrix.compare_stats(
