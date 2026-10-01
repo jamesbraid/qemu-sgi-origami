@@ -11901,6 +11901,77 @@ static void test_gl_texture_load_from_another_node(void)
     qtest_quit(t);
 }
 
+/* A 1024-by-1024 RGBA8 level is exactly one TRAM's 4 MiB. */
+#define TEX_SPEC_1024_LEVEL1  0xaa1
+
+/* Context slot, with a viewport and projection, ready to load and draw. */
+static void tex_enter(QTestState *t, uint32_t slot)
+{
+    gl_enter_slot(t, slot);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+}
+
+/* Level 1 of a 1024-by-1024 in a fresh context. */
+static void tex_load_big(QTestState *t, uint32_t slot)
+{
+    static const uint32_t box[6] = { 0, 0, 1024, 1024, 1024 << 16 | 1024, 0 };
+    uint8_t row[4096];
+
+    memset(row, 0x5a, sizeof(row));
+    tex_enter(t, slot);
+    tex_load_full(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_1024_LEVEL1, row, 1024,
+                  1024, box, true, 0, sizeof(row));
+}
+
+/* Load a 4-by-2 level 0 in the current context and draw with it. */
+static void tex_small_level_draw(QTestState *t)
+{
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+}
+
+/*
+ * A context keeps at most one TRAM's 4 MiB: with a level of exactly that
+ * size loaded, a further level has no room, is not stored (logged), and
+ * the draw finds no level 0 and is untextured, the quad's own white.
+ * gl-texture-load-draws-the-level is the same load in an empty context.
+ */
+static void test_gl_texture_context_cap(void)
+{
+    QTestState *t = qtest_init(TEX_ARGS);
+
+    tex_load_big(t, GL_SLOT_A);
+    tex_small_level_draw(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The board keeps four TRAMs' worth, 16 MiB, across its contexts: four
+ * contexts holding 4 MiB each leave no room in a fifth.
+ */
+static void test_gl_texture_board_cap(void)
+{
+    QTestState *t = qtest_init(TEX_ARGS);
+
+    for (uint32_t i = 0; i < 4; i++) {
+        tex_load_big(t, 0x1000 + i);
+    }
+    tex_enter(t, 0x1004);
+    tex_small_level_draw(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 /*
  * A stored level, the registers and a load waiting for its transfer
  * cross a migration: the destination draws the stored RGBA4 level into
@@ -11965,6 +12036,81 @@ static void test_gl_texture_migration(void)
     qtest_quit(to);
     qtest_quit(from);
     g_rmdir(tmpfs);
+}
+
+/*
+ * Rewrite the level number of the one level record in a migration stream
+ * of a 4-by-2 level of base 0 with the number level.
+ */
+static void tex_patch_level_number(const char *path, uint32_t level,
+                                   uint32_t to)
+{
+    g_autofree char *data = NULL;
+    gsize len;
+    int found = 0;
+
+    g_assert_true(g_file_get_contents(path, &data, &len, NULL));
+    for (gsize i = 0; i + 28 <= len; i++) {
+        const uint8_t *p = (const uint8_t *)data + i;
+
+        /* used, base, level, log2 width 2, log2 height 1, mode, 32 bytes */
+        if (ldl_be_p(p) == 1 && ldl_be_p(p + 4) == 0 &&
+            ldl_be_p(p + 8) == level && ldl_be_p(p + 12) == 2 &&
+            ldl_be_p(p + 16) == 1 && ldl_be_p(p + 24) == 32) {
+            stl_be_p(data + i + 8, to);
+            found++;
+        }
+    }
+    g_assert_cmpint(found, ==, 1);
+    g_assert_true(g_file_set_contents(path, data, len, NULL));
+}
+
+/*
+ * Two levels of one base with one level number are not a state the model
+ * can reach (a load replaces), so a stream carrying them is corrupt and
+ * is refused; the stream as saved, with levels 0 and 1, loads.
+ */
+static void test_gl_texture_migration_rejects_duplicate_level(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *stream = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t texels[32];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-texture-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(tmpfs, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+
+    from = tex_start(TEX_MIGRATION_ARGS);
+    tex_texels(texels);
+    tex_load(from, TEX_TL_MODE_RGBA8, texels);
+    tex_load_as(from, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2 | 1, texels, 4, 2,
+                box, true);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    to = qtest_init(TEX_MIGRATION_ARGS " -incoming defer");
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_quit(to);
+
+    tex_patch_level_number(stream, 1, 0);
+    to = qtest_init(TEX_MIGRATION_ARGS " -incoming defer");
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
 }
 
 static void test_hq_flags_fence_token_sets_bit(void)
@@ -18534,6 +18680,13 @@ int main(int argc, char **argv)
                    test_gl_texture_textureless_board_ignores);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-load-from-another-node",
                    test_gl_texture_load_from_another_node);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-context-cap",
+                   test_gl_texture_context_cap);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-board-cap",
+                   test_gl_texture_board_cap);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-migration-rejects-"
+                   "duplicate-level",
+                   test_gl_texture_migration_rejects_duplicate_level);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
                    test_gl_texture_migration);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",

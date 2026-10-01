@@ -50,6 +50,8 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
 /* Forget one context's texture state and free its levels. */
 void sgi_mgras_texture_reset(SGIMgrasTexture *t);
+/* Whether every context's levels together fit the board's TRAMs. */
+bool sgi_mgras_texture_board_valid(const SGIMgrasState *s);
 /* Whether migrated texture state is in range. */
 bool sgi_mgras_texture_valid(const SGIMgrasTexture *t);
 /* Every context's texture state, once any has some. */

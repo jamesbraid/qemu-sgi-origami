@@ -2278,6 +2278,9 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             return false;
         }
     }
+    if (!sgi_mgras_texture_board_valid(s)) {
+        return false;
+    }
     /* An entry's identity is its slot, which the stream carries. */
     for (int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl[i].hw_id = s->gl_selected[i] ? s->gl_slot[i] : 0;
