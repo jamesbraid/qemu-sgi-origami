@@ -563,6 +563,31 @@
   'data': ['onboard', 'xio-slot', 'machine-placed'] }
 
 ##
+# @SGIModelSystemTimekeeperKind:
+#
+# @m48t35-compatible: experimental shared Timekeeper compatibility
+#     model
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSystemTimekeeperKind', 'data': ['m48t35-compatible'] }
+
+##
+# @SGIModelSystemTimekeeper:
+#
+# @kind: explicit compatibility selection, not a physical part
+#     identity
+# @year-base: machine software year convention
+# @initial-ip27-fixture: whether a fresh unbacked part receives the
+#     IP27 fixture
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSystemTimekeeper',
+  'data': { 'kind': 'SGIModelSystemTimekeeperKind',
+            'year-base': 'uint32', 'initial-ip27-fixture': 'bool' } }
+
+##
 # @SGIModelIoBoard:
 #
 # One base I/O board.  A PCI function's own position, interrupt input
@@ -593,6 +618,9 @@
 #
 # @serial: fitted-part one-wire serial, if known
 #
+# @system-timekeeper: explicit experimental fitted system-clock
+#     policy
+#
 # @ioc3-serial: the IOC3 function's own one-wire serial, a distinct
 #     fitted-part identity from the board's own @serial, if known
 #
@@ -609,7 +637,8 @@
             '*other-identity-parts': ['str'],
             '*revision': 'uint8',
             '*serial': 'uint64',
-            '*ioc3-serial': 'uint64' } }
+            '*ioc3-serial': 'uint64',
+            '*system-timekeeper': 'SGIModelSystemTimekeeper' } }
 
 ##
 # @SGIModelControllerKind:
@@ -925,6 +954,12 @@
 #
 # @clock-reference: whether each NVRAM backend needs a clock reference
 #
+# @system-timekeeper-kind: explicit fitted compatibility selection
+# @year-base: machine software year convention
+# @initial-ip27-fixture: fresh unbacked part initialization policy
+# @conflicts-machine-option: machine option incompatible with this
+#     resource
+#
 # @requires-machine-option: explicit machine option required before
 #     provisioning this resource
 #
@@ -940,7 +975,11 @@
             '*board-indices': ['uint32'],
             '*drive-indices': ['uint32'],
             '*clock-reference': 'bool',
-            '*requires-machine-option': 'str' } }
+            '*requires-machine-option': 'str',
+            '*system-timekeeper-kind': 'SGIModelSystemTimekeeperKind',
+            '*year-base': 'uint32',
+            '*initial-ip27-fixture': 'bool',
+            '*conflicts-machine-option': 'str' } }
 
 ##
 # @SGIModelStorage:

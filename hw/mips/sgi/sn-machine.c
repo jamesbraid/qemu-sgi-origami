@@ -44,6 +44,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/baseio.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-elsc.h"
@@ -1746,6 +1747,27 @@ static bool sgi_machine_instantiate_bedrock_io(
     qdev_prop_set_string(baseio, "preset",
                          record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ?
                          "fuel" : "io8");
+    if (record->system_timekeeper) {
+        SGIModelSystemTimekeeper *clock = record->system_timekeeper;
+
+        if (record->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL ||
+            clock->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_M48T35_COMPATIBLE ||
+            clock->year_base != 1968 || clock->initial_ip27_fixture) {
+            error_setg(errp, "unsupported fitted system Timekeeper policy");
+            return false;
+        }
+        if (s->fuel_rtc_decode) {
+            error_setg(errp, "system Timekeeper conflicts with "
+                       "fuel-rtc-decode");
+            return false;
+        }
+        qdev_prop_set_uint8(baseio, "system-timekeeper-kind",
+                            SGI_IOC3_TIMEKEEPER_M48T35);
+        qdev_prop_set_uint32(baseio, "system-timekeeper-year-base",
+                             clock->year_base);
+        qdev_prop_set_bit(baseio, "system-timekeeper-initial-ip27-fixture",
+                          clock->initial_ip27_fixture);
+    }
     if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
         uint8_t mac[6];
 
