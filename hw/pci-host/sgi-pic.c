@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * PIC revision 3 compatibility model for an explicitly selected IP53 profile.
  * Reset, DMA, and interrupt effects are emulator rules, not measured silicon.

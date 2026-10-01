@@ -3,7 +3,7 @@
  *
  * The four byte-wide 16550A ports and their local interrupt controller are
  * modeled. ATA, serial DMA, keyboard/mouse, GPIO and byte-bus devices are not.
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

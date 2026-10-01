@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* PIC revision 3 compatibility rules, with synthetic PCI fixture identities. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
