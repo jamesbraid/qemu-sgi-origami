@@ -42,6 +42,27 @@
  * xio-widget.h), with the pin's host-address field over address bits
  * 47:38 and the pin's own interrupt number.
  */
+static MemTxResult xbridge_send_interrupt(SGIXBridgeHeadState *s,
+                                           SGIXioIntDest dest, uint8_t number,
+                                           bool set, bool source_known)
+{
+    SGIXioSource source = {
+        .widget_known = source_known,
+        .widget = REG(s, 0x20) & 15,
+    };
+    uint8_t bytes[8];
+
+    if (!s->packet_sender) {
+        return sgi_xio_send_interrupt(&s->endpoint[dest.widget].as,
+                                       dest.address, number, set);
+    }
+    /* Board aggregation loses the originating PCI device, not the head. */
+    stq_be_p(bytes, number | (set ? SGI_XIO_INTERRUPT_SET : 0));
+    return s->packet_sender(s->packet_opaque, s,
+                            ((hwaddr)dest.widget << 48) | dest.address,
+                            bytes, sizeof(bytes), true, &source);
+}
+
 static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
 {
     SGIXioIntDest dest = sgi_xio_int_dest(REG(s, 0x30), REG(s, 0x38));
@@ -55,8 +76,7 @@ static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
                       dest.widget);
         return;
     }
-    result = sgi_xio_send_interrupt(&s->endpoint[dest.widget].as,
-                                    dest.address, host & 0xff, set);
+    result = xbridge_send_interrupt(s, dest, host & 0xff, set, true);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: interrupt destination refused write\n");
@@ -175,6 +195,69 @@ static const MemoryRegionOps xbridge_flush_ops = {
     .impl.max_access_size = 8,
 };
 
+static MemTxResult xbridge_source_dma_read(void *opaque, hwaddr address,
+                                           uint64_t *value, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    struct XBridgeSourceDMA *path = opaque;
+    SGIXBridgeHeadState *s = path->head;
+    SGIXioSource source = {
+        .widget_known = true,
+        .device_known = true,
+        .widget = REG(s, 0x20) & 15,
+        .device = path->slot,
+    };
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result;
+
+    if (path->swap) {
+        address ^= 4 - size;
+    }
+    result = s->packet_sender(s->packet_opaque, s, address, bytes, size,
+                              false, &source);
+    *value = path->swap ? ldn_be_p(bytes, size) : ldn_le_p(bytes, size);
+    return result;
+}
+
+static MemTxResult xbridge_source_dma_write(void *opaque, hwaddr address,
+                                            uint64_t value, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    struct XBridgeSourceDMA *path = opaque;
+    SGIXBridgeHeadState *s = path->head;
+    SGIXioSource source = {
+        .widget_known = true,
+        .device_known = true,
+        .widget = REG(s, 0x20) & 15,
+        .device = path->slot,
+    };
+    uint8_t bytes[8];
+
+    if (path->swap) {
+        address ^= 4 - size;
+        stn_be_p(bytes, size, value);
+    } else {
+        stn_le_p(bytes, size, value);
+    }
+    return s->packet_sender(s->packet_opaque, s, address, bytes, size,
+                            true, &source);
+}
+
+static const MemoryRegionOps xbridge_source_dma_ops[2] = {
+    {
+        .read_with_attrs = xbridge_source_dma_read,
+        .write_with_attrs = xbridge_source_dma_write,
+        .endianness = DEVICE_LITTLE_ENDIAN,
+        .valid = { .min_access_size = 1, .max_access_size = 8 },
+    }, {
+        .read_with_attrs = xbridge_source_dma_read,
+        .write_with_attrs = xbridge_source_dma_write,
+        .endianness = DEVICE_LITTLE_ENDIAN,
+        .valid = { .min_access_size = 1, .max_access_size = 8 },
+        .impl = { .min_access_size = 1, .max_access_size = 4 },
+    },
+};
+
 static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                                       IOMMUAccessFlags flag, int iommu_idx)
 {
@@ -248,6 +331,13 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       &s->endpoint[widget].as :
                       &s->endpoint[widget].swap_as;
     entry.translated_addr = destination & ~entry.addr_mask;
+    if (s->packet_sender) {
+        unsigned correction = !swap &&
+                              xbridge_slot_needs_correction(s, dma->slot);
+
+        entry.target_as = &dma->source[correction].as;
+        entry.translated_addr |= (hwaddr)widget << 48;
+    }
     entry.perm = IOMMU_RW;
     return entry;
 }
@@ -299,8 +389,8 @@ static void xbridge_error_packet(SGIXBridgeHeadState *s)
                       dest.widget);
         return;
     }
-    result = sgi_xio_send_interrupt(&s->endpoint[dest.widget].as,
-                                    dest.address, REG(s, 0x128) & 0xff, true);
+    result = xbridge_send_interrupt(s, dest, REG(s, 0x128) & 0xff,
+                                     true, false);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: error destination refused write\n");
@@ -931,6 +1021,24 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
 
         s->dma[i].head = s;
         s->dma[i].slot = i;
+        if (s->packet_sender) {
+            for (unsigned correction = 0; correction < 2; correction++) {
+                struct XBridgeSourceDMA *path = &s->dma[i].source[correction];
+                g_autofree char *source_name = g_strdup_printf(
+                    "xbridge.source-%u-%u", i, correction);
+
+                path->head = s;
+                path->slot = i;
+                path->swap = correction;
+                memory_region_init_io(&path->mr, OBJECT(s),
+                                      &xbridge_source_dma_ops[correction],
+                                      path, source_name,
+                                      SGI_XIO_WIDGETS * SGI_XIO_PACKET_SIZE);
+                /* A card programmed through this head can DMA synchronously. */
+                path->mr.disable_reentrancy_guard = true;
+                address_space_init(&path->as, &path->mr, source_name);
+            }
+        }
         memory_region_init_iommu(&s->dma[i].iommu, sizeof(s->dma[i].iommu),
                                  TYPE_XBRIDGE_IOMMU, OBJECT(s), name,
                                  UINT64_MAX);
@@ -989,6 +1097,11 @@ static void xbridge_unrealize(DeviceState *dev)
     }
     for (i = 0; i < 8; i++) {
         address_space_destroy(&s->dma[i].as);
+        if (s->packet_sender) {
+            for (unsigned correction = 0; correction < 2; correction++) {
+                address_space_destroy(&s->dma[i].source[correction].as);
+            }
+        }
     }
     address_space_destroy(&s->denied_as);
     address_space_destroy(&s->flush_as);
@@ -1129,7 +1242,13 @@ typedef struct SGIXBridgePort {
     MemoryRegion route_none;
     MemoryRegion route_widget[SGI_XIO_WIDGETS];
     bool present;
+    SGIXioPeer peer;
 } SGIXBridgePort;
+
+typedef struct SGIXBridgePacketFrame {
+    const SGIXioSource *source;
+    struct SGIXBridgePacketFrame *previous;
+} SGIXBridgePacketFrame;
 
 struct SGIXBridgeState {
     SysBusDevice parent_obj;
@@ -1146,6 +1265,12 @@ struct SGIXBridgeState {
     MemoryRegion *head_fabric[2];
     MemoryRegion head_target[2][SGI_XIO_WIDGETS];
     bool superbridge;
+    uint8_t packet_context;
+    SGIXBridgePacketFrame *active_packet;
+    SGIXioPeer host_peer;
+    SGIXioPeer head_peer[2];
+    MemoryRegion head_context_root[2];
+    AddressSpace head_context_as[2];
     uint8_t mode;
     MemoryRegion *fabric;
     qemu_irq head_reset[2];
@@ -1354,6 +1479,58 @@ static void chip_warm_reset(void *opaque, int port, int level)
     }
 }
 
+bool sgi_xbridge_enable_packet_context(SGIXBridgeState *s, Error **errp)
+{
+    if (DEVICE(s)->realized) {
+        error_setg(errp, "XBridge packet transport must be selected before "
+                   "realization");
+        return false;
+    }
+    s->packet_context = true;
+    return true;
+}
+
+static MemTxResult chip_peer_rw(SGIXBridgeState *s, const SGIXioPeer *peer,
+                                 hwaddr address, void *buffer, size_t size,
+                                 bool write, const SGIXioSource *source)
+{
+    SGIXBridgePacketFrame frame = { source, s->active_packet };
+    MemTxResult result;
+
+    /* A card may start a distinct DMA transaction during head MMIO dispatch. */
+    for (SGIXBridgePacketFrame *p = s->active_packet; p; p = p->previous) {
+        if (p->source == source) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-xbridge: cyclic explicit packet refused\n");
+            return MEMTX_ACCESS_ERROR;
+        }
+    }
+    s->active_packet = &frame;
+    result = sgi_xio_peer_packet_rw(peer, address, buffer, size, write, source);
+    s->active_packet = frame.previous;
+    return result;
+}
+
+static MemTxResult chip_source_send(void *opaque, SGIXBridgeHeadState *head,
+                                     hwaddr address, void *buffer, size_t size,
+                                     bool write, const SGIXioSource *source)
+{
+    SGIXBridgeState *s = opaque;
+    unsigned widget = address >> 48;
+    const SGIXioPeer *peer;
+
+    if (s->superbridge) {
+        peer = &s->head_peer[head == &s->head[1]];
+    } else if (widget == s->host_port) {
+        peer = &s->host_peer;
+    } else if (widget >= CHIP_LINK_FIRST && widget <= CHIP_LINK_LAST) {
+        peer = &s->external[widget - CHIP_LINK_FIRST].peer;
+    } else {
+        return MEMTX_DECODE_ERROR;
+    }
+    return chip_peer_rw(s, peer, address, buffer, size, write, source);
+}
+
 static void chip_realize(DeviceState *dev, Error **errp)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
@@ -1459,6 +1636,10 @@ static void chip_realize(DeviceState *dev, Error **errp)
     for (i = 0; i < 2; i++) {
         unsigned widget = i ? CHIP_HEAD_F : CHIP_HEAD_E;
 
+        if (s->packet_context) {
+            s->head[i].packet_sender = chip_source_send;
+            s->head[i].packet_opaque = s;
+        }
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
         if (s->board_part[i]) {
             qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
@@ -1506,6 +1687,12 @@ static void chip_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
             return;
         }
+        memory_region_init_alias(&s->head_context_root[i], OBJECT(s),
+                                 "xbridge.head-context-root",
+                                 &s->xio, (uint64_t)widget << CHIP_WIDGET_SHIFT,
+                                 CHIP_WIDGET_SPACE);
+        address_space_init(&s->head_context_as[i], &s->head_context_root[i],
+                            "xbridge.head-context");
         if (!s->superbridge) {
             s->head_reset[i] = qemu_allocate_irq(chip_head_reset,
                                                  &s->head[i], 0);
@@ -1637,6 +1824,7 @@ static void chip_unrealize(DeviceState *dev)
             qemu_free_irq(s->head_intx_sink[i][n]);
         }
         qemu_free_irq(s->head_reset[i]);
+        address_space_destroy(&s->head_context_as[i]);
     }
 }
 
@@ -1667,16 +1855,19 @@ static int chip_post_load(void *opaque, int version_id)
 {
     SGIXBridgeState *s = opaque;
 
-    return version_id == 1 && s->superbridge ? -EINVAL : 0;
+    return (version_id == 1 && s->superbridge) ||
+           (version_id < 3 && s->packet_context) ? -EINVAL : 0;
 }
 
 /* The mode is immutable; the children carry programmed state. */
 static const VMStateDescription vmstate_chip = {
     .name = TYPE_SGI_XBRIDGE,
     .post_load = chip_post_load,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(packet_context, SGIXBridgeState, 3,
+                       vmstate_info_uint8_equal, uint8_t),
         VMSTATE_SINGLE(mode, SGIXBridgeState, 2,
                        vmstate_info_uint8_equal, uint8_t),
         VMSTATE_END_OF_LIST()
@@ -1792,13 +1983,18 @@ static bool chip_xio_port_connect(Object *port, unsigned int index,
             return false;
         }
         s->head_fabric[head] = peer->packet_fabric;
+        s->head_peer[head] = *peer;
         return true;
     }
     if (index >= CHIP_LINK_FIRST && index <= CHIP_LINK_LAST &&
         index != s->host_port) {
-        return sgi_xbridge_attach_xio_port(s, index, peer->cpu_face,
-                                           peer->packet_face ?: peer->cpu_face,
-                                           errp);
+        if (!sgi_xbridge_attach_xio_port(s, index, peer->cpu_face,
+                                        peer->packet_face ?: peer->cpu_face,
+                                        errp)) {
+            return false;
+        }
+        s->external[index - CHIP_LINK_FIRST].peer = *peer;
+        return true;
     }
     if (index != s->host_port) {
         error_setg(errp, "the XBridge links only its host port, 0x%x, and "
@@ -1811,7 +2007,44 @@ static bool chip_xio_port_connect(Object *port, unsigned int index,
         return false;
     }
     s->fabric = peer->packet_face;
+    s->host_peer = *peer;
     return true;
+}
+
+static MemTxResult chip_xio_packet_rw(Object *port, unsigned int index,
+                                       hwaddr address, void *buffer,
+                                       size_t size, bool write,
+                                       const SGIXioSource *source)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+    unsigned widget = address >> 48;
+    const SGIXioPeer *peer;
+
+    if (s->superbridge) {
+        widget = index;
+    } else if (widget == index || widget > CHIP_HEAD_F) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (widget == CHIP_HEAD_E || widget == CHIP_HEAD_F) {
+        AddressSpace *as = &s->head_context_as[widget - CHIP_HEAD_E];
+
+        if (!DEVICE(s)->realized) {
+            return MEMTX_DECODE_ERROR;
+        }
+        address &= SGI_XIO_PACKET_SIZE - 1;
+        return write ? address_space_write(as, address, MEMTXATTRS_UNSPECIFIED,
+                                           buffer, size) :
+                       address_space_read(as, address, MEMTXATTRS_UNSPECIFIED,
+                                          buffer, size);
+    }
+    if (widget == s->host_port) {
+        peer = &s->host_peer;
+    } else if (widget >= CHIP_LINK_FIRST && widget <= CHIP_LINK_LAST) {
+        peer = &s->external[widget - CHIP_LINK_FIRST].peer;
+    } else {
+        return MEMTX_DECODE_ERROR;
+    }
+    return chip_peer_rw(s, peer, address, buffer, size, write, source);
 }
 
 static void chip_class_init(ObjectClass *oc, const void *data)
@@ -1828,6 +2061,7 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     pc->describe = chip_xio_port_describe;
     pc->cpu_face = chip_xio_port_cpu_face;
     pc->packet_face = chip_xio_port_packet_face;
+    pc->packet_rw = chip_xio_packet_rw;
     pc->switched = chip_xio_port_switched;
     pc->reset_output = chip_xio_port_reset_output;
     pc->connect = chip_xio_port_connect;

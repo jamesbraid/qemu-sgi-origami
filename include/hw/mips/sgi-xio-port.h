@@ -62,6 +62,14 @@ typedef struct SGIXioPeer {
     bool switched;
 } SGIXioPeer;
 
+/* Access-control inputs, not physical packet-header encoding. */
+typedef struct SGIXioSource {
+    bool widget_known;
+    bool device_known;
+    uint8_t widget;
+    uint8_t device;
+} SGIXioSource;
+
 struct SGIXioPortClass {
     InterfaceClass parent_class;
 
@@ -75,6 +83,11 @@ struct SGIXioPortClass {
 
     MemoryRegion *(*cpu_face)(Object *port, unsigned int index);
     MemoryRegion *(*packet_face)(Object *port, unsigned int index);
+
+    /* Explicit-source packets never fall back to an unqualified face. */
+    MemTxResult (*packet_rw)(Object *port, unsigned int index, hwaddr address,
+                             void *buffer, size_t size, bool write,
+                             const SGIXioSource *source);
 
     /* Whether this port's faces carry the destination widget. */
     bool (*switched)(Object *port, unsigned int index);
@@ -126,6 +139,13 @@ static inline bool sgi_xio_llp_reset_accepted(int64_t *quiet_until,
     *quiet_until = now + SGI_XIO_LLP_RESET_QUIET_CYCLES * cycle_ns;
     return true;
 }
+
+MemTxResult sgi_xio_port_packet_rw(Object *port, unsigned int index,
+                                   hwaddr address, void *buffer, size_t size,
+                                   bool write, const SGIXioSource *source);
+MemTxResult sgi_xio_peer_packet_rw(const SGIXioPeer *peer, hwaddr address,
+                                   void *buffer, size_t size, bool write,
+                                   const SGIXioSource *source);
 
 const char *sgi_xio_port_describe(Object *port, unsigned int index);
 MemoryRegion *sgi_xio_port_cpu_face(Object *port, unsigned int index);

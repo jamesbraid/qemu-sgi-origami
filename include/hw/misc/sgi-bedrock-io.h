@@ -4,6 +4,7 @@
 #define HW_MISC_SGI_BEDROCK_IO_H
 
 #include "hw/core/sysbus.h"
+#include "hw/mips/sgi-xio-port.h"
 
 #define TYPE_SGI_BEDROCK_IO "sgi-bedrock-io"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
@@ -25,12 +26,18 @@ typedef struct SGIBedrockIOBTE {
     QEMUBH *signal_bh;
 } SGIBedrockIOBTE;
 
+typedef MemTxResult (*SGIBedrockIODestinationRW)(void *opaque,
+    const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
+    bool write);
+
 struct SGIBedrockIOState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
     MemoryRegion pio;
     MemoryRegion inbound;
     AddressSpace *dma_as;
+    SGIBedrockIODestinationRW destination_rw;
+    void *destination_opaque;
     MemoryRegion *dma_mr;
     AddressSpace linked_dma_as;
     bool linked_dma_as_initialized;
@@ -94,6 +101,10 @@ struct SGIBedrockIOState {
     SGIBedrockIOBTE bte[2];
 };
 
+/* Composing topology callback, after source permission checks; no fallback. */
+void sgi_bedrock_io_set_destination(SGIBedrockIOState *s,
+                                   SGIBedrockIODestinationRW rw, void *opaque);
+
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
 
 /*
@@ -110,6 +121,10 @@ void sgi_bedrock_io_set_claimant(SGIBedrockIOState *s,
 MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write);
+MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
+                                    const SGIXioSource *source,
+                                    hwaddr address, void *buffer, size_t size,
+                                    bool write);
 void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
                                     unsigned device);
 

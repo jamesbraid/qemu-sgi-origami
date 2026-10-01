@@ -694,6 +694,71 @@ MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                               buffer, size);
 }
 
+void sgi_bedrock_io_set_destination(SGIBedrockIOState *s,
+                                   SGIBedrockIODestinationRW rw, void *opaque)
+{
+    s->destination_rw = rw;
+    s->destination_opaque = opaque;
+}
+
+MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
+                                    const SGIXioSource *source,
+                                    hwaddr address, void *buffer, size_t size,
+                                    bool write)
+{
+    SGIBedrockIOState *target = s;
+    unsigned first, last;
+    MemTxResult result;
+
+    if (!source || !source->widget_known || source->widget > 15 ||
+        (source->device_known && source->device > 7)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-io: explicit packet has unknown source\n");
+        return MEMTX_ACCESS_ERROR;
+    }
+    if (address >= SGI_BEDROCK_IO_INBOUND_SIZE ||
+        size > SGI_BEDROCK_IO_INBOUND_SIZE - address) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (address & II_XIO_REGISTER) {
+        target = ii_serving(s, extract64(address, II_XIO_NODE_SHIFT,
+                                         II_XIO_NODE_WIDTH));
+        if (!target) {
+            return MEMTX_DECODE_ERROR;
+        }
+    }
+    first = source->device_known ? source->device : 0;
+    last = source->device_known ? source->device : 7;
+    for (unsigned device = first; device <= last; device++) {
+        if (!ii_inbound_permitted(s, source->widget, device) ||
+            !ii_inbound_permitted(target, source->widget, device)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-io: explicit packet from widget %u "
+                          "device %u refused\n", source->widget, device);
+            return MEMTX_ACCESS_ERROR;
+        }
+    }
+    /* The typed operation has no MemoryRegion dispatch to hold this guard. */
+    if (DEVICE(s)->mem_reentrancy_guard.engaged_in_io ||
+        DEVICE(target)->mem_reentrancy_guard.engaged_in_io) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-io: reentrant explicit packet refused\n");
+        return MEMTX_ACCESS_ERROR;
+    }
+    DEVICE(s)->mem_reentrancy_guard.engaged_in_io = true;
+    DEVICE(target)->mem_reentrancy_guard.engaged_in_io = true;
+    if (s->destination_rw) {
+        result = s->destination_rw(s->destination_opaque, source, address,
+                                    buffer, size, write);
+    } else {
+        result = sgi_bedrock_io_inbound_rw(s, source->widget, first, address,
+                                          buffer, size, write);
+    }
+    DEVICE(target)->mem_reentrancy_guard.engaged_in_io = false;
+    DEVICE(s)->mem_reentrancy_guard.engaged_in_io = false;
+    return result;
+}
+
 void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
                                     unsigned device)
 {
@@ -1112,6 +1177,14 @@ static MemoryRegion *ii_xio_port_packet_face(Object *port,
     return &SGI_BEDROCK_IO(port)->inbound;
 }
 
+static MemTxResult ii_xio_packet_rw(Object *port, unsigned int index,
+                                     hwaddr address, void *buffer, size_t size,
+                                     bool write, const SGIXioSource *source)
+{
+    return sgi_bedrock_io_source_rw(SGI_BEDROCK_IO(port), source, address,
+                                    buffer, size, write);
+}
+
 static void ii_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1127,6 +1200,7 @@ static void ii_class_init(ObjectClass *klass, const void *data)
     pc->describe = ii_xio_port_describe;
     pc->cpu_face = ii_xio_port_cpu_face;
     pc->packet_face = ii_xio_port_packet_face;
+    pc->packet_rw = ii_xio_packet_rw;
 }
 
 static const TypeInfo ii_info = {
