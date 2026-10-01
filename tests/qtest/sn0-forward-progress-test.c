@@ -33,8 +33,9 @@
 #include "sgi-test.h"
 
 /*
- * The state words sit in plain node memory at physical 0x300000, reached
- * uncached: above the PROM-data window at 0x100000, which the machine
+ * On SN machines, state words sit in plain node memory at physical
+ * 0x300000, reached uncached: above the PROM-data window at 0x100000,
+ * which the machine
  * filters through an I/O region per processor, and above the image copy
  * other CPU-side tests keep at 0x200000.  A machine whose nodes each see
  * their own low memory has one view per node: the host seeds each view
@@ -42,7 +43,6 @@
  * token they read back.
  */
 #define VIEW_PHYS           0x00300000u
-#define VIEW_KSEG1          SN0_KSEG1(VIEW_PHYS)
 
 #define CLAIMS_OFF          0x000   /* processors that took a slot here */
 #define TOKEN_OFF           0x008   /* host-seeded, one value per view */
@@ -129,6 +129,7 @@ typedef struct {
     const char *args;       /* what it needs besides -bios and -accel */
     size_t image_size;      /* the only size the machine accepts, or 0 */
     void (*prepare)(QTestState *qts);
+    uint32_t view_phys;     /* 0 uses VIEW_PHYS */
 } Recipe;
 
 #define ORIGIN300_BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x20001f80008)
@@ -142,6 +143,11 @@ static void prepare_origin300(QTestState *qts)
                  ORIGIN300_MD_INSTALLED_SELECT2);
 }
 
+/* Test-owned R12000 configuration, as in octane-test.c. */
+#define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
+    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
+    "r12000-scache-block-words=32"
+
 /*
  * How each machine takes a raw image at the reset vector.  A machine
  * query-machines reports with a family processor and this table lacks is
@@ -153,6 +159,10 @@ static const Recipe recipes[] = {
     { "origin2000", "-M origin2000", 0 },
     { "onyx2", "-M onyx2", 0 },
     { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
+    /* IP30 has only 16 KiB of low RAM; the SN state address is unmapped. */
+    { "octane", "-M octane -m 128M -cpu R10000", 0, NULL, 0x3000 },
+    { "octane2", "-M octane2 -m 256M -cpu " OCTANE2_CPU,
+      0, NULL, 0x3000 },
 };
 
 static const char *const r10000_family[] = {
@@ -420,11 +430,11 @@ static void emit_exception_handler(SN0Image *p)
     sn0_emit_park(p);
 }
 
-static void emit_preamble(SN0Image *p)
+static void emit_preamble(SN0Image *p, uint32_t view_phys)
 {
     sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
-    sn0_emit_li(p, SN0_R_T0, VIEW_KSEG1);
+    sn0_emit_li(p, SN0_R_T0, SN0_KSEG1(view_phys));
 
     emit_fetch_add(p, CLAIMS_OFF);
     sn0_emit_or(p, R_S5, R_T3, SN0_R_ZERO);
@@ -534,7 +544,7 @@ static void build_steady_state(SN0Image *p)
     sn0_emit_park(p);
 }
 
-static void build_image(SN0Image *p, Program program)
+static void build_image(SN0Image *p, Program program, uint32_t view_phys)
 {
     unsigned int vector;
 
@@ -546,7 +556,7 @@ static void build_image(SN0Image *p, Program program)
     }
 
     p->pos = CODE_START;
-    emit_preamble(p);
+    emit_preamble(p, view_phys);
     if (program == PROGRAM_COUNT_WRAP) {
         build_count_wrap(p);
     } else {
@@ -585,6 +595,7 @@ static char *write_image(const SN0Image *p, size_t size)
 typedef struct {
     QTestState *qts;
     unsigned int cpus;
+    uint32_t view_phys;
     unsigned int views;
     unsigned int view_cpu[MAX_CPUS];    /* one CPU sees each view */
     unsigned int view_slots[MAX_CPUS];  /* processors that claimed a slot */
@@ -594,7 +605,7 @@ static uint64_t cpu_read_word(Run *r, unsigned int cpu, unsigned int off)
 {
     uint8_t bytes[8];
 
-    g_assert_true(qtest_memread_cpu(r->qts, cpu, VIEW_PHYS + off, bytes,
+    g_assert_true(qtest_memread_cpu(r->qts, cpu, r->view_phys + off, bytes,
                                     sizeof(bytes)));
     return ldq_be_p(bytes);
 }
@@ -605,7 +616,7 @@ static void cpu_write_word(Run *r, unsigned int cpu, unsigned int off,
     uint8_t bytes[8];
 
     stq_be_p(bytes, value);
-    g_assert_true(qtest_memwrite_cpu(r->qts, cpu, VIEW_PHYS + off, bytes,
+    g_assert_true(qtest_memwrite_cpu(r->qts, cpu, r->view_phys + off, bytes,
                                      sizeof(bytes)));
 }
 
@@ -854,7 +865,8 @@ static void boot(Run *r, const Recipe *recipe, Program program)
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
 
-    build_image(image, program);
+    r->view_phys = recipe->view_phys ? recipe->view_phys : VIEW_PHYS;
+    build_image(image, program, r->view_phys);
     path = write_image(image, recipe->image_size);
     r->qts = qtest_initf("%s -bios %s -accel tcg,thread=multi -S",
                          recipe->args, path);
