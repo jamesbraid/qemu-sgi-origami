@@ -13,6 +13,7 @@
 #include "qapi/qapi-types-sgi-sn.h"
 #include "qapi/qapi-visit-sgi-sn.h"
 #include "qapi/qobject-input-visitor.h"
+#include "qapi/util.h"
 #include "qobject/qjson.h"
 #include "qobject/qobject.h"
 
@@ -120,6 +121,55 @@ static void check_modules_partition_nodes(const SGIModelTopology *t)
     }
 }
 
+/* The selected IP30 profiles have one CPU; this is not a HEART CPU limit. */
+static void check_heart_node_shape(const SGIModelNode *node)
+{
+    const SGIModelBankLayoutList *layout;
+    const uint64List *bank, *default_bank;
+    uint64_t total = 0;
+
+    g_assert_nonnull(node->heart);
+    g_assert_null(node->identity);
+    g_assert_false(node->has_hub_slot_bits);
+    g_assert_cmpuint(node->heart->widget_id_64 >> 28, ==,
+                     node->heart->widget_revision);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->cpu_slots), ==, 1);
+    g_assert_cmpuint(node->cpu_slots->value->interface, ==, 0);
+    g_assert_cmpuint(node->cpu_slots->value->slot, ==, 0);
+    g_assert_nonnull(node->cpu_slots->value->assembly);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->bank_mib), ==, 4);
+    for (bank = node->bank_mib; bank; bank = bank->next) {
+        total += bank->value;
+    }
+    g_assert_cmpuint(total, >, 0);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->accepted_memory_mib), ==, 1);
+    g_assert_cmpuint(node->accepted_memory_mib->value, ==, total);
+    g_assert_true(node->has_accepted_bank_layouts);
+    g_assert_nonnull(node->accepted_bank_layouts);
+    for (layout = node->accepted_bank_layouts; layout; layout = layout->next) {
+        uint64_t fitted = 0;
+        bool empty = false;
+
+        g_assert_cmpuint(QAPI_LIST_LENGTH(layout->value->bank_mib), ==, 4);
+        for (bank = layout->value->bank_mib; bank; bank = bank->next) {
+            g_assert_true(bank->value == 0 || bank->value == 64 ||
+                          bank->value == 128 || bank->value == 256);
+            if (bank->value) {
+                g_assert_false(empty);
+            } else {
+                empty = true;
+            }
+            fitted += bank->value;
+        }
+        g_assert_cmpuint(fitted, ==, total);
+    }
+    default_bank = node->accepted_bank_layouts->value->bank_mib;
+    for (bank = node->bank_mib; bank; bank = bank->next) {
+        g_assert_cmpuint(bank->value, ==, default_bank->value);
+        default_bank = default_bank->next;
+    }
+}
+
 /* Every node names a known ASIC kind; its CPU slots and banks fit it. */
 static void check_node_shapes(const SGIModelTopology *t)
 {
@@ -131,6 +181,12 @@ static void check_node_shapes(const SGIModelTopology *t)
         const uint64List *bank_entry;
         struct AsicShape shape = { };
         unsigned int bank;
+
+        if (node->asic_kind == SGI_MODEL_ASIC_KIND_HEART) {
+            g_assert_cmpint(t->generation, ==, SGI_MODEL_GENERATION_IP30);
+            check_heart_node_shape(node);
+            continue;
+        }
 
         /*
          * Zero-initialized rather than left indeterminate: GCC's flow
@@ -250,6 +306,7 @@ static void check_io_board_presets(const SGIModelTopology *t)
 
         g_assert_true(preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_IP30 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6G ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
@@ -310,6 +367,41 @@ static void check_xio_attachments(const SGIModelTopology *t)
         g_assert_true(claimed[i]);
     }
     g_assert_cmpuint(board, ==, total_boards);
+}
+
+/* IP30 routes HEART and its onboard Bridge through one Crossbow. */
+static void check_heart_xio_attachments(const SGIModelTopology *t)
+{
+    const SGIModelXioAttachmentList *entry;
+    unsigned int widgets = 0;
+
+    if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HEART) {
+        return;
+    }
+    g_assert_cmpuint(node_count(t), ==, 1);
+    g_assert_null(t->routers);
+    g_assert_null(t->cables);
+    g_assert_null(t->xio_slots);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->crossbars), ==, 1);
+    g_assert_cmpint(t->crossbars->value->kind, ==,
+                    SGI_MODEL_CROSSBAR_KIND_XBOW);
+    g_assert_cmpuint(io_board_count(t), ==, 1);
+    g_assert_cmpint(t->io_boards->value->preset, ==,
+                    SGI_MODEL_IO_BOARD_PRESET_IP30);
+    g_assert_cmpint(t->io_boards->value->carrier, ==,
+                    SGI_MODEL_IO_BOARD_CARRIER_ONBOARD);
+    g_assert_true(t->io_boards->value->has_ioc3_serial);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->xio_attachments), ==, 2);
+    for (entry = t->xio_attachments; entry; entry = entry->next) {
+        const SGIModelXioAttachment *attachment = entry->value;
+
+        g_assert_cmpint(attachment->crossbar_index, ==, 0);
+        g_assert_cmpuint(attachment->node_index, ==, 0);
+        g_assert_true(attachment->widget == 8 || attachment->widget == 15);
+        g_assert_false(widgets & (1u << attachment->widget));
+        widgets |= 1u << attachment->widget;
+    }
+    g_assert_cmpuint(widgets, ==, (1u << 8) | (1u << 15));
 }
 
 static void check_xio_slots(const SGIModelTopology *t)
@@ -399,7 +491,7 @@ static void check_bedrock_has_populated_io8(const SGIModelTopology *t)
     bool has_populated_io8 = false;
     const SGIModelIoBoardList *entry;
 
-    if (node0(t)->asic_kind == SGI_MODEL_ASIC_KIND_HUB) {
+    if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
         return;
     }
     for (entry = t->io_boards; entry; entry = entry->next) {
@@ -454,6 +546,7 @@ static void test_every_topology_is_well_formed(void)
         check_cables(t);
         check_io_board_presets(t);
         check_xio_attachments(t);
+        check_heart_xio_attachments(t);
         check_xio_slots(t);
         check_origin2000_node_slots(t);
         check_slots_are_unoccupied(t);
