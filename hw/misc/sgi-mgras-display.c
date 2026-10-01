@@ -106,8 +106,8 @@ uint8_t sgi_mgras_display_did(SGIMgrasState *s, bool overlay, unsigned int x,
  * its overlay enabled, resolved through the map that WID's overlay mode
  * names in bits 7:3; index 0 is transparent. The X server's own
  * SERVER_OVERLAY_VISUALS property advertises transparent pixel 0 for its
- * overlay visual (guest console capture irix-20260926T050306-f62509,
- * console/ioc3-a.log line 272: visual 0x23, TransparentPixel, value 0),
+ * overlay visual (a guest console capture,
+ * line 272 of its log: visual 0x23, TransparentPixel, value 0),
  * and it never loads entry 0 of the overlay maps. The mode fields are
  * inferred (see SGI_MGRAS_XMAP_OVERLAY_MODE); an overlay drawn over a WID
  * whose overlay is disabled stays invisible.

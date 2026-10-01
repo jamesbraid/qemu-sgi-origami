@@ -652,7 +652,7 @@ static void test_gl_context_table_replaces_the_least_recent(void)
 }
 
 /*
- * A switch can land inside a packet. In run irix-20260928T000530-78d0c5
+ * A switch can land inside a packet. In a captured run
  * (seq 12929748 to 12930582) perfly's context 0x84c6 was switched out 33
  * words into the 156 data words of its fourth GE table load (header
  * 0x80000284), context 0x5420 then sent one glFlush, and 0x84c6 came back
@@ -725,7 +725,7 @@ static void test_gl_packet_split_by_a_context_switch(void)
  * in unix.IP27) zeroes the context, sets image word 0 to -1 and ORs
  * 0xc0000000 into word 1. Once MgrasCtxsw has written the image it clears
  * bit 27 of word 1 for every context, and bits 31, 30, 29 and 26 for
- * every context but the default. In run irix-20260930T204826-66052a every
+ * every context but the default. In a captured run every
  * first delivery of a slot's new context carries both bits (0xe4000000 or
  * 0xec000000) and no later one does; the default context's image keeps
  * bit 31 alone (0x90000000, 0x98000000) on every switch.
@@ -740,13 +740,13 @@ static void gl_enter_new_slot(QTestState *qts, uint32_t slot)
 }
 
 /*
- * The kernel gives a dead client's slot to the next new context. In run
- * irix-20260930T204826-66052a ivview was killed with its glVertex3f two
- * words short in slot 0x5420 (seq 13911131), amesh's next context was
- * given 0x5420 new (seq 14490524), and the model took that context's
- * opener and 0x8c04 as the vertex's last two words. A new context's words
- * start at a header: here the dead context's glClearColor is two words
- * short, and the new one's opener and clear colour must not complete it.
+ * The kernel gives a dead client's slot to the next new context. In a captured
+ * run ivview was killed with its glVertex3f two words short in slot 0x5420
+ * (seq 13911131), amesh's next context was given 0x5420 new (seq 14490524),
+ * and the model took that context's opener and 0x8c04 as the vertex's last two
+ * words. A new context's words start at a header: here the dead context's
+ * glClearColor is two words short, and the new one's opener and clear colour
+ * must not complete it.
  */
 static void test_gl_new_context_starts_at_a_header(void)
 {

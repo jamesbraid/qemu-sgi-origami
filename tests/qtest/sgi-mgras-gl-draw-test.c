@@ -123,7 +123,7 @@ static void test_gl_clear_needs_the_window_rectangle(void)
 
 /*
  * The server gives the probe's window display ID 14 and XMAP mode 0x1408
- * (run irix-20260927T135825-92207b, seq 3899859-3899880). Bits 9:5 of that
+ * (a captured run, seq 3899859-3899880). Bits 9:5 of that
  * mode are zero, so an indexed pixel left under the window resolves
  * through colour map 0, which the server never loads, and shows black. A
  * GL clear stores direct colour, which bypasses the map.
@@ -783,7 +783,7 @@ static void gl_corner_triangle(QTestState *qts)
 }
 
 /*
- * colorbars (run irix-20260928T004550-1040f3, from seq 26371573) sends its
+ * colorbars (a captured run, from seq 26371573) sends its
  * bars' colours as glColor3ub words 0x87878700, 0x87870000, 0x00878700,
  * 0x00870000, 0x87008700 and 0x87000000: white, yellow, cyan, green,
  * magenta and red at 0x87, so the three bytes arrive red first from bit
@@ -1384,9 +1384,9 @@ static void test_gl_clip_ignores_disabled_rectangles(void)
 
 /*
  * The kernel's null clip, 0x23 with both rectangles the whole screen and
- * the origin at row 1024 (perfly's context 0x84c6 in run
- * irix-20260928T000530-78d0c5), draws nothing; nor does 0x10, a window of
- * five or more rectangles, whose bounds the image does not give.
+ * the origin at row 1024 (perfly's context 0x84c6 in a captured run), draws
+ * nothing; nor does 0x10, a window of five or more rectangles, whose bounds
+ * the image does not give.
  */
 static void test_gl_clip_null_and_many_draw_nothing(void)
 {

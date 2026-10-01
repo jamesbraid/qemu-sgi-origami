@@ -3,8 +3,7 @@ sgi-replay 2
 head sgi-mgras
 # Overlay planes the way the stock IRIX 6.5.30 X server drives them for a
 # window on its overlay visual (popup and Toolchest menus, XOR outlines),
-# reduced from desktop traces irix-20260926T035440-7d2dc3 and
-# irix-20260926T052228-910b39:
+# reduced from two desktop traces:
 #  - a primitive draws into the overlay when DRBPOINTERS is 0x101c0 and
 #    COLORMASKMSBS enables bits 6:4; the server also zeroes COLORMASKLSBSA,
 #    so the main planes keep their pixels

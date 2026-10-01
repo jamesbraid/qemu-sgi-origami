@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras-si-t
 # ivview's textured quad on SI+T, from the IRIX 6.5.30 session run
-# irix-20260930T224203-2e96c4 (four-node Origin 2000, the IP27GR532
+# (four-node Origin 2000, the IP27GR532
 # libGLcore.so, the scene's Texture2 image 4 2 4 with textureQuality 0.1,
 # so the client kept one RGBA4 level drawn nearest; trace texrgba2.trace,
 # SHA-256 c3f079d31f637d7c0db7852431b17fa3d64daf893a6be2250cfb9076811886cf).

@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # CMAP, XMAP and WID the way the stock IRIX 6.5.30 X server programs them,
-# reduced from the desktop session of trace irix-20260922T133830-79813f:
+# reduced from the desktop session of a captured trace:
 #  - a CMAP selector carries the map in bits 4:0 and the first entry in
 #    bits 15:8, and the data port advances one entry per write
 #  - each pixel's WID comes from the VC3 main display-ID table (register

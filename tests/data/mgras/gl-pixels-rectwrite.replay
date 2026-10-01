@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # One row of mandel's first rectwrite, cut from the IRIX 6.5.30 session
-# run irix-20260929T063522-625ddc (mandel from the 6.5.12 demos, IRIS GL
+# a captured run (mandel from the 6.5.12 demos, IRIS GL
 # through the IGLOO libgl.so, on the SI): the context switch to its
 # context 0x5420, then every main-port word up to the end of the first
 # pixel draw. Kept: the port, context and flag-clear writes; dropped: reads,

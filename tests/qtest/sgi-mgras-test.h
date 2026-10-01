@@ -661,7 +661,7 @@ static inline void mgras_load_vga_timing(QTestState *q)
 /*
  * The 63-word context image the IRIX kernel wrote for the probe's GL
  * context, a 128x128 window whose top-left pixel is at screen (256, 256)
- * (run irix-20260927T135825-92207b, seq 3959112). Word 2 is the window's
+ * (a captured run, seq 3959112). Word 2 is the window's
  * lower-left corner as (y << 16) | x with y counted up from the bottom of
  * the screen, word 3 is 0x11, and words 11 and 12 are the window's column
  * and row ranges in the 0x147/0x148 layout. The other words are carried
@@ -862,7 +862,7 @@ static inline uint32_t gl_window_pixel(QTestState *qts, int x, int y)
 
 /*
  * The GL client's matrix, depth and buffer words as the recorded probe
- * streams of run irix-20260927T172059-fdbada carry them (glMatrixMode
+ * streams of a captured run carry them (glMatrixMode
  * 0x2a04, glLoadIdentity 0x2c00, glLoadMatrixf 0x2b40 with 16 floats in
  * memory order, glMultMatrixf 0x2d40, glFrustum 0x3418 and glOrtho 0x3518
  * with the six arguments as floats, glEnable(GL_DEPTH_TEST) 0x6604 with 1,
@@ -976,7 +976,7 @@ static inline void gl_deep_scene(QTestState *s)
 
 /*
  * Context image word 0 names the context's GL state: 0x3bcd and 0x5420
- * for the two probe clients of run irix-20260927T191513-b4997c, which
+ * for the two probe clients of a captured run, which
  * never re-send their state after a switch. The tests give both contexts
  * the same window, so a model that keyed state by the window, or kept one
  * state for the board, fails them.
@@ -1086,9 +1086,9 @@ static inline uint32_t gl_attribute_query(QTestState *qts, uint32_t index)
 
 /*
  * __Mgr_ReturnMode's 0xa20c query: an index, then a1 and a2, answered at
- * 0x028004 once flag bit 17 is set. The indices are the ones the hq3_revB_HQ4.u
- * symbol table gives, which the library loads for a board reporting GE
- * revision 2 with one GE: GL_MODELVIEW_MATRIX 0x3a + i and
+ * 0x028004 once flag bit 17 is set. The indices are the ones the
+ * hq3_revB_HQ4.u symbol table gives, which the library loads for a board
+ * reporting GE revision 2 with one GE: GL_MODELVIEW_MATRIX 0x3a + i and
  * GL_PROJECTION_MATRIX 0x4a + i with a1 0, read as floats into the
  * result's element i; GL_MATRIX_MODE 0x29, read as answer + 0x1701;
  * GL_VIEWPORT 0xc1d to 0xc20 and GL_SHADE_MODEL 0xc19 as integers;
@@ -1325,8 +1325,8 @@ static inline void gl_colour_index_back_buffer(QTestState *qts)
  * routine's word in its parameters, the zoom at 0x191 and the window
  * rectangle at 0xe34; then 0x8d20 and eight words, the first the image's
  * words a row; then the image, inline one block a row, or by a DMA
- * transfer kicked with 0xa7. The values are the ones run
- * irix-20260929T063522-625ddc captured from ipaste, imgview and mandel.
+ * transfer kicked with 0xa7. The values are the ones a captured run took from
+ * ipaste, imgview and mandel.
  */
 #define GL_GE_CRAM            0x80
 #define GL_GE_ERAM            0xcd
@@ -2435,7 +2435,7 @@ static inline void gl_polygon_context_check(QTestState *s)
 
 /*
  * The kernel's context eviction (sgi-mgras-gl.c, "Context eviction") as
- * run irix-20260930T234501-dc3029 captured it from i3dm: context 0x9d19's
+ * a captured run captured it from i3dm: context 0x9d19's
  * 0x1854 ERAM words read out by a DMA read kicked 0xbd from DMA-map slot
  * 2, then that host image written back into 0x5420 in chunks of 0x384
  * words kicked 0xa5. Here node 0's page list maps pages 7 to 14.

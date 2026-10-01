@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # A new GL context given a dead client's slot, assembled from the IRIX
-# 6.5.30 session run irix-20260930T204826-66052a (ivview on xforms.iv,
+# 6.5.30 session run (ivview on xforms.iv,
 # twice, on the SI through the IP27GR532 libGLcore.so). Kept: the port
 # words, the HQ flag clears and the query flag and answer reads; dropped:
 # the status polls and the cursor, DAC and retrace writes around them.
