@@ -117,6 +117,9 @@ static void populate(SGIGLContext *c, bool other)
     c->standalone_stipple = c->line_phase_loaded = false;
     c->draw_error_loaded = false;
     c->line_phase = 0;
+    /* Nor is a family's fog hook, which is not migrated. */
+    c->cur.fog_factor = NULL;
+    c->cur.fog_opaque = NULL;
 
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
     c->cur.depth_test = !other;
@@ -210,7 +213,10 @@ static void populate(SGIGLContext *c, bool other)
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
 }
 
-/* Pointer alignment adds host padding before the owned assembly. */
+/*
+ * Pointer alignment adds host padding before the owned assembly, and the
+ * family's fog hook, a host pointer pair with its padding, is not state.
+ */
 static bool context_padding(size_t at)
 {
     size_t before = offsetof(SGIGLContext, polygon_stipple) +
@@ -218,6 +224,16 @@ static bool context_padding(size_t at)
     size_t end = offsetof(SGIGLContext, raster_texcoord) +
                  sizeof(((SGIGLContext *)0)->raster_texcoord);
 
+    /* The draw state's pointers align it past the hardware identity. */
+    if (at >= offsetof(SGIGLContext, hw_id) + sizeof(uint32_t) &&
+        at < offsetof(SGIGLContext, cur)) {
+        return true;
+    }
+    if (at >= offsetof(SGIGLContext, cur.window_rows_down) +
+              sizeof(uint32_t) &&
+        at < offsetof(SGIGLContext, cur.fog_opaque) + sizeof(void *)) {
+        return true;
+    }
     if (at >= offsetof(SGIGLContext, standalone_stipple) &&
         at < offsetof(SGIGLContext, line_phase)) {
         return true;
