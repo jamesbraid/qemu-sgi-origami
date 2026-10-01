@@ -2,6 +2,7 @@
 /* Synthetic bank populations for the standalone IP30 HEART profile. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "memtx.h"
 #include "sgi-migrate.h"
 
 #define HEART_PATH "/machine/peripheral/heart"
@@ -38,7 +39,7 @@ static uint32_t heart_descriptor(unsigned index)
 
 static QTestState *heart_start(unsigned mib, const char *extra)
 {
-    QTestState *s = qtest_initf("-M none -cpu R10000 -device "
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
         "sgi-heart,id=heart,bank0-size=%" PRIu64 ",widget-revision=4 -S %s",
         (uint64_t)mib * 1024 * 1024, extra);
 
@@ -125,7 +126,7 @@ static void test_ecc_words_aliases(void)
         g_assert_cmphex(qtest_readq(s, words[i]), ==, patterns[i] ^ 0x729);
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
     }
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_REGS + 0x20, 0x80010000), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_REGS + 0x20, 0x80010000), ==,
                      MEMTX_OK);
     qtest_quit(s);
 }
@@ -189,14 +190,14 @@ static void test_ecc_unsupported(void)
     qtest_writeq(s, word + 8, 0xbc2697184ed305faULL);
     for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
         qtest_writeq(s, HEART_REGS, invalid[i]);
-        g_assert_cmpuint(qtest_writeq_tx(s, word, UINT64_MAX), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_writeq(s, word, UINT64_MAX), ==, MEMTX_ERROR);
         qtest_writeq(s, HEART_REGS, 0);
         g_assert_cmphex(qtest_readq(s, word), ==, pattern);
     }
     qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
-    g_assert_cmpuint(qtest_writel_tx(s, word, 0x170349a8), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word - 4, UINT64_MAX), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + word, UINT64_MAX), ==,
+    g_assert_cmpuint(memtx_writel(s, word, 0x170349a8), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word - 4, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + word, UINT64_MAX), ==,
                      MEMTX_ERROR);
     qtest_writeq(s, word, pattern);
     qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
@@ -206,13 +207,13 @@ static void test_ecc_unsupported(void)
             continue;
         }
         qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | (1ULL << control));
-        g_assert_cmpuint(qtest_readq_tx(s, word, &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(s, word, &value), ==, MEMTX_ERROR);
         if (control != 21) {
-            g_assert_cmpuint(qtest_writeq_tx(s, word, 0), ==, MEMTX_ERROR);
+            g_assert_cmpuint(memtx_writeq(s, word, 0), ==, MEMTX_ERROR);
         }
         /* Unsupported ECC controls leave ordinary unpoisoned RAM usable. */
         if (control == 20) {
-            g_assert_cmpuint(qtest_writeq_tx(s, word + 0x40, 0x6bf09dc48),
+            g_assert_cmpuint(memtx_writeq(s, word + 0x40, 0x6bf09dc48),
                              ==, MEMTX_ERROR);
             g_assert_cmphex(qtest_readq(s, word + 0x40), ==, 0);
         } else {
@@ -221,17 +222,17 @@ static void test_ecc_unsupported(void)
         }
     }
     qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
-    g_assert_cmpuint(qtest_readl_tx(s, word, &part), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, word + 4, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word - 4, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word + 4, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, word - 4, &value), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_PACKET + word, &value), ==,
+    g_assert_cmpuint(memtx_readl(s, word, &part), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, word + 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word - 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word + 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, word - 4, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_PACKET + word, &value), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + word - 4, 0), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + word - 4, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20), ==, 0x80010000);
     g_assert_cmphex(qtest_readq(s, word - 8), ==, 0x8231dca94180be76ULL);
     g_assert_cmphex(qtest_readq(s, word + 8), ==, 0xbc2697184ed305faULL);
@@ -258,7 +259,7 @@ static void test_ecc_double_bit(void)
     qtest_writel(s, HEART_REGS + 0x20, 0x80030000);
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE | HEART_ECC_DOUBLE);
     for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
-        g_assert_cmpuint(qtest_writeq_tx(s, words[i], patterns[i]), ==,
+        g_assert_cmpuint(memtx_writeq(s, words[i], patterns[i]), ==,
                          MEMTX_OK);
     }
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
@@ -269,10 +270,10 @@ static void test_ecc_double_bit(void)
         qtest_writeq(s, HEART_REGS, 0);
         g_assert_cmphex(qtest_readq(s, alias), ==, patterns[i] ^ 3);
         qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
-        g_assert_cmpuint(qtest_readq_tx(s, alias, &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(s, alias, &value), ==, MEMTX_ERROR);
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
         qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE);
-        g_assert_cmpuint(qtest_readq_tx(s, alias, &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(s, alias, &value), ==, MEMTX_ERROR);
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 2);
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
                         HEART_ECC_IRQ);
@@ -287,10 +288,10 @@ static void test_ecc_double_bit(void)
         g_assert_false(qtest_get_irq(s, 4));
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 2);
         qtest_writeq(s, HEART_REGS + 0x10040, 2);
-        g_assert_cmpuint(qtest_readq_tx(s, words[i], &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(s, words[i], &value), ==, MEMTX_ERROR);
         g_assert_true(qtest_get_irq(s, 4));
         qtest_writeq(s, HEART_REGS, i & 1 ? HEART_ECC_FORCE : 0);
-        g_assert_cmpuint(qtest_writeq_tx(s, alias, patterns[i] ^ 0x123), ==,
+        g_assert_cmpuint(memtx_writeq(s, alias, patterns[i] ^ 0x123), ==,
                          MEMTX_OK);
         g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 2);
         qtest_writeq(s, HEART_REGS + 0x10040, 2);
@@ -321,27 +322,27 @@ static void test_ecc_double_unsupported(void)
     qtest_writeq(s, word, pattern);
     for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
         qtest_writeq(s, HEART_REGS, invalid[i]);
-        g_assert_cmpuint(qtest_writeq_tx(s, word, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_writeq(s, word, 0), ==, MEMTX_ERROR);
         qtest_writeq(s, HEART_REGS, 0);
         g_assert_cmphex(qtest_readq(s, word), ==, pattern);
     }
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE | HEART_ECC_DOUBLE);
-    g_assert_cmpuint(qtest_writel_tx(s, word, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word - 4, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + word, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, word, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word - 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + word, 0), ==,
                      MEMTX_ERROR);
     qtest_writeq(s, word, pattern);
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE);
-    g_assert_cmpuint(qtest_readl_tx(s, word, &part), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, word - 4, &value), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word + 4, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_PACKET + word, &value), ==,
+    g_assert_cmpuint(memtx_readl(s, word, &part), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, word - 4, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word + 4, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_PACKET + word, &value), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, HEART_REGS + 0x20, 0), ==, MEMTX_ERROR);
     qtest_writeq(s, HEART_REGS, HEART_ECC_FORCE);
-    g_assert_cmpuint(qtest_readq_tx(s, word, &value), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, word, 0), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, word + 0x100, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, word, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, word, 0), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(s, word + 0x100, 0), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
     qtest_writeq(s, HEART_REGS, 0);
@@ -371,12 +372,12 @@ static void test_ecc_mixed_classes(void)
     qtest_writeq(s, HEART_REGS + 0x10020, 1ULL << 61);
     qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
     g_assert_cmphex(qtest_readq(s, single), ==, 0xfedcba9876543210ULL);
-    g_assert_cmpuint(qtest_readq_tx(s, double_word, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, double_word, &value), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 1);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
                     single | (0x13ULL << 34));
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE);
-    g_assert_cmpuint(qtest_readq_tx(s, double_word, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, double_word, &value), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10040), ==, 3);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
                     HEART_ECC_IRQ | (1ULL << 61));
@@ -482,7 +483,7 @@ static void test_ecc_double_reset(void)
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE | HEART_ECC_DOUBLE);
     qtest_writeq(s, HEART_RAM + 0x20, 0x3210aabbccdd8765ULL);
     qtest_writeq(s, HEART_REGS, HEART_ECC_UNCORRECTABLE);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_RAM + 0x20, &value), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_RAM + 0x20, &value), ==,
                      MEMTX_ERROR);
     qtest_system_reset(s);
     qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
@@ -539,7 +540,7 @@ static void test_ecc_migration(gconstpointer data)
     qtest_writeq(from, HEART_REGS, enables | (1ULL << 13));
     qtest_writeq(from, HEART_REGS + 0x10000, HEART_ECC_IRQ);
     if (double_bit) {
-        g_assert_cmpuint(qtest_readq_tx(from, word, &value), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(from, word, &value), ==, MEMTX_ERROR);
     } else {
         g_assert_cmphex(qtest_readq(from, word), ==, pattern);
     }
@@ -562,7 +563,7 @@ static void test_ecc_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, HEART_RAM + 0x1000), ==, 0);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 0);
     if (double_bit) {
-        g_assert_cmpuint(qtest_readq_tx(to, other + 2 * UNIT, &value), ==,
+        g_assert_cmpuint(memtx_readq(to, other + 2 * UNIT, &value), ==,
                          MEMTX_ERROR);
     } else {
         g_assert_cmphex(qtest_readq(to, other + 2 * UNIT), ==,
@@ -575,7 +576,7 @@ static void test_ecc_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, other), ==, 0x0192837465abcedfULL);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 0);
     if (double_bit) {
-        g_assert_cmpuint(qtest_readq_tx(to, word + 2 * UNIT, &value), ==,
+        g_assert_cmpuint(memtx_readq(to, word + 2 * UNIT, &value), ==,
                          MEMTX_ERROR);
         qtest_writeq(to, HEART_REGS, 0);
         g_assert_cmphex(qtest_readq(to, word), ==, pattern ^ 3);
@@ -632,11 +633,11 @@ static void test_ecc_guard_overlap(void)
     qtest_writeq(s, word, 0x69f78da014e352bcULL);
     qtest_writeq(s, word + 8, 0x451bea907cd326f8ULL);
     qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
-    g_assert_cmpuint(qtest_writeq_tx(s, word - 1, UINT64_MAX), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word + 1, UINT64_MAX), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, word + 15, UINT64_MAX), ==,
+    g_assert_cmpuint(memtx_writeq(s, word - 1, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word + 1, UINT64_MAX), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writeq(s, word + 15, UINT64_MAX), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, word + 1, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, word + 1, &value), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, word - 8), ==, 0x85bf014adc732968ULL);
     g_assert_cmphex(qtest_readq(s, word + 16), ==, 0x315c402a87bd916eULL);
     g_assert_cmphex(qtest_readq(s, word), ==, 0x69f78da014e352bcULL);
@@ -764,14 +765,14 @@ static void test_descriptors(gconstpointer data)
     /* An absent descriptor claims probe space but cannot retain a pattern. */
     qtest_writel(s, HEART_REGS + 0x20, 0);
     qtest_writel(s, HEART_REGS + 0x24, PROBE_DESC);
-    g_assert_cmpuint(qtest_readq_tx(s, 0x10000000000ULL, &value), ==,
+    g_assert_cmpuint(memtx_readq(s, 0x10000000000ULL, &value), ==,
                      MEMTX_DECODE_ERROR);
     g_assert_cmphex(value, ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, 0x10000000000ULL, UINT64_MAX), ==,
+    g_assert_cmpuint(memtx_writeq(s, 0x10000000000ULL, UINT64_MAX), ==,
                      MEMTX_DECODE_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, PROBE_RAM + 0x100, UINT64_MAX), ==,
+    g_assert_cmpuint(memtx_writeq(s, PROBE_RAM + 0x100, UINT64_MAX), ==,
                      MEMTX_OK);
-    g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM + 0x100, &value), ==,
+    g_assert_cmpuint(memtx_readq(s, PROBE_RAM + 0x100, &value), ==,
                      MEMTX_OK);
     g_assert_cmphex(value, ==, 0);
     qtest_writeq(s, HEART_REGS + 0x20, 0);
@@ -891,7 +892,7 @@ static void test_projection(gconstpointer data)
 
 static void test_two_64m_banks(void)
 {
-    QTestState *s = qtest_init("-M none -cpu R10000 -device "
+    QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
         "sgi-heart,id=heart,bank0-size=67108864,bank1-size=67108864 -S");
     uint64_t first = HEART_RAM + 0x100;
     uint64_t second = HEART_RAM + 2 * UNIT + 0x100;
@@ -916,7 +917,7 @@ static void test_invalid_bank_capacity(void)
         g_test_trap_assert_stderr("*capacity must be 0, 64M, 128M or 256M*");
         return;
     }
-    s = qtest_init("-M none -cpu R10000 -device "
+    s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 -device "
                    "sgi-heart,id=heart,bank0-size=100663296 -S");
     qtest_quit(s);
 }
@@ -934,7 +935,7 @@ static void test_wide_descriptor_clear(void)
         qtest_writel(s, HEART_REGS + 0x20 + 4 * i, descriptor);
         g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==,
                         descriptor);
-        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+        g_assert_cmpuint(memtx_readq(s, address[i], &value), ==,
                          MEMTX_OK);
     }
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20), ==,
@@ -948,14 +949,14 @@ static void test_wide_descriptor_clear(void)
     for (unsigned i = 0; i < 4; i++) {
         g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==,
                         i < 2 ? 0 : heart_descriptor(i));
-        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+        g_assert_cmpuint(memtx_readq(s, address[i], &value), ==,
                          i < 2 ? MEMTX_DECODE_ERROR : MEMTX_OK);
     }
 
     qtest_writeq(s, HEART_REGS + 0x28, 0);
     for (unsigned i = 0; i < 4; i++) {
         g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20 + 4 * i), ==, 0);
-        g_assert_cmpuint(qtest_readq_tx(s, address[i], &value), ==,
+        g_assert_cmpuint(memtx_readq(s, address[i], &value), ==,
                          MEMTX_DECODE_ERROR);
     }
     qtest_quit(s);
@@ -971,24 +972,24 @@ static void test_widget_id(void)
 
     qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
     qtest_writeq(s, PROBE_RAM, 0x0123456789abcdefULL);
-    g_assert_cmpuint(qtest_readb_tx(s, PROBE_RAM, &byte), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readb(s, PROBE_RAM, &byte), ==, MEMTX_OK);
     g_assert_cmphex(byte, ==, 0x01);
-    g_assert_cmpuint(qtest_readw_tx(s, PROBE_RAM, &half), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readw(s, PROBE_RAM, &half), ==, MEMTX_OK);
     g_assert_cmphex(half, ==, 0x0123);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
     g_assert_cmphex(wide, ==, (uint64_t)id);
-    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET, &byte), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET, &half), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 8, &wide),
+    g_assert_cmpuint(memtx_readb(s, HEART_WIDGET, &byte), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readw(s, HEART_WIDGET, &half), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET, &id), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 8, &wide),
                      ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 4), ==, HEART_WIDGET_ID);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET, &wide), ==, MEMTX_OK);
     g_assert_cmphex(wide, ==, HEART_WIDGET_ID);
     qtest_quit(s);
 }
@@ -1001,40 +1002,40 @@ static void test_widget_control(void)
     uint8_t byte;
     uint64_t wide;
 
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x24, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x24, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, 0xa5c3f00f),
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, 0xa5c3f00f),
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0xa5c3f00f);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, 0x5a3c0ff0),
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, 0x5a3c0ff0),
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a3c0ff0);
     word = qtest_readl(s, HEART_WIDGET + 0x24);
     word = (word & ~0x00ff0000U) | 0x00420000U;
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x24, word), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x24, word), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, word);
 
-    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x24, &byte), ==,
+    g_assert_cmpuint(memtx_readb(s, HEART_WIDGET + 0x24, &byte), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x24, 0xff), ==,
+    g_assert_cmpuint(memtx_writeb(s, HEART_WIDGET + 0x24, 0xff), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x24, &half), ==,
+    g_assert_cmpuint(memtx_readw(s, HEART_WIDGET + 0x24, &half), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x24, 0xffff), ==,
+    g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x24, 0xffff), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x20, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x20, &wide), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x20, UINT64_MAX),
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x20, UINT64_MAX),
                      ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x20, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x20, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x20, UINT32_MAX),
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x20, UINT32_MAX),
                      ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x28, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x28, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x28, UINT32_MAX),
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x28, UINT32_MAX),
                      ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x24), ==, 0x5a420ff0);
 
@@ -1051,16 +1052,16 @@ static void test_widget_timeout(void)
     uint16_t half;
     uint8_t byte;
 
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x2c, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x2c, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x28, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x28, &wide), ==,
                      MEMTX_OK);
     g_assert_cmphex(wide, ==, 0);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x44, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x44, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x2c, 0x80), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x2c, 0x80), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x80);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x80);
@@ -1068,37 +1069,37 @@ static void test_widget_timeout(void)
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x12345678);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x12345678);
     g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x2c), ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28, 0), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x28, 0), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x28,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x28,
                                     0x1234567887654321ULL), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x28), ==, 0x87654321);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x87654321);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x28, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x28, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x30, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x30, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x2c, &byte), ==,
+    g_assert_cmpuint(memtx_readb(s, HEART_WIDGET + 0x2c, &byte), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x2c, 0), ==,
+    g_assert_cmpuint(memtx_writeb(s, HEART_WIDGET + 0x2c, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x2c, &half), ==,
+    g_assert_cmpuint(memtx_readw(s, HEART_WIDGET + 0x2c, &half), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x2c, 0), ==,
+    g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x2c, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x40, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x40, &wide), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x44, &byte), ==,
+    g_assert_cmpuint(memtx_readb(s, HEART_WIDGET + 0x44, &byte), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x44, &half), ==,
+    g_assert_cmpuint(memtx_readw(s, HEART_WIDGET + 0x44, &half), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x44, 0), ==,
+    g_assert_cmpuint(memtx_writeb(s, HEART_WIDGET + 0x44, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x44, 0), ==,
+    g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x44, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x48, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x48, &word), ==,
                      MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x2c), ==, 0x87654321);
     g_assert_cmphex(qtest_readl(s, HEART_WIDGET + 0x44), ==, 0);
@@ -1117,53 +1118,53 @@ static void test_widget_errors(void)
     uint16_t half;
     uint8_t byte;
 
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x60, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x60, &wide), ==,
                      MEMTX_OK);
     g_assert_cmphex(wide, ==, 0);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x68, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x68, &wide), ==,
                      MEMTX_OK);
     g_assert_cmphex(wide, ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x60, 0), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x60, 0), ==,
                      MEMTX_OK);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x44, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x44, 0), ==,
                      MEMTX_OK);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x44, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x44, &word), ==,
                      MEMTX_OK);
     g_assert_cmphex(word, ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x40, 0), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x40, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x40, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x40, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x48, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x48, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x44, 1), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x44, 1), ==,
                      MEMTX_ERROR);
 
     qtest_writeq(s, HEART_WIDGET + 0x68, 0xdeadbeef3ff62c07ULL);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x68), ==,
                     0x3ff62c07ULL);
-    g_assert_cmpuint(qtest_readb_tx(s, HEART_WIDGET + 0x68, &byte), ==,
+    g_assert_cmpuint(memtx_readb(s, HEART_WIDGET + 0x68, &byte), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeb_tx(s, HEART_WIDGET + 0x68, 0), ==,
+    g_assert_cmpuint(memtx_writeb(s, HEART_WIDGET + 0x68, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readw_tx(s, HEART_WIDGET + 0x68, &half), ==,
+    g_assert_cmpuint(memtx_readw(s, HEART_WIDGET + 0x68, &half), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writew_tx(s, HEART_WIDGET + 0x68, 0), ==,
+    g_assert_cmpuint(memtx_writew(s, HEART_WIDGET + 0x68, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x68, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x68, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x6c, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x6c, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x70, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x70, &wide), ==,
                      MEMTX_OK);
     g_assert_cmphex(wide, ==, 0);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x70, 0), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x70, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x60, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x60, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_WIDGET + 0x64, 0), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_WIDGET + 0x64, 0), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_WIDGET + 0x60,
+    g_assert_cmpuint(memtx_writeq(s, HEART_WIDGET + 0x60,
                                     0xdeadbeef3ff62c07ULL), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_WIDGET + 0x60), ==, 0);
@@ -1195,30 +1196,30 @@ static void test_widget_diagnostics(void)
     for (unsigned i = 0; i < G_N_ELEMENTS(word_offsets); i++) {
         uint64_t addr = HEART_WIDGET + word_offsets[i];
 
-        g_assert_cmpuint(qtest_readl_tx(s, addr, &word), ==, MEMTX_OK);
+        g_assert_cmpuint(memtx_readl(s, addr, &word), ==, MEMTX_OK);
         g_assert_cmphex(word, ==, 0);
-        g_assert_cmpuint(qtest_readb_tx(s, addr, &byte), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_readw_tx(s, addr, &half), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_readq_tx(s, addr, &wide), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_writel_tx(s, addr, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readb(s, addr, &byte), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readw(s, addr, &half), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readq(s, addr, &wide), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_writel(s, addr, 0), ==, MEMTX_ERROR);
     }
     for (unsigned i = 0; i < G_N_ELEMENTS(wide_offsets); i++) {
         uint64_t addr = HEART_WIDGET + wide_offsets[i];
 
-        g_assert_cmpuint(qtest_readq_tx(s, addr, &wide), ==, MEMTX_OK);
+        g_assert_cmpuint(memtx_readq(s, addr, &wide), ==, MEMTX_OK);
         g_assert_cmphex(wide, ==, 0);
-        g_assert_cmpuint(qtest_readb_tx(s, addr, &byte), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_readw_tx(s, addr, &half), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_readl_tx(s, addr, &word), ==, MEMTX_ERROR);
-        g_assert_cmpuint(qtest_readl_tx(s, addr + 4, &word), ==,
+        g_assert_cmpuint(memtx_readb(s, addr, &byte), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readw(s, addr, &half), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readl(s, addr, &word), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_readl(s, addr + 4, &word), ==,
                          MEMTX_ERROR);
-        g_assert_cmpuint(qtest_writeq_tx(s, addr, 0), ==, MEMTX_ERROR);
+        g_assert_cmpuint(memtx_writeq(s, addr, 0), ==, MEMTX_ERROR);
     }
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 0x18, &word), ==,
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 0x18, &word), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x88, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x88, &wide), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET + 0x98, &wide), ==,
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET + 0x98, &wide), ==,
                      MEMTX_ERROR);
 
     qtest_system_reset(s);
@@ -1239,31 +1240,31 @@ static void test_widget_packets(void)
     uint64_t level2 = 1ULL << 42;
 
     qtest_irq_intercept_out_named(s, HEART_PATH, "processor");
-    g_assert_cmpuint(qtest_writel_tx(s, HEART_PACKET + 0x80, 0x103), ==,
+    g_assert_cmpuint(memtx_writel(s, HEART_PACKET + 0x80, 0x103), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x140), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 0x140), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x303), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 0x303), ==,
                      MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x88, 0x103), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x88, 0x103), ==,
                      MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, 0);
 
     qtest_writeq(s, HEART_REGS + 0x10000,
                  level0 | level1 | level2);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x103), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 0x103), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, level0);
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 1));
     g_assert_false(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x110), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 0x110), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
                     level0 | level1);
     g_assert_true(qtest_get_irq(s, 1));
     g_assert_false(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 0x12a), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 0x12a), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10038), ==,
                     level0 | level1 | level2);
@@ -1277,14 +1278,14 @@ static void test_widget_packets(void)
     qtest_writeq(s, HEART_REGS + 0x10000,
                  level0 | level1 | level2);
     g_assert_true(qtest_get_irq(s, 1));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 16), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 16), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==,
                     level0 | level2);
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 1));
     g_assert_true(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 3), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 3), ==,
                      MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x10030), ==, level2);
     g_assert_false(qtest_get_irq(s, 0));
@@ -1295,7 +1296,7 @@ static void test_widget_packets(void)
     g_assert_false(qtest_get_irq(s, 2));
     qtest_writeq(s, HEART_REGS + 0x10000, level2);
     g_assert_true(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_PACKET + 0x80, 42), ==,
+    g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + 0x80, 42), ==,
                      MEMTX_OK);
     g_assert_false(qtest_get_irq(s, 2));
     qtest_quit(s);
@@ -1388,9 +1389,9 @@ static void test_reset(void)
     qtest_clock_step(s, 800);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 10);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(s, HEART_WIDGET + 4, &id), ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_WIDGET, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, HEART_WIDGET, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, (uint64_t)id);
     g_assert_cmphex(qtest_readq(s, HEART_REGS), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x08), ==, 0);
@@ -1407,10 +1408,10 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, HEART_STATUS), ==, 0x18);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x50000), ==, 0);
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
-    g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==,
+    g_assert_cmpuint(memtx_readq(s, PROBE_RAM, &value), ==,
                      MEMTX_DECODE_ERROR);
     qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
-    g_assert_cmpuint(qtest_readq_tx(s, PROBE_RAM, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, PROBE_RAM, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0xfeedface);
     g_assert_cmphex(qtest_readq(s, PROBE_RAM + UNIT), ==, 0xfeedface);
     qtest_quit(s);
@@ -1524,7 +1525,7 @@ static void test_migration(void)
 
 static QTestState *heart_xtalk_start(const char *extra)
 {
-    QTestState *s = qtest_initf("-M none -cpu R10000 -S "
+    QTestState *s = qtest_initf(MEMTX_TEST_DEVICE "-M none -cpu R10000 -S "
                                  "-device sgi-heart-xtalk-test,id=heart-xtalk %s",
                                  extra);
 
@@ -1547,40 +1548,40 @@ static void test_xtalk_dma(void)
 
     qtest_writel(s, HEART_XTALK_REGS + 0x20, 0x80030000);
     qtest_writel(s, HEART_XTALK_REGS + 0x24, 0x80030004);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_RAM - 8, UINT64_MAX),
+    g_assert_cmpuint(memtx_writeq(s, HEART_XTALK_RAM - 8, UINT64_MAX),
                      ==, MEMTX_DECODE_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, packet - 4,
+    g_assert_cmpuint(memtx_writeq(s, packet - 4,
                                      0x1021324354657687ULL), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, boundary - 4), ==,
                     0x1021324354657687ULL);
     qtest_writeq(s, boundary - 4, 0x8877665544332211ULL);
-    g_assert_cmpuint(qtest_readq_tx(s, packet - 4, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, packet - 4, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x8877665544332211ULL);
 
     /* One eight-byte packet must leave its valid first four bytes alone. */
     qtest_writel(s, HEART_XTALK_REGS + 0x24, 0);
     qtest_writeq(s, boundary - 8, 0xaabbccddeeff0011ULL);
-    g_assert_cmpuint(qtest_writeq_tx(s, packet - 4,
+    g_assert_cmpuint(memtx_writeq(s, packet - 4,
                                      0xdeadbeef01234567ULL),
                      ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, boundary - 8), ==,
                     0xaabbccddeeff0011ULL);
-    g_assert_cmpuint(qtest_readq_tx(s, packet - 4, &value),
+    g_assert_cmpuint(memtx_readq(s, packet - 4, &value),
                      ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, packet - 8,
+    g_assert_cmpuint(memtx_writeq(s, packet - 8,
                                      0x123456789abcdef0ULL), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, boundary - 8), ==,
                     0x123456789abcdef0ULL);
 
     qtest_writel(s, HEART_XTALK_REGS + 0x24, 0x80030004);
-    g_assert_cmpuint(qtest_writeq_tx(s, packet,
+    g_assert_cmpuint(memtx_writeq(s, packet,
                                      0x8877665544332211ULL), ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, boundary), ==,
                     0x8877665544332211ULL);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    g_assert_cmpuint(qtest_readq_tx(s, packet, &value), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_readq(s, packet, &value), ==, MEMTX_ERROR);
     qtest_writel(s, HEART_XTALK_REGS + 0x24, 0x80030004);
-    g_assert_cmpuint(qtest_readq_tx(s, packet, &value), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readq(s, packet, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x8877665544332211ULL);
     qtest_quit(s);
 }
@@ -1657,27 +1658,27 @@ static void test_xtalk_routing(void)
     uint64_t value;
     const uint64_t bits = (1ULL << 3) | (1ULL << 42);
 
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24) + 4, &id),
+    g_assert_cmpuint(memtx_readl(s, HEART_SMALL + (8 << 24) + 4, &id),
                      ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_LARGE + 4, &id),
+    g_assert_cmpuint(memtx_readl(s, HEART_LARGE + 4, &id),
                      ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24), &id),
+    g_assert_cmpuint(memtx_readl(s, HEART_SMALL + (8 << 24), &id),
                      ==, MEMTX_ERROR);
     /* Crossbow drops requests to a legal widget without a reachable link. */
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_MISSING_PACKET + 0x80, 0x103),
+    g_assert_cmpuint(memtx_writeq(s, HEART_MISSING_PACKET + 0x80, 0x103),
                      ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, 0);
     qtest_writeq(s, HEART_XTALK_REGS + 0x10000, bits);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 0x103),
+    g_assert_cmpuint(memtx_writeq(s, HEART_XTALK_PACKET + 0x80, 0x103),
                      ==, MEMTX_OK);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 0x12a),
+    g_assert_cmpuint(memtx_writeq(s, HEART_XTALK_PACKET + 0x80, 0x12a),
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, bits);
     g_assert_true(qtest_get_irq(s, 0));
     g_assert_true(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 3),
+    g_assert_cmpuint(memtx_writeq(s, HEART_XTALK_PACKET + 0x80, 3),
                      ==, MEMTX_OK);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==,
                     1ULL << 42);
@@ -1687,20 +1688,20 @@ static void test_xtalk_routing(void)
         "{'execute':'qom-set','arguments':{'path':"
         "'/machine/peripheral/heart-xtalk/xbow',"
         "'property':'links-alive','value':32768}}");
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24) + 4, &id),
+    g_assert_cmpuint(memtx_readl(s, HEART_SMALL + (8 << 24) + 4, &id),
                      ==, MEMTX_ERROR);
-    g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 0x103),
+    g_assert_cmpuint(memtx_writeq(s, HEART_XTALK_PACKET + 0x80, 0x103),
                      ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==,
                     1ULL << 42);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24) + 4, &id),
+    g_assert_cmpuint(memtx_readl(s, HEART_SMALL + (8 << 24) + 4, &id),
                      ==, MEMTX_OK);
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, 0);
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 2));
-    g_assert_cmpuint(qtest_readq_tx(s, HEART_MISSING_PACKET + 0x80, &value),
+    g_assert_cmpuint(memtx_readq(s, HEART_MISSING_PACKET + 0x80, &value),
                      ==, MEMTX_ERROR);
     qtest_quit(s);
 }
@@ -1724,7 +1725,7 @@ static void test_xtalk_migration(void)
     qtest_writeq(from, HEART_XTALK_PACKET + 0x80, 0x12a);
     qtest_writel(from, HEART_XTALK_REGS + 0x20, 0x80030000);
     qtest_writel(from, HEART_XTALK_REGS + 0x24, 0x80030004);
-    g_assert_cmpuint(qtest_writeq_tx(from, HEART_XTALK_RAM + 4 * UNIT - 4,
+    g_assert_cmpuint(memtx_writeq(from, HEART_XTALK_RAM + 4 * UNIT - 4,
                                      0x1021324354657687ULL), ==, MEMTX_OK);
     g_assert_true(qtest_get_irq(from, 0));
     g_assert_true(qtest_get_irq(from, 2));

@@ -2,6 +2,7 @@
 /* Exercise a Sharp x16 chip behind Bridge without assigning IP30 wiring. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "memtx.h"
 
 #define BRIDGE_BASE UINT64_C(0x10000000)
 #define FLASH (BRIDGE_BASE + 0xc00000)
@@ -19,7 +20,9 @@ static QTestState *start(bool second_select, bool strap)
     const char *chip = second_select ?
         "/machine/peripheral/flash-fixture1/chip" : CHIP_PATH;
     QTestState *qts = qtest_initf(
-        "-M none -cpu R10000 -device lh28f800su-test-device,id=flash-fixture%s "
+        MEMTX_TEST_DEVICE
+        "-M none -cpu R10000 "
+        "-device lh28f800su-test-device,id=flash-fixture%s "
         "-device sgi-bridge,id=bridge,no-board-identity=on,"
         "fabric=/machine/unattached/system[0]%s%s",
         second_select ? "1" : "",
@@ -104,7 +107,7 @@ static void test_second_select(gconstpointer data)
 
     g_assert_cmphex(qtest_readl(qts, BRIDGE_STATUS) & STATUS_FLASH_SELECT,
                     ==, strap ? STATUS_FLASH_SELECT : 0);
-    g_assert_cmpuint(qtest_readw_tx(qts, empty + 0x40, &word), ==,
+    g_assert_cmpuint(memtx_readw(qts, empty + 0x40, &word), ==,
                      MEMTX_DECODE_ERROR);
     g_assert_cmphex(qtest_readw(qts, selected + 0x40), ==, 0xffff);
 
@@ -122,7 +125,7 @@ static void test_second_select(gconstpointer data)
     g_assert_cmphex(qtest_readw(qts, selected + 0x40), ==, 0x3456);
     g_assert_cmphex(qtest_readw(qts, selected + CHIP_SIZE + 0x40), ==,
                     0x3456);
-    g_assert_cmpuint(qtest_readw_tx(qts, empty + 0x40, &word), ==,
+    g_assert_cmpuint(memtx_readw(qts, empty + 0x40, &word), ==,
                      MEMTX_DECODE_ERROR);
 
     qtest_quit(qts);
