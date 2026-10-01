@@ -19,6 +19,8 @@
 #define STATE_KSEG1_HI      0xa010
 #define POLL_INTERVAL_US    1000
 #define POLL_TRIES          10000
+#define R16000_CPU "R16000,big-endian=on,r16000-experimental=on," \
+    "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
 
 /*
  * Boot-exception vectors, shared by the status-re and llsc fragments: both
@@ -229,7 +231,8 @@ static char *cpu_qom_path(QTestState *qts)
     return path;
 }
 
-static void test_nmi_entry_and_retrigger(void)
+static void run_nmi_entry_and_retrigger(const char *machine,
+                                        const char *cpu)
 {
     g_autofree char *image = NULL;
     g_autofree char *cpu_path = NULL;
@@ -242,9 +245,9 @@ static void test_nmi_entry_and_retrigger(void)
     nmi_write_guest_image(fd);
     close(fd);
 
-    qts = qtest_initf("-M origin200 -m 64M "
-                      "-cpu R10000 -bios %s -accel tcg "
-                      "-no-reboot -no-shutdown", image);
+    qts = qtest_initf("-M %s -m 64M "
+                      "-cpu %s -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", machine, cpu, image);
     unlink(image);
     wait_for_state(qts, READY_OFF, READY_MAGIC);
     cpu_path = cpu_qom_path(qts);
@@ -271,7 +274,17 @@ static void test_nmi_entry_and_retrigger(void)
     qtest_quit(qts);
 }
 
-static void test_nmi_reset_rearms(void)
+static void test_nmi_entry_and_retrigger(void)
+{
+    run_nmi_entry_and_retrigger("origin200", "R10000");
+}
+
+static void test_r16000_nmi_entry_and_retrigger(void)
+{
+    run_nmi_entry_and_retrigger("malta", R16000_CPU);
+}
+
+static void run_nmi_reset_rearms(const char *machine, const char *cpu)
 {
     g_autofree char *image = NULL;
     g_autofree char *cpu_path = NULL;
@@ -282,9 +295,9 @@ static void test_nmi_reset_rearms(void)
     g_assert_cmpint(fd, >=, 0);
     nmi_write_guest_image(fd);
     close(fd);
-    qts = qtest_initf("-M origin200 -m 64M "
-                      "-cpu R10000 -bios %s -accel tcg "
-                      "-no-shutdown", image);
+    qts = qtest_initf("-M %s -m 64M "
+                      "-cpu %s -bios %s -accel tcg "
+                      "-no-shutdown", machine, cpu, image);
     unlink(image);
     wait_for_state(qts, READY_OFF, READY_MAGIC);
     cpu_path = cpu_qom_path(qts);
@@ -312,6 +325,16 @@ static void test_nmi_reset_rearms(void)
     qtest_set_irq_in(qts, cpu_path, "nmi", 0, 0);
 
     qtest_quit(qts);
+}
+
+static void test_nmi_reset_rearms(void)
+{
+    run_nmi_reset_rearms("origin200", "R10000");
+}
+
+static void test_r16000_nmi_reset_rearms(void)
+{
+    run_nmi_reset_rearms("malta", R16000_CPU);
 }
 
 static void test_nmi_latch_migration(void)
@@ -765,6 +788,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/nmi/entry-and-retrigger",
                    test_nmi_entry_and_retrigger);
     qtest_add_func("/sn0/nmi/reset-rearms", test_nmi_reset_rearms);
+    qtest_add_func("/r16000/nmi/entry-and-retrigger",
+                   test_r16000_nmi_entry_and_retrigger);
+    qtest_add_func("/r16000/nmi/cold-reset-control",
+                   test_r16000_nmi_reset_rearms);
     qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
     qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
     g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);

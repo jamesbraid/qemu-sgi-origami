@@ -21,7 +21,10 @@
 #define R12000_CPU_1_FPU "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4568," \
     "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
     "r12000-scache-block-words=16"
+#define R16000_CPU_4M "R16000,big-endian=on,r16000-experimental=on," \
+    "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304"
 #define R12000_MAILBOX 0x00200000
+#define R16000_MAILBOX (USER_PHYS + 0x1100)
 
 #define DATA_BASE 0x20001220000ULL
 #define MACHINE_SINGLE \
@@ -153,6 +156,11 @@ static void user_mtc0(UserCode *p, unsigned int rt, unsigned int rd)
 static void user_mfc0(UserCode *p, unsigned int rt, unsigned int rd)
 {
     user_emit(p, 0x40000000 | (rt << 16) | (rd << 11));
+}
+
+static void user_cfc1(UserCode *p, unsigned int rt, unsigned int rd)
+{
+    user_emit(p, 0x44400000 | (rt << 16) | (rd << 11));
 }
 
 static unsigned int user_branch(UserCode *p, unsigned int op,
@@ -707,6 +715,12 @@ static void test_r14000_word_loads(void)
                        true);
 }
 
+static void test_r16000_word_loads(void)
+{
+    run_word_load_test("-M malta -m 64M -nic none -vga none",
+                       R16000_CPU_4M, true);
+}
+
 /* CP0 register numbers used by the timer image below. */
 #define CP0_COUNT      9
 #define CP0_COMPARE    11
@@ -1213,6 +1227,181 @@ static void test_r12000_rejects_inconsistent_profile(void)
     }
 }
 
+static void assert_cpu_profile_rejected(const char *machine,
+                                        const char *profile,
+                                        const char *reason)
+{
+    const char *const args[] = { qtest_qemu_binary(NULL), "-M", machine,
+        "-cpu", profile, "-display", "none", "-S", NULL };
+    g_autofree char *stderr_text = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &stderr_text, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(stderr_text, reason));
+}
+
+static void test_r16000_requires_experiment_profile(void)
+{
+    assert_cpu_profile_rejected("malta", "R16000,big-endian=on",
+                                 "R16000 requires r16000-experimental=on");
+    assert_cpu_profile_rejected("malta",
+        "R16000,big-endian=on,r16000-experimental=on",
+        "R16000 requires r16000-reset-mode");
+    assert_cpu_profile_rejected("malta",
+        "R16000,big-endian=on,r16000-experimental=on,"
+        "r16000-reset-mode=0x3a005",
+        "R16000 requires r16000-scache-bytes");
+}
+
+static void test_r16000_rejects_inconsistent_profile(void)
+{
+    static const struct {
+        const char *profile;
+        const char *error;
+    } cases[] = {
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194305",
+          "r16000-scache-bytes must be 4194304, 8388608, or 16777216" },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x4a005,r16000-scache-bytes=4194304",
+          "r16000-scache-bytes disagrees with Config0 SS" },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x38005,r16000-scache-bytes=4194304",
+          "r16000-reset-mode requires Config0 SB=1" },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x32005,r16000-scache-bytes=4194304",
+          "r16000-reset-mode endianness differs from CPU" },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x6c03a005,r16000-scache-bytes=4194304",
+          "r16000-reset-mode uses only Config0 bits 24:0" },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        assert_cpu_profile_rejected("malta", cases[i].profile,
+                                    cases[i].error);
+    }
+}
+
+static void test_r16000_rejected_by_production_profile(void)
+{
+    assert_cpu_profile_rejected("origin300",
+        "R16000,big-endian=on,r16000-experimental=on,"
+        "r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304",
+        "Invalid CPU model: R16000");
+}
+
+static char *r16000_identity_image(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    char *path = NULL;
+    int fd;
+
+    /* Malta overwrites BIOS word 0x10 with its board ID. */
+    user_emit(image, 0x1000003f); /* branch to BIOS offset 0x100 */
+    user_emit(image, 0);
+    image->pos = 0x100;
+    user_li(image, 26, 0xa0000000 | R16000_MAILBOX);
+    user_mfc0(image, 8, 15);       /* PRId */
+    user_i(image, 43, 26, 8, 0);
+    user_mfc0(image, 8, 16);       /* Config0 */
+    user_i(image, 43, 26, 8, 4);
+    user_li(image, 9, 0x20000000); /* Enable the FPU for CFC1. */
+    user_mfc0(image, 8, 12);
+    user_emit(image, (8u << 21) | (9u << 16) | (8u << 11) | 0x25);
+    user_mtc0(image, 8, 12);
+    user_cfc1(image, 8, 0);        /* FCR0 */
+    user_i(image, 43, 26, 8, 8);
+    user_li(image, 9, 1);
+    user_i(image, 43, 26, 9, 12);
+    user_park(image);
+
+    fd = g_file_open_tmp("r16000-identity-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    return path;
+}
+
+static char *r16000_qom_path(QTestState *qts)
+{
+    QDict *response = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QDict *cpu = qobject_to(QDict, qlist_peek(cpus));
+    char *path = g_strdup(qdict_get_str(cpu, "qom-path"));
+
+    qobject_unref(response);
+    return path;
+}
+
+static void test_r16000_identity_and_immutable_inputs(void)
+{
+    static const struct {
+        const char *profile;
+        uint32_t expected_config0;
+    } cases[] = {
+        { R16000_CPU_4M, 0x6c03a005 },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x4a005,r16000-scache-bytes=8388608",
+          0x6c04a005 },
+        { "R16000,big-endian=on,r16000-experimental=on,"
+          "r16000-reset-mode=0x5a005,r16000-scache-bytes=16777216",
+          0x6c05a005 },
+    };
+    g_autofree char *image = r16000_identity_image();
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *cpu_path = NULL;
+        uint8_t mailbox[16];
+        QTestState *qts = qtest_initf(
+            "-M malta -m 64M -cpu %s -bios %s -accel tcg,thread=single -S",
+            cases[i].profile, image);
+        int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        do {
+            qtest_memread(qts, R16000_MAILBOX + 12, mailbox, 4);
+            if (ldl_be_p(mailbox) == 1) {
+                break;
+            }
+            g_usleep(1000);
+        } while (g_get_monotonic_time() < deadline);
+        g_assert_cmphex(ldl_be_p(mailbox), ==, 1);
+        qtest_memread(qts, R16000_MAILBOX, mailbox, sizeof(mailbox));
+        g_assert_cmphex(ldl_be_p(mailbox), ==, 0x00000F50);
+        g_assert_cmphex(ldl_be_p(mailbox + 4), ==,
+                        cases[i].expected_config0);
+        g_assert_cmphex(ldl_be_p(mailbox + 8), ==, 0x00000900);
+
+        cpu_path = r16000_qom_path(qts);
+        for (unsigned int property = 0; property < 3; property++) {
+            QDict *response;
+            if (property == 0) {
+                response = qtest_qmp_assert_failure_ref(qts,
+                    "{'execute':'qom-set','arguments':{'path':%s,"
+                    "'property':'r16000-experimental','value':false}}",
+                    cpu_path);
+            } else if (property == 1) {
+                response = qtest_qmp_assert_failure_ref(qts,
+                    "{'execute':'qom-set','arguments':{'path':%s,"
+                    "'property':'r16000-reset-mode','value':237581}}",
+                    cpu_path);
+            } else {
+                response = qtest_qmp_assert_failure_ref(qts,
+                    "{'execute':'qom-set','arguments':{'path':%s,"
+                    "'property':'r16000-scache-bytes','value':8388608}}",
+                    cpu_path);
+            }
+            g_assert_nonnull(strstr(qdict_get_str(response, "desc"),
+                                    "cannot change after CPU realization"));
+            qobject_unref(response);
+        }
+        qtest_quit(qts);
+    }
+}
+
 static char *r12000_probe_image(bool wide_block)
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
@@ -1353,6 +1542,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/qtest/r10000-word-loads", test_r10000_word_loads);
     if (qtest_has_machine("malta")) {
         qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
+        qtest_add_func("/r16000/word-loads", test_r16000_word_loads);
     }
     qtest_add_func("/sn0/qtest/r10000-timer", test_r10000_timer);
     if (qtest_has_machine("malta")) {
@@ -1361,6 +1551,16 @@ int main(int argc, char **argv)
                        test_r12000_requires_profile);
         qtest_add_func("/r12000/profile-inconsistent",
                        test_r12000_rejects_inconsistent_profile);
+        qtest_add_func("/r16000/profile-required",
+                       test_r16000_requires_experiment_profile);
+        qtest_add_func("/r16000/profile-inconsistent",
+                       test_r16000_rejects_inconsistent_profile);
+        qtest_add_func("/r16000/identity-immutable",
+                       test_r16000_identity_and_immutable_inputs);
+        if (qtest_has_machine("origin300")) {
+            qtest_add_func("/r16000/production-profile-refused",
+                           test_r16000_rejected_by_production_profile);
+        }
         qtest_add_func("/r12000/profile-16-words", test_r12000_profile_16);
         qtest_add_func("/r12000/profile-32-words", test_r12000_profile_32);
         qtest_add_func("/r12000/performance-ip7", test_r12000_performance_ip7);

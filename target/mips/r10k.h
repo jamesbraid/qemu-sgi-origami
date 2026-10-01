@@ -22,6 +22,7 @@
 #define R10K_SCACHE_SIZE       (1024 * 1024)
 #define R14K_SCACHE_SIZE       (2 * 1024 * 1024)
 #define R10K_SCACHE_4M_SIZE    (4 * 1024 * 1024)
+#define R10K_SCACHE_MAX_SIZE   (16 * 1024 * 1024)
 #define R10K_SCACHE_LINE_SIZE  128
 #define R10K_SCACHE_WAYS       2
 #define R10K_SCACHE_SETS       (R10K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
@@ -39,7 +40,30 @@
 #define R10K_SCACHE_4M_TAGS    (R10K_SCACHE_4M_SETS * R10K_SCACHE_WAYS)
 #define R10K_SCACHE_4M_QUADWORDS (R10K_SCACHE_4M_SIZE / 16)
 #define R10K_SCACHE_4M_DWORDS  (R10K_SCACHE_4M_SIZE / 8)
+#define R10K_SCACHE_MAX_SETS   (R10K_SCACHE_MAX_SIZE / \
+                                R10K_SCACHE_LINE_SIZE / R10K_SCACHE_WAYS)
+#define R10K_SCACHE_MAX_TAGS   (R10K_SCACHE_MAX_SETS * R10K_SCACHE_WAYS)
+#define R10K_SCACHE_MAX_QUADWORDS (R10K_SCACHE_MAX_SIZE / 16)
+#define R10K_SCACHE_MAX_DWORDS (R10K_SCACHE_MAX_SIZE / 8)
 #define CP0St_R10K_DE          16
+static inline bool r10k_scache_size_valid(uint32_t size)
+{
+    return size >= 512 * 1024 && size <= R10K_SCACHE_MAX_SIZE &&
+           !(size & (size - 1));
+}
+
+static inline uint32_t r10k_scache_capacity(uint32_t configured_size,
+                                            uint32_t size_code)
+{
+    uint32_t size = configured_size;
+
+    if (configured_size == R10K_SCACHE_SIZE && size_code >= 3 &&
+        size_code <= 5) {
+        size = R10K_SCACHE_SIZE << (size_code - 1);
+    }
+    return r10k_scache_size_valid(size) ? size : 0;
+}
+
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
 
@@ -96,6 +120,15 @@ typedef struct R10KCPUProfile {
     uint32_t values[R12000_PROFILE_FIELDS];
     bool set[R12000_PROFILE_FIELDS];
     uint32_t migration_profile[R12000_PROFILE_FIELDS];
+    bool r16000_experimental;
+    uint32_t r16000_reset_mode;
+    uint32_t r16000_scache_bytes;
+    bool r16000_reset_mode_set;
+    bool r16000_scache_bytes_set;
+    uint32_t migration_r16000_reset_mode;
+    uint32_t migration_r16000_scache_bytes;
+    /* Transient: cleared before load, set by the R16000 subsection. */
+    bool migration_r16000_profile_seen;
     struct mips_def_t *cpu_model;
     bool valid;
 } R10KCPUProfile;
@@ -161,11 +194,11 @@ typedef struct R10KState {
     int32_t CP0_CacheErr;
 
     /* R10000 external secondary-cache diagnostic state. */
-    uint32_t scache_taglo[R10K_SCACHE_4M_TAGS];
-    uint8_t scache_taghi[R10K_SCACHE_4M_TAGS];
-    uint8_t scache_mru[R10K_SCACHE_4M_SETS];
-    uint64_t scache_data[R10K_SCACHE_4M_DWORDS];
-    uint16_t scache_ecc[R10K_SCACHE_4M_QUADWORDS];
+    uint32_t scache_taglo[R10K_SCACHE_MAX_TAGS];
+    uint8_t scache_taghi[R10K_SCACHE_MAX_TAGS];
+    uint8_t scache_mru[R10K_SCACHE_MAX_SETS];
+    uint64_t scache_data[R10K_SCACHE_MAX_DWORDS];
+    uint16_t scache_ecc[R10K_SCACHE_MAX_QUADWORDS];
 
     /*
      * R10000 primary-cache diagnostic state. The tag arrays keep each tag's

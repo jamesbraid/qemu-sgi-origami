@@ -29,11 +29,9 @@
 
 static unsigned int r10k_scache_size(const CPUMIPSState *env)
 {
-    if (env->cfg.scache_size == R10K_SCACHE_SIZE &&
-        extract32(env->CP0_Config0, CP0C0_R10K_SS, 3) == 3) {
-        return R10K_SCACHE_4M_SIZE;
-    }
-    return env->cfg.scache_size;
+    return r10k_scache_capacity(env->cfg.scache_size,
+                                extract32(env->CP0_Config0,
+                                          CP0C0_R10K_SS, 3));
 }
 
 static unsigned int r10k_scache_line_size(const CPUMIPSState *env)
@@ -51,6 +49,18 @@ static unsigned int r10k_scache_sets(const CPUMIPSState *env)
 static unsigned int r10k_scache_quad_sets(const CPUMIPSState *env)
 {
     return r10k_scache_size(env) / 16 / R10K_SCACHE_WAYS;
+}
+
+static bool r10k_scache_geometry_valid(const CPUMIPSState *env)
+{
+    unsigned int size = r10k_scache_size(env);
+    unsigned int line_size = r10k_scache_line_size(env);
+
+    return size && (line_size == 64 || line_size == R10K_SCACHE_LINE_SIZE) &&
+           size / line_size <= R10K_SCACHE_MAX_TAGS &&
+           size / line_size / R10K_SCACHE_WAYS <= R10K_SCACHE_MAX_SETS &&
+           size / 8 <= R10K_SCACHE_MAX_DWORDS &&
+           size / 16 <= R10K_SCACHE_MAX_QUADWORDS;
 }
 
 /*
@@ -154,6 +164,12 @@ static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
 {
     unsigned int tag = set * R10K_SCACHE_WAYS + way;
     unsigned int line_mask = r10k_scache_line_size(env) - 1;
+
+    if (set >= r10k_scache_sets(env) || way >= R10K_SCACHE_WAYS ||
+        tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
+        tag >= R10K_SCACHE_MAX_TAGS) {
+        return;
+    }
 
     r10k_scache_invalidate_subsets(env,
                                    (r10k_scache_tag_pa(env, tag) << 18) |
@@ -275,6 +291,9 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
      * access is made, so no Watch exception fires for one.
      */
     paddr = cpu_mips_translate_address(env, addr, MMU_DATA_LOAD, ra);
+    if (cache_type == 3 && !r10k_scache_geometry_valid(env)) {
+        return;
+    }
 
     /*
      * The primary caches are virtually indexed: VA[13:6] names an
@@ -422,10 +441,16 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * block write or nothing goes out on the interface either way
          * (the processor block write and eliminate protocols).
          */
+        unsigned int tag = set * R10K_SCACHE_WAYS + way;
+
+        if (set >= r10k_scache_sets(env) || way >= R10K_SCACHE_WAYS ||
+            tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
+            tag >= R10K_SCACHE_MAX_TAGS) {
+            return;
+        }
         r10k_system_request(env, R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE,
                             paddr, ctz32(r10k_scache_sets(env)));
-        if (env->r10k->scache_taglo[set * R10K_SCACHE_WAYS + way] &
-            (3 << 10)) {
+        if (env->r10k->scache_taglo[tag] & (3 << 10)) {
             r10k_scache_invalidate(env, set, way, paddr, addr);
         }
         return;
@@ -448,9 +473,16 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                                        R10K_REQUEST_HIT_INVALIDATE,
                                        paddr, 0);
 
+        if (set >= r10k_scache_sets(env)) {
+            return;
+        }
         for (w = 0; w < R10K_SCACHE_WAYS; w++) {
             unsigned int tag = set * R10K_SCACHE_WAYS + w;
 
+            if (tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
+                tag >= R10K_SCACHE_MAX_TAGS) {
+                break;
+            }
             if ((env->r10k->scache_taglo[tag] & (3 << 10)) &&
                 r10k_scache_tag_pa(env, tag) == extract64(paddr, 18, 22)) {
                 r10k_scache_invalidate(env, set, w, paddr, addr);
@@ -482,6 +514,12 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                                (r10k_scache_sets(env) - 1);
             unsigned int tag = set * R10K_SCACHE_WAYS + way;
 
+            if (set >= r10k_scache_sets(env) || way >= R10K_SCACHE_WAYS ||
+                tag >= r10k_scache_size(env) / r10k_scache_line_size(env) ||
+                tag >= R10K_SCACHE_MAX_TAGS ||
+                set >= R10K_SCACHE_MAX_SETS) {
+                return;
+            }
             /* TagHi's MRU bit is set-wide; its tag nibble is per-way. */
             if (cache_operation == 0b010) { /* Index Store Tag */
                 env->r10k->scache_taglo[tag] =
@@ -501,6 +539,12 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             unsigned int quad = quad_set * R10K_SCACHE_WAYS + way;
             unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
 
+            if (quad >= r10k_scache_size(env) / 16 ||
+                quad >= R10K_SCACHE_MAX_QUADWORDS ||
+                dword >= r10k_scache_size(env) / 8 ||
+                dword >= R10K_SCACHE_MAX_DWORDS) {
+                return;
+            }
             if (cache_operation == 0b111) { /* Index Store Data */
                 /*
                  * The data array is one quadword wide and is written

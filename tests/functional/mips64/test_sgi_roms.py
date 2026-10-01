@@ -16,6 +16,18 @@ CONFIG_ARGS = {
     'icount': ['-icount', 'shift=3,align=off,sleep=off'],
 }
 
+CPU_ARGS = {
+    'R4000': 'R4000',
+    'R10000': 'R10000',
+    'R14000': 'R14000',
+    'R16000-4m': 'R16000,big-endian=on,r16000-experimental=on,'
+                 'r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304',
+    'R16000-8m': 'R16000,big-endian=on,r16000-experimental=on,'
+                 'r16000-reset-mode=0x4a005,r16000-scache-bytes=8388608',
+    'R16000-16m': 'R16000,big-endian=on,r16000-experimental=on,'
+                  'r16000-reset-mode=0x5a005,r16000-scache-bytes=16777216',
+}
+
 
 class SGIRoms(QemuSystemTest):
     timeout = 180
@@ -27,8 +39,9 @@ class SGIRoms(QemuSystemTest):
         self.assertTrue(image.is_file(), f'Missing source-built ROM: {image}')
         # These programs can exit before the QMP handshake completes.
         self.vm.set_qmp_monitor(False)
-        self.vm.add_args('-cpu', cpu, '-nodefaults', '-display', 'none',
-                         '-no-reboot', '-semihosting', '-bios', str(image),
+        self.vm.add_args(
+            '-cpu', CPU_ARGS[cpu], '-nodefaults', '-display', 'none',
+            '-no-reboot', '-semihosting', '-bios', str(image),
                          *CONFIG_ARGS[config])
         self.vm.launch()
         self.vm.wait(timeout=self.timeout)

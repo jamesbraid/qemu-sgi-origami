@@ -10,6 +10,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "hw/core/irq.h"
 #include "qemu/timer.h"
@@ -241,6 +242,19 @@ void cpu_mips_store_r10k_perf(CPUMIPSState *env, uint32_t val, unsigned sel)
         }
         env->CP0_Performance[sel] =
             val & env->cfg.performance_control_rw_bitmask;
+        if (env->cfg.log_unsupported_performance) {
+            unsigned event = mips_r10k_perf_event(env->CP0_Performance[sel]);
+
+            if (event != 0) {
+                qemu_log_mask(LOG_UNIMP,
+                              "R16000 performance event %u is unsupported\n",
+                              event);
+            }
+            if (env->CP0_Performance[sel] & CP0PC_IE) {
+                qemu_log_mask(LOG_UNIMP,
+                              "R16000 performance counter interrupts are unsupported\n");
+            }
+        }
         if (mips_r10k_perf_counting(env, sel >> 1)) {
             env->CP0_Performance[sel + 1] =
                 (uint32_t)env->CP0_Performance[sel + 1] -

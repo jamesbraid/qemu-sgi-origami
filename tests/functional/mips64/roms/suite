@@ -24,54 +24,54 @@
 # host scheduling makes a throughput ratio unsuitable for a pass criterion.
 #
 # rom            processor models
-sext             R4000 R10000 R14000
-branchlikely     R4000 R10000 R14000
-exceptions       R4000 R10000 R14000
-tlb              R4000 R10000 R14000
-llsc             R4000 R10000 R14000
-llscexc          R10000 R14000
-cacheops         R4000 R10000 R14000
-cachetags        R10000 R14000
-cacheecc         R10000 R14000
+sext             R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+branchlikely     R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+exceptions       R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+tlb              R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+llsc             R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+llscexc          R10000 R14000 R16000-4m R16000-8m R16000-16m
+cacheops         R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+cachetags        R10000 R14000 R16000-4m R16000-8m R16000-16m
+cacheecc         R10000 R14000 R16000-4m R16000-8m R16000-16m
 scachetags       R10000 R14000
 scachedata       R10000 R14000
-pcachetags       R10000 R14000
-pcachedata       R10000 R14000
-cachefaults      R10000 R14000
-timer            R4000 R10000 R14000
-intdeliver       R4000 R10000 R14000
-xtlbvector       R4000 R10000 R14000
+pcachetags       R10000 R14000 R16000-4m R16000-8m R16000-16m
+pcachedata       R10000 R14000 R16000-4m R16000-8m R16000-16m
+cachefaults      R10000 R14000 R16000-4m R16000-8m R16000-16m
+timer            R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+intdeliver       R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+xtlbvector       R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
 hubint           R10000
 bridgebus        R10000
 cpuid            R10000
 foldback         R10000 config:4cpu-2node
 llscscale        R10000 config:4cpu-2node timed
 bwinnode         R10000 config:4cpu-2node
-xkphys           R10000 R14000
-cp0misc          R10000 R14000 config:icount
-addrspace        R10000 R14000
+xkphys           R10000 R14000 R16000-4m R16000-8m R16000-16m
+cp0misc          R10000 R14000 R16000-4m R16000-8m R16000-16m config:icount
+addrspace        R10000 R14000 R16000-4m R16000-8m R16000-16m
 # tlbuncached asserts the Hub's uncached-attribute decode (VA[58:57] in
 # xkphys), which only an Origin node's Hub implements -- malta has no such
 # space and faults with a data bus error under either processor model, so
 # this row runs on origin200 only.
 tlbuncached      R10000
 r10000_remap     R10000
-tlbspan          R4000 R10000 R14000
-tlbconflict      R10000 R14000
-framemask        R10000 R14000
-watch            R10000 R14000
+tlbspan          R4000 R10000 R14000 R16000-4m R16000-8m R16000-16m
+tlbconflict      R10000 R14000 R16000-4m R16000-8m R16000-16m
+framemask        R10000 R14000 R16000-4m R16000-8m R16000-16m
+watch            R10000 R14000 R16000-4m R16000-8m R16000-16m
 perfcount        R10000
-xcontext         R10000 R14000
-mips4user        R10000 R14000
-diagregs         R10000
-fpucond          R10000 R14000
-isadecode        R10000 R14000
-buserror         R10000 R14000
+xcontext         R10000 R14000 R16000-4m R16000-8m R16000-16m
+mips4user        R10000 R14000 R16000-4m R16000-8m R16000-16m
+diagregs         R10000 R16000-4m R16000-8m R16000-16m
+fpucond          R10000 R14000 R16000-4m R16000-8m R16000-16m
+isadecode        R10000 R14000 R16000-4m R16000-8m R16000-16m
+buserror         R10000 R14000 R16000-4m R16000-8m R16000-16m
 icountslot       R4000 R10000 R14000 config:icount
 r14000_identity  R14000
-r14000_perf      R14000
+r14000_perf      R14000 R16000-4m R16000-8m R16000-16m
 r14000_cache     R14000
-r14000_exceptions R14000
+r14000_exceptions R14000 R16000-4m R16000-8m R16000-16m
 
 # Also not listed: timerstall, the ROM half of the downstream timer-stall-repro debugger harness. It
 # only tests anything when that harness stalls the emulator inside a Compare

@@ -201,10 +201,14 @@ void mips_r10k_cpu_finalize(MIPSCPU *cpu);
 extern const VMStateDescription mips_vmstate_r10k;
 extern const VMStateDescription mips_vmstate_r12000_profile;
 void mips_r10k_profile_pre_save(MIPSCPU *cpu);
+void mips_r10k_profile_pre_load(MIPSCPU *cpu);
 int mips_r10k_profile_post_load(MIPSCPU *cpu);
 extern const VMStateDescription mips_vmstate_r14k_scache;
 extern const VMStateDescription mips_vmstate_r12000_extra;
 extern const VMStateDescription mips_vmstate_r10k_scache_4m;
+extern const VMStateDescription mips_vmstate_r16000_profile;
+extern const VMStateDescription mips_vmstate_r10k_scache_8m;
+extern const VMStateDescription mips_vmstate_r10k_scache_16m;
 
 static inline bool cpu_mips_hw_interrupts_enabled(const CPUMIPSState *env)
 {

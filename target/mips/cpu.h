@@ -84,6 +84,8 @@ typedef struct MIPSCPUConfig {
     uint16_t performance_control_rw_bitmask;
     /* Counter overflow contributes to the processor's IP[7] input. */
     bool performance_counter_interrupts;
+    /* Unsupported counter selections need an observable diagnostic. */
+    bool log_unsupported_performance;
     /* Writable bits in the R10000-family Diagnostic register. */
     uint64_t diagnostic_rw_bitmask;
     /* External secondary-cache capacity used by diagnostic operations. */

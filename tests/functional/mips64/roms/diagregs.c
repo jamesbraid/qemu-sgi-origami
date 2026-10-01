@@ -51,6 +51,7 @@ const char rom_name[] = "diagregs";
 #define DIAG_BPSTATE_MASK (3ull << 14)
 #define DIAG_BPIDX_MASK   (0x1ffull << 3)
 #define DIAG_BPOP_MASK    (3ull << 0)
+#define DIAG_BIT26        (1ull << 26)
 
 /* Reserved bits must read zero after writes. */
 #define DIAG_RESERVED (0xfff0ffff00000000ull | (0x1full << 23) | \
@@ -58,6 +59,14 @@ const char rom_name[] = "diagregs";
 
 void rom_main(void)
 {
+    uint64_t diag_reserved = DIAG_RESERVED;
+    uint64_t diagnostic;
+    uint32_t r16000 = rom_get_prid() == 0x00000f50u;
+
+    if (r16000) {
+        diag_reserved &= ~DIAG_BIT26;
+    }
+
     /*
      * Check FrameMask register reset/readback here; framemask.c separately
      * checks how its mask affects TLB writes.
@@ -75,7 +84,7 @@ void rom_main(void)
      * zero would pass the latter but fail the mode checks; treating the whole
      * register as scratch would fail reserved-bit checks. Accesses are 64-bit.
      */
-    rom_assert_eq(4, 0, rom_get_brdiag() & DIAG_RESERVED);
+    rom_assert_eq(4, 0, rom_get_brdiag() & diag_reserved);
     rom_assert_eq(5, 0, rom_get_brdiag() & DIAG_BPMODE_MASK);
 
     rom_set_brdiag(0ull << DIAG_BPMODE_SHIFT);
@@ -91,6 +100,20 @@ void rom_main(void)
     rom_assert_eq(9, 3ull << DIAG_BPMODE_SHIFT,
                   rom_get_brdiag() & DIAG_BPMODE_MASK);
 
+    if (r16000) {
+        diagnostic = rom_get_brdiag();
+        rom_set_brdiag(diagnostic | DIAG_BIT26);
+        rom_assert_eq(29, DIAG_BIT26,
+                      rom_get_brdiag() & DIAG_BIT26);
+        rom_assert_eq(30, diagnostic & DIAG_BPMODE_MASK,
+                      rom_get_brdiag() & DIAG_BPMODE_MASK);
+        rom_set_brdiag(diagnostic);
+        rom_assert_eq(31, diagnostic & DIAG_BIT26,
+                      rom_get_brdiag() & DIAG_BIT26);
+        rom_assert_eq(32, diagnostic & DIAG_BPMODE_MASK,
+                      rom_get_brdiag() & DIAG_BPMODE_MASK);
+    }
+
     /*
      * Writing every bit still leaves the reserved ones reading zero,
      * and
@@ -99,12 +122,12 @@ void rom_main(void)
      * write.
      */
     rom_set_brdiag(~0ull);
-    rom_assert_eq(10, 0, rom_get_brdiag() & DIAG_RESERVED);
+    rom_assert_eq(10, 0, rom_get_brdiag() & diag_reserved);
     rom_assert_eq(11, DIAG_BPMODE_MASK, rom_get_brdiag() & DIAG_BPMODE_MASK);
 
     rom_set_brdiag(0);
     rom_assert_eq(12, 0, rom_get_brdiag() & DIAG_BPMODE_MASK);
-    rom_assert_eq(13, 0, rom_get_brdiag() & DIAG_RESERVED);
+    rom_assert_eq(13, 0, rom_get_brdiag() & diag_reserved);
 
     /*
      * The Diagnostic register's table selectors read, write, or initialize
