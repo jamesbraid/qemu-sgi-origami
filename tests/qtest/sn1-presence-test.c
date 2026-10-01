@@ -535,6 +535,18 @@ static void emit_liveness_program(Image *p, bool b_posts)
     emit_i(p, OPC_XORI, R_T2, R_T4, 1);             /* zero only for B */
     to_post = emit_branch(p, OPC_BNE, R_T4, R_ZERO);
     if (b_posts) {
+        unsigned int wait_for_partner_post;
+
+        /*
+         * Start B's delay only after A sampled the counter and posted. This
+         * keeps B's host scheduling before A's post out of A's measurement.
+         */
+        emit_li32(p, R_T0, POST_VALUE);
+        wait_for_partner_post = p->pos;
+        emit_i(p, OPC_LD, R_FP, R_T1, PI_RT_COMPARE_A);
+        emit_i(p, OPC_BNE, R_T1, R_T0, 0);
+        patch_branch(p, p->pos - 4, wait_for_partner_post);
+        emit_nop(p);
         emit_rt_wait(p, LATE_POST_TICKS);
     } else {
         to_partner = emit_branch(p, OPC_BEQ, R_ZERO, R_ZERO);
