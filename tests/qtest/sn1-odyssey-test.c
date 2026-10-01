@@ -4157,7 +4157,10 @@ static void test_command_fifo_gl_depth_test(void)
  */
 #define ODSY_MODE_ALPHA_TEST (1u << 14)
 #define ODSY_REG_ALPHA_FUNC 0x0001041e
-/* A stored fragment keeps its own alpha: round(0.25 * 255) (odyssey_float_channel). */
+/*
+ * A stored fragment keeps its own alpha: round(0.25 * 255)
+ * (odyssey_float_channel).
+ */
 #define ODSY_PLANE_YELLOW_QUARTER_ALPHA 0xffff0040u
 
 static void test_command_fifo_gl_alpha_test(void)
@@ -4189,6 +4192,131 @@ static void test_command_fifo_gl_alpha_test(void)
                      odsy_near_yellow);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
                     ODSY_PLANE_YELLOW_QUARTER_ALPHA);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Blend and logic op (docs/reviews/odyssey-fragment-state-evidence-
+ * 20261001.md): 0x0404 bit 17 is a computed GL_BLEND enable (the
+ * library also parks 0x0c21 at all zeros whenever this bit is clear),
+ * bits 19 and 20 are GL_INDEX_LOGIC_OP and GL_COLOR_LOGIC_OP, 0x0c21
+ * carries the blend factors, equation and constant colour, and 0x0422
+ * the logic op mode.
+ */
+#define ODSY_MODE_BLEND (1u << 17)
+#define ODSY_MODE_COLOR_LOGIC_OP (1u << 20)
+#define ODSY_REG_BLEND 0x00010c21    /* 3 operands */
+#define ODSY_REG_LOGIC_OP 0x00010422
+#define ODSY_PLANE_GREEN 0x00ff00ffu
+/*
+ * push_depth_clear's rect always writes alpha 1, so a draw's own alpha 1
+ * minus that background alpha is 0, not 1: white RGB survives, alpha
+ * does not.
+ */
+#define ODSY_PLANE_WHITE_ZERO_ALPHA 0xffffff00u
+#define ODSY_PLANE_ZERO 0x00000000u
+
+static void set_blend(QTestState *qts, uint32_t word0, uint32_t word1,
+                      uint32_t word2)
+{
+    user_cmd_push(qts, ODSY_REG_BLEND);
+    user_cmd_push(qts, word0);
+    user_cmd_push(qts, word1);
+    user_cmd_push(qts, word2);
+}
+
+static void test_command_fifo_gl_blend(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+
+    /* src GL_ZERO, dst GL_ONE: the draw leaves the red background alone. */
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
+    set_blend(qts, 0x08, 0, 0);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
+
+    /* Swap the two fields, src GL_ONE dst GL_ZERO: the draw replaces it. */
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_blend(qts, 0x200, 0, 0);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+
+    /*
+     * The library parks 0x0c21 at zero whenever bit 17 is clear. Disable
+     * blending, send that parked all-zero word, then re-enable blending
+     * without resending 0x0c21: the GL_ONE/GL_ZERO factors above must still
+     * be in effect, proving the parked zero word was never applied.
+     */
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    set_blend(qts, 0, 0, 0);
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+
+    /*
+     * The equation field, bits 15:13: 6 is GL_FUNC_SUBTRACT, source minus
+     * destination; 7 is GL_FUNC_REVERSE_SUBTRACT, destination minus source.
+     * An opaque white draw over an opaque black background: SUBTRACT leaves
+     * white RGB with alpha 1 - 1 = 0; REVERSE_SUBTRACT clamps every channel,
+     * alpha included, to zero.
+     */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    /* (6 << 13) | GL_ONE << 6 | GL_ONE */
+    set_blend(qts, 0xc208, 0, 0);
+    push_triangle_4f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
+                    ODSY_PLANE_WHITE_ZERO_ALPHA);
+
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    /* (7 << 13) | GL_ONE << 6 | GL_ONE */
+    set_blend(qts, 0xe208, 0, 0);
+    push_triangle_4f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_ZERO);
+
+    /*
+     * Logic op. Bit 20 with 0x0422 = 6 (GL_XOR): two identical draws XOR
+     * the background away and back, returning it exactly.
+     */
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE,
+            ODSY_GL_MODE_FLAT | ODSY_MODE_COLOR_LOGIC_OP);
+    set_reg(qts, ODSY_REG_LOGIC_OP, 6);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
+
+    /* With bit 20 and bit 17 both clear, the same 0x0422 has no effect. */
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+
+    /*
+     * With bit 17 set and equation 5 (GL_LOGIC_OP) in 0x0c21 word 0, 0x0422
+     * still carrying 6 XORs the second draw away again.
+     */
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
+    /* (5 << 13) | GL_ONE << 6 | GL_ZERO */
+    set_blend(qts, 0xa200, 0, 0);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    push_triangle_4f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ONE,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
     qtest_quit(qts);
 }
@@ -9403,6 +9531,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_depth_test);
     qtest_add_func("sn1/odyssey/command-fifo-gl-alpha-test",
                    test_command_fifo_gl_alpha_test);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-blend",
+                   test_command_fifo_gl_blend);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",

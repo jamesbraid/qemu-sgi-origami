@@ -1490,6 +1490,36 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_ALPHA_REF_SCALE 4096.0f
 
 /*
+ * Bit 17 of the same register is a computed enable, not a plain mirror of
+ * glEnable(GL_BLEND): the library sets it when blending is on and colour
+ * logic op, bit 20 below, is off (docs/reviews/odyssey-fragment-state-
+ * evidence-20261001.md). The library also rewrites 0x0c21 to all zeros
+ * whenever this bit is clear, so a draw must not apply that register's
+ * factors, equation or colour while the bit is clear -- doing so would
+ * overwrite the real blend state with the library's parked zeros.
+ */
+#define ODSY_MODE_BLEND (1u << 17)
+#define ODSY_REG_BLEND 0x0c21        /* 3 operands */
+#define ODSY_BLEND_DST_MASK 0x3f
+#define ODSY_BLEND_SRC_SHIFT 6
+#define ODSY_BLEND_SRC_MASK 0x7f
+#define ODSY_BLEND_EQ_SHIFT 13
+#define ODSY_BLEND_EQ_MASK 0x7
+#define ODSY_BLEND_COLOUR_MASK 0xfff
+#define ODSY_BLEND_COLOUR_SHIFT 12
+#define ODSY_BLEND_COLOUR_SCALE 4096.0f
+
+/*
+ * Bits 19 and 20 of the same register are GL_INDEX_LOGIC_OP and
+ * GL_COLOR_LOGIC_OP. 0x0422 carries the mode either enable feeds the
+ * shared layer, GL_CLEAR (0) to GL_SET (15) recovered as op - GL_CLEAR.
+ */
+#define ODSY_MODE_INDEX_LOGIC_OP (1u << 19)
+#define ODSY_MODE_COLOR_LOGIC_OP (1u << 20)
+#define ODSY_REG_LOGIC_OP 0x0422        /* 1 operand */
+#define ODSY_LOGIC_OP_MASK 0xf
+
+/*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
  * above root/EZsetup/demos/guest) and the text-field caret
  * (docs/analysis/odyssey-glyph-raster-format.md). BEGIN with primitive 0xa
@@ -3619,9 +3649,10 @@ static void odyssey_gl_feed(SGIOdysseyState *s, uint16_t op,
 
 /*
  * Hand the GL state register 0x0404 carries to the shared context: bit 12,
- * the shade model, bit 16, the depth test, and bit 14, the alpha test. The
- * shared rasterizer fills a flat triangle from its provoking vertex, the
- * last one for triangles and strips as GL specifies.
+ * the shade model, bit 16, the depth test, bit 14, the alpha test, bit 17,
+ * blending, bit 19, index logic op, and bit 20, colour logic op. The shared
+ * rasterizer fills a flat triangle from its provoking vertex, the last one
+ * for triangles and strips as GL specifies.
  * Nothing in the stream says which vertex the board takes; the library
  * never reorders or repeats colours to steer it, so GL's own rule is
  * INFERRED. Called on every 0x0404, including the X server's pattern-mode
@@ -3633,6 +3664,9 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                      SGI_GL_FLAT : SGI_GL_SMOOTH;
     uint32_t depth_test = SGI_GL_DEPTH_TEST;
     uint32_t alpha_test = SGI_GL_ALPHA_TEST;
+    uint32_t blend = SGI_GL_BLEND;
+    uint32_t index_logic_op = SGI_GL_INDEX_LOGIC_OP;
+    uint32_t color_logic_op = SGI_GL_COLOR_LOGIC_OP;
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
@@ -3647,7 +3681,71 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &depth_test, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_ALPHA_TEST ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &alpha_test, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_BLEND ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &blend, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_INDEX_LOGIC_OP ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &index_logic_op, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_COLOR_LOGIC_OP ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &color_logic_op, 1);
 }
+
+/*
+ * 0x0c21's 6-bit blend factor code to the shared layer's enum
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md, established):
+ * 0 GL_ZERO, 0x08 GL_ONE, 0x10 "the other colour" (GL_DST_COLOR as a source
+ * factor, GL_SRC_COLOR as a destination factor -- the board never needs both
+ * names at the same position, so one code covers both), 0x18 GL_SRC_ALPHA,
+ * 0x20 GL_DST_ALPHA, 0x28 GL_CONSTANT_COLOR, 0x30 GL_CONSTANT_ALPHA, 0x38 the
+ * "one minus" of the 0x10 pairing, 0x39 through 0x3c the "one minus" of
+ * 0x18/0x20/0x28/0x30 in turn, and 0x40, a source-only code, GL_SRC_ALPHA_
+ * SATURATE. Returns UINT32_MAX for a code with no factor at the requested
+ * position.
+ */
+static uint32_t odyssey_blend_factor(uint32_t code, bool dst)
+{
+    switch (code) {
+    case 0x00:
+        return 0;                       /* GL_ZERO */
+    case 0x08:
+        return 1;                       /* GL_ONE */
+    case 0x10:
+        return dst ? SGI_GL_SRC_COLOR : SGI_GL_DST_COLOR;
+    case 0x18:
+        return SGI_GL_SRC_ALPHA;
+    case 0x20:
+        return SGI_GL_DST_ALPHA;
+    case 0x28:
+        return SGI_GL_CONSTANT_COLOR;
+    case 0x30:
+        return SGI_GL_CONSTANT_ALPHA;
+    case 0x38:
+        return dst ? SGI_GL_ONE_MINUS_SRC_COLOR : SGI_GL_ONE_MINUS_DST_COLOR;
+    case 0x39:
+        return SGI_GL_ONE_MINUS_SRC_ALPHA;
+    case 0x3a:
+        return SGI_GL_ONE_MINUS_DST_ALPHA;
+    case 0x3b:
+        return SGI_GL_ONE_MINUS_CONSTANT_COLOR;
+    case 0x3c:
+        return SGI_GL_ONE_MINUS_CONSTANT_ALPHA;
+    case 0x40:
+        return dst ? UINT32_MAX : SGI_GL_SRC_ALPHA_SATURATE;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+/*
+ * 0x0c21 word 0 bits 15:13 to the shared layer's blend equation. Codes 3
+ * and 4, the SGIX alpha min/max extension, have no shared equivalent
+ * (sgi_gl_blend_equation_valid() accepts only the other six), so the
+ * dispatch case below reports and skips them rather than feeding a code
+ * the shared layer would reject.
+ */
+static const uint32_t odyssey_blend_equation[8] = {
+    SGI_GL_FUNC_ADD, SGI_GL_MIN, SGI_GL_MAX, 0, 0,
+    SGI_GL_LOGIC_OP, SGI_GL_FUNC_SUBTRACT, SGI_GL_FUNC_REVERSE_SUBTRACT,
+};
 
 /* 0x0420 and 0x0452 to the shared context's comparison and depth mask. */
 static void odyssey_gl_apply_depth(SGIOdysseyState *s)
@@ -6257,6 +6355,59 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         args[1] = odyssey_f32_bits((word & ODSY_ALPHA_REF_MASK) /
                                    ODSY_ALPHA_REF_SCALE);
         odyssey_gl_feed(s, SGI_GL_OP_ALPHA_FUNC, args, 2);
+        break;
+    }
+    case ODSY_REG_BLEND: {
+        uint32_t word;
+        uint32_t eq, src, dst;
+        uint32_t args[4];
+
+        if (!(s->pattern_mode & ODSY_MODE_BLEND)) {
+            /* The library parks this register at zero while blending is off. */
+            break;
+        }
+        word = s->cmd_operand[0];
+        eq = (word >> ODSY_BLEND_EQ_SHIFT) & ODSY_BLEND_EQ_MASK;
+        src = odyssey_blend_factor((word >> ODSY_BLEND_SRC_SHIFT) &
+                                   ODSY_BLEND_SRC_MASK, false);
+        dst = odyssey_blend_factor(word & ODSY_BLEND_DST_MASK, true);
+        if (src == UINT32_MAX || dst == UINT32_MAX) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: blend factor word 0x%x is "
+                          "not modeled\n", word);
+        } else {
+            args[0] = src;
+            args[1] = dst;
+            odyssey_gl_feed(s, SGI_GL_OP_BLEND_FUNC, args, 2);
+        }
+        if (eq == 3 || eq == 4) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: blend equation %u (the "
+                          "SGIX alpha min/max extension) is not modeled\n",
+                          eq);
+        } else {
+            args[0] = odyssey_blend_equation[eq];
+            odyssey_gl_feed(s, SGI_GL_OP_BLEND_EQUATION, args, 1);
+        }
+        args[0] = odyssey_f32_bits(((s->cmd_operand[1] >>
+                                    ODSY_BLEND_COLOUR_SHIFT) &
+                                    ODSY_BLEND_COLOUR_MASK) /
+                                   ODSY_BLEND_COLOUR_SCALE);
+        args[1] = odyssey_f32_bits((s->cmd_operand[1] &
+                                    ODSY_BLEND_COLOUR_MASK) /
+                                   ODSY_BLEND_COLOUR_SCALE);
+        args[2] = odyssey_f32_bits(((s->cmd_operand[2] >>
+                                    ODSY_BLEND_COLOUR_SHIFT) &
+                                    ODSY_BLEND_COLOUR_MASK) /
+                                   ODSY_BLEND_COLOUR_SCALE);
+        args[3] = odyssey_f32_bits((s->cmd_operand[2] &
+                                    ODSY_BLEND_COLOUR_MASK) /
+                                   ODSY_BLEND_COLOUR_SCALE);
+        odyssey_gl_feed(s, SGI_GL_OP_BLEND_COLOR, args, 4);
+        break;
+    }
+    case ODSY_REG_LOGIC_OP: {
+        uint32_t mode = SGI_GL_CLEAR + (s->cmd_operand[0] & ODSY_LOGIC_OP_MASK);
+
+        odyssey_gl_feed(s, SGI_GL_OP_LOGIC_OP, &mode, 1);
         break;
     }
     case ODSY_REG_FOG:
