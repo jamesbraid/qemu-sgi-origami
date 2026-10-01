@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip30
+  platform: ip30
+  requires:
+    architecture: ip30
+  contract:
+    board_ip: IP30
+  capacity:
+    cpu_slots_per_node: 1
+    dimm_slots_per_node: 8
+    memory_banks_per_node: 4
+    dimms_per_bank: 2
+    supported_bank_sizes_mib:
+    - 64
+    - 128
+    - 256
+    provenance: derived
+    sources: &id001
+    - docs/datasheets/ip30-machine.md
+    - docs/datasheets/ip30-octane2-machine.md
+    notes: Processor capacity is restricted to the existing single-processor emulator profiles.
+  memory_kits:
+  - id: kit-128
+    dimms: 2
+    dimm_mib: 64
+    banks:
+    - 128
+    provenance: derived
+    sources: *id001
+  - id: kit-256
+    dimms: 2
+    dimm_mib: 128
+    banks:
+    - 256
+    provenance: derived
+    sources: *id001

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: product
+  id: octane
+  requires:
+    assembly: ip30
+    module: octane-module
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations:
+    - - 1
+    provenance: derived
+    sources:
+    - docs/datasheets/ip30-machine.md
+  population:
+    nodes: 1
+    cpus_per_node:
+    - 1
+    provenance: derived
+    sources:
+    - docs/datasheets/ip30-machine.md
+  cpu_selection:
+    default:
+      clock_mhz: 195
+      cache_mib: 1
+    slots:
+    - cpu0
+  memory_kits_per_node:
+  - kit-128
+  data:
+    machine:
+      name: Octane serial profile
+      model_role: emulation-target
+      emulation:
+        machine_name: octane
+        display_description: SGI Octane (IP30)
+        lifecycle: implemented
+        profile: serial
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 64
+          - 128
+          - 256
+          accepted_bank_layouts_mib:
+          - - 128
+            - 0
+            - 0
+            - 0
+          - - 64
+            - 64
+            - 0
+            - 0
+        synthetic_identities:
+        - component: bridge
+          serial: '0x7a3001000002'
+          reason: Reviewed virtual system-board identity.
+        - component: ioc3
+          serial: '0x5e7000000001'
+          reason: Existing virtual IOC3 identity; not a physical serial.
+      harness:
+        console: ioc3-serial-a
+        prom_dialogue: none
+        default_cpu_model: R10000
+        disk_bus: scsi
+        netboot_adapter: none
+        default_topology: octane
+        requires_per_node_flash: false
+        has_managed_boot_flash: false
+        operator_firmware: true
+        firmware_bytes: 2097152
+        identity_inputs: []
+        supported_guests:
+        - irix
+        install_media: []
+        provenance: derived
+        sources:
+        - docs/datasheets/ip30-machine.md

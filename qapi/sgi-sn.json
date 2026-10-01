@@ -32,12 +32,14 @@
 #
 # @hub: the SN0 (IP27/IP29) Hub
 #
+# @heart: the IP30 HEART controller
+#
 # @bedrock: the SN1 (IP35) Bedrock
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelAsicKind',
-  'data': ['hub', 'bedrock'] }
+  'data': ['hub', 'bedrock', 'heart'] }
 
 ##
 # @SGIModelProcessor:
@@ -60,6 +62,9 @@
 #
 # @cache-mib: secondary cache size
 #
+# @required-properties: QOM inputs an operator must supply when this
+#     selected processor profile has no established default
+#
 # @mode-bits: the CP0_Config0-derived mode word the flash
 #     configuration block and the board latch both compare against,
 #     computed once by the catalogue compiler from this
@@ -70,12 +75,13 @@
 { 'struct': 'SGIModelProcessor',
   'data': { 'id': 'str',
             'kind': 'str',
-            'prid': 'uint32',
-            'fpu-prid': 'uint32',
+            '*prid': 'uint32',
+            '*fpu-prid': 'uint32',
             'clock-hz': 'uint64',
-            'cache-clock-hz': 'uint64',
+            '*cache-clock-hz': 'uint64',
             'cache-mib': 'uint16',
-            'mode-bits': 'uint32' } }
+            '*mode-bits': 'uint32',
+            '*required-properties': ['str'] } }
 
 ##
 # @SGIModelCpuSlot:
@@ -100,12 +106,15 @@
 #
 # Which boot-flash chip a node board carries.
 #
+# @operator-prom: raw operator-supplied image; physical chip
+#     unidentified
+#
 # @am29f080: AMD Am29F080 (or a pin-compatible part)
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelFlashKind',
-  'data': ['am29f080'] }
+  'data': ['am29f080', 'operator-prom'] }
 
 ##
 # @SGIModelFlash:
@@ -156,6 +165,64 @@
             'system-controller': 'bool' } }
 
 ##
+# @SGIModelBoardRecord:
+#
+# A reviewed virtual board identity, not a measured physical serial.
+#
+# @role: processor, system-board, frontplane or power-supply
+#
+# @barcode: virtual board barcode
+#
+# @part: fitted board part number
+#
+# @revision: fitted board revision
+#
+# @name: board record name
+#
+# @serial: virtual one-wire ROM serial
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBoardRecord',
+  'data': { 'role': 'str', 'barcode': 'str', 'part': 'str',
+            'revision': 'str', 'name': 'str', 'serial': 'uint64' } }
+
+##
+# @SGIModelHeartIdentity:
+#
+# The selected IP30 controller and board population.
+#
+# @widget-revision: selected HEART revision
+#
+# @widget-id-64: reviewed 64-bit identification response
+#
+# @widget-status-f-measured: select the reviewed revision-F status
+#     response
+#
+# @gpio-classic: IOC3's board-wired classic-product input
+#
+# @board-records: virtual identities of the fitted boards
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelHeartIdentity',
+  'data': { 'widget-revision': 'uint8', 'widget-id-64': 'uint64',
+            'widget-status-f-measured': 'bool', 'gpio-classic': 'bool',
+            'board-records': ['SGIModelBoardRecord'] } }
+
+##
+# @SGIModelBankLayout:
+#
+# One accepted memory fitting, in the controller's bank order.
+#
+# @bank-mib: per-bank capacity, with zero for an unpopulated bank
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBankLayout',
+  'data': { 'bank-mib': ['uint64'] } }
+
+##
 # @SGIModelNode:
 #
 # One node board: a node ASIC, its populated processor slots, its
@@ -174,7 +241,12 @@
 #
 # @asic-kind: which node ASIC this board is built around
 #
-# @identity: the ASIC's own fitted-part identity
+# @identity: Hub/Bedrock fitted-part identity, absent for HEART
+#
+# @heart: IP30 fitted controller/board identity, absent for SN0/SN1
+#
+# @accepted-bank-layouts: selected valid bank populations where
+#     specified
 #
 # @cpu-slots: this node's processor-interface slots, populated and
 #     empty
@@ -201,10 +273,12 @@
             'slot': 'uint32',
             '*hub-slot-bits': 'uint8',
             'asic-kind': 'SGIModelAsicKind',
-            'identity': 'SGIModelAsicIdentity',
+            '*identity': 'SGIModelAsicIdentity',
+            '*heart': 'SGIModelHeartIdentity',
             'cpu-slots': ['SGIModelCpuSlot'],
             'bank-mib': ['uint64'],
             'accepted-memory-mib': ['uint64'],
+            '*accepted-bank-layouts': ['SGIModelBankLayout'],
             'flash': 'SGIModelFlash',
             'slave-role': 'bool' } }
 
@@ -416,6 +490,8 @@
 #
 # @io6: the Origin 2000/Onyx2 plain BaseIO XIO card
 #
+# @ip30: onboard IP30 Bridge, dual ISP1040, IOC3 and RAD population
+#
 # @io6g: the Origin 2000/Onyx2 BaseIO-G XIO card, whose MediaIO
 #     daughtercard adds a second IOC3 (keyboard, mouse, two serial
 #     ports and a parallel port, no ethernet) alongside the plain
@@ -460,7 +536,7 @@
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
-  'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
+  'data': ['ip29-io', 'ip29-io-crosstown', 'ip30', 'io6', 'io6g', 'io8', 'io9',
            'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona',
            'mscsi', 'mgras', 'odyssey', 'vbrick'] }
 
@@ -692,12 +768,14 @@
 #
 # @sn0: SN0 (IP27/IP29 Hub-family boards)
 #
+# @ip30: IP30 HEART-family boards
+#
 # @sn1: SN1 (IP35 Bedrock-family boards)
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelGeneration',
-  'data': ['sn0', 'sn1'] }
+  'data': ['sn0', 'sn1', 'ip30'] }
 
 ##
 # @SGIModelTopology:
@@ -815,7 +893,7 @@
 { 'struct': 'SGIModelFirmware',
   'data': { 'kind': 'str',
             'argument': 'str',
-            'asset': 'str',
+            '*asset': 'str',
             'size': 'uint64',
             '*sha256': 'str',
             'per-node-flash': 'bool' } }
@@ -907,12 +985,15 @@
 #
 # @cache-mib: secondary cache size
 #
+# @required-properties: explicit per-CPU QOM properties supplied by
+#     the operator
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelOfferingProcessor',
   'data': { 'part': 'str',
             'clock-hz': 'uint64',
-            'cache-mib': 'uint16' } }
+            'cache-mib': 'uint16', '*required-properties': ['str'] } }
 
 ##
 # @SGIModelOffering:

@@ -140,10 +140,10 @@
       ],
       "properties": {
         "name": { "type": "string", "description": "Canonical machine name in prose, e.g. 'Origin 200'." },
-        "generation": { "enum": ["SN0", "SN1"] },
+        "generation": { "enum": ["SN0", "SN1", "IP30"] },
         "board_ip": { "type": "string", "description": "Physical module IP number, e.g. IP29." },
         "architecture_ip": { "type": "string", "description": "Platform family IP number, e.g. IP27." },
-        "kernel_ip": { "type": "string", "description": "Software port IP number. IP27 for everything origami targets." },
+        "kernel_ip": { "type": "string", "description": "Software platform IP number selected by this configuration, e.g. IP27 or IP30." },
         "model_role": { "enum": ["emulation-target", "reference"], "description": "Whether this projection is an Origami target or a hardware-only reference machine." },
         "firmware_config": {
           "type": "object",
@@ -216,7 +216,8 @@
               "required": ["accepted_bank_sizes_mib"],
               "additionalProperties": false,
               "properties": {
-                "accepted_bank_sizes_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
+                "accepted_bank_layouts_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "integer", "minimum": 0 } } },
+              "accepted_bank_sizes_mib": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "integer", "minimum": 1, "maximum": 65535 } }
               },
               "description": "Current emulator fitting rules. These are not asserted as IP29 hardware facts."
             },
@@ -334,11 +335,13 @@
             "provenance", "sources"
           ],
           "additionalProperties": false,
-          "description": "Facts tools/origami_lib needs to launch this product without a per-product literal: which console line the stock firmware's own dialogue uses, how to reach it, and what the harness accepts. Not consumed by the QEMU model compiler or emitter; a change here never touches generated C.",
+          "description": "Launch metadata emitted into the compiled catalogue: firmware input, console dialogue, supported guests and accepted launch options.",
           "properties": {
+            "operator_firmware": { "type": "boolean" },
+            "firmware_bytes": { "type": "integer", "minimum": 1 },
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
             "console": { "enum": ["ioc3-serial-a", "l1-uart"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
-            "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
+            "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
             "disk_bus": { "type": "string", "minLength": 1, "description": "Default SCSI bus id guest launchers attach the boot disk to." },
             "netboot_adapter": { "type": "string", "minLength": 1, "description": "Adapter kind the stock PROM's netboot command has been confirmed to drive." },
             "default_firmware_asset": { "type": "string", "minLength": 1, "description": "Asset path of the firmware image a launcher uses when none is given. Absent when the product's real stock image is already named by emulation.firmware_payload.path." },
@@ -362,7 +365,7 @@
             },
             "install_media": {
               "type": "array",
-              "minItems": 1,
+              "minItems": 0,
               "uniqueItems": true,
               "items": { "type": "string", "minLength": 1 },
               "description": "Install media kinds the harness drives for this product today."
@@ -1088,7 +1091,7 @@
             "properties": { "kind": { "const": "node-asic" } },
             "required": ["kind"]
           },
-          "then": { "required": ["node_asic"] },
+          "then": { "if": { "properties": { "hardware_kind": { "const": "heart" } }, "required": ["hardware_kind"] }, "else": { "required": ["node_asic"] } },
           "else": { "not": { "required": ["node_asic"] } }
         },
         {
@@ -1134,6 +1137,7 @@
         "id": { "$ref": "#/$defs/identifier" },
         "name": { "type": "string", "description": "Canonical name from the component taxonomy. Prose uses this exact string." },
         "kind": { "$ref": "#/$defs/component-kind" },
+        "board_record": {"type": "object", "required": ["role", "barcode", "part", "revision", "name", "serial"], "additionalProperties": false, "properties": {"role": {"type": "string", "minLength": 1}, "barcode": {"type": "string", "minLength": 1}, "part": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "serial": {"$ref": "#/$defs/address"}}},
         "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
         "node_asic": { "$ref": "#/$defs/node-asic-facts" },
         "router_asic": { "$ref": "#/$defs/router-asic-facts" },
@@ -1201,6 +1205,10 @@
           "additionalProperties": false,
           "description": "What the part reports about itself when a guest asks.",
           "properties": {
+            "widget_id_64": { "$ref": "#/$defs/address" },
+            "widget_status_f_measured": { "type": "boolean" },
+            "gpio_classic": { "type": "boolean" },
+            "required_properties": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
             "widget_part": { "$ref": "#/$defs/address" },
             "widget_mfg": { "$ref": "#/$defs/address" },
             "processor_identification": { "$ref": "#/$defs/address" },

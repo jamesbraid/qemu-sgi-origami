@@ -1159,6 +1159,9 @@ def _node_cpus(model: dict, components: dict[str, dict], node: dict,
 def _compile_node(model: dict, components: dict[str, dict], entry: dict,
                    position: int, node_count: int) -> dict:
     node = entry["component"]
+    if node.get("hardware_kind") == "heart":
+        from .model_ip30 import compile_heart_node
+        return compile_heart_node(model, components, entry)
     node_asic = node.get("node_asic")
     if not isinstance(node_asic, dict):
         raise CompileError(f"node '{node['id']}' has no node_asic block")
@@ -1466,7 +1469,10 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
     # family), never SGI_MODEL_IO_BASEIO -- that enumerator names the
     # Origin 2000 family's own standalone BaseIO/IO6 board, the
     # `board_ancestor["id"]` case below.
-    if (bridge.get("hardware_kind") == "xbridge"
+    if board_ancestor is not None and board_ancestor.get("hardware_kind") == "ip30":
+        board_id = board_ancestor["id"]
+        board_kind = "IP30"
+    elif (bridge.get("hardware_kind") == "xbridge"
             and _inside_vbrick(components, bridge)):
         board_id = _grouping_module(components, bridge)["id"]
         board_kind = "VBRICK"
@@ -1505,8 +1511,9 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
             and _is_within(components, component, board_ancestor["id"])
             for component in components.values())
         board_kind = "IP29_IO_CROSSTOWN" if fitted_crosstown else "IP29_IO"
+    pci_kinds = {**_HUB_PCI_KINDS, "rad1": "RAD1"} if board_kind == "IP30" else _HUB_PCI_KINDS
     pci, ioc3_serial = _board_pci_population(
-        model, components, _HUB_PCI_KINDS, {bridge["id"]})
+        model, components, pci_kinds, {bridge["id"]})
     return {
         "id": board_id,
         "module_index": entry["module_index"],
@@ -1844,7 +1851,7 @@ def compile_model(model: dict) -> dict:
             "has committed to emulating"
         )
     generation = machine.get("generation")
-    if generation not in ("SN0", "SN1"):
+    if generation not in ("SN0", "SN1", "IP30"):
         raise CompileError(
             f"generation '{generation}' is not supported by this compiler yet "
             "(only SN0/Hub and SN1/Bedrock nodes have a grounded reset-mode "
