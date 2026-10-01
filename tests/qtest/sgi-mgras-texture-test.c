@@ -321,8 +321,8 @@ static void test_gl_texture_tl_mode_persists(void)
  * What the model does not draw stays untextured rather than drawn wrong:
  * TEXMODE1 bit 0 clear, a mipmap filter's bit 5 (TEXMODE2),
  * a detail texture (bit 9), environment code 3 on a colour class, a
- * level kept at 12 bits, which is not stored, and 0x0c00 after the
- * bind. Each quad is white.
+ * level kept at depth code 3, which is not defined and not stored, and
+ * 0x0c00 after the bind. Each quad is white.
  */
 static void test_gl_texture_unsupported_draws_untextured(void)
 {
@@ -331,7 +331,7 @@ static void test_gl_texture_unsupported_draws_untextured(void)
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x20 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x200 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 6, TEX_TEXMODE2_RGBA8 },
-        { 0x34046, TEX_TEXMODE1_ON, 0x10008 },
+        { 0x34066, TEX_TEXMODE1_ON, 0x1000c },
     };
     QTestState *t = tex_start(TEX_ARGS);
     uint8_t texels[32];
@@ -1185,6 +1185,54 @@ static void test_gl_texture_linear_edge_wrap(void)
     qtest_quit(t);
 }
 
+/*
+ * A 12-bit component arrives as a big-endian halfword of which the top 12
+ * bits are kept (approximated; the board's choice is unknown) and is
+ * drawn as the nearest 8-bit value, v * 255 / 4095. Luminance halfwords
+ * 0x0f00 and 0x0ff0 differ only in the low 4 bits of their 12-bit values
+ * and draw as 15 and 16, which a truncation to 8 bits would make equal;
+ * 0x0ff0, 0x0ff8 and 0x0fff differ only in the dropped bits and draw
+ * alike; 0x0000, 0x4000, 0x8000 and 0xffff differ in the high bits and
+ * stay apart. An RGBA12 texel checks the component order and widths.
+ */
+static void test_gl_texture_depth12_halfword(void)
+{
+    static const uint16_t half[8] = {
+        0x0000, 0x4000, 0x8000, 0xffff, 0x0f00, 0x0ff0, 0x0ff8, 0x0fff,
+    };
+    static const int want[8] = { 0, 64, 128, 255, 15, 16, 16, 16 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t lum[16], rgba[64];
+    TexScene sc = {
+        .layout = TEX_LAYOUT_ONE, .depth = 2, .cls = TEX_CLASS_LUMINANCE,
+        .texels = lum,
+    };
+
+    for (int i = 0; i < 8; i++) {
+        stw_be_p(&lum[2 * i], half[i]);
+    }
+    tex_scene(t, &sc);
+    for (int i = 0; i < 8; i++) {
+        g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==,
+                        want[i] << 16 | want[i] << 8 | want[i]);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        stw_be_p(&rgba[8 * i], 0xf000);
+        stw_be_p(&rgba[8 * i + 2], 0x8000);
+        stw_be_p(&rgba[8 * i + 4], 0x1000);
+        stw_be_p(&rgba[8 * i + 6], 0xffff);
+    }
+    sc = (TexScene) {
+        .layout = TEX_LAYOUT_RGBA, .depth = 2, .cls = TEX_CLASS_COLOUR,
+        .texels = rgba,
+    };
+    tex_scene(t, &sc);
+    g_assert_cmphex(tex_texel_pixel(t, 1, 1), ==, 239 << 16 | 128 << 8 | 16);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1243,6 +1291,8 @@ int main(int argc, char **argv)
                    test_gl_texture_linear_midpoint);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-linear-edge-wrap",
                    test_gl_texture_linear_edge_wrap);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-depth12-halfword",
+                   test_gl_texture_depth12_halfword);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",

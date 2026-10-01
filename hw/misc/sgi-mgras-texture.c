@@ -33,8 +33,9 @@
  *   0, 0, w, h here where the image path's are inclusive, and it does not
  *   read the bytes a pixel from XFRMODE, 0xc00080 on these four-byte
  *   levels. The kept format is TL_MODE's layout (one component, luminance
- *   alpha, RGB, RGBA) and depth (4 or 8 bits), the host bytes the
- *   components in order a byte each, the bottom row (t = 0) first;
+ *   alpha, RGB, RGBA) and depth (4, 8 or 12 bits), the host bytes the
+ *   components in order, a byte each at 4 and 8 bits and a big-endian
+ *   halfword at 12, the bottom row (t = 0) first;
  *   established for RGBA unsigned bytes, inferred for the rest. The
  *   transfer must be exactly width times height times the format's bytes
  *   a texel. The pixel program is not read, approximated: only the
@@ -45,8 +46,8 @@
  *   loads, since the client skips it when reloading the image it loaded
  *   last. An unpaired 0x9c00, which the client's untraced wide-level
  *   branch sends, and a 0x511a transfer outside a bracket are logged and
- *   not rejected. An inline image, GL_ABGR_EXT, a 12-bit depth or a
- *   transfer of another byte count is logged and nothing is stored.
+ *   not rejected. An inline image, GL_ABGR_EXT or a transfer of another
+ *   byte count is logged and nothing is stored.
  *
  * - Storage. Approximated: a level is stored per GL context keyed by the
  *   base block the kernel's 0xeb04 names and TL_SPEC's level number, not
@@ -67,7 +68,11 @@
  *   of 15 under it, and alpha 11 under round(v * 15 / 255), so the
  *   choice is visible; the board's conversion is unknown, and a physical
  *   render of texels differing in their low four bits would settle it.
- *   An 8-bit depth keeps the host byte.
+ *   An 8-bit depth keeps the host byte. A 12-bit component keeps the top
+ *   12 bits of its host halfword (approximated; the board's reduction is
+ *   unknown, and a render of texels differing in the dropped bits would
+ *   settle it) and is drawn as the nearest of 255, the sampler's texels
+ *   being 8-bit.
  *
  * - Bind and draw. 0x0b00 with TEXMODE1 bit 0 set turns texturing on,
  *   0x0c00 or bit 0 clear off. A draw is textured from level 0 under the
@@ -180,6 +185,7 @@
 #define MGRAS_TEX_LAYOUT_RGBA    3
 #define MGRAS_TEX_DEPTH_4        0
 #define MGRAS_TEX_DEPTH_8        1
+#define MGRAS_TEX_DEPTH_12       2
 #define MGRAS_TEX_SPEC_LEVEL(s)  ((s) & 0xf)
 #define MGRAS_TEX_SPEC_LOG2W(s)  (((s) >> 4) & 0xf)
 #define MGRAS_TEX_SPEC_LOG2H(s)  (((s) >> 8) & 0xf)
@@ -211,16 +217,20 @@ static uint32_t mgras_tex_components(uint32_t mode)
     return MGRAS_TEX_LAYOUT(mode) + 1;
 }
 
-/* Bytes a texel in the host image, a byte a component at 4 and 8 bits. */
+/*
+ * Bytes a texel in the host image and in the model's storage, a byte a
+ * component at 4 and 8 bits and a big-endian halfword at 12.
+ */
 static uint32_t mgras_tex_host_texel(uint32_t mode)
 {
-    return mgras_tex_components(mode);
+    return mgras_tex_components(mode) *
+           (MGRAS_TEX_DEPTH(mode) == MGRAS_TEX_DEPTH_12 ? 2 : 1);
 }
 
 static uint64_t mgras_tex_level_bytes(uint32_t spec, uint32_t mode)
 {
     return ((1ull << MGRAS_TEX_SPEC_LOG2W(spec)) <<
-            MGRAS_TEX_SPEC_LOG2H(spec)) * mgras_tex_components(mode);
+            MGRAS_TEX_SPEC_LOG2H(spec)) * mgras_tex_host_texel(mode);
 }
 
 static void mgras_tex_level_free(SGIMgrasTexLevel *l)
@@ -505,7 +515,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       size, spec, w, h);
         return true;
     }
-    if (MGRAS_TEX_DEPTH(mode) > MGRAS_TEX_DEPTH_8) {
+    if (MGRAS_TEX_DEPTH(mode) > MGRAS_TEX_DEPTH_12) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture kept as TL_MODE 0x%x "
                       "(layout %u, depth code %u) is not modelled; nothing "
                       "stored\n", mode, MGRAS_TEX_LAYOUT(mode),
@@ -575,6 +585,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t level = MGRAS_TEX_SPEC_LEVEL(t->load_spec);
     uint32_t bytes = mgras_tex_level_bytes(t->load_spec, t->load_mode);
     uint32_t comps = mgras_tex_components(t->load_mode);
+    uint32_t texels = 1u << (MGRAS_TEX_SPEC_LOG2W(t->load_spec) +
+                             MGRAS_TEX_SPEC_LOG2H(t->load_spec));
     uint64_t board = 0;
     SGIMgrasTexLevel *l = NULL, *free = NULL;
     const uint8_t *in = t->staging;
@@ -601,12 +613,19 @@ static void mgras_tex_commit(SGIMgrasState *s)
     }
     mgras_tex_level_free(l);
     out = g_malloc(bytes);
-    for (uint32_t i = 0; i < t->staging_bytes / comps; i++) {
-        for (uint32_t k = 0; k < comps; k++, in++) {
+    for (uint32_t i = 0; i < texels * comps; i++) {
+        switch (MGRAS_TEX_DEPTH(t->load_mode)) {
+        case MGRAS_TEX_DEPTH_4:
             /* Truncation to 4 bits, the model's choice, as above. */
-            out[comps * i + k] =
-                MGRAS_TEX_DEPTH(t->load_mode) == MGRAS_TEX_DEPTH_4 ?
-                *in >> 4 : *in;
+            out[i] = in[i] >> 4;
+            break;
+        case MGRAS_TEX_DEPTH_8:
+            out[i] = in[i];
+            break;
+        default:
+            /* The top 12 bits of the halfword, kept right-aligned. */
+            stw_be_p(&out[2 * i], lduw_be_p(&in[2 * i]) >> 4);
+            break;
         }
     }
     *l = (SGIMgrasTexLevel) {
@@ -654,21 +673,36 @@ void sgi_mgras_texture_abort(SGIMgrasState *s)
 
 /*
  * A stored texel as the sampler's canonical RRGGBBAA, a 4-bit component
- * replicated to 8 bits. A one-component texel is set in both the red and
- * alpha bytes and a two-component one's luminance in red, since the class
- * that reads it is the draw's and the sampler takes the byte it needs.
+ * replicated to 8 bits and a 12-bit one scaled to 8. A one-component
+ * texel is set in both the red and alpha bytes and a two-component one's
+ * luminance in red, since the class that reads it is the draw's and the
+ * sampler takes the byte it needs.
  */
 static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
                                  uint32_t y, uint32_t *rgba)
 {
     const SGIMgrasTexLevel *l = opaque;
     uint32_t comps = mgras_tex_components(l->mode);
-    const uint8_t *p = &l->texels[((y << l->log2w) + x) * comps];
+    uint32_t i = ((y << l->log2w) + x) * comps;
     uint32_t c[4];
 
     for (uint32_t k = 0; k < comps; k++) {
-        c[k] = MGRAS_TEX_DEPTH(l->mode) == MGRAS_TEX_DEPTH_4 ? p[k] * 0x11 :
-                                                              p[k];
+        switch (MGRAS_TEX_DEPTH(l->mode)) {
+        case MGRAS_TEX_DEPTH_4:
+            c[k] = l->texels[i + k] * 0x11;
+            break;
+        case MGRAS_TEX_DEPTH_8:
+            c[k] = l->texels[i + k];
+            break;
+        default:
+            /*
+             * The sampler's texels are 8-bit, so a 12-bit component is
+             * rounded to the nearest of 255 (approximated): precision
+             * beyond the 8-bit store is lost before filtering.
+             */
+            c[k] = (lduw_be_p(&l->texels[2 * (i + k)]) * 255 + 2047) / 4095;
+            break;
+        }
     }
     switch (MGRAS_TEX_LAYOUT(l->mode)) {
     case MGRAS_TEX_LAYOUT_ONE:
@@ -874,7 +908,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         return false;
     }
     if (t->load &&
-        (MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_8 ||
+        (MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_12 ||
          mgras_tex_level_bytes(t->load_spec, t->load_mode) >
          MGRAS_TEX_CONTEXT_BYTES)) {
         return false;
@@ -899,7 +933,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         }
         if (l->used != 1 || l->level > 0xf || l->log2w > 0xf ||
             l->log2h > 0xf || !l->texels ||
-            MGRAS_TEX_DEPTH(l->mode) > MGRAS_TEX_DEPTH_8 ||
+            MGRAS_TEX_DEPTH(l->mode) > MGRAS_TEX_DEPTH_12 ||
             l->bytes != mgras_tex_level_bytes(spec, l->mode)) {
             return false;
         }
