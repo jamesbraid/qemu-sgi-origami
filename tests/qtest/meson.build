@@ -77,6 +77,9 @@ slow_qtests = {
   # The 59 RTC storage and register cases measured 49.02s alone.
   # Three times that leaves room for the repeated QEMU launches under load.
   'sn0-ds1685-test': 150,
+  # Nine dual-node startups took 48.80s; seven cases consumed 52.41s
+  # in parallel CI before the final migration hit the 60s default.
+  'sn0-fabric-test': 150,
   # Tigon reached 60.10s in the same loaded run without a failed assertion.
   'sn0-tigon-test': 120,
   # Bridge was the fourth most killed test in CI over Aug 30 - Sep 3, with
@@ -198,6 +201,7 @@ qtest_priorities = {
   # Preserve the SCSI and parallel suites' order when enlarging their budgets.
   'sn1-io8-scsi-test': 60,
   'sn0-ioc3-parallel-test': 60,
+  'sn0-fabric-test': 60,
   # Keep the Hub suite's scheduling order independent of its larger budget.
   'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
