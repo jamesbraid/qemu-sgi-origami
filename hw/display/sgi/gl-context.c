@@ -2844,6 +2844,63 @@ static unsigned int sgi_gl_held_max(uint32_t mode)
     }
 }
 
+/*
+ * How many vertices a primitive of this mode holds after count vertices
+ * since glBegin, or -1 when k cannot be that number. Only count mod 2,
+ * 3 and 4 and k itself decide it, never count's absolute size, so a
+ * count that is right only modulo 12 is enough: once a mode has all it
+ * will ever hold, k alone says so.
+ */
+static bool sgi_gl_resume_held_ok(uint32_t mode, unsigned int k,
+                                  uint32_t count)
+{
+    switch (mode) {
+    case SGI_GL_POINTS:
+        return k == 0;
+    case SGI_GL_LINES:
+        return k == count % 2;
+    case SGI_GL_TRIANGLES:
+        return k == count % 3;
+    case SGI_GL_QUADS:
+        return k == count % 4;
+    case SGI_GL_QUAD_STRIP:
+        return k >= 2 ? k == 2 + count % 2 : k == count;
+    case SGI_GL_LINE_STRIP:
+        return k <= 1 && (k == 1 || count == 0);
+    default:
+        /* Strips of triangles, fans, loops, polygons: first and last. */
+        return k <= 2 && (k == 2 || k == count);
+    }
+}
+
+bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
+                             const float (*v)[SGI_GL_VERTEX_FLOATS],
+                             unsigned int k, uint32_t count)
+{
+    if (c->in_begin) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-gl: resume inside glBegin ignored\n");
+        return false;
+    }
+    if (mode > SGI_GL_POLYGON || k > SGI_GL_HELD_VERTICES ||
+        (k && !v) || !sgi_gl_resume_held_ok(mode, k, count) ||
+        (c->polygon.enabled && mode == SGI_GL_POLYGON)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: resume of mode %u with "
+                      "%u held of %u sent refused\n", mode, k, count);
+        return false;
+    }
+    /* line_phase is deliberately left alone, unlike glBegin. */
+    c->in_begin = true;
+    c->begin_mode = mode;
+    c->nheld = k;
+    for (unsigned int i = 0; i < k; i++) {
+        sgi_gl_hold(c, i, v[i]);
+    }
+    /* The strip's next triangle faces as its count's parity says. */
+    c->strip_odd = mode == SGI_GL_TRIANGLE_STRIP && k == 2 ? count & 1 : 0;
+    return true;
+}
+
 bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
 {
     const SGIGLDrawState *st = &c->cur;

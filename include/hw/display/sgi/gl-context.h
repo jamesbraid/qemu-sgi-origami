@@ -1095,6 +1095,30 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
 bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
 
 /*
+ * Resume a primitive a context switch interrupted inside glBegin/glEnd:
+ * begin mode and take k of the vertices the primitive held, oldest first,
+ * as the context itself held them, without drawing. count is how many
+ * vertices had been sent since glBegin, k <= count. The context uses
+ * only count mod 2 (strip winding), mod 3 and mod 4 (how far into a
+ * triangle or quad it was) and whether k is all the mode ever holds, so
+ * a count exact only modulo 12 will do. Held, oldest first: none for
+ * points; count mod 2, 3 or 4 vertices for lines, triangles or quads;
+ * the last for a line strip; for a triangle strip, fan, polygon or line
+ * loop the previous (loop, fan, polygon: the first) and the last once
+ * two have come; for a quad strip every vertex up to three, then the last
+ * pair, plus one more after an odd count.
+ * The next vertex completes the primitive as if none had been lost, and a
+ * line loop still closes at glEnd. The line stipple phase is not reset
+ * or advanced by a resume: that is the model's choice, hardware
+ * behaviour being unknown. Refused, with a log, inside glBegin, for a
+ * (k, count, mode) that cannot occur, and for glPolygon while polygon
+ * mode assembly is on, which holds every vertex.
+ */
+bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
+                             const float (*v)[SGI_GL_VERTEX_FLOATS],
+                             unsigned int k, uint32_t count);
+
+/*
  * Migration of one context: every field of SGIGLContext, described field
  * by field so that neither the host's byte order nor its padding reaches
  * the stream, floats as the IEEE single bits they hold. A family keeps its
