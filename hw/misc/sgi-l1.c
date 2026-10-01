@@ -776,6 +776,16 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         stl_be_p(fields + 6, l1_brick_type_character(s));
         l1_reply_direct(recipient, channel, 0, 2, fields, 10);
         return true;
+    case 4:
+        if (!s->brick_serial || !s->brick_serial[0]) {
+            l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
+        } else {
+            fields[0] = 1;
+            pstrcpy((char *)fields + 1, sizeof(fields) - 1, s->brick_serial);
+            l1_reply_direct(recipient, channel, 0, 1, fields,
+                             2 + strlen((char *)fields + 1));
+        }
+        return true;
     case 6:
         if (count < 4 || args_len < 20) {
             l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
@@ -1405,7 +1415,7 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
     }
     command = lduw_be_p(p + 5);
     if (command != 3 && command != 6 && command != 7 &&
-        !(attached && command == 0xc)) {
+        !(!attached && command == 4) && !(attached && command == 0xc)) {
         goto refused;
     }
     for (unsigned i = 0; i < router->owner_count; i++) {
@@ -1764,9 +1774,8 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         stl_be_p(fields + 1, 1);
         l1_reply(s, channel, -106, 1, fields, 5);
         return;
-    case 4:
     case 8: {
-        const char *serial = command == 4 ? s->brick_serial : s->system_serial;
+        const char *serial = s->system_serial;
 
         if (!serial || !serial[0]) {
             error = -104;
