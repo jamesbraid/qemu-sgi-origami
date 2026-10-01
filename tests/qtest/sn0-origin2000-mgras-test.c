@@ -17982,6 +17982,29 @@ static void test_pio_read_rows_start_a_unit(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * The server's transfers to the screen through the port set XFRCONTROL 2,
+ * without the read bit, and execute IR_ALIAS the same way. Such an
+ * execute is not a read: the read under way keeps its next unit.
+ */
+static void test_pio_write_control_starts_no_read(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    for (uint32_t i = 0; i < 4; i++) {
+        pio_paint(qts, 640 + i, 512, 0x00010101 * (i + 1));
+    }
+    mgras_enter_context(qts);
+
+    pio_read_start(qts, 640, 512, 4, 1, 0x8000);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x010101);
+    rss_direct(qts, 0x102, 0x2, false);
+    rss_direct(qts, 0x159, 0x10000, false);
+    rss_direct(qts, 0x045, 0x18, true);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x030303);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x040404);
+}
+
 /* A transfer mode no capture has shown reads zero rather than pixels. */
 static void test_pio_read_other_mode_reads_zero(void)
 {
@@ -18561,6 +18584,8 @@ int main(int argc, char **argv)
                    test_pio_read_rows_start_a_unit);
     qtest_add_func("sn0/origin2000/mgras/pio-read-other-mode-reads-zero",
                    test_pio_read_other_mode_reads_zero);
+    qtest_add_func("sn0/origin2000/mgras/pio-write-control-starts-no-read",
+                   test_pio_write_control_starts_no_read);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-context-opener-resets-only-its-context",
                    test_gl_context_opener_resets_only_its_context);

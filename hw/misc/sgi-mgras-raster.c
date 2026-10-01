@@ -1605,7 +1605,10 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  * impactreg.h's and gxemul's impactsr-bsd.h's.
  *
  * Inferred: that XFRCONTROL bit 1 selects the data port, the only bit the
- * two read forms differ in; that a unit carries two 4-byte pixels, since a
+ * two read forms differ in, and bit 3 the read, since the server's
+ * transfers to the screen through the port set bit 1 alone (XFRCONTROL
+ * 2, run irix-20261001T020627-d15779); that a unit carries two 4-byte
+ * pixels, since a
  * two-pixel box took exactly one; that each row starts a unit, since the
  * listing counts each row's bytes down by eight; and that the box and
  * rows follow the DMA read's, hardware y with the top row first. The
@@ -1620,7 +1623,6 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  */
 #define MGRAS_RSS_XFRCONTROL 0x102
 #define MGRAS_RSS_XFRSIZE 0x153
-#define MGRAS_XFRCONTROL_PIO 0x2
 #define MGRAS_XFRCONTROL_PIO_READ 0xa
 #define MGRAS_XFRMODE_PIO_READ 0x8000
 
@@ -1634,11 +1636,9 @@ static void mgras_pio_read_start(SGIMgrasState *s)
     uint32_t w = size & 0xffff, h = size >> 16;
 
     s->pio_read_active = false;
-    if (s->rss[MGRAS_RSS_XFRCONTROL] != MGRAS_XFRCONTROL_PIO_READ ||
-        s->rss[MGRAS_RSS_BYTE_XFER_PACKING] != MGRAS_XFRMODE_PIO_READ) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port transfer, control "
-                      "0x%x mode 0x%x, not modelled; reads return zero\n",
-                      s->rss[MGRAS_RSS_XFRCONTROL],
+    if (s->rss[MGRAS_RSS_BYTE_XFER_PACKING] != MGRAS_XFRMODE_PIO_READ) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read, mode 0x%x, "
+                      "not modelled; reads return zero\n",
                       s->rss[MGRAS_RSS_BYTE_XFER_PACKING]);
         return;
     }
@@ -1731,7 +1731,8 @@ static void mgras_raster_command_execute(
          * unimplemented command, so it is not logged. With the transfer
          * control set for a host read it starts one through the data port.
          */
-        if (s->rss[MGRAS_RSS_XFRCONTROL] & MGRAS_XFRCONTROL_PIO) {
+        if ((s->rss[MGRAS_RSS_XFRCONTROL] & MGRAS_XFRCONTROL_PIO_READ) ==
+            MGRAS_XFRCONTROL_PIO_READ) {
             mgras_pio_read_start(s);
         }
         return;
