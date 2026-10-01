@@ -6090,10 +6090,11 @@ static void test_board_refused(gconstpointer data)
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    /* Texture is the only thing any board still lacks. */
+    /* Texture is the only thing any board still lacks, in part. */
     g_assert_cmpuint(e->tram, >, 0);
     assert_qemu_rejects(args, message);
-    assert_qemu_rejects(args, "needs texture (TE1 and TRAM), which");
+    assert_qemu_rejects(args, "needs texture beyond a one-level RGBA nearest "
+                        "draw (TE1 and TRAM), which");
 }
 
 /*
