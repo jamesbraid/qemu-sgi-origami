@@ -361,10 +361,35 @@ static void test_gl_texture_unsupported_draws_untextured(void)
 }
 
 /*
+ * The load's GE words at 0xe3d for a one-level texture at TXMIPMAP word
+ * block, as perfly's client sent them: the width, 0, the level, the word,
+ * the word less one and a sixth word the model does not read.
+ */
+static void tex_load_at(QTestState *t, uint32_t block, const uint8_t *texels)
+{
+    const uint32_t words[6] = { 4, 0, 0, block, block - 1, 0 };
+
+    gl_ge_load(t, GL_GE_ERAM, 0xe3d, words, 6);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+}
+
+/* Point TXMIPMAP entry 0 at block, as the draw setup does. */
+static void tex_mipmap_word(QTestState *t, uint32_t block)
+{
+    tex_record(t, TEX_TXADDR, 0);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, block);
+}
+
+/*
  * A load whose six GE words at 0xe3d carry a border offset other than the
  * two traced unbordered ones is logged once and stores nothing, so the
  * draw is white and untextured; the traced values 0xffffffff and 0 draw
- * the level, as does a first block that cancels the offset.
+ * the level, as does a first block that cancels the offset. Each draw
+ * names the TXMIPMAP word its load did.
  */
 static void test_gl_texture_border_is_logged_untextured(void)
 {
@@ -405,6 +430,7 @@ static void test_gl_texture_border_is_logged_untextured(void)
         gl_ge_load(t, GL_GE_ERAM, 0xe3d, words, 6);
         tex_load(t, TEX_TL_MODE_RGBA8, texels);
         tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+        tex_mipmap_word(t, cases[i].block);
         tex_quad(t);
         if (cases[i].bordered) {
             want = TEX_WHITE;
@@ -423,6 +449,43 @@ static void test_gl_texture_border_is_logged_untextured(void)
     qtest_quit(t);
     unlink(log);
     g_rmdir(tmpfs);
+}
+
+/*
+ * Two textures of one context, loaded to blocks 0 and 4 as perfly's
+ * CH-53 rotor and body were, are both kept: a draw takes the level its
+ * TXMIPMAP word names, in either order, and a word nothing was loaded
+ * to draws untextured.
+ */
+static void test_gl_texture_levels_by_block(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t first[32], second[32];
+
+    tex_texels(first);
+    for (int i = 0; i < 32; i++) {
+        second[i] = i % 4 == 3 ? 0xff : first[i] ^ 0xa0;
+    }
+    tex_load_at(t, 0, first);
+    tex_load_at(t, 4, second);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int k = 0; k < 2; k++) {
+            uint32_t block = (k ^ pass) ? 4 : 0;
+            const uint8_t *p = block ? second : first;
+
+            tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+            tex_mipmap_word(t, block);
+            tex_quad(t);
+            g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==,
+                            p[28] << 16 | p[29] << 8 | p[30]);
+        }
+    }
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_mipmap_word(t, 8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
 }
 
 /*
@@ -1593,6 +1656,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-unsupported-draws-untextured",
                    test_gl_texture_unsupported_draws_untextured);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-levels-by-block",
+                   test_gl_texture_levels_by_block);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-textureless-board-ignores",
                    test_gl_texture_textureless_board_ignores);

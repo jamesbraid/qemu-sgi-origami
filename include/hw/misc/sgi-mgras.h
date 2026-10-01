@@ -335,13 +335,15 @@ typedef struct SGIMgrasGLPixels {
 #define SGI_MGRAS_TEX_TABLE 32
 
 /*
- * One loaded texture level, keyed by the base block and TL_SPEC's level
- * number, in the model's own layout: the kept format's components in
- * order, a byte each holding the 4- or 8-bit value.
+ * One loaded texture level, keyed by the base block, the TXMIPMAP word the
+ * load named and TL_SPEC's level number, in the model's own layout: the
+ * kept format's components in order, a byte each holding the 4- or 8-bit
+ * value.
  */
 typedef struct SGIMgrasTexLevel {
     uint32_t used;              /* 0 or 1 */
     uint32_t base;
+    uint32_t block;             /* the load's TXMIPMAP word */
     uint32_t level;
     uint32_t log2w, log2h;
     uint32_t mode;              /* TL_MODE when it was loaded */
@@ -369,7 +371,7 @@ typedef struct SGIMgrasTexture {
     uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
     /* A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads. */
     uint32_t load;
-    uint32_t load_base, load_spec, load_mode;
+    uint32_t load_base, load_block, load_spec, load_mode;
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.

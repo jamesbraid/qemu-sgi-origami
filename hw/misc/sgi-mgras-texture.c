@@ -50,12 +50,22 @@
  *   byte count is logged and nothing is stored.
  *
  * - Storage. Approximated: a level is stored per GL context keyed by the
- *   base block the kernel's 0xeb04 names and TL_SPEC's level number, not
- *   at a TRAM block. TXMIPMAP gives the three small levels of a traced
- *   mipmapped texture all block 0, so where a level sits in TRAM is
- *   unknown, and the model keeps no TRAM byte image: TRAM save and
- *   restore through the kernel's DMA paths are not modelled. Two textures
- *   of one context under one base replace each other's levels. A context
+ *   base block the kernel's 0xeb04 names, the TXMIPMAP word the load
+ *   names and TL_SPEC's level number, not at a TRAM byte address. The
+ *   load's GE words at 0xe3d carry the level's TXMIPMAP word, the first
+ *   block in 7:0 and a per-image flag in bit 8, and the draw sends the
+ *   same word for the level through the TXMIPMAP table: ivview's three
+ *   levels loaded 0, 0x100 and 0 and drew 0, 0x100 and 0, and perfly's
+ *   three textures loaded and drew 0, 4 and 0xc for level 0 (established
+ *   as words; that the board reads the level from the block it was loaded
+ *   to is inferred). The draw finds level n by TXMIPMAP entry n, the
+ *   client writing the table from the first level, 0 in every trace. A
+ *   mipmapped texture puts several small levels in one block under one
+ *   word, so the level number stays in the key. Where a level sits inside
+ *   its block is unknown, and the model keeps no TRAM byte image: TRAM
+ *   save and restore through the kernel's DMA paths are not modelled, and
+ *   a load does not evict a level of another word that overlapped it in
+ *   TRAM; the other stays until its own word is loaded again. A context
  *   keeps at most one TRAM's 4 MiB of texels and the board four TRAMs'.
  *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
  *   keeps one store per context for both, approximated: each path
@@ -215,10 +225,11 @@
 #define MGRAS_TEX_HQ_ABGR        0x80
 
 /*
- * The load's six GE words at 0xe3d: word 3 carries the level's first block
- * in 7:0 and word 4 is the image's border offset plus that block. The
- * traced unbordered levels give an offset of 0xffffffff (one level) or 0
- * (mipmapped); any other offset is taken as a border (inferred).
+ * The load's six GE words at 0xe3d: word 3 is the level's TXMIPMAP word,
+ * its first block in 7:0, and word 4 is the image's border offset plus
+ * that block. The traced unbordered levels give an offset of 0xffffffff
+ * (one level) or 0 (mipmapped); any other offset is taken as a border
+ * (inferred).
  */
 #define MGRAS_TEX_GE_LOAD        0xe3d
 #define MGRAS_TEX_GE_BLOCK       (MGRAS_TEX_GE_LOAD + 3)
@@ -524,7 +535,8 @@ void sgi_mgras_texture_record_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
-static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t level);
+static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t base,
+                                        uint32_t block, uint32_t level);
 
 bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
 {
@@ -570,7 +582,9 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     border = s->ge_param[MGRAS_TEX_GE_BORDER] -
              (s->ge_param[MGRAS_TEX_GE_BLOCK] & 0xff);
     if (border && border != 0xffffffffu) {
-        SGIMgrasTexLevel *old = mgras_tex_find(t, MGRAS_TEX_SPEC_LEVEL(spec));
+        SGIMgrasTexLevel *old = mgras_tex_find(t, t->base,
+                                               s->ge_param[MGRAS_TEX_GE_BLOCK],
+                                               MGRAS_TEX_SPEC_LEVEL(spec));
 
         /* A level kept earlier under this slot would draw as the new one. */
         if (old) {
@@ -601,6 +615,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     }
     t->load = 1;
     t->load_base = t->base;
+    t->load_block = s->ge_param[MGRAS_TEX_GE_BLOCK];
     t->load_spec = spec;
     t->load_mode = mode;
     return true;
@@ -667,7 +682,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
     for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
         SGIMgrasTexLevel *e = &t->levels[i];
 
-        if (e->used && e->base == t->load_base && e->level == level) {
+        if (e->used && e->base == t->load_base &&
+            e->block == t->load_block && e->level == level) {
             l = e;
         } else if (!e->used && !free) {
             free = e;
@@ -703,6 +719,7 @@ static void mgras_tex_commit(SGIMgrasState *s)
     *l = (SGIMgrasTexLevel) {
         .used = 1,
         .base = t->load_base,
+        .block = t->load_block,
         .level = level,
         .log2w = MGRAS_TEX_SPEC_LOG2W(t->load_spec),
         .log2h = MGRAS_TEX_SPEC_LOG2H(t->load_spec),
@@ -710,8 +727,9 @@ static void mgras_tex_commit(SGIMgrasState *s)
         .bytes = bytes,
         .texels = out,
     };
-    trace_sgi_mgras_texture_level(t->load_base, level, 1u << l->log2w,
-                                  1u << l->log2h, t->load_mode);
+    trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
+                                  1u << l->log2w, 1u << l->log2h,
+                                  t->load_mode);
 done:
     mgras_tex_staging_free(t);
     t->load = 0;
@@ -879,15 +897,23 @@ static bool mgras_tex_environment(SGIMgrasState *s, uint32_t cls)
     return true;
 }
 
-static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t level)
+static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t base,
+                                        uint32_t block, uint32_t level)
 {
     for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        if (t->levels[i].used && t->levels[i].base == t->base &&
-            t->levels[i].level == level) {
+        if (t->levels[i].used && t->levels[i].base == base &&
+            t->levels[i].block == block && t->levels[i].level == level) {
             return &t->levels[i];
         }
     }
     return NULL;
+}
+
+/* Level n of the draw: TXMIPMAP entry n under the context's base. */
+static SGIMgrasTexLevel *mgras_tex_draw_level(SGIMgrasTexture *t,
+                                              uint32_t level)
+{
+    return mgras_tex_find(t, t->base, t->txmipmap[level], level);
 }
 
 /*
@@ -915,7 +941,7 @@ static void mgras_tex_pyramid(SGIMgrasTexture *t, const SGIMgrasTexLevel *l0,
     double min_lod = mip ? MIN(MGRAS_TXLOD_MIN(t->txlod) / 64.0, last) : 0;
 
     for (uint32_t level = 0; level < SGI_MGRAS_TEX_LEVELS; level++) {
-        SGIMgrasTexLevel *e = mgras_tex_find(t, level);
+        SGIMgrasTexLevel *e = mgras_tex_draw_level(t, level);
 
         if (!e || e->mode != l0->mode) {
             continue;
@@ -952,10 +978,11 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
         return NULL;
     }
-    l = mgras_tex_find(t, 0);
+    l = mgras_tex_draw_level(t, 0);
     if (!l) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: textured draw with no level 0 "
-                      "loaded under base %u\n", t->base);
+                      "loaded under base %u at TXMIPMAP 0x%x\n", t->base,
+                      t->txmipmap[0]);
         return NULL;
     }
     size = l->log2h << 4 | l->log2w;
@@ -1055,7 +1082,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
             const SGIMgrasTexLevel *o = &t->levels[j];
 
             if (o->used && l->used && o->base == l->base &&
-                o->level == l->level) {
+                o->block == l->block && o->level == l->level) {
                 return false;
             }
         }
@@ -1079,11 +1106,12 @@ static bool mgras_tex_level_bytes_ok(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex_level = {
     .name = TYPE_SGI_MGRAS "/texture-level",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(used, SGIMgrasTexLevel),
         VMSTATE_UINT32(base, SGIMgrasTexLevel),
+        VMSTATE_UINT32(block, SGIMgrasTexLevel),
         VMSTATE_UINT32(level, SGIMgrasTexLevel),
         VMSTATE_UINT32(log2w, SGIMgrasTexLevel),
         VMSTATE_UINT32(log2h, SGIMgrasTexLevel),
@@ -1097,8 +1125,8 @@ static const VMStateDescription vmstate_sgi_mgras_tex_level = {
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
@@ -1120,6 +1148,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(bracket, SGIMgrasTexture),
         VMSTATE_UINT32(load, SGIMgrasTexture),
         VMSTATE_UINT32(load_base, SGIMgrasTexture),
+        VMSTATE_UINT32(load_block, SGIMgrasTexture),
         VMSTATE_UINT32(load_spec, SGIMgrasTexture),
         VMSTATE_UINT32(load_mode, SGIMgrasTexture),
         VMSTATE_STRUCT_ARRAY(levels, SGIMgrasTexture, SGI_MGRAS_TEX_LEVELS, 1,
@@ -1147,8 +1176,8 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
                    t->texrbuffer | t->base | t->t_offset | t->on |
-                   t->bracket | t->load | t->load_base | t->load_spec |
-                   t->load_mode;
+                   t->bracket | t->load | t->load_base | t->load_block |
+                   t->load_spec | t->load_mode;
 
     for (int i = 0; i < SGI_MGRAS_TEX_TABLE; i++) {
         any |= t->txmipmap[i] | t->txborder[i];
