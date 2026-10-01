@@ -1,9 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SI+T MGRAS texture: one TE1 engine and its TRAM, as the IRIX 6.5.30
- * OpenGL client drives them (docs/datasheets/mgras-texture.md in the
- * Origami repository, "Upload, bind and draw as traced on SI+T", and the
- * review record docs/reviews/mgras-texture-ingress-evidence-20260930.md).
+ * OpenGL client drives them.
  * Every word below is established as what that client and kernel sent
  * to the model, in run irix-20260930T224203-2e96c4 (ivview drawing one
  * textured quad); what the board does with each is inferred.
@@ -89,7 +87,7 @@
 #include "hw/misc/sgi-mgras-gl.h"
 #include "trace.h"
 
-/* Class-0 texture tokens (mgras-texture.md, "Class-0 texture tokens"). */
+/* Class-0 texture tokens. */
 #define MGRAS_TEX_ON             0x00000b00
 #define MGRAS_TEX_OFF            0x00000c00
 #define MGRAS_TEX_T_OFFSET       0x00005f04
@@ -99,7 +97,7 @@
 #define MGRAS_TEX_RECORDS        0x00007c08
 #define MGRAS_TEX_TABLE          0x0000ec10
 
-/* Texture registers (mgras-texture.md, "Register map"). */
+/* Texture registers. */
 #define MGRAS_TEX_TEXMODE1       0x111
 #define MGRAS_TEX_TEXMODE2       0x180
 #define MGRAS_TEX_TXSIZE         0x181
@@ -134,9 +132,7 @@
 #define MGRAS_TEX_FLAGS_BY_DMA   0x80
 
 /*
- * The GE pixel program the client loads for four unsigned bytes a pixel
- * (mgras-texture.md, "Upload": 0x1f44/0, 0x3e65/0xd91, 0x156a/0x1b4,
- * 0x352d/0xdf3, with 0x4064 in the unpack routine's second word), the
+ * The GE pixel program the client loads for four unsigned bytes a pixel, the
  * one the image path also knows, at GE parameters 0x13b on; the size word
  * at 0xe34 + 4; and the HQ pixel-format word's GL_ABGR_EXT bit.
  */

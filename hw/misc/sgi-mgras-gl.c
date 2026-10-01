@@ -38,10 +38,9 @@
 /* Class-0 opcodes, bits 15:8 of the header, with their byte lengths. */
 #define MGRAS_GL_CONTEXT_OPENER  0x00000600
 /*
- * glBegin and glEnd: 0x1600 to 0x1f00 begin the ten primitive modes, and
- * each mode's end token is 0x0a00 above its begin token
- * (mgras-gl-commands.md, "Primitives"). The tokens do not follow the
- * modes' enumerant order: 0x1800 begins GL_LINE_STRIP (3) and 0x1900
+ * glBegin and glEnd: 0x1600 to 0x1f00 begin the ten primitive modes, and each
+ * mode's end token is 0x0a00 above its begin token. The tokens do not follow
+ * the modes' enumerant order: 0x1800 begins GL_LINE_STRIP (3) and 0x1900
  * GL_LINE_LOOP (2). The defines below and mgras_gl_begin_tokens[] are the
  * mapping; no arithmetic on the mode stands in for them.
  */
@@ -71,7 +70,7 @@
 #define MGRAS_GL_ORTHO           0x00003518
 /*
  * The matrix stack and transforms, named by the client's display-list
- * decoder (notes-lists-arrays-lighting.md in the Origami repository):
+ * decoder:
  * glRotatef's words are the angle in degrees and the axis.
  */
 #define MGRAS_GL_POP_MATRIX      0x00002e00
@@ -357,7 +356,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  *   culling off first and restores it after.
  *
  * Every context setup sends 0x7404 with 0x405 and 0x5604 with 0x901,
- * OpenGL's initial values (notes-unimplemented-tokens.md). That the
+ * OpenGL's initial values. That the
  * board then culls and chooses two-sided colours as OpenGL 1.2.1, 3.5.1
  * and 2.13.1 give is inferred from the specification; the discriminating
  * tests are gl-cull-face-culls-by-facing and
@@ -374,7 +373,7 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * detail-texture function table glDetailTexFuncSGIS sets. Its words are
  * two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u table, the
  * raster register 0x194 and one table value; the setup's values are 0x1f
- * three times and then 0x1d down to 1 (notes-unimplemented-tokens.md).
+ * three times and then 0x1d down to 1.
  * The SI has no texture memory and the model draws no texture, so the
  * table changes nothing it draws. The test is on each packet's values,
  * not on the setup's sequence, so an application's glDetailTexFuncSGIS
@@ -409,7 +408,7 @@ enum {
     MGRAS_ERAM_WRITE_INLINE,
     MGRAS_ERAM_STATES,
 };
-/* An inline data block's header bit (mgras-gl-commands.md, "Word framing"). */
+/* An inline data block's header bit. */
 #define MGRAS_GL_INLINE_BLOCK    0x80000000u
 
 /* Vertex-attribute headers: the class names the source format. */
@@ -423,12 +422,11 @@ enum {
 /*
  * glColor3ub is sent as 0x34800203 and one word. The model matches every
  * header with its byte length rounded up to the whole words the payload
- * takes (mgras-gl-commands.md, "Word framing").
+ * takes.
  */
 #define MGRAS_GL_COLOR3UB        0x34800204
 /*
- * glNormal3f, and glEdgeFlag true and false (mgras-gl-commands.md and
- * notes-lists-arrays-lighting.md in the Origami repository).
+ * glNormal3f, and glEdgeFlag true and false.
  */
 #define MGRAS_GL_NORMAL3F        0x0000070c
 /*
@@ -448,14 +446,13 @@ enum {
  * to the words they take. The client converts nothing, so the board does;
  * that it converts as OpenGL 1.2.1's table 2.6 gives for a signed normal
  * component, (2c + 1) / (2^b - 1) for b bits, is inferred from the
- * specification and the classes' reading as scaled types in
- * mgras-gl-commands.md.
+ * specification and the classes' reading as scaled types.
  */
 #define MGRAS_GL_NORMAL3D        0x12000718
 #define MGRAS_GL_NORMAL3I        0x1c00070c
 #define MGRAS_GL_NORMAL3S        0x1d000708
 #define MGRAS_GL_NORMAL3B        0x1c800704
-/* glRasterPos2f and 3f (mgras-gl-commands.md, attribute table). */
+/* glRasterPos2f and 3f. */
 #define MGRAS_GL_RASTER_POS2F    0x40003808
 #define MGRAS_GL_RASTER_POS3F    0x2000380c
 /*
@@ -490,15 +487,14 @@ enum {
 
 /*
  * Colour-index mode, from the IRIX 6.5.30 IP27GR532 libGLcore.so's own
- * disassembly (SHA-256 626d6d94...). The context setup calls
+ * code (SHA-256 626d6d94...). The context setup calls
  * __glMgrInitCI (0xd94e830) for each colour buffer when the visual is a
  * colour-index one and another initializer otherwise; __glMgrInitCI
  * writes 0x0a04 and a word of the visual's configuration, from which it
  * also forms the index mask (1 << n) - 1, and __glMgrInitRGB (0xd973620)
  * writes 0x0900 and nothing more. So 0x0a04's word is the number of
  * bits a colour index holds, 8 in gr_osview's context setup and in
- * glxinfo's (the application survey's run irix-20260928T004550-1040f3,
- * and mgras-gl-commands.md), and 0x0900 marks an RGBA context. That the
+ * glxinfo's, and 0x0900 marks an RGBA context. That the
  * board switches its colour handling on them is inferred.
  */
 #define MGRAS_GL_INIT_CI         0x00000a04
@@ -712,20 +708,18 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
 #define MGRAS_GL_IMAGE_BANKS     16
 
 /*
- * Lighting, from the IRIX 6.5.30 IP27GR532 libGLcore.so's emitters
- * (notes-lists-arrays-lighting.md in the Origami repository, established
- * there): glLightfv writes a header per parameter, the light's number
- * (light - GL_LIGHT0) and the parameter's floats, the application's
- * values untransformed; glLightModelfv writes the ambient's red, green and
- * blue and not its alpha, and the two booleans as integers; glMaterialfv
- * writes the face and parameter enumerants and always four floats;
- * glColorMaterial writes one header per face with the parameter, and
- * glEnable and glDisable of GL_COLOR_MATERIAL one word each. glGetLightfv
- * and glGetMaterialfv write 0xef08 with the light's number and parameter
- * or 0xee08 with the face and parameter, then query 0x3ba to 0x3bd and
- * read four floats, keeping as many as the parameter has; the index does
- * not depend on the light or face, so the board puts the parameter in
- * one place for the queries (inferred). The model keeps the state in the
+ * Lighting, from the IRIX 6.5.30 IP27GR532 libGLcore.so's emitters: glLightfv
+ * writes a header per parameter, the light's number (light - GL_LIGHT0) and
+ * the parameter's floats, the application's values untransformed;
+ * glLightModelfv writes the ambient's red, green and blue and not its alpha,
+ * and the two booleans as integers; glMaterialfv writes the face and parameter
+ * enumerants and always four floats; glColorMaterial writes one header per
+ * face with the parameter, and glEnable and glDisable of GL_COLOR_MATERIAL one
+ * word each. glGetLightfv and glGetMaterialfv write 0xef08 with the light's
+ * number and parameter or 0xee08 with the face and parameter, then query 0x3ba
+ * to 0x3bd and read four floats, keeping as many as the parameter has; the
+ * index does not depend on the light or face, so the board puts the parameter
+ * in one place for the queries (inferred). The model keeps the state in the
  * shared context, which transforms positions and spot directions by the
  * modelview when they arrive, and answers from it.
  *
@@ -1017,8 +1011,7 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * -1 for a context with no GL state. The image
  * carries no other GL state, the clients never re-send theirs after a
  * switch, and nothing touches the GE ports at those switches, so the board
- * keeps each context's state under its slot (inferred;
- * mgras-gl-commands.md, "Per-context state").
+ * keeps each context's state under its slot.
  *
  * Approximated: the model keys its state by the slot address the kernel
  * chose, not by GE external RAM contents, and never interprets the GE
@@ -1039,7 +1032,7 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * 0 to -1 and ORs 0xc0000000 into word 1. After writing the image
  * MgrasCtxsw clears bit 27 of word 1 for every context and bits 31, 30,
  * 29 and 26 for every context but the default, whose image keeps bit 31
- * (established from the disassembly). In run
+ * (established from the client's code). In run
  * irix-20260930T204826-66052a each of the 36 openers the clients sent
  * follows exactly one image with both bits in its slot since that slot's
  * previous opener, and the default context's images carry 0x90000000 or
@@ -1115,8 +1108,7 @@ static void mgras_gl_bind(SGIMgrasState *s)
         .back = 1u << back,
         /*
          * Draw-buffer bits 2 and 3 name colour-buffer slots 2 and 3 where
-         * the board has them (mgras-dual-re.md, "What IRIX sends a
-         * two-engine board"): a deep double-buffered visual sends bit 2
+         * the board has them: a deep double-buffered visual sends bit 2
          * for its back buffer and a stereo one for FRONT_LEFT, so the bit
          * has no fixed front or back meaning. Drawing honours them.
          * Limitation: swap and scanout still use banks 0 and 1 only. Which
@@ -1481,17 +1473,16 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 
 /*
  * The answer to the client's 0xa104 query for one current attribute.
- * __Mgr_GetCurrentAttrState reads indices 4 to 7 as GL_CURRENT_COLOR's
- * four floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
- * GL_CURRENT_TEXTURE_COORDS' and 15 as GL_EDGE_FLAG, true when the answer
- * has any of bits 0x01c00000 (notes-return-mode-queries.md in the Origami
- * repository). The model answers with the loaded context's colour,
- * normal, texture coordinates and edge flag; that the board answers with
- * its copy of that state is inferred. Which of the edge flag's three
- * bits the board sets is unknown, so the model sets all three. Other
- * indices answer zero, logged.
- * The discriminating tests are hq-attribute-queries-set-flag-after-arguments
- * and hq-attribute-query-answers-normal-and-edge-flag.
+ * __Mgr_GetCurrentAttrState reads indices 4 to 7 as GL_CURRENT_COLOR's four
+ * floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
+ * GL_CURRENT_TEXTURE_COORDS' and 15 as GL_EDGE_FLAG, true when the answer has
+ * any of bits 0x01c00000. The model answers with the loaded context's colour,
+ * normal, texture coordinates and edge flag; that the board answers with its
+ * copy of that state is inferred. Which of the edge flag's three bits the
+ * board sets is unknown, so the model sets all three. Other indices answer
+ * zero, logged. The discriminating tests are
+ * hq-attribute-queries-set-flag-after-arguments and
+ * hq-attribute-query-answers-normal-and-edge-flag.
  *
  * The same routine reads GL_CURRENT_INDEX at index 4, and the raster
  * index shares 0x351 with the raster colour's red in the 0xa20c table,
@@ -1558,14 +1549,13 @@ typedef enum MgrasGLQueryPacking {
 /*
  * The client adds this double, read at $gp - 0x39e8 in
  * __glMgrDoGet, to the x and y words of GL_CURRENT_RASTER_POSITION
- * before returning them (notes-return-mode-queries.md).
+ * before returning them.
  */
 #define MGRAS_GL_RASTER_BIAS     49151.5
 
 /*
  * The 0xa20c state queries the model answers. __Mgr_ReturnMode sends an
- * index, a1 and a2 and reads one word back at 0x028004
- * (notes-return-mode-queries.md in the Origami repository). No index is a
+ * index, a1 and a2 and reads one word back at 0x028004. No index is a
  * literal: __glMgrDoGet takes each from a table the library loads from
  * the HQ microcode file's symbol table, so the index is an address the
  * board's program gives for that piece of GL state. The notes list each
@@ -1768,8 +1758,7 @@ static const struct {
 /*
  * The library loads hq3.u's table instead of hq3_revB_HQ4.u's when the
  * GE revision the kernel recorded is below 2, or the board has two GEs
- * and one RE (notes-return-mode-queries.md, "Where the index comes
- * from"). The kernel records the low byte of 0x028004 after the GE
+ * and one RE. The kernel records the low byte of 0x028004 after the GE
  * program download, which the model holds at the board's GE revision
  * until the first query. Every board the model presents reports 2 or 3
  * and none has two GEs with one RE, so only the hq3_revB_HQ4.u indices
@@ -1782,12 +1771,11 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
 
 /*
  * Six queries read raster-register state packed as the raster engine
- * holds it (notes-return-mode-queries.md), and the client decodes each
+ * holds it, and the client decodes each
  * field as below (established from the listing). Every context setup's
  * 0x7c08 block pairs a raster register and value with one of these
  * indices as a third word, and each value decodes, as the client decodes
- * that query, to OpenGL's initial state (notes-unimplemented-tokens.md,
- * "The triple's third word is a query address"):
+ * that query, to OpenGL's initial state:
  *
  * - 0x286, setup 0x10009000: the polygon stipple, line stipple and fog
  *   enables in bits 0, 5 and 17;
@@ -1814,7 +1802,7 @@ static bool mgras_gl_query_table_known(const SGIMgrasBoard *b)
  *
  * glIsEnabled(GL_FOG) reads a second index, 0x3 with a1 0, only when bit
  * 17 of 0x286 is clear, and tests it against the table word at offset
- * 0x440, 0x40000 (notes-return-mode-queries.md). What the word holds is
+ * 0x440, 0x40000. What the word holds is
  * unknown; the model answers zero, which reads as fog disabled, as bit 17
  * already said.
  */
@@ -1882,24 +1870,23 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
 }
 
 /*
- * GL_COLOR_WRITEMASK and GL_INDEX_WRITEMASK are both query 0x32b (table
- * offset 0x4c0; notes-return-mode-queries.md). For the colour mask the
- * client tests the answer's bits 0 to 3 in turn as red, green, blue and
- * alpha (0xd992858-0xd9928e0); for the index mask it returns the answer
- * ANDed with (1 << n) - 1, n the context word at 0xcb4, the index's bits
- * (0xd9959f4-0xd995a30). Established from the IRIX 6.5.30 IP27GR532
- * libGLcore.so. That the board keeps one write-mask word for both is
- * inferred from the shared index. In colour-index mode the model answers
- * glIndexMask's mask, and in RGBA mode glColorMask's channels in the bits
- * 0x3b04 sends them in. 0x32c is glGetError's index, not a mask, and its
- * zero answer stays right.
+ * GL_COLOR_WRITEMASK and GL_INDEX_WRITEMASK are both query 0x32b. For the
+ * colour mask the client tests the answer's bits 0 to 3 in turn as red, green,
+ * blue and alpha (0xd992858-0xd9928e0); for the index mask it returns the
+ * answer ANDed with (1 << n) - 1, n the context word at 0xcb4, the index's
+ * bits (0xd9959f4-0xd995a30). Established from the IRIX 6.5.30 IP27GR532
+ * libGLcore.so. That the board keeps one write-mask word for both is inferred
+ * from the shared index. In colour-index mode the model answers glIndexMask's
+ * mask, and in RGBA mode glColorMask's channels in the bits 0x3b04 sends them
+ * in. 0x32c is glGetError's index, not a mask, and its zero answer stays
+ * right.
  */
 #define MGRAS_GL_QUERY_WRITEMASK 0x32b
 
 /*
  * glIsEnabled(GL_CLIP_PLANEi) queries 0xb87 + i and takes the answer's
  * sign bit as the boolean; glGetClipPlane queries 0xb8d + 4i + k for
- * coefficient k and reads floats (notes-return-mode-queries.md). The
+ * coefficient k and reads floats. The
  * model answers the plane in eye coordinates, as the specification has
  * glGetClipPlane return it.
  */
@@ -2371,7 +2358,7 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
 /*
  * A colour index as a CI8 pixel in each bank of target, which scans out
  * through the colour map the window's display ID selects, the X server's
- * own CI8 form (mgras-raster-display.md, "Scanout"). The write mask keeps
+ * own CI8 form. The write mask keeps
  * the stored index's bits where it is clear. A context deeper than eight
  * bits keeps its low eight, logged at its setup.
  *
@@ -2532,12 +2519,12 @@ static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
 }
 
 /*
- * The client writes the opener first when it sets up a new context
- * (mgras-gl-commands.md, "Context setup opener"), and the setup that
- * follows sends no matrix, so the context must already hold the OpenGL
- * initial state then. The model restores it in the loaded context's entry
- * alone; the other contexts and the banks the image gave are the board's.
- * The discriminating tests are gl-context-setup-restores-initial-state and
+ * The client writes the opener first when it sets up a new context, and the
+ * setup that follows sends no matrix, so the context must already hold the
+ * OpenGL initial state then. The model restores it in the loaded context's
+ * entry alone; the other contexts and the banks the image gave are the
+ * board's. The discriminating tests are
+ * gl-context-setup-restores-initial-state and
  * gl-context-opener-resets-only-its-context.
  */
 static void mgras_gl_context_start(SGIMgrasState *s)
@@ -2551,7 +2538,7 @@ static void mgras_gl_context_start(SGIMgrasState *s)
 
 /*
  * No MGRAS command is a glFinish: the client's glFinish is a query and a
- * status poll (mgras-gl-commands.md), which the HQ answers itself.
+ * status poll, which the HQ answers itself.
  */
 static SGIGLSink mgras_gl_sink(SGIMgrasState *s)
 {
@@ -3517,8 +3504,8 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_CLEAR_DEPTH:
         /*
-         * The word is already scaled to the depth plane's 24 bits
-         * (mgras-gl-commands.md), the form the shared context keeps.
+         * The word is already scaled to the depth plane's 24 bits, the form
+         * the shared context keeps.
          */
         mgras_gl_command(s, SGI_GL_OP_CLEAR_DEPTH, payload, 1);
         return;

@@ -36,12 +36,11 @@
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
 /*
  * 0x000e0100 is the client's DMA-read fence marker, which
- * __glMgrWaitForDMARead sends before it polls 0x020200 & 0x1eff for zero
- * (mgras-gl-commands.md in the Origami repository, "DMA-read fence";
- * established as software expectation). The client also pads pooled
- * display lists with it. What the board does with it is unknown. It has
- * no payload, the model's DMA is always idle by the time the client
- * polls, and the word would otherwise be logged once per padding word.
+ * __glMgrWaitForDMARead sends before it polls 0x020200 & 0x1eff for zero. The
+ * client also pads pooled display lists with it. What the board does with it
+ * is unknown. It has no payload, the model's DMA is always idle by the time
+ * the client polls, and the word would otherwise be logged once per padding
+ * word.
  */
 #define MGRAS_CMD_FIFO_DMA_READ_FENCE_REG 0x01
 #define MGRAS_HQ_FLAG_FENCE 0x00010000
@@ -109,7 +108,7 @@
  * XYWIN carries a per-window screen origin: mgrasLineSS writes it before
  * RE_POINT/RE_LINE, but mgrasPolyFillRectSolid never writes it before
  * BLOCKXYSTARTI/BLOCKXYENDI (both confirmed by the sites each function's
- * disassembly touches). OpenBSD's impact(4) driver
+ * code touches). OpenBSD's impact(4) driver
  * (sys/arch/sgi/dev/impactreg.h) names this register IMPACTSR_CMD_XYWIN
  * and comments it "YX coords", built through an IMPACTSR_YXCOORDS(x, y)
  * macro expanding to (y << 16) | x -- the low/high 16-bit split below is
@@ -222,17 +221,16 @@
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 /*
- * A primitive draws into the overlay planes when DRBPOINTERS holds the
- * overlay pointer word and COLORMASKMSBS enables planes in bits 6:4.
- * Inferred from captured IRIX 6.5.30 desktop sessions: every fill, glyph
- * row, byte transfer and line the server issues for a window on its
- * overlay visual (popup and Toolchest menus, XOR drag outlines) carries
- * DRBPOINTERS 0x101c0, COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no
- * main-plane drawing carries that pointer word. How the hardware decodes
- * the pointer word's fields is unknown, so the whole word is compared.
- * The same word with COLORMASKMSBS 0xf0 and logic op CLEAR is how the
- * server erases an overlay window, over the whole screen at start-up and
- * over a popup's rectangle when it is taken down.
+ * A primitive draws into the overlay planes when DRBPOINTERS holds the overlay
+ * pointer word and COLORMASKMSBS enables planes in bits 6:4. Inferred from
+ * IRIX 6.5.30 desktop sessions recorded on the model: every fill, glyph row,
+ * byte transfer and line the server issues for a window on its overlay visual
+ * (popup and Toolchest menus, XOR drag outlines) carries DRBPOINTERS 0x101c0,
+ * COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no main-plane drawing carries
+ * that pointer word. How the hardware decodes the pointer word's fields is
+ * unknown, so the whole word is compared. The same word with COLORMASKMSBS
+ * 0xf0 and logic op CLEAR is how the server erases an overlay window, over the
+ * whole screen at start-up and over a popup's rectangle when it is taken down.
  */
 #define MGRAS_DRBPOINTERS_OVERLAY 0x000101c0
 #define MGRAS_COLORMASKMSBS_OVERLAY 0x70
@@ -350,7 +348,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     /*
-     * Established (mgras-gl-commands.md, "Word framing"): the IRIX 6.5.30
+     * Established: the IRIX 6.5.30
      * OpenGL client forms these blocks for its GE table loads and batched
      * raster register writes, for example 0x80000214 for five descriptor
      * words and 128 data words. The class-0 opcode before the block gives
@@ -428,10 +426,10 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     /*
-     * The OpenGL packets the model executes (sgi_mgras_gl_header() and
-     * mgras-gl-commands.md). The class and opcode are kept like any other
-     * header's, so the payload collects and dispatches through the usual
-     * path; the longest, glLoadMatrixf's, fills the 16-word buffer.
+     * The OpenGL packets the model executes (see sgi_mgras_gl_header()). The
+     * class and opcode are kept like any other header's, so the payload
+     * collects and dispatches through the usual path; the longest,
+     * glLoadMatrixf's, fills the 16-word buffer.
      */
     if (sgi_mgras_gl_header(token)) {
         s->cmd_token_class = cmd_class;
@@ -1124,7 +1122,7 @@ static void mgras_draw_byte_row(SGIMgrasState *s)
     /*
      * The real xdm chooser ORs a row-padding field (bits 16:14) into this
      * word alongside the packing selector bit, e.g. 0x00010080 or
-     * 0x00018000 rather than the bare selector value (blockcopy-grammar.md).
+     * 0x00018000 rather than the bare selector value.
      * Test the selector bit, not the whole register, so those padded
      * values still match their packing mode. Bit 7 set is the only value
      * that selects the pair packing; every other value, including 0 (the
@@ -1219,8 +1217,8 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * eight observed XYWIN values all carry a nonzero x field, and adding
  * both fields lands each of those clusters inside a distinct,
  * non-overlapping icon-sized box. Gating on x != 0 is an inference from
- * that split, not a confirmed hardware or driver condition: disassembly
- * of mgrasLineSS finds two distinct sites that write XYWIN ahead of
+ * that split, not a confirmed hardware or driver condition: the client's code
+ * for mgrasLineSS finds two distinct sites that write XYWIN ahead of
  * RE_POINT/RE_LINE, one that structurally always stores x == 0 and one
  * that can store a genuine nonzero x, but which guest-side condition
  * chooses between them was not traced to a confirmed branch predicate.
@@ -1819,7 +1817,7 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * 6.5.30 kernel's mgrasFillTxTbl (unix.IP27, SHA-256 cbdb02ea5d33...)
  * stores each entry as a 64-bit doubleword from vtopv, then the next
  * three entries as that value plus 1, 2 and 3, one per 4 KiB of the
- * kernel's 16 KiB page (established from the disassembly). On SN0 the
+ * kernel's 16 KiB page (established from the client's code). On SN0 the
  * node number is physical address bits 39:32 (NASID_SHFT 32 in Linux's
  * asm/sn/sn0/addrs.h), so a frame on node n has n in entry bits 27:20.
  * The pages a process locks for a pool or an image lie on whatever node
@@ -1868,7 +1866,7 @@ static bool mgras_raster_dma_address(void *opaque, uint64_t addr, hwaddr *bus)
  * widget-shifted region behind it. mgras_write() has already incremented
  * and traced s->trace_sequence for the write that triggered this transfer,
  * so the transfer is submitted with that write's sequence number
- * (trace_sequence - 1): Origami's reduction places chunk records
+ * (trace_sequence - 1): the replay tooling places chunk records
  * immediately before the write they belong to.
  */
 static void mgras_raster_dma_chunk(void *opaque, uint64_t seq, uint64_t addr,
@@ -2366,13 +2364,10 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 }
 
 /*
- * Display-list execute, 0x00080c08 with two words: a byte offset into the
- * pool and a size. The IRIX 6.5.30 GL client sends it from
- * __glMgrDLExecuteDMA with nothing after it, just after the kernel
- * installs the pool's page list in DMA-map slot 4 (established from run
- * irix-20260928T023038-8a94ce: libGLcore.so-IP27GR532
- * notes-lists-arrays-lighting.md in the Origami repository, "Probe
- * measurements"). That the board reads the list from slot 4's pages is
+ * Display-list execute, 0x00080c08 with two words: a byte offset into the pool
+ * and a size. The IRIX 6.5.30 GL client sends it from __glMgrDLExecuteDMA with
+ * nothing after it, just after the kernel installs the pool's page list in
+ * DMA-map slot 4. That the board reads the list from slot 4's pages is
  * inferred from that install being the only one before the execute.
  *
  * The board reads the words from host memory itself. The shared command
@@ -2401,7 +2396,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  *   0x00083708, next offset, size,   a range ending in glCallList: the
  *   0x00080c08, callee offset, size  called list's first range, then next
  *
- * Established from the disassembly: the three forms, their 2, 3 and 6
+ * Established from the client's code: the three forms, their 2, 3 and 6
  * header words (the table at .rodata 0xdac9588), that __glMgrDLToPool
  * writes the next range's pool offset and size into a range's words 1
  * and 2, and that __glMgrDLResolveCalls writes the called list's first
@@ -2727,7 +2722,7 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
                          (s->cmd_token_payload_count * sizeof(uint32_t));
 
     /*
-     * Established as software expectation (mgras-hq4.md, "HQ flags"): the
+     * Established as software expectation: the
      * IRIX 6.5.30 client's __Mgr_ReturnMode clears flag 17, writes the query,
      * then polls flag 17 with no bound and reads 0x028004 once it is set.
      * Approximated: the model has the answer as soon as the arguments
@@ -2747,8 +2742,7 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     }
 
     /*
-     * Established (notes-return-mode-queries.md in the Origami repository,
-     * "Other queries answered at 0x028004"): the client's one-argument
+     * Established: the client's one-argument
      * 0xa104 query, sent for GL_CURRENT_COLOR and the other current
      * attributes, and its two-argument 0x8b08 histogram query clear flag
      * 17 and wait on it like 0xa20c. perfly waited forever on 0xa104 in
@@ -2770,7 +2764,7 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     }
 
     /*
-     * Established (mgras-hq4.md, "Swap scheduling"): MgrasSchedSwapBuf
+     * Established: MgrasSchedSwapBuf
      * enables source 10, writes 0x3700 and sleeps until its handler sees
      * source 10. Inferred there: the board raises it once the work queued
      * ahead of the word has drained, so the flip follows the rendering.

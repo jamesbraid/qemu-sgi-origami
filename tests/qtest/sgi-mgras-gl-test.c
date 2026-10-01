@@ -81,7 +81,7 @@ static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
 /*
  * The kernel's MgrasValidateBanks as the swap captures show it: a 64-bit
  * store of the header and the first word, then a 32-bit store of the
- * second (mgras-gl-commands.md, "How the client reaches the port").
+ * second.
  */
 static void gl_banks(QTestState *qts, uint32_t bank)
 {
@@ -122,7 +122,7 @@ static void gl_ortho_triangle_ndc(QTestState *qts)
 
 /*
  * SHA-256 of the 128x128 expected windows gl_min_expected.py writes for
- * the probe's scene cases (Origami branch gl-probe-transform-depth),
+ * the probe's scene cases (a probe branch),
  * computed from the OpenGL 1.1 rules and matched by Mesa llvmpipe, never
  * from this model.
  */
@@ -972,8 +972,7 @@ static void test_gl_matrix_stack_holds_32(void)
  * Each matrix query answers its own stack's current matrix, column-major,
  * whatever the matrix mode, from the loaded context: a translation's x is
  * element 12 of the modelview matrix, and glOrtho's x scale element 0 of
- * the projection matrix. perfly's draw process died reading zeros here
- * (mgras-gl-commands.md, "Execution in the QEMU model").
+ * the projection matrix. perfly's draw process died reading zeros here. 
  */
 static void test_hq_query_answers_the_matrices(void)
 {
@@ -1278,7 +1277,7 @@ static void test_gl_colour_index_swap_shows_the_drawn_bank(void)
 /*
  * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
  * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
- * 0x351, the raster colour's red (notes-return-mode-queries.md). In a
+ * 0x351, the raster colour's red. In a
  * colour-index context both answer the index as a float; in an RGBA one,
  * red.
  */

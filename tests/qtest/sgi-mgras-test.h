@@ -109,9 +109,9 @@ static QTestState *qts;
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 /*
- * A rect fill's colour comes from these registers, not PACKEDCOLOR: CI8
- * masks FILLCOLOR_R to a CMAP index byte, RGB packs the low byte of each
- * of the three high nibbles; see mgras_draw_fill() in hw/misc/sgi-mgras-raster.c.
+ * A rect fill's colour comes from these registers, not PACKEDCOLOR: CI8 masks
+ * FILLCOLOR_R to a CMAP index byte, RGB packs the low byte of each of the
+ * three high nibbles; see mgras_draw_fill() in hw/misc/sgi-mgras-raster.c.
  */
 #define REG_FILLCOLOR_R          0x176
 #define REG_FILLCOLOR_G          0x177
@@ -406,13 +406,12 @@ static inline void mgras_tag_wid(QTestState *qts, uint32_t x0, uint32_t y0,
 /*
  * PP1SELECT (0x071c08) picks which PP1 the XMAP registers reach. The IRIX
  * 6.5.30 kernel writes ((re << 1) | pp) << 1 there before its per-PP1
- * sequences (MgrasSyncREPP, mgras_update_pp1ccv),
- * so 0 and 2 name the two PP1s of RE 0 and 4 and 6 those of RE 1, and it
- * writes 1 before configuring every PP1 at once (MgrasInitXMAP,
- * MgrasSyncPPRDRAMs) and again after each per-PP1 loop
- * (docs/datasheets/mgras-dual-re.md). A two-RE board has four PP1s, each
- * with its own XMAP register file; 0x071f00 and 0x071f80 are the
- * exception, kept by no PP1 (test_pp1_select_leaves_sync_registers_shared).
+ * sequences (MgrasSyncREPP, mgras_update_pp1ccv), so 0 and 2 name the two PP1s
+ * of RE 0 and 4 and 6 those of RE 1, and it writes 1 before configuring every
+ * PP1 at once (MgrasInitXMAP, MgrasSyncPPRDRAMs) and again after each per-PP1
+ * loop. A two-RE board has four PP1s, each with its own XMAP register file;
+ * 0x071f00 and 0x071f80 are the exception, kept by no PP1
+ * (test_pp1_select_leaves_sync_registers_shared).
  */
 #define REG_PP1_SELECT          REG_REPP_STATUS_1
 #define PP1_SELECT(re, pp)      ((((re) << 1) | (pp)) << 1)
@@ -498,8 +497,7 @@ static inline void mgras_assert_pp1_xmap(QTestState *s, uint8_t select,
  * after the phase starts: exactly k frames, truncated to the nanosecond.
  * The default is the IRIX 6.5.30 1280x1024 60 Hz table (1065 lines of 840
  * VC3 clocks) at half its 107.25 MHz PLL output, about 59.943 Hz: the
- * timing section of docs/datasheets/mgras-raster-display.md in the Origami
- * repository.
+ * timing the IRIX kernel's table gives.
  */
 typedef struct MgrasFrameTime {
     uint64_t clocks;
@@ -863,7 +861,7 @@ static inline uint32_t gl_window_pixel(QTestState *qts, int x, int y)
 }
 
 /*
- * The GL client's matrix, depth and buffer words as the captured probe
+ * The GL client's matrix, depth and buffer words as the recorded probe
  * streams of run irix-20260927T172059-fdbada carry them (glMatrixMode
  * 0x2a04, glLoadIdentity 0x2c00, glLoadMatrixf 0x2b40 with 16 floats in
  * memory order, glMultMatrixf 0x2d40, glFrustum 0x3418 and glOrtho 0x3518
@@ -1003,8 +1001,7 @@ static inline void gl_window_projection(QTestState *qts)
 
 /*
  * The matrix stack and transform commands, named by the client's own
- * display-list decoder (notes-lists-arrays-lighting.md, "The CPU decoder
- * as a second opcode table"): glPushMatrix 0x2f00, glPopMatrix 0x2e00,
+ * display-list decoder: glPushMatrix 0x2f00, glPopMatrix 0x2e00,
  * glRotatef 0x3010 (angle in degrees, x, y, z), glScalef 0x310c and
  * glTranslatef 0x320c.
  */
@@ -1089,8 +1086,7 @@ static inline uint32_t gl_attribute_query(QTestState *qts, uint32_t index)
 
 /*
  * __Mgr_ReturnMode's 0xa20c query: an index, then a1 and a2, answered at
- * 0x028004 once flag bit 17 is set (notes-return-mode-queries.md in the
- * Origami repository). The indices are the ones the hq3_revB_HQ4.u
+ * 0x028004 once flag bit 17 is set. The indices are the ones the hq3_revB_HQ4.u
  * symbol table gives, which the library loads for a board reporting GE
  * revision 2 with one GE: GL_MODELVIEW_MATRIX 0x3a + i and
  * GL_PROJECTION_MATRIX 0x4a + i with a1 0, read as floats into the
@@ -1113,14 +1109,13 @@ static inline uint32_t gl_query(QTestState *qts, uint32_t index, uint32_t a1)
 }
 
 /*
- * glRasterPos2f and 3f are 0x40003808 and 0x2000380c with their floats
- * (mgras-gl-commands.md, attribute table). The raster-position queries in
- * the hq3_revB_HQ4.u column (notes-return-mode-queries.md): x, y, z and w
- * at 0x359, 0x35a, 0x35b and 0x350, the valid bit at 0x35c, the colour at
- * 0x351 to 0x354, the texture coordinates at 0x355 to 0x358 and the
- * distance at 0x34b. The client adds the double -49151.5 to the x and y
- * words before returning them, and ANDs the valid word with a mask from
- * the microcode's symbol table whose value is not recorded.
+ * glRasterPos2f and 3f are 0x40003808 and 0x2000380c with their floats. The
+ * raster-position queries in the hq3_revB_HQ4.u column: x, y, z and w at
+ * 0x359, 0x35a, 0x35b and 0x350, the valid bit at 0x35c, the colour at 0x351
+ * to 0x354, the texture coordinates at 0x355 to 0x358 and the distance at
+ * 0x34b. The client adds the double -49151.5 to the x and y words before
+ * returning them, and ANDs the valid word with a mask from the microcode's
+ * symbol table whose value is not recorded.
  */
 #define GL_RASTER_POS2F_HDR   0x40003808
 #define GL_RASTER_POS3F_HDR   0x2000380c
@@ -1815,11 +1810,10 @@ static inline void gl_migrate(void (*setup)(QTestState *),
 }
 
 /*
- * glDepthRange is 0x4808 and near and far as floats, which the client
- * does not clamp (__glMgrim_DepthRange, 0xd960590); GL_DEPTH_RANGE is
- * queried at 0xc21 and 0xc22 and read as floats (notes-return-mode-
- * queries.md). OpenGL 1.2.1 (2.10.1) starts the range at [0, 1] and
- * clamps each value to [0, 1].
+ * glDepthRange is 0x4808 and near and far as floats, which the client does not
+ * clamp (__glMgrim_DepthRange, 0xd960590); GL_DEPTH_RANGE is queried at 0xc21
+ * and 0xc22 and read as floats. OpenGL 1.2.1 (2.10.1) starts the range at [0,
+ * 1] and clamps each value to [0, 1].
  */
 #define GL_DEPTH_RANGE_HDR    0x00004808
 #define GL_Q_DEPTH_RANGE      0xc21
@@ -1837,7 +1831,7 @@ static inline uint32_t gl_stack_depth(uint32_t answer, uint32_t base)
 }
 
 /*
- * The raster-state queries (notes-return-mode-queries.md): 0x2ca holds
+ * The raster-state queries: 0x2ca holds
  * the depth function in bits 2:0, read as GL_NEVER + (answer & 7), and
  * the write mask, true when bits 27:4 are all set; 0x288 holds dither in
  * bit 0, stencil and alpha test in bits 4 and 6 and the logic op in bits
@@ -1855,7 +1849,7 @@ static inline uint32_t gl_stack_depth(uint32_t answer, uint32_t base)
 #define GL_Q_ALPHA            0x2cc
 
 /*
- * Lighting as the client sends it (notes-lists-arrays-lighting.md):
+ * Lighting as the client sends it:
  * glLightfv one header per parameter with the light's number and floats,
  * glMaterialfv 0x1118 with face, parameter and four floats,
  * glLightModelfv(GL_LIGHT_MODEL_AMBIENT) 0x570c with three floats,
@@ -1913,9 +1907,7 @@ static inline void gl_readback(QTestState *qts, uint32_t header, uint32_t a,
 }
 
 /*
- * The lighting enables and normals as the client sends them
- * (notes-lists-arrays-lighting.md; __glMgrim_Enable, __glMgrim_Disable and
- * the glNormal3 emitters of the IRIX 6.5.30 IP27GR532 libGLcore.so):
+ * The lighting enables and normals as the client sends them: 
  * glEnable and glDisable(GL_LIGHTING) 0x0d00 and 0x0e00 alone,
  * glEnable(GL_LIGHTi) 0x7104 and i, glDisable 0xa004 and i,
  * glEnable/glDisable(GL_NORMALIZE) 0xa304 with 1 or 0, glNormal3f 0x070c,
@@ -1997,8 +1989,7 @@ static inline void gl_fill_window(QTestState *qts, float r, float g, float b)
  * glScissor (__glMgrim_Scissor 0xd97c260): 0x3910 and x, width - 1, y,
  * height - 1; glEnable and glDisable of GL_SCISSOR_TEST: 0x6e04 and 1 or
  * 0. GL_SCISSOR_BOX is queried at 0xc24 to 0xc27 as x, y and the last
- * column and row, and GL_SCISSOR_TEST at 0xc28 (notes-return-mode-
- * queries.md).
+ * column and row, and GL_SCISSOR_TEST at 0xc28.
  */
 #define GL_SCISSOR_HDR        0x00003910
 #define GL_SCISSOR_TEST_HDR   0x00006e04

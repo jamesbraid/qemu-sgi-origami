@@ -64,7 +64,7 @@
 
 /*
  * The monitor ID in 0x071308 bits 7:4: 0xf, what every captured Origin
- * board read with its monitor (mgras-board-identity.md). It belongs to the
+ * board read with its monitor. It belongs to the
  * monitor, not the board, so every board answers alike.
  */
 #define MGRAS_MONITOR_ID 0xf
@@ -88,11 +88,10 @@
  *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
  *   revision are approximated with the matching one-GE board's values.
  *
- * SSI and ESSI render: their second GE takes its program through the
- * second download port, and their second RE's two PP1s have XMAP
- * register files of their own behind PP1SELECT
- * (docs/datasheets/mgras-dual-re.md). Drawing reaches both REs through
- * the one command FIFO, so one set of planes stands for both.
+ * SSI and ESSI render: their second GE takes its program through the second
+ * download port, and their second RE's two PP1s have XMAP register files of
+ * their own behind PP1SELECT. Drawing reaches both REs through the one command
+ * FIFO, so one set of planes stands for both.
  *
  * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
  * not the board's (MGRAS_MONITOR_ID).
@@ -455,7 +454,7 @@ static void mgras_context_write(SGIMgrasState *s, uint32_t value)
     }
     if (s->context_words >= 63) {
         /*
-         * Established (mgras-hq4.md, "Context switch and HQ flags"):
+         * Established:
          * MgrasCtxsw stores exactly 63 words and never reads or writes a
          * closing token at 0x120400 -- the transaction completes as soon
          * as the 63rd word lands. Defensive only: completion moves
@@ -698,7 +697,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return 0;
     /*
      * Bits 31:28 are the HQ revision the IRIX kernel reads with a 32-bit
-     * load (mgras-board-identity.md). How they relate to the widget
+     * load. How they relate to the widget
      * identification word at 0x000004 is unknown; a 64-bit read keeps
      * the low word at zero as before.
      */
@@ -756,13 +755,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x028004:
         return s->ge_report;
     /*
-     * Bits 7:4 are the attached monitor's ID. The kernel reads this byte
-     * while it builds the board record and again on every OpenGL context
-     * query (MgrasGatherInfo, MgrasGatherDynamicInfo), and gfxinfo prints
-     * the field. Every captured Origin board reports 0xf, which gfxinfo
-     * prints as "unknown, assuming 19"" and which, like 0, selects the
-     * kernel's stock 1280x1024 60 Hz timing record
-     * (mgras-board-identity.md). Bits 3:0 are never read; 0 is
+     * Bits 7:4 are the attached monitor's ID. The kernel reads this byte while
+     * it builds the board record and again on every OpenGL context query
+     * (MgrasGatherInfo, MgrasGatherDynamicInfo), and gfxinfo prints the field.
+     * Every captured Origin board reports 0xf, which gfxinfo prints as
+     * "unknown, assuming 19"" and which, like 0, selects the kernel's stock
+     * 1280x1024 60 Hz timing record. Bits 3:0 are never read; 0 is
      * approximated.
      */
     case 0x071308: {
@@ -1765,7 +1763,7 @@ static const VMStateDescription vmstate_sgi_mgras_xmap = {
 };
 
 /*
- * Origami's unversioned machines support migration between identical builds
+ * The unversioned machines support migration between identical builds
  * only. Change both version_id and minimum_version_id when represented state
  * changes.
  */
