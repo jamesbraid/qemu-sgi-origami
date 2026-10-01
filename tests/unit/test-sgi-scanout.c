@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI graphics scanout: retrace period and phase, swap records, dirty
  * lines, both cursor paths, and migration.

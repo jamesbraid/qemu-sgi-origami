@@ -2,7 +2,7 @@
 #
 # The sMDK standalone diagnostics on a four-processor Origin 300
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The origin300_4cpu row of smdk-matrix, in its own meson target so the
 nightly runs it beside the other populations. test_prom_smdk_origin300.py

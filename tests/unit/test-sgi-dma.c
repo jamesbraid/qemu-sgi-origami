@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI graphics DMA and command fetch: guest pages resolved to host chunks,
  * the chunk trace contract, pixel transfers both ways, completions, and a

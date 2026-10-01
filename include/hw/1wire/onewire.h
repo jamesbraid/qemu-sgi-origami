@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Dallas/Maxim 1-Wire bus and device interface. */
 #ifndef HW_1WIRE_ONEWIRE_H
 #define HW_1WIRE_ONEWIRE_H

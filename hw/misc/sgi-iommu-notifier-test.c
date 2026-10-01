@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Exercise the real IOMMU notifier registration API without caching DMA. */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"

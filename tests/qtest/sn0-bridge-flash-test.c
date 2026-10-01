@@ -17,7 +17,7 @@
  * the window. That decode is checked on a bare Bridge the board test
  * fixture builds, with a stand-in part in place of whatever a board fits.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

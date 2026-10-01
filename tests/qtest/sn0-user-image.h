@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Bare-metal CPU images for Origin 200 qtests, assembled independently.
  * -bios loads at 0xbfc00000: reset is offset 0; TLB, XTLB and general

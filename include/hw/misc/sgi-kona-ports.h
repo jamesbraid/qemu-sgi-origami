@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* InfiniteReality command-port roles and selector tables. */
 #ifndef HW_MISC_SGI_KONA_PORTS_H
 #define HW_MISC_SGI_KONA_PORTS_H

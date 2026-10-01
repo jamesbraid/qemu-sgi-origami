@@ -1,6 +1,6 @@
 # Pin a running QEMU's vCPU threads one-to-one to host CPUs
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Under MTTCG each guest processor is a host thread, and QEMU_CLOCK_VIRTUAL
 follows the host clock. A guest that times one device against its own

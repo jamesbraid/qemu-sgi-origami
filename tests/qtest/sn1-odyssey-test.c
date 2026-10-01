@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The Odyssey (VPro) graphics board plugged into the Origin 300's XIO
  * connector. No SGI product shipped that composition; it is the host the

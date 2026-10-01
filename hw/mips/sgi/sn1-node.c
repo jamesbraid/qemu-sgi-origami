@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI Origin 300 ("SN1", IP35/Bedrock) node device. See sn1-node.h.
  *

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Synthetic graphs exercise Router forwarding beyond the module topology.
  * A minimal test Hub type stands in for the real Hub (hw/misc/sgi-hub.c),

@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  * Every processor must re-enter a generated ROM after a guest-requested
  * reset. Public Linux arch/mips/sgi-ip27/ip27-reset.c writes NI_PORT_RESET
  * with NPR_PORTRESET | NPR_LOCALRESET. Its asm/sn/sn0/hubni.h and hubpi.h

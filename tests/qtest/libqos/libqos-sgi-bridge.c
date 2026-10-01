@@ -2,7 +2,7 @@
  * libqos QOSState for one SGI Bridge on -M none. Caller devices follow the
  * Bridge and transfer memory, so card tests use one command line on any host.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

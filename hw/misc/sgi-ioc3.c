@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI IOC3 PCI base I/O: serial DMA, Ethernet, PS/2, MicroLAN and timekeeper.
  */

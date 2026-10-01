@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Four-node Origin 2000 module and per-node slot capacity.
 layer_version: 1
 layer:

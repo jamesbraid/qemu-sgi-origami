@@ -2,7 +2,7 @@
 # write their own firmware with, and the trace-log reader that pairs each
 # machine reset with the write that asked for it
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Several tests here boot a few dozen hand-assembled instructions in place
 of firmware, because the question they ask -- does a port-reset write

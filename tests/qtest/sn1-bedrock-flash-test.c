@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Isolated Origin 300 boot-flash adapter with synthetic images.
  * The empty machine supplies only an address space; test window addresses

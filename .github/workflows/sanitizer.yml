@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Build with address and undefined-behaviour sanitizers and run the MIPS64
 # register suite. This weekly, non-required check complements the faster
 # required suite and needs no guest assets.

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * A pending timer interrupt is delivered when Status unmasks it or ERET
  * clears EXL.

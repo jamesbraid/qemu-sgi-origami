@@ -1,7 +1,7 @@
 # Origin 300 boot-flash and synthetic identity-EEPROM seeding for the stock
 # IP35 PROM boot tests in this directory
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 origin300 takes only a raw stock PROM image as -bios and refuses -kernel
 outright, with no synthesized-firmware bypass (test_origin300_prom.py's

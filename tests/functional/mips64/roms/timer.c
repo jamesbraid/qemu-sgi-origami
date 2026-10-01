@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test the Count and Compare registers and their shared timer
  * interrupt. Interrupts remain masked so the pending bit is observed

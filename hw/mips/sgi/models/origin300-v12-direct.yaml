@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Synthetic direct V12 attachment on the Origin 300 cable port.
 configuration_version: 1
 layers:

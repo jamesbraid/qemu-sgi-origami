@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 300 ("SN1") CPU population-to-Bedrock-slot topology. A pure lookup
  * on the compiled catalogue's Bedrock node record (qapi/sgi-sn.json), with no

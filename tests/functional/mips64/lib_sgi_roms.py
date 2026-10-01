@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Parse the native SGI bare-metal ROM test matrix."""
 
 from dataclasses import dataclass

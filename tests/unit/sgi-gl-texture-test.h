@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 #ifndef SGI_GL_TEXTURE_TEST_H
 #define SGI_GL_TEXTURE_TEST_H
 

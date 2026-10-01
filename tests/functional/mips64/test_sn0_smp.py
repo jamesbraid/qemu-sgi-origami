@@ -2,7 +2,7 @@
 #
 # SGI SN0 SMP scheduling tests
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 
 import re
 import time

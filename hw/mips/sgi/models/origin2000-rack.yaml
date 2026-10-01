@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Origin 2000 rack module: the eight-processor module with its two
 # Standard Routers, one to four node boards (nodes=, four by default), the
 # BaseIO in IO1 and every other XIO slot empty. A shipped Origin 2000 has no

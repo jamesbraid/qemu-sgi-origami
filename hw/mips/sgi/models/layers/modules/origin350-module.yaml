@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 350: IO9 is on PIC head 0; Bedrock's XIO widget is unverified.
 layer_version: 1
 # The catalogue citation checker (tools/check-citations) resolves a sources: entry

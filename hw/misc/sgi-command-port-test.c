@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* MMIO test device for command-port framing and owner callbacks. */
 /*
  * Its register layout and selectors are synthetic, not a board address map or

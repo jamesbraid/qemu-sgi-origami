@@ -5,7 +5,7 @@
 # test_prom_smdk_origin300.py and the test_prom_smdk_origin300_<row>.py
 # beside it boot the stock PROM and the monitor once per diagnostic.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # These six are the Origin 300 field guide's own set (108-0264-004
 # Table 2-1): io8bt, ndir, nmem, scct, System_Level_Test and xbg. The

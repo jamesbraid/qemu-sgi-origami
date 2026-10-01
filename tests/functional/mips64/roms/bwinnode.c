@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check which node's big-window table decodes unqualified addresses. Opposite
  * entries identify the decoder; the test requires two nodes and four CPUs.

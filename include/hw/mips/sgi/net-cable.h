@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-net-cable joins two SGI_NET_PORT ports: the Origin 200's direct
  * Hub-to-Hub CrayLink, a module's Hub-to-Router or Router-to-Router midplane

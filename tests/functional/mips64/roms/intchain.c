@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * End-to-end PCI interrupt delivery through the Bridge, Hub and processor.
  * Slot 3 drives Bridge pin 3. The test programs its destination, raises

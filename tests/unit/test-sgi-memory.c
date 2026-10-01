@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI graphics board memory and planes: plane bounds, packing, both
  * backings, logic ops and masks, clip lists, and migration.

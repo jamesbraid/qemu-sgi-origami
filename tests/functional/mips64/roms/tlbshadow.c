@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test displaced TLB entries: a live translation takes precedence,
  * and rewriting an entry removes its displaced copies.

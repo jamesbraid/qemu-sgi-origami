@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The SGI PCI-XTALK ADAPTER ("PCI shoehorn"): one XIO slot converted to one
 # PCI card position through a Bridge, here fitted with an SGI Cad Duo input
 # card. A composition fits it into an Origin 2000 IO2 connector with a

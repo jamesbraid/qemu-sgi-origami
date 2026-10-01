@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 sgi-replay 2
 head sgi-mgras
 # xdm chooser "root" icon fixture, built from the guest's own 64-bit command

@@ -1,6 +1,6 @@
 # Tests for the SI greeter and desktop region colour tables
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `python3 tests/functional/mips64/test_lib_mgras_regions.py`. It paints a

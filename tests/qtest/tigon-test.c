@@ -2,7 +2,7 @@
  * Alteon Tigon 2 (SGI "eg") device contract on a Bridge head.
  * Tests PCI identity, firmware rings, DMA byte order, and interrupts.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*

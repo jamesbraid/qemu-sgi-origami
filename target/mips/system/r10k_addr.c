@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The R10000 family's xkphys uncached-attribute window, split out of the
  * shared address translation. get_physical_address() calls it for an

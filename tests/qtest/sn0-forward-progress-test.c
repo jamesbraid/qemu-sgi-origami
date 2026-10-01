@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Multi-threaded TCG forward-progress tests. Origin 200 and eight-CPU Origin
  * 2000 IRIX boots lost scheduler interrupts for 10-47 seconds and never

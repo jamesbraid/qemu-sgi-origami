@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * R10000-family processor state
  *
@@ -10,8 +11,6 @@
  * multi-megabyte cache arrays cost nothing on a machine built from other
  * cores.
  *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
  */
 
 #ifndef MIPS_R10K_H

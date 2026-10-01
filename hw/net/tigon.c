@@ -1,6 +1,6 @@
 /*
  * Alteon Tigon 2 Gigabit Ethernet controller (SGI IRIS "eg" board).
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 /*
  * At power-on the host loads firmware into on-card SRAM and releases the

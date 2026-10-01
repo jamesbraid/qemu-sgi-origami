@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * DP83840 ethernet transceiver, reached through the IOC3's management
  * registers (the lan9118-phy shape). Out of reset the link is down; it

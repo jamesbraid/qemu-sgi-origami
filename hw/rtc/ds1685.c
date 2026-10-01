@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * DS1685/DS1687 real-time clock: the DS1287 PC clock's fourteen registers,
  * a second software-selected bank carrying the extended half, 242 bytes of

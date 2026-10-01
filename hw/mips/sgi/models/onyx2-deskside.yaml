@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
 # IO1 (Crossbow widget F) and one InfiniteReality pipe on XIO4 (widget 8)
 # with no Ktown (docs/datasheets/onyx2.md, Deskside). Launch it with

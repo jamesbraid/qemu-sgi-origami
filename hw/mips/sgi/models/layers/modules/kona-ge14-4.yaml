@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The GE14-4 geometry board of an InfiniteReality pipe, with its one-wire
 # record, part 030-1129-002 in the real deskside (whole-tetra) capture
 # (docs/datasheets/onyx2.md, One-wire records). A composition fits it beside

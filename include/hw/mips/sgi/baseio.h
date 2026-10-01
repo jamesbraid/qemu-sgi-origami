@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-baseio: SGI's base I/O functional unit -- the IOC3 plus SCSI
  * controllers, and on the IO-8 a USB controller, as PCI devices behind an

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Register-contract tests for the SGI MENET XIO board: a Bridge and four
  * IOC3s giving a module four Fast Ethernet ports and six serial ports.

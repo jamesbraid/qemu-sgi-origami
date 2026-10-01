@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Seed physical flash independently of the CPU address-space selector. */
 
 #include "qemu/osdep.h"

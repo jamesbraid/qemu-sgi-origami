@@ -3,7 +3,7 @@
 # Linux/IP27 network multiuser: boot the Gentoo disk on the networked kernel
 # and require a live ssh service answering a remote connection
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Boots the reproducible networked disk image -- tools/gentoo-disk's Gentoo
 rootfs (gentoo/gentoo-rootfs.img) rooted by the

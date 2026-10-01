@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The flash part that holds the BASEIO PROM on a Bridge's external-flash
  * port, where the IP27 PROM's loader reads it: the Origin 2000 BaseIO

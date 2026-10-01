@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test RAD1 ring-to-host 16-bit stereo conversion
  * (include/hw/audio/sgi-rad1-audio-pcm.h). qtest audio captures only silence,

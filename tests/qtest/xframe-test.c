@@ -2,7 +2,7 @@
  * Neterion/S2io Xframe register and traffic tests on a Bridge head.
  * Covers PCI setup, PIF controls, transmit, receive, and multicast.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*

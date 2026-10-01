@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Non-graphics Onyx 350 reference; resolve before validation.
 configuration_version: 1
 layers:

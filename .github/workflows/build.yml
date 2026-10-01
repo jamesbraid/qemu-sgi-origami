@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Build QEMU and run native MIPS64 checks. Smoke covers changed qtests,
 # SGI unit tests, and one Linux boot; full adds register and functional tests
 # plus the source-built ROM suite. Guest assets are checksum-verified.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 200 authoring composition. Resolve it before validation or generation;
 # tools/system_model.py is the single loader used by those consumers.
 configuration_version: 1

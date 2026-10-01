@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test Context and XContext field packing for 44-bit virtual addresses.
  * R10000 XContext uses a wider page-number field than the R4400, and

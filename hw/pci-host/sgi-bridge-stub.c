@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Fallback for the SGI Bridge plain DMA route.
  * BCM570x is built on targets without Bridge; it keeps ordinary bus-master DMA.

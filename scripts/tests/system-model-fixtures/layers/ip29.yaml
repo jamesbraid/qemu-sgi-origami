@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 layer_version: 1
 layer:
   kind: assembly

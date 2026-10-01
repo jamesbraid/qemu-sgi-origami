@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Test R10000 NMI, Status.RE logging and deterministic LL/SC link breaks
  * independent of Hub and XIO. Origin 200 is this fork's only R10000 machine;

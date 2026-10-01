@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 3000 I-brick: an XBridge, host port A into the C-brick, IO7 on bus 1.
 layer_version: 1
 # The catalogue citation checker (tools/check-citations) resolves a sources: entry

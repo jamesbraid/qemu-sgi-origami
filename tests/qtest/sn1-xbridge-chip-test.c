@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * XBridge crossbar at widget 0 and heads at 0xe/0xf on one host port. A
  * non-default host port tests routing; this is not an Origin 300.

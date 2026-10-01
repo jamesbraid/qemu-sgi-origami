@@ -4,7 +4,7 @@
 # disk at target 1 in extended mode, and require a write-compare
 # sequential exercise over 100,000 blocks to finish with zero errors
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 fx.64 is the vendor's standalone disk formatter and exerciser -- the
 program the install rig already netboots to label a disk. Its exercise

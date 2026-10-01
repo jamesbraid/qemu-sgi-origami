@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test the R10000 performance counters and their shared Cause.IP[7]
  * interrupt. Counter event 0 counts cycles; other events must not be

@@ -9,7 +9,7 @@
  * adapter at the position the board puts it, and that both directions of
  * the fabric path between it and the processor's memory work.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The per-CPU cache-as-RAM private window every Scalable Node PROM uses
  * before DRAM is initialised: physical 0x10_0000, 32 KiB, split by processor

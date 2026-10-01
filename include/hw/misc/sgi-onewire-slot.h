@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI MicroLAN slot decode: one register write per 1-Wire bit slot. IOC3,
  * Bridge and Hub share the 20-bit low-drive/sample-offset/pulse layout.

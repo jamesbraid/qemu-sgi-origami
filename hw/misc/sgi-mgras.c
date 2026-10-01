@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bounded functional SI graphics endpoint. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"

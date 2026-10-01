@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Reusable fitted Origin 300 base module hardware.
 layer_version: 1
 # The catalogue citation checker (tools/check-citations) resolves a sources: entry

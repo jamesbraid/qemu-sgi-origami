@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Node-board populations: each Origin 2000 and Onyx2 chassis fits one
  * node board up to its most, in the order SGI fills the node slots, and

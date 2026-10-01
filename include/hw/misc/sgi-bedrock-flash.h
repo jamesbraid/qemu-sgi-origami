@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Origin 300 boot-flash adapter and two CFI PROM positions. */
 #ifndef HW_MISC_SGI_BEDROCK_FLASH_H
 #define HW_MISC_SGI_BEDROCK_FLASH_H

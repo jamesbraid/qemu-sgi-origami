@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The abstract SGI Scalable Node family machine and its builder over an
  * SGIModelTopology from the compiled catalogue (qapi/sgi-sn.json,

@@ -2,7 +2,7 @@
 # decide whether a guest is stuck translating one throwaway instruction
 # per block instead of making real progress
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Judge whether a running guest is making useful TCG translation progress.
 
 If guest instruction fetches land in a region mapped as I/O, TCG can emit

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI graphics DMA: guest pages to host chunks, and pixel transfers
  * between those chunks and a plane. See the header for the contract.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Run the source-built MIPS CPU ROM matrix through native QEMU tests."""
 
 from pathlib import Path

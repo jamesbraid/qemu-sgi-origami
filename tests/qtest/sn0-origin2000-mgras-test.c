@@ -4,7 +4,7 @@
  * Unsupported behavior remains an approximation unless the public MGRAS
  * contracts specify it.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

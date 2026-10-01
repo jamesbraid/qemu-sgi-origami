@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-3-Clause
 """Reject qtest sources that are absent from the Meson test lists."""
 
 from pathlib import Path

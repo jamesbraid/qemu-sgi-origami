@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI MediaIO RAD1 audio ring and host PCM conversion. */
 /*
  * A ring frame is one 32-bit word per channel: two for the analog and AES3

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * This test checks the rack and deskside layouts configured by the Onyx2
  * machine model, including the presence of their modeled BaseIO-G and

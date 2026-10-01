@@ -4,7 +4,7 @@
 # the IRIX greeter, log in as guest, and require the default desktop to
 # show its expected colours
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The same boot checks the xdm greeter before login. Everything after a
 graphical login -- Xsgi loading the DAC gamma ramp, 4Dwm drawing the

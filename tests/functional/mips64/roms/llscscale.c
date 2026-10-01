@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Each processor increments a private word, then contends on a shared
  * word. Assertions check the final counts. Timing is printed for

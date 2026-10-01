@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-xio-baseio: an Origin 2000 and Onyx2 XIO I/O board built from a
  * Bridge and an sgi-baseio preset behind it -- the standard BaseIO

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Test Origin 2000 node PROM storage and AMD-style flash commands. */
 /*
  * Each node has one byte-wide pflash_cfi02 part and a separate backing file.

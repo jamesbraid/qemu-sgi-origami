@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Register-contract tests for the SGI MSCSI XIO board: a Bridge and four
  * QLogic ISP1040 SCSI controllers. It is the "mscsi" preset of

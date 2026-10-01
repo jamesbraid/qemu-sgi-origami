@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # One InfiniteReality graphics pipe (KONA): the geometry board, one raster
 # manager with its texture memory and a display generator. The host reaches
 # the pipe through the XIO-to-graphics ASIC (XG) on the geometry board,

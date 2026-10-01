@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI SN0 Hub: processor, memory/directory, I/O and network interfaces in an
  * 8 MB register window per node. Registers support guest console bring-up;

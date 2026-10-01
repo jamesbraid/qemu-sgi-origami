@@ -1,7 +1,7 @@
 # Screendump-based pass conditions: reading a captured PPM framebuffer and
 # judging it against bounded, general checks
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A graphics device's pass condition cannot be a console-text match: the
 thing under test is what landed in the framebuffer, and the whole point of

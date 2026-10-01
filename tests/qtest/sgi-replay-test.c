@@ -4,7 +4,7 @@
  * head's entry in replay_heads[] chooses the host machine, where the head's
  * registers sit and how to reach its test properties.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check the shipped hw/mips/sgi/sn-catalogue.json topology once; sn-machine.c
  * trusts the compiler and golden data at machine launch. Parse the tracked

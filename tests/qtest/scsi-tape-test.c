@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * QTest for the scsi-tape sequential-access device, driven through the
  * QLogic ISP1040 adapter it sits behind on the Origin 200. The adapter's

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Broadcom BCM570x PCI Gigabit Ethernet MAC and descriptor engines. */
 /*
  * A generic PCI network controller that OpenBSD's bge, Linux's tg3 and IRIX's

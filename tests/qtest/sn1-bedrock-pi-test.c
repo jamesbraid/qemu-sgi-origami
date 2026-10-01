@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Isolated Bedrock composition and processor interrupts; empty-machine
  * R10000 supplies an address space only and executes no code.

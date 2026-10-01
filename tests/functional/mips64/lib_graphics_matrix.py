@@ -1,6 +1,6 @@
 # The graphics test matrix: manifest format, scenario registry and parser
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 origin200-matrix's own Cell format (id | guest | scenario | cpus | nodes |
 mem | accel | speed | timeout | attempts | min_passes | expect | xfail_mark

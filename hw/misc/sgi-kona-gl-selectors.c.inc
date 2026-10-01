@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * InfiniteReality OpenGL doorbell selector table.
  * Maintain these entries alongside tests/unit/test-sgi-kona-gl-decode.c,

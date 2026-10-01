@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check the R14000 model's processor and FPU identifiers and selected
  * register behavior. These expectations include emulator compatibility

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Fetch only the LocalAsset files used by a selected MIPS64 test set."""
 
 import argparse

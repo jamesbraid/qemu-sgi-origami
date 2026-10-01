@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test the unmapped 64-bit physical window and its uncached attribute.
  * Uncached references use bits 58:57 as the attribute; bits 39:0 select

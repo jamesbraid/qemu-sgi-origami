@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * QLogic ISP SCSI host adapter family: the single-channel ISP1040 and the
  * dual-channel ISP12160.

@@ -3,7 +3,7 @@
 # MDK router package on the two-chassis machine: netboot MDK_router_sso
 # BY PATH on four CPUs across two nodes and require its link test to run
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 MDK_router_sso is the third MDK 1.6 package: a CrayLink link test
 written, per its release note, for a two-node system with a null

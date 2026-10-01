@@ -2,7 +2,7 @@
 #
 # Bidirectional fragmented UDP on an IRIX eg adapter.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Require eg0 to reassemble a peer datagram and transmit one UDP datagram."""
 
 import os

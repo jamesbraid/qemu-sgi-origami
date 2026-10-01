@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Bedrock NI, composed by the parent without owning node reset policy. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-ni.h"

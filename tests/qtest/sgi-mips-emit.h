@@ -24,7 +24,7 @@
  * write appends for the R10000's missing EHB, are policy this header still
  * leaves to each caller.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef SGI_MIPS_EMIT_H

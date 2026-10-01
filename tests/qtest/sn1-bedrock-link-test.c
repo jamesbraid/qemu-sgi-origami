@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Two Bedrocks joined by NUMAlink 3, as in a two-chassis Origin 300.
  * Empty-machine R10000 supplies qtest address space only; no firmware runs.

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test sgi-command-port.c with a fixture-only device: selector 0x1 takes
  * zero arguments, 0x2 takes three, and 0x3 takes eleven, the largest known

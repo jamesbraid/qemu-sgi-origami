@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test TLB refill vector selection by faulting address space and its
  * UX, SX or KX enable, including exceptions taken with EXL set.

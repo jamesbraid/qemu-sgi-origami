@@ -2,7 +2,7 @@
 # factored out so test_prom_mdk_instgen_verdict.py can exercise it
 # without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 test_prom_mdk_instgen.py's docstring gives the account of instgen and its
 two-CPU requirement. No qemu_test import, so the verdict companion can

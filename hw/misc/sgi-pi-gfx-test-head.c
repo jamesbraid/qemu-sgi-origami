@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * A graphics head for register-contract qtests. Its "return" property
  * returns credits when a test says so. With "port" set it also answers

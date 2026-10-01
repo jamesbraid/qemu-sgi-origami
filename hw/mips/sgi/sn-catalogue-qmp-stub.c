@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Catalogue query for MIPS builds without SN0/SN1 machines. */
 
 #include "qemu/osdep.h"

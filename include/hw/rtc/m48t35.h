@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * M48T35-class Timekeeper: battery-backed storage with a clock in its top
  * bytes.

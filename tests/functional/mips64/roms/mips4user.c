@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Status.XX gates MIPS IV instructions in user mode
  * (R10000 User's Manual 2.0).

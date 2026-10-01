@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check interrupt output through the processor Cause register. A pending
  * bit with its mask clear must not raise a line. Setting the mask must

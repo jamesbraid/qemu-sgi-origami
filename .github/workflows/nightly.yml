@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Run native MIPS64 workloads nightly. The regular matrix runs three days a
 # week; IRIX diagnostics run Tuesday, Thursday, and Saturday. Sunday alternates
 # installation and network tests. Manual dispatch selects a workload.

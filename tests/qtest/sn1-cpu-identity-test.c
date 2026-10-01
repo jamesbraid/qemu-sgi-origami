@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 300 CPU identity, checked by code running on each processor. Each
  * publishes its physical slice to its own real-time compare register.

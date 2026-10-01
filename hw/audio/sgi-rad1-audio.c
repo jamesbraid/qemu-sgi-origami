@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI MediaIO RAD1 audio registers, DMA, and host audio streams. */
 /*
  * Register-file bring-up, the free-running UST counter, the status DMA, and
