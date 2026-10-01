@@ -527,6 +527,9 @@ sgi_qtests = \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
   sn1_pci_expansion_qtests + \
+  (config_all_devices.has_key('CONFIG_SGI_IOC4') and \
+   config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ? \
+    ['sgi-ioc4-test'] : []) + \
   sn0_mgras_qtests + \
   sgi_board_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_O2_GBE') ?
