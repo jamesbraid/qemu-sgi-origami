@@ -8180,6 +8180,35 @@ static void test_gl_default_context_keeps_its_packet(void)
 }
 
 /*
+ * Both new-context bits are needed, not bit 31 alone. No captured image of
+ * a slotted context has bit 31 without bit 30, and the default context,
+ * whose images do, shares the slotless entry the rule leaves alone, so
+ * this is the model's choice of the narrower rule: the kernel's allocator
+ * sets both bits and only both mark a new context here. A slotted context
+ * loaded with 0xac000000 resumes the packet it left open.
+ */
+static void test_gl_bit_31_alone_keeps_the_packet(void)
+{
+    mgras_reset();
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_HDR);
+    gl_float(qts, 1);
+    gl_float(qts, 0);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+
+    mgras_enter_gl_image(qts, GL_SLOT_A, 0xac000000, 256, 640, 128, 128,
+                         0x11);
+    gl_float(qts, 1);
+    gl_float(qts, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xff00ff);
+}
+
+/*
  * A context with no slot yet carries -1 in word 0, as the allocator
  * leaves it, and shares the default context's entry. Such an image with
  * both new-context bits must not start that shared entry afresh, or the
@@ -18238,6 +18267,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-new-context-without-a-slot-keeps-the-default",
                    test_gl_new_context_without_a_slot_keeps_the_default);
+    qtest_add_func("sn0/origin2000/mgras/gl-bit-31-alone-keeps-the-packet",
+                   test_gl_bit_31_alone_keeps_the_packet);
     qtest_add_func("sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
                    test_gl_color_bytes_unpack_red_first);
     qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
