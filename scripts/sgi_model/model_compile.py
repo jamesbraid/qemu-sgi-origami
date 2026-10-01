@@ -1424,6 +1424,13 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
                     "unsupported I/O assembly main power selection or state")
             record["main_power"] = raw["main_power"]
             record["initial_main_power"] = raw["initial_main_power"]
+        if "configuration_storage" in raw:
+            if (raw["configuration_storage"] != "bedrock-flash-experiment"
+                    or "main_power" not in raw):
+                raise CompileError(
+                    "configuration storage requires its supported selection "
+                    "and explicit main power")
+            record["configuration_storage"] = raw["configuration_storage"]
         if "power_command_issuer" in raw:
             issuer = controller_indices.get(raw["power_command_issuer"])
             if ("main_power" not in raw or issuer is None

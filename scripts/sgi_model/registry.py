@@ -19,4 +19,5 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-two-chassis", "origin200-gigachannel", "onyx2-rack",
     "onyx2-deskside", "origin300-v12-direct", "origin300-vbrick",
     "origin300-pci-expansion-experiment",
+    "origin300-pci-expansion-configuration-storage-experiment",
 )

@@ -6,6 +6,10 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "block/block.h"
+#include "system/block-backend-global-state.h"
+#include "system/block-backend-io.h"
+#include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
@@ -45,6 +49,19 @@ struct SGIOrigin300PciExpansionState {
     SGIOrigin300PowerOperation power_operation;
     void *power_opaque;
     bool power_active;
+    uint8_t storage_selected;
+    uint64_t storage_size;
+    uint64_t storage_part_size;
+    uint64_t storage_window_size;
+    uint64_t storage_stride;
+    DeviceState *storage;
+    BlockBackend *storage_backend;
+    char *storage_module_id;
+    char *storage_controller_id;
+    uint32_t storage_module_id_length;
+    uint32_t storage_controller_id_length;
+    AddressSpace storage_space;
+    bool storage_space_initialized;
     struct ExpansionView {
         SGIOrigin300PciExpansionState *assembly;
         AddressSpace target;
@@ -61,6 +78,112 @@ struct SGIOrigin300PciExpansionState {
     uint8_t port[4];
     char *bus_prefix;
 };
+
+static void expansion_storage_cleanup(SGIOrigin300PciExpansionState *s)
+{
+    if (s->storage_space_initialized) {
+        address_space_destroy(&s->storage_space);
+        s->storage_space_initialized = false;
+    }
+    if (s->storage) {
+        SGIBedrockFlashState *flash = SGI_BEDROCK_FLASH(s->storage);
+
+        for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
+            if (flash->flash[i]->realized) {
+                qdev_unrealize(flash->flash[i]);
+            }
+            object_unparent(OBJECT(flash->flash[i]));
+        }
+        if (s->storage->realized) {
+            qdev_unrealize(s->storage);
+        }
+        object_unparent(OBJECT(s->storage));
+        object_unref(OBJECT(s->storage));
+        s->storage = NULL;
+    }
+    if (s->storage_backend) {
+        blk_detach_dev(s->storage_backend, DEVICE(s));
+        s->storage_backend = NULL;
+    }
+}
+
+bool sgi_origin300_pci_expansion_bind_storage(
+    SGIOrigin300PciExpansionState *s, const char *module_id,
+    const char *controller_id, BlockBackend *backend, Error **errp)
+{
+    BlockDriverState *backing, *slice[SGI_BEDROCK_FLASH_POSITIONS] = { NULL };
+    g_autofree char *prefix = NULL;
+    int flags;
+
+    backing = backend ? blk_bs(backend) : NULL;
+    if (DEVICE(s)->realized || s->storage_selected || !s->power_selected ||
+        !module_id || !module_id[0] || !controller_id || !controller_id[0] ||
+        !backing ||
+        strlen(module_id) > UINT32_MAX || strlen(controller_id) > UINT32_MAX) {
+        error_setg(errp,
+                   "invalid or late expansion configuration storage binding");
+        return false;
+    }
+    if (blk_get_attached_dev(backend)) {
+        error_setg(errp,
+                   "expansion configuration storage backend is already in use");
+        return false;
+    }
+    if (strcmp(bdrv_get_format_name(backing), "raw") ||
+        blk_get_full_raw_file_length(backend) != SGI_BEDROCK_FLASH_SIZE ||
+        bdrv_is_read_only(backing)) {
+        error_setg(errp, "expansion configuration storage needs a writable "
+                   "full regular raw-to-file image of exactly 16 MiB");
+        return false;
+    }
+    if (blk_attach_dev(backend, DEVICE(s)) < 0) {
+        error_setg(errp,
+                   "expansion configuration storage backend is already in use");
+        return false;
+    }
+    s->storage_backend = backend;
+    flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
+    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
+        slice[i] = sgi_bedrock_flash_open_slice(
+            backing, i * SGI_BEDROCK_FLASH_PART_SIZE, flags, errp);
+        if (!slice[i]) {
+            goto fail;
+        }
+    }
+    s->storage = qdev_new(TYPE_SGI_BEDROCK_FLASH);
+    object_property_add_child(OBJECT(s), "configuration-storage",
+                              OBJECT(s->storage));
+    prefix = g_strdup_printf("pci-expansion.%s.%s", module_id, controller_id);
+    qdev_prop_set_string(s->storage, "name-prefix", prefix);
+    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
+        g_autofree char *drive = g_strdup_printf("drive%u", i);
+
+        if (!object_property_set_str(OBJECT(s->storage), drive,
+                                     bdrv_get_node_name(slice[i]), errp)) {
+            goto fail;
+        }
+    }
+    s->storage_module_id = g_strdup(module_id);
+    s->storage_controller_id = g_strdup(controller_id);
+    s->storage_module_id_length = strlen(module_id);
+    s->storage_controller_id_length = strlen(controller_id);
+    s->storage_selected = 1;
+    s->storage_size = SGI_BEDROCK_FLASH_SIZE;
+    s->storage_part_size = SGI_BEDROCK_FLASH_PART_SIZE;
+    s->storage_window_size = SGI_BEDROCK_FLASH_WINDOW_SIZE;
+    s->storage_stride = SGI_BEDROCK_FLASH_SECOND_READ;
+    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
+        bdrv_unref(slice[i]);
+    }
+    return true;
+
+fail:
+    expansion_storage_cleanup(s);
+    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
+        bdrv_unref(slice[i]);
+    }
+    return false;
+}
 
 static MemTxResult expansion_denied_read(void *opaque, hwaddr addr,
                                          uint64_t *data, unsigned size,
@@ -380,6 +503,7 @@ static void expansion_unrealize(DeviceState *dev)
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(dev);
 
     expansion_intx_clear(s);
+    expansion_storage_cleanup(s);
     if (s->intx_inputs) {
         for (unsigned head = 0; head < SGI_ORIGIN300_PCI_HEADS; head++) {
             const char *name = head % 2 ? "head-f-pci-intx" : "head-e-pci-intx";
@@ -398,7 +522,8 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
-    if ((version < 4 && s->power_selected) ||
+    if ((version < 5 && s->storage_selected) ||
+        (version < 4 && s->power_selected) ||
         s->requested_power > 1 || s->completed_power > 1) {
         return -EINVAL;
     }
@@ -439,6 +564,22 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
     if (!expansion_available(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "pci-expansion: main power off\n");
         return MEMTX_ACCESS_ERROR;
+    }
+    if (local >= UINT64_C(0x38000000) && local < UINT64_C(0x40000000)) {
+        offset = local - UINT64_C(0x38000000);
+        if (!s->storage_space_initialized || !size ||
+            size > SGI_BEDROCK_FLASH_WINDOW_SIZE - offset) {
+            return MEMTX_DECODE_ERROR;
+        }
+        if ((write && size != 8) ||
+            (!write && size != 1 && size != 2 && size != 4 && size != 8)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "pci-expansion: configuration storage %zu-byte %s "
+                          "is unsupported\n", size, write ? "write" : "read");
+            return MEMTX_ERROR;
+        }
+        return address_space_rw(&s->storage_space, offset, attrs, buffer,
+                                 size, write);
     }
     if ((local >= UINT64_C(0x34000000) && local < UINT64_C(0x36000000)) ||
         (local >= UINT64_C(0x10034000000) &&
@@ -639,6 +780,20 @@ static void expansion_realize(DeviceState *dev, Error **errp)
     if (!sysbus_realize(SYS_BUS_DEVICE(s->bic), errp)) {
         return;
     }
+    if (s->storage_selected) {
+        if (!s->storage) {
+            error_setg(errp, "configuration storage binding was released");
+            return;
+        }
+        if (!sysbus_realize(SYS_BUS_DEVICE(s->storage), errp)) {
+            expansion_storage_cleanup(s);
+            return;
+        }
+        address_space_init(&s->storage_space,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->storage), 1),
+            "pci-expansion.configuration-storage");
+        s->storage_space_initialized = true;
+    }
     s->endpoint = (SN1FabricEndpoint) {
         .owner = OBJECT(s),
         .bedrock = bic,
@@ -703,6 +858,9 @@ static void expansion_finalize(Object *obj)
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(obj);
     unsigned i;
 
+    expansion_storage_cleanup(s);
+    g_free(s->storage_module_id);
+    g_free(s->storage_controller_id);
     for (unsigned view = 0; view < 12; view++) {
         if (s->view_target[view].assembly) {
             address_space_destroy(&s->view_target[view].target);
@@ -747,11 +905,33 @@ static const Property expansion_properties[] = {
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(storage_selected, SGIOrigin300PciExpansionState, 5,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_SINGLE(storage_size, SGIOrigin300PciExpansionState, 5,
+                       vmstate_info_uint64_equal, uint64_t),
+        VMSTATE_SINGLE(storage_part_size, SGIOrigin300PciExpansionState, 5,
+                       vmstate_info_uint64_equal, uint64_t),
+        VMSTATE_SINGLE(storage_window_size, SGIOrigin300PciExpansionState, 5,
+                       vmstate_info_uint64_equal, uint64_t),
+        VMSTATE_SINGLE(storage_stride, SGIOrigin300PciExpansionState, 5,
+                       vmstate_info_uint64_equal, uint64_t),
+        VMSTATE_SINGLE(storage_module_id_length, SGIOrigin300PciExpansionState,
+                       5, vmstate_info_uint32_equal, uint32_t),
+        VMSTATE_SINGLE(storage_controller_id_length,
+                       SGIOrigin300PciExpansionState,
+                       5, vmstate_info_uint32_equal, uint32_t),
+        VMSTATE_VARRAY_UINT32(storage_module_id, SGIOrigin300PciExpansionState,
+                             storage_module_id_length, 5,
+                             vmstate_info_uint8_equal, char),
+        VMSTATE_VARRAY_UINT32(storage_controller_id,
+                             SGIOrigin300PciExpansionState,
+                             storage_controller_id_length, 5,
+                             vmstate_info_uint8_equal, char),
         VMSTATE_SINGLE(power_selected, SGIOrigin300PciExpansionState, 4,
                        vmstate_info_uint8_equal, uint8_t),
         VMSTATE_SINGLE(initial_power, SGIOrigin300PciExpansionState, 4,

@@ -69,6 +69,10 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
             a->has_main_power != a->has_initial_main_power ||
             (a->has_main_power &&
              a->main_power != SGI_MODEL_MAIN_POWER_FUNCTIONAL_EXPERIMENT) ||
+            (a->has_configuration_storage &&
+             (!a->has_main_power ||
+              a->configuration_storage !=
+                  SGI_MODEL_CONFIGURATION_STORAGE_BEDROCK_FLASH_EXPERIMENT)) ||
             (a->bic_identity & 0xf000) != 0xc000 ||
             QAPI_LIST_LENGTH(a->head_ports) != 4 ||
             (a->has_intx_map && QAPI_LIST_LENGTH(a->intx_map) != 48)) {

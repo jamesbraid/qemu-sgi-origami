@@ -489,18 +489,6 @@ static void sn1_node_init_claims(SN1NodeState *node)
     sn1_node_update_claims(node);
 }
 
-static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
-                                                    int64_t offset,
-                                                    int flags, Error **errp)
-{
-    QDict *options = qdict_new();
-
-    qdict_put_str(options, "driver", "raw");
-    qdict_put_str(options, "file", bdrv_get_node_name(backing));
-    qdict_put_int(options, "offset", offset);
-    qdict_put_int(options, "size", SGI_BEDROCK_FLASH_PART_SIZE);
-    return bdrv_open(NULL, NULL, options, flags, errp);
-}
 
 /*
  * Creates the node's boot-flash part from -drive if=pflash and returns the
@@ -548,11 +536,11 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
     }
 
     flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
-    lower = sn1_node_open_flash_slice(backing, 0, flags, errp);
+    lower = sgi_bedrock_flash_open_slice(backing, 0, flags, errp);
     if (!lower) {
         return NULL;
     }
-    upper = sn1_node_open_flash_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE,
+    upper = sgi_bedrock_flash_open_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE,
                                       flags, errp);
     if (!upper) {
         bdrv_unref(lower);

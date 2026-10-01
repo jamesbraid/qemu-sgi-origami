@@ -25,6 +25,7 @@
 static const unsigned widget[] = { 0xe, 0xf, 8, 9, 0xc, 0xd };
 
 static QTestState *management_start(const char *extra);
+static void power_set(QTestState *qts, bool on);
 
 static QTestState *start(const char *extra)
 {
@@ -1260,6 +1261,385 @@ static void test_management_data(void)
     qtest_quit(qts);
 }
 
+#define STORAGE_BASE (REQUESTER(0) + NODE(7) + UINT64_C(0x38000000))
+#define STORAGE_SECOND UINT64_C(0x02000000)
+#define STORAGE_UNLOCK0 (8 * UINT64_C(0x555))
+#define STORAGE_UNLOCK1 (8 * UINT64_C(0x2aa))
+
+static char *storage_image(void)
+{
+    g_autofree uint8_t *bytes = g_malloc(16 * 1024 * 1024);
+    char *path = NULL;
+    GError *error = NULL;
+    int fd = g_file_open_tmp("ni-storage-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    memset(bytes, 0xff, 16 * 1024 * 1024);
+    g_assert_cmpint(write(fd, bytes, 16 * 1024 * 1024), ==, 16 * 1024 * 1024);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static QTestState *storage_start(const char *image, const char *extra)
+{
+    g_autofree char *options = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.power=on "
+        "-global sgi-pci-expansion-ni-fixture.storage=on "
+        "-global sgi-pci-expansion-ni-fixture.storage-drive=cfg "
+        "-drive if=none,id=cfg,file=%s,format=raw %s", image, extra);
+
+    return management_start(options);
+}
+
+static void storage_cycle(QTestState *qts, uint64_t base, uint64_t offset,
+                           uint16_t value)
+{
+    qtest_writeq(qts, base + offset, value);
+    result(qts, 0, MEMTX_OK);
+}
+
+static void storage_unlock(QTestState *qts, uint64_t base)
+{
+    storage_cycle(qts, base, STORAGE_UNLOCK0, 0xaa);
+    storage_cycle(qts, base, STORAGE_UNLOCK1, 0x55);
+}
+
+static void storage_program(QTestState *qts, uint64_t base, uint64_t offset,
+                             uint16_t value)
+{
+    storage_unlock(qts, base);
+    storage_cycle(qts, base, STORAGE_UNLOCK0, 0xa0);
+    storage_cycle(qts, base, offset * 4, value);
+}
+
+static void test_storage_unsupported_transfer(void)
+{
+    g_autofree char *image = storage_image();
+    QTestState *qts = storage_start(image, "");
+
+    for (unsigned position = 0; position < 2; position++) {
+        uint64_t base = STORAGE_BASE + position * STORAGE_SECOND;
+
+        storage_cycle(qts, base, 8 * 0x55, 0x98);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        qtest_writeq(qts, MANAGEMENT + 88,
+                     NODE(7) + 0x38000000 + position * STORAGE_SECOND);
+        qtest_writeq(qts, MANAGEMENT + 96, 0xf0);
+        qtest_writeq(qts, MANAGEMENT + 104, 16 | (UINT64_C(1) << 32));
+        g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_ERROR);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        qtest_writeq(qts, MANAGEMENT + 104, 16);
+        g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_ERROR);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        storage_cycle(qts, base, 0, 0xf0);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0xffff);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_storage_program_power_reset(void)
+{
+    g_autofree char *image = storage_image();
+    QTestState *qts = storage_start(image, "");
+
+    for (unsigned position = 0; position < 2; position++) {
+        uint64_t base = STORAGE_BASE + position * STORAGE_SECOND;
+        uint16_t value = position ? 0x5678 : 0x1234;
+
+        storage_cycle(qts, base, STORAGE_UNLOCK0, 0xaa);
+        power_set(qts, false);
+        qtest_writeq(qts, base + STORAGE_UNLOCK1, 0x55);
+        result(qts, 0, MEMTX_ACCESS_ERROR);
+        qtest_readw(qts, base);
+        result(qts, 0, MEMTX_ACCESS_ERROR);
+        power_set(qts, true);
+        storage_cycle(qts, base, STORAGE_UNLOCK1, 0x55);
+        storage_cycle(qts, base, STORAGE_UNLOCK0, 0xa0);
+        storage_cycle(qts, base, 0x100 * 4, value);
+        g_assert_cmphex(qtest_readw(qts, base + 0x100), ==, value);
+        storage_cycle(qts, base, 8 * 0x55, 0x98);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        qtest_writeq(qts, MANAGEMENT + 8, 1);
+        qtest_writeq(qts, MANAGEMENT + 48, 0);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        power_set(qts, false);
+        power_set(qts, true);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 'Q');
+        qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+        g_assert_cmphex(qtest_readw(qts, base + 0x100), ==, value);
+        g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0xffff);
+    }
+    qtest_quit(qts);
+    qts = storage_start(image, "");
+    g_assert_cmphex(qtest_readw(qts, STORAGE_BASE + 0x100), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, STORAGE_BASE + STORAGE_SECOND + 0x100),
+                    ==, 0x5678);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_storage_erase_while_off(void)
+{
+    g_autofree char *image = storage_image();
+    QTestState *qts = storage_start(image, "");
+    uint64_t base = STORAGE_BASE + STORAGE_SECOND;
+
+    /* The fixture starts paused; CFI timers require a running VM clock. */
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    storage_program(qts, base, 0x20000, 0x1234);
+    storage_program(qts, STORAGE_BASE, 0x20000, 0x5678);
+    storage_unlock(qts, base);
+    storage_cycle(qts, base, STORAGE_UNLOCK0, 0x80);
+    storage_unlock(qts, base);
+    storage_cycle(qts, base, 0x20000 * 4, 0x30);
+    power_set(qts, false);
+    qtest_clock_step(qts, INT64_C(10000000000));
+    qtest_readw(qts, base + 0x20000);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    power_set(qts, true);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20000), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, STORAGE_BASE + 0x20000), ==, 0x5678);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_storage_migration_off(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("ni-storage-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source = storage_image();
+    g_autofree char *destination = storage_image();
+    QTestState *from = storage_start(source, "");
+    QTestState *to = storage_start(destination, "-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    storage_program(from, STORAGE_BASE + STORAGE_SECOND, 0x400, 0x3456);
+    storage_cycle(from, STORAGE_BASE + STORAGE_SECOND, 8 * 0x55, 0x98);
+    power_set(from, false);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_readw(to, STORAGE_BASE + STORAGE_SECOND + 0x20);
+    result(to, 0, MEMTX_ACCESS_ERROR);
+    power_set(to, true);
+    g_assert_cmphex(qtest_readw(to, STORAGE_BASE + STORAGE_SECOND + 0x20),
+                    ==, 'Q');
+    storage_cycle(to, STORAGE_BASE + STORAGE_SECOND, 0, 0xf0);
+    g_assert_cmphex(qtest_readw(to, STORAGE_BASE + STORAGE_SECOND + 0x400),
+                    ==, 0x3456);
+    qtest_quit(from);
+    qtest_quit(to);
+    to = storage_start(destination, "");
+    g_assert_cmphex(qtest_readw(to, STORAGE_BASE + STORAGE_SECOND + 0x400),
+                    ==, 0x3456);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(unlink(source), ==, 0);
+    g_assert_cmpint(unlink(destination), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_storage_migration_erase_off(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("ni-storage-erase-migrate-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source = storage_image();
+    g_autofree char *destination = storage_image();
+    QTestState *from = storage_start(source, "");
+    QTestState *to = storage_start(destination, "-incoming defer");
+    uint64_t upper = STORAGE_BASE + STORAGE_SECOND;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    storage_program(from, upper, 0x20000, 0x1234);
+    storage_program(from, STORAGE_BASE, 0x20000, 0x5678);
+    storage_unlock(from, upper);
+    storage_cycle(from, upper, STORAGE_UNLOCK0, 0x80);
+    storage_unlock(from, upper);
+    storage_cycle(from, upper, 0x20000 * 4, 0x30);
+    g_assert_cmphex(qtest_readw(from, upper + 0x20000) & 0x80, ==, 0);
+    power_set(from, false);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_readw(to, upper + 0x20000);
+    result(to, 0, MEMTX_ACCESS_ERROR);
+    power_set(to, true);
+    g_assert_cmphex(qtest_readw(to, upper + 0x20000) & 0x80, ==, 0);
+    power_set(to, false);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_clock_step(to, INT64_C(10000000000));
+    qtest_readw(to, upper + 0x20000);
+    result(to, 0, MEMTX_ACCESS_ERROR);
+    power_set(to, true);
+    g_assert_cmphex(qtest_readw(to, upper + 0x20000), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(to, STORAGE_BASE + 0x20000), ==, 0x5678);
+    qtest_quit(from);
+    qtest_quit(to);
+    to = storage_start(destination, "");
+    g_assert_cmphex(qtest_readw(to, upper + 0x20000), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(to, STORAGE_BASE + 0x20000), ==, 0x5678);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(unlink(source), ==, 0);
+    g_assert_cmpint(unlink(destination), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static bool storage_backend_attached(QTestState *qts)
+{
+    QDict *reply = qtest_qmp(qts, "{'execute':'query-block'}");
+    const QListEntry *entry;
+    bool attached = false;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(reply, "return"), entry) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (!strcmp(qdict_get_str(block, "device"), "cfg")) {
+            attached = qdict_haskey(block, "qdev");
+        }
+    }
+    qobject_unref(reply);
+    return attached;
+}
+
+static void test_storage_late_binding(void)
+{
+    g_autofree char *image = storage_image();
+    QTestState *qts = storage_start(image,
+        "-global sgi-pci-expansion-ni-fixture.storage-late=on");
+
+    g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 80), ==, 1);
+    g_assert_false(storage_backend_attached(qts));
+    qtest_readq(qts, STORAGE_BASE);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_storage_teardown(void)
+{
+    g_autofree char *image = storage_image();
+    QTestState *qts = storage_start(image, "");
+
+    g_assert_true(storage_backend_attached(qts));
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'realized','value':false}}", PATH "/chassis");
+    g_assert_false(storage_backend_attached(qts));
+    qtest_readq(qts, STORAGE_BASE);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+static void test_storage_migration_mismatch(const void *data)
+{
+    unsigned kind = GPOINTER_TO_UINT(data);
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("ni-storage-mismatch-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source = storage_image();
+    g_autofree char *destination = storage_image();
+    const char *owner = kind == 0 ?
+        "-global sgi-pci-expansion-ni-fixture.storage-module-id="
+        "fixture-otherx " :
+        kind == 1 ? "-global sgi-pci-expansion-ni-fixture."
+                    "storage-controller-id=fixture-controllER " : "";
+    g_autofree char *extra = g_strconcat(owner, "-incoming defer", NULL);
+    QTestState *from = kind == 3 ?
+        management_start("-global sgi-pci-expansion-ni-fixture.power=on") :
+        storage_start(source, "");
+    QTestState *to = kind == 2 ?
+        management_start("-global sgi-pci-expansion-ni-fixture.power=on "
+                         "-incoming defer") : storage_start(destination, extra);
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(unlink(source), ==, 0);
+    g_assert_cmpint(unlink(destination), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_storage_read(void)
+{
+    g_autofree uint8_t *bytes = g_malloc0(16 * 1024 * 1024);
+    g_autofree char *path = NULL;
+    g_autofree char *options = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("ni-configuration-storage-XXXXXX", &path, &error);
+    uint64_t base = REQUESTER(0) + NODE(7) + 0x38000000;
+
+    g_assert_no_error(error);
+    memset(bytes, 0xff, 16 * 1024 * 1024);
+    stq_be_p(bytes + 0x1e0000, UINT64_C(0x0123456789abcdef));
+    stq_be_p(bytes + 0x9e0000, UINT64_C(0xfedcba9876543210));
+    g_assert_cmpint(write(fd, bytes, 16 * 1024 * 1024), ==, 16 * 1024 * 1024);
+    g_assert_cmpint(close(fd), ==, 0);
+    options = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.power=on "
+        "-global sgi-pci-expansion-ni-fixture.storage=on "
+        "-global sgi-pci-expansion-ni-fixture.storage-drive=cfg "
+        "-drive if=none,id=cfg,file=%s,format=raw", path);
+    qts = management_start(options);
+    g_assert_cmphex(qtest_readq(qts, base + 0x1e0000), ==,
+                    UINT64_C(0x0123456789abcdef));
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, base + 0x21e0000), ==,
+                    UINT64_C(0xfedcba9876543210));
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(qts, base + 0x1e0000), ==, 0x01);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readw(qts, base + 0x1e0000), ==, 0x0123);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(qts, base + 0x1e0000), ==, 0x01234567);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(qts, base + 0x7fffff), ==, 0xff);
+    result(qts, 0, MEMTX_OK);
+    qtest_readq(qts, base + 0x800000);
+    result(qts, 0, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readb(qts, base + 0x2000000), ==, 0xff);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(qts, base + 0x27fffff), ==, 0xff);
+    result(qts, 0, MEMTX_OK);
+    qtest_readq(qts, base + 0x8000000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_writel(qts, base + STORAGE_UNLOCK0, 0xaa);
+    result(qts, 0, MEMTX_ERROR);
+    qtest_writeq(qts, base + STORAGE_UNLOCK0, UINT64_C(0x100aa));
+    result(qts, 0, MEMTX_ERROR);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 static void test_power_pio(void)
 {
     QTestState *qts = management_start(
@@ -1780,6 +2160,33 @@ static void test_power_adapter(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/read", test_storage_read);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/unsupported-transfer",
+                   test_storage_unsupported_transfer);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/late-binding",
+                   test_storage_late_binding);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/teardown",
+                   test_storage_teardown);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/storage/migration-module-mismatch",
+                        GUINT_TO_POINTER(0), test_storage_migration_mismatch);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/storage/migration-controller-mismatch",
+                        GUINT_TO_POINTER(1), test_storage_migration_mismatch);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/storage/migration-selected-mismatch",
+                        GUINT_TO_POINTER(2), test_storage_migration_mismatch);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/storage/migration-unselected-mismatch",
+                        GUINT_TO_POINTER(3), test_storage_migration_mismatch);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/program-power-reset",
+                   test_storage_program_power_reset);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/erase-while-off",
+                   test_storage_erase_while_off);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/migration-erase-off",
+                   test_storage_migration_erase_off);
+    qtest_add_func("/sgi/pci-expansion-ni/storage/migration-off",
+                   test_storage_migration_off);
     qtest_add_func("/sgi/pci-expansion-ni/power-adapter", test_power_adapter);
     qtest_add_func("/sgi/pci-expansion-ni/power-pio", test_power_pio);
     qtest_add_func("/sgi/pci-expansion-ni/power-owner", test_power_owner);

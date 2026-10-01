@@ -240,6 +240,47 @@ Without either input, its serial remains absent. Compute L1 controllers
 continue to use the global property. An expansion entry overrides the
 global value only for its selected controller.
 
+Expansion configuration storage experiment
+==========================================
+
+The ``origin300-pci-expansion-configuration-storage-experiment`` topology
+explicitly selects expansion main power and an independent Bedrock flash
+attachment. It accepts one caller-owned image, bound by exact module ID::
+
+  -M origin300,topology=origin300-pci-expansion-configuration-storage-experiment,expansion-storage.0=expansion-enclosure=cfg1
+  -drive if=none,id=cfg1,file=CALLER.raw,format=raw,readonly=off
+
+``expansion-storage`` is a machine string list. The bounded implementation
+accepts one ``module-id=backend-id`` entry. Empty fields, extra separators,
+duplicate entries, unselected owners and missing backends fail construction.
+The selected module's controller identity is retained independently of its
+NASID and compared during migration.
+
+The backend must be unused, writable and a complete regular file opened
+through a direct raw-to-file chain. The opened file must contain exactly
+16 MiB. Explicit raw offset or size options, filters, snapshots and other
+protocols are unsupported. The backend remains reserved by the expansion
+assembly; separate raw slices supply two independently stateful 8 MiB CFI
+positions. The attachment creates no image or default contents.
+
+Only the expansion RBOOT window is connected. NASID 1 physical address
+``0x23a1e0000`` reads image offset ``0x9e0000``. LBOOT and executable aliases
+are absent. Main power off refuses guest access while an already accepted
+flash timer continues. Power transitions preserve command state; whole
+machine reset returns array mode without erasing bytes. Isolated controller
+reset preserves flash state. Migration requires the same storage selection,
+geometry, module identity and controller identity.
+
+This is an experimental functional attachment. It establishes no physical
+configuration-storage chip population, factory contents, diagnostic identity
+or successful stock guest discovery. Existing topologies without this
+selection require no image and retain failed storage access. The composed
+PCI buses are ``expansion0-u0-head-e.0``, ``expansion0-u0-head-f.0``,
+``expansion0-u1-head-e.0``, ``expansion0-u1-head-f.0``,
+``expansion0-u2-head-e.0`` and ``expansion0-u2-head-f.0``. They remain empty
+unless a caller explicitly attaches a supported card. Physical slot and PCI
+device-number correspondence is not established.
+
 Board devices
 =============
 

@@ -469,6 +469,25 @@ class RecordShapeTests(unittest.TestCase):
         self.assertNotIn("initial_latch", descriptor)
         self.assertNotIn("intx_map", descriptor)
 
+    def test_expansion_configuration_storage_requires_power_selection(self):
+        model = self._expansion_descriptor_model()
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        self.assertNotIn("configuration_storage",
+                         compile_model(model)["io_assemblies"][0])
+        raw["configuration_storage"] = "bedrock-flash-experiment"
+        with self.assertRaisesRegex(CompileError, "configuration storage"):
+            compile_model(model)
+        raw.update(main_power="functional-experiment", initial_main_power=True)
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertEqual(descriptor["configuration_storage"],
+                         "bedrock-flash-experiment")
+        emitted = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(emitted["io-assemblies"][0]["configuration-storage"],
+                         "bedrock-flash-experiment")
+        raw["configuration_storage"] = "physical"
+        with self.assertRaisesRegex(CompileError, "configuration storage"):
+            compile_model(model)
+
     def test_expansion_main_power_requires_explicit_selection_and_state(self):
         model = self._expansion_descriptor_model()
         raw = model["machine"]["emulation"]["io_assemblies"][0]

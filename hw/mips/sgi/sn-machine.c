@@ -50,6 +50,7 @@
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-bic-board-interface.h"
+#include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-l1.h"
 #include "chardev/char.h"
 #include "migration/vmstate.h"
@@ -327,6 +328,9 @@ struct SGIMachineState {
     strList *controller_board_eeprom;
     strList *controller_chardev;
     strList *controller_brick_serial;
+    strList *expansion_storage;
+    const SGIModelIoAssembly *storage_assembly;
+    BlockBackend *storage_backend;
 };
 
 /*
@@ -342,6 +346,11 @@ typedef struct SGIMachineIdentityRecords {
 } SGIMachineIdentityRecords;
 
 static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
+    {
+        "expansion-storage", offsetof(SGIMachineState, expansion_storage),
+        "Caller-backed expansion configuration storage as module-id=backend-id",
+        true,
+    },
     {
         "chassis-eeprom", offsetof(SGIMachineState, chassis_eeprom),
         "Files holding the chassis identification records, in order",
@@ -579,6 +588,87 @@ static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
             }
         }
     }
+    return true;
+}
+
+static bool sgi_machine_validate_expansion_storage(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    const SGIModelIoAssemblyList *entry;
+    const SGIModelIoAssembly *selected = NULL;
+    g_autofree char *binding = NULL;
+    char *backend_id;
+    size_t module_count;
+    BlockBackend *backend;
+    BlockDriverState *backing;
+
+    for (entry = t->io_assemblies; entry; entry = entry->next) {
+        if (entry->value->has_configuration_storage) {
+            if (selected) {
+                error_setg(errp,
+                           "configuration storage supports one selected owner");
+                return false;
+            }
+            selected = entry->value;
+        }
+    }
+    if (!selected) {
+        if (s->expansion_storage) {
+            error_setg(errp,
+                       "configuration storage binding requires selection");
+            return false;
+        }
+        return true;
+    }
+    if (!s->expansion_storage) {
+        error_setg(errp,
+                   "configuration storage selection requires one image binding");
+        return false;
+    }
+    if (s->expansion_storage->next) {
+        error_setg(errp, "configuration storage accepts one image binding");
+        return false;
+    }
+    binding = g_strdup(s->expansion_storage->value);
+    backend_id = strchr(binding, '=');
+    if (!backend_id || backend_id == binding || !backend_id[1] ||
+        strchr(backend_id + 1, '=')) {
+        error_setg(errp, "invalid configuration storage binding; "
+                   "expected module-id=backend-id");
+        return false;
+    }
+    *backend_id++ = 0;
+    modules = sgi_model_module_array(t->modules, &module_count);
+    if (selected->module_index >= module_count ||
+        strcmp(modules[selected->module_index]->id, binding)) {
+        error_setg(errp,
+                   "configuration storage binding names an unselected module '%s'",
+                   binding);
+        return false;
+    }
+    backend = blk_by_name(backend_id);
+    backing = backend ? blk_bs(backend) : NULL;
+    if (!backing) {
+        error_setg(errp,
+                   "configuration storage backend '%s' does not exist",
+                   backend_id);
+        return false;
+    }
+    if (strcmp(bdrv_get_format_name(backing), "raw") ||
+        blk_get_full_raw_file_length(backend) != SGI_BEDROCK_FLASH_SIZE ||
+        bdrv_is_read_only(backing)) {
+        error_setg(errp, "expansion configuration storage needs a writable "
+                   "full regular raw-to-file image of exactly 16 MiB");
+        return false;
+    }
+    if (blk_get_attached_dev(backend)) {
+        error_setg(errp,
+                   "expansion configuration storage backend is already in use");
+        return false;
+    }
+    s->storage_assembly = selected;
+    s->storage_backend = backend;
     return true;
 }
 
@@ -2794,6 +2884,22 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
                 s->controller_reset_registered[a->controller_index] = true;
             }
         }
+        if (a->has_configuration_storage) {
+            const SGIModelControllerList *controller = t->controllers;
+
+            for (unsigned owner_index = 0;
+                 owner_index < a->controller_index; owner_index++) {
+                controller = controller->next;
+            }
+            if (s->storage_assembly != a || !controller ||
+                !sgi_origin300_pci_expansion_bind_storage(assembly,
+                    modules[a->module_index]->id, controller->value->id,
+                    s->storage_backend, errp)) {
+                object_unref(OBJECT(interface));
+                object_unref(OBJECT(dev));
+                return false;
+            }
+        }
         if (!sgi_machine_set_expansion_inputs(s, a->controller_index,
                                               l1, errp) ||
             !qdev_realize(l1, NULL, errp)) {
@@ -3543,7 +3649,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_resolve_config(s, t, errp)) {
         return false;
     }
-    if (!sgi_machine_validate_controller_inputs(s, t, errp)) {
+    if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
+        !sgi_machine_validate_expansion_storage(s, t, errp)) {
         return false;
     }
     if (sgi_machine_has_identity_records(s)) {
