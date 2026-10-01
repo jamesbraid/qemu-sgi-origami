@@ -1586,6 +1586,120 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
     }
 }
 
+/*
+ * Host reads through the raster engine's data port. The IRIX 6.5.30 X
+ * server's mgrasReadPixels (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
+ * reads a box this way; run irix-20260930T234501-dc3029 caught it 214 times
+ * while oglsnoop showed the pixel under the pointer, two pixels each
+ * time (the first at seq 4088838). Established from that
+ * listing and the trace: the server waits for 0x02c578 bit 8, writes
+ * CONFIG (0x112) 0xca4, XYWIN 0, PIXCMD (0x160) 2, PP1FILLMODE 0x500, the
+ * colour masks, DRBPOINTERS 0x90240, the box in BLOCKXYSTARTI and
+ * BLOCKXYENDI, XFRSIZE (0x153) and XFRCOUNTERS (0x158) as height << 16 |
+ * width, XFRMODE (0x159) 0x8000, FILLMODE 0x800000, IR_ALIAS 0x18,
+ * XFRCONTROL (0x102) 0xa and GLINE_XSTARTF 1, executes IR_ALIAS, and then
+ * reads the data as 8-byte units, each 0x02d1c0 and then 0x02c1c4,
+ * storing the first word before the second; it then writes XFRCONTROL 0
+ * and restores CONFIG and XYWIN. Its DMA reads write XFRCONTROL 8 instead,
+ * and are kicked through the descriptors. The register names are OpenBSD
+ * impactreg.h's and gxemul's impactsr-bsd.h's.
+ *
+ * Inferred: that XFRCONTROL bit 1 selects the data port, the only bit the
+ * two read forms differ in; that a unit carries two 4-byte pixels, since a
+ * two-pixel box took exactly one; that each row starts a unit, since the
+ * listing counts each row's bytes down by eight; and that the box and
+ * rows follow the DMA read's, hardware y with the top row first. The
+ * pixels are bank 0's in the DMA read's 4-byte form
+ * (mgras_raster_dma_run_read()). Approximated: whether reading 0x02d1c0
+ * advances the transfer and 0x02c1c4 only returns the latched half, as
+ * the model has it, or the reverse, is unknown; software always reads the
+ * pair in that order. Unknown: the one-byte form and any XFRMODE but
+ * 0x8000, which the model logs and reads as zero. The discriminating tests
+ * are pio-read-returns-the-box, pio-read-rows-start-a-unit and the replay
+ * fixture pio-read-oglsnoop.
+ */
+#define MGRAS_RSS_XFRCONTROL 0x102
+#define MGRAS_RSS_XFRSIZE 0x153
+#define MGRAS_XFRCONTROL_PIO 0x2
+#define MGRAS_XFRCONTROL_PIO_READ 0xa
+#define MGRAS_XFRMODE_PIO_READ 0x8000
+
+static void mgras_pio_read_start(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
+    uint32_t size = s->rss[MGRAS_RSS_XFRSIZE];
+    uint32_t x0 = xy0 >> 16, y0 = xy0 & 0xffff;
+    uint32_t x1 = xy1 >> 16, y1 = xy1 & 0xffff;
+    uint32_t w = size & 0xffff, h = size >> 16;
+
+    s->pio_read_active = false;
+    if (s->rss[MGRAS_RSS_XFRCONTROL] != MGRAS_XFRCONTROL_PIO_READ ||
+        s->rss[MGRAS_RSS_BYTE_XFER_PACKING] != MGRAS_XFRMODE_PIO_READ) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port transfer, control "
+                      "0x%x mode 0x%x, not modelled; reads return zero\n",
+                      s->rss[MGRAS_RSS_XFRCONTROL],
+                      s->rss[MGRAS_RSS_BYTE_XFER_PACKING]);
+        return;
+    }
+    if (x0 > x1 || y1 > y0 || x1 >= s->width || y0 >= s->height ||
+        w != x1 - x0 + 1 || h != y0 - y1 + 1) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: data-port read box "
+                      "(%u,%u)-(%u,%u) does not fit size 0x%x; reads return "
+                      "zero\n", x0, y0, x1, y1, size);
+        return;
+    }
+    s->pio_read_active = true;
+    s->pio_read_x = x0;
+    s->pio_read_y = s->height - 1 - y0;
+    s->pio_read_w = w;
+    s->pio_read_h = h;
+    s->pio_read_next = 0;
+    s->pio_read_low = 0;
+}
+
+/* Bank 0's pixel at screen (x, y) as the data port gives it. */
+static uint32_t mgras_pio_read_pixel(SGIMgrasState *s, uint32_t x, uint32_t y)
+{
+    uint32_t p = s->front[y * s->width + x];
+
+    return ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+}
+
+uint32_t sgi_mgras_raster_pio_read(SGIMgrasState *s, bool high)
+{
+    uint32_t units = DIV_ROUND_UP(s->pio_read_w, 2);
+    uint32_t row, x, hi;
+
+    if (!high) {
+        return s->pio_read_low;
+    }
+    if (!s->pio_read_active || s->pio_read_next >= units * s->pio_read_h) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: data-port read with no "
+                      "read box left; zero\n");
+        s->pio_read_low = 0;
+        return 0;
+    }
+    row = s->pio_read_next / units;
+    x = 2 * (s->pio_read_next % units);
+    hi = mgras_pio_read_pixel(s, s->pio_read_x + x, s->pio_read_y + row);
+    s->pio_read_low = x + 1 < s->pio_read_w ?
+        mgras_pio_read_pixel(s, s->pio_read_x + x + 1, s->pio_read_y + row) :
+        0;
+    s->pio_read_next++;
+    return hi;
+}
+
+bool sgi_mgras_raster_pio_read_valid(SGIMgrasState *s)
+{
+    return !s->pio_read_active ||
+           (s->pio_read_w && s->pio_read_h &&
+            s->pio_read_x + s->pio_read_w <= s->width &&
+            s->pio_read_y + s->pio_read_h <= s->height &&
+            s->pio_read_next <=
+                DIV_ROUND_UP(s->pio_read_w, 2) * s->pio_read_h);
+}
+
 static void mgras_raster_command_execute(
     SGIMgrasState *s, const SGIMgrasRasterSubmission *submission)
 {
@@ -1614,8 +1728,12 @@ static void mgras_raster_command_execute(
          * mgras_draw_pio_pixel_pair()) already paint their own data; this
          * execute only latches the register write mgras_raster_rss_write()
          * already applied. This is established behaviour, not an
-         * unimplemented command, so it is not logged.
+         * unimplemented command, so it is not logged. With the transfer
+         * control set for a host read it starts one through the data port.
          */
+        if (s->rss[MGRAS_RSS_XFRCONTROL] & MGRAS_XFRCONTROL_PIO) {
+            mgras_pio_read_start(s);
+        }
         return;
     case MGRAS_RSS_CHAR_H:
     case MGRAS_RSS_CHAR_L:
