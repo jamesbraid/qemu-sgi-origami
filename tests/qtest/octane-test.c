@@ -2504,8 +2504,11 @@ static void test_rad_pci(void)
     qtest_writel(qts, CFG(3) + 0x04, 0x00000002);
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
     g_assert_cmphex(qtest_readl(qts, CFG(3) + 0x10), ==, RAD_PCI_BAR0);
-    /* Bridge absorbs the unsupported BAR transaction; zero is model output. */
-    g_assert_cmpuint(qtest_readl_tx(qts, RAD_BAR0, &value), ==, MEMTX_OK);
+    /* A failed RAD read propagates even with Bridge error reporting masked. */
+    g_assert_cmpuint(qtest_readl_tx(qts, RAD_BAR0, &value), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & (1u << 15), ==, 0);
+    g_assert_cmpuint(qtest_readl_tx(qts, RAD_BAR0 + 0x30, &value), ==,
+                     MEMTX_OK);
     g_assert_cmphex(value, ==, 0);
     g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
@@ -3495,18 +3498,18 @@ static void test_rad_ust_unsupported(void)
     qtest_writel(qts, RAD_BAR0 + 0x40, 0x55);
     qtest_writel(qts, RAD_BAR0 + 0x30, 0x12345678);
     /*
-     * Bridge consumes the PCI error, so QTest reports success. The RAD log
-     * and later enable check prove rejection. Narrow CPU addresses correct
-     * back to the same BAR0 offset.
+     * Bridge posts writes but returns failed reads to the requester. The
+     * RAD log and later enable check prove rejection without state changes.
+     * Narrow CPU addresses correct back to the same BAR0 offset.
      */
     g_assert_cmpuint(qtest_writeb_tx(qts, RAD_BAR0 + 0x43, 0x0a), ==,
                      MEMTX_OK);
     g_assert_cmpuint(qtest_readb_tx(qts, RAD_BAR0 + 0x43, &byte), ==,
-                     MEMTX_OK);
+                     MEMTX_ERROR);
     g_assert_cmpuint(qtest_writew_tx(qts, RAD_BAR0 + 0x42, 0x0a), ==,
                      MEMTX_OK);
     g_assert_cmpuint(qtest_readw_tx(qts, RAD_BAR0 + 0x42, &half), ==,
-                     MEMTX_OK);
+                     MEMTX_ERROR);
     qtest_readl(qts, RAD_BAR0 + 0x40);
     /* A 64-bit Bridge cycle reaches RAD whole when Device(3) says 64-bit. */
     qtest_writel(qts, device_reg, qtest_readl(qts, device_reg) | (1u << 22));
@@ -3514,7 +3517,7 @@ static void test_rad_ust_unsupported(void)
                                      UINT64_C(0x1122334455667788)), ==,
                      MEMTX_OK);
     g_assert_cmpuint(qtest_readq_tx(qts, RAD_BAR0 + 0x40, &wide), ==,
-                     MEMTX_OK);
+                     MEMTX_ERROR);
     qtest_writel(qts, device_reg, qtest_readl(qts, device_reg) & ~(1u << 22));
     qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
     qtest_clock_step(qts, 9600);
@@ -3909,7 +3912,7 @@ static void test_uncached_attribute_zero(void)
         }
         g_usleep(1000);
     }
-    g_assert_cmphex(result & 0x0fffffff, ==, 0x0c00106c);
+    g_assert_cmphex(result & 0x0fffffff, ==, 0x0c00106d);
     g_assert_cmphex(qtest_readl(qts, ATTR0 + IOC3 + 0x28), ==,
                     qtest_readl(qts, IOC3 + 0x28));
     g_assert_cmphex(qtest_readl(qts, ATTR0 + FLASH), ==,
