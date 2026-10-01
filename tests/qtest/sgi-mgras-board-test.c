@@ -1376,11 +1376,13 @@ static void test_board_identity(gconstpointer data)
     qtest_quit(s);
 }
 
-/* Select an RE for direct access: a raster write to RSS register 0x112. */
+/*
+ * Select an RE for direct access: a raster write to RSS register 0x112.
+ * The caller enters a context first.
+ */
 static void board_select_re(QTestState *s, uint32_t value)
 {
-    qtest_writeq(s, REG_CONTEXT_COMMAND,
-                 ((uint64_t)(0x00180004 | 0x112 << 8) << 32) | value);
+    qtest_writeq(s, REG_CONTEXT_COMMAND, MGRAS_COMMAND(0x112, value));
 }
 
 /*
@@ -1392,6 +1394,8 @@ static void test_board_re4_status_reports_selected_re(gconstpointer data)
 {
     const MgrasBoardExpect *e = data;
     QTestState *s = mgras_board_init(e);
+
+    mgras_enter_context(s);
 
     g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
                     e->re - 1);
@@ -1419,6 +1423,7 @@ static void test_board_re4_status_keeps_revision_bits(void)
             continue;
         }
         s = mgras_board_init(e);
+        mgras_enter_context(s);
         for (uint32_t re = 0; re < e->re; re++) {
             board_select_re(s, re);
             g_assert_cmphex((qtest_readl(s, REG_DIRECT_COPY_READY) >> 4) & 0xf,
@@ -1439,6 +1444,8 @@ static void test_board_rdram_data_same_for_each_re(gconstpointer data)
 {
     const MgrasBoardExpect *e = data;
     QTestState *s = mgras_board_init(e);
+
+    mgras_enter_context(s);
 
     for (uint32_t re = 0; re < 4; re++) {
         board_select_re(s, re);
