@@ -360,6 +360,20 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
         size <= memory_region_size(node->ram) - local) {
         as = &node->ni_ram_as;
         offset = local;
+    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                        SN1_BOARD_ID_OFFSET &&
+               local - (SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                        SN1_BOARD_ID_OFFSET) < 8) {
+        offset = local - (SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                          SN1_BOARD_ID_OFFSET);
+        if (offset || size != 8) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sn1: remote board identification refuses %zu-byte "
+                          "%s at 0x%" HWADDR_PRIx "\n", size,
+                          write ? "write" : "read", address);
+            return MEMTX_ERROR;
+        }
+        as = &node->ni_board_id_as;
     } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
                local - SN1_HUB_REMOTE_REGISTERS_ADDRESS < SGI_BEDROCK_SIZE &&
                size <= SGI_BEDROCK_SIZE -
@@ -379,6 +393,14 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
         as = &node->ni_pio_as;
         offset = local - SN1_IO_SPACE_ADDRESS;
     } else {
+        if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
+            local - SN1_HUB_REMOTE_REGISTERS_ADDRESS <
+                SN1_HUB_LOCAL_REGISTERS_SIZE) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sn1: unmapped remote Hub register %zu-byte %s "
+                          "at 0x%" HWADDR_PRIx "\n", size,
+                          write ? "write" : "read", address);
+        }
         return MEMTX_DECODE_ERROR;
     }
     return write ? address_space_write(as, offset, attrs, buffer, size) :
@@ -452,6 +474,8 @@ static void sn1_node_init_claims(SN1NodeState *node)
     sn1_node_ni_target_as(node, 0, node->ram, &node->ni_ram_as, "sn1.ni-ram");
     address_space_init(&node->ni_hub_as,
                       &SGI_BEDROCK(node->bedrock)->hub_window, "sn1.ni-hub");
+    sn1_node_ni_target_as(node, 2, &node->board_id, &node->ni_board_id_as,
+                          "sn1.ni-board-id");
     sn1_node_ni_target_as(node, 1, sysbus_mmio_get_region(
         SYS_BUS_DEVICE(node->bedrock), 1), &node->ni_pio_as, "sn1.ni-pio");
     sn1_fabric_init_floor(&node->endpoint, node->claim_floor);
@@ -1153,6 +1177,8 @@ static void sn1_node_map_memory(SN1NodeState *node)
 
     memory_region_init_io(&node->board_id, OBJECT(node), &sn1_board_id_ops,
                           node, "sn1.board-id", 8);
+    /* Stateless response can be reached from this node's processor view. */
+    node->board_id.disable_reentrancy_guard = true;
     memory_region_add_subregion(&node->hub_local_registers,
                                 SN1_BOARD_ID_OFFSET, &node->board_id);
     /* The remote form reaches the same response above the Bedrock window. */
@@ -1911,6 +1937,7 @@ static void sn1_node_unrealize(DeviceState *dev)
     SN1NodeState *node = SN1_NODE(dev);
 
     address_space_destroy(&node->ni_pio_as);
+    address_space_destroy(&node->ni_board_id_as);
     address_space_destroy(&node->ni_hub_as);
     address_space_destroy(&node->ni_ram_as);
     sn_promdata_poll_free(&node->promdata_poll);

@@ -1887,6 +1887,167 @@ static void test_expansion_storage_provider_refusals(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_compute_board_identity(void)
+{
+    static const uint64_t addresses[] = {
+        UINT64_C(0x10014000000), UINT64_C(0x10034000000),
+    };
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[8];
+    int fd = g_file_open_tmp("compute-board-identity-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
+        "-d guest_errors -D %s", prom, log);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned form = 0; form < G_N_ELEMENTS(addresses); form++) {
+            uint64_t address = addresses[form];
+
+            g_assert_true(qtest_memread_cpu(qts, cpu, address,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+            stq_be_p(bytes, UINT64_MAX);
+            g_assert_true(qtest_memwrite_cpu(qts, cpu, address,
+                                            bytes, sizeof(bytes)));
+            g_assert_true(qtest_memread_cpu(qts, cpu, address,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+            for (unsigned width = 1; width <= 4; width *= 2) {
+                g_assert_true(qtest_memread_cpu(qts, cpu, address,
+                                               bytes, width));
+                for (unsigned i = 0; i < width; i++) {
+                    g_assert_cmpuint(bytes[i], ==, 0);
+                }
+                memset(bytes, 0xff, width);
+                g_assert_true(qtest_memwrite_cpu(qts, cpu, address,
+                                                bytes, width));
+            }
+            g_assert_true(qtest_memread_cpu(qts, cpu, address + 4, bytes, 4));
+            g_assert_cmphex(ldl_be_p(bytes), ==, 0);
+            g_assert_true(qtest_memread_cpu(qts, cpu, address + 1,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+            g_assert_true(qtest_memread_cpu(qts, cpu, address + 8,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        }
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x10035000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x10634000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned form = 0; form < G_N_ELEMENTS(addresses); form++) {
+            g_assert_true(qtest_memread_cpu(qts, cpu, addresses[form],
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+        }
+    }
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                 UINT64_C(2) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, addresses[1],
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x10434000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+        g_assert_true(qtest_memread_cpu(qts, cpu, addresses[0],
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+    }
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/expansion-cable',"
+        "'property':'down','value':true}}");
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x10234000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x10434000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents, "refusing a 8-byte write"));
+    g_assert_nonnull(strstr(contents, "refusing 4 bytes at offset 0x4"));
+    g_assert_nonnull(strstr(contents,
+        "remote board identification refuses 4-byte read at 0x10034000004"));
+    g_assert_nonnull(strstr(contents,
+        "remote board identification refuses 1-byte read at 0x10034000001"));
+    g_assert_nonnull(strstr(contents,
+        "unmapped remote Hub register 8-byte read at 0x10034000008"));
+    g_assert_nonnull(strstr(contents,
+        "unmapped remote Hub register 8-byte read at 0x10035000000"));
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+static void test_expansion_compute_board_identity_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *dir =
+        g_dir_make_tmp("compute-board-migrate-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from, *to;
+    uint8_t bytes[8];
+
+    g_assert_no_error(error);
+    from = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none",
+        prom);
+    to = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s -nodefaults -display none "
+        "-incoming defer", prom);
+    expansion_vector(from, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    qtest_writeq(from, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                 UINT64_C(2) << 32);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        const uint64_t addresses[] = {
+            UINT64_C(0x10014000000), UINT64_C(0x10434000000),
+        };
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+            g_assert_true(qtest_memread_cpu(to, cpu, addresses[i],
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldq_be_p(bytes), ==, 0x8001);
+        }
+        g_assert_true(qtest_memread_cpu(to, cpu, UINT64_C(0x10034000000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    /* QEMU may remove the listener when incoming migration completes. */
+    if (unlink(socket) < 0) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_processor_absence(void)
 {
     static const uint64_t offsets[] = { 0x40, 0x48, 0x200040, 0x200048 };
@@ -2708,6 +2869,10 @@ int main(int argc, char **argv)
                    test_expansion_storage_backend_refusals);
     qtest_add_func("sn/builder/expansion/storage/provider-refusals",
                    test_expansion_storage_provider_refusals);
+    qtest_add_func("sn/builder/expansion/compute-board-identity",
+                   test_expansion_compute_board_identity);
+    qtest_add_func("sn/builder/expansion/compute-board-identity-migration",
+                   test_expansion_compute_board_identity_migration);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
     qtest_add_func("sn/builder/expansion/storage/composed-read",
