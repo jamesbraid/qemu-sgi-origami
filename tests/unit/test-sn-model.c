@@ -264,7 +264,8 @@ static void check_cables(const SGIModelTopology *t)
             const SGIModelLinkEnd *end = side ? cable->ends->next->value :
                                                 cable->ends->value;
             size_t count = end->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
-                total_routers : total_nodes;
+                total_routers : end->kind == SGI_MODEL_LINK_END_KIND_IO_PEER ?
+                QAPI_LIST_LENGTH(t->io_peers) : total_nodes;
 
             g_assert_cmpuint(end->index, <, count);
             if (end->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
@@ -721,6 +722,10 @@ static void test_existing_topologies_have_no_io_peers(void)
     for (entry = catalogue->topologies; entry; entry = entry->next) {
         const SGIModelModuleList *module;
 
+        if (g_str_equal(entry->value->name,
+                        "origin300-pci-expansion-experiment")) {
+            continue;
+        }
         g_assert_false(entry->value->has_io_peers);
         g_assert_null(entry->value->io_peers);
         for (module = entry->value->modules; module; module = module->next) {
@@ -728,6 +733,51 @@ static void test_existing_topologies_have_no_io_peers(void)
             g_assert_null(module->value->io_peers);
         }
     }
+}
+
+static void test_expansion_offering(void)
+{
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+    const SGIModelTopology *t = NULL;
+    const SGIModelIoAssembly *a;
+    const uint8List *port;
+    static const uint8_t ports[] = { 8, 9, 12, 13 };
+    unsigned int index = 0;
+    Error *err = NULL;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->name,
+                        "origin300-pci-expansion-experiment")) {
+            t = entry->value;
+            break;
+        }
+    }
+    g_assert_nonnull(t);
+    g_assert_cmpuint(node_count(t), ==, 1);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->io_peers), ==, 1);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->io_assemblies), ==, 1);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->controllers), ==, 2);
+    a = t->io_assemblies->value;
+    g_assert_cmpuint(a->placement, ==, 1);
+    g_assert_cmpuint(a->initial_node_number, ==, 0);
+    g_assert_cmpuint(a->bedrock_revision, ==, 2);
+    g_assert_cmpuint(a->xbridge_revision, ==, 2);
+    g_assert_cmphex(a->bic_identity, ==, 0xc000);
+    g_assert_false(a->has_initial_latch);
+    g_assert_true(a->has_intx_map);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(a->intx_map), ==, 48);
+    for (port = a->head_ports; port; port = port->next, index++) {
+        g_assert_cmpuint(index, <, G_N_ELEMENTS(ports));
+        g_assert_cmpuint(port->value, ==, ports[index]);
+    }
+    g_assert_cmpuint(index, ==, G_N_ELEMENTS(ports));
+    g_assert_nonnull(t->l1_management);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->owners), ==, 2);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->associations), ==, 2);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(t->l1_management->attachments), ==, 2);
+    g_assert_true(sgi_model_check_runtime_endpoints(t, &err));
+    g_assert_null(err);
 }
 
 static void test_io_peer_runtime_refusal(const void *data)
@@ -901,7 +951,10 @@ static void test_existing_population_views(void)
             g_assert_nonnull(view);
             g_assert_cmpuint(QAPI_LIST_LENGTH(view->nodes), ==,
                              QAPI_LIST_LENGTH(row->value->nodes));
-            g_assert_null(view->io_peers);
+            g_assert_cmpuint(QAPI_LIST_LENGTH(view->io_peers), ==,
+                             QAPI_LIST_LENGTH(topology->value->io_peers));
+            g_assert(view->io_assemblies == topology->value->io_assemblies);
+            g_assert(view->l1_management == topology->value->l1_management);
         }
     }
 }
@@ -959,6 +1012,8 @@ int main(int argc, char **argv)
                     test_io_peer_rejects_processors);
     g_test_add_func("/sn-model/io-peer/existing-topologies",
                     test_existing_topologies_have_no_io_peers);
+    g_test_add_func("/sn-model/io-peer/expansion-offering",
+                    test_expansion_offering);
     g_test_add_data_func("/sn-model/io-peer/runtime-refuses-peer", NULL,
                          test_io_peer_runtime_refusal);
     g_test_add_data_func("/sn-model/io-peer/runtime-refuses-module-only",
