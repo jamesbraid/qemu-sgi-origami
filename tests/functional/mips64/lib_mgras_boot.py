@@ -41,8 +41,13 @@ __all__ = ['run_board', 'board_timeout']
 
 MACHINE = (MACHINES['origin2000'] +
            ',nodes=4,baseio-preset=io6g,debug-leds=off')
-SMP = '4'
-MEMORY_MIB = 512
+# Two R10000s per node, as the stock rack installation has; with one per
+# node the PROM cannot find its own CPU's KLCONFIG entry and four-node
+# discovery times out.
+SMP = '8'
+# One 64 MiB bank per node, the bank size the Origin 2000 rack model
+# accepts and the stock installation it models.
+MEMORY_MIB = 256
 SERIAL_TIMEOUT_SECONDS = 1320
 
 COMMAND_TIMEOUT_SECONDS = 60
