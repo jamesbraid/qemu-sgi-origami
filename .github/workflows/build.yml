@@ -204,8 +204,10 @@ jobs:
           PYTESTS
             set --
             while IFS= read -r name; do set -- "$@" "$name"; done < /src/build-ci/expected-qtests.txt
+            # Migration cases start multiple QEMU processes per test file.
+            # Limit concurrent files on the eight-CPU builders.
             "$meson" test -C /src/build-ci --setup qemu:thorough \
-              --logbase smoke-qtest --print-errorlogs "$@"
+              --num-processes 2 --logbase smoke-qtest --print-errorlogs "$@"
             report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "smoke-qtest*.junit.xml" -print)
             test -n "$report"
             test "$(printf "%s\n" "$report" | wc -l)" -eq 1
@@ -466,7 +468,8 @@ jobs:
             python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
               --expect /src/build-ci/full-unit.expected
 
-            make -j"$(nproc)" -C /src/build-ci check-qtest-mips64
+            # This make job count also sets Meson's qtest worker count.
+            make -j2 -C /src/build-ci check-qtest-mips64
           '
 
       - name: retain failure diagnostics
