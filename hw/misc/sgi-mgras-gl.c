@@ -608,6 +608,11 @@ enum {
 #define MGRAS_GL_READ_OPEN       0x00009600
 #define MGRAS_GL_READ_CLOSE      0x00009700
 #define MGRAS_GL_READ_SETUP      0x0000db04
+/*
+ * The RE count shifted right once: a context setup sends it right after the
+ * opener (1 on SSI, 0 on SI), a cross-check and no draw.
+ */
+#define MGRAS_GL_RE_COUNT        0x00008c04
 #define MGRAS_GL_READ_PIO        0x00008f08
 #define MGRAS_GL_READ_DMA_DONE   0x0000da00
 /* Parser payload slots a records block keeps its place in; see below. */
@@ -878,6 +883,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     }
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
+    case MGRAS_GL_RE_COUNT:
     case MGRAS_GL_CLEAR_COLOR_BUF:
     case MGRAS_GL_CLEAR_DEPTH_BUF:
     case MGRAS_GL_VIEWPORT:
@@ -3616,6 +3622,15 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
         mgras_gl_context_start(s);
+        return;
+    case MGRAS_GL_RE_COUNT:
+        s->gl_re_count_word = payload[0];
+        s->gl_re_count_tokens++;
+        if (payload[0] != s->board->re_count >> 1) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: client sent RE count "
+                          "token %u on a board with %u RE(s)\n", payload[0],
+                          s->board->re_count);
+        }
         return;
     case MGRAS_GL_VIEWPORT:
         /* The client has already clamped the size (__glMgrim_Viewport). */
