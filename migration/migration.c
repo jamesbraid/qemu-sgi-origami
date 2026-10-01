@@ -71,20 +71,6 @@
 #define INMIGRATE_DEFAULT_EXIT_ON_ERROR true
 
 static GSList *migration_state_notifiers[MIG_MODE__MAX];
-static NotifierList incoming_completion_notifiers =
-    NOTIFIER_LIST_INITIALIZER(incoming_completion_notifiers);
-
-void migration_add_incoming_completion_notifier(Notifier *notify)
-{
-    notifier_list_add(&incoming_completion_notifiers, notify);
-}
-
-void migration_incoming_complete_notify(void)
-{
-    assert(bql_locked());
-    notifier_list_notify(&incoming_completion_notifiers, NULL);
-}
-
 /* Messages sent on the return path from destination to source */
 enum mig_rp_message_type {
     MIG_RP_MSG_INVALID = 0,  /* Must be 0 */
@@ -733,7 +719,6 @@ static void process_incoming_migration_bh(void *opaque)
      */
     migrate_set_state(&mis->state, MIGRATION_STATUS_ACTIVE,
                       MIGRATION_STATUS_COMPLETED);
-    migration_incoming_complete_notify();
     migration_incoming_state_destroy();
 }
 
