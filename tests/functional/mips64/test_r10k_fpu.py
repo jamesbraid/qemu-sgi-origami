@@ -27,6 +27,8 @@ DONE_NO_EXCEPTION = 2
 R12000 = ('R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,'
           'r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,'
           'r12000-scache-block-words=16')
+R16000 = ('R16000,big-endian=on,r16000-experimental=on,'
+          'r16000-reset-mode=0x3a005,r16000-scache-bytes=4194304')
 
 
 def instruction(op, rs, rt, immediate):
@@ -140,6 +142,9 @@ class R10KFPU(QemuSystemTest):
 
     def test_r12000_exact_subnormal_result(self):
         self.check_vector(R12000, 3, 0x00800000, 0x40000000)
+
+    def test_r16000_exact_subnormal_result(self):
+        self.check_vector(R16000, 3, 0x00800000, 0x40000000)
 
     def test_r10000_add_subnormal_input(self):
         self.check_vector('R10000', 0, 0x3f800000, 0x00000001)

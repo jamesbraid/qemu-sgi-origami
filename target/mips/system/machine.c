@@ -38,6 +38,12 @@ static void cpu_post_save(void *opaque)
     }
 }
 
+static int cpu_pre_load(void *opaque)
+{
+    mips_r10k_profile_pre_load(opaque);
+    return 0;
+}
+
 static int cpu_post_load(void *opaque, int version_id)
 {
     MIPSCPU *cpu = opaque;
@@ -547,6 +553,7 @@ const VMStateDescription vmstate_mips_cpu = {
     .minimum_version_id = 23,
     .pre_save = cpu_pre_save,
     .post_save = cpu_post_save,
+    .pre_load = cpu_pre_load,
     .post_load = cpu_post_load,
     .fields = (const VMStateField[]) {
         /* Active TC */
@@ -661,6 +668,7 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
+        &mips_vmstate_r16000_profile,
         &mips_vmstate_r12000_profile,
         &mips_vmstate_nmi,
         &mips_vmstate_timer,
@@ -671,6 +679,8 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_r14k_scache,
         &mips_vmstate_r12000_extra,
         &mips_vmstate_r10k_scache_4m,
+        &mips_vmstate_r10k_scache_8m,
+        &mips_vmstate_r10k_scache_16m,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,
         NULL

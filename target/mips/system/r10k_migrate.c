@@ -4,9 +4,9 @@
  *
  * The state the R10000 family adds lives behind env->r10k, so it travels as
  * a pointed-to sub-description rather than as fields of the shared CPU state.
- * One subsection carries the base state every family member has; two more
- * carry the extra secondary-cache capacity of the larger caches, gated on the
- * same cache-size tests the flat subsections used before the state moved.
+ * The base subsection carries the state every family member has. Additional
+ * subsections carry the larger secondary-cache ranges selected from the same
+ * effective capacity used by diagnostic operations.
  *
  */
 
@@ -91,26 +91,30 @@ static const VMStateDescription vmstate_r10k_scache_r14k = {
     }
 };
 
-static bool mips_r10k_scache_is_4m(const MIPSCPU *cpu)
+static uint32_t mips_r10k_scache_capacity(const MIPSCPU *cpu)
 {
-    return cpu->env.cfg.scache_size == R10K_SCACHE_SIZE &&
-           extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3) == 3;
+    return cpu->env.r10k ?
+        r10k_scache_capacity(cpu->env.cfg.scache_size,
+            extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3)) : 0;
+}
+
+static bool mips_r12000_profile_active(const MIPSCPU *cpu)
+{
+    return cpu->r10k_profile && cpu->r10k_profile->valid &&
+           !strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R12000");
 }
 
 static bool mips_r14k_scache_needed(void *opaque)
 {
     const MIPSCPU *cpu = opaque;
 
-    return ((!cpu->r10k_profile || !cpu->r10k_profile->valid) &&
-            cpu->env.cfg.scache_size == R14K_SCACHE_SIZE) ||
-           mips_r10k_scache_is_4m(cpu);
+    return !mips_r12000_profile_active(cpu) &&
+           mips_r10k_scache_capacity(cpu) > R10K_SCACHE_SIZE;
 }
 
 static bool mips_r12000_extra_needed(void *opaque)
 {
-    MIPSCPU *cpu = opaque;
-
-    return cpu->r10k_profile && cpu->r10k_profile->valid;
+    return mips_r12000_profile_active(opaque);
 }
 
 static const VMStateDescription vmstate_r12000_extra = {
@@ -182,7 +186,9 @@ static const VMStateDescription vmstate_r10k_scache_4m = {
 
 static bool mips_r10k_scache_4m_needed(void *opaque)
 {
-    return mips_r10k_scache_is_4m(opaque);
+    const MIPSCPU *cpu = opaque;
+
+    return mips_r10k_scache_capacity(cpu) > R14K_SCACHE_SIZE;
 }
 
 const VMStateDescription mips_vmstate_r10k_scache_4m = {
@@ -193,6 +199,157 @@ const VMStateDescription mips_vmstate_r10k_scache_4m = {
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_POINTER(env.r10k, MIPSCPU, vmstate_r10k_scache_4m,
                                R10KState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* The secondary-cache range from four to eight megabytes. */
+static const VMStateDescription vmstate_r10k_scache_8m = {
+    .name = "mips/r10k-scache-8m",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState,
+                                 R10K_SCACHE_4M_TAGS,
+                                 R10K_SCACHE_MAX_TAGS / 2 -
+                                 R10K_SCACHE_4M_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState,
+                                R10K_SCACHE_4M_TAGS,
+                                R10K_SCACHE_MAX_TAGS / 2 -
+                                R10K_SCACHE_4M_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState,
+                                R10K_SCACHE_4M_SETS,
+                                R10K_SCACHE_MAX_SETS / 2 -
+                                R10K_SCACHE_4M_SETS),
+        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState,
+                                 R10K_SCACHE_4M_DWORDS,
+                                 R10K_SCACHE_MAX_DWORDS / 2 -
+                                 R10K_SCACHE_4M_DWORDS),
+        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+                                 R10K_SCACHE_4M_QUADWORDS,
+                                 R10K_SCACHE_MAX_QUADWORDS / 2 -
+                                 R10K_SCACHE_4M_QUADWORDS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r10k_scache_8m_needed(void *opaque)
+{
+    const MIPSCPU *cpu = opaque;
+
+    return mips_r10k_scache_capacity(cpu) > R10K_SCACHE_4M_SIZE;
+}
+
+const VMStateDescription mips_vmstate_r10k_scache_8m = {
+    .name = "cpu/r10k-scache-8m",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_scache_8m_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(env.r10k, MIPSCPU, vmstate_r10k_scache_8m,
+                               R10KState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* The secondary-cache range from eight to sixteen megabytes. */
+static const VMStateDescription vmstate_r10k_scache_16m = {
+    .name = "mips/r10k-scache-16m",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState,
+                                 R10K_SCACHE_MAX_TAGS / 2,
+                                 R10K_SCACHE_MAX_TAGS / 2),
+        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState,
+                                R10K_SCACHE_MAX_TAGS / 2,
+                                R10K_SCACHE_MAX_TAGS / 2),
+        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState,
+                                R10K_SCACHE_MAX_SETS / 2,
+                                R10K_SCACHE_MAX_SETS / 2),
+        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState,
+                                 R10K_SCACHE_MAX_DWORDS / 2,
+                                 R10K_SCACHE_MAX_DWORDS / 2),
+        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+                                 R10K_SCACHE_MAX_QUADWORDS / 2,
+                                 R10K_SCACHE_MAX_QUADWORDS / 2),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r10k_scache_16m_needed(void *opaque)
+{
+    const MIPSCPU *cpu = opaque;
+
+    return mips_r10k_scache_capacity(cpu) > R10K_SCACHE_MAX_SIZE / 2;
+}
+
+const VMStateDescription mips_vmstate_r10k_scache_16m = {
+    .name = "cpu/r10k-scache-16m",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_scache_16m_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(env.r10k, MIPSCPU, vmstate_r10k_scache_16m,
+                               R10KState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static int mips_r16000_profile_post_load(void *opaque, int version_id)
+{
+    R10KCPUProfile *profile = opaque;
+
+    if (!profile->r16000_experimental || !profile->r16000_reset_mode_set ||
+        !profile->r16000_scache_bytes_set ||
+        profile->migration_r16000_reset_mode != profile->r16000_reset_mode ||
+        profile->migration_r16000_scache_bytes !=
+        profile->r16000_scache_bytes) {
+        return -EINVAL;
+    }
+    profile->migration_r16000_profile_seen = true;
+    return 0;
+}
+
+static int mips_r16000_profile_pre_load(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    if (strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000") ||
+        !cpu->r10k_profile || !cpu->r10k_profile->r16000_experimental) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_r16000_profile = {
+    .name = "mips/r16000-profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = mips_r16000_profile_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(migration_r16000_reset_mode, R10KCPUProfile),
+        VMSTATE_UINT32(migration_r16000_scache_bytes, R10KCPUProfile),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r16000_profile_needed(void *opaque)
+{
+    MIPSCPU *cpu = opaque;
+
+    return cpu->r10k_profile && cpu->r10k_profile->r16000_experimental;
+}
+
+const VMStateDescription mips_vmstate_r16000_profile = {
+    .name = "cpu/r16000-profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_load = mips_r16000_profile_pre_load,
+    .needed = mips_r16000_profile_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(r10k_profile, MIPSCPU,
+                               vmstate_r16000_profile, R10KCPUProfile),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -210,9 +367,7 @@ static const VMStateDescription vmstate_r12000_profile = {
 
 static bool mips_r12000_profile_needed(void *opaque)
 {
-    MIPSCPU *cpu = opaque;
-
-    return cpu->r10k_profile && cpu->r10k_profile->valid;
+    return mips_r12000_profile_active(opaque);
 }
 
 const VMStateDescription mips_vmstate_r12000_profile = {
@@ -231,9 +386,20 @@ void mips_r10k_profile_pre_save(MIPSCPU *cpu)
 {
     R10KCPUProfile *profile = cpu->r10k_profile;
 
-    if (profile && profile->valid) {
+    if (mips_r12000_profile_active(cpu)) {
         memcpy(profile->migration_profile, profile->values,
                sizeof(profile->values));
+    }
+    if (profile && profile->r16000_experimental) {
+        profile->migration_r16000_reset_mode = profile->r16000_reset_mode;
+        profile->migration_r16000_scache_bytes = profile->r16000_scache_bytes;
+    }
+}
+
+void mips_r10k_profile_pre_load(MIPSCPU *cpu)
+{
+    if (cpu->r10k_profile) {
+        cpu->r10k_profile->migration_r16000_profile_seen = false;
     }
 }
 
@@ -247,7 +413,16 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
         env->CP0_PRid != profile->r10000_prid) {
         return -EINVAL;
     }
-    if (profile && profile->valid &&
+    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R16000") &&
+        (!profile || !profile->r16000_experimental ||
+         !profile->migration_r16000_profile_seen ||
+         env->CP0_PRid != 0x00000F50 || env->active_fpu.fcr0 != 0x00000900 ||
+         (env->CP0_Config0 & env->cpu_model->CP0_Config0_preserve_bitmask) !=
+         (env->cpu_model->CP0_Config0 &
+          env->cpu_model->CP0_Config0_preserve_bitmask))) {
+        return -EINVAL;
+    }
+    if (mips_r12000_profile_active(cpu) &&
         memcmp(profile->migration_profile, profile->values,
                sizeof(profile->values))) {
         return -EINVAL;

@@ -852,6 +852,64 @@ const mips_def_t mips_defs[] =
         .mmu_type = MMU_TYPE_R10000,
     },
     {
+        /*
+         * CPU-only R16000 experiment. The selected compatibility behavior
+         * does not identify a production board or a physical reset mode.
+         * The caller must explicitly opt in and supply the board mode and
+         * secondary-cache capacity before realization.
+         */
+        .name = "R16000",
+        .CP0_PRid = 0x00000F50,
+        .CP0_Config0 = (3 << CP0C0_R10K_IC) | (3 << CP0C0_R10K_DC),
+        /* Config1 is internal metadata; this model exposes Config0. */
+        .CP0_Config1 = (1 << CP0C1_FP) | (63 << CP0C1_MMU),
+        .CP0_Config0_preserve_bitmask = 0xFFFFFFF8,
+        .CP0_PageMask_rw_bitmask = 0x01FFE000,
+        .CP0_Framemask_rw_bitmask = 0xFFFF,
+        .CP0_EntryLo_extra_rw_bitmask = 3ULL << CP0EnLo_UC,
+        .xkseg_limit = 0xC0000FFEFFFFFFFFULL,
+        .CP0_LLAddr_rw_bitmask = 0xFFFFFFFF,
+        .CP0_LLAddr_shift = 0,
+        .CP0_TagLo_rw_bitmask = 0xFFFFFFFF,
+        .CP0_ECC_rw_bitmask = 0x3FF,
+        .SYNCI_Step = 32,
+        .CCRes = 2,
+        .CP0_Status_rw_bitmask = 0xF67DFFFF,
+        .CP1_fcr0 = 0x00000900,
+        .CP1_fcr31 = 0,
+        .CP1_fcr31_rw_bitmask = 0xFF83FFFF,
+        .SEGBITS = 44,
+        .PABITS = 40,
+        .insn_flags = CPU_MIPS4 | INSN_R10K,
+        .cfg = {
+            .uncached_attribute = true,
+            .erl_restricts_xuseg = true,
+            .watch_is_physical = true,
+            .warm_reset_reports_sr = true,
+            .cache_error_is_error_level = true,
+            .exception_breaks_ll_link = true,
+            .lladdr_is_scratch = true,
+            .fp_traps_denormal_result = true,
+            .fp_cvt_l_limited_to_51_bits = true,
+            .stores_are_posted = true,
+            .has_cache_diagnostics = true,
+            .has_branch_prediction_table = true,
+            .performance_counter_pairs = 4,
+            .performance_control_rw_bitmask = CP0PC_EVENT_R12K |
+                CP0PC_IE | CP0PC_U | CP0PC_K | CP0PC_EXL,
+            .performance_counter_interrupts = false,
+            .log_unsupported_performance = true,
+            .diagnostic_rw_bitmask = 0x0403CFFB,
+            .scache_size = R10K_SCACHE_4M_SIZE,
+            .scache_line_size = 128,
+            .compare_match_is_continuous = true,
+            .count_compare_adjacent_recovery = true,
+            .mtc0_entrylo_moves_64_bits = true,
+            .partial_lwr_preserves_upper = true,
+        },
+        .mmu_type = MMU_TYPE_R10000,
+    },
+    {
         .name = "VR5432",
         .CP0_PRid = 0x00005400,
         /* No L2 cache, icache size 8k, dcache size 8k, uncached coherency. */

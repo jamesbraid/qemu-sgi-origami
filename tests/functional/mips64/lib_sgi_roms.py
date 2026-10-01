@@ -7,7 +7,8 @@ import re
 
 
 CONFIGS = ('default', '4cpu-2node', 'icount')
-CPUS = ('R4000', 'R10000', 'R14000')
+CPUS = ('R4000', 'R10000', 'R14000',
+        'R16000-4m', 'R16000-8m', 'R16000-16m')
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,8 @@ class Case:
     @property
     def identity(self):
         config = self.config.replace('-', '_')
-        return f'SGIRoms.test_{self.rom}_{self.cpu}_{config}'
+        cpu = self.cpu.replace('-', '_')
+        return f'SGIRoms.test_{self.rom}_{cpu}_{config}'
 
 
 def read_suite(path):

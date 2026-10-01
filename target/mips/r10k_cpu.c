@@ -121,6 +121,125 @@ static bool mips_r12000_validate(MIPSCPU *cpu, Error **errp)
     return false;
 }
 
+static void mips_r16000_experimental_get(Object *obj, Visitor *v,
+                                         const char *name, void *opaque,
+                                         Error **errp)
+{
+    bool value = MIPS_CPU(obj)->r10k_profile->r16000_experimental;
+
+    visit_type_bool(v, name, &value, errp);
+}
+
+static void mips_r16000_experimental_set(Object *obj, Visitor *v,
+                                         const char *name, void *opaque,
+                                         Error **errp)
+{
+    MIPSCPU *cpu = MIPS_CPU(obj);
+    bool value;
+
+    if (DEVICE(obj)->realized) {
+        error_setg(errp, "%s cannot change after CPU realization", name);
+        return;
+    }
+    if (!visit_type_bool(v, name, &value, errp)) {
+        return;
+    }
+    cpu->r10k_profile->r16000_experimental = value;
+}
+
+static const char *const r16000_property_names[] = {
+    "r16000-reset-mode", "r16000-scache-bytes",
+};
+
+static void mips_r16000_property_get(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
+    unsigned int field = (uintptr_t)opaque;
+    uint32_t value = field == 0 ? profile->r16000_reset_mode :
+                                 profile->r16000_scache_bytes;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mips_r16000_property_set(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    MIPSCPU *cpu = MIPS_CPU(obj);
+    R10KCPUProfile *profile = cpu->r10k_profile;
+    unsigned int field = (uintptr_t)opaque;
+    uint32_t value;
+
+    if (DEVICE(obj)->realized) {
+        error_setg(errp, "%s cannot change after CPU realization", name);
+        return;
+    }
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (field == 0) {
+        profile->r16000_reset_mode = value;
+        profile->r16000_reset_mode_set = true;
+    } else {
+        profile->r16000_scache_bytes = value;
+        profile->r16000_scache_bytes_set = true;
+    }
+}
+
+static bool mips_r16000_validate(MIPSCPU *cpu, Error **errp)
+{
+    R10KCPUProfile *profile = cpu->r10k_profile;
+    uint32_t mode, bytes, ss;
+
+    if (!profile->r16000_experimental) {
+        error_setg(errp, "R16000 requires r16000-experimental=on");
+    } else if (!profile->r16000_reset_mode_set) {
+        error_setg(errp, "R16000 requires r16000-reset-mode");
+    } else if (!profile->r16000_scache_bytes_set) {
+        error_setg(errp, "R16000 requires r16000-scache-bytes");
+    } else if (profile->r16000_reset_mode & ~0x01ffffffu) {
+        error_setg(errp,
+                   "r16000-reset-mode uses only Config0 bits 24:0; "
+                   "primary cache sizes are fixed at 32 KiB");
+    } else {
+        mode = profile->r16000_reset_mode;
+        bytes = profile->r16000_scache_bytes;
+        if (bytes == 4 * 1024 * 1024) {
+            ss = 3;
+        } else if (bytes == 8 * 1024 * 1024) {
+            ss = 4;
+        } else if (bytes == 16 * 1024 * 1024) {
+            ss = 5;
+        } else {
+            error_setg(errp,
+                       "r16000-scache-bytes must be 4194304, 8388608, or 16777216");
+            return false;
+        }
+        if (((mode >> CP0C0_R10K_SS) & 7) != ss) {
+            error_setg(errp,
+                       "r16000-scache-bytes disagrees with Config0 SS");
+        } else if (!((mode >> CP0C0_R10K_SB) & 1)) {
+            error_setg(errp,
+                       "r16000-reset-mode requires Config0 SB=1 for 128-byte lines");
+        } else if (((mode >> CP0C0_BE) & 1) != cpu->is_big_endian) {
+            error_setg(errp,
+                       "r16000-reset-mode endianness differs from CPU");
+        } else {
+            profile->cpu_model = g_new(mips_def_t, 1);
+            *profile->cpu_model = *cpu->env.cpu_model;
+            profile->cpu_model->CP0_Config0 |= mode;
+            profile->cpu_model->cfg.scache_size = bytes;
+            profile->cpu_model->cfg.scache_line_size = 128;
+            cpu->env.cpu_model = profile->cpu_model;
+            profile->valid = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 void mips_r10k_cpu_init(MIPSCPU *cpu)
 {
     Object *obj = OBJECT(cpu);
@@ -144,12 +263,35 @@ void mips_r10k_cpu_init(MIPSCPU *cpu)
                                 NULL, (void *)i);
         }
     }
+    if (!strcmp(mcc->cpu_def->name, "R16000")) {
+        object_property_add(obj, "r16000-experimental", "bool",
+                            mips_r16000_experimental_get,
+                            mips_r16000_experimental_set, NULL, NULL);
+        object_property_set_description(obj, "r16000-experimental",
+            "Opt in to the CPU-only R16000 compatibility experiment");
+        for (uintptr_t i = 0; i < ARRAY_SIZE(r16000_property_names); i++) {
+            object_property_add(obj, r16000_property_names[i], "uint32",
+                                mips_r16000_property_get,
+                                mips_r16000_property_set, NULL, (void *)i);
+        }
+        object_property_set_description(obj, "r16000-reset-mode",
+            "Explicit board Config0 bits 24:0; primary cache sizes are fixed");
+        object_property_set_description(obj, "r16000-scache-bytes",
+            "Explicit secondary-cache capacity in bytes for the experiment");
+    }
 }
 
 bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp)
 {
-    return strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R12000") ||
-           mips_r12000_validate(cpu, errp);
+    const char *name = MIPS_CPU_GET_CLASS(cpu)->cpu_def->name;
+
+    if (!strcmp(name, "R12000")) {
+        return mips_r12000_validate(cpu, errp);
+    }
+    if (!strcmp(name, "R16000")) {
+        return mips_r16000_validate(cpu, errp);
+    }
+    return true;
 }
 
 void mips_r10k_cpu_realize(MIPSCPU *cpu)
