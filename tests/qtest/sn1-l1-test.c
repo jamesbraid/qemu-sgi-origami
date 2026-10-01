@@ -493,6 +493,223 @@ static void test_board_area_validity(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+
+static QTestState *start_expansion_records(const char *path,
+                                          const char *bic1,
+                                          const char *extra)
+{
+    QTestState *s = qtest_initf(
+        "-M none -cpu R10000 -S %s -device '{\"driver\":\"sgi-l1\","
+        "\"id\":\"l1c\",\"brick-type\":\"pci-expansion\","
+        "\"board-record-eeprom\":[\"%s\",\"%s\",\"%s\",\"%s\"]}' "
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\", "
+        "\"controller\":\"l1c\"}'",
+        extra, path, path, path, bic1);
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    return s;
+}
+
+static QTestState *start_expansion(const char *path, const char *extra)
+{
+    return start_expansion_records(path, "", extra);
+}
+
+static void expect_expansion_identity(QTestState *s)
+{
+    uint8_t reply[131];
+    const uint8_t expected[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x41, 0, 0, 0, 0, 0x25
+    };
+
+    g_assert_cmpuint(general(s, 3, NULL, 0, 0, reply), ==, sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
+static void test_expansion_records(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-expansion-XXXXXX", &error);
+    g_autofree char *path = NULL;
+    uint8_t image[512] = { 1, 2, 0, 0, 0, 0, 0, 0xfd };
+    uint8_t reply[131];
+    const uint32_t valid[] = { 1, 0, 0, 16, 8, 1, 1, 0, 0 };
+    const uint32_t absent_area[] = { 1, 0, 0, 0, 8, 1, 1, 1, 0 };
+    const uint8_t absent[] = { 0x30, 0xff, 0xff, 0xff, 0x98, 0 };
+    const uint8_t invalid[] = { 0x30, 0xff, 0xff, 0xff, 0x95, 0 };
+    const uint8_t unsupported[] = { 0x30, 0xff, 0xff, 0xff, 0x9c, 0 };
+    QTestState *s;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "synthetic-board.bin", NULL);
+    /* The area ends at byte 32, below the product's configured capacity. */
+    image[18] = 4;
+    image[31] = 0xfc;
+    g_assert_true(g_file_set_contents(path, (char *)image, 32, &error));
+    g_assert_no_error(error);
+    s = start_expansion(path, "");
+    expect_expansion_identity(s);
+    for (unsigned component = 0; component < 3; component++) {
+        expect_format(s, component, valid, G_N_ELEMENTS(valid));
+        g_assert_cmpuint(eeprom_read(s, component, 3, 0, 16, reply), ==, 28);
+        g_assert_cmpmem(reply + 12, 16, image + 16, 16);
+        /* Board positions never acquire a compute SPD area. */
+        g_assert_cmpuint(eeprom_read(s, component, 4, 0, 1, reply), ==, 6);
+        g_assert_cmpmem(reply, 6, absent, 6);
+    }
+    for (unsigned component = 3; component < 6; component++) {
+        g_assert_cmpuint(eeprom_read(s, component, 5, 999, 1, reply), ==, 6);
+        g_assert_cmpmem(reply, 6, absent, 6);
+    }
+    for (unsigned code = 0x2002; code <= 0x2004; code++) {
+        g_assert_cmpuint(general(s, code, NULL, 0, 0, reply), ==, 6);
+        g_assert_cmpmem(reply, 6, unsupported, 6);
+    }
+    qtest_system_reset(s);
+    expect_expansion_identity(s);
+    expect_format(s, 2, valid, G_N_ELEMENTS(valid));
+    qtest_quit(s);
+
+    /* A checksummed area ending at 512 is rejected by the strict bound. */
+    memset(image, 0, sizeof(image));
+    memcpy(image, (uint8_t[]){ 1, 62, 0, 0, 0, 0, 0, 0xc1 }, 8);
+    memcpy(image + 496, (uint8_t[]){ 1, 2, 0, 0, 0, 0, 0, 0xfd }, 8);
+    g_assert_true(g_file_set_contents(path, (char *)image, 512, &error));
+    g_assert_no_error(error);
+    s = start_expansion(path, "");
+    expect_format(s, 2, absent_area, G_N_ELEMENTS(absent_area));
+    qtest_quit(s);
+
+    image[7]++;
+    g_assert_true(g_file_set_contents(path, (char *)image, 512, &error));
+    g_assert_no_error(error);
+    s = start_expansion(path, "");
+    /* Stored invalid status precedes the offset check. */
+    g_assert_cmpuint(eeprom_read(s, 2, 0, 999, 1, reply), ==, 6);
+    g_assert_cmpmem(reply, 6, invalid, 6);
+    qtest_quit(s);
+    unlink(path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_expansion_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-expansion-migrate-XXXXXX",
+                                        &error);
+    g_autofree char *socket = NULL, *uri = NULL, *path = NULL;
+    const uint8_t image[32] = { 1, 0, 0, 0, 0, 0, 0, 0xff };
+    const uint32_t valid[] = { 1, 0, 0, 0, 8, 1, 1, 1, 0 };
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "synthetic-board.bin", NULL);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                      &error));
+    g_assert_no_error(error);
+    from = start_expansion_records(path, path, "");
+    to = start_expansion("", "-incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
+    expect_expansion_identity(to);
+    expect_format(to, 2, valid, G_N_ELEMENTS(valid));
+    expect_format(to, 3, valid, G_N_ELEMENTS(valid));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(path);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+
+static void test_expansion_input_refusal(void)
+{
+    if (g_test_subprocess()) {
+        qtest_initf("-M none -cpu R10000 -S -device "
+                    "'{\"driver\":\"sgi-l1\",\"brick-type\":"
+                    "\"pci-expansion\",%s}'", g_getenv("L1_EXPANSION_INPUT"));
+        return;
+    }
+    {
+        const char *inputs[] = {
+            "\"spd-record-eeprom\":[\"\",\"\",\"missing\"]",
+            "\"board-record-eeprom\":[\"\",\"\",\"\",\"\",\"missing\"]",
+            "\"board-eeprom\":[\"missing\"]",
+            "\"chassis-eeprom\":[\"missing\"]",
+            "\"spd-eeprom\":[\"missing\"]",
+        };
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(inputs); i++) {
+            g_setenv("L1_EXPANSION_INPUT", inputs[i], TRUE);
+            g_test_trap_subprocess(NULL, 0, 0);
+            g_test_trap_assert_failed();
+            g_test_trap_assert_stderr(
+                "*accepts only four selected board records*");
+        }
+        g_unsetenv("L1_EXPANSION_INPUT");
+    }
+}
+
+
+static void test_expansion_oversize_refusal(void)
+{
+    if (g_test_subprocess()) {
+        start_expansion(g_getenv("L1_EXPANSION_FILE"), "");
+        return;
+    }
+    {
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("sn1-l1-oversize-XXXXXX", &error);
+        g_autofree char *path = NULL;
+        const uint8_t image[513] = { 1, 0, 0, 0, 0, 0, 0, 0xff };
+
+        g_assert_no_error(error);
+        path = g_build_filename(dir, "synthetic-oversize.bin", NULL);
+        g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
+                                          &error));
+        g_assert_no_error(error);
+        g_setenv("L1_EXPANSION_FILE", path, TRUE);
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*selected EEPROM record length is invalid*");
+        g_unsetenv("L1_EXPANSION_FILE");
+        unlink(path);
+        g_assert_cmpint(rmdir(dir), ==, 0);
+    }
+}
+
+static void test_expansion_migration_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-profile-mismatch-XXXXXX",
+                                        &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_expansion("", "");
+    to = qtest_init("-M none -cpu R10000 -S -incoming defer "
+                    "-device sgi-l1,id=l1c" UART);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_selected_board(void)
 {
     GError *error = NULL;
@@ -1714,6 +1931,126 @@ static void test_command_interpreter(void)
     /* The command ran only through the interpreter: no console text. */
     assert_display(s, "Powered Up");
     qtest_quit(s);
+}
+
+
+static void assert_expansion_idle(QTestState *s)
+{
+    g_autoptr(QDict) reset = NULL, shutdown = NULL, stop = NULL, resume = NULL;
+
+    g_assert_cmpstr(status(s), ==, "prelaunch");
+    reset = qtest_qmp_event_ref(s, "RESET");
+    shutdown = qtest_qmp_event_ref(s, "SHUTDOWN");
+    stop = qtest_qmp_event_ref(s, "STOP");
+    resume = qtest_qmp_event_ref(s, "RESUME");
+    g_assert_null(reset);
+    g_assert_null(shutdown);
+    g_assert_null(stop);
+    g_assert_null(resume);
+    assert_display(s, "L1 running");
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
+}
+
+static bool reject_expansion_lifecycle_event(QTestState *s, const char *name,
+                                             QDict *event, void *opaque)
+{
+    g_assert_cmpstr(name, !=, "RESET");
+    g_assert_cmpstr(name, !=, "SHUTDOWN");
+    g_assert_cmpstr(name, !=, "STOP");
+    g_assert_cmpstr(name, !=, "RESUME");
+    return false;
+}
+
+static void check_expansion_lifecycle_refusal(const char *pin)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",brick-type=pci-expansion", "");
+    uint8_t reply[131], args[5], request[128];
+    const unsigned codes[] = { 0x2001, 0x2005, 0x2006, 0x2007, 0x2008 };
+    const char *commands[] = {
+        "power up", "power down", "pwr u", "pwr d", "* pwr d",
+        "reset", "rst", "* reset", "softreset", "softrst", "nmi",
+        "select", "sel subchannel 1",
+    };
+    const uint8_t unsupported[] = { 0x30, 0xff, 0xff, 0xff, 0x9b, 0 };
+    const uint8_t no_processors[] = { 0x30, 0xff, 0xff, 0xff, 0x94, 0 };
+    const char *warning = "INFO: compute service is unsupported on "
+                          "expansion profile.\r\n";
+
+    qtest_irq_intercept_out_named(s, L1, pin);
+    qtest_qmp_set_event_callback(s, reject_expansion_lifecycle_event, NULL);
+    assert_expansion_idle(s);
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    g_assert_cmpuint(general(s, 0x10, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmpmem(reply, 6, no_processors, 6);
+    for (unsigned i = 0; i < G_N_ELEMENTS(codes); i++) {
+        g_assert_cmpuint(general(s, codes[i], NULL, 0, 0, reply), ==, 6);
+        g_assert_cmpmem(reply, 6, unsupported, 6);
+        assert_expansion_idle(s);
+    }
+    integer(args, 1);
+    g_assert_cmpuint(general(s, 0x1002, args, sizeof(args), 1, reply), ==, 6);
+    g_assert_cmpmem(reply, 6, unsupported, 6);
+    for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
+        size_t n;
+        g_autofree char *line = g_strdup_printf("%s\r", commands[i]);
+        g_autofree char *expected = g_strconcat(warning, PROMPT, NULL);
+
+        console_send(fd, line);
+        console_expect(fd, expected);
+        assert_expansion_idle(s);
+        text_request(request, &n, 0, commands[i]);
+        send_frame(s, request, n, false);
+        g_assert_cmpuint(receive(s, reply), >, 7);
+        g_assert_cmphex(reply[1], ==, 0xff);
+        g_assert_cmphex(reply[4], ==, 0xff);
+        g_assert_cmphex(reply[5], ==, 1);
+        g_assert_cmphex(reply[6], ==, 1);
+        g_assert_cmpstr((char *)reply + 7, ==,
+            "INFO: compute service is unsupported on expansion profile.");
+        assert_expansion_idle(s);
+    }
+    /* Ctrl-D cannot enter a processor console. */
+    console_send(fd, "\004");
+    {
+        g_autofree char *expected = g_strconcat(warning, PROMPT, NULL);
+
+        console_expect(fd, expected);
+    }
+    for (unsigned task = 5; task <= 21; task += 16) {
+        size_t n;
+
+        text_request(request, &n, 0, "x");
+        set_destination(request, 0x0ffff000 | task);
+        send_frame(s, request, n, false);
+        g_assert_cmpuint(receive(s, reply), ==, 6);
+        g_assert_cmpmem(reply, 6, unsupported, 6);
+    }
+    {
+        const uint8_t output[] = { 0x44, 'x' };
+
+        send_frame(s, output, sizeof(output), false);
+        g_assert_cmpuint(general(s, 0x000e, NULL, 0, 0, reply), ==, 11);
+        g_assert_cmphex(reply[10], ==, 0);
+    }
+    assert_expansion_idle(s);
+    qtest_qmp_set_event_callback(s, NULL, NULL);
+    qtest_system_reset(s);
+    assert_expansion_idle(s);
+    expect_expansion_identity(s);
+    qtest_quit(s);
+    close(fd);
+}
+
+static void test_expansion_lifecycle_refusal(void)
+{
+    const char *pins[] = { "node-power", "node-reset", "soft-reset", "nmi" };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(pins); i++) {
+        check_expansion_lifecycle_refusal(pins[i]);
+    }
 }
 
 static void raw_bytes(QTestState *s, const uint8_t *bytes, size_t n)
@@ -3016,6 +3353,16 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
     qtest_add_func("sn1/l1/eeprom-six-entries", test_eeprom_six_entries);
+    qtest_add_func("sn1/l1/expansion/lifecycle-refusal",
+                   test_expansion_lifecycle_refusal);
+    qtest_add_func("sn1/l1/expansion/records", test_expansion_records);
+    qtest_add_func("sn1/l1/expansion/migration", test_expansion_migration);
+    qtest_add_func("sn1/l1/expansion/input-refusal",
+                   test_expansion_input_refusal);
+    qtest_add_func("sn1/l1/expansion/oversize-refusal",
+                   test_expansion_oversize_refusal);
+    qtest_add_func("sn1/l1/expansion/migration-mismatch",
+                   test_expansion_migration_mismatch);
     qtest_add_func("sn1/l1/eeprom-selected-board", test_selected_board);
     qtest_add_func("sn1/l1/eeprom-selected-spd", test_selected_spd);
     qtest_add_func("sn1/l1/eeprom-selected-raw-conflict",

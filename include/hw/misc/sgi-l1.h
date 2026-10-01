@@ -17,6 +17,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_LOG_ENTRIES 128
 #define SGI_L1_LOG_TEXT 48
 
+typedef struct SGIL1ProductProfile SGIL1ProductProfile;
+
 typedef struct SGIL1EEPROM {
     uint32_t length;
     uint8_t *data;
@@ -84,6 +86,8 @@ struct SGIL1State {
     char *brick_serial;
     char *brick_type;
     uint32_t brick_type_code;
+    const SGIL1ProductProfile *profile;
+    uint32_t product_identity;
     uint32_t processors;
     GString *capture;
     /* Running a command the cabled peer relayed with ctc; not migrated. */
