@@ -361,6 +361,71 @@ static void test_gl_texture_unsupported_draws_untextured(void)
 }
 
 /*
+ * A load whose six GE words at 0xe3d carry a border offset other than the
+ * two traced unbordered ones is logged once and stores nothing, so the
+ * draw is white and untextured; the traced values 0xffffffff and 0 draw
+ * the level, as does a first block that cancels the offset.
+ */
+static void test_gl_texture_border_is_logged_untextured(void)
+{
+    static const struct {
+        uint32_t block;
+        uint32_t border;
+        bool bordered;
+    } cases[] = {
+        { 0, 0xffffffff, false },
+        { 0, 0, false },
+        { 3, 2, false },
+        { 0, 1, true },
+        { 3, 7, true },
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    uint8_t texels[32];
+    QTestState *t;
+    int logged = 0;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-tex-border-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    args = g_strdup_printf(TEX_ARGS " -d unimp -D %s", log);
+    t = tex_start(args);
+    tex_texels(texels);
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        const uint32_t words[6] = { 4, 0, 0, cases[i].block,
+                                    cases[i].border, 0 };
+        uint32_t want = texels[0] << 16 | texels[1] << 8 | texels[2];
+
+        gl_word(t, GL_CONTEXT_OPENER);
+        gl_viewport(t, 0, 0, 128, 128);
+        gl_window_projection(t);
+        gl_ge_load(t, GL_GE_ERAM, 0xe3d, words, 6);
+        tex_load(t, TEX_TL_MODE_RGBA8, texels);
+        tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+        tex_quad(t);
+        if (cases[i].bordered) {
+            want = TEX_WHITE;
+        }
+        g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, want);
+        logged += cases[i].bordered;
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    for (const char *p = contents;
+         (p = strstr(p, "texture load with a border")); p++) {
+        logged--;
+    }
+    g_assert_cmpint(logged, ==, 0);
+    qtest_quit(t);
+    unlink(log);
+    g_rmdir(tmpfs);
+}
+
+/*
  * The SI has no TRAM: the same words draw the quad white, the records'
  * block and the transfer are consumed, and the fence after them parses.
  */
@@ -1447,6 +1512,9 @@ int main(int argc, char **argv)
                    test_gl_texture_load_from_another_node);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-context-cap",
                    test_gl_texture_context_cap);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-border-is-logged-untextured",
+                   test_gl_texture_border_is_logged_untextured);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-board-cap",
                    test_gl_texture_board_cap);
     qtest_add_func("sn0/origin2000/mgras/"
