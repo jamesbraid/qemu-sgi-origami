@@ -3117,6 +3117,309 @@ static void test_pio_read_other_mode_reads_zero(void)
     g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
 }
+
+/*
+ * glReadPixels and glCopyPixels as the IRIX 6.5.30 OpenGL client sends
+ * them (see "Pixel read-back and copy" in the GL command contract).
+ * No capture has the board's side of a read, so these tests pin the
+ * model's approximations: the register records reach the raster engine,
+ * 0x8f08 starts a data-port read, the bracket words are consumed, and a
+ * slow copy is a read followed by an ordinary draw.
+ */
+#define GL_RSS_PAIRS_HDR      0x00007f08
+#define GL_RSS_TRIPLES_HDR    0x00007c08
+#define GL_READ_OPEN          0x00009600
+#define GL_READ_CLOSE         0x00009700
+#define GL_READ_SETUP_HDR     0x0000db04
+#define GL_READ_PIO_HDR       0x00008f08
+#define GL_SAVE_RSS_HDR       0x0000d214
+#define GL_RESTORE_RSS        0x0000d300
+#define GL_RSS_XFRSIZE        0x153
+#define GL_RSS_XFRCOUNTERS    0x158
+#define GL_RSS_XFRMODE        0x159
+#define GL_READ_MODE_RGBA     0x80
+
+typedef struct GLRecord {
+    uint32_t reg;
+    uint32_t value;
+} GLRecord;
+
+/* Raster register pairs: record and word counts, then an inline block. */
+static void gl_rss_pairs(QTestState *qts, const GLRecord *r, uint32_t n)
+{
+    gl_word(qts, GL_RSS_PAIRS_HDR);
+    gl_word(qts, n);
+    gl_word(qts, 2 * n);
+    gl_word(qts, GL_INLINE_BLOCK | 8 * n);
+    for (uint32_t i = 0; i < n; i++) {
+        gl_word(qts, r[i].reg);
+        gl_word(qts, r[i].value);
+    }
+}
+
+/* Raster register records: (register, value, shadow address) triples. */
+static void gl_rss_triples(QTestState *qts, const GLRecord *r, uint32_t n)
+{
+    uint32_t words = (3 * n + 1) & ~1u;
+
+    gl_word(qts, GL_RSS_TRIPLES_HDR);
+    gl_word(qts, n);
+    gl_word(qts, words);
+    gl_word(qts, GL_INLINE_BLOCK | 4 * words);
+    for (uint32_t i = 0; i < n; i++) {
+        gl_word(qts, r[i].reg);
+        gl_word(qts, r[i].value);
+        gl_word(qts, 0x2b6);
+    }
+    if (words != 3 * n) {
+        gl_word(qts, 0);
+    }
+}
+
+/*
+ * The five registers every read writes, for a box of w by h pixels at
+ * screen column x whose hardware rows run y0 to y1 (the client's start is
+ * its low row, the X server's its high one), in transfer mode mode.
+ */
+static void gl_read_registers(QTestState *qts, uint32_t x, uint32_t y0,
+                              uint32_t y1, uint32_t w, uint32_t h,
+                              uint32_t mode, bool triples)
+{
+    const GLRecord r[] = {
+        { GL_RSS_XFRSIZE, h << 16 | w },
+        { GL_RSS_XFRCOUNTERS, h << 16 | w },
+        { GL_RSS_XFRMODE, mode },
+        { REG_BLOCK_START, x << 16 | y0 },
+        { REG_BLOCK_END, (x + w - 1) << 16 | y1 },
+    };
+
+    if (triples) {
+        gl_rss_triples(qts, r, ARRAY_SIZE(r));
+    } else {
+        gl_rss_pairs(qts, r, ARRAY_SIZE(r));
+    }
+}
+
+/* The client's data-port read: setup word, then the 0x8f08 trigger. */
+static void gl_read_setup_word(QTestState *qts)
+{
+    gl_one(qts, GL_READ_SETUP_HDR, 0x1);
+}
+
+static void gl_read_trigger(QTestState *qts)
+{
+    gl_word(qts, GL_READ_PIO_HDR);
+    gl_word(qts, 0);
+    gl_word(qts, 0);
+}
+
+/* A 4-byte RGBA image of the given pixel words, drawn inline at (x, y). */
+static void gl_draw_rgba_row(QTestState *qts, uint32_t x, uint32_t y,
+                             const uint32_t *px, uint32_t n)
+{
+    gl_pixels_program(qts, GL_PIX_4UB, 4 * n, x, y, x + n - 1, y, 1);
+    gl_pixels_draw(qts, n);
+    gl_pixels_row(qts, 0, px, n);
+    gl_pixels_fence(qts);
+}
+
+/* Hardware row of window row y in the probe window gl_enter_slot() makes. */
+#define GL_READ_HW_ROW(y)     (640 + (y))
+
+/* The client's two-pixel read of the window's row y. */
+static void gl_client_read_row(QTestState *qts, uint32_t x, uint32_t y,
+                               uint32_t w, uint32_t h)
+{
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 256 + x, GL_READ_HW_ROW(y),
+                      GL_READ_HW_ROW(y) + h - 1, w, h, GL_READ_MODE_RGBA,
+                      false);
+    gl_read_setup_word(qts);
+    gl_read_trigger(qts);
+}
+
+/*
+ * The 0x7f08 and 0x7c08 records reach the raster engine's registers: the
+ * X server's data-port read, set up by records rather than by direct
+ * writes, returns the same units, and a record that moves the box moves
+ * the result.
+ */
+static void test_gl_records_apply_the_read_registers(void)
+{
+    /* A register the model does not apply, after the five it does. */
+    const GLRecord extra[] = { { 0x156, 0xffffffff } };
+
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    pio_paint(qts, 640, 512, 0x00332211);
+    pio_paint(qts, 641, 512, 0x00665544);
+    mgras_enter_context(qts);
+
+    for (int triples = 0; triples < 2; triples++) {
+        /* Hardware row 511 is screen row 512 of the 1024-row screen. */
+        gl_read_registers(qts, 640, 511, 511, 2, 1, 0x8000, triples);
+        rss_direct(qts, 0x102, 0xa, false);
+        rss_direct(qts, 0x045, 0x18, true);
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x332211);
+        g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x665544);
+    }
+
+    /* Records that move the box one column right move the result. */
+    gl_read_registers(qts, 641, 511, 511, 2, 1, 0x8000, false);
+    rss_direct(qts, 0x045, 0x18, true);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x665544);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+
+    /* One the model does not apply changes nothing. */
+    gl_read_registers(qts, 640, 511, 511, 2, 1, 0x8000, false);
+    gl_rss_pairs(qts, extra, ARRAY_SIZE(extra));
+    rss_direct(qts, 0x045, 0x18, true);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x332211);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x665544);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * glReadPixels' data-port form for RGBA: records, 0xdb04 and a word, then
+ * 0x8f08 and two zeros. Without the 0x8f08 nothing is read; with it the
+ * window's pixels come back as units, red in bits 7:0, the box's top row
+ * first (approximated: the client's own row order is not captured).
+ */
+static void test_gl_readpixels_dataport_rgba(void)
+{
+    static const uint32_t row0[2] = { 0x010203ff, 0x040506ff };
+    static const uint32_t row1[2] = { 0x111213ff, 0x141516ff };
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 10, 20, row0, 2);
+    gl_draw_rgba_row(qts, 10, 21, row1, 2);
+    g_assert_cmphex(gl_window_pixel(qts, 11, 21), ==, 0x141516);
+
+    /* No trigger: the polls and the setup alone start nothing. */
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 256 + 10, GL_READ_HW_ROW(20), GL_READ_HW_ROW(21),
+                      2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_setup_word(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+
+    gl_read_trigger(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x131211);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x161514);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x030201);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x060504);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    gl_word(qts, GL_READ_CLOSE);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/* The transfer modes the model has no evidence for read zero, logged. */
+static void test_gl_readpixels_other_mode_reads_zero(void)
+{
+    static const uint32_t row0[2] = { 0x010203ff, 0x040506ff };
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 10, 20, row0, 2);
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 256 + 10, GL_READ_HW_ROW(20), GL_READ_HW_ROW(20),
+                      2, 1, 0x01, false);
+    gl_read_setup_word(qts);
+    gl_read_trigger(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+}
+
+/*
+ * Everything a read brackets itself with is consumed without a log line
+ * and without disturbing the next draw: 0x9600 and 0x9700, the save and
+ * restore words, and the ERAM parameter push.
+ */
+static void test_gl_readpixels_bracket_opaque(void)
+{
+    static const uint32_t row0[2] = { 0x010203ff, 0x040506ff };
+    static const uint32_t row1[2] = { 0x717273ff, 0x747576ff };
+    static const uint32_t eram[4] = { 0x18d, 0, 0, 0 };
+    g_autofree char *log = NULL;
+    QTestState *t;
+    char *path = gl_eviction_log_start(&t, MACHINE_ARGS);
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    gl_draw_rgba_row(t, 10, 20, row0, 2);
+
+    gl_word(t, GL_READ_OPEN);
+    gl_word(t, GL_SAVE_RSS_HDR);
+    gl_word(t, 0x11e23929);
+    gl_word(t, 0x01000000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 2);
+    gl_ge_load(t, GL_GE_ERAM, 0x18d, eram, ARRAY_SIZE(eram));
+    gl_client_read_row(t, 10, 20, 2, 1);
+    g_assert_cmphex(qtest_readl(t, REG_RE_DATA_HI), ==, 0x030201);
+    g_assert_cmphex(qtest_readl(t, REG_RE_DATA_LO), ==, 0x060504);
+    gl_word(t, GL_RESTORE_RSS);
+    gl_word(t, GL_READ_CLOSE);
+
+    /* The next draw lands where it would have without the read. */
+    gl_draw_rgba_row(t, 30, 40, row1, 2);
+    g_assert_cmphex(gl_window_pixel(t, 30, 40), ==, 0x717273);
+    g_assert_cmphex(gl_window_pixel(t, 31, 40), ==, 0x747576);
+    g_assert_cmphex(gl_window_pixel(t, 10, 20), ==, 0x010203);
+    g_assert_cmphex(gl_window_pixel(t, 32, 40), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    log = gl_eviction_log_end(t, path);
+    g_assert_null(strstr(log, "unimplemented command-FIFO token"));
+    g_assert_null(strstr(log, "ERAM"));
+}
+
+/*
+ * glCopyPixels' slow path is a read followed by the client's ordinary
+ * glDrawPixels at the raster position: read the source box through the
+ * data port, send its pixels back as an RGBA image at the destination,
+ * and read the destination box back to see the same units.
+ */
+static void test_gl_copypixels_slow_path(void)
+{
+    static const uint32_t src[3] = { 0x010203ff, 0x040506ff, 0x070809ff };
+    uint32_t unit[4], px[3];
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 10, 20, src, 3);
+
+    gl_client_read_row(qts, 10, 20, 3, 1);
+    for (int i = 0; i < 4; i++) {
+        unit[i] = qtest_readl(qts, i % 2 ? REG_RE_DATA_LO : REG_RE_DATA_HI);
+    }
+    gl_word(qts, GL_READ_CLOSE);
+    g_assert_cmphex(unit[0], ==, 0x030201);
+    g_assert_cmphex(unit[1], ==, 0x060504);
+    g_assert_cmphex(unit[2], ==, 0x090807);
+    /* The read draws nothing and moves nothing. */
+    g_assert_cmphex(gl_window_pixel(qts, 10, 20), ==, 0x010203);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0);
+
+    for (int i = 0; i < 3; i++) {
+        uint32_t w = unit[i];
+
+        px[i] = (w & 0xff) << 24 | (w >> 8 & 0xff) << 16 |
+                (w >> 16 & 0xff) << 8 | 0xff;
+    }
+    gl_draw_rgba_row(qts, 50, 60, px, 3);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 60), ==, 0x010203);
+    g_assert_cmphex(gl_window_pixel(qts, 51, 60), ==, 0x040506);
+    g_assert_cmphex(gl_window_pixel(qts, 52, 60), ==, 0x070809);
+    g_assert_cmphex(gl_window_pixel(qts, 53, 60), ==, 0);
+
+    gl_client_read_row(qts, 50, 60, 3, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x030201);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x060504);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x090807);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3254,6 +3557,16 @@ int main(int argc, char **argv)
                    test_gl_dma_read_fence_is_consumed_quietly);
     qtest_add_func("sn0/origin2000/mgras/gl-list-past-the-pool-is-bounded",
                    test_gl_list_past_the_pool_is_bounded);
+    qtest_add_func("sn0/origin2000/mgras/gl-records-apply-the-read-registers",
+                   test_gl_records_apply_the_read_registers);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
+                   test_gl_readpixels_dataport_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-other-mode-reads-zero",
+                   test_gl_readpixels_other_mode_reads_zero);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
+                   test_gl_readpixels_bracket_opaque);
+    qtest_add_func("sn0/origin2000/mgras/gl-copypixels-slow-path",
+                   test_gl_copypixels_slow_path);
 
     ret = g_test_run();
     qtest_quit(qts);

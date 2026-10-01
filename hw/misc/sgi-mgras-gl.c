@@ -32,6 +32,7 @@
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-texture.h"
+#include "hw/misc/sgi-mgras-raster.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "trace.h"
 
@@ -588,6 +589,32 @@ enum {
 #define MGRAS_GL_LOAD_RASTER_INFO 0x0000d700
 #define MGRAS_GL_SAVE_TEXMODE    0x0000e910
 #define MGRAS_GL_RESTORE_TEXMODE 0x0000ea00
+/*
+ * glReadPixels and glCopyPixels, as the IRIX 6.5.30 client sends them (the
+ * pixel read-back and copy contract; no capture has the board's side).
+ * __glMgrim_ReadPixels brackets a whole read with 0x9600 and 0x9700,
+ * neither with a payload, and the data-port read ends its register setup
+ * with 0xdb04 and a word and starts with 0x8f08 and two zeros. The DMA
+ * read's 0xda00 follows its kick. The client batches raster registers into
+ * 0x7f08 packets of (register, value) pairs, a record count and a word
+ * count and then an inline block, as 0x7c08 does with triples.
+ * Approximated: the brackets, the setup word and the ERAM push around a
+ * read are consumed as opaque, since what the board does with them beyond
+ * ordering is unknown; the model reads at the 0x8f08 trigger, the only
+ * word the data-port path has that the server's does not.
+ */
+#define MGRAS_GL_RSS_PAIRS       0x00007f08
+#define MGRAS_GL_RSS_PAIRS_OP    0x7f
+#define MGRAS_GL_READ_OPEN       0x00009600
+#define MGRAS_GL_READ_CLOSE      0x00009700
+#define MGRAS_GL_READ_SETUP      0x0000db04
+#define MGRAS_GL_READ_PIO        0x00008f08
+#define MGRAS_GL_READ_DMA_DONE   0x0000da00
+/* Parser payload slots a records block keeps its place in; see below. */
+#define MGRAS_GL_REC_NEXT        8
+#define MGRAS_GL_REC_REG         9
+#define MGRAS_GL_REC_VALUE       10
+#define MGRAS_GL_REC_TEXTURE     11     /* the texture path takes the words */
 /* A GE pixel draw, whose image follows it; see mgras_gl_pixels_start(). */
 #define MGRAS_GL_PIXELS          0x00008d20
 #define MGRAS_GL_PIXELS_OP       0x8d
@@ -979,6 +1006,12 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_LOAD_RASTER_INFO:
     case MGRAS_GL_SAVE_TEXMODE:
     case MGRAS_GL_RESTORE_TEXMODE:
+    case MGRAS_GL_RSS_PAIRS:
+    case MGRAS_GL_READ_OPEN:
+    case MGRAS_GL_READ_CLOSE:
+    case MGRAS_GL_READ_SETUP:
+    case MGRAS_GL_READ_PIO:
+    case MGRAS_GL_READ_DMA_DONE:
         return true;
     default:
         return false;
@@ -2246,7 +2279,8 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
     if (cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
         return (((reg == MGRAS_GL_BITMAP_OP || reg == MGRAS_GL_PIXELS_OP) &&
                  payload_count == MGRAS_GL_BITMAP_WORDS) ||
-                (reg == SGI_MGRAS_TEX_RECORDS_OP &&
+                ((reg == SGI_MGRAS_TEX_RECORDS_OP ||
+                  reg == MGRAS_GL_RSS_PAIRS_OP) &&
                  payload_count == SGI_MGRAS_TEX_RECORD_SLOTS)) &&
                words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
     }
@@ -3204,6 +3238,78 @@ void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
     }
 }
 
+/*
+ * The raster register records of the 0x7c08 and 0x7f08 packets: an inline
+ * block of triples (register, value, the GE's shadow address) or pairs
+ * (register, value), a pad word after an odd count of the former. The
+ * block's words are applied here as each record completes
+ * (sgi_mgras_raster_record()); a register the raster engine leaves is
+ * logged, except under 0x7c08 on a board with TRAM, where the texture path
+ * owns the block's words and logs its own. The texture path's log also
+ * names the registers applied here as not modelled by it.
+ */
+static bool mgras_gl_records_block(SGIMgrasState *s, uint32_t header)
+{
+    uint32_t *slot = s->cmd_token_payload;
+    uint32_t offset = (header & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22;
+    uint32_t bytes = header & SGI_MGRAS_CMD_BLOCK_BYTES;
+    bool triples = s->cmd_token_reg == SGI_MGRAS_TEX_RECORDS_OP;
+
+    if (s->cmd_token_class != 0 || s->cmd_token_payload_count != 2 ||
+        (!triples && s->cmd_token_reg != MGRAS_GL_RSS_PAIRS_OP)) {
+        return false;
+    }
+    if (triples && sgi_mgras_texture_records(s, header)) {
+        slot[MGRAS_GL_REC_TEXTURE] = 1;
+    } else {
+        if (offset || bytes != slot[1] * sizeof(uint32_t)) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: raster register "
+                          "records block of %u bytes at offset %u after a "
+                          "packet giving %u words\n", bytes, offset,
+                          slot[1]);
+        }
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
+        s->cmd_token_words_remaining = DIV_ROUND_UP(offset + bytes,
+                                                    sizeof(uint32_t));
+        s->cmd_token_payload_count = SGI_MGRAS_TEX_RECORD_SLOTS;
+        slot[MGRAS_GL_REC_TEXTURE] = 0;
+        if (!s->cmd_token_words_remaining) {
+            s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+        }
+    }
+    slot[MGRAS_GL_REC_NEXT] = 0;
+    return true;
+}
+
+static void mgras_gl_record_word(SGIMgrasState *s, uint32_t word)
+{
+    uint32_t *slot = s->cmd_token_payload;
+    bool triples = s->cmd_token_reg == SGI_MGRAS_TEX_RECORDS_OP;
+    uint32_t stride = triples ? 3 : 2;
+    uint32_t k = slot[MGRAS_GL_REC_NEXT]++;
+
+    if (k / stride < slot[0]) {
+        if (k % stride == 0) {
+            slot[MGRAS_GL_REC_REG] = word;
+        } else if (k % stride == 1) {
+            slot[MGRAS_GL_REC_VALUE] = word;
+        }
+        if (k % stride == stride - 1 &&
+            !sgi_mgras_raster_record(s, slot[MGRAS_GL_REC_REG],
+                                     slot[MGRAS_GL_REC_VALUE]) &&
+            !slot[MGRAS_GL_REC_TEXTURE]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: raster register record "
+                          "0x%x value 0x%x is not modelled\n",
+                          slot[MGRAS_GL_REC_REG], slot[MGRAS_GL_REC_VALUE]);
+        }
+    }
+    if (slot[MGRAS_GL_REC_TEXTURE]) {
+        sgi_mgras_texture_record_word(s, word);
+    } else if (!s->cmd_token_words_remaining) {
+        s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
+    }
+}
+
 bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header)
 {
     const uint32_t *slot = s->cmd_token_payload;
@@ -3223,7 +3329,7 @@ bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header)
         return true;
     }
     if (mgras_gl_pixels_block(s, header) ||
-        sgi_mgras_texture_records(s, header)) {
+        mgras_gl_records_block(s, header)) {
         return true;
     }
     if (s->cmd_token_class != 0 || s->cmd_token_reg != MGRAS_GL_BITMAP_OP ||
@@ -3255,8 +3361,9 @@ void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word)
         mgras_gl_pixels_word(s, word);
         return;
     }
-    if (s->cmd_token_reg == SGI_MGRAS_TEX_RECORDS_OP) {
-        sgi_mgras_texture_record_word(s, word);
+    if (s->cmd_token_reg == SGI_MGRAS_TEX_RECORDS_OP ||
+        s->cmd_token_reg == MGRAS_GL_RSS_PAIRS_OP) {
+        mgras_gl_record_word(s, word);
         return;
     }
     for (int i = 0; i < 4; i++) {
@@ -3933,6 +4040,25 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_LOAD_RASTER_INFO:
     case MGRAS_GL_SAVE_TEXMODE:
     case MGRAS_GL_RESTORE_TEXMODE:
+    case MGRAS_GL_READ_OPEN:
+    case MGRAS_GL_READ_CLOSE:
+    case MGRAS_GL_READ_SETUP:
+        return;
+    case MGRAS_GL_RSS_PAIRS:
+        /* Its records follow in an inline block; see mgras_gl_records(). */
+        if (words != 2 || payload[1] != 2 * payload[0]) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: raster register "
+                          "pairs packet of %u records in %u words\n",
+                          payload[0], payload[1]);
+        }
+        return;
+    case MGRAS_GL_READ_PIO:
+        sgi_mgras_raster_pio_read_trigger(s);
+        return;
+    case MGRAS_GL_READ_DMA_DONE:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: the OpenGL client's DMA read "
+                      "(0xda00 after its kick) is not modelled; nothing "
+                      "returned\n");
         return;
     default:
         g_assert_not_reached();
