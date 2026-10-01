@@ -145,8 +145,7 @@ static void test_gl_native_texcoord_contexts(void)
 /*
  * One-engine texture on SI+T (hw/misc/sgi-mgras-texture.c), in the words
  * the IRIX 6.5.30 IP27GR532 client sent when ivview loaded and drew one
- * textured quad (run irix-20260930T224203-2e96c4; mgras-texture.md,
- * "Upload, bind and draw as traced on SI+T"). Raster register records
+ * textured quad. Raster register records
  * are 0x7c08, the record and word counts, and an inline block of
  * (register, value, shadow) triples padded to an even count with a stale
  * word. A load is TL_MODE and TL_SPEC, 0x9b00, the four-byte pixel

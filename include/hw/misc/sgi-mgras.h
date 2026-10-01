@@ -76,15 +76,13 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_REPP_SYNC 0x071f80
 
 /*
- * PP1SELECT picks which PP1 the XMAP registers reach
- * (docs/datasheets/mgras-dual-re.md). Established from the IRIX 6.5.30
- * kernel: it writes ((re << 1) | pp) << 1 before a sequence meant for one
- * PP1 and 1 before writes every PP1 must take. Two PP1s sit behind each
- * RE, so a two-RE board has four. The model keeps a copy per PP1 of the
+ * PP1SELECT picks which PP1 the XMAP registers reach. Established from the
+ * IRIX 6.5.30 kernel: it writes ((re << 1) | pp) << 1 before a sequence meant
+ * for one PP1 and 1 before writes every PP1 must take. Two PP1s sit behind
+ * each RE, so a two-RE board has four. The model keeps a copy per PP1 of the
  * index byte 0x071c88 and of 0x071d00, 0x071d08, 0x071d80, 0x071e00 and
- * 0x071e80. It keeps none of 0x071f00 and 0x071f80, which read the same
- * fixed values under every selection: an approximation the datasheet's
- * model contract lists.
+ * 0x071e80. It keeps none of 0x071f00 and 0x071f80, which read the same fixed
+ * values under every selection: an approximation of the model.
  */
 #define SGI_MGRAS_REPP_STATUS_1 0x071c08
 #define SGI_MGRAS_PP1_SELECT SGI_MGRAS_REPP_STATUS_1
