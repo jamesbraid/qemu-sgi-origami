@@ -2225,6 +2225,91 @@ static void test_expansion_processor_absence(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_six_head_pio(void)
+{
+    static const unsigned widgets[] = { 8, 9, 0xc, 0xd, 0xe, 0xf };
+    const uint64_t remote = SPACE_IO + (UINT64_C(1) << 33);
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[4];
+    int fd = g_file_open_tmp("expansion-six-heads-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "-cpu R14000 -smp 2 -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none -d guest_errors -D %s",
+        STORAGE_BINDING, image, prom, log);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+
+        stl_be_p(bytes, 0x123450 + head);
+        g_assert_true(qtest_memwrite_cpu(qts, 0, base + 0x124,
+                                        bytes, sizeof(bytes)));
+    }
+    /* Distinct maps distinguish six owners from aliases of one head. */
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+            uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+
+            g_assert_true(qtest_memread_cpu(qts, cpu, base + 4,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldl_be_p(bytes), ==, 0x2d002049);
+            g_assert_true(qtest_memread_cpu(qts, cpu, base + 0x124,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldl_be_p(bytes), ==, 0x123450 + head);
+            g_assert_true(qtest_memread_cpu(qts, cpu, base + 0x104,
+                                           bytes, sizeof(bytes)));
+            g_assert_cmphex(ldl_be_p(bytes) & (1U << 24), ==, 0);
+        }
+    }
+    /* An absent U0 widget must not reach another PCI head. */
+    g_assert_true(qtest_memread_cpu(qts, 0, remote + (UINT64_C(0xb) << 24) + 4,
+                                   bytes, sizeof(bytes)));
+    g_assert_cmphex(ldl_be_p(bytes), ==, 0);
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+
+        g_assert_true(qtest_memread_cpu(qts, 1, base + 0x104,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldl_be_p(bytes) & (1U << 24), ==, 0);
+    }
+    /* This undefined register is a head error, not a widget-route refusal. */
+    g_assert_true(qtest_memread_cpu(qts, 0,
+        remote + (UINT64_C(0xc) << 24) + 0x98, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldl_be_p(bytes), ==, 0);
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+
+        g_assert_true(qtest_memread_cpu(qts, 1, base + 0x104,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldl_be_p(bytes) & (1U << 24), ==,
+                        widgets[head] == 0xc ? 1U << 24 : 0);
+        g_assert_true(qtest_memread_cpu(qts, 1, base + 0x124,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldl_be_p(bytes), ==, 0x123450 + head);
+    }
+    g_assert_true(qtest_memread_cpu(qts, 1,
+        remote + (UINT64_C(0xc) << 24) + 0x1c, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldl_be_p(bytes), ==, 0x98);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents, "sgi-xbridge: invalid access at 0x98"));
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
 static void test_expansion_unconnected_uart(gconstpointer opaque)
 {
     unsigned cpus = GPOINTER_TO_UINT(opaque);
@@ -3036,6 +3121,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
+    qtest_add_func("sn/builder/expansion/six-head-pio",
+                   test_expansion_six_head_pio);
     qtest_add_data_func("sn/builder/expansion/unconnected-uart/two-cpus",
                         GUINT_TO_POINTER(2), test_expansion_unconnected_uart);
     qtest_add_data_func("sn/builder/expansion/unconnected-uart/four-cpus",
