@@ -612,6 +612,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     }
     qdev_prop_set_uint16(xbow, "links-present", links);
     qdev_prop_set_uint16(xbow, "startup-links-alive", links);
+    qdev_prop_set_uint16(xbow, "link-reset-restore-alive", links);
     if (!sgi_xbow_attach_endpoint(crossbow, 8,
             sgi_xio_port_cpu_face(OBJECT(heart), 0),
             sgi_xio_port_packet_face(OBJECT(heart), 0), &error_fatal) ||

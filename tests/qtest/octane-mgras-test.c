@@ -7,6 +7,7 @@
 #include "sgi-migrate.h"
 #include "qobject/qdict.h"
 
+#define XBOW 0x10000000ULL
 #define SI_SHORT 0x1b000000ULL
 #define SI_LONG 0xb000000000ULL
 #define HEART 0x0ff00000ULL
@@ -181,6 +182,203 @@ static void test_liveness(gconstpointer data)
     g_assert_cmphex(qtest_readl(qts, SI_SHORT + CONTROL), ==, 0x5d3a81c6);
     g_assert_cmphex(qtest_readl(qts, SI_LONG + CONTROL), ==, 0x5d3a81c6);
     qtest_quit(qts);
+}
+
+static uint64_t link_register(unsigned widget, unsigned offset)
+{
+    return XBOW + 0x100 + (widget - 8) * 0x40 + offset + 4;
+}
+
+static void assert_link_alive(QTestState *qts, unsigned widget, bool alive)
+{
+    g_assert_cmphex(qtest_readl(qts, link_register(widget, 0x10)) &
+                    (1u << 31), ==, alive ? 1u << 31 : 0);
+    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive") &
+                    (1u << widget), ==, alive ? 1u << widget : 0);
+}
+
+static void reset_link(QTestState *qts, unsigned widget)
+{
+    g_assert_cmpuint(qtest_writel_tx(qts, link_register(widget, 0x30), 0),
+                     ==, 0);
+}
+
+static void assert_si_unreachable(QTestState *qts)
+{
+    uint32_t value;
+
+    g_assert_cmpuint(qtest_readl_tx(qts, SI_SHORT + 4, &value), !=, 0);
+    g_assert_cmpuint(qtest_readl_tx(qts, SI_LONG + 4, &value), !=, 0);
+}
+
+static void assert_link_masks(QTestState *qts, unsigned links)
+{
+    const char *names[] = {
+        "links-present", "startup-links-alive", "link-reset-restore-alive",
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(names); i++) {
+        g_assert_cmphex(property(qts, "/machine/crossbow", names[i]),
+                        ==, links);
+    }
+}
+
+static void test_link_reset_recovery(gconstpointer data)
+{
+    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+
+    assert_identity(qts);
+    reset_link(qts, 11);
+    assert_link_alive(qts, 11, false);
+    qtest_clock_step(qts, 19);
+    assert_link_alive(qts, 11, false);
+    qtest_clock_step(qts, 1);
+    assert_link_alive(qts, 11, true);
+    assert_identity(qts);
+    assert_link_masks(qts, SI_LINKS);
+
+    /* Recovery preserves routes while the reported alive bit is clear. */
+    reset_link(qts, 11);
+    assert_link_alive(qts, 11, false);
+    assert_identity(qts);
+    qtest_clock_step(qts, 19);
+    assert_link_alive(qts, 11, false);
+    assert_identity(qts);
+    qtest_clock_step(qts, 1);
+    assert_link_alive(qts, 11, true);
+    assert_identity(qts);
+
+    set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
+    reset_link(qts, 11);
+    assert_link_alive(qts, 11, false);
+    assert_si_unreachable(qts);
+    qtest_clock_step(qts, 19);
+    assert_link_alive(qts, 11, false);
+    assert_si_unreachable(qts);
+    qtest_clock_step(qts, 1);
+    assert_link_alive(qts, 11, false);
+    assert_si_unreachable(qts);
+    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                    ==, CORE_LINKS);
+    qtest_system_reset(qts);
+    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                    ==, SI_LINKS);
+    assert_identity(qts);
+    qtest_quit(qts);
+}
+
+static void test_link_reset_absent(gconstpointer data)
+{
+    const char *selections[] = { "", ",graphics-board=none" };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
+        QTestState *qts = start(GPOINTER_TO_INT(data), selections[i], "");
+
+        assert_link_masks(qts, CORE_LINKS);
+        reset_link(qts, 11);
+        assert_link_alive(qts, 11, false);
+        assert_si_unreachable(qts);
+        qtest_clock_step(qts, 19);
+        assert_link_alive(qts, 11, false);
+        assert_si_unreachable(qts);
+        qtest_clock_step(qts, 1);
+        assert_link_alive(qts, 11, false);
+        assert_si_unreachable(qts);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-present"),
+                        ==, CORE_LINKS);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, CORE_LINKS);
+        qtest_system_reset(qts);
+        assert_si_unreachable(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void assert_bridge(QTestState *qts, uint32_t expected)
+{
+    uint32_t value;
+
+    g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), ==, 0);
+    g_assert_cmphex(value, ==, expected);
+}
+
+static void test_core_link_reset_recovery(gconstpointer data)
+{
+    const char *selections[] = {
+        "", ",graphics-board=none", ",graphics-board=si",
+    };
+    const unsigned widgets[] = { 8, 15 };
+
+    for (unsigned selection = 0; selection < G_N_ELEMENTS(selections);
+         selection++) {
+        bool graphics = selection == 2;
+        uint32_t links = graphics ? SI_LINKS : CORE_LINKS;
+        QTestState *qts = start(GPOINTER_TO_INT(data),
+                               selections[selection], "");
+        uint32_t bridge = qtest_readl(qts, BRIDGE + 4);
+
+        assert_link_masks(qts, links);
+        for (unsigned i = 0; i < G_N_ELEMENTS(widgets); i++) {
+            reset_link(qts, widgets[i]);
+            assert_link_alive(qts, widgets[i], false);
+            assert_bridge(qts, bridge);
+            if (graphics) {
+                assert_identity(qts);
+            } else {
+                assert_si_unreachable(qts);
+            }
+            qtest_clock_step(qts, 19);
+            assert_link_alive(qts, widgets[i], false);
+            assert_bridge(qts, bridge);
+            qtest_clock_step(qts, 1);
+            assert_link_alive(qts, widgets[i], true);
+            assert_bridge(qts, bridge);
+            if (graphics) {
+                assert_identity(qts);
+            } else {
+                assert_si_unreachable(qts);
+            }
+            g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                            ==, links);
+        }
+        set_property(qts, "/machine/crossbow", "links-alive", links & ~0x8000);
+        reset_link(qts, 15);
+        assert_link_alive(qts, 15, false);
+        uint32_t value;
+
+        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        qtest_clock_step(qts, 19);
+        assert_link_alive(qts, 15, false);
+        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        qtest_clock_step(qts, 1);
+        assert_link_alive(qts, 15, false);
+        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, links & ~0x8000);
+        qtest_system_reset(qts);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, links);
+        assert_bridge(qts, bridge);
+
+        /* A dead CPU ingress cannot deliver its own reset command. */
+        set_property(qts, "/machine/crossbow", "links-alive", links & ~0x100);
+        g_assert_cmpuint(qtest_writel_tx(qts, link_register(8, 0x30), 0),
+                         !=, 0);
+        qtest_clock_step(qts, 20);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, links & ~0x100);
+        g_assert_cmpuint(qtest_readl_tx(qts, BRIDGE + 4, &value), !=, 0);
+        qtest_system_reset(qts);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, links);
+        assert_bridge(qts, bridge);
+        if (graphics) {
+            assert_identity(qts);
+        } else {
+            assert_si_unreachable(qts);
+        }
+        qtest_quit(qts);
+    }
 }
 
 static void enter_context(QTestState *qts)
@@ -380,6 +578,9 @@ int main(int argc, char **argv)
         { "shared-controls", test_shared_controls },
         { "widths-and-holes", test_widths_and_holes },
         { "liveness", test_liveness },
+        { "link-reset-recovery", test_link_reset_recovery },
+        { "link-reset-absent", test_link_reset_absent },
+        { "core-link-reset-recovery", test_core_link_reset_recovery },
         { "reset", test_reset },
         { "migration", test_migration },
         { "local-dma", test_local_dma },
