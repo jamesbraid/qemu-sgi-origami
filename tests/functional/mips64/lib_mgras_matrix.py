@@ -121,10 +121,16 @@ DISPLAY_SETUP = ('setenv DISPLAY :0.0; '
                  'setenv XAUTHORITY /usr/people/guest/.Xauthority')
 
 
+def program_log(name):
+    """Where in the guest a feature's program writes its own output, so a
+    program that exits early leaves its reason in the transcript."""
+    return f'/tmp/mgras-{name}.out'
+
+
 def _demo(name, args=''):
     tail = f' {args}' if args else ''
     return (f'( {name}{tail} || /usr/demos/bin/{name}{tail} ) '
-            '>& /dev/null &')
+            f'>& {program_log(name)} &')
 
 
 FEATURES = (

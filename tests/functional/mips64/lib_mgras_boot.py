@@ -140,7 +140,8 @@ def _run_feature(test, vm, board, feature, desktop_frame):
                           f'missing and {REQUIRE_REFERENCES_ENV} is set')
     finally:
         _serial(test, vm, f'{feature.name}-stop',
-                f'killall -9 {feature.process}', 'STOP-END')
+                f'killall -9 {feature.process}; '
+                f'cat {matrix.program_log(feature.process)}', 'STOP-END')
     return result
 
 
