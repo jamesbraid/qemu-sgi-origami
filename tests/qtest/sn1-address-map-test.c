@@ -2306,6 +2306,45 @@ static void l1_expect_revision(QTestState *qts, int32_t major,
     }
 }
 
+static void assert_qemu_rejects(const char *const args[], const char *message);
+
+static void test_configured_l1_requires_node(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-origin300-config-test,activate=on,unused-l1=on",
+        "-cpu", "R14000", "-smp", "2", "-m", "512M", "-bios", prom_path,
+        "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL,
+    };
+
+    assert_qemu_rejects(args,
+        "controller 'unused-l1' has L1 configuration without a modeled Bedrock node");
+}
+
+/* Synthetic descriptor values prove shared assembly consumes configuration. */
+static void test_configured_origin300_identity(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(
+        "-M sn-builder-origin300-config-test,activate=on "
+        "-cpu R14000 -smp 2 -m 512M -bios %s -S", quoted);
+
+    for (unsigned int reset = 0; reset < 2; reset++) {
+        uint64_t local = BEDROCK_LOCAL + BEDROCK_LB;
+        uint64_t widget = BEDROCK_LOCAL + BEDROCK_IO + IO_WIDGET_ID;
+
+        g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, 0x8abc);
+        g_assert_cmphex((qtest_readq(qts, local) >> 28) & 0xf, ==, 9);
+        g_assert_cmphex((qtest_readq(qts, widget) >> 28) & 0xf, ==, 9);
+        l1_expect_product_identity(qts, 0x41);
+        l1_expect_revision(qts, 7, 8, 9);
+        if (!reset) {
+            qtest_system_reset(qts);
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void test_fuel_l1_revision(const void *data)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
@@ -2345,8 +2384,6 @@ static void test_fuel_l1_revision(const void *data)
     qtest_quit(qts);
 }
 
-static void assert_qemu_rejects(const char *const args[], const char *message);
-
 static void test_fuel_l1_revision_rejects_invalid(const void *data)
 {
     g_autofree char *machine = g_strdup_printf(
@@ -2372,7 +2409,8 @@ static void test_fuel_l1_revision_rejects_other_machine(const void *data)
         "-display", "none", "-qtest", "stdio", "-accel", "qtest", NULL
     };
 
-    assert_qemu_rejects(args, "fuel-l1-revision applies only to -M fuel");
+    assert_qemu_rejects(args,
+        "input 'fuel-l1-revision' is not bound by topology 'origin300'");
 }
 
 static void test_fuel_l1_type_migration(const void *data)
@@ -3316,6 +3354,9 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    if (!strstr(error_output, message)) {
+        g_test_message("QEMU rejection: %s", error_output);
+    }
     g_assert_nonnull(strstr(error_output, message));
 }
 
@@ -4305,6 +4346,10 @@ int main(int argc, char **argv)
                         test_prom_cpu_module_config);
     qtest_add_data_func("sn1/address-map/l1-product-identity", NULL,
                         test_l1_product_identity);
+    qtest_add_data_func("sn1/address-map/configured-l1-requires-node", NULL,
+                        test_configured_l1_requires_node);
+    qtest_add_data_func("sn1/address-map/configured-origin300-identity", NULL,
+                        test_configured_origin300_identity);
     qtest_add_data_func("sn1/address-map/fuel-l1-revision", NULL,
                         test_fuel_l1_revision);
     qtest_add_data_func("sn1/address-map/fuel-l1-revision-other-machine", NULL,

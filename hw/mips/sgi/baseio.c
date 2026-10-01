@@ -105,10 +105,13 @@ struct SGIBaseioState {
     bool revision_set;
     uint32_t revision_override;
     uint64_t onewire_serial;
-    uint32_t fuel_subsystem_id;
+    uint32_t ioc3_subsystem_id;
+    uint32_t scsi_revision;
+    uint32_t ioc3_revision;
+    uint32_t usb_revision;
     uint8_t system_timekeeper_kind;
     uint32_t system_timekeeper_year_base;
-    char *fuel_mac;
+    char *ioc3_mac;
     char *nvram_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
@@ -129,6 +132,9 @@ typedef struct SGIBaseioPreset {
     const char *name;
     SGIBaseioPresetIdentity identity;
     SGIBaseioBuildFn build;
+    uint8_t system_timekeeper_kind;
+    uint32_t system_timekeeper_year_base;
+    const char *const *pci_function_types;
 } SGIBaseioPreset;
 
 /* Every board's own carrier resolves this from the PCI bus it hands us. */
@@ -274,11 +280,9 @@ static bool baseio_realize_ioc3(SGIBaseioState *s, PCIDevice *ioc3,
 
 /*
  * The IOC3 child every preset creates, differing only by population.
- * has_subsystem_id is false for ip29 and io8 (whose own PCI subsystem
- * fields are class defaults or, for io8, set afterward through raw
- * config space -- device identity, not a qdev property claim); baseio
- * sets it here, before realize, since "subsystem-id" is a qdev property
- * and setting one after realize is refused outright. has_phy is true
+ * A supplied subsystem ID is set before realization, when the child
+ * consumes its identity properties. Otherwise the chip's class default
+ * remains. has_phy is true
  * only for io8, whose IOC3 answers through a DP83843 at a fixed MII
  * address rather than the Origin 200/2000 boards' own DP83840A default,
  * for the same before-realize reason. onewire_serial is the chip's own
@@ -332,6 +336,9 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
 
     object_property_add_child(OBJECT(s), child_name, OBJECT(ioc3));
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
+    if (s->ioc3_mac) {
+        qdev_prop_set_string(DEVICE(ioc3), "board-mac", s->ioc3_mac);
+    }
     baseio_configure_ioc3_timekeeper(s, ioc3, timekeeper);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", onewire_serial);
     if (has_subsystem_id) {
@@ -605,13 +612,11 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 }
 
 #define IO8_SCSI_DEVICE           1
-#define IO8_SCSI_REVISION         6
 #define IO8_SCSI_INTERRUPT_PIN    1
 #define IO8_SCSI_SUBSYSTEM_VENDOR 0xffff
 #define IO8_SCSI_SUBSYSTEM_ID     0xffff
 
 #define IO8_IOC3_DEVICE           4
-#define IO8_IOC3_REVISION         1
 #define IO8_IOC3_INTERRUPT_PIN    4
 #define IO8_IOC3_SUPERIO_PIN      0
 #define IO8_IOC3_SUBSYSTEM_VENDOR 0x10a9
@@ -624,7 +629,6 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 #define IO8_IOC3_PHY_ADDR 1
 
 #define IO8_USB_DEVICE           5
-#define IO8_USB_REVISION         0x10
 #define IO8_USB_INTERRUPT_PIN    5
 #define IO8_USB_SUBSYSTEM_VENDOR 0xffff
 #define IO8_USB_SUBSYSTEM_ID     0xffff
@@ -654,15 +658,18 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     if (!pci_realize_and_unref(scsi, s->pci_bus, errp)) {
         return false;
     }
-    pci_set_byte(scsi->config + PCI_REVISION_ID, IO8_SCSI_REVISION);
+    pci_set_byte(scsi->config + PCI_REVISION_ID, s->scsi_revision);
     pci_set_word(scsi->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_SCSI_SUBSYSTEM_VENDOR);
     pci_set_word(scsi->config + PCI_SUBSYSTEM_ID, IO8_SCSI_SUBSYSTEM_ID);
     baseio_wire_xbridge_intx(chip, IO8_SCSI_DEVICE, IO8_SCSI_INTERRUPT_PIN);
 
-    ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
+    ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, s->ioc3_revision,
                              IO8_IOC3_POPULATION,
-                             SGI_IOC3_TIMEKEEPER_M48T35, false, 0, true,
+                             SGI_IOC3_TIMEKEEPER_M48T35, true,
+                             s->ioc3_subsystem_id == UINT32_MAX ?
+                             IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED :
+                             s->ioc3_subsystem_id, true,
                              IO8_IOC3_PHY_ADDR, s->onewire_serial,
                              s->chardev_a_id, s->chardev_b_id,
                              s->record_a_id, s->record_b_id, errp);
@@ -672,7 +679,8 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_IOC3_SUBSYSTEM_VENDOR);
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_ID,
-                IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED);
+                s->ioc3_subsystem_id == UINT32_MAX ?
+                IO8_IOC3_SUBSYSTEM_ID_NOT_OBSERVED : s->ioc3_subsystem_id);
     baseio_wire_xbridge_intx(chip, IO8_IOC3_DEVICE, IO8_IOC3_INTERRUPT_PIN);
     /* The chip's own internal SuperIO real-time event, not a PCI pin. */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
@@ -684,7 +692,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
         return false;
     }
-    pci_set_byte(usb->config + PCI_REVISION_ID, IO8_USB_REVISION);
+    pci_set_byte(usb->config + PCI_REVISION_ID, s->usb_revision);
     pci_set_word(usb->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_USB_SUBSYSTEM_VENDOR);
     pci_set_word(usb->config + PCI_SUBSYSTEM_ID, IO8_USB_SUBSYSTEM_ID);
@@ -790,7 +798,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
         error_setg(errp, "unsupported or conflicting system Timekeeper policy");
         return false;
     }
-    if (s->fuel_subsystem_id > UINT16_MAX) {
+    if (s->ioc3_subsystem_id > UINT16_MAX) {
         error_setg(errp, "fuel preset requires an explicit IOC3 "
                    "subsystem ID");
         return false;
@@ -801,6 +809,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     if (!pci_realize_and_unref(scsi, s->pci_bus, errp)) {
         return false;
     }
+    pci_set_byte(scsi->config + PCI_REVISION_ID, s->scsi_revision);
     qlogic_isp_handle_legacy_cmdline(DEVICE(scsi));
     baseio_wire_xbridge_intx(chip, 1, 1);
 
@@ -817,9 +826,9 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     }
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
-                         s->fuel_subsystem_id);
-    if (s->fuel_mac) {
-        qdev_prop_set_string(DEVICE(ioc3), "board-mac", s->fuel_mac);
+                         s->ioc3_subsystem_id);
+    if (s->ioc3_mac) {
+        qdev_prop_set_string(DEVICE(ioc3), "board-mac", s->ioc3_mac);
     }
     qdev_prop_set_uint16(DEVICE(&SGI_IOC3(ioc3)->parallel_dev),
                         "parallel-part", SGI_IOC3_PAR_PART_TL16PIR552);
@@ -834,6 +843,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     if (!baseio_realize_ioc3(s, ioc3, errp)) {
         return false;
     }
+    pci_set_byte(ioc3->config + PCI_REVISION_ID, s->ioc3_revision);
     s->parallel_claimed = true;
     baseio_note_claim(s, s->chardev_a_id);
     baseio_note_claim(s, s->chardev_b_id);
@@ -849,6 +859,7 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
         return false;
     }
+    pci_set_byte(usb->config + PCI_REVISION_ID, s->usb_revision);
     baseio_wire_xbridge_intx(chip, 5, 5);
 
     return true;
@@ -861,6 +872,10 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
  * part, revision and name are real boards' identities, paired with the
  * Bridge revision each board reports.
  */
+static const char *const bedrock_pci_function_types[] = {
+    "qlogic-isp12160", TYPE_SGI_IOC3, "lucent-ohci",
+};
+
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
       baseio_build_ip29 },
@@ -870,14 +885,16 @@ static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO",
                 SGI_BASEIO_XIO_WIDGET(8) | SGI_BASEIO_XIO_WIDGET(15), true },
       baseio_build_io6g },
-    { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
+    { "io8", { "030-1673-003", 0 }, baseio_build_io8,
+      SGI_IOC3_TIMEKEEPER_M48T35, 1968, bedrock_pci_function_types },
     { "menet", { "030-0873-003", 4, "OMENET0001", "J", "MENET",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_menet },
     { "mscsi", { "030-1243-001", 3, "OMSCSI0001", "F", "MSCSI",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_mscsi },
-    { "fuel", { NULL, 0 }, baseio_build_fuel },
+    { "fuel", { NULL, 0 }, baseio_build_fuel,
+      SGI_IOC3_TIMEKEEPER_M48T35, 1968, bedrock_pci_function_types },
 };
 
 static const SGIBaseioPreset *baseio_preset_find(const char *name)
@@ -984,9 +1001,9 @@ static void baseio_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
-        ((strcmp(s->preset, "fuel") && strcmp(s->preset, "io8")) ||
-         s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_M48T35 ||
-         s->system_timekeeper_year_base != 1968)) {
+        (s->system_timekeeper_kind != preset->system_timekeeper_kind ||
+         s->system_timekeeper_year_base !=
+         preset->system_timekeeper_year_base)) {
         error_setg(errp, "unsupported system Timekeeper policy for preset '%s'",
                    s->preset);
         return;
@@ -995,6 +1012,44 @@ static void baseio_realize(DeviceState *dev, Error **errp)
         s->system_timekeeper_year_base != 1970) {
         error_setg(errp, "system Timekeeper properties require "
                    "an explicit kind");
+        return;
+    }
+    {
+        uint32_t *revisions[] = {
+            &s->scsi_revision, &s->ioc3_revision, &s->usb_revision,
+        };
+        const char *const properties[] = {
+            "scsi-revision", "ioc3-revision", "usb-revision",
+        };
+
+        for (unsigned int i = 0; i < ARRAY_SIZE(revisions); i++) {
+            PCIDeviceClass *pc;
+
+            if (!preset->pci_function_types) {
+                if (*revisions[i] != UINT32_MAX) {
+                    error_setg(errp, "preset '%s' does not support '%s'",
+                               s->preset, properties[i]);
+                    return;
+                }
+                continue;
+            }
+            pc = PCI_DEVICE_CLASS(object_class_by_name(
+                preset->pci_function_types[i]));
+
+            if (*revisions[i] == UINT32_MAX) {
+                *revisions[i] = pc->revision;
+            } else if (*revisions[i] != pc->revision) {
+                error_setg(errp, "preset '%s' %s %u is unsupported by '%s' "
+                           "(implemented revision %u)", s->preset,
+                           properties[i], *revisions[i],
+                           preset->pci_function_types[i], pc->revision);
+                return;
+            }
+        }
+    }
+    if (s->ioc3_subsystem_id != UINT32_MAX &&
+        s->ioc3_subsystem_id > UINT16_MAX) {
+        error_setg(errp, "ioc3-subsystem-id must fit sixteen bits");
         return;
     }
     if (!preset->build(s, errp)) {
@@ -1036,9 +1091,15 @@ static const Property baseio_properties[] = {
                      PCIBus *),
     DEFINE_PROP_UINT64("onewire-serial", SGIBaseioState, onewire_serial,
                        SGI_IOC3_ONEWIRE_SERIAL),
-    DEFINE_PROP_UINT32("fuel-subsystem-id", SGIBaseioState, fuel_subsystem_id,
+    DEFINE_PROP_UINT32("ioc3-subsystem-id", SGIBaseioState,
+                       ioc3_subsystem_id, UINT32_MAX),
+    DEFINE_PROP_STRING("ioc3-mac", SGIBaseioState, ioc3_mac),
+    DEFINE_PROP_UINT32("scsi-revision", SGIBaseioState, scsi_revision,
                        UINT32_MAX),
-    DEFINE_PROP_STRING("fuel-mac", SGIBaseioState, fuel_mac),
+    DEFINE_PROP_UINT32("ioc3-revision", SGIBaseioState, ioc3_revision,
+                       UINT32_MAX),
+    DEFINE_PROP_UINT32("usb-revision", SGIBaseioState, usb_revision,
+                       UINT32_MAX),
     DEFINE_PROP_UINT8("system-timekeeper-kind", SGIBaseioState,
                       system_timekeeper_kind, SGI_IOC3_TIMEKEEPER_NONE),
     DEFINE_PROP_UINT32("system-timekeeper-year-base", SGIBaseioState,
@@ -1075,6 +1136,9 @@ static void baseio_instance_init(Object *obj)
      * to learn what design part number and silicon revision that chip's
      * own identity properties should carry (see the header comment).
      */
+    object_property_add_alias(obj, "fuel-subsystem-id", obj,
+                              "ioc3-subsystem-id");
+    object_property_add_alias(obj, "fuel-mac", obj, "ioc3-mac");
     object_property_add_str(obj, "part", baseio_get_part, baseio_set_part);
     object_property_add(obj, "revision", "uint32", baseio_get_revision,
                         baseio_set_revision, NULL, NULL);

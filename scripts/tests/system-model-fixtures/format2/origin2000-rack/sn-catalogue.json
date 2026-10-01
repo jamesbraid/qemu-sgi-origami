@@ -42,6 +42,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -161,6 +162,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -280,6 +282,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -399,6 +402,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -518,6 +522,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -635,6 +640,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -752,6 +758,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -869,6 +876,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -986,6 +994,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1101,6 +1110,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1216,6 +1226,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1331,6 +1342,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1444,6 +1456,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1557,6 +1570,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1754,6 +1768,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
+          "populated": true,
           "preset": "io6",
           "revision": 4,
           "serial": 17592186044423

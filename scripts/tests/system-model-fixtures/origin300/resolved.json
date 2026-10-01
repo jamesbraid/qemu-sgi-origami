@@ -1238,6 +1238,23 @@
     "architecture_ip": "IP35",
     "board_ip": "IP45",
     "emulation": {
+      "bedrock_nodes": {
+        "bedrock": {
+          "board_id_word": 32769,
+          "initiator_region": 0,
+          "installed_bank_mask": {
+            "mode": "fixed",
+            "value": 12
+          },
+          "local_region": 0,
+          "notes": "Preserves existing emulator initialization. This policy adds no physical hardware claim.",
+          "provenance": "derived",
+          "sources": [
+            "hw/mips/sgi/sn1-node.c",
+            "hw/mips/sgi/sn-machine.c"
+          ]
+        }
+      },
       "display_description": "SGI Origin 300 (IP45)",
       "emulator_constraints": {
         "accepted_bank_sizes_mib": [
@@ -1299,6 +1316,33 @@
           ]
         }
       ],
+      "io_boards": {
+        "xbridge-bridge-f": {
+          "ioc3_subsystem_id": 65535,
+          "mac_source": "none",
+          "notes": "Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.",
+          "provenance": "derived",
+          "sources": [
+            "hw/mips/sgi/baseio.c"
+          ]
+        }
+      },
+      "l1_controllers": {
+        "l1": {
+          "notes": "Preserves existing emulator initialization. This policy adds no physical hardware claim.",
+          "provenance": "derived",
+          "reported_type": 52,
+          "revision": {
+            "major": 1,
+            "minor": 18,
+            "patch": 5
+          },
+          "sources": [
+            "hw/mips/sgi/sn1-node.c",
+            "hw/mips/sgi/sn-machine.c"
+          ]
+        }
+      },
       "lifecycle": "implemented",
       "machine_name": "origin300",
       "profile": "base",
@@ -1347,6 +1391,10 @@
         "brick-serial",
         "l1-debug-switches"
       ],
+      "identity_record_slots": [
+        "node-board",
+        "io-board"
+      ],
       "install_media": [
         "disk-image",
         "netboot"
@@ -1355,6 +1403,17 @@
       "prom_dialogue": "ip35-l1-prompt",
       "provenance": "derived",
       "requires_per_node_flash": false,
+      "smdk": {
+        "diagnostic_mac_bootarg": false,
+        "discovery_prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package_path": "assets/boot/smdk",
+        "requires_boot_flash": false,
+        "requires_network_identity": false,
+        "tftp_mode": "fixed"
+      },
       "sources": [
         "tools/origami_lib/prom.py: L1_CONSOLE, ORIGIN300_EEPROM_INPUTS, ORIGIN300_SPD_INPUTS, and PromLaunchRequest.brick_serial, the harness's own existing Origin 300 identity inputs",
         "tools/origami_lib/irix.py: _select_irix_profile rejecting IRIX install mode on Origin 300 (\"Origin 300 currently supports IRIX boot mode\")",

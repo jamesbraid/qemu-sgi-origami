@@ -37,6 +37,32 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [
+        {
+          "option": "fuel-bedrock-revision",
+          "required": true
+        },
+        {
+          "option": "fuel-board-id-word",
+          "required": true
+        },
+        {
+          "option": "fuel-ioc3-subsystem-id",
+          "required": true
+        },
+        {
+          "option": "fuel-l1-revision",
+          "required": false
+        },
+        {
+          "option": "fuel-l1-type-code",
+          "required": true
+        },
+        {
+          "option": "fuel-mac-eeprom",
+          "required": false
+        }
+      ],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom"
@@ -96,6 +122,18 @@
           "scope": "board"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": true,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg",
+          "launcher"
+        ],
+        "package-path": "assets/boot/smdk-fuel-6526",
+        "requires-boot-flash": true,
+        "requires-network-identity": true,
+        "tftp-mode": "requested"
+      },
       "smp": 1,
       "storage": [
         {
@@ -154,6 +192,7 @@
         "per-node-flash": false,
         "size": 2097152
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [],
       "memory-per-node-mib": {
@@ -259,6 +298,7 @@
         "per-node-flash": false,
         "size": 2097152
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [],
       "memory-per-node-mib": {
@@ -379,6 +419,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -494,6 +535,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -609,6 +651,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -722,6 +765,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -835,6 +879,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -954,6 +999,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1073,6 +1119,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1192,6 +1239,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1311,6 +1359,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1430,6 +1479,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1547,6 +1597,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1664,6 +1715,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1781,6 +1833,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -1898,6 +1951,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2013,6 +2067,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2128,6 +2183,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2243,6 +2299,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2356,6 +2413,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2469,6 +2527,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -2589,6 +2648,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -2737,6 +2797,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -2855,6 +2916,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -2973,6 +3035,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -3091,6 +3154,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -3209,6 +3273,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -3327,6 +3392,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -3446,6 +3512,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -3566,6 +3633,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -3686,6 +3754,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -3806,6 +3875,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -3926,6 +3996,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4044,6 +4115,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4162,6 +4234,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4280,6 +4353,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4398,6 +4472,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4514,6 +4589,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4630,6 +4706,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4746,6 +4823,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4860,6 +4938,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -4974,6 +5053,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5094,6 +5174,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5213,6 +5294,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5332,6 +5414,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5451,6 +5534,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5570,6 +5654,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5687,6 +5772,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5804,6 +5890,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -5921,6 +6008,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6038,6 +6126,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6153,6 +6242,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6268,6 +6358,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6383,6 +6474,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6496,6 +6588,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6609,6 +6702,7 @@
         "per-node-flash": true,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image"
@@ -6720,6 +6814,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -6804,6 +6899,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -6889,6 +6995,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -6973,6 +7080,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 6,
       "storage": [
         {
@@ -7058,6 +7176,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7142,6 +7261,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 6,
       "storage": [
         {
@@ -7227,6 +7357,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7311,6 +7442,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 8,
       "storage": [
         {
@@ -7389,6 +7531,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7467,6 +7610,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -7524,6 +7678,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7602,6 +7757,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -7659,6 +7825,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7737,6 +7904,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -7794,6 +7972,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7872,6 +8051,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -7929,6 +8119,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -8007,6 +8198,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -8064,6 +8266,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -8142,6 +8345,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -8182,6 +8396,20 @@
         {
           "id": "l1",
           "kind": "l1",
+          "l1": {
+            "mac-eeprom-input": {
+              "option": "fuel-mac-eeprom",
+              "required": false
+            },
+            "reported-type-input": {
+              "option": "fuel-l1-type-code",
+              "required": true
+            },
+            "revision-input": {
+              "option": "fuel-l1-revision",
+              "required": false
+            }
+          },
           "module-index": 0
         }
       ],
@@ -8194,8 +8422,28 @@
           "carrier": "onboard",
           "id": "ip34-system-board",
           "ioc3-serial": 103835129348099,
+          "ioc3-subsystem-input": {
+            "option": "fuel-ioc3-subsystem-id",
+            "required": true
+          },
+          "mac-source": "module-l1",
           "module-index": 0,
           "other-identity-parts": [],
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "fuel",
           "system-timekeeper": {
             "initial-ip27-fixture": false,
@@ -8251,6 +8499,21 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-input": {
+              "option": "fuel-board-id-word",
+              "required": true
+            },
+            "board-id-mask": 61440,
+            "board-id-required-bits": 16384,
+            "initiator-region": 0,
+            "installed-bank-mask": 3,
+            "local-region": 0,
+            "revision-input": {
+              "option": "fuel-bedrock-revision",
+              "required": true
+            }
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -8333,6 +8596,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0887-003",
+          "populated": true,
           "preset": "ip30",
           "revision": 3,
           "serial": 134346593796098
@@ -8501,6 +8765,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1467-001",
+          "populated": true,
           "preset": "ip30",
           "revision": 3,
           "serial": 134346610573314
@@ -8707,6 +8972,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0734-002",
+          "populated": true,
           "preset": "io6g",
           "revision": 4,
           "serial": 17592186044423
@@ -8719,6 +8985,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1129-002",
+          "populated": true,
           "preset": "kona",
           "revision": 0,
           "serial": 17592186044425
@@ -9125,6 +9392,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-0734-002",
+          "populated": true,
           "preset": "io6g",
           "revision": 4,
           "serial": 17592186044423
@@ -9139,6 +9407,7 @@
             "030-1067-001"
           ],
           "part": "030-1398-001",
+          "populated": true,
           "preset": "kona",
           "revision": 0,
           "serial": 17592186044425
@@ -9877,6 +10146,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io",
           "revision": 4,
           "serial": 6618611909121
@@ -9889,6 +10159,7 @@
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io",
           "revision": 4,
           "serial": 6618611909122
@@ -10100,6 +10371,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io-crosstown",
           "revision": 4,
           "serial": 6618611909121
@@ -10241,6 +10513,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io-crosstown",
           "revision": 4,
           "serial": 6618611909121
@@ -10252,6 +10525,7 @@
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1252-001",
+          "populated": true,
           "preset": "gigachannel",
           "revision": 4,
           "serial": 6618611909128
@@ -10460,6 +10734,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io",
           "revision": 4,
           "serial": 6618611909121
@@ -10711,6 +10986,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
+          "populated": true,
           "preset": "io6",
           "revision": 4,
           "serial": 17592186044423
@@ -11550,6 +11826,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1124-002",
+          "populated": true,
           "preset": "io6",
           "revision": 4,
           "serial": 17592186044423
@@ -12297,11 +12574,27 @@
         {
           "id": "master-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         },
         {
           "id": "slave-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 1
         }
       ],
@@ -12316,6 +12609,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -12325,9 +12619,26 @@
           "carrier": "machine-placed",
           "id": "master-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295,
@@ -12344,6 +12655,7 @@
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004296
@@ -12353,9 +12665,26 @@
           "carrier": "machine-placed",
           "id": "slave-xbridge-bridge-f",
           "ioc3-serial": 103835129348099,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004296,
@@ -12444,6 +12773,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -12533,6 +12868,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -12641,6 +12982,14 @@
         {
           "id": "l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         }
       ],
@@ -12655,6 +13004,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -12664,9 +13014,26 @@
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295,
@@ -12684,6 +13051,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "",
+          "populated": true,
           "preset": "odyssey",
           "revision": 10,
           "serial": 47413004297
@@ -12741,6 +13109,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -12849,6 +13223,14 @@
         {
           "id": "l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         }
       ],
@@ -12863,6 +13245,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -12872,9 +13255,26 @@
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295,
@@ -12892,6 +13292,7 @@
           "module-index": 1,
           "other-identity-parts": [],
           "part": "",
+          "populated": true,
           "preset": "vbrick",
           "revision": 2,
           "serial": 47413004298
@@ -12956,6 +13357,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -13059,6 +13466,14 @@
         {
           "id": "l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         }
       ],
@@ -13073,6 +13488,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -13082,9 +13498,26 @@
           "carrier": "machine-placed",
           "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295,
@@ -13147,6 +13580,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {

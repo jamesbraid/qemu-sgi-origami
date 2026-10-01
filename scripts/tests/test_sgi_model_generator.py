@@ -15,7 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = "859d6114b229980d44fed396fa3fa5deca0cfb0d1c55cd109f14b143ee1358da"
+EXPECTED_CATALOGUE_SHA256 = "07caaf8e313f659ca25a3f679942a3aa42f8dd210f6ab24b87af61742b4d97d5"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -273,7 +273,7 @@ class FuelTests(unittest.TestCase):
     def test_system_timekeeper_requires_fitted_fuel_board(self):
         model = load_checked_system_model(
             INPUTS / "fuel.yaml", model_schema=schema(INPUTS))
-        for field, value in (("generation", "SN0"), ("board_ip", "IP29")):
+        for field, value in (("generation", "SN0"),):
             altered = copy.deepcopy(model)
             altered["machine"][field] = value
             with self.subTest(field=field), self.assertRaises(ResolutionError):

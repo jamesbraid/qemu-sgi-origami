@@ -2245,7 +2245,7 @@ fuel_mac_done:
     }
 }
 
-bool sgi_l1_fuel_mac(DeviceState *dev, uint8_t mac[6])
+bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6])
 {
     SGIL1State *s = SGI_L1(dev);
 

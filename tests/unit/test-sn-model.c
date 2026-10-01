@@ -334,7 +334,8 @@ static void check_io_board_presets(const SGIModelTopology *t)
  * remaining attachments own the topology's io-boards entries one for
  * one: the same split sgi_machine_index_xio_attachments() computes at
  * realize time. Bedrock topologies are checked separately because their
- * XBridge heads are node parts, with only fitted I/O boards in io-boards.
+ * XBridge heads are node parts. Both empty and fitted heads have io-boards
+ * records, distinguished by populated.
  */
 static void check_xio_attachments(const SGIModelTopology *t)
 {
@@ -500,8 +501,9 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
         const SGIModelXioAttachmentList *attachment = t->xio_attachments;
         unsigned int index = entry->value->attachment;
 
-        if (entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
-            entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+        if (!entry->value->populated ||
+            (entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+             entry->value->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL)) {
             continue;
         }
         while (index-- && attachment) {
@@ -583,13 +585,13 @@ static void test_origin300_graphics_attachment(gconstpointer data)
         const SGIModelXioAttachmentList *attachment;
         const unsigned int widgets[] = { 14, 15, 11 };
         unsigned int index = 0;
-        unsigned int io8_count = 0, graphics_count = 0;
+        unsigned int io8_count = 0, empty_count = 0, graphics_count = 0;
 
         if (!g_str_equal(t->name, name)) {
             continue;
         }
         g_assert_null(t->xio_slots);
-        g_assert_cmpuint(io_board_count(t), ==, 2);
+        g_assert_cmpuint(io_board_count(t), ==, 3);
         for (attachment = t->xio_attachments; attachment;
              attachment = attachment->next, index++) {
             g_assert_cmpuint(index, <, G_N_ELEMENTS(widgets));
@@ -600,15 +602,25 @@ static void test_origin300_graphics_attachment(gconstpointer data)
         g_assert_cmpuint(index, ==, G_N_ELEMENTS(widgets));
         for (board = t->io_boards; board; board = board->next) {
             if (board->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8) {
-                g_assert_cmpuint(board->value->attachment, ==, 1);
-                io8_count++;
+                if (board->value->populated) {
+                    g_assert_cmpuint(board->value->attachment, ==, 1);
+                    g_assert_nonnull(board->value->pci_functions);
+                    io8_count++;
+                } else {
+                    g_assert_cmpuint(board->value->attachment, ==, 0);
+                    g_assert_null(board->value->pci_functions);
+                    g_assert_null(board->value->system_timekeeper);
+                    empty_count++;
+                }
                 continue;
             }
             g_assert_cmpint(board->value->preset, ==, preset);
+            g_assert_true(board->value->populated);
             g_assert_cmpuint(board->value->attachment, ==, 2);
             graphics_count++;
         }
         g_assert_cmpuint(io8_count, ==, 1);
+        g_assert_cmpuint(empty_count, ==, 1);
         g_assert_cmpuint(graphics_count, ==, 1);
         return;
     }

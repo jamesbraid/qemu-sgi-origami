@@ -41,6 +41,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -159,6 +160,7 @@
         "per-node-flash": false,
         "size": 1048576
       },
+      "hardware-inputs": [],
       "identity-inputs": [],
       "install-media": [
         "disk-image",
@@ -255,6 +257,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1244-001",
+          "populated": true,
           "preset": "ip29-io-crosstown",
           "revision": 4,
           "serial": 6618611909121

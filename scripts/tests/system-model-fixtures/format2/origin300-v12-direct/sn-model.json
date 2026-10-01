@@ -2,7 +2,7 @@
   "format": 4,
   "format_key": "sgi-sn",
   "outputs": {
-    "sn-catalogue.json": "40ffbc716bedc77e9024feda5e5d5738186282df7ed7f99fd45fc765801041a5"
+    "sn-catalogue.json": "413065a6f99991768d3174ef32062b69cabaea64e12a433a8108c1aaeb839acc"
   },
-  "source_sha256": "4cf766600af1fc8f4927bf34d234bfd0b1d0ff7a808ddf588211ab140cf9f521"
+  "source_sha256": "7ea97cf002105d3f09cd570a96de39cce72ed29ae8e186413bcbd783e1656e8c"
 }

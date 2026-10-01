@@ -731,23 +731,26 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
     components = {c["id"]: c for c in model.get("components", [])}
     for board, policy in selected.items():
         fitted = components.get(board, {})
-        machine = model["machine"]
-        is_fuel = (machine.get("generation") == "SN1"
-                   and machine.get("board_ip") == "IP34"
-                   and machine["emulation"].get("machine_name") == "fuel"
-                   and fitted.get("kind") == "board"
-                   and fitted.get("hardware_kind") == "ip34")
         parent = components.get(fitted.get("parent"), {})
-        is_io8 = (machine.get("generation") == "SN1"
-                  and machine.get("board_ip") == "IP45"
-                  and machine["emulation"].get("machine_name") == "origin300"
-                  and fitted.get("kind") == "subfunction"
-                  and parent.get("hardware_kind") == "xbridge")
-        if is_fuel:
-            has_ioc3 = any(c.get("parent") == board
-                           and c.get("hardware_kind") == "ioc3"
+        if model["machine"].get("generation") != "SN1":
+            raise ResolutionError(
+                "system Timekeeper selection requires a Bedrock assembly")
+        if fitted.get("kind") == "board":
+            def within(component):
+                seen = set()
+                while component.get("parent") in components:
+                    cid = component["parent"]
+                    if cid == board:
+                        return True
+                    if cid in seen:
+                        return False
+                    seen.add(cid)
+                    component = components[cid]
+                return False
+            has_ioc3 = any(c.get("hardware_kind") == "ioc3" and within(c)
                            for c in components.values())
-        elif is_io8:
+        elif (fitted.get("kind") == "subfunction"
+              and parent.get("kind") == "pci-host-bridge"):
             buses = {bus["id"] for bus in model.get("buses", [])
                      if bus.get("kind") == "pci" and bus.get("master") == board}
             has_ioc3 = any(
@@ -757,7 +760,8 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
                 for connection in model.get("connections", []))
         else:
             raise ResolutionError(
-                "system Timekeeper selection requires Fuel or Origin 300")
+                "system Timekeeper selection names no supported assembly "
+                f"'{board}'")
         if not has_ioc3:
             raise ResolutionError(
                 f"system Timekeeper board '{board}' has no fitted IOC3")
@@ -766,6 +770,183 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
                 or policy["year_base"] != 1968
                 or policy.get("initial_ip27_fixture") is not False):
             raise ResolutionError("unsupported system Timekeeper policy")
+
+
+def validate_initialization_policy(model: dict[str, Any]) -> None:
+    """Validate configuration fields and their existing public input aliases."""
+    emulation = model.get("machine", {}).get("emulation", {})
+    recipe = model.get("machine", {}).get("harness", {}).get("smdk")
+    if recipe is not None:
+        fields = {"package_path", "tftp_mode", "diagnostic_mac_bootarg",
+                  "requires_boot_flash", "requires_network_identity",
+                  "discovery_prerequisites"}
+        if not isinstance(recipe, dict) or set(recipe) != fields:
+            raise ResolutionError(
+                "sMDK recipe requires its complete launch policy")
+        if (not isinstance(recipe["package_path"], str)
+                or not recipe["package_path"].strip()):
+            raise ResolutionError("sMDK recipe requires a package path")
+        if (not isinstance(recipe["tftp_mode"], str)
+                or recipe["tftp_mode"] not in {"fixed", "requested"}):
+            raise ResolutionError("sMDK recipe requires a supported TFTP mode")
+        for field in ("diagnostic_mac_bootarg", "requires_boot_flash",
+                      "requires_network_identity"):
+            if type(recipe[field]) is not bool:
+                raise ResolutionError(f"sMDK recipe {field} must be boolean")
+        names = recipe["discovery_prerequisites"]
+        if (not isinstance(names, list)
+                or any(not isinstance(name, str) or not name.strip()
+                       for name in names)
+                or len(names) != len(set(names))):
+            raise ResolutionError(
+                "sMDK discovery prerequisites must be unique diagnostic names")
+    components = {c["id"]: c for c in model.get("components", [])}
+    allowed = {
+        "bedrock_nodes": {"board_id_word", "board_id_input", "board_id_mask",
+                          "board_id_required_bits", "revision_input",
+                          "local_region",
+                          "initiator_region", "installed_bank_mask"},
+        "l1_controllers": {"reported_type", "reported_type_input", "revision",
+                           "revision_input", "mac_eeprom_input"},
+        "io_boards": {"ioc3_subsystem_id", "ioc3_subsystem_input",
+                      "mac_source"},
+        "pci_function_revisions": {"revision"},
+    }
+    bindings = {
+        ("bedrock_nodes", "board_id_input"): "fuel-board-id-word",
+        ("bedrock_nodes", "revision_input"): "fuel-bedrock-revision",
+        ("l1_controllers", "reported_type_input"): "fuel-l1-type-code",
+        ("l1_controllers", "revision_input"): "fuel-l1-revision",
+        ("l1_controllers", "mac_eeprom_input"): "fuel-mac-eeprom",
+        ("io_boards", "ioc3_subsystem_input"): "fuel-ioc3-subsystem-id",
+    }
+    seen = set()
+
+    def integer(value, maximum, label, minimum=0):
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ResolutionError(
+                f"{label} must be an integer from {minimum} through {maximum}")
+
+    def known_or_required(entry, field, input_field, label):
+        if (field not in entry
+                and not entry.get(input_field, {}).get("required")):
+            raise ResolutionError(
+                f"{label} requires {field} or a required input")
+
+    for section, fields in allowed.items():
+        selected = emulation.get(section, {})
+        if not isinstance(selected, dict):
+            raise ResolutionError(f"{section} must be a component map")
+        for cid, entry in selected.items():
+            component = components.get(cid)
+            if component is None:
+                raise ResolutionError(
+                    f"{section} names unknown component '{cid}'")
+            if (not isinstance(entry, dict)
+                    or set(entry) - fields - {
+                        "provenance", "sources", "notes"}):
+                raise ResolutionError(f"invalid {section} policy for '{cid}'")
+            if (section == "bedrock_nodes"
+                    and component.get("hardware_kind") != "bedrock"):
+                raise ResolutionError(f"component '{cid}' is not a Bedrock")
+            if (section == "l1_controllers"
+                    and component.get("system_controller", {}).get(
+                        "kind") != "l1"):
+                raise ResolutionError(f"component '{cid}' is not an L1")
+            if section == "io_boards":
+                parent = components.get(component.get("parent"), {})
+                if not (component.get("kind") == "board"
+                        or (component.get("kind") == "subfunction"
+                            and parent.get("kind") == "pci-host-bridge")):
+                    raise ResolutionError(
+                        f"component '{cid}' is not an I/O assembly")
+            if (section == "pci_function_revisions"
+                    and component.get("hardware_kind") not in {
+                        "isp12160", "ioc3", "lucent-ohci"}):
+                raise ResolutionError(
+                    f"component '{cid}' is not a supported PCI part")
+            for field, value in entry.items():
+                expected = bindings.get((section, field))
+                if expected is None:
+                    continue
+                if (not isinstance(value, dict)
+                        or set(value) != {"option", "required"}
+                        or value["option"] != expected
+                        or type(value["required"]) is not bool):
+                    raise ResolutionError(
+                        f"'{cid}' {field} requires input alias '{expected}'")
+                if expected in seen:
+                    raise ResolutionError(
+                        f"input alias '{expected}' has multiple owners")
+                seen.add(expected)
+            if section == "bedrock_nodes":
+                known_or_required(entry, "board_id_word", "board_id_input", cid)
+                if "board_id_word" in entry:
+                    integer(entry["board_id_word"], (1 << 64) - 1,
+                            f"'{cid}' board_id_word")
+                if ("board_id_mask" in entry) != (
+                        "board_id_required_bits" in entry):
+                    raise ResolutionError(
+                        f"'{cid}' board identity constraint is incomplete")
+                if "board_id_mask" in entry:
+                    for field in ("board_id_mask", "board_id_required_bits"):
+                        integer(entry[field], (1 << 64) - 1, f"'{cid}' {field}")
+                    if (entry["board_id_required_bits"]
+                            & ~entry["board_id_mask"]):
+                        raise ResolutionError(
+                            f"'{cid}' required board bits exceed mask")
+                    if ("board_id_word" in entry
+                            and entry["board_id_word"] & entry["board_id_mask"]
+                            != entry["board_id_required_bits"]):
+                        raise ResolutionError(
+                            f"'{cid}' board identity violates configured mask")
+                identity = component.get("identity", {})
+                if "hardware_revision" in identity:
+                    integer(identity["hardware_revision"], 15,
+                            f"'{cid}' hardware_revision")
+                elif not entry.get("revision_input", {}).get("required"):
+                    raise ResolutionError(
+                        f"'{cid}' requires a Bedrock revision "
+                        "or required input")
+                integer(entry.get("local_region"), 63, f"'{cid}' local_region")
+                integer(entry.get("initiator_region"), 63,
+                        f"'{cid}' initiator_region")
+                mask = entry.get("installed_bank_mask", {})
+                if not isinstance(mask, dict):
+                    raise ResolutionError(
+                        f"'{cid}' installed bank mask must be a policy")
+                if (mask.get("mode") == "fixed"
+                        and set(mask) == {"mode", "value"}):
+                    integer(mask["value"], 255, f"'{cid}' installed_bank_mask")
+                elif mask != {"mode": "fitted-banks"}:
+                    raise ResolutionError(
+                        f"'{cid}' installed bank mask policy is invalid")
+            elif section == "l1_controllers":
+                known_or_required(
+                    entry, "reported_type", "reported_type_input", cid)
+                if "reported_type" in entry:
+                    integer(entry["reported_type"], 255,
+                            f"'{cid}' reported_type", 1)
+                if "revision" in entry:
+                    revision = entry["revision"]
+                    if (not isinstance(revision, dict)
+                            or set(revision) != {"major", "minor", "patch"}):
+                        raise ResolutionError(
+                            f"'{cid}' requires a complete L1 revision")
+                    for field, value in revision.items():
+                        integer(value, 2147483647,
+                                f"'{cid}' L1 revision {field}")
+            elif section == "io_boards":
+                known_or_required(
+                    entry, "ioc3_subsystem_id", "ioc3_subsystem_input", cid)
+                if "ioc3_subsystem_id" in entry:
+                    integer(entry["ioc3_subsystem_id"], 65535,
+                            f"'{cid}' ioc3_subsystem_id")
+                if entry.get("mac_source") not in {"none", "module-l1"}:
+                    raise ResolutionError(
+                        f"'{cid}' has no supported MAC source")
+            else:
+                integer(entry.get("revision"), 255, f"'{cid}' PCI revision")
 
 
 def validate_board_identity_overrides(model: dict[str, Any]) -> None:
@@ -906,5 +1087,6 @@ def check_composition(model: dict[str, Any]) -> dict[str, Any]:
     validate_hub_ni_revision_overrides(model)
     validate_board_identity_overrides(model)
     validate_system_timekeepers(model)
+    validate_initialization_policy(model)
     component_exclusions([("model", model.get("excluded_components"))], model.get("components"))
     return model

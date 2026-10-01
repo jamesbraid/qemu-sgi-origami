@@ -126,7 +126,7 @@ struct SGIL1State {
     char usb_test_descriptor_result[74];
 };
 
-bool sgi_l1_fuel_mac(DeviceState *dev, uint8_t mac[6]);
+bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6]);
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */
 struct SGIL1UARTState {

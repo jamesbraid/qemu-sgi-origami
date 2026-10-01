@@ -1032,6 +1032,81 @@ static void test_fuel_memory(const void *data)
     qtest_quit(qts);
 }
 
+static uint64_t fuel_qom_uint(QTestState *qts, const char *path,
+                               const char *property)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        path, property);
+
+    g_assert_false(qdict_haskey(response, "error"));
+    return qdict_get_int(response, "return");
+}
+
+static void test_fuel_zero_identity_inputs(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts = qtest_initf(
+        "-M fuel,fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0,"
+        "fuel-l1-type-code=0x61,fuel-bedrock-revision=0 "
+        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 0);
+    g_assert_cmphex(fuel_qom_uint(qts, "/machine/node0/baseio/ioc3",
+                                 "subsystem-id"), ==, 0);
+    qtest_system_reset(qts);
+    g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_baseio_identity_properties(const void *data)
+{
+    static const char *options[] = {
+        "ioc3-subsystem-id=0x1234,ioc3-mac=02:00:00:00:00:01",
+        "fuel-subsystem-id=0x1234,fuel-mac=02:00:00:00:00:01",
+    };
+    g_autofree char *quoted = g_shell_quote(data);
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(options); i++) {
+        QTestState *qts = qtest_initf(
+            "-M origin300 -cpu R14000 -smp 2 -m 512M -bios %s -S "
+            "-device sgi-baseio,id=direct,preset=fuel,"
+            "pci-bus=/machine/node0/xbridge/head-e/head-e.0,%s,"
+            "scsi-revision=6,ioc3-revision=1,usb-revision=16",
+            quoted, options[i]);
+        g_autoptr(QDict) response = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{"
+            "'path':'/machine/peripheral/direct/ioc3','property':'board-mac'}}");
+
+        g_assert_cmphex(fuel_qom_uint(qts, "/machine/peripheral/direct/ioc3",
+                                     "subsystem-id"), ==, 0x1234);
+        g_assert_false(qdict_haskey(response, "error"));
+        g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                        "02:00:00:00:00:01");
+        qtest_quit(qts);
+    }
+}
+
+static void test_baseio_rejects_unsupported_revision(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-m", "512M", "-bios", data, "-S", "-display", "none",
+        "-device", "sgi-baseio,preset=fuel,"
+        "pci-bus=/machine/node0/xbridge/head-e/head-e.0,"
+        "fuel-subsystem-id=0x1234,ioc3-revision=2",
+        "-qtest", "stdio", "-accel", "qtest", NULL,
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_true(g_pattern_match_simple("*ioc3-revision 2 is unsupported*",
+                                         error_output));
+}
+
 static void test_fuel_rejects_other_board_code(const void *data)
 {
     const char *prom = data;
@@ -1039,7 +1114,8 @@ static void test_fuel_rejects_other_board_code(const void *data)
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*bits 15:12 (0x4)*");
+        g_test_trap_assert_stderr(
+            "*board ID fails its configured mask/required-bits constraint*");
         return;
     }
     g_autofree char *quoted = g_shell_quote(prom);
@@ -1063,7 +1139,7 @@ static void test_fuel_requires_l1_type_code(const void *data)
     }
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                                  "fuel-ioc3-subsystem-id=0xc30a "
+                                  "fuel-ioc3-subsystem-id=0xc30a,fuel-bedrock-revision=2 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
@@ -1156,7 +1232,7 @@ static void test_fuel_bedrock_revision_rejects_other_machine(const void *data)
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
         g_test_trap_assert_stderr(
-            "*fuel-bedrock-revision applies only to -M fuel*");
+            "*input 'fuel-bedrock-revision' is not bound by topology 'origin300'*");
         return;
     }
     g_autofree char *quoted = g_shell_quote(prom);
@@ -1197,7 +1273,8 @@ static void test_fuel_l1_type_code_rejects_other_machine(const void *data)
     if (!g_test_subprocess()) {
         g_test_trap_subprocess(NULL, 0, 0);
         g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*applies only to -M fuel*");
+        g_test_trap_assert_stderr(
+            "*input 'fuel-l1-type-code' is not bound by topology 'origin300'*");
         return;
     }
     g_autofree char *quoted = g_shell_quote(prom);
@@ -1793,6 +1870,12 @@ int main(int argc, char **argv)
                         test_fuel_timekeeper_migration_stopped);
     qtest_add_data_func("fuel/system-timekeeper-elapsed-rollover", prom,
                         test_fuel_timekeeper_elapsed_rollover);
+    qtest_add_data_func("fuel/zero-identity-inputs", prom,
+                        test_fuel_zero_identity_inputs);
+    qtest_add_data_func("fuel/baseio-identity-properties", prom,
+                        test_baseio_identity_properties);
+    qtest_add_data_func("fuel/baseio-unsupported-revision", prom,
+                        test_baseio_rejects_unsupported_revision);
     status = g_test_run();
     g_assert_cmpint(g_unlink(prom), ==, 0);
     return status;

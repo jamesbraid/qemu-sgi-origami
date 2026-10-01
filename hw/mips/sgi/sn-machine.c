@@ -151,6 +151,46 @@ static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
 #define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
 #define TYPE_SGI_GIGACHANNEL "sgi-gigachannel"
 
+typedef enum SGIMachineInput {
+    SGI_INPUT_BOARD_ID,
+    SGI_INPUT_IOC3_SUBSYSTEM,
+    SGI_INPUT_L1_TYPE,
+    SGI_INPUT_L1_REVISION,
+    SGI_INPUT_BEDROCK_REVISION,
+    SGI_INPUT_MAC_EEPROM,
+    SGI_INPUT_COUNT,
+} SGIMachineInput;
+
+static const char *const sgi_machine_input_names[] = {
+    [SGI_INPUT_BOARD_ID] = "fuel-board-id-word",
+    [SGI_INPUT_IOC3_SUBSYSTEM] = "fuel-ioc3-subsystem-id",
+    [SGI_INPUT_L1_TYPE] = "fuel-l1-type-code",
+    [SGI_INPUT_L1_REVISION] = "fuel-l1-revision",
+    [SGI_INPUT_BEDROCK_REVISION] = "fuel-bedrock-revision",
+    [SGI_INPUT_MAC_EEPROM] = "fuel-mac-eeprom",
+};
+
+typedef struct SGIMachineNodeConfig {
+    uint64_t board_id_word;
+    uint8_t revision;
+    uint8_t local_region;
+    uint8_t initiator_region;
+    uint8_t installed_bank_mask;
+    unsigned int controller_index;
+} SGIMachineNodeConfig;
+
+typedef struct SGIMachineL1Config {
+    uint8_t reported_type;
+    int32_t revision[3];
+    const char *mac_eeprom;
+} SGIMachineL1Config;
+
+typedef struct SGIMachineIoConfig {
+    uint16_t ioc3_subsystem_id;
+    SGIModelMacSource mac_source;
+    uint8_t pci_revision[SGI_MODEL_PCI_FUNCTION_KIND__MAX];
+} SGIMachineIoConfig;
+
 struct SGIMachineState {
     MachineState parent_obj;
 
@@ -225,6 +265,9 @@ struct SGIMachineState {
      * synthetic two-node fixture).
      */
     DeviceState **bedrock_nodes;
+    SGIMachineNodeConfig *node_config;
+    SGIMachineL1Config *l1_config;
+    SGIMachineIoConfig *io_config;
     /* Each Bedrock node's share of machine->ram, in node order. */
     MemoryRegion *bedrock_ram;
 
@@ -326,9 +369,6 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
     unsigned int nodes = MAX(s->num_nodes, 1);
     size_t i;
 
-    if (s->fuel_mac_eeprom) {
-        qdev_prop_set_string(l1, "fuel-mac-eeprom", s->fuel_mac_eeprom);
-    }
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         const SGIMachineIdentityRecords *records =
             &sgi_machine_identity_records[i];
@@ -1724,9 +1764,8 @@ static bool sgi_machine_instantiate_vbrick(
  * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
  * crossbar_index -1, so sgi_machine_index_xio_attachments() already
  * buckets it as a board-owning entry rather than a Crossbow one). The
- * XBridge always answers both heads. An IO8 record without an IOC3 serial
- * names the empty head. Fuel records describe the fitted system board even
- * when its IOC3 identity is unknown. Resolves every
+ * XBridge always answers both heads. The descriptor marks empty heads
+ * separately from fitted boards whose identity is unknown. Resolves every
  * backend id from this record and the command line, the policy
  * sn1_node_build_io8() applied before this step moved it here.
  */
@@ -1738,9 +1777,10 @@ static bool sgi_machine_instantiate_bedrock_io(
     SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     DeviceState *baseio;
     PCIBus *bus;
+    const SGIMachineIoConfig *config = &s->io_config[board_index];
+    const uint8_t *revision = config->pci_revision;
 
-    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
-        !record->has_ioc3_serial) {
+    if (!record->populated) {
         return true;
     }
 
@@ -1748,14 +1788,11 @@ static bool sgi_machine_instantiate_bedrock_io(
     baseio = qdev_new(TYPE_SGI_BASEIO);
     object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
     qdev_prop_set_string(baseio, "preset",
-                         record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL ?
-                         "fuel" : "io8");
+                         SGIModelIoBoardPreset_str(record->preset));
     if (record->system_timekeeper) {
         SGIModelSystemTimekeeper *clock = record->system_timekeeper;
 
-        if ((record->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL &&
-             record->preset != SGI_MODEL_IO_BOARD_PRESET_IO8) ||
-            clock->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_M48T35_COMPATIBLE ||
+        if (clock->kind != SGI_MODEL_SYSTEM_TIMEKEEPER_KIND_M48T35_COMPATIBLE ||
             clock->year_base != 1968 || clock->initial_ip27_fixture) {
             error_setg(errp, "unsupported fitted system Timekeeper policy");
             return false;
@@ -1765,17 +1802,23 @@ static bool sgi_machine_instantiate_bedrock_io(
         qdev_prop_set_uint32(baseio, "system-timekeeper-year-base",
                              clock->year_base);
     }
-    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_FUEL) {
+    qdev_prop_set_uint32(baseio, "ioc3-subsystem-id",
+                         config->ioc3_subsystem_id);
+    qdev_prop_set_uint32(baseio, "scsi-revision",
+                         revision[SGI_MODEL_PCI_FUNCTION_KIND_ISP12160]);
+    qdev_prop_set_uint32(baseio, "ioc3-revision",
+                         revision[SGI_MODEL_PCI_FUNCTION_KIND_IOC3]);
+    qdev_prop_set_uint32(baseio, "usb-revision",
+                         revision[SGI_MODEL_PCI_FUNCTION_KIND_LUCENT_OHCI]);
+    if (config->mac_source == SGI_MODEL_MAC_SOURCE_MODULE_L1) {
         uint8_t mac[6];
 
-        qdev_prop_set_uint32(baseio, "fuel-subsystem-id",
-                             s->fuel_ioc3_subsystem_id);
-        if (sgi_l1_fuel_mac(node->l1, mac)) {
+        if (sgi_l1_board_mac(node->l1, mac)) {
             g_autofree char *address = g_strdup_printf(
                 "%02x:%02x:%02x:%02x:%02x:%02x",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-            qdev_prop_set_string(baseio, "fuel-mac", address);
+            qdev_prop_set_string(baseio, "ioc3-mac", address);
         }
     }
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
@@ -1855,6 +1898,9 @@ static bool sgi_machine_instantiate_io_board(
     const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXioAttachment *attachment, Error **errp)
 {
+    if (!record->populated) {
+        return true;
+    }
     switch (record->preset) {
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
@@ -2350,18 +2396,20 @@ static bool sgi_machine_load_bedrock_flash(MachineState *machine,
 
     if (!machine->firmware) {
         error_setg(errp,
-                   "origin300 requires -bios with a raw stock PROM payload");
+                   "%s requires -bios with a raw stock PROM payload",
+                   MACHINE_GET_CLASS(machine)->name);
         return false;
     }
     path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
     if (!path) {
-        error_setg(errp, "origin300: cannot find PROM image '%s'",
-                  machine->firmware);
+        error_setg(errp, "%s: cannot find PROM image '%s'",
+                  MACHINE_GET_CLASS(machine)->name, machine->firmware);
         return false;
     }
     if (!g_file_get_contents(path, &contents, &length, &local_error)) {
-        error_setg(errp, "origin300: cannot read PROM image '%s': %s",
-                  machine->firmware, local_error->message);
+        error_setg(errp, "%s: cannot read PROM image '%s': %s",
+                  MACHINE_GET_CLASS(machine)->name, machine->firmware,
+                  local_error->message);
         return false;
     }
 
@@ -2455,12 +2503,319 @@ static void sgi_machine_build_module_containers(MachineState *machine,
     }
 }
 
+static bool sgi_machine_input_present(SGIMachineState *s,
+                                      SGIMachineInput input)
+{
+    switch (input) {
+    case SGI_INPUT_BOARD_ID:
+        return s->fuel_board_id_word_set;
+    case SGI_INPUT_IOC3_SUBSYSTEM:
+        return s->fuel_ioc3_subsystem_id_set;
+    case SGI_INPUT_L1_TYPE:
+        return s->fuel_l1_type_code_set;
+    case SGI_INPUT_L1_REVISION:
+        return s->fuel_l1_revision_set;
+    case SGI_INPUT_BEDROCK_REVISION:
+        return s->fuel_bedrock_revision_set;
+    case SGI_INPUT_MAC_EEPROM:
+        return s->fuel_mac_eeprom != NULL;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool sgi_machine_bind_input(SGIMachineState *s,
+                                  const SGIModelTopology *t,
+                                  const SGIModelInputBinding *binding,
+                                  SGIMachineInput input, unsigned int *used,
+                                  bool *present, Error **errp)
+{
+    *present = false;
+    if (!binding) {
+        return true;
+    }
+    if (strcmp(binding->option, sgi_machine_input_names[input])) {
+        error_setg(errp, "topology '%s' binds unsupported input '%s' to '%s'",
+                   t->name, binding->option, sgi_machine_input_names[input]);
+        return false;
+    }
+    if (*used & (1U << input)) {
+        error_setg(errp, "topology '%s' binds input '%s' more than once",
+                   t->name, binding->option);
+        return false;
+    }
+    *used |= 1U << input;
+    *present = sgi_machine_input_present(s, input);
+    if (binding->required && !*present) {
+        error_setg(errp, "topology '%s' requires an explicit %s launch input",
+                   t->name, binding->option);
+        return false;
+    }
+    return true;
+}
+
+static bool sgi_machine_resolve_uint(SGIMachineState *s,
+                                    const SGIModelTopology *t,
+                                    const SGIModelInputBinding *binding,
+                                    SGIMachineInput input, unsigned int *used,
+                                    bool has_default, uint64_t default_value,
+                                    uint64_t *value, Error **errp)
+{
+    bool present;
+
+    if (!sgi_machine_bind_input(s, t, binding, input, used, &present, errp)) {
+        return false;
+    }
+    if (!present) {
+        if (!has_default) {
+            error_setg(errp, "topology '%s' has no resolved value for '%s'",
+                       t->name, sgi_machine_input_names[input]);
+            return false;
+        }
+        *value = default_value;
+        return true;
+    }
+    switch (input) {
+    case SGI_INPUT_BOARD_ID:
+        *value = s->fuel_board_id_word;
+        break;
+    case SGI_INPUT_IOC3_SUBSYSTEM:
+        *value = s->fuel_ioc3_subsystem_id;
+        break;
+    case SGI_INPUT_L1_TYPE:
+        *value = s->fuel_l1_type_code;
+        break;
+    case SGI_INPUT_BEDROCK_REVISION:
+        *value = s->fuel_bedrock_revision;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    return true;
+}
+
+/* Resolve once, before assembly, without changing the shared catalogue. */
+static bool sgi_machine_resolve_config(SGIMachineState *s,
+                                     const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelNode **nodes = NULL;
+    g_autofree const SGIModelController **controllers = NULL;
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    size_t node_count, controller_count, board_count, i;
+    unsigned int used = 0;
+
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    controllers = sgi_model_controller_array(t->controllers, &controller_count);
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    s->node_config = g_new0(SGIMachineNodeConfig, node_count);
+    s->l1_config = g_new0(SGIMachineL1Config, controller_count);
+    s->io_config = g_new0(SGIMachineIoConfig, board_count);
+
+    for (i = 0; i < node_count; i++) {
+        const SGIModelNode *node = nodes[i];
+        const SGIModelBedrockConfig *config = node->bedrock;
+        SGIMachineNodeConfig *resolved = &s->node_config[i];
+        const SGIModelModule *module;
+        uint64_t value;
+
+        if (node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
+            continue;
+        }
+        module = sgi_machine_node_module(t, i);
+        if (!config || !module || module->controller_index < 0 ||
+            (uint64_t)module->controller_index >= controller_count ||
+            !controllers[module->controller_index]->l1) {
+            error_setg(errp, "topology '%s' node '%s' has incomplete "
+                       "Bedrock or L1 configuration", t->name, node->id);
+            return false;
+        }
+        resolved->controller_index = module->controller_index;
+        if (!sgi_machine_resolve_uint(s, t, config->board_id_input,
+                SGI_INPUT_BOARD_ID, &used, config->has_board_id_word,
+                config->board_id_word, &resolved->board_id_word, errp)) {
+            return false;
+        }
+        if (config->has_board_id_mask != config->has_board_id_required_bits ||
+            (config->has_board_id_mask &&
+             ((config->board_id_required_bits & ~config->board_id_mask) ||
+              (resolved->board_id_word & config->board_id_mask) !=
+              config->board_id_required_bits))) {
+            error_setg(errp, "topology '%s' node '%s' board ID fails its "
+                       "configured mask/required-bits constraint",
+                       t->name, node->id);
+            return false;
+        }
+        if (!sgi_machine_resolve_uint(s, t, config->revision_input,
+                SGI_INPUT_BEDROCK_REVISION, &used,
+                node->identity->has_widget_revision,
+                node->identity->widget_revision, &value, errp)) {
+            return false;
+        }
+        if (value > 15) {
+            error_setg(errp, "%s must fit four bits",
+                       config->revision_input ?
+                       config->revision_input->option : "Bedrock revision");
+            return false;
+        }
+        if (config->local_region >= 64 || config->initiator_region >= 64) {
+            error_setg(errp, "topology '%s' node '%s' Bedrock regions must "
+                       "be below 64", t->name, node->id);
+            return false;
+        }
+        resolved->revision = value;
+        resolved->local_region = config->local_region;
+        resolved->initiator_region = config->initiator_region;
+        resolved->installed_bank_mask = config->installed_bank_mask;
+    }
+    for (i = 0; i < controller_count; i++) {
+        const SGIModelL1Config *config = controllers[i]->l1;
+        SGIMachineL1Config *resolved = &s->l1_config[i];
+        uint64_t value;
+        bool present;
+
+        bool owns_node = false;
+
+        if (!config) {
+            continue;
+        }
+        for (size_t n = 0; n < node_count; n++) {
+            if (nodes[n]->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK &&
+                s->node_config[n].controller_index == i) {
+                owns_node = true;
+                break;
+            }
+        }
+        if (!owns_node) {
+            error_setg(errp, "topology '%s' controller '%s' has L1 "
+                       "configuration without a modeled Bedrock node",
+                       t->name, controllers[i]->id);
+            return false;
+        }
+        if (!sgi_machine_resolve_uint(s, t, config->reported_type_input,
+                SGI_INPUT_L1_TYPE, &used, config->has_reported_type,
+                config->reported_type, &value, errp)) {
+            return false;
+        }
+        if (!value || value > UINT8_MAX) {
+            error_setg(errp, "%s must be nonzero and fit eight bits",
+                       config->reported_type_input ?
+                       config->reported_type_input->option :
+                       "L1 reported type");
+            return false;
+        }
+        resolved->reported_type = value;
+        if (!sgi_machine_bind_input(s, t, config->revision_input,
+                SGI_INPUT_L1_REVISION, &used, &present, errp)) {
+            return false;
+        }
+        if (present) {
+            memcpy(resolved->revision, s->fuel_l1_revision,
+                   sizeof(resolved->revision));
+        } else if (config->revision) {
+            if (config->revision->major > INT32_MAX ||
+                config->revision->minor > INT32_MAX ||
+                config->revision->patch > INT32_MAX) {
+                error_setg(errp, "topology '%s' controller '%s' L1 revision "
+                           "components must fit signed 32-bit values",
+                           t->name, controllers[i]->id);
+                return false;
+            }
+            resolved->revision[0] = config->revision->major;
+            resolved->revision[1] = config->revision->minor;
+            resolved->revision[2] = config->revision->patch;
+        } else {
+            for (unsigned int j = 0; j < ARRAY_SIZE(resolved->revision); j++) {
+                resolved->revision[j] = -1;
+            }
+        }
+        if (!sgi_machine_bind_input(s, t, config->mac_eeprom_input,
+                SGI_INPUT_MAC_EEPROM, &used, &present, errp)) {
+            return false;
+        }
+        if (present) {
+            resolved->mac_eeprom = s->fuel_mac_eeprom;
+        }
+    }
+    for (i = 0; i < board_count; i++) {
+        const SGIModelIoBoard *board = boards[i];
+        SGIMachineIoConfig *resolved = &s->io_config[i];
+        const SGIModelPciFunctionList *entry;
+        unsigned int found = 0;
+        uint64_t value;
+
+        if (!board->populated ||
+            (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+             board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL)) {
+            continue;
+        }
+        if (!sgi_machine_resolve_uint(s, t, board->ioc3_subsystem_input,
+                SGI_INPUT_IOC3_SUBSYSTEM, &used, board->has_ioc3_subsystem_id,
+                board->ioc3_subsystem_id, &value, errp)) {
+            return false;
+        }
+        if (value > UINT16_MAX || !board->has_mac_source) {
+            error_setg(errp, "topology '%s' board '%s' has invalid IOC3 "
+                       "identity configuration", t->name, board->id);
+            return false;
+        }
+        resolved->ioc3_subsystem_id = value;
+        resolved->mac_source = board->mac_source;
+        if (resolved->mac_source != SGI_MODEL_MAC_SOURCE_NONE &&
+            resolved->mac_source != SGI_MODEL_MAC_SOURCE_MODULE_L1) {
+            error_setg(errp, "topology '%s' board '%s' has unsupported "
+                       "MAC source", t->name, board->id);
+            return false;
+        }
+        for (entry = board->pci_functions; entry; entry = entry->next) {
+            const SGIModelPciFunction *function = entry->value;
+            unsigned int revision;
+
+            switch (function->kind) {
+            case SGI_MODEL_PCI_FUNCTION_KIND_ISP12160:
+                revision = 6;
+                break;
+            case SGI_MODEL_PCI_FUNCTION_KIND_IOC3:
+                revision = SGI_IOC3_REVISION;
+                break;
+            case SGI_MODEL_PCI_FUNCTION_KIND_LUCENT_OHCI:
+                revision = 16;
+                break;
+            default:
+                error_setg(errp, "topology '%s' board '%s' has unsupported "
+                           "PCI function", t->name, board->id);
+                return false;
+            }
+            if ((found & (1U << function->kind)) ||
+                function->revision != revision) {
+                error_setg(errp, "topology '%s' board '%s' has duplicate "
+                           "or unsupported PCI function revision",
+                           t->name, board->id);
+                return false;
+            }
+            found |= 1U << function->kind;
+            resolved->pci_revision[function->kind] = function->revision;
+        }
+        if (found != (1U << SGI_MODEL_PCI_FUNCTION_KIND__MAX) - 1) {
+            error_setg(errp, "topology '%s' board '%s' has incomplete PCI "
+                       "function configuration", t->name, board->id);
+            return false;
+        }
+    }
+    for (i = 0; i < SGI_INPUT_COUNT; i++) {
+        if (sgi_machine_input_present(s, i) && !(used & (1U << i))) {
+            error_setg(errp, "input '%s' is not bound by topology '%s'",
+                       sgi_machine_input_names[i], t->name);
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
-    bool is_fuel = g_strcmp0(smc->product, "fuel") == 0;
     Error *local_err = NULL;
     const SGIModelTopology *t = sgi_machine_resolve(machine, &local_err);
     const SN0ModelMemory *node_memory =
@@ -2503,63 +2858,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (is_fuel && !s->fuel_board_id_word_set) {
-        error_setg(errp, "fuel requires a fuel-board-id-word "
-                   "launch input; the physical reset word is unknown");
-        return false;
-    }
-    if (is_fuel &&
-        (s->fuel_board_id_word & 0xf000) != 0x4000) {
-        error_setg(errp, "fuel-board-id-word must identify Fuel in bits "
-                   "15:12 (0x4); the remaining bits must be supplied");
-        return false;
-    }
-    if (is_fuel && !s->fuel_ioc3_subsystem_id_set) {
-        error_setg(errp, "fuel requires a "
-                   "fuel-ioc3-subsystem-id launch input; the physical "
-                   "PCI subsystem identity is unknown");
-        return false;
-    }
-    if (is_fuel && !s->fuel_l1_type_code_set) {
-        error_setg(errp, "fuel requires an explicit fuel-l1-type-code "
-                   "launch input; the physical L1 reply is unknown");
-        return false;
-    }
-    if (is_fuel && !s->fuel_bedrock_revision_set) {
-        error_setg(errp, "fuel requires an explicit fuel-bedrock-revision "
-                   "launch input; the fitted revision is unknown");
-        return false;
-    }
-    if (s->fuel_bedrock_revision_set && s->fuel_bedrock_revision > 0xf) {
-        error_setg(errp, "fuel-bedrock-revision must fit four bits");
-        return false;
-    }
-    if (is_fuel && !s->fuel_l1_type_code) {
-        error_setg(errp, "fuel-l1-type-code must be nonzero");
-        return false;
-    }
-    if (!is_fuel && s->fuel_mac_eeprom) {
-        error_setg(errp, "fuel-mac-eeprom applies only to -M fuel");
-        return false;
-    }
-    if (!is_fuel && s->fuel_l1_type_code_set) {
-        error_setg(errp, "fuel-l1-type-code applies only to -M fuel");
-        return false;
-    }
-    if (!is_fuel && s->fuel_l1_revision_set) {
-        error_setg(errp, "fuel-l1-revision applies only to -M fuel");
-        return false;
-    }
-    if (!is_fuel && s->fuel_bedrock_revision_set) {
-        error_setg(errp, "fuel-bedrock-revision applies only to -M fuel");
-        return false;
-    }
-    if (!is_fuel && s->fuel_board_id_word_set) {
-        error_setg(errp, "fuel-board-id-word applies only to -M fuel");
-        return false;
-    }
-    if (!is_fuel && s->fuel_ioc3_subsystem_id_set) {
-        error_setg(errp, "fuel-ioc3-subsystem-id applies only to -M fuel");
+    if (!sgi_machine_resolve_config(s, t, errp)) {
         return false;
     }
     if (sgi_machine_has_identity_records(s)) {
@@ -2783,9 +3082,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) {
                     continue;
                 }
-                /* An IO8 record without an IOC3 serial is the empty head. */
-                if (board->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
-                    !board->has_ioc3_serial) {
+                if (!board->populated) {
                     continue;
                 }
                 if (board->attachment >= attachment_count) {
@@ -2841,22 +3138,34 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
             qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
                                  requested[node_index]);
-            if (is_fuel) {
-                qdev_prop_set_bit(DEVICE(node), "fuel-board", true);
+            {
+                const SGIMachineNodeConfig *config =
+                    &s->node_config[node_index];
+                const SGIMachineL1Config *l1 =
+                    &s->l1_config[config->controller_index];
+
                 qdev_prop_set_uint64(DEVICE(node), "board-id-word",
-                                     s->fuel_board_id_word);
-                qdev_prop_set_uint32(DEVICE(node), "fuel-l1-type-code",
-                                     s->fuel_l1_type_code);
-                if (s->fuel_l1_revision_set) {
-                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-major",
-                                       s->fuel_l1_revision[0]);
-                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-minor",
-                                       s->fuel_l1_revision[1]);
-                    qdev_prop_set_int32(DEVICE(node), "fuel-l1-revision-patch",
-                                       s->fuel_l1_revision[2]);
+                                     config->board_id_word);
+                qdev_prop_set_uint8(DEVICE(node), "bedrock-revision",
+                                    config->revision);
+                qdev_prop_set_uint8(DEVICE(node), "local-region",
+                                    config->local_region);
+                qdev_prop_set_uint8(DEVICE(node), "initiator-region",
+                                    config->initiator_region);
+                qdev_prop_set_uint8(DEVICE(node), "installed-bank-mask",
+                                    config->installed_bank_mask);
+                qdev_prop_set_uint32(DEVICE(node), "l1-type-code",
+                                     l1->reported_type);
+                qdev_prop_set_int32(DEVICE(node), "l1-revision-major",
+                                    l1->revision[0]);
+                qdev_prop_set_int32(DEVICE(node), "l1-revision-minor",
+                                    l1->revision[1]);
+                qdev_prop_set_int32(DEVICE(node), "l1-revision-patch",
+                                    l1->revision[2]);
+                if (l1->mac_eeprom) {
+                    qdev_prop_set_string(DEVICE(node), "l1-mac-eeprom",
+                                         l1->mac_eeprom);
                 }
-                qdev_prop_set_uint8(DEVICE(node), "fuel-bedrock-revision",
-                                    s->fuel_bedrock_revision);
             }
             qdev_prop_set_bit(DEVICE(node), "last-node",
                               node_index == node_count - 1);
@@ -3846,6 +4155,9 @@ static void sgi_machine_instance_finalize(Object *obj)
 
     g_free(s->nodes);
     g_free(s->bedrock_nodes);
+    g_free(s->node_config);
+    g_free(s->l1_config);
+    g_free(s->io_config);
     g_free(s->routers);
     g_free(s->crossbars);
     g_free(s->io_boards);
@@ -3949,44 +4261,45 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
                               sgi_machine_get_fuel_board_id_word,
                               sgi_machine_set_fuel_board_id_word, NULL, NULL);
     object_class_property_set_description(oc, "fuel-board-id-word",
-        "Experimental full 64-bit Fuel board-identification response; "
-        "required for -M fuel because its physical reset value is unknown.");
+        "Full 64-bit board-identification launch input; applicability and "
+        "requirements are declared by the selected model.");
 
     object_class_property_add(oc, "fuel-ioc3-subsystem-id", "uint16",
                               sgi_machine_get_fuel_ioc3_subsystem_id,
                               sgi_machine_set_fuel_ioc3_subsystem_id,
                               NULL, NULL);
     object_class_property_set_description(oc, "fuel-ioc3-subsystem-id",
-        "Experimental Fuel IOC3 PCI subsystem ID; required for -M fuel "
-        "because its physical configuration-space value is unknown.");
+        "IOC3 PCI subsystem ID launch input; applicability and requirements "
+        "are declared by the selected model.");
 
     object_class_property_add(oc, "fuel-l1-type-code", "uint8",
                               sgi_machine_get_fuel_l1_type_code,
                               sgi_machine_set_fuel_l1_type_code, NULL, NULL);
     object_class_property_set_description(oc, "fuel-l1-type-code",
-        "Experimental Fuel L1 local identity reply character; required "
-        "because its physical stored value is unknown. Accepts a nonzero byte.");
+        "L1 local identity reply byte; applicability and requirements are "
+        "declared by the selected model. Accepts a nonzero byte.");
 
     object_class_property_add_str(oc, "fuel-l1-revision",
                                   sgi_machine_get_fuel_l1_revision,
                                   sgi_machine_set_fuel_l1_revision);
     object_class_property_set_description(oc, "fuel-l1-revision",
-        "Optional Fuel L1 firmware revision as decimal major.minor.patch; "
-        "absent when the fitted revision is unknown.");
+        "L1 firmware revision as decimal major.minor.patch; applicability "
+        "and requirements are declared by the selected model.");
 
     object_class_property_add(oc, "fuel-bedrock-revision", "uint8",
                               sgi_machine_get_fuel_bedrock_revision,
                               sgi_machine_set_fuel_bedrock_revision,
                               NULL, NULL);
     object_class_property_set_description(oc, "fuel-bedrock-revision",
-        "Fitted Fuel Bedrock revision, 0 through 15; required because the "
-        "revision of the selected board is unknown.");
+        "Fitted Bedrock revision, 0 through 15; applicability and requirements "
+        "are declared by the selected model.");
 
     object_class_property_add_str(oc, "fuel-mac-eeprom",
                                   sgi_machine_get_fuel_mac_eeprom,
                                   sgi_machine_set_fuel_mac_eeprom);
     object_class_property_set_description(oc, "fuel-mac-eeprom",
-        "Path to an explicitly supplied 512-byte Fuel L1 MAC EEPROM image");
+        "Path to a 512-byte Fuel L1 MAC EEPROM image; applicability and "
+        "requirements are declared by the selected model");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",
