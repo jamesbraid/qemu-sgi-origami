@@ -48,6 +48,14 @@ SERIAL_TIMEOUT_SECONDS = 1320
 COMMAND_TIMEOUT_SECONDS = 60
 REQUIRE_REFERENCES_ENV = 'QEMU_TEST_MGRAS_REQUIRE_REFERENCES'
 
+# The disk every board boots: test_mgras_desktop's root-si.qcow2 with the
+# OpenGL links pointed at the MGRAS IP27 builds (without them no board gets
+# a direct OpenGL context), a guest password, and the 2RSS timing table
+# Xsgi needs on a two-RE board.
+DISK_REL = os.path.join('irix', '6.5.30', 'root-mgras.qcow2')
+DISK_SHA256 = ('c97ba11c8c639caf7f9acc35efaeb7dd'
+               'd32ea25c4b50c0d1815de45884b79248')
+
 
 def board_timeout(board_key):
     """The meson timeout a board's boot needs: the desktop test's own
