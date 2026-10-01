@@ -89,6 +89,21 @@ static const ReplayHead replay_heads[] = {
         .height = 1024,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
+    }, {
+        /*
+         * The same machine with the SSI board, two raster engines, whose
+         * colour-buffer slots 2 and 3 a deep GL window draws into.
+         */
+        .codename = "sgi-mgras-ssi",
+        .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=ssi",
+        .mmio_base = SPACE_IO + (0xfULL << 24),
+        .mmio_size = 2 * MiB,
+        .qom_path = "/machine/module0/io3",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_mgras_mmio "
+                 "-trace enable=sgi_mgras_control_mmio",
     },
 };
 
@@ -112,6 +127,7 @@ static const ReplayHead *find_head(const char *codename)
 #define OVERLAY           "overlay.replay"
 #define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
 #define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
+#define GL_DEEP_SWAP_CLOCK_SSI "gl-deep-swap-clock-ssi.replay"
 #define GL_NEW_CONTEXT_SLOT_REUSE \
     "gl-new-context-slot-reuse.replay"
 #define GL_TEXTURE_RGBA4_QUAD \
@@ -983,6 +999,15 @@ static void test_gl_pixels_rectwrite(void)
 }
 
 /*
+ * A deep double-buffered window's swaps show the slot or bank the client
+ * drew: black before the first swap, the clock's frame after each.
+ */
+static void test_gl_deep_swap_clock_ssi(void)
+{
+    run_fixture(GL_DEEP_SWAP_CLOCK_SSI, NULL);
+}
+
+/*
  * ivview's context dies four words short in slot 0x5420, and the next
  * ivview's new context in the same slot sets up and answers its queries
  * (run irix-20260930T204826-66052a).
@@ -1353,6 +1378,8 @@ int main(int argc, char **argv)
                    test_dma_image_transfer);
     qtest_add_func("sgi-replay/mgras/gl-pixels-rectwrite",
                    test_gl_pixels_rectwrite);
+    qtest_add_func("sgi-replay/mgras/gl-deep-swap-clock-ssi",
+                   test_gl_deep_swap_clock_ssi);
     qtest_add_func("sgi-replay/mgras/gl-new-context-slot-reuse",
                    test_gl_new_context_slot_reuse);
     qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",

@@ -1140,15 +1140,21 @@ static void mgras_gl_bind(SGIMgrasState *s)
         .front = 1u << (back ^ 1),
         .back = 1u << back,
         /*
-         * Draw-buffer bits 2 and 3 name colour-buffer slots 2 and 3 where
-         * the board has them: a deep double-buffered visual sends bit 2
-         * for its back buffer and a stereo one for FRONT_LEFT, so the bit
-         * has no fixed front or back meaning. Drawing honours them.
-         * Limitation: swap and scanout still use banks 0 and 1 only. Which
-         * slot a window displays after a swap is unknown until traced, so
-         * the model shows nothing a bit-2 draw wrote.
+         * Draw-buffer bits 2 and 3 name colour buffers beyond the two
+         * banks where the board has slots; a stereo visual sends bit 3 too
+         * and nothing here is known of it. A deep double-buffered visual
+         * sends FRONT as (1, 4) and BACK as (4, 1), so its pair is bank 0
+         * and slot 2 and bit 2 is its back buffer, which the bank token
+         * places as it does a shallow back buffer: token 1 names slot 2
+         * (the pair's second member), token 0 bank 0. The kernel's
+         * captured swaps flip the select bit in step with the token, and
+         * select bit set shows the second member (see sgi-mgras-display.c).
+         * Inferred from the client's triples and that capture; the
+         * hardware's own mapping is not published. Limitation: FRONT
+         * (bit 0) on a deep visual still goes to the shallow front bank,
+         * which is bank 0 only while the token is 1.
          */
-        .extra = { s->slot[0] ? 4 : 0, s->slot[1] ? 8 : 0 },
+        .extra = { s->slot[0] ? (back ? 4 : 1) : 0, s->slot[1] ? 8 : 0 },
     };
 
     for (int i = 0; mode == MGRAS_GL_CLIP_INSIDE && i < MGRAS_GL_CLIP_RECTS;
@@ -2349,10 +2355,15 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
     if (banks & 2) {
         s->back[idx] = rgb;
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
+        /* A shallow window's pixel is not a deep window's. */
+        if (s->slot[0]) {
+            s->slot[0][idx] &= ~SGI_MGRAS_SLOT_WRITTEN;
+        }
     }
     for (int i = 0; i < 2; i++) {
         if ((banks & (4u << i)) && s->slot[i]) {
-            s->slot[i][idx] = rgb;
+            s->slot[i][idx] = (rgb & 0xffffff) |
+                              (i ? 0 : SGI_MGRAS_SLOT_WRITTEN);
         }
     }
 }
