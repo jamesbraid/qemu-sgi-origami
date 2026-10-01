@@ -1435,12 +1435,51 @@ static bool sgi_rad1_octane_ring_valid(SGIRad1AudioState *s, bool output,
            bank[SGI_RAD1_AUDIO_DMA_IDX(ctrl2)] == limit;
 }
 
+/* Startup readback is storage only; unsupported interfaces stay disabled. */
+static int sgi_rad1_octane_startup_index(hwaddr addr)
+{
+    static const uint16_t offsets[] = {
+        0x44, 0x48, 0x4c, 0x50, 0x54, 0x70, 0x74, 0x78, 0x7c, 0x80,
+        0x88, 0x8c, 0x90, 0xa0, 0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8,
+        0xbc, 0x4c0, 0x4c8, 0x4d0, 0x4d8, 0x4e0, 0x4e8, 0x4f0,
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+        if (addr == offsets[i]) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool sgi_rad1_octane_subcode_access(hwaddr addr, unsigned size)
+{
+    hwaddr word = addr & ~7ULL;
+
+    return (size == 4 || size == 8) && !(addr & (size - 1)) &&
+           word >= 0x1000 && word <= 0x1218 &&
+           word != 0x1078 && word != 0x10f8;
+}
+
 static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
                                        uint64_t *value, unsigned size,
                                        MemTxAttrs attrs)
 {
     SGIRad1AudioState *s = opaque;
     bool output;
+    int index = sgi_rad1_octane_startup_index(addr);
+
+    if (size == 4 && index >= 0) {
+        *value = s->octane_startup[index];
+        return MEMTX_OK;
+    }
+    if (sgi_rad1_octane_subcode_access(addr, size)) {
+        *value = s->octane_subcode[(addr - 0x1000) / 8];
+        if (size == 4) {
+            *value = (uint32_t)(*value >> ((addr & 4) * 8));
+        }
+        return MEMTX_OK;
+    }
 
     if (size == 4 && !(addr & 3)) {
         if (sgi_rad1_octane_descriptor(addr, &output)) {
@@ -1480,6 +1519,41 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
 {
     SGIRad1AudioState *s = opaque;
     bool output;
+    int index = sgi_rad1_octane_startup_index(addr);
+
+    if (size == 4 && index >= 0) {
+        uint32_t unsupported = 0;
+
+        switch (addr) {
+        case 0x44:
+        case 0x48:
+            unsupported = 5;
+            break;
+        case 0x4c:
+        case 0x50:
+        case 0x54:
+            unsupported = 1;
+            break;
+        }
+        if (value & unsupported) {
+            goto unsupported;
+        }
+        s->octane_startup[index] = value;
+        return MEMTX_OK;
+    }
+    if (sgi_rad1_octane_subcode_access(addr, size)) {
+        uint64_t *word = &s->octane_subcode[(addr - 0x1000) / 8];
+
+        if (size == 8) {
+            *word = value;
+        } else {
+            unsigned shift = (addr & 4) * 8;
+
+            *word = (*word & ~(UINT64_C(0xffffffff) << shift)) |
+                    ((uint64_t)(uint32_t)value << shift);
+        }
+        return MEMTX_OK;
+    }
 
     if (size == 4 && !(addr & 3)) {
         if (sgi_rad1_octane_descriptor(addr, &output)) {
@@ -1830,6 +1904,8 @@ static void sgi_rad1_octane_reset_hold(Object *obj, ResetType type)
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
 
     sgi_rad1_audio_reset_hold(obj, type);
+    memset(s->octane_startup, 0, sizeof(s->octane_startup));
+    memset(s->octane_subcode, 0, sizeof(s->octane_subcode));
     s->octane_ust_count = 0;
     s->octane_ust_phase = 0;
     s->octane_ust_enabled = false;
@@ -1877,12 +1953,14 @@ static int sgi_rad1_octane_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .pre_save = sgi_rad1_octane_pre_save,
     .post_load = sgi_rad1_octane_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
+        VMSTATE_UINT32_ARRAY(octane_startup, SGIRad1AudioState, 28),
+        VMSTATE_UINT64_ARRAY(octane_subcode, SGIRad1AudioState, 68),
         VMSTATE_UINT32_ARRAY(dma_bank, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_DMA_BANK_WORDS),
         VMSTATE_UINT32_ARRAY(sample_pos, SGIRad1AudioState,
