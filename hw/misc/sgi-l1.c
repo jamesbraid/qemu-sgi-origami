@@ -1991,24 +1991,42 @@ static void l1_realize(DeviceState *dev, Error **errp)
     uint32_t counts[] = { s->chassis_count, s->board_count, s->spd_count };
 
     if (s->fuel_mac_eeprom) {
-        g_autofree char *data = NULL;
-        gsize length;
-        GError *local_error = NULL;
+        char data[513];
+        gsize length = 0;
         const uint8_t *bytes;
         size_t start, area_length, cursor;
         unsigned sum = 0;
         bool mac_field = false;
+        int fd;
 
         if (s->system_serial) {
             error_setg(errp, "Fuel MAC EEPROM and system-serial conflict");
             return;
         }
-        if (!g_file_get_contents(s->fuel_mac_eeprom, &data, &length,
-                                 &local_error)) {
-            error_setg(errp, "Fuel MAC EEPROM: %s", local_error->message);
-            g_error_free(local_error);
+        fd = qemu_open(s->fuel_mac_eeprom, O_RDONLY | O_BINARY, errp);
+        if (fd < 0) {
+            error_prepend(errp, "Fuel MAC EEPROM: ");
             return;
         }
+        /* One extra byte distinguishes the fixed image from oversized input. */
+        while (length < sizeof(data)) {
+            ssize_t n = read(fd, data + length, sizeof(data) - length);
+
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                error_setg_errno(errp, errno, "Fuel MAC EEPROM: read '%s'",
+                                 s->fuel_mac_eeprom);
+                qemu_close(fd);
+                return;
+            }
+            if (!n) {
+                break;
+            }
+            length += n;
+        }
+        qemu_close(fd);
         bytes = (const uint8_t *)data;
         if (length != 512) {
             goto invalid_fuel_mac;

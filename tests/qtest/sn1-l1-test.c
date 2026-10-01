@@ -2394,11 +2394,13 @@ static void fuel_mac_checksum(uint8_t *image)
     image[0] = -sum;
 }
 
-static void fuel_mac_reject(const char *path, const uint8_t *image)
+static void fuel_mac_reject(const char *path, const uint8_t *image,
+                            size_t length)
 {
     GError *error = NULL;
 
-    g_assert_true(g_file_set_contents(path, (const char *)image, 512, &error));
+    g_assert_true(g_file_set_contents(path, (const char *)image, length,
+                                      &error));
     g_assert_no_error(error);
     g_test_trap_subprocess(NULL, 0, 0);
     g_test_trap_assert_failed();
@@ -2408,7 +2410,7 @@ static void fuel_mac_reject(const char *path, const uint8_t *image)
 static void test_fuel_mac_eeprom(void)
 {
     static const char mac[] = "02A1B2C3D4E5";
-    uint8_t image[512] = { 0 }, reply[129];
+    uint8_t image[513] = { 0 }, reply[129];
     g_autofree char *path = NULL;
     GError *error = NULL;
     QTestState *s;
@@ -2440,8 +2442,7 @@ static void test_fuel_mac_eeprom(void)
     image[70] = 12;
     memcpy(image + 71, mac, 12);
     fuel_mac_checksum(image);
-    g_assert_true(g_file_set_contents(path, (char *)image, sizeof(image),
-                                      &error));
+    g_assert_true(g_file_set_contents(path, (char *)image, 512, &error));
     g_assert_no_error(error);
     s = qtest_initf("-M none -cpu R10000 -S -device "
                     "sgi-l1,id=l1c,fuel-mac-eeprom=%s" UART, path);
@@ -2451,24 +2452,36 @@ static void test_fuel_mac_eeprom(void)
     qtest_quit(s);
 
     g_setenv("L1_FUEL_MAC_PATH", path, true);
+    fuel_mac_reject(path, image, 0);
+    fuel_mac_reject(path, image, 511);
+    image[512] = 0xa5;
+    fuel_mac_reject(path, image, sizeof(image));
     image[71] = 'G';
     fuel_mac_checksum(image);
-    fuel_mac_reject(path, image);
+    fuel_mac_reject(path, image, 512);
     image[71] = '0';
     image[39] = 63;
     image[33] = 8;
     fuel_mac_checksum(image);
-    fuel_mac_reject(path, image);
+    fuel_mac_reject(path, image, 512);
     image[39] = 4;
     image[33] = 60;
     fuel_mac_checksum(image);
-    fuel_mac_reject(path, image);
+    fuel_mac_reject(path, image, 512);
     image[33] = 16;
     fuel_mac_checksum(image);
     image[0]++;
-    fuel_mac_reject(path, image);
+    fuel_mac_reject(path, image, 512);
+    g_assert_cmpint(unlink(path), ==, 0);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Fuel MAC EEPROM:*");
+    g_assert_cmpint(g_mkdir(path, 0700), ==, 0);
+    g_test_trap_subprocess(NULL, 0, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*Fuel MAC EEPROM:*");
+    g_assert_cmpint(g_rmdir(path), ==, 0);
     g_unsetenv("L1_FUEL_MAC_PATH");
-    unlink(path);
 }
 
 /*
