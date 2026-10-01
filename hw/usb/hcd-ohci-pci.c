@@ -54,8 +54,8 @@ static void ohci_pci_die(struct OHCIState *ohci)
 
     ohci_sysbus_die(ohci);
 
-    pci_word_test_and_set_mask(dev->parent_obj.config + PCI_STATUS,
-                               PCI_STATUS_DETECTED_PARITY);
+    pci_set_word(dev->parent_obj.config + PCI_STATUS,
+                 PCI_STATUS_DETECTED_PARITY);
 }
 
 static void usb_ohci_realize_pci(PCIDevice *dev, Error **errp)
