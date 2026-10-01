@@ -456,6 +456,9 @@
                     "minimum": 0,
                     "maximum": 18446744073709551615
                   },
+                  "controller_startup": {
+                    "enum": ["bic-functional-experiment"]
+                  },
                   "initial_latch": {
                     "type": "integer",
                     "minimum": 0,

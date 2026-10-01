@@ -289,6 +289,8 @@ struct SGIMachineState {
     SGIMachinePeerNotifier *io_peer_notifiers;
     SGIMachineAssemblyOwnership *assembly_ownership;
     DeviceState **controllers;
+    bool *controller_reset_registered;
+    DeviceState **controller_bics;
     uint32_t controller_count;
     uint32_t *owner_controllers;
     SGIL1QueryOwner *query_owners;
@@ -2641,6 +2643,8 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     modules = sgi_model_module_array(t->modules, &module_count);
     s->controller_count = QAPI_LIST_LENGTH(t->controllers);
     s->controllers = g_new0(DeviceState *, s->controller_count);
+    s->controller_reset_registered = g_new0(bool, s->controller_count);
+    s->controller_bics = g_new0(DeviceState *, s->controller_count);
     s->io_peer_count = QAPI_LIST_LENGTH(t->io_peers);
     s->io_peers = g_new0(DeviceState *, s->io_peer_count);
     s->io_peer_notifiers = g_new0(SGIMachinePeerNotifier, s->io_peer_count);
@@ -2682,18 +2686,45 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         object_property_add_child(module, "l1", OBJECT(l1));
         s->controllers[a->controller_index] = l1;
         qdev_prop_set_string(l1, "brick-type", a->controller_profile);
-        if (!sgi_machine_set_expansion_inputs(s, a->controller_index,
-                                              l1, errp) ||
-            !qdev_realize(l1, NULL, errp)) {
-            object_unref(OBJECT(interface));
-            object_unref(OBJECT(dev));
-            return false;
-        }
         object_property_add_child(module, "board-interface", OBJECT(interface));
         qdev_prop_set_uint64(interface, "identity", a->bic_identity);
         qdev_prop_set_bit(interface, "initial-latch-set", a->has_initial_latch);
         qdev_prop_set_uint16(interface, "initial-latch", a->initial_latch);
         if (!qdev_realize(interface, NULL, errp)) {
+            object_unref(OBJECT(interface));
+            object_unref(OBJECT(dev));
+            return false;
+        }
+        device_cold_reset(interface);
+        if (a->has_controller_startup) {
+            SGIL1BICEndpoint endpoints[2] = {
+                { .receiver = OBJECT(interface),
+                  .identity = (uint64_t)a->peer_index + 1 },
+            };
+
+            if (a->controller_startup !=
+                SGI_MODEL_CONTROLLER_STARTUP_BIC_FUNCTIONAL_EXPERIMENT ||
+                !sgi_l1_bind_bic_startup(SGI_L1(l1),
+                    SGI_L1_BIC_STARTUP_EXPERIMENT, endpoints,
+                    sgi_bic_board_controller_operation, errp)) {
+                object_unref(OBJECT(interface));
+                object_unref(OBJECT(dev));
+                return false;
+            }
+            s->controller_bics[a->controller_index] = interface;
+            object_ref(OBJECT(interface));
+            qemu_register_resettable(OBJECT(interface));
+            qemu_register_resettable(OBJECT(l1));
+            s->controller_reset_registered[a->controller_index] = true;
+        }
+        if (!sgi_machine_set_expansion_inputs(s, a->controller_index,
+                                              l1, errp) ||
+            !qdev_realize(l1, NULL, errp)) {
+            if (s->controller_reset_registered[a->controller_index]) {
+                qemu_unregister_resettable(OBJECT(l1));
+                qemu_unregister_resettable(OBJECT(interface));
+                s->controller_reset_registered[a->controller_index] = false;
+            }
             object_unref(OBJECT(interface));
             object_unref(OBJECT(dev));
             return false;
@@ -4733,6 +4764,13 @@ static void sgi_machine_instance_finalize(Object *obj)
     }
     sgi_l1_query_router_destroy(&s->query_router);
     for (i = 0; i < s->controller_count; i++) {
+        if (s->controller_reset_registered[i]) {
+            qemu_unregister_resettable(OBJECT(s->controllers[i]));
+            qemu_unregister_resettable(OBJECT(s->controller_bics[i]));
+        }
+        if (s->controller_bics[i]) {
+            object_unref(OBJECT(s->controller_bics[i]));
+        }
         if (s->controllers[i]) {
             object_unref(OBJECT(s->controllers[i]));
         }
@@ -4746,6 +4784,8 @@ static void sgi_machine_instance_finalize(Object *obj)
         }
     }
     g_free(s->controllers);
+    g_free(s->controller_bics);
+    g_free(s->controller_reset_registered);
     g_free(s->owner_controllers);
     g_free(s->query_owners);
     g_free(s->query_associations);

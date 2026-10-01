@@ -238,3 +238,7 @@ system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_TEST_DEVICES'],
 system_ss.add(when: ['CONFIG_SGI_BOARD_TEST', 'CONFIG_SGI_SN1',
                      'CONFIG_TEST_DEVICES'],
               if_true: files('../../tests/qtest/sgi-pci-expansion-ni-fixture.c'))
+
+system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_SGI_BIC_BOARD_INTERFACE',
+                     'CONFIG_TEST_DEVICES'],
+              if_true: files('../../tests/qtest/l1-bic-startup-fixture.c'))

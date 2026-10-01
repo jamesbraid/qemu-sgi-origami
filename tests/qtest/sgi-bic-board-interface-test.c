@@ -55,6 +55,28 @@ static void unknown(QTestState *s)
     remote(s, LATCH_OFFSET, 2, false, 0, TX_ERROR);
 }
 
+static void test_controller_operations(void)
+{
+    QTestState *s = start(ID, true, 0xabcd, "");
+    const uint64_t invalid[] = {
+        UINT64_C(1) << 32 | 0x008c1301,
+        0x018c1301, 0x008e1301, 0x008c1401,
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(invalid); i++) {
+        qtest_writeq(s, BASE + 56, invalid[i]);
+        g_assert_cmpuint(qtest_readq(s, BASE + 48), ==, TX_ERROR);
+        latch(s, 0xabcd);
+    }
+    qtest_writeq(s, BASE + 56, 0x008c1302);
+    g_assert_cmpuint(qtest_readq(s, BASE + 48), ==, 0);
+    latch(s, 0x02cd);
+    qtest_writeq(s, BASE + 56, 0x008c1241);
+    g_assert_cmpuint(qtest_readq(s, BASE + 48), ==, 0);
+    latch(s, 0x0241);
+    qtest_quit(s);
+}
+
 static void test_identity(void)
 {
     const uint64_t ids[] = { ID, OTHER_ID };
@@ -241,6 +263,7 @@ static void test_migration_mismatch(const void *opaque)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sgi/bic/controller-operations", test_controller_operations);
     qtest_add_func("/bic/identity", test_identity);
     qtest_add_func("/bic/unknown", test_unknown);
     qtest_add_func("/bic/initial", test_initial);

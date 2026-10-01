@@ -564,3 +564,6 @@ sgi_elsc_nic(uint32_t pulse, uint32_t sample, uint32_t delay, bool routed, bool 
 sgi_command_port_word(unsigned int port_id, uint32_t word) "port %u word 0x%08x"
 sgi_command_port_packet(unsigned int port_id, uint32_t selector, unsigned int argc) "port %u selector 0x%08x argc %u"
 sgi_command_port_unsupported(unsigned int port_id, uint32_t word) "port %u unsupported selector 0x%08x"
+
+# sgi-l1.c
+sgi_l1_bic_startup_operation(unsigned int position, uint8_t bus, uint8_t address, uint8_t command, uint8_t value, bool completed) "position=%u bus=%u address=0x%02x command=0x%02x value=0x%02x completed=%d"

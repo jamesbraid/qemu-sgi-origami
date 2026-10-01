@@ -12839,6 +12839,7 @@
           "bic-identity": 49152,
           "controller-index": 1,
           "controller-profile": "pci-expansion",
+          "controller-startup": "bic-functional-experiment",
           "head-ports": [
             8,
             9,

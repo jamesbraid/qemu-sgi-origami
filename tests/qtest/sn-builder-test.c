@@ -1877,7 +1877,7 @@ static void test_expansion_cpu_board_load(const void *data)
     QTestState *qts;
     uint64_t result = 0;
     int fd;
-    static const uint32_t code[] = {
+    uint32_t code[] = {
         0x400c6000, /* mfc0 t4, Status */
         0x358c0080, /* ori t4, t4, KX */
         0x408c6000, /* mtc0 t4, Status */
@@ -1899,6 +1899,12 @@ static void test_expansion_cpu_board_load(const void *data)
         0x00000000,
     };
 
+    uint64_t expected = data ? 0x41 : 0xc000;
+
+    if (data) {
+        code[8] = 0x35293500; /* ori t1, t1, 0x3500 */
+        code[11] = 0x950a0000; /* lhu t2, 0(t0) */
+    }
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
@@ -1927,12 +1933,12 @@ static void test_expansion_cpu_board_load(const void *data)
         g_usleep(1000);
     }
     qtest_qmp_assert_success(qts, "{'execute':'stop'}");
-    if (result != 0xc000) {
+    if (result != expected) {
         g_autofree char *registers = qtest_hmp(qts, "info registers");
 
         g_test_message("CPU registers: %s", registers);
     }
-    g_assert_cmphex(result, ==, 0xc000);
+    g_assert_cmphex(result, ==, expected);
     qtest_quit(qts);
     g_unlink(path);
 }
@@ -1982,7 +1988,8 @@ static void test_expansion_physical_board_lookup(const void *data)
                 UINT64_C(0x10000000000) + physical + 0x1000000);
             g_autofree char *reply = qtest_hmp(qts, "%s", command);
 
-            g_assert_nonnull(strstr(reply, "Cannot access memory"));
+            g_assert_null(strstr(reply, "Cannot access memory"));
+            g_assert_nonnull(strstr(reply, "0x0041"));
             g_free(command);
             command = g_strdup_printf("xp/1wx 0x%" PRIx64,
                                        UINT64_C(0x10000000000) + physical);
@@ -1992,6 +1999,27 @@ static void test_expansion_physical_board_lookup(const void *data)
         }
         qtest_quit(qts);
     }
+    g_unlink(prom);
+}
+
+/* The explicitly selected controller assigns its own board on startup. */
+static void test_expansion_controller_startup(const void *data)
+{
+    g_autofree char *prom = expansion_prom();
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -bios %s -nodefaults -display none", prom);
+    uint64_t peer_revision = expansion_vector(qts, EXPANSION_LB_REVISION,
+                                              false, 0);
+
+    expansion_vector(qts, EXPANSION_LB_REVISION, true,
+                     peer_revision | (UINT64_C(1) << 32));
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x41);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    expansion_vector(qts, EXPANSION_LB_REVISION, true,
+                     peer_revision | (UINT64_C(1) << 32));
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x41);
+    qtest_quit(qts);
     g_unlink(prom);
 }
 
@@ -2220,8 +2248,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion/experimental-offering",
                         "origin300,topology=origin300-pci-expansion-experiment",
                         test_expansion_builder);
+    qtest_add_data_func("sn/builder/expansion/controller-startup",
+                        NULL, test_expansion_controller_startup);
     qtest_add_data_func("sn/builder/expansion/physical-board-lookup",
                         NULL, test_expansion_physical_board_lookup);
+    qtest_add_data_func("sn/builder/expansion/cpu-controller-latch",
+                        GINT_TO_POINTER(1), test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/cpu-board-load",
                         NULL, test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",

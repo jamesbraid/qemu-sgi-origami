@@ -3874,9 +3874,269 @@ static void test_attached_composition_refusal(void)
     }
 }
 
+#define BIC_STARTUP_BASE UINT64_C(0x12000000)
+
+static QTestState *bic_start(unsigned population, unsigned failure,
+                            bool selected, bool initial, const char *extra)
+{
+    QTestState *s = qtest_initf(
+        "-M none -cpu R10000 -S -device sgi-l1-bic-startup-fixture,id=startup,"
+        "population=%u,fail-mask=%u,selected=%s,initial-set=%s "
+        "-device sgi-l1-uart,id=startup-uart,"
+        "controller=/machine/peripheral/startup/l1 %s",
+        population, failure, selected ? "on" : "off",
+        initial ? "on" : "off", extra);
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/startup", 0,
+                          BIC_STARTUP_BASE);
+    l1_test_base = 0x11000000ULL;
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/startup-uart", 0, BASE);
+    return s;
+}
+
+static uint64_t bic_read(QTestState *s, unsigned offset)
+{
+    return qtest_readq(s, BIC_STARTUP_BASE + offset);
+}
+
+static void bic_write(QTestState *s, unsigned offset, uint64_t value)
+{
+    qtest_writeq(s, BIC_STARTUP_BASE + offset, value);
+}
+
+static void bic_operations(QTestState *s, unsigned population,
+                           uint16_t coordinates)
+{
+    g_assert_cmpuint(bic_read(s, 0), ==, 2 * population);
+    for (unsigned i = 0; i < population; i++) {
+        uint64_t destination = ((uint64_t)i << 32) | ((0x8c + 2 * i) << 16);
+
+        g_assert_cmphex(bic_read(s, 16 + 16 * i), ==,
+                        destination | 0x1300 | (coordinates >> 8));
+        g_assert_cmphex(bic_read(s, 24 + 16 * i), ==,
+                        destination | 0x1200 | (coordinates & 0xff));
+    }
+}
+
+static void test_bic_startup_operations(void)
+{
+    for (unsigned population = 1; population <= 2; population++) {
+        for (unsigned failure = 0; failure < (1u << (2 * population));
+             failure++) {
+            QTestState *s = bic_start(population, failure, true, true, "");
+
+            bic_operations(s, population, 0x41);
+            for (unsigned i = 0; i < population; i++) {
+                uint16_t expected = (failure & (1u << (2 * i)) ? 0xab00 : 0) |
+                    (failure & (2u << (2 * i)) ? 0xcd : 0x41);
+
+                g_assert_cmphex(bic_read(s, 88 + 8 * i), ==, expected);
+            }
+            /* The binding cannot change after realization. */
+            bic_write(s, 104, 0);
+            qtest_quit(s);
+        }
+    }
+    for (unsigned failure = 1; failure <= 2; failure++) {
+        QTestState *s = bic_start(1, failure, true, false, "");
+
+        bic_operations(s, 1, 0x41);
+        g_assert_cmphex(bic_read(s, 88), ==, UINT64_C(1) << 63);
+        bic_write(s, 8, 0);
+        bic_write(s, 80, 0);
+        g_assert_cmphex(bic_read(s, 88), ==, 0x41);
+        qtest_quit(s);
+    }
+}
+
+static void test_bic_startup_failure_visibility(void)
+{
+    GError *error = NULL;
+    g_autofree char *path = NULL, *log = NULL;
+    g_autofree char *quoted = NULL, *extra = NULL;
+    QTestState *s;
+    int fd = g_file_open_tmp("l1-bic-operation-XXXXXX.txt", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-trace enable=sgi_l1_bic_startup_operation "
+                            "-d guest_errors -D %s", quoted);
+    s = bic_start(1, 3, true, true, extra);
+    bic_operations(s, 1, 0x41);
+    g_assert_cmphex(bic_read(s, 88), ==, 0xabcd);
+    bic_write(s, 8, 0);
+    bic_write(s, 80, 0);
+    g_assert_cmphex(bic_read(s, 88), ==, 0x41);
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "sgi-l1: BIC startup operation failed: "
+                           "position=0 bus=0 address=0x8c "
+                           "command=0x13 value=0x00"));
+    g_assert_nonnull(strstr(log, "sgi-l1: BIC startup operation failed: "
+                           "position=0 bus=0 address=0x8c "
+                           "command=0x12 value=0x41"));
+    g_assert_nonnull(strstr(log, "command=0x13 value=0x00 completed=0"));
+    g_assert_nonnull(strstr(log, "command=0x12 value=0x41 completed=0"));
+    g_assert_nonnull(strstr(log, "command=0x13 value=0x00 completed=1"));
+    g_assert_nonnull(strstr(log, "command=0x12 value=0x41 completed=1"));
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_bic_startup_resets(void)
+{
+    QTestState *s = bic_start(1, 0, true, true, "");
+    uint8_t reply[131];
+
+    bic_write(s, 64, 9);
+    bic_write(s, 72, 5);
+    bic_operations(s, 1, 0x41);
+    g_assert_cmphex(bic_read(s, 88), ==, 0x41);
+    /* The existing reboot request activates settings without resetting BIC. */
+    bic_write(s, 0, 0);
+    g_assert_cmpuint(general(s, 0x4002, NULL, 0, 0, reply), ==, 6);
+    bic_operations(s, 1, 0x245);
+    g_assert_cmphex(bic_read(s, 88), ==, 0x245);
+    bic_write(s, 8, 1);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_qmp_eventwait(s, "RESET");
+    bic_operations(s, 1, 0x245);
+    /* Reset-enter restored the high byte before the failed startup high. */
+    g_assert_cmphex(bic_read(s, 88), ==, 0xab45);
+    bic_write(s, 80, 1);
+    g_assert_cmpuint(bic_read(s, 0), ==, 0);
+    g_assert_cmphex(bic_read(s, 88), ==, 0xabcd);
+    bic_write(s, 8, 0);
+    bic_write(s, 80, 0);
+    bic_operations(s, 1, 0x245);
+    g_assert_cmphex(bic_read(s, 88), ==, 0x245);
+    qtest_quit(s);
+
+    s = bic_start(1, 0, false, true, "");
+    g_assert_cmpuint(bic_read(s, 0), ==, 0);
+    g_assert_cmphex(bic_read(s, 88), ==, 0xabcd);
+    bic_write(s, 64, 9);
+    bic_write(s, 80, 0);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_qmp_eventwait(s, "RESET");
+    g_assert_cmpuint(bic_read(s, 0), ==, 0);
+    g_assert_cmphex(bic_read(s, 88), ==, 0xabcd);
+    qtest_quit(s);
+}
+
+static void test_bic_startup_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("l1-bic-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = bic_start(1, 1, true, true, "");
+    to = bic_start(1, 0, true, true, "-incoming defer");
+    bic_write(from, 64, 9);
+    bic_write(from, 72, 5);
+    bic_write(to, 0, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    /* Destination completion state came from the stream, with no replay. */
+    g_assert_cmpuint(bic_read(to, 0), ==, 0);
+    g_assert_cmphex(bic_read(to, 88), ==, 0xab41);
+    bic_write(to, 8, 0);
+    bic_write(to, 80, 0);
+    bic_operations(to, 1, 0x245);
+    g_assert_cmphex(bic_read(to, 88), ==, 0x245);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_bic_startup_migration_mismatch(void)
+{
+    for (unsigned mismatch = 0; mismatch < 3; mismatch++) {
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("l1-bic-mismatch-XXXXXX", &error);
+        g_autofree char *socket = NULL, *uri = NULL;
+        QTestState *from, *to;
+
+        g_assert_no_error(error);
+        socket = g_build_filename(dir, "migration.sock", NULL);
+        uri = g_strdup_printf("unix:%s", socket);
+        from = bic_start(1, 0, true, true, "");
+        to = bic_start(mismatch == 1 ? 2 : 1, 0, mismatch != 0, true,
+            mismatch == 2 ? "-global "
+                            "sgi-l1-bic-startup-fixture.identity-base=10 "
+                            "-incoming defer" : "-incoming defer");
+        qtest_set_expected_status(to, EXIT_FAILURE);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        qtest_wait_qemu(to);
+        qtest_quit(to);
+        qtest_quit(from);
+        unlink(socket);
+        g_assert_cmpint(rmdir(dir), ==, 0);
+    }
+}
+
+static void test_bic_startup_active_save(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("l1-bic-active-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+    bool failed = false;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = bic_start(1, 0, true, true, "");
+    to = bic_start(1, 0, true, true, "-incoming defer");
+    bic_write(from, 112, 1);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    for (unsigned tries = 0; tries < 1000; tries++) {
+        g_autoptr(QDict) status = qtest_qmp_assert_success_ref(from,
+            "{'execute':'query-migrate'}");
+
+        if (g_str_equal(qdict_get_str(status, "status"), "failed")) {
+            failed = true;
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_true(failed);
+    bic_write(from, 112, 0);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn1/l1/bic-startup/failure-visibility",
+                   test_bic_startup_failure_visibility);
+    qtest_add_func("sn1/l1/bic-startup/active-save",
+                   test_bic_startup_active_save);
+    qtest_add_func("sn1/l1/bic-startup/operations",
+                   test_bic_startup_operations);
+    qtest_add_func("sn1/l1/bic-startup/resets", test_bic_startup_resets);
+    qtest_add_func("sn1/l1/bic-startup/migration", test_bic_startup_migration);
+    qtest_add_func("sn1/l1/bic-startup/migration-mismatch",
+                   test_bic_startup_migration_mismatch);
     qtest_add_func("sn1/l1/uart", test_uart);
     qtest_add_func("sn1/l1/frames", test_frames);
     qtest_add_func("sn1/l1/output-escape-startup",

@@ -22,6 +22,7 @@
 #include "system/rtc.h"
 #include "system/runstate.h"
 #include "system/qtest.h"
+#include "trace.h"
 
 /* Product metadata does not describe physical UART wiring or power control. */
 struct SGIL1ProductProfile {
@@ -400,9 +401,73 @@ static void l1_power_up_bh(void *opaque)
     }
 }
 
-/* The controller's own start: mains applied, or the reboot_l1 command. */
-static void l1_boot(SGIL1State *s)
+bool sgi_l1_bind_bic_startup(SGIL1State *s, SGIL1BICStartup selection,
+                           const SGIL1BICEndpoint endpoints[2],
+                           SGIL1BICOperation operation, Error **errp)
 {
+    if (DEVICE(s)->realized || s->bic_startup ||
+        selection != SGI_L1_BIC_STARTUP_EXPERIMENT || !operation ||
+        !s->brick_type || strcmp(s->brick_type, "pci-expansion") ||
+        !endpoints[0].receiver || !endpoints[0].identity ||
+        (!!endpoints[1].receiver != !!endpoints[1].identity) ||
+        (endpoints[1].receiver &&
+         (endpoints[1].receiver == endpoints[0].receiver ||
+          endpoints[1].identity == endpoints[0].identity))) {
+        error_setg(errp, "L1 BIC startup needs an unbound expansion controller "
+                   "and distinct immutable endpoints before realization");
+        return false;
+    }
+    s->bic_startup = selection;
+    s->bic_operation = operation;
+    for (unsigned i = 0; i < 2; i++) {
+        s->bic_endpoints[i] = endpoints[i];
+        if (endpoints[i].receiver) {
+            object_ref(endpoints[i].receiver);
+        }
+    }
+    return true;
+}
+
+static void l1_bic_startup(SGIL1State *s)
+{
+    uint16_t coordinates = (s->rack << 6) | s->bay;
+
+    if (!s->bic_startup_needed) {
+        return;
+    }
+    s->bic_startup_needed = false;
+    s->bic_operation_active = true;
+    for (unsigned i = 0; i < 2; i++) {
+        if (!s->bic_endpoints[i].receiver) {
+            continue;
+        }
+        /* Independent operations: a failed high byte does not skip low. */
+        for (unsigned byte = 0; byte < 2; byte++) {
+            uint8_t command = byte ? 0x12 : 0x13;
+            uint8_t value = byte ? coordinates : coordinates >> 8;
+            uint8_t address = 0x8c + 2 * i;
+
+            bool completed = s->bic_operation(s->bic_endpoints[i].receiver,
+                                              i, 0, address, command, value);
+
+            trace_sgi_l1_bic_startup_operation(i, 0, address, command, value,
+                                               completed);
+            if (!completed) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-l1: BIC startup operation failed: "
+                              "position=%u bus=0 address=0x%02x "
+                              "command=0x%02x value=0x%02x\n",
+                              i, address, command, value);
+            }
+        }
+    }
+    s->bic_operation_active = false;
+}
+
+/* The controller's own start: mains applied, or the reboot_l1 command. */
+static void l1_boot_local(SGIL1State *s)
+{
+    s->bic_startup_needed = s->bic_startup != SGI_L1_BIC_STARTUP_NONE;
     s->rack = s->pending_rack;
     s->bay = s->pending_bay;
     s->console_mode = s->escaped = s->warned_off = false;
@@ -425,6 +490,12 @@ static void l1_boot(SGIL1State *s)
     } else {
         l1_log(s, "L1 booting");
     }
+}
+
+static void l1_boot(SGIL1State *s)
+{
+    l1_boot_local(s);
+    l1_bic_startup(s);
 }
 
 /* The packet protocol. */
@@ -2027,7 +2098,12 @@ static void l1_reset_enter(Object *obj, ResetType type)
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
     g_strlcpy(s->usb_test_descriptor_result, "none",
               sizeof(s->usb_test_descriptor_result));
-    l1_boot(s);
+    l1_boot_local(s);
+}
+
+static void l1_reset_hold(Object *obj, ResetType type)
+{
+    l1_bic_startup(SGI_L1(obj));
 }
 
 static bool l1_record_invalid(const SGIL1EEPROM *record, unsigned area)
@@ -2274,7 +2350,8 @@ static int l1_pre_save(void *opaque)
 {
     SGIL1State *s = opaque;
 
-    return s->query_router && s->query_router->active ? -EBUSY : 0;
+    return s->bic_operation_active ||
+           (s->query_router && s->query_router->active) ? -EBUSY : 0;
 }
 
 /* Product identity must match before loading the selected record cache. */
@@ -2286,6 +2363,9 @@ static const VMStateDescription vmstate_l1 = {
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
+        VMSTATE_UINT32_EQUAL(bic_startup, SGIL1State),
+        VMSTATE_UINT64_EQUAL(bic_endpoints[0].identity, SGIL1State),
+        VMSTATE_UINT64_EQUAL(bic_endpoints[1].identity, SGIL1State),
         VMSTATE_UINT64_EQUAL(query_owner_identity, SGIL1State),
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
@@ -2490,6 +2570,10 @@ fuel_mac_done:
     if (!s->profile) {
         error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, unknown or "
                    "pci-expansion");
+        return;
+    }
+    if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {
+        error_setg(errp, "L1 BIC startup requires the expansion profile");
         return;
     }
     s->product_identity = s->profile->identity;
@@ -2945,6 +3029,7 @@ static void l1_class_init(ObjectClass *klass, const void *data)
     dc->hotpluggable = false;
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
+    rc->phases.hold = l1_reset_hold;
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
                                   NULL);
     object_class_property_add_str(klass, "display-line-2",
@@ -2954,6 +3039,17 @@ static void l1_class_init(ObjectClass *klass, const void *data)
 static void l1_finalize(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
+
+    if (s->power_up_bh) {
+        qemu_unregister_reset(l1_after_node_reset, s);
+        qemu_bh_delete(s->power_up_bh);
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        if (s->bic_endpoints[i].receiver) {
+            object_unref(s->bic_endpoints[i].receiver);
+        }
+    }
+
     for (unsigned i = 0; i < 48; i++) {
         g_free(s->records[i].data);
     }
