@@ -365,6 +365,8 @@ config SGI_L1
 
 config SGI_XIO_TEST_TARGET
     bool
+    select SGI_XIO_PORT
+    select SGI_BEDROCK_IO
     default y if SGI_DEVICES
 
 config SGI_IOMMU_NOTIFIER_TEST
