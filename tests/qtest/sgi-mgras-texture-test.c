@@ -1375,6 +1375,46 @@ static void test_gl_texture_trilinear_blend(void)
     qtest_quit(t);
 }
 
+/*
+ * The raster engine applies the read-back registers 0x46, 0x47, 0x153,
+ * 0x158 and 0x159 from a 0x7c08 block itself, so the texture path, which
+ * sees the same block on a board with TRAM, does not log them as not
+ * modelled. A register nothing applies is still logged.
+ */
+static void test_gl_texture_raster_records_are_not_logged(void)
+{
+    static const uint32_t applied[] = { 0x46, 0x47, 0x153, 0x158, 0x159 };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    QTestState *t;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-tex-log-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    args = g_strdup_printf(TEX_ARGS " -d unimp -D %s", log);
+    t = tex_start(args);
+    for (int i = 0; i < ARRAY_SIZE(applied); i++) {
+        tex_record(t, applied[i], 0x1234);
+    }
+    tex_record(t, 0x1ff, 0x5678);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    for (int i = 0; i < ARRAY_SIZE(applied); i++) {
+        g_autofree char *needle =
+            g_strdup_printf("raster register record 0x%x ", applied[i]);
+
+        g_assert_null(strstr(contents, needle));
+    }
+    g_assert_nonnull(strstr(contents, "raster register record 0x1ff "));
+    qtest_quit(t);
+    unlink(log);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1439,6 +1479,9 @@ int main(int argc, char **argv)
                    test_gl_texture_mip_level_select);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-trilinear-blend",
                    test_gl_texture_trilinear_blend);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-raster-records-are-not-logged",
+                   test_gl_texture_raster_records_are_not_logged);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",

@@ -146,6 +146,17 @@
 #define MGRAS_TEX_TL_MODE        0x1a1
 #define MGRAS_TEX_TL_SPEC        0x1a2
 
+/*
+ * Raster register records the pixel read-back applies in
+ * sgi_mgras_raster_record(): the box corners, transfer size and counters
+ * and the byte packing.
+ */
+#define MGRAS_TEX_RSS_BLOCKXYSTARTI     0x046
+#define MGRAS_TEX_RSS_BLOCKXYENDI       0x047
+#define MGRAS_TEX_RSS_XFRSIZE           0x153
+#define MGRAS_TEX_RSS_XFRCOUNTERS       0x158
+#define MGRAS_TEX_RSS_BYTE_XFER_PACKING 0x159
+
 /* TEXMODE1 fields: bits 2:1 environment, 4:3 layout, 11:9 class. */
 #define MGRAS_TEXMODE1_CLASS(m)    (((m) >> 9) & 7)
 #define MGRAS_TEXMODE1_LAYOUT(m)   (((m) >> 3) & 3)
@@ -346,6 +357,13 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
         return;
     case MGRAS_TEX_TL_SPEC:
         t->tl_spec = value;
+        return;
+    case MGRAS_TEX_RSS_BLOCKXYSTARTI:
+    case MGRAS_TEX_RSS_BLOCKXYENDI:
+    case MGRAS_TEX_RSS_XFRSIZE:
+    case MGRAS_TEX_RSS_XFRCOUNTERS:
+    case MGRAS_TEX_RSS_BYTE_XFER_PACKING:
+        /* The raster engine applies these from the same block. */
         return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: raster register record 0x%x "
