@@ -374,6 +374,12 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
             return MEMTX_ERROR;
         }
         as = &node->ni_board_id_as;
+    } else if (local >= SN1_HUB_REMOTE_BOOT &&
+               local - SN1_HUB_REMOTE_BOOT < UINT64_C(0x8000000) &&
+               size <= UINT64_C(0x8000000) - (local - SN1_HUB_REMOTE_BOOT) &&
+               node->ni_boot_initialized) {
+        as = &node->ni_boot_as;
+        offset = local - SN1_HUB_REMOTE_BOOT;
     } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
                local - SN1_HUB_REMOTE_REGISTERS_ADDRESS < SGI_BEDROCK_SIZE &&
                size <= SGI_BEDROCK_SIZE -
@@ -913,6 +919,10 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
         memory_region_add_subregion_overlap(
             system, sn1_node_address(node, SN1_HUB_LOCAL_HIGH_BOOT),
             &node->prom_view_local_high.rom, 1);
+        sn1_node_ni_target_as(node, 3,
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(node->boot_flash), 1),
+            &node->ni_boot_as, "sn1.ni-boot");
+        node->ni_boot_initialized = true;
         return true;
     }
 
@@ -970,6 +980,22 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_REMOTE_FLASH),
         &node->prom_flash_remote);
+    /* This stateless erased response is also reached from the CPU view. */
+    node->prom_flash.disable_reentrancy_guard = true;
+    memory_region_init(&node->ni_target[3], OBJECT(node), "sn1.ni-boot",
+                       UINT64_C(0x8000000));
+    memory_region_init_alias(&node->ni_target_part[3][0], OBJECT(node),
+                             "sn1.ni-boot.payload", &node->prom, 0, prom_size);
+    memory_region_add_subregion(&node->ni_target[3], 0,
+                                &node->ni_target_part[3][0]);
+    memory_region_init_alias(&node->ni_target_part[3][1], OBJECT(node),
+                             "sn1.ni-boot.second", &node->prom_flash, 0,
+                             SN1_PROM_SECOND_SELECTION_SIZE);
+    memory_region_add_subregion(&node->ni_target[3],
+                                SN1_HUB_REMOTE_FLASH - SN1_HUB_REMOTE_BOOT,
+                                &node->ni_target_part[3][1]);
+    address_space_init(&node->ni_boot_as, &node->ni_target[3], "sn1.ni-boot");
+    node->ni_boot_initialized = true;
     return true;
 }
 
@@ -1936,6 +1962,9 @@ static void sn1_node_unrealize(DeviceState *dev)
 {
     SN1NodeState *node = SN1_NODE(dev);
 
+    if (node->ni_boot_initialized) {
+        address_space_destroy(&node->ni_boot_as);
+    }
     address_space_destroy(&node->ni_pio_as);
     address_space_destroy(&node->ni_board_id_as);
     address_space_destroy(&node->ni_hub_as);

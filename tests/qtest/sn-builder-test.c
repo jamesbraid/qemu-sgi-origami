@@ -2048,6 +2048,127 @@ static void test_expansion_compute_board_identity_migration(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_compute_remote_boot(const void *data)
+{
+    const bool pflash = data != NULL;
+    const uint64_t value = UINT64_C(0x123456789abcdef0);
+    const uint64_t remote = UINT64_C(0x10038000078);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *flash = pflash ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *drive = pflash ? g_strdup_printf(
+        "-drive if=pflash,file=%s,format=raw,readonly=off", flash) :
+        g_strdup("");
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir =
+        g_dir_make_tmp("compute-boot-migrate-XXXXXX", &error);
+    g_autofree char *destination_flash = pflash ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *destination_drive = pflash ? g_strdup_printf(
+        "-drive if=pflash,file=%s,format=raw,readonly=off", destination_flash) :
+        g_strdup("");
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    uint8_t bytes[8];
+    int fd = open(pflash ? flash : prom, O_WRONLY);
+    QTestState *qts, *to;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    stq_be_p(bytes, value);
+    g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x78), ==, sizeof(bytes));
+    if (pflash) {
+        stq_be_p(bytes, ~value);
+        g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x800078),
+                        ==, sizeof(bytes));
+    }
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s %s "
+        "-nodefaults -display none", prom, drive);
+    /* Before peer activation, the CPU claim reaches the global boot alias. */
+    g_assert_cmphex(qtest_readq(qts, remote), ==, value);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, value);
+        for (unsigned width = 1; width <= 8; width *= 2) {
+            g_assert_true(qtest_memread_cpu(qts, cpu, remote, bytes, width));
+            for (unsigned i = 0; i < width; i++) {
+                g_assert_cmpuint(bytes[i], ==, value >> (56 - i * 8) & 0xff);
+            }
+        }
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote + 0x2000000,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, pflash ? ~value : UINT64_MAX);
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote + 0x1000000,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        memset(bytes, 0xff, sizeof(bytes));
+        g_assert_true(qtest_memwrite_cpu(qts, cpu, remote,
+                                        bytes, sizeof(bytes)));
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, value);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                 UINT64_C(2) << 32);
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote + (UINT64_C(2) << 33),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, value);
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote + (UINT64_C(1) << 33),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, cpu, remote + (UINT64_C(3) << 33),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
+    /* The private boot views are constructed again, not migrated as state. */
+    if (pflash) {
+        /* Existing flash command decode: a 64-bit store enters query mode. */
+        qtest_writeq(qts, UINT64_C(0x104380002a8), 0x98);
+        g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10438000020)), ==, 'Q');
+    }
+    to = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s %s "
+        "-nodefaults -display none -incoming defer", prom, destination_drive);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(qts, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    if (pflash) {
+        g_assert_cmphex(qtest_readw(to, UINT64_C(0x10438000020)), ==, 'Q');
+        qtest_writeq(to, UINT64_C(0x10438002aa8), 0xf0);
+    }
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(to, cpu,
+            remote + (UINT64_C(2) << 33), bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, value);
+        g_assert_true(qtest_memread_cpu(to, cpu, remote, bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
+    qtest_quit(qts);
+    qtest_quit(to);
+    if (unlink(socket) < 0) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    if (pflash) {
+        g_assert_cmpint(unlink(flash), ==, 0);
+        g_assert_cmpint(unlink(destination_flash), ==, 0);
+    }
+}
+
 static void test_expansion_processor_absence(void)
 {
     static const uint64_t offsets[] = { 0x40, 0x48, 0x200040, 0x200048 };
@@ -2873,6 +2994,10 @@ int main(int argc, char **argv)
                    test_expansion_compute_board_identity);
     qtest_add_func("sn/builder/expansion/compute-board-identity-migration",
                    test_expansion_compute_board_identity_migration);
+    qtest_add_data_func("sn/builder/expansion/compute-remote-boot/payload",
+                        NULL, test_expansion_compute_remote_boot);
+    qtest_add_data_func("sn/builder/expansion/compute-remote-boot/pflash",
+                        GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
     qtest_add_func("sn/builder/expansion/storage/composed-read",
