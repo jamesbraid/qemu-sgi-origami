@@ -3308,7 +3308,8 @@ static void query_uart(unsigned owner)
     l1_test_base = 0x11000000ULL + owner * 0x1000;
 }
 
-static QTestState *query_start_config(char **paths, uint32_t topology,
+static QTestState *query_start_config(char **paths, const char *const *serials,
+                                      uint32_t topology,
                                       uint64_t last_identity,
                                       const char *attachments,
                                       const char *extra)
@@ -3325,6 +3326,11 @@ static QTestState *query_start_config(char **paths, uint32_t topology,
         if (paths) {
             g_string_append_printf(args,
                 ",\"board-record-eeprom\":[\"%s\"]", paths[i]);
+        }
+        if (serials && serials[i]) {
+            g_autofree char *escaped = g_strescape(serials[i], NULL);
+
+            g_string_append_printf(args, ",\"brick-serial\":\"%s\"", escaped);
         }
         g_string_append_printf(args,
             "}' -device '{\"driver\":\"sgi-l1-uart\","
@@ -3353,12 +3359,12 @@ static QTestState *query_start_config(char **paths, uint32_t topology,
 static QTestState *query_start(char **paths, uint32_t topology,
                                uint64_t last_identity, const char *extra)
 {
-    return query_start_config(paths, topology, last_identity, "", extra);
+    return query_start_config(paths, NULL, topology, last_identity, "", extra);
 }
 
 static QTestState *query_start_attached(char **paths, const char *extra)
 {
-    return query_start_config(paths, QUERY_TOPOLOGY, 104,
+    return query_start_config(paths, NULL, QUERY_TOPOLOGY, 104,
                               ",\"attached0\":2,\"attached1\":3,"
                               "\"attached2\":0,\"attached3\":1", extra);
 }
@@ -3511,6 +3517,117 @@ static void test_query_owners(void)
 static void test_attached_records(void)
 {
     check_query_records(true);
+}
+
+static void query_expect_serial(QTestState *s, unsigned issuer,
+                                 uint8_t channel, const char *serial)
+{
+    uint8_t reply[131], expected[64] = { 0x20 | channel, 0, 0, 0, 0, 1, 1 };
+    unsigned length = strlen(serial) + 8;
+
+    memcpy(expected + 7, serial, strlen(serial) + 1);
+    g_assert_cmpuint(receive(s, reply), ==, length);
+    g_assert_cmpmem(reply, length, expected, length);
+    query_empty_except(s, issuer);
+}
+
+static void query_serial(QTestState *s, unsigned issuer, unsigned serving,
+                          uint8_t channel, const char *serial,
+                          const uint8_t *args, unsigned args_len,
+                          unsigned count)
+{
+    query_send(s, issuer, query_address(serving, 6), 4, channel,
+               args, args_len, count);
+    query_expect_serial(s, issuer, channel, serial);
+}
+
+static void test_query_serial(void)
+{
+    const char *serials[] = { "compute-A", "compute-B", "expansion-A~}",
+                              "expansion-B" };
+    const uint8_t extra[] = { 0, 0, 0, 0, 7 };
+    QTestState *s = query_start_config(NULL, serials, QUERY_TOPOLOGY,
+                                      104, "", "");
+
+    for (unsigned issuer = 0; issuer < 4; issuer++) {
+        for (unsigned owner = 0; owner < 2; owner++) {
+            unsigned serving = issuer < 2 ? 2 + owner : owner;
+            uint8_t channel = (issuer * 7 + owner) & 0x1f;
+
+            query_serial(s, issuer, serving, channel, serials[serving],
+                          NULL, 0, 0);
+            query_serial(s, issuer, serving, channel ^ 0x1f, serials[serving],
+                          extra, sizeof(extra), 1);
+        }
+    }
+    qtest_quit(s);
+    query_uart(0);
+}
+
+static void test_query_serial_refusals(void)
+{
+    const char *serials[] = { NULL, "", "expansion-A~}", "expansion-B" };
+    const uint8_t malformed[] = { 0x82, 0x44 };
+    const uint32_t denied[] = { 0x0007f006, 0x0ffc3006, 0x00049006,
+                                 0x4ffff006, 0x3ffff006 };
+    uint8_t reply[131];
+    QTestState *s = query_start_config(NULL, serials, QUERY_TOPOLOGY,
+                                      104, "", "");
+
+    for (unsigned issuer = 2; issuer < 4; issuer++) {
+        for (unsigned serving = 0; serving < 2; serving++) {
+            uint8_t channel = issuer * 5 + serving;
+            uint8_t absent[] = { 0x20 | channel, 0xff, 0xff, 0xff, 0x98, 0 };
+
+            query_send(s, issuer, query_address(serving, 6), 4, channel,
+                       NULL, 0, 0);
+            g_assert_cmpuint(receive(s, reply), ==, sizeof(absent));
+            g_assert_cmpmem(reply, sizeof(absent), absent, sizeof(absent));
+            query_empty_except(s, issuer);
+        }
+    }
+    query_send(s, 0, query_address(2, 6), 4, 7,
+               malformed, sizeof(malformed), 1);
+    {
+        const uint8_t invalid[] = { 0x27, 0xff, 0xff, 0xff, 0x9c, 0 };
+
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(invalid));
+        g_assert_cmpmem(reply, sizeof(invalid), invalid, sizeof(invalid));
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(denied); i++) {
+        query_send(s, 0, denied[i], 4, 11, NULL, 0, 0);
+        expect_router_error(s, 11);
+        query_empty_except(s, 0);
+    }
+    query_send(s, 0, query_address(2, 6), 8, 13, NULL, 0, 0);
+    expect_router_error(s, 13);
+    query_send(s, 0, query_address(2, 3), 4, 13, NULL, 0, 0);
+    expect_router_error(s, 13);
+    qtest_writeq(s, QUERY_FIXTURE_BASE, QUERY_TOPOLOGY & ~(1 << 2));
+    query_send(s, 0, query_address(2, 6), 4, 17, NULL, 0, 0);
+    expect_router_error(s, 17);
+    qtest_writeq(s, QUERY_FIXTURE_BASE, QUERY_TOPOLOGY);
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 8, 1);
+    query_send(s, 0, query_address(2, 6), 4, 21, NULL, 0, 0);
+    expect_router_error(s, 21);
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 8, 0);
+    query_serial(s, 0, 2, 21, serials[2], NULL, 0, 0);
+    query_local_command(s, 3, "brick slot 3");
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 3);
+    query_send(s, 0, query_address(2, 6), 4, 5, NULL, 0, 0);
+    expect_router_error(s, 5);
+    query_local_command(s, 3, "brick slot 4");
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 3);
+    query_local_command(s, 2, "brick rack 9");
+    query_local_command(s, 2, "brick slot 8");
+    qtest_writeq(s, QUERY_FIXTURE_BASE + 16, 2);
+    query_send(s, 0, query_address(2, 6), 4, 5, NULL, 0, 0);
+    expect_router_error(s, 5);
+    query_send(s, 0, (9u << 18) | (8u << 12) | 6, 4, 5, NULL, 0, 0);
+    query_expect_serial(s, 0, 5, serials[2]);
+    g_assert_cmpuint(qtest_readq(s, QUERY_FIXTURE_BASE + 48), ==, 103);
+    qtest_quit(s);
+    query_uart(0);
 }
 
 static void test_query_refusals_reset(void)
@@ -3693,7 +3810,7 @@ static void test_attached_identity(void)
 static void test_attached_refusals_reset(void)
 {
     QTestState *s = query_start_attached(NULL, "");
-    const uint16_t denied[] = { 0x2001, 0x2005, 0x2006, 0x1002, 0x1003, 1 };
+    const uint16_t denied[] = { 0x2001, 0x2005, 0x2006, 0x1002, 0x1003, 1, 4 };
     const uint32_t addresses[] = { 0x4ffff206, 0x40043006, 0x4ffff003,
                                    0x4ffff005, 0x4ffff00e };
     const uint8_t malformed[] = { 0x82, 0x44 };
@@ -3837,7 +3954,7 @@ static void test_attached_migration_mismatch(void)
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     from = query_start_attached(NULL, "");
-    to = query_start_config(NULL, QUERY_TOPOLOGY, 104,
+    to = query_start_config(NULL, NULL, QUERY_TOPOLOGY, 104,
         ",\"attached0\":3,\"attached1\":3,\"attached2\":0,\"attached3\":1",
         "-incoming defer");
     qtest_set_expected_status(to, EXIT_FAILURE);
@@ -3858,7 +3975,7 @@ static void test_attached_composition_refusal(void)
     if (g_test_subprocess()) {
         g_autofree char *selection = g_strdup_printf(
             ",\"attached0\":%s", g_getenv("L1_BAD_ATTACHMENT"));
-        QTestState *s = query_start_config(NULL, QUERY_TOPOLOGY, 104,
+        QTestState *s = query_start_config(NULL, NULL, QUERY_TOPOLOGY, 104,
                                           selection, "");
         qtest_quit(s);
     } else {
@@ -4158,6 +4275,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/attached-routing/composition-refusal",
                    test_attached_composition_refusal);
     qtest_add_func("sn1/l1/attached-routing/identity", test_attached_identity);
+    qtest_add_func("sn1/l1/query-routing/serial-refusals",
+                   test_query_serial_refusals);
+    qtest_add_func("sn1/l1/query-routing/serial", test_query_serial);
     qtest_add_func("sn1/l1/query-routing/owners", test_query_owners);
     qtest_add_func("sn1/l1/query-routing/refusals-reset",
                    test_query_refusals_reset);
