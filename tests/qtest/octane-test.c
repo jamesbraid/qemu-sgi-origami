@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Graphics-free Octane profile: synthetic RAM and raw flash policy. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"

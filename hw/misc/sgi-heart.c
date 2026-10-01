@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /*
  * SGI IP30 HEART standalone processor and memory controller profile.
  * Memory population is explicit; this does not identify an Octane DIMM layout.

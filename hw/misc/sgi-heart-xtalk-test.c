@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* Test-only Crossbow connection to a HEART endpoint at widget 8. */
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"

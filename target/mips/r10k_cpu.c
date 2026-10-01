@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* R10000-family properties, model ownership and CPU lifecycle. */
 
 #include "qemu/osdep.h"

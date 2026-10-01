@@ -1,4 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
+/* Copyright (c) 2026 James Braid */
 /* ICS1890 register contract through IOC3 management, without guest code. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
