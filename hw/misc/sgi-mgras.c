@@ -88,6 +88,13 @@
  *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
  *   revision are approximated with the matching one-GE board's values.
  *
+ * MXI and EMXI add one TE1 and its TRAM to each of SSI's two REs. The model
+ * keeps one texture store, drawn by the shared rasterizer for every row, so
+ * a texture load, a base write and a draw reach both REs' rows alike. That
+ * approximates each path holding its own full copy (the software cannot tell
+ * them apart; only the diagnostics' per-RE TRAM tests could). Both paths
+ * report the same TRAM population, as the kernel's decode requires.
+ *
  * SSI and ESSI render: their second GE takes its program through the second
  * download port, and their second RE's two PP1s have XMAP register files of
  * their own behind PP1SELECT. Drawing reaches both REs through the one command
@@ -137,6 +144,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .implemented = true,
     }, {
         /*
          * Approximated beyond identity: the model renders an E-series
@@ -179,6 +187,7 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .implemented = true,
     },
 };
 
@@ -1488,11 +1497,13 @@ static void mgras_reset_exit(Object *obj, ResetType type)
 }
 
 /*
- * Select the descriptor. A board with TRAM makes IRIX drive texture paths
+ * Select the descriptor. SI+T and ESI+T make IRIX drive texture paths
  * the model has only in part (hw/misc/sgi-mgras-texture.c draws a loaded
- * RGBA level nearest-sampled and modulated, nothing more), so it is
- * refused unless x-unimplemented-board asks for it anyway; then it is
- * presented with a LOG_UNIMP note naming what is missing.
+ * RGBA level nearest-sampled and modulated, nothing more), so a board not
+ * marked implemented is refused unless x-unimplemented-board asks for it
+ * anyway; then it is presented with a LOG_UNIMP note naming what is
+ * missing. MXI and EMXI are marked implemented: they have what SSI and
+ * the texture model already have, and add no behaviour of their own.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {

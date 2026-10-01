@@ -1487,15 +1487,13 @@ static void test_gl_texture_raster_records_are_not_logged(void)
  * an odd row; a quad two pixels tall with t from 0 to 0.25 keeps both in
  * texel row 0 of the 4-by-2 level, so each must read that row's texels.
  */
-#define MXI_BOARD_FLAG " -global sgi-mgras.x-unimplemented-board=on"
-
 #define MXI_ROW_EVEN          16
 #define MXI_ROW_ODD           17
 
 static QTestState *mxi_start(const char *board)
 {
     g_autofree char *args = g_strdup_printf(
-        MACHINE_ARGS " -global sgi-mgras.board=%s" MXI_BOARD_FLAG, board);
+        MACHINE_ARGS " -global sgi-mgras.board=%s", board);
 
     return tex_start(args);
 }
