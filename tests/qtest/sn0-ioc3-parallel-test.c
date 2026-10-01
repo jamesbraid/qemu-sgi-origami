@@ -416,6 +416,32 @@ static void test_fuel_ti_configuration_is_read_only(const void *data)
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
 }
 
+static void test_ti_part_selects_fifo_capacity(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 "
+                                 "-global sgi-ioc3-parallel.parallel-part=1");
+    unsigned int i;
+
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_TEST));
+    for (i = 0; i < 16; i++) {
+        qtest_writeb(qts, ECP_FIFO, i);
+        g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                        ECR_MODE(MODE_TEST) |
+                        (i == 15 ? ECR_FIFO_FULL : 0));
+    }
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, i);
+    }
+    g_assert_cmphex(qtest_readb(qts, ECP_EXTENDED), ==,
+                    ECR_MODE(MODE_TEST) | ECR_FIFO_EMPTY);
+    qtest_writeb(qts, ECP_EXTENDED, ECR_MODE(MODE_CONFIG));
+    g_assert_cmphex(qtest_readb(qts, ECP_FIFO), ==, 0x1f);
+    g_assert_cmphex(qtest_readb(qts, ECP_CONFIG_B) & 0xbf, ==, 0x0b);
+
+    qtest_quit(qts);
+}
+
 static void test_fuel_ti_fifo_survives_savevm_loadvm(const void *data)
 {
     g_autofree char *tmpdir = NULL;
@@ -1515,6 +1541,8 @@ int main(int argc, char **argv)
                         test_fuel_ti_fifo_wraps_and_overruns);
     qtest_add_data_func("fuel/parallel-ti-configuration-read-only", NULL,
                         test_fuel_ti_configuration_is_read_only);
+    qtest_add_data_func("sn0/ioc3/parallel-ti-part-fifo-capacity", NULL,
+                        test_ti_part_selects_fifo_capacity);
     qtest_add_data_func("fuel/parallel-ti-fifo-savevm-loadvm", NULL,
                         test_fuel_ti_fifo_survives_savevm_loadvm);
 
