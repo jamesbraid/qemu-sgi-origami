@@ -11,6 +11,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIOrigin300PciExpansionState,
 
 #define SGI_ORIGIN300_PCI_HEADS 6
 
+bool sgi_origin300_pci_expansion_enable_ni_route(
+    SGIOrigin300PciExpansionState *s, Error **errp);
+
 /* ASIC/head order: U0 E/F, U1 E/F, U2 E/F; chassis slot mapping is unknown. */
 PCIBus *sgi_origin300_pci_expansion_bus(SGIOrigin300PciExpansionState *s,
                                        unsigned head);

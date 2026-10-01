@@ -202,6 +202,23 @@ static void sn1_node_place_claims(SN1NodeState *node)
             continue;
         }
         sn1_fabric_place_view(&node->endpoint, node->claim[view]);
+        if (view < SN1_NODE_FABRIC_VIEW) {
+            bool typed = peer && peer->ready && peer->isolated_route;
+
+            for (unsigned space = 0; space < SN1_NODE_SPACES; space++) {
+                memory_region_set_enabled(
+                    &node->ni_processor[view][space].region, typed);
+                if (typed) {
+                    memory_region_set_enabled(&node->claim[view][space][0],
+                                              false);
+                    memory_region_set_enabled(&node->claim[view][space][1],
+                                              false);
+                } else {
+                    memory_region_set_enabled(&node->claim[view][space][0],
+                                              true);
+                }
+            }
+        }
     }
     for (view = 0; view < node->nr_cpus; view++) {
         unsigned physical = sn1_cpu_slot(node->model_node, view);
@@ -234,6 +251,11 @@ void sn1_node_update_claims(SN1NodeState *node)
                                           &node->cable_notifier);
         node->cable_notifier_added = true;
     }
+    SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
+
+    sgi_bedrock_io_set_destination(&bedrock->io,
+        peer && peer->isolated_route ? sn1_fabric_destination_rw : NULL,
+        &node->endpoint);
     sn1_fabric_update_claims(&node->endpoint);
 }
 
@@ -307,6 +329,11 @@ static SGIBedrockIOState *sn1_node_io_claimant(void *opaque,
     SN1NodeState *node = opaque;
     SN1FabricEndpoint *target = sn1_fabric_claimant(&node->endpoint, number);
 
+    SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
+
+    if (peer && peer->isolated_route) {
+        target = sn1_fabric_resolve_named(&node->endpoint, number);
+    }
     return target ? &target->bedrock->io : NULL;
 }
 
@@ -319,6 +346,98 @@ static void sn1_node_cached_alias_changed(Notifier *notifier, void *data)
     sn1_node_update_claims(node);
 }
 
+static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
+    unsigned origin, hwaddr address, void *buffer, size_t size, bool write,
+    MemTxAttrs attrs)
+{
+    SN1NodeState *node = SN1_NODE(endpoint->owner);
+    hwaddr local = address - ((uint64_t)endpoint->placement << 33);
+    AddressSpace *as;
+    hwaddr offset;
+
+    if (local < memory_region_size(node->ram) &&
+        size <= memory_region_size(node->ram) - local) {
+        as = &node->ni_ram_as;
+        offset = local;
+    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
+               local - SN1_HUB_REMOTE_REGISTERS_ADDRESS < SGI_BEDROCK_SIZE &&
+               size <= SGI_BEDROCK_SIZE -
+                       (local - SN1_HUB_REMOTE_REGISTERS_ADDRESS)) {
+        as = &node->ni_hub_as;
+        offset = local - SN1_HUB_REMOTE_REGISTERS_ADDRESS;
+    } else if (local >= SN1_BEDROCK_NODE_ADDRESS &&
+               local - SN1_BEDROCK_NODE_ADDRESS < SN1_BEDROCK_NODE_SIZE &&
+               size <= SN1_BEDROCK_NODE_SIZE -
+                       (local - SN1_BEDROCK_NODE_ADDRESS)) {
+        as = &node->ni_hub_as;
+        offset = local - SN1_BEDROCK_NODE_ADDRESS;
+    } else if (local >= SN1_IO_SPACE_ADDRESS &&
+               local - SN1_IO_SPACE_ADDRESS < SGI_BEDROCK_IO_PIO_SIZE &&
+               size <= SGI_BEDROCK_IO_PIO_SIZE -
+                       (local - SN1_IO_SPACE_ADDRESS)) {
+        as = &node->ni_pio_as;
+        offset = local - SN1_IO_SPACE_ADDRESS;
+    } else {
+        return MEMTX_DECODE_ERROR;
+    }
+    return write ? address_space_write(as, offset, attrs, buffer, size) :
+                   address_space_read(as, offset, attrs, buffer, size);
+}
+
+static MemTxResult sn1_node_ni_destination_rw(SN1FabricEndpoint *endpoint,
+    const SGIXioSource *source, hwaddr address, void *buffer, size_t size,
+    bool write)
+{
+    SN1NodeState *node = SN1_NODE(endpoint->owner);
+    AddressSpace *as;
+    hwaddr offset;
+
+    if (address & (UINT64_C(1) << 47)) {
+        hwaddr window = address & ((UINT64_C(1) << 39) - 1);
+
+        if ((window & ~UINT64_C(0x7fffff)) != UINT64_C(0x1800000)) {
+            return MEMTX_DECODE_ERROR;
+        }
+        offset = window & 0x7fffff;
+        if (offset >= 0x400000 || size > 0x400000 - offset) {
+            return MEMTX_DECODE_ERROR;
+        }
+        as = &SGI_BEDROCK(node->bedrock)->io.hub_as;
+    } else {
+        offset = address & (SN1_FABRIC_WINDOW_SIZE - 1);
+        if (offset >= memory_region_size(node->ram) ||
+            size > memory_region_size(node->ram) - offset) {
+            return MEMTX_DECODE_ERROR;
+        }
+        as = &node->ni_ram_as;
+    }
+    return write ? address_space_write(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                      buffer, size) :
+                   address_space_read(as, offset, MEMTXATTRS_UNSPECIFIED,
+                                     buffer, size);
+}
+
+static void sn1_node_ni_target_as(SN1NodeState *node, unsigned index,
+    MemoryRegion *target, AddressSpace *as, const char *name)
+{
+    uint64_t size = memory_region_size(target);
+    uint64_t split = size / 2;
+
+    /* A complete alias can flatten to the target's global placement. */
+    memory_region_init(&node->ni_target[index], OBJECT(node), name, size);
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t offset = i ? split : 0;
+        uint64_t bytes = i ? size - split : split;
+        g_autofree char *part = g_strdup_printf("%s.%u", name, i);
+
+        memory_region_init_alias(&node->ni_target_part[index][i], OBJECT(node),
+                                 part, target, offset, bytes);
+        memory_region_add_subregion(&node->ni_target[index], offset,
+                                    &node->ni_target_part[index][i]);
+    }
+    address_space_init(as, &node->ni_target[index], name);
+}
+
 static void sn1_node_init_claims(SN1NodeState *node)
 {
     unsigned int cpu, i;
@@ -327,9 +446,20 @@ static void sn1_node_init_claims(SN1NodeState *node)
     node->endpoint.bedrock = SGI_BEDROCK(node->bedrock);
     node->endpoint.placement = node->nasid;
     node->endpoint.place_claims = sn1_node_place_endpoint_claims;
+    node->endpoint.processor_rw = sn1_node_ni_processor_rw;
+    node->endpoint.destination_rw = sn1_node_ni_destination_rw;
+    sn1_node_ni_target_as(node, 0, node->ram, &node->ni_ram_as, "sn1.ni-ram");
+    address_space_init(&node->ni_hub_as,
+                      &SGI_BEDROCK(node->bedrock)->hub_window, "sn1.ni-hub");
+    sn1_node_ni_target_as(node, 1, sysbus_mmio_get_region(
+        SYS_BUS_DEVICE(node->bedrock), 1), &node->ni_pio_as, "sn1.ni-pio");
     sn1_fabric_init_floor(&node->endpoint, node->claim_floor);
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         sn1_node_view_claims(node, cpu, &node->cpu_sysmem[cpu]);
+        for (unsigned space = 0; space < SN1_NODE_SPACES; space++) {
+            sn1_fabric_init_processor_view(&node->ni_processor[cpu][space],
+                &node->endpoint, cpu, space, &node->cpu_sysmem[cpu]);
+        }
         sn1_node_local_form(node, cpu, 0, "reset", SN1_PROM_RESET,
                             node->model_node->flash->size);
         sn1_node_local_form(node, cpu, 1, "hub-special", SN1_SPACE_HUB,
@@ -1791,6 +1921,9 @@ static void sn1_node_unrealize(DeviceState *dev)
 {
     SN1NodeState *node = SN1_NODE(dev);
 
+    address_space_destroy(&node->ni_pio_as);
+    address_space_destroy(&node->ni_hub_as);
+    address_space_destroy(&node->ni_ram_as);
     sn_promdata_poll_free(&node->promdata_poll);
 }
 
