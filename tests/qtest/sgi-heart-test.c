@@ -1682,8 +1682,10 @@ static void test_xtalk_routing(void)
     g_assert_cmphex(id, ==, HEART_WIDGET_ID);
     g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24), &id),
                      ==, MEMTX_ERROR);
+    /* Crossbow drops requests to a legal widget without a reachable link. */
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_MISSING_PACKET + 0x80, 0x103),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, 0);
     qtest_writeq(s, HEART_XTALK_REGS + 0x10000, bits);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 0x103),
                      ==, MEMTX_OK);
@@ -1703,9 +1705,9 @@ static void test_xtalk_routing(void)
         "'/machine/peripheral/heart-xtalk/xbow',"
         "'property':'links-alive','value':32768}}");
     g_assert_cmpuint(qtest_readl_tx(s, HEART_SMALL + (8 << 24) + 4, &id),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_ERROR);
     g_assert_cmpuint(qtest_writeq_tx(s, HEART_XTALK_PACKET + 0x80, 0x103),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==,
                     1ULL << 42);
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
@@ -1716,7 +1718,7 @@ static void test_xtalk_routing(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 2));
     g_assert_cmpuint(qtest_readq_tx(s, HEART_MISSING_PACKET + 0x80, &value),
-                     ==, MEMTX_DECODE_ERROR);
+                     ==, MEMTX_ERROR);
     qtest_quit(s);
 }
 
