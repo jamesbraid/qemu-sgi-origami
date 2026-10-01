@@ -49,6 +49,8 @@ slow_qtests = {
   # IOC3 shares one machine across every case that wants a plain origin200
   # and starts its own for the rest. Measured 58.74s.
   'sn0-ioc3-test': 180,
+  # The 104 Octane cases measured 61.19s under host load.
+  'octane-test': 180,
   # The Hub's cases share one machine, but the file's time is mostly its
   # multi-processor rendezvous cases, which run a real guest under TCG and
   # do not get faster for sharing anything. Measured 138.14s.
