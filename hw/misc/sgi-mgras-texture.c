@@ -75,8 +75,9 @@
  *   layout and depth are TEXMODE1 bits 4:3 and TEXMODE2 bits 3:2, the
  *   environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
  *   modulate, decal or blend, and nothing in TEXMODE2
- *   asks for linear or mipmapped filtering, detail, clamping, a volume or
- *   a one-dimensional texture: nearest sampling with repeat wrap, through
+ *   asks for linear or mipmapped filtering, detail, a volume or
+ *   a one-dimensional texture: nearest sampling with the axes' wrap
+ *   (mgras_tex_wrap), through
  *   the shared rasterizer's texture sampling. Anything else draws
  *   untextured, logged.
  *
@@ -145,10 +146,14 @@
 #define MGRAS_TEXMODE1_TABLE     0x0000f000u
 /*
  * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 5 to
- * 10 filtering, mipmap and detail control, 11 to 14 the clamps, 19 mipmap
- * and detail control, 23 a volume and 24 a one-dimensional texture.
+ * 10 filtering, mipmap and detail control, 19 mipmap and detail control,
+ * 23 a volume and 24 a one-dimensional texture. Bits 11 to 14 are the
+ * wrap bits, below.
  */
-#define MGRAS_TEXMODE2_UNDRAWN   0x01887ff0u
+#define MGRAS_TEXMODE2_WRAP_S    0x00000800u
+#define MGRAS_TEXMODE2_WRAP_T    0x00001000u
+#define MGRAS_TEXMODE2_CLAMP     0x00004000u
+#define MGRAS_TEXMODE2_UNDRAWN   0x018807f0u
 
 /* The pixel transfer's routine word in 0x8d20's payload, and its value. */
 #define MGRAS_TEX_ROUTINE_WORD   6
@@ -702,6 +707,25 @@ static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
     return *format;
 }
 
+/*
+ * The wrap of one axis. A set axis bit clamps, and bit 14 says whether it
+ * is GL_CLAMP (set) or clamp to border (clear) for every clamped axis at
+ * once, as the client's one flag does. With a nearest filter a clamp
+ * reads the edge texel and clamp to border the border colour outside the
+ * image; with a linear one the neighbours beyond the edge are the border
+ * colour for both. Those semantics are OpenGL 1.2.1 3.8.4 and the
+ * SGIS_texture_border_clamp rules, the latter not read: approximated, as
+ * the board's coordinate rounding is unknown.
+ */
+static uint32_t mgras_tex_wrap(uint32_t texmode2, uint32_t axis_bit)
+{
+    if (!(texmode2 & axis_bit)) {
+        return SGI_GL_REPEAT;
+    }
+    return texmode2 & MGRAS_TEXMODE2_CLAMP ? SGI_GL_CLAMP :
+                                             SGI_GL_CLAMP_TO_BORDER;
+}
+
 /* A 12-bit colour field, 0 to 4095, as a fraction. */
 static float mgras_tex_c12(uint32_t v)
 {
@@ -806,8 +830,17 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     *image = (SGIGLTexImage) {
         .min_filter = SGI_GL_NEAREST,
         .mag_filter = SGI_GL_NEAREST,
-        .wrap_s = SGI_GL_REPEAT,
-        .wrap_t = SGI_GL_REPEAT,
+        .wrap_s = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_S),
+        .wrap_t = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_T),
+        /*
+         * TXBCOLOR is R12 | G12 << 12 and B12 | A12 << 12. The sampler
+         * reduces it to the texture's own format, which is the model's
+         * choice (approximated; the board's reduction is unknown).
+         */
+        .border_color = {
+            mgras_tex_c12(t->txbcolor[0]), mgras_tex_c12(t->txbcolor[0] >> 12),
+            mgras_tex_c12(t->txbcolor[1]), mgras_tex_c12(t->txbcolor[1] >> 12),
+        },
         .pyramid = &t->pyramid,
     };
     return image;
