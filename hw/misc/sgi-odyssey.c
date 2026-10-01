@@ -1473,6 +1473,21 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * it around its own clears, and the X server's word keeps it off.
  */
 #define ODSY_MODE_DITHER (1u << 18)
+/*
+ * Bit 14 of the same register is GL_ALPHA_TEST
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): glEnable/
+ * glDisable(GL_ALPHA_TEST) set and clear it in the library's 0x0404 shadow.
+ * 0x041e carries the function and reference together in one word: bits 14:12
+ * the comparison, GL_NEVER = 0 to GL_ALWAYS = 7, and bits 11:0 the reference
+ * under the common 12-bit rule (value / 4096.0, the library's own truncated
+ * encoding of its float reference).
+ */
+#define ODSY_MODE_ALPHA_TEST (1u << 14)
+#define ODSY_REG_ALPHA_FUNC 0x041e      /* 1 operand */
+#define ODSY_ALPHA_FUNC_SHIFT 12
+#define ODSY_ALPHA_FUNC_MASK 0x7
+#define ODSY_ALPHA_REF_MASK 0xfff
+#define ODSY_ALPHA_REF_SCALE 4096.0f
 
 /*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
@@ -3604,9 +3619,9 @@ static void odyssey_gl_feed(SGIOdysseyState *s, uint16_t op,
 
 /*
  * Hand the GL state register 0x0404 carries to the shared context: bit 12,
- * the shade model, and bit 16, the depth test. The shared rasterizer fills a
- * flat triangle from its provoking vertex, the last one for triangles and
- * strips as GL specifies.
+ * the shade model, bit 16, the depth test, and bit 14, the alpha test. The
+ * shared rasterizer fills a flat triangle from its provoking vertex, the
+ * last one for triangles and strips as GL specifies.
  * Nothing in the stream says which vertex the board takes; the library
  * never reorders or repeats colours to steer it, so GL's own rule is
  * INFERRED. Called on every 0x0404, including the X server's pattern-mode
@@ -3617,6 +3632,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     uint32_t shade = s->pattern_mode & ODSY_MODE_FLAT_SHADE ?
                      SGI_GL_FLAT : SGI_GL_SMOOTH;
     uint32_t depth_test = SGI_GL_DEPTH_TEST;
+    uint32_t alpha_test = SGI_GL_ALPHA_TEST;
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
@@ -3629,6 +3645,8 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     s->gl_dither = s->pattern_mode & ODSY_MODE_DITHER;
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_DEPTH_TEST ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &depth_test, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_ALPHA_TEST ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &alpha_test, 1);
 }
 
 /* 0x0420 and 0x0452 to the shared context's comparison and depth mask. */
@@ -4087,6 +4105,14 @@ static double odyssey_f32(uint32_t bits)
 
     memcpy(&f, &bits, sizeof(f));
     return f;
+}
+
+static uint32_t odyssey_f32_bits(float f)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
 }
 
 static void odyssey_normalize3(double v[3])
@@ -6222,6 +6248,17 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->gl_write_mask = s->cmd_operand[0];
         odyssey_gl_apply_depth(s);
         break;
+    case ODSY_REG_ALPHA_FUNC: {
+        uint32_t word = s->cmd_operand[0];
+        uint32_t args[2];
+
+        args[0] = SGI_GL_NEVER_ENUM + ((word >> ODSY_ALPHA_FUNC_SHIFT) &
+                                       ODSY_ALPHA_FUNC_MASK);
+        args[1] = odyssey_f32_bits((word & ODSY_ALPHA_REF_MASK) /
+                                   ODSY_ALPHA_REF_SCALE);
+        odyssey_gl_feed(s, SGI_GL_OP_ALPHA_FUNC, args, 2);
+        break;
+    }
     case ODSY_REG_FOG:
         /* Fog: consumed, not modeled (see ODSY_REG_FOG). */
         break;
