@@ -1852,6 +1852,91 @@ static void test_expansion_management_migration(const void *data)
     g_unlink(prom);
 }
 
+static void expansion_cpu_readq(QTestState *qts, unsigned cpu, uint64_t address,
+                                 uint64_t expected)
+{
+    g_autofree char *command = g_strdup_printf("xp/1gx 0x%" PRIx64, address);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'human-monitor-command','arguments':"
+        "{'command-line':%s,'cpu-index':%u}}", command, cpu);
+    const char *text = qdict_get_str(response, "return");
+    const char *colon = strchr(text, ':');
+    uint64_t value;
+
+    g_assert_null(strstr(text, "Cannot access memory"));
+    g_assert_nonnull(colon);
+    g_assert_cmpint(sscanf(colon + 1, "%" SCNx64, &value), ==, 1);
+    g_assert_cmphex(value, ==, expected);
+}
+
+static void test_expansion_cpu_board_load(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint64_t result = 0;
+    int fd;
+    static const uint32_t code[] = {
+        0x400c6000, /* mfc0 t4, Status */
+        0x358c0080, /* ori t4, t4, KX */
+        0x408c6000, /* mtc0 t4, Status */
+        0x00000000,
+        0x3c089000, /* lui t0, 0x9000 */
+        0x0008403c, /* dsll32 t0, t0, 0 */
+        0x34090002, /* ori t1, zero, 2 */
+        0x00094c38, /* dsll t1, t1, 16 */
+        0x35293400, /* ori t1, t1, 0x3400 */
+        0x00094c38, /* dsll t1, t1, 16 */
+        0x01094025, /* or t0, t0, t1 */
+        0xdd0a0000, /* ld t2, 0(t0) */
+        0x3c089200, /* lui t0, 0x9200 */
+        0x0008403c, /* dsll32 t0, t0, 0 */
+        0x3c090100, /* lui t1, 0x0100 */
+        0x01094025, /* or t0, t0, t1 */
+        0xfd0a0108, /* sd t2, PI_RT_COMPARE_A(t0) */
+        0x1000ffff, /* beq zero, zero, self */
+        0x00000000,
+    };
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    stl_be_p(image, 0x100000ff);
+    for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+        stl_be_p(image + 0x400 + i * 4, code[i]);
+    }
+    fd = g_file_open_tmp("expansion-cpu-load-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-pci-expansion-experiment "
+        "-cpu R14000 -bios %s -accel tcg,thread=multi -no-shutdown -S", path);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (unsigned tries = 0; tries < 1000; tries++) {
+        result = qtest_readq(qts, EXPANSION_LB_LOCAL + 0x108);
+        if (result) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    if (result != 0xc000) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+        g_test_message("CPU registers: %s", registers);
+    }
+    g_assert_cmphex(result, ==, 0xc000);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 static void test_expansion_physical_board_lookup(const void *data)
 {
     g_autofree char *prom = expansion_prom();
@@ -1887,6 +1972,24 @@ static void test_expansion_physical_board_lookup(const void *data)
         g_assert_cmphex(qtest_readq(qts, UINT64_C(0x10014000000)),
                         ==, compute_identity);
         g_assert_cmphex(qtest_readq(qts, physical), ==, 0xc000);
+        expansion_cpu_readq(qts, 0, physical, 0xc000);
+        expansion_cpu_readq(qts, 1, physical, 0xc000);
+        expansion_cpu_readq(qts, 0, UINT64_C(0x10000000000) + physical,
+                             0xc000);
+        {
+            g_autofree char *command = g_strdup_printf(
+                "xp/1hx 0x%" PRIx64,
+                UINT64_C(0x10000000000) + physical + 0x1000000);
+            g_autofree char *reply = qtest_hmp(qts, "%s", command);
+
+            g_assert_nonnull(strstr(reply, "Cannot access memory"));
+            g_free(command);
+            command = g_strdup_printf("xp/1wx 0x%" PRIx64,
+                                       UINT64_C(0x10000000000) + physical);
+            g_free(reply);
+            reply = qtest_hmp(qts, "%s", command);
+            g_assert_nonnull(strstr(reply, "Cannot access memory"));
+        }
         qtest_quit(qts);
     }
     g_unlink(prom);
@@ -2119,6 +2222,8 @@ int main(int argc, char **argv)
                         test_expansion_builder);
     qtest_add_data_func("sn/builder/expansion/physical-board-lookup",
                         NULL, test_expansion_physical_board_lookup);
+    qtest_add_data_func("sn/builder/expansion/cpu-board-load",
+                        NULL, test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",
                         NULL, test_expansion_controller_inputs);
     qtest_add_data_func("sn/builder/expansion/controller-refusals",
