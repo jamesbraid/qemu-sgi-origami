@@ -319,7 +319,7 @@ static void test_gl_texture_tl_mode_persists(void)
 
 /*
  * What the model does not draw stays untextured rather than drawn wrong:
- * TEXMODE1 bit 0 clear, a linear magnification filter (TEXMODE2 bit 7),
+ * TEXMODE1 bit 0 clear, a mipmap filter's bit 5 (TEXMODE2),
  * a detail texture (bit 9), environment code 3 on a colour class, a
  * level kept at 12 bits, which is not stored, and 0x0c00 after the
  * bind. Each quad is white.
@@ -328,7 +328,7 @@ static void test_gl_texture_unsupported_draws_untextured(void)
 {
     static const uint32_t cases[][3] = {
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON & ~1u, TEX_TEXMODE2_RGBA8 },
-        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x20 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x200 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 6, TEX_TEXMODE2_RGBA8 },
         { 0x34046, TEX_TEXMODE1_ON, 0x10008 },
@@ -666,8 +666,8 @@ static void tex_expect(uint32_t got, double r, double g, double b)
         int have = got >> (16 - 8 * k) & 0xff;
 
         if (abs(have - (int)lround(want[k] * 255)) > 1) {
-            g_test_message("channel %d: have %d, want %.1f", k, have,
-                           want[k] * 255);
+            g_printerr("channel %d: have %d, want %.1f\n", k, have,
+                       want[k] * 255);
             g_assert_not_reached();
         }
     }
@@ -1094,6 +1094,97 @@ static void test_gl_texture_border_per_class(void)
     qtest_quit(t);
 }
 
+#define TEX_MAG_LINEAR        0x0080
+#define TEX_MIN_LINEAR        0x0100
+
+/*
+ * A 2-by-1 texture, black then white, drawn magnified across 30 or 31
+ * pixels so that one pixel centre falls exactly on a texel join or edge.
+ * At the join the linear mean is one half, 127 or 128; the tolerance of
+ * one count is the model's own, the board's blend precision being
+ * unknown. With only the minification filter linear (bit 8) the draw
+ * is magnified and takes the nearest texel, which tells the two filter
+ * bits apart.
+ */
+static void test_gl_texture_linear_midpoint(void)
+{
+    static const float quad[4][4] = {
+        { 16, 16, 0, 0 }, { 47, 16, 1, 0 }, { 47, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+    static const uint8_t texels[8] = {
+        0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    static const struct {
+        uint32_t mode2;
+        double want;
+    } cases[] = {
+        { TEX_MAG_LINEAR | TEX_MIN_LINEAR, 0.5 },
+        { TEX_MAG_LINEAR, 0.5 },
+        { TEX_MIN_LINEAR, 1 },
+        { 0, 1 },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .w = 2, .h = 1, .texels = texels, .quad = quad,
+            .mode2 = cases[i].mode2,
+        };
+
+        tex_scene(t, &sc);
+        /* The pixel centred on s = 0.5. */
+        tex_expect(gl_window_pixel(t, 31, 24), cases[i].want, cases[i].want,
+                   cases[i].want);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A coordinate on the texture's edge, s = 0, blends the edge texel with
+ * its neighbour outside the image: under repeat that is the opposite
+ * edge texel (white), under GL_CLAMP and clamp to border the border
+ * colour (red). The quad's s runs -0.25 to 0.75 over 30 pixels, so pixel
+ * 23's centre is s = 0.
+ */
+static void test_gl_texture_linear_edge_wrap(void)
+{
+    static const float quad[4][4] = {
+        { 16, 16, -0.25f, 0 }, { 46, 16, 0.75f, 0 },
+        { 46, 32, 0.75f, 1 }, { 16, 32, -0.25f, 1 },
+    };
+    static const uint8_t texels[8] = {
+        0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    static const struct {
+        uint32_t wrap;
+        double r, g, b;
+    } cases[] = {
+        { 0, 0.5, 0.5, 0.5 },
+        { TEX_WRAP_S | TEX_WRAP_CLAMP, 0.5, 0, 0 },
+        { TEX_WRAP_S, 0.5, 0, 0 },
+    };
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .w = 2, .h = 1, .texels = texels, .quad = quad,
+            .mode2 = TEX_MAG_LINEAR | TEX_MIN_LINEAR | cases[i].wrap,
+            .extra = { TEX_BORDER_RG(0xfff, 0),
+                       TEX_BORDER_BA(0, 0xfff) },
+            .n_extra = 2,
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(gl_window_pixel(t, 23, 24), cases[i].r, cases[i].g,
+                   cases[i].b);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1148,6 +1239,10 @@ int main(int argc, char **argv)
                    test_gl_texture_wrap_mixed_axes);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-border-per-class",
                    test_gl_texture_border_per_class);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-linear-midpoint",
+                   test_gl_texture_linear_midpoint);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-linear-edge-wrap",
+                   test_gl_texture_linear_edge_wrap);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",

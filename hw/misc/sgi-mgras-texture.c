@@ -75,8 +75,9 @@
  *   layout and depth are TEXMODE1 bits 4:3 and TEXMODE2 bits 3:2, the
  *   environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
  *   modulate, decal or blend, and nothing in TEXMODE2
- *   asks for linear or mipmapped filtering, detail, a volume or
- *   a one-dimensional texture: nearest sampling with the axes' wrap
+ *   asks for mipmapped filtering, detail, a volume or a
+ *   one-dimensional texture: nearest or linear sampling by bits 8 and 7
+ *   with the axes' wrap
  *   (mgras_tex_wrap), through
  *   the shared rasterizer's texture sampling. Anything else draws
  *   untextured, logged.
@@ -145,15 +146,17 @@
 #define MGRAS_TEXMODE1_SELECT    0x00000180u
 #define MGRAS_TEXMODE1_TABLE     0x0000f000u
 /*
- * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 5 to
- * 10 filtering, mipmap and detail control, 19 mipmap and detail control,
- * 23 a volume and 24 a one-dimensional texture. Bits 11 to 14 are the
- * wrap bits, below.
+ * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 5 and 6
+ * mipmap filtering, 9 detail, 10 unknown, 19 mipmap control, 23 a volume
+ * and 24 a one-dimensional texture. Bits 7 and 8 are the magnification
+ * and minification filters and 11 to 14 the wrap bits, below.
  */
+#define MGRAS_TEXMODE2_MAG_LINEAR 0x00000080u
+#define MGRAS_TEXMODE2_MIN_LINEAR 0x00000100u
 #define MGRAS_TEXMODE2_WRAP_S    0x00000800u
 #define MGRAS_TEXMODE2_WRAP_T    0x00001000u
 #define MGRAS_TEXMODE2_CLAMP     0x00004000u
-#define MGRAS_TEXMODE2_UNDRAWN   0x018807f0u
+#define MGRAS_TEXMODE2_UNDRAWN   0x01880670u
 
 /* The pixel transfer's routine word in 0x8d20's payload, and its value. */
 #define MGRAS_TEX_ROUTINE_WORD   6
@@ -828,8 +831,16 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         .count = 1,
     };
     *image = (SGIGLTexImage) {
-        .min_filter = SGI_GL_NEAREST,
-        .mag_filter = SGI_GL_NEAREST,
+        /*
+         * Bit 8 is linear inside a level and 7 linear magnification:
+         * inferred from the client's filter table, and the weights are
+         * OpenGL 1.2.1 3.8.5's, approximated since the board's blend
+         * precision is unknown.
+         */
+        .min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
+                      SGI_GL_LINEAR : SGI_GL_NEAREST,
+        .mag_filter = t->texmode2 & MGRAS_TEXMODE2_MAG_LINEAR ?
+                      SGI_GL_LINEAR : SGI_GL_NEAREST,
         .wrap_s = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_S),
         .wrap_t = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_T),
         /*
