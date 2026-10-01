@@ -611,6 +611,11 @@ struct SGIRad1AudioState {
 
     MemoryRegion bar0;
 
+    /* Octane synthetic startup readback, separate from MediaIO state. */
+    uint32_t octane_startup[28];
+    /* Two excluded doubleword holes remain unused in this address span. */
+    uint64_t octane_subcode[68];
+
     uint32_t predispatch_a;    /* 0x44 */
     uint32_t predispatch_b;    /* 0x48 */
     uint32_t shift_load_clock; /* 0x4c */

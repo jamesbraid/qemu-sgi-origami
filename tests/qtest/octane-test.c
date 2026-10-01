@@ -2521,6 +2521,157 @@ static void octane_rad_map(QTestState *qts)
     qtest_writel(qts, BRIDGE + 0x200 + 8 * 3 + 4, 0x1130);
 }
 
+
+static const struct {
+    uint16_t offset;
+    uint32_t value;
+} octane_rad_startup_words[] = {
+    { 0x44, 0xa0000008 }, { 0x48, 0x10 }, { 0x4c, 0x03000000 },
+    { 0x50, 0x60000000 }, { 0x54, 0x4000000c }, { 0x70, 0x1440 },
+    { 0x74, 0x08000010 }, { 0x78, 0x00fac688 }, { 0x7c, 0xd6d6d6d6 },
+    { 0x80, 0xffe20000 }, { 0x88, 3 }, { 0x8c, 2 }, { 0x90, 2 },
+    { 0xa0, 0x02000001 }, { 0xa4, 0x12345678 }, { 0xa8, 1 },
+    { 0xac, 2 }, { 0xb0, 3 }, { 0xb4, 4 }, { 0xb8, 0x9fffffff },
+    { 0xbc, 0x9fffffff }, { 0x4c0, 0xa000c000 }, { 0x4c8, 0xa000c800 },
+    { 0x4d0, 0xa000d000 }, { 0x4d8, 0xa000d800 }, { 0x4e0, 0xa000e000 },
+    { 0x4e8, 0xa000e800 }, { 0x4f0, 0xa000f000 },
+};
+
+static bool octane_rad_subcode_word(unsigned offset)
+{
+    return offset >= 0x1000 && offset <= 0x1218 &&
+           offset != 0x1078 && offset != 0x10f8;
+}
+
+static uint64_t octane_rad_subcode_pattern(unsigned offset)
+{
+    return UINT64_C(0x0123456789abcdef) ^ ((uint64_t)offset << 32) ^ offset;
+}
+
+static void octane_rad_startup_program(QTestState *qts)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(octane_rad_startup_words); i++) {
+        qtest_writel(qts, RAD_BAR0 + octane_rad_startup_words[i].offset,
+                     octane_rad_startup_words[i].value);
+    }
+    for (unsigned offset = 0x1000; offset <= 0x1218; offset += 8) {
+        if (octane_rad_subcode_word(offset)) {
+            qtest_writeq(qts, RAD_BAR0 + offset,
+                         octane_rad_subcode_pattern(offset));
+        }
+    }
+}
+
+static void octane_rad_startup_check(QTestState *qts, bool reset)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(octane_rad_startup_words); i++) {
+        g_assert_cmphex(qtest_readl(qts,
+                        RAD_BAR0 + octane_rad_startup_words[i].offset), ==,
+                        reset ? 0 : octane_rad_startup_words[i].value);
+    }
+    for (unsigned offset = 0x1000; offset <= 0x1218; offset += 8) {
+        if (octane_rad_subcode_word(offset)) {
+            g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + offset), ==,
+                            reset ? 0 : octane_rad_subcode_pattern(offset));
+        }
+    }
+}
+
+static void test_rad_startup_storage(void)
+{
+    QTestState *qts = octane_start();
+    static const struct { unsigned offset; uint32_t value; } sequence[] = {
+        { 0x80, 0xffffffff }, { 0x80, 0xffe3cffe },
+        { 0x80, 0xffe3c0fe }, { 0x80, 0xffe24070 },
+        { 0x80, 0xffe20000 }, { 0x70, 0x1500 }, { 0x70, 0x1540 },
+        { 0x70, 0x1440 }, { 0x70, 0x1540 }, { 0x88, 3 },
+        { 0x88, 2 }, { 0x88, 0 }, { 0x7c, 0xc0c0c0c0 },
+        { 0x70, 0x480 }, { 0x80, 0xfffffffe },
+        { 0x80, 0xffffcbfc }, { 0x80, 0xffff8bfc },
+        { 0xa8, 0x13579bdf }, { 0xac, 0x2468ace0 },
+        { 0xb0, 0x89abcdef }, { 0xb4, 0xfedcba98 },
+    };
+
+    octane_rad_map(qts);
+    octane_rad_startup_check(qts, true);
+    for (unsigned i = 0; i < ARRAY_SIZE(sequence); i++) {
+        qtest_writel(qts, RAD_BAR0 + sequence[i].offset, sequence[i].value);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + sequence[i].offset), ==,
+                        sequence[i].value);
+    }
+    octane_rad_startup_program(qts);
+    octane_rad_startup_check(qts, false);
+    qtest_writeq(qts, RAD_BAR0 + 0x1060, 0);
+    qtest_writeq(qts, RAD_BAR0 + 0x10e0, 0);
+    for (unsigned offset = 0x1000; offset <= 0x1218; offset += 8) {
+        if (octane_rad_subcode_word(offset)) {
+            g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + offset), ==,
+                            offset == 0x1060 || offset == 0x10e0 ? 0 :
+                            octane_rad_subcode_pattern(offset));
+        }
+    }
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    octane_rad_startup_check(qts, true);
+    qtest_quit(qts);
+}
+
+static void test_rad_subcode_width_swap(void)
+{
+    QTestState *qts = octane_start();
+    const uint64_t value = UINT64_C(0x0123456789abcdef);
+    const uint64_t sentinel = UINT64_C(0xfedcba9876543210);
+
+    octane_rad_map(qts);
+    for (unsigned mode = 0; mode < 4; mode++) {
+        uint32_t config = 0x1130 | ((mode & 1) ? 1u << 22 : 0) |
+                          ((mode & 2) ? 1u << 13 : 0);
+        uint32_t low = mode == 3 ? value >> 32 : value;
+        uint32_t high = mode == 3 ? value : value >> 32;
+
+        qtest_writel(qts, BRIDGE_REG(0x218), config);
+        for (unsigned offset = 0x1000; offset <= 0x1218; offset += 8) {
+            uint64_t pattern = octane_rad_subcode_pattern(offset);
+
+            if (!octane_rad_subcode_word(offset)) {
+                continue;
+            }
+            qtest_writeq(qts, RAD_BAR0 + offset, pattern);
+            g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + offset), ==, pattern);
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + offset), ==,
+                            mode == 3 ? pattern >> 32 : (uint32_t)pattern);
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + offset + 4), ==,
+                            mode == 3 ? (uint32_t)pattern : pattern >> 32);
+        }
+        qtest_writeq(qts, RAD_BAR0 + 0x1100, sentinel);
+        g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1100), ==, sentinel);
+        qtest_writeq(qts, RAD_BAR0 + 0x1110, sentinel);
+        qtest_writeq(qts, RAD_BAR0 + 0x1108, value);
+        g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1108), ==, value);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==, low);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==, high);
+        /* Independent halves must preserve their neighbor at the BAR. */
+        qtest_writel(qts, RAD_BAR0 + 0x1108, 0x13579bdf);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==, high);
+        qtest_writel(qts, RAD_BAR0 + 0x110c, 0x2468ace0);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==, 0x13579bdf);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==, 0x2468ace0);
+        for (unsigned dma = 0; dma < 4; dma++) {
+            qtest_writel(qts, RAD_BAR0 + 0x1108, 0x13579bdf);
+            qtest_writel(qts, BRIDGE_REG(0x218), config | (dma << 19));
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==,
+                            0x13579bdf);
+            qtest_writeq(qts, RAD_BAR0 + 0x1108, value);
+            g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1108), ==, value);
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==, low);
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==, high);
+        }
+        g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1100), ==, sentinel);
+        g_assert_cmphex(qtest_readq(qts, RAD_BAR0 + 0x1110), ==, sentinel);
+    }
+    qtest_quit(qts);
+}
+
 static void octane_rad_status_program(QTestState *qts, uint64_t base,
                                       uint32_t limit)
 {
@@ -2831,6 +2982,186 @@ static void test_rad_status_overrun(void)
     qtest_quit(qts);
 }
 
+static void test_rad_startup_unsupported(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *log = NULL;
+    int fd = g_file_open_tmp("octane-rad-startup-XXXXXX", &path, NULL);
+    QTestState *qts;
+    const uint64_t buffer = RAM + 0x8000;
+    const unsigned enables[] = { 0x44, 0x48, 0x4c, 0x50, 0x54 };
+    const unsigned holes[] = { 0x1078, 0x107c, 0x10f8, 0x10fc, 0x1220 };
+    const unsigned descriptors[] = {
+        0x4c4, 0x4cc, 0x4d4, 0x4dc, 0x4e4, 0x4ec, 0x4f4,
+        0x508, 0x50c, 0x510, 0x514, 0x518, 0x51c, 0x520,
+    };
+    uint8_t memory[0x100];
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(path);
+    args = g_strdup_printf("-d unimp -D %s", quoted);
+    qts = octane_start_args(args);
+    octane_rad_map(qts);
+    qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
+    qtest_memset(qts, buffer, 0xa5, sizeof(memory));
+    octane_rad_startup_program(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(enables); i++) {
+        uint32_t before = qtest_readl(qts, RAD_BAR0 + enables[i]);
+
+        qtest_writel(qts, RAD_BAR0 + enables[i], before | 1);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + enables[i]), ==, before);
+        if (enables[i] == 0x44 || enables[i] == 0x48) {
+            qtest_writel(qts, RAD_BAR0 + enables[i], before | 4);
+            g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + enables[i]), ==,
+                            before);
+        }
+    }
+    /* Narrow CPU addresses are corrected back to the aligned BAR word. */
+    qtest_writeb(qts, RAD_BAR0 + 0x83, 0x12);
+    qtest_writew(qts, RAD_BAR0 + 0x82, 0x1234);
+    qtest_readb(qts, RAD_BAR0 + 0x83);
+    qtest_readw(qts, RAD_BAR0 + 0x82);
+    qtest_writeb(qts, RAD_BAR0 + 0x1103, 0x12);
+    qtest_writew(qts, RAD_BAR0 + 0x1102, 0x1234);
+    qtest_readb(qts, RAD_BAR0 + 0x1103);
+    qtest_readw(qts, RAD_BAR0 + 0x1102);
+    for (unsigned i = 0; i < ARRAY_SIZE(holes); i++) {
+        qtest_writel(qts, RAD_BAR0 + holes[i], 0x12345678);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + holes[i]), ==, 0);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(descriptors); i++) {
+        qtest_writel(qts, RAD_BAR0 + descriptors[i], 0x12345678);
+        g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + descriptors[i]), ==, 0);
+    }
+    qtest_writel(qts, BRIDGE_REG(0x218), 0x1130 | (1u << 22));
+    qtest_writeq(qts, RAD_BAR0 + 0x80, UINT64_C(0x123456789abcdef0));
+    qtest_readq(qts, RAD_BAR0 + 0x80);
+    qtest_writeq(qts, RAD_BAR0 + 0x1078, UINT64_MAX);
+    qtest_readq(qts, RAD_BAR0 + 0x1078);
+    qtest_writeq(qts, RAD_BAR0 + 0x10f8, UINT64_MAX);
+    qtest_readq(qts, RAD_BAR0 + 0x10f8);
+    qtest_writeq(qts, RAD_BAR0 + 0x1220, UINT64_MAX);
+    qtest_readq(qts, RAD_BAR0 + 0x1220);
+    /* This unaligned CPU word is rejected before reaching RAD. */
+    qtest_writel_tx(qts, RAD_BAR0 + 0x81, 0x12345678);
+    qtest_writel(qts, BRIDGE_REG(0x218), 0x1130);
+    octane_rad_startup_check(qts, false);
+    /* An unaligned CPU doubleword becomes accepted aligned BAR halves. */
+    qtest_writeq(qts, RAD_BAR0 + 0x1104, UINT64_MAX);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1104), ==, UINT32_MAX);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1108), ==, UINT32_MAX);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1100), ==,
+                    (uint32_t)octane_rad_subcode_pattern(0x1100));
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x110c), ==,
+                    octane_rad_subcode_pattern(0x1108) >> 32);
+    /* Split cycles commit separately, even when either half is rejected. */
+    qtest_writeq(qts, RAD_BAR0 + 0x90, UINT64_C(0x1234567889abcdef));
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x90), ==, 0x89abcdef);
+    qtest_writeq(qts, RAD_BAR0 + 0x48, UINT64_C(0x0300000200000011));
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x48), ==, 0x10);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4c), ==, 0x03000002);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x18), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, 0);
+    qtest_memread(qts, buffer, memory, sizeof(memory));
+    for (unsigned i = 0; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0xa5);
+    }
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(qtest_get_irq(qts, i));
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 1-byte BAR0 write at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 2-byte BAR0 write at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 1-byte BAR0 read at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 2-byte BAR0 read at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 1-byte BAR0 write at 0x1100"));
+    g_assert_nonnull(strstr(log, "unsupported 2-byte BAR0 write at 0x1100"));
+    g_assert_nonnull(strstr(log, "unsupported 8-byte BAR0 write at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 8-byte BAR0 read at 0x80"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x94"));
+    for (unsigned i = 0; i < ARRAY_SIZE(enables); i++) {
+        g_autofree char *needle = g_strdup_printf(
+            "unsupported 4-byte BAR0 write at 0x%x", enables[i]);
+        g_assert_nonnull(strstr(log, needle));
+    }
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_rad_startup_running(void)
+{
+    QTestState *qts = octane_start();
+    const uint64_t buffer = RAM + 0x10000;
+    const uint32_t ctrl = 0x40003 | (330 << 2);
+    uint32_t position, ust;
+
+    octane_rad_map(qts);
+    qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    qtest_memset(qts, buffer, 0xa5, 128 * 0x80);
+    octane_rad_output_program(qts, 0xa0020000);
+    octane_rad_status_program(qts, 0xa0010000, 0xffffc078);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, ctrl);
+    qtest_clock_step(qts, 25000);
+    position = qtest_readl(qts, RAD_BAR0 + 0x2c);
+    ust = qtest_readl(qts, RAD_BAR0 + 0x30);
+    octane_rad_startup_program(qts);
+    qtest_writel(qts, RAD_BAR0 + 0x70, 0x1540);
+    qtest_writel(qts, RAD_BAR0 + 0x7c, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x4c, 1);
+    qtest_writel(qts, RAD_BAR0 + 0x44, 4);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, position);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x30), ==, ust);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x20000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, ctrl);
+    qtest_clock_step(qts, 4999);
+    g_assert_cmphex(qtest_readl(qts, buffer + 3 * 0x80 + 0x7c), ==, 0xa5a5a5a5);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, buffer + 3 * 0x80 + 0x7c), ==, 0x80080000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 3 * 0x80 + 0x38), ==, 0xa0020008);
+    g_assert_cmphex(qtest_readl(qts, buffer + 3 * 0x80 + 0x70), ==, 31);
+    qtest_clock_step(qts, 15351);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x2c) >> 18, ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x2c) >> 18, ==, 2);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000000);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x1fffc);
+    position = qtest_readl(qts, RAD_BAR0 + 0x2c);
+    qtest_memset(qts, buffer, 0xa5, 128 * 0x80);
+    octane_rad_startup_program(qts);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, position);
+    for (unsigned i = 0; i < 128; i++) {
+        g_assert_cmphex(qtest_readl(qts, buffer + i * 0x80 + 0x7c), ==,
+                        0xa5a5a5a5);
+    }
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030), ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(qtest_get_irq(qts, i));
+    }
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    octane_rad_startup_check(qts, true);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x5c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_rad_transfer_migration(void)
 {
     g_autoptr(GError) error = NULL;
@@ -2855,11 +3186,13 @@ static void test_rad_transfer_migration(void)
     qtest_writel(from, RAD_BAR0 + 0x58, 0x20000001);
     qtest_writel(from, RAD_BAR0 + 0x5c, ctrl);
     qtest_clock_step(from, 25000);
+    octane_rad_startup_program(from);
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_migrate_stopped(from, uri);
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    octane_rad_startup_check(to, false);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x2c) >> 18, ==, 1);
     g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x30), ==, 26);
     qtest_clock_step(to, 4999);
@@ -2910,6 +3243,11 @@ static void octane_rad_output_samples(uint64_t elapsed_ns,
     }
     octane_rad_output_program(qts, 0xa000a000);
     qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+    octane_rad_startup_program(qts);
+    /* Startup mute, gain and board storage must leave samples intact. */
+    qtest_writel(qts, RAD_BAR0 + 0x70, 0x1540);
+    qtest_writel(qts, RAD_BAR0 + 0x7c, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x88, 0);
     qtest_clock_step(qts, elapsed_ns);
     if (read_before_disable) {
         g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x2c) >> 18, ==, frames);
@@ -4228,6 +4566,12 @@ int main(int argc, char **argv)
                         test_rad_pci_identity);
     qtest_add_data_func("/octane2/rad-pci-identity", GINT_TO_POINTER(1),
                         test_rad_pci_identity);
+    qtest_add_func("/octane/rad-startup-storage", test_rad_startup_storage);
+    qtest_add_func("/octane/rad-startup-unsupported",
+                   test_rad_startup_unsupported);
+    qtest_add_func("/octane/rad-startup-running", test_rad_startup_running);
+    qtest_add_func("/octane/rad-subcode-width-swap",
+                   test_rad_subcode_width_swap);
     qtest_add_func("/octane/rad-status-direct", test_rad_status_direct);
     qtest_add_data_func("/octane/rad-status-primary-only", GINT_TO_POINTER(0),
                         test_rad_status_primary_only);
