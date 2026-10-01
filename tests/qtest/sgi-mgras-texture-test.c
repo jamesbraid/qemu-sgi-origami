@@ -569,6 +569,247 @@ static void test_hq_query_answers_the_texture_matrix(void)
     g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0));
     g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE_DEPTH, 1), ==, 0xb45);
 }
+
+/*
+ * The next increment: formats, environments, wrap, filtering and
+ * mipmaps (hw/misc/sgi-mgras-texture.c). A scene opens a fresh context,
+ * loads one level 0, binds it as the IRIX client does for the given
+ * kept format, class, environment and TEXMODE2 bits, and draws a quad
+ * of fragment colour frag. Registers in extra go out after the bind, so
+ * they override it. Where a case wants the alpha of the stored colour it
+ * blends over white: with a red fragment the green channel is then one
+ * minus the alpha.
+ */
+#ifndef GL_ONE_MINUS_SRC_ALPHA
+#define GL_ONE_MINUS_SRC_ALPHA 0x303
+#endif
+#define TEX_ENV_MODULATE      0
+#define TEX_ENV_DECAL         1
+#define TEX_ENV_BLEND         2
+#define TEX_ENV_ALPHA         3
+#define TEX_CLASS_ALPHA       1
+#define TEX_CLASS_LUMINANCE   2
+#define TEX_CLASS_INTENSITY   3
+#define TEX_CLASS_COLOUR      4
+#define TEX_LAYOUT_ONE        0
+#define TEX_LAYOUT_LA         1
+#define TEX_LAYOUT_RGB        2
+#define TEX_LAYOUT_RGBA       3
+
+typedef struct TexScene {
+    uint32_t layout, depth, cls, env;
+    uint32_t mode2;             /* TEXMODE2 bits beyond the depth */
+    uint32_t w, h;              /* level 0, 4 by 2 when 0 */
+    const uint8_t *texels;
+    float frag[4];              /* white when all 0 */
+    bool over_white;
+    uint32_t extra[8][2];       /* registers after the bind */
+    unsigned n_extra;
+    const float (*quad)[4];     /* x, y, s, t a corner; tex_quad's if NULL */
+} TexScene;
+
+static uint32_t tex_mode1(uint32_t env, uint32_t layout, uint32_t cls,
+                          uint32_t depth)
+{
+    return 1 | env << 1 | layout << 3 | 2 << 5 | cls << 9 |
+           (depth == 2 ? 0x10000 : 0x40000);
+}
+
+static uint32_t tex_bytes_a_texel(uint32_t layout, uint32_t depth)
+{
+    return (layout + 1) * (depth == 2 ? 2 : 1);
+}
+
+static uint32_t tex_log2(uint32_t n)
+{
+    return 31 - __builtin_clz(n);
+}
+
+static void tex_scene(QTestState *t, const TexScene *sc)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float geometry[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 }, { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+    uint32_t w = sc->w ? sc->w : 4, h = sc->h ? sc->h : 2;
+    uint32_t size = tex_log2(h) << 4 | tex_log2(w);
+    uint32_t spec = tex_log2(h) << 8 | tex_log2(w) << 4;
+    uint32_t box[6] = { 0, 0, w, h, h << 16 | w, 0 };
+    const float *frag = sc->frag[3] ? sc->frag : white;
+
+    tex_enter(t, GL_SLOT_A);
+    gl_clear_color(t, 1, 1, 1, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    tex_load_fmt(t, true, 0x34000 | sc->layout << 1 | sc->depth << 5, spec,
+                 sc->texels, w, h, tex_bytes_a_texel(sc->layout, sc->depth),
+                 box, true, 0, 0);
+    tex_bind(t, tex_mode1(sc->env, sc->layout, sc->cls, sc->depth),
+             0x10000 | sc->depth << 2 | sc->mode2);
+    tex_records(t, (const uint32_t[]){ TEX_TXSIZE, size << 8 | size,
+                                       TEX_TXCLAMPSIZE, w << 13 | h }, 2);
+    for (unsigned i = 0; i < sc->n_extra; i++) {
+        tex_record(t, sc->extra[i][0], sc->extra[i][1]);
+    }
+    if (sc->over_white) {
+        gl_one(t, GL_BLEND_HDR, 1);
+        gl_blend(t, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_FUNC_ADD);
+    }
+    tex_quad_rect(t, frag, sc->quad ? sc->quad : geometry);
+}
+
+/* Each channel of a pixel within one count of 255 * (r, g, b). */
+static void tex_expect(uint32_t got, double r, double g, double b)
+{
+    const double want[3] = { r, g, b };
+
+    for (int k = 0; k < 3; k++) {
+        int have = got >> (16 - 8 * k) & 0xff;
+
+        if (abs(have - (int)lround(want[k] * 255)) > 1) {
+            g_test_message("channel %d: have %d, want %.1f", k, have,
+                           want[k] * 255);
+            g_assert_not_reached();
+        }
+    }
+}
+
+/*
+ * A one-component level is stored once; alpha, luminance and intensity
+ * differ only in the class the draw's TEXMODE1 names. With a red
+ * fragment over white, luminance leaves the alpha of the stored colour
+ * at the fragment's 1 and intensity makes it the texel, which shows in
+ * the green channel. A model reading the class at load could not draw
+ * both from one level.
+ */
+static void test_gl_texture_class_intensity_vs_luminance(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[8];
+
+    for (int i = 0; i < 8; i++) {
+        texels[i] = 0x20 * i + 0x10;
+    }
+    for (int cls = TEX_CLASS_LUMINANCE; cls <= TEX_CLASS_INTENSITY; cls++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_ONE, .depth = 1, .cls = cls,
+            .texels = texels, .frag = { 1, 0, 0, 1 }, .over_white = true,
+        };
+
+        tex_scene(t, &sc);
+        for (int i = 0; i < 8; i++) {
+            double v = texels[i] / 255.0;
+
+            if (cls == TEX_CLASS_LUMINANCE) {
+                tex_expect(tex_texel_pixel(t, i % 4, i / 4), v, 0, 0);
+            } else {
+                tex_expect(tex_texel_pixel(t, i % 4, i / 4), v * v + 1 - v,
+                           1 - v, 1 - v);
+            }
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * An ALPHA8 texel 0x80 under a red opaque fragment gives colour (1, 0,
+ * 0) and alpha one half, whatever environment the draw names: the
+ * client sends code 3 for it, and the model reads the alpha class as
+ * that function (OpenGL 1.2.1 tables 3.18 and 3.19) for every code. The
+ * other layouts put their components in the right channels: RGB texel
+ * bytes R, G, B, luminance-alpha L then A, RGBA R, G, B, A.
+ */
+static void test_gl_texture_class_alpha(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t one[8], la[16], rgb[24], rgba[32];
+
+    memset(one, 0x80, sizeof(one));
+    for (int env = 0; env <= TEX_ENV_ALPHA; env++) {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_ONE, .depth = 1, .cls = TEX_CLASS_ALPHA,
+            .env = env, .texels = one, .frag = { 1, 0, 0, 1 },
+        };
+
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 2, 1), 1, 0, 0);
+        sc.over_white = true;
+        tex_scene(t, &sc);
+        tex_expect(tex_texel_pixel(t, 2, 1), 1, 1 - 0x80 / 255.0,
+                   1 - 0x80 / 255.0);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        la[2 * i] = 0x30 + 0x10 * i;
+        la[2 * i + 1] = 0xf0 - 0x10 * i;
+        rgb[3 * i] = 0x10 * i;
+        rgb[3 * i + 1] = 0x80 + 0x10 * i;
+        rgb[3 * i + 2] = 0xf0 - 0x20 * i;
+        rgba[4 * i] = 0x10 * i + 1;
+        rgba[4 * i + 1] = 0x20 + 0x10 * i;
+        rgba[4 * i + 2] = 0xe0 - 0x10 * i;
+        rgba[4 * i + 3] = 0x40 + 0x10 * i;
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_LA, .depth = 1, .cls = TEX_CLASS_LUMINANCE,
+            .texels = la,
+        };
+
+        tex_scene(t, &sc);
+        for (int i = 0; i < 8; i++) {
+            double l = la[2 * i] / 255.0;
+
+            tex_expect(tex_texel_pixel(t, i % 4, i / 4), l, l, l);
+        }
+        sc.over_white = true;
+        tex_scene(t, &sc);
+        for (int i = 0; i < 8; i++) {
+            double l = la[2 * i] / 255.0, a = la[2 * i + 1] / 255.0;
+            double v = l * a + 1 - a;
+
+            tex_expect(tex_texel_pixel(t, i % 4, i / 4), v, v, v);
+        }
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGB, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .texels = rgb,
+        };
+
+        tex_scene(t, &sc);
+        for (int i = 0; i < 8; i++) {
+            tex_expect(tex_texel_pixel(t, i % 4, i / 4), rgb[3 * i] / 255.0,
+                       rgb[3 * i + 1] / 255.0, rgb[3 * i + 2] / 255.0);
+        }
+        sc.over_white = true;
+        tex_scene(t, &sc);
+        /* No alpha in the texel: the fragment's 1 stays, colour as it was. */
+        for (int i = 0; i < 8; i++) {
+            tex_expect(tex_texel_pixel(t, i % 4, i / 4), rgb[3 * i] / 255.0,
+                       rgb[3 * i + 1] / 255.0, rgb[3 * i + 2] / 255.0);
+        }
+    }
+    {
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .texels = rgba, .over_white = true,
+        };
+
+        tex_scene(t, &sc);
+        for (int i = 0; i < 8; i++) {
+            double a = rgba[4 * i + 3] / 255.0;
+
+            tex_expect(tex_texel_pixel(t, i % 4, i / 4),
+                       rgba[4 * i] / 255.0 * a + 1 - a,
+                       rgba[4 * i + 1] / 255.0 * a + 1 - a,
+                       rgba[4 * i + 2] / 255.0 * a + 1 - a);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -606,6 +847,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-table-defaults-are-silent",
                    test_gl_texture_table_defaults_are_silent);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-class-intensity-vs-luminance",
+                   test_gl_texture_class_intensity_vs_luminance);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-class-alpha",
+                   test_gl_texture_class_alpha);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",

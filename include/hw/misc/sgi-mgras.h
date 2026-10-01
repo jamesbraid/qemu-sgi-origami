@@ -12,6 +12,7 @@
 #include "hw/display/sgi/command-fetch.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/display/sgi/gl-context.h"
+#include "hw/display/sgi/rasterizer.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
@@ -332,8 +333,8 @@ typedef struct SGIMgrasGLPixels {
 
 /*
  * One loaded texture level, keyed by the base block and TL_SPEC's level
- * number, in the model's own layout: two bytes a texel for a 4-bit depth,
- * four for an 8-bit one.
+ * number, in the model's own layout: the kept format's components in
+ * order, a byte each holding the 4- or 8-bit value.
  */
 typedef struct SGIMgrasTexLevel {
     uint32_t used;              /* 0 or 1 */
@@ -371,6 +372,9 @@ typedef struct SGIMgrasTexture {
      */
     uint8_t *staging;
     uint32_t staged, staging_bytes;
+    /* Host-only: the sampler's view of the levels, rebuilt for each draw. */
+    SGIGLTexPyramid pyramid;
+    SGIGLTexLevel sampler_levels[SGI_MGRAS_TEX_LEVELS];
     SGIMgrasTexLevel levels[SGI_MGRAS_TEX_LEVELS];
 } SGIMgrasTexture;
 
