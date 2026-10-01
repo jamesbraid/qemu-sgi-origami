@@ -446,9 +446,16 @@ static int ds1685_storage_load_cleanup(void *opaque)
     return 0;
 }
 
+static int ds1685_storage_load_state(QEMUFile *f, void *opaque,
+                                     int version_id)
+{
+    return -EINVAL;
+}
+
 /* No wire section: this entry owns only the storage load lifecycle. */
 static const SaveVMHandlers ds1685_storage_handlers = {
     .load_setup = ds1685_storage_load_setup,
+    .load_state = ds1685_storage_load_state,
     .load_cleanup = ds1685_storage_load_cleanup,
 };
 

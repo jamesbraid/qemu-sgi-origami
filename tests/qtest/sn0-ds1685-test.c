@@ -1124,13 +1124,22 @@ static void test_storage_failed_incoming(const void *data)
     char image[512] = { 0 }, reference[24];
     gsize len;
     QTestState *qts;
+    bool helper = data && !strcmp(data, "helper");
 
     image[R_RAM_LOW] = 0x5a;
     memset(reference, 0xa5, sizeof(reference));
     g_assert_true(g_file_set_contents(store, image, sizeof(image), NULL));
     g_assert_true(g_file_set_contents(clock, reference,
                                       sizeof(reference), NULL));
-    if (data) {
+    if (helper) {
+        /* A FULL section must not load the storage-only lifecycle helper. */
+        static const char malformed[] =
+            "QEVM\0\0\0\3\4\0\0\0\1\16"
+            "ds1685-storage\0\0\0\0\0\0\0\0";
+
+        g_assert_true(g_file_set_contents(stream, malformed,
+                                          sizeof(malformed) - 1, NULL));
+    } else if (data) {
         QTestState *from;
 
         create_store(source, source_clock);
@@ -1152,12 +1161,21 @@ static void test_storage_failed_incoming(const void *data)
         ",ds1685-drive=rtc-store -rtc base=2024-01-01T00:00:00,clock=vm"
         " -drive if=none,id=rtc-store,file=%s,format=raw"
         " -drive if=none,id=rtc-store-clock,file=%s,format=raw"
-        " -incoming defer", store, clock);
+        " -incoming defer %s", store, clock,
+        helper ? "-global migration.send-configuration=off" : "");
     qtest_qmp_assert_success(qts,
         "{'execute':'migrate-incoming','arguments':{'uri':%s,"
         "'exit-on-error':false}}", uri);
     sgi_wait_migration_status(qts, "failed", 30);
-    if (data) {
+    if (helper) {
+        QDict *status = qtest_qmp_assert_success_ref(qts,
+            "{'execute':'query-migrate'}");
+
+        g_assert_nonnull(strstr(qdict_get_str(status, "error-desc"),
+                                "ds1685-storage"));
+        qobject_unref(status);
+    }
+    if (data && !helper) {
         octane_attach(qts);
         g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
     }
@@ -1752,6 +1770,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/ds1685/storage-failed-incoming", NULL,
                         test_storage_failed_incoming);
     qtest_add_data_func("/sn0/ds1685/storage-invalid-footer", "footer",
+                        test_storage_failed_incoming);
+    qtest_add_data_func("/sn0/ds1685/storage-invalid-helper", "helper",
                         test_storage_failed_incoming);
     qtest_add_data_func("/sn0/ds1685/storage-snapshot", NULL,
                         test_storage_snapshot);
