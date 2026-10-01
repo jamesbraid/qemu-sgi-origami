@@ -2531,6 +2531,44 @@ static void test_gl_pixels_dma_rgba_and_rgb(void)
 }
 
 /*
+ * imgview's GL_RGB image on the SSI: 0x8d20 gives each row's words in two
+ * parts, 48 and 48 for 128 pixels of three bytes, and a tile whose rows
+ * lie back to back in host memory comes as one transfer row. Here eight
+ * pixels a row are 6 words, given as 3 and 3, and the two rows come first
+ * as two transfer rows, then as one of 48 bytes. Both draw the whole
+ * image.
+ */
+static void test_gl_pixels_dma_rows_in_two_parts(void)
+{
+    uint8_t rgb[48];
+
+    for (int i = 0; i < 16; i++) {
+        rgb[3 * i] = 0x10 + i;
+        rgb[3 * i + 1] = 0x40 + i;
+        rgb[3 * i + 2] = 0x80 + i;
+    }
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_3UB, 24, 50, 60, 57, 61, 1);
+    gl_pixels_draw_parts(qts, 3, 3, 0x88);
+    gl_pixels_dma(qts, rgb, sizeof(rgb), 24, 2, 24, 0xa7);
+    for (int i = 0; i < 16; i++) {
+        g_assert_cmphex(gl_window_pixel(qts, 50 + i % 8, 60 + i / 8), ==,
+                        (0x10 + i) << 16 | (0x40 + i) << 8 | (0x80 + i));
+    }
+
+    gl_pixels_program(qts, GL_PIX_3UB, 24, 50, 62, 57, 63, 1);
+    gl_pixels_draw_parts(qts, 3, 3, 0x88);
+    gl_pixels_dma(qts, rgb, sizeof(rgb), 48, 1, 48, 0xa7);
+    for (int i = 0; i < 16; i++) {
+        g_assert_cmphex(gl_window_pixel(qts, 50 + i % 8, 62 + i / 8), ==,
+                        (0x10 + i) << 16 | (0x40 + i) << 8 | (0x80 + i));
+    }
+    g_assert_cmphex(gl_window_pixel(qts, 58, 62), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 50, 64), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A program the model does not know (a routine between the head and the
  * unpack, as a scale or bias would add, or a known program whose unpack
  * word is another's) and a pixel zoom other than 1 draw nothing, and
@@ -3559,6 +3597,8 @@ int main(int argc, char **argv)
                    test_gl_pixels_dma_abgr);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rgba-and-rgb",
                    test_gl_pixels_dma_rgba_and_rgb);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rows-in-two-parts",
+                   test_gl_pixels_dma_rows_in_two_parts);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-unmodelled-draw-nothing",
                    test_gl_pixels_unmodelled_draw_nothing);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",

@@ -68,7 +68,7 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word);
  */
 bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
                              bool *take);
-/* One row of that transfer's image, from its first byte. */
+/* One row of that transfer, one or more image rows from its first byte. */
 void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
                              uint32_t n);
 /* End the draw after a transfer that failed partway. */

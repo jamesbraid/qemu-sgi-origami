@@ -2750,10 +2750,14 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * The draw. Pixel n of a row lands on the window pixel whose centre lies
  * between xr + n and xr + n + 1 for the raster position's x, and the same
  * for rows (OpenGL 1.2.1, 3.6.4); an invalid raster position draws
- * nothing. 0x8d20's first word is the image's words a row: 69 for
- * ipaste's 69-pixel tiles of four bytes, 51 for imgview's 68 pixels of
- * three, 50 for mandel's 100 indices (inferred from those; it is the tile
- * descriptor's word +8 in the listing). A colour-index image's bytes a
+ * nothing. 0x8d20's first two words together are the image's words a
+ * row: 69 and 0 for ipaste's 69-pixel tiles of four bytes, 51 and 0 for
+ * imgview's 68 pixels of three on the SI, 50 and 0 for mandel's 100
+ * indices, and 48 and 48 for imgview's 128 pixels of three on the SSI
+ * (inferred from those; they are the tile descriptor's words +8 and +0xc
+ * in the IP27GR564 listing, which sets bit 4 of 0x8d20's last word when
+ * the second is 0). Why the SSI's client splits a row in two is not
+ * known: the image bytes are whole rows. A colour-index image's bytes a
  * pixel are the 1, 2 or 4 that give that many words, which is 2 for every
  * rectwrite captured; an image too narrow to tell (one index wide, or two
  * at 1 or 2 bytes) is logged and not drawn. The image is the bottom row
@@ -2767,9 +2771,11 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  * inferred, as the GE program is not read.
  *
  * Evidence: a captured run, a trace of ipaste, imgview,
- * mandel, snapshot and i3dm on the SI. The discriminating tests are
+ * mandel, snapshot and i3dm on the SI, and imgview's draws on the SSI
+ * logged by the model. The discriminating tests are
  * gl-pixels-inline-colour-index, gl-pixels-inline-rgb, gl-pixels-dma-abgr,
- * gl-pixels-dma-rgba-and-rgb, gl-pixels-unmodelled-draw-nothing,
+ * gl-pixels-dma-rgba-and-rgb, gl-pixels-dma-rows-in-two-parts,
+ * gl-pixels-unmodelled-draw-nothing,
  * gl-pixels-rows-follow-their-draw, gl-pixels-raster-kick-leaves-the-draw,
  * gl-pixels-far-raster-position, gl-pixels-follow-the-raster-position,
  * gl-pixels-long-load, gl-pixels-follow-the-context and
@@ -2862,7 +2868,7 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
 }
 
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
-static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
+static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                     SGIMgrasGLPixels *px)
 {
     const uint32_t *ge = s->ge_param;
@@ -2957,9 +2963,9 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
             if (DIV_ROUND_UP(px->w * bpp, 4) == row_words) {
                 if (px->bpp) {
                     qemu_log_mask(LOG_UNIMP, "sgi-mgras: colour-index image "
-                                  "%u wide in %u words a row could be %u or "
-                                  "%u bytes an index; not drawn\n", px->w,
-                                  row_words, px->bpp, bpp);
+                                  "%u wide in %" PRIu64 " words a row could "
+                                  "be %u or %u bytes an index; not drawn\n",
+                                  px->w, row_words, px->bpp, bpp);
                     return false;
                 }
                 px->bpp = bpp;
@@ -2969,8 +2975,9 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint32_t row_words,
         break;
     }
     if (px->bpp > 4 || DIV_ROUND_UP(px->w * px->bpp, 4) != row_words) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %u words a row "
-                      "for %u pixels is not modelled\n", row_words, px->w);
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %" PRIu64 " words "
+                      "a row for %u pixels is not modelled\n", row_words,
+                      px->w);
         return false;
     }
     if (format == MGRAS_GL_PIXELS_INDEX && !mgras_gl(s)->cur.index_bits) {
@@ -3028,7 +3035,7 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         };
         return;
     }
-    if (!mgras_gl_pixels_program(s, payload[0], px)) {
+    if (!mgras_gl_pixels_program(s, (uint64_t)payload[0] + payload[1], px)) {
         px->format = MGRAS_GL_PIXELS_FORMATS;
         px->bpp = 1;
     }
@@ -3217,10 +3224,17 @@ static void mgras_gl_pixels_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
+/*
+ * A transfer's rows are the image's rows, or runs of whole image rows: the
+ * client sends an image whose rows lie back to back in host memory as one
+ * transfer row, as imgview's 128-pixel tiles of a 128-pixel image came on
+ * the SSI, 1 row of 12288 bytes for a draw of 128 by 32 at three bytes.
+ */
 bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
                              bool *take)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+    uint32_t row_bytes = px->w * px->bpp;
 
     if (sgi_mgras_texture_dma(s, rows, bpr, take)) {
         memset(px, 0, sizeof(*px));
@@ -3233,7 +3247,8 @@ bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
         memset(px, 0, sizeof(*px));
         return true;
     }
-    if (px->row || rows != px->h || bpr != px->w * px->bpp) {
+    if (px->row || !row_bytes || bpr % row_bytes ||
+        (uint64_t)rows * (bpr / row_bytes) != px->h) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
                       "bytes for a pixel draw of %u by %u at %u bytes a "
                       "pixel; not drawn\n", rows, bpr, px->w, px->h,
@@ -3257,9 +3272,14 @@ void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
     if (sgi_mgras_texture_row(s, bytes, n)) {
         return;
     }
-    if (mgras_gl_pixels(s)->active) {
-        mgras_gl_pixels_bytes(s, bytes, n);
+    while (n && mgras_gl_pixels(s)->active) {
+        SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+        uint32_t len = MIN(n, px->w * px->bpp);
+
+        mgras_gl_pixels_bytes(s, bytes, len);
         mgras_gl_pixels_row_end(s);
+        bytes += len;
+        n -= len;
     }
 }
 
