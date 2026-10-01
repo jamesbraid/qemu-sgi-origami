@@ -4597,6 +4597,103 @@ static void test_the_1968_clock_keeps_supplied_storage(const void *data)
     rtc_files_free(&f);
 }
 
+static QTestState *rtc_start_1968_backed(const RtcFiles *f,
+                                        const char *base, const char *uri)
+{
+    g_autofree char *incoming = uri ? g_strdup_printf("-incoming %s", uri)
+                                  : g_strdup("");
+    QTestState *qts = qtest_initf(
+        "-M origin200 " RTC_1968_ARGS " -rtc base=%s,clock=vm "
+        "-drive if=none,id=sgi-nvram0,file=%s,format=raw "
+        "-drive if=none,id=sgi-nvram0-clock,file=%s,format=raw %s",
+        base, f->image, f->ref, incoming);
+
+    if (!uri) {
+        sn0_ioc3_attach(qts);
+    }
+    return qts;
+}
+
+static void test_the_backed_clock_survives_migration_source_quit(
+    const void *data)
+{
+    bool stopped = GPOINTER_TO_INT(data);
+    RtcTime set = { 0x99, 0x12, 0x31, 0x23, 0x59, 0x59 };
+    RtcTime next = { 0x00, 0x01, 0x01, 0x00, 0x00, 0x00 };
+    RtcTime reopened = { 0x00, 0x01, 0x01, 0x00, 0x00, 0x10 };
+    g_autofree char *dir = g_dir_make_tmp("sn0-ioc3-rtc-migrate-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    g_autofree char *before_image = NULL, *before_ref = NULL;
+    g_autofree char *after_image = NULL, *after_ref = NULL;
+    uint8_t ordinary[0x7ff8], restored[0x7ff8];
+    gsize before_image_len, before_ref_len, after_image_len, after_ref_len;
+    RtcFiles source, destination;
+    g_autoptr(QDict) status = NULL;
+    QTestState *from, *to;
+
+    g_assert_nonnull(dir);
+    if (stopped) {
+        set.sec |= 0x80;
+        next = reopened = set;
+    }
+    rtc_files_new(&source, true);
+    rtc_files_new(&destination, true);
+    from = rtc_start_1968_backed(&source, RTC_BASE, NULL);
+    qtest_writeb(from, BYTEBUS_DEV0 + 0x100, 0x3c);
+    qtest_writeb(from, BYTEBUS_DEV0 + 0x900, 0xc3);
+    qtest_writeb(from, RTC_CHECKSUM, 0xa7);
+    qtest_writeb(from, RTC_LEAP_CYCLE, 0x6d);
+    rtc_set(from, &set);
+    qtest_memread(from, BYTEBUS_DEV0, ordinary, sizeof(ordinary));
+
+    to = rtc_start_1968_backed(&destination, RTC_BASE, uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+    g_clear_pointer(&status, qdict_unref);
+    status = qtest_qmp_assert_success_ref(from, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "postmigrate");
+    sn0_ioc3_attach(to);
+    qtest_memread(to, BYTEBUS_DEV0, restored, sizeof(restored));
+    g_assert_cmpmem(restored, sizeof(restored), ordinary, sizeof(ordinary));
+    rtc_assert(to, &set);
+
+    g_assert_true(g_file_get_contents(source.image, &before_image,
+                                      &before_image_len, NULL));
+    g_assert_true(g_file_get_contents(source.ref, &before_ref,
+                                      &before_ref_len, NULL));
+    qtest_qmp_assert_success(from, "{'execute':'quit'}");
+    qtest_wait_qemu(from);
+    qtest_quit(from);
+    g_assert_true(g_file_get_contents(source.image, &after_image,
+                                      &after_image_len, NULL));
+    g_assert_true(g_file_get_contents(source.ref, &after_ref,
+                                      &after_ref_len, NULL));
+    g_assert_cmpmem(after_image, after_image_len,
+                    before_image, before_image_len);
+    g_assert_cmpmem(after_ref, after_ref_len, before_ref, before_ref_len);
+
+    qtest_system_reset(to);
+    sn0_ioc3_attach(to);
+    qtest_memread(to, BYTEBUS_DEV0, restored, sizeof(restored));
+    g_assert_cmpmem(restored, sizeof(restored), ordinary, sizeof(ordinary));
+    qtest_clock_step(to, 1000000000LL);
+    rtc_assert(to, &next);
+    qtest_qmp_assert_success(to, "{'execute':'quit'}");
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+
+    to = rtc_start_1968_backed(&destination, "2026-08-11T12:30:16", NULL);
+    qtest_memread(to, BYTEBUS_DEV0, restored, sizeof(restored));
+    g_assert_cmpmem(restored, sizeof(restored), ordinary, sizeof(ordinary));
+    rtc_assert(to, &reopened);
+    qtest_quit(to);
+    rtc_files_free(&source);
+    rtc_files_free(&destination);
+    g_rmdir(dir);
+}
+
 /*
  * A reference drive too small for its 16-byte record would fail every save
  * and lose the elapsed time without saying so; realize refuses it instead.
@@ -5860,6 +5957,11 @@ int main(int argc, char **argv)
                         test_the_buffer_ram_parity_survives_migration);
     qtest_add_data_func("sn0/ioc3/size-probe-survives-parity-checking", NULL,
                         test_the_size_probe_survives_parity_checking);
+    qtest_add_data_func("sn0/ioc3/clock-backing/migration-running", NULL,
+                        test_the_backed_clock_survives_migration_source_quit);
+    qtest_add_data_func("sn0/ioc3/clock-backing/migration-stopped",
+                        GINT_TO_POINTER(1),
+                        test_the_backed_clock_survives_migration_source_quit);
     qtest_add_data_func("sn0/ioc3/clock-config/year-base", NULL,
                         test_the_clock_has_a_selected_year_base);
     qtest_add_data_func("sn0/ioc3/clock-config/initial-range", NULL,
