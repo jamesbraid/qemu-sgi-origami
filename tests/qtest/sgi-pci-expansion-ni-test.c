@@ -1330,6 +1330,86 @@ static void absence_words(QTestState *qts, unsigned nasid)
     }
 }
 
+#define PENDING_OPTIONS ABSENCE_OPTIONS " -global " \
+    "sgi-origin300-pci-expansion-module.unconnected-uart-experiment=on " \
+    "-global sgi-pci-expansion-ni-fixture.pending-registers=on"
+#define PENDING_BASE(n) (REQUESTER(n) + BIC_IO + 0x1800000)
+
+static void pending_write(QTestState *qts, unsigned pi, unsigned offset,
+                           uint64_t value)
+{
+    qtest_writeq(qts, PENDING_BASE(0) + pi * 0x200000 + offset, value);
+    result(qts, 0, MEMTX_OK);
+}
+
+static uint64_t pending_read(QTestState *qts, unsigned pi, unsigned bank)
+{
+    uint64_t value = qtest_readq(qts,
+        PENDING_BASE(1) + pi * 0x200000 + 0x98 + bank * 8);
+
+    result(qts, 1, MEMTX_OK);
+    return value;
+}
+
+static void test_pending_registers(gconstpointer opaque)
+{
+    unsigned count = GPOINTER_TO_UINT(opaque);
+    g_autofree char *options = g_strdup_printf(PENDING_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.compute-origins=%u", count);
+    QTestState *qts = management_start(options);
+    static const unsigned reflected[] = { 54, 55, 62, 63 };
+    uint64_t sentinel = UINT64_C(0x123456789abcdef0);
+
+    qtest_writeq(qts, COMPUTE + 0x608000, sentinel);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned bank = 0; bank < 2; bank++) {
+            unsigned bit = 16 + pi + bank * 2;
+            uint64_t expected = UINT64_C(1) << bit;
+
+            pending_write(qts, pi, 0x90, 0x100 | bank * 64 | bit);
+            g_assert_cmphex(pending_read(qts, pi, bank), ==, expected);
+            for (unsigned origin = 0; origin < count; origin++) {
+                qtest_writeq(qts, MANAGEMENT + 144, origin);
+                g_assert_cmphex(qtest_readq(qts, PENDING_BASE(0) +
+                    pi * 0x200000 + 0x98 + bank * 8), ==, expected);
+                result(qts, 0, MEMTX_OK);
+            }
+            qtest_writeq(qts, MANAGEMENT + 144, count);
+            qtest_writeq(qts, PENDING_BASE(0) + pi * 0x200000 + 0x90, 0);
+            result(qts, 0, MEMTX_ACCESS_ERROR);
+            qtest_writeq(qts, MANAGEMENT + 144, 0);
+            g_assert_cmphex(pending_read(qts, pi, bank), ==, expected);
+            pending_write(qts, pi, 0x180, bank * 64 | bit);
+            g_assert_cmphex(pending_read(qts, pi, bank), ==, 0);
+        }
+        for (unsigned i = 0; i < G_N_ELEMENTS(reflected); i++) {
+            pending_write(qts, pi, 0x90, 0x140 | reflected[i]);
+            g_assert_cmphex(pending_read(qts, pi, 1), ==, 0);
+            pending_write(qts, pi, 0x180, 0x40 | reflected[i]);
+            g_assert_cmphex(pending_read(qts, pi, 1), ==, 0);
+        }
+        pending_write(qts, pi, 0x10, 0x12345678);
+        pending_write(qts, pi, 0x90, 0x110 + pi);
+    }
+    power_set(qts, false);
+    qtest_readq(qts, PENDING_BASE(0) + 0x98);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    power_set(qts, true);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        g_assert_cmphex(pending_read(qts, pi, 0), ==, UINT64_C(1) << (16 + pi));
+    }
+    qtest_writeq(qts, MANAGEMENT + 176, 0);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        g_assert_cmphex(pending_read(qts, pi, 0), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, PENDING_BASE(0) +
+                                  pi * 0x200000 + 0x10), ==, 0x12345678);
+        result(qts, 0, MEMTX_OK);
+    }
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x608000), ==, sentinel);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_processor_absence(void)
 {
     QTestState *qts = management_start(ABSENCE_OPTIONS);
@@ -1368,6 +1448,141 @@ static void absence_transfer(QTestState *qts, uint64_t address,
     qtest_writeq(qts, MANAGEMENT + 104,
                  length | ((uint64_t)write << 32));
     g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 112), ==, expected);
+}
+
+static void test_pending_refusals(void)
+{
+    QTestState *qts = management_start(PENDING_OPTIONS);
+    static const unsigned widths[] = { 1, 2, 4, 16 };
+    static const unsigned offsets[] = { 0x08, 0x18, 0x88, 0xb0, 0x188 };
+
+    pending_write(qts, 0, 0x90, 0x110);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        uint64_t base = BIC_IO + 0x1800000 + pi * 0x200000;
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(widths); i++) {
+            absence_transfer(qts, base + 0x90, widths[i], true, MEMTX_ERROR);
+            absence_transfer(qts, base + 0x98, widths[i], false, MEMTX_ERROR);
+        }
+        absence_transfer(qts, base + 0x91, 8, true, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, base + 0x90, 8, false, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, base + 0x180, 8, false, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, base + 0x98, 8, true, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, base + 0xa0, 8, true, MEMTX_DECODE_ERROR);
+        for (unsigned i = 0; i < G_N_ELEMENTS(offsets); i++) {
+            absence_transfer(qts, base + offsets[i], 8, true,
+                             MEMTX_DECODE_ERROR);
+        }
+        absence_transfer(qts, BIC_HUB + pi * 0x200000 + 0x90, 8, true,
+                         pi ? MEMTX_DECODE_ERROR : MEMTX_OK);
+        qtest_writeq(qts, MANAGEMENT + 88,
+            (UINT64_C(1) << 47) | (UINT64_C(7) << 39) |
+            (0x1800090 + pi * 0x200000));
+        qtest_writeq(qts, MANAGEMENT + 136, 0);
+        g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==,
+                        MEMTX_DECODE_ERROR);
+    }
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, UINT64_C(1) << 16);
+    g_assert_cmphex(pending_read(qts, 1, 0), ==, 0);
+    qtest_quit(qts);
+    qts = management_start(ABSENCE_OPTIONS);
+    absence_transfer(qts, BIC_IO + 0x1800090, 8, true, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_pending_permissions(void)
+{
+    GError *error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    int fd = g_file_open_tmp("ni-pending-permissions-XXXXXX", &log, &error);
+    g_autofree char *options = g_strdup_printf(PENDING_OPTIONS
+        " -d guest_errors -D %s", log);
+    uint64_t packet = (UINT64_C(1) << 47) | (UINT64_C(7) << 39) | 0x1800090;
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = management_start(options);
+    qtest_writeq(qts, MANAGEMENT + 88, packet);
+    qtest_writeq(qts, MANAGEMENT + 96, 0x110);
+    pending_write(qts, 0, 0x10, 0);
+    qtest_writeq(qts, MANAGEMENT + 192, 1);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_OK);
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, 0);
+    pending_write(qts, 0, 0x10, 1);
+    qtest_writeq(qts, MANAGEMENT + 192, 1);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_OK);
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, UINT64_C(1) << 16);
+    pending_write(qts, 0, 0x90, 16);
+    qtest_writeq(qts, REQUESTER(0) + BIC_HUB + 0x400118, 0);
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, MANAGEMENT + 192, 1);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, 0);
+    qtest_writeq(qts, MANAGEMENT + 200, 1);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        g_assert_cmphex(pending_read(qts, pi, 1), ==, UINT64_C(1) << 54);
+        pending_write(qts, pi, 0x90, 0x40 | 54);
+        g_assert_cmphex(pending_read(qts, pi, 1), ==, UINT64_C(1) << 54);
+    }
+    qtest_writeq(qts, MANAGEMENT + 200, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents, "denied by I/O protect"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
+static void test_pending_child_compatibility(void)
+{
+    QTestState *qts = management_start(PENDING_OPTIONS);
+    uint64_t ordinary_protect = qtest_readq(qts, COMPUTE + 0x10);
+
+    pending_write(qts, 0, 0x90, 0x110);
+    pending_write(qts, 0, 0x180, 0x151);
+    pending_write(qts, 0, 0x10, 0x12345678);
+    for (unsigned kind = 0; kind < 3; kind++) {
+        qtest_writeq(qts, MANAGEMENT + 184, kind);
+        g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, 2);
+        g_assert_cmphex(pending_read(qts, 0, 0), ==, UINT64_C(1) << 16);
+        g_assert_cmphex(pending_read(qts, 0, 1), ==, UINT64_C(1) << 17);
+    }
+    qtest_writeq(qts, MANAGEMENT + 184, 3);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, 13);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, UINT64_C(1) << 21);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0xa0), ==, UINT64_C(1) << 22);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x10), ==,
+                    ordinary_protect ^ UINT64_C(0xa5a5a5a5));
+    qtest_quit(qts);
+}
+
+static void test_pending_crossbar(void)
+{
+    QTestState *qts = management_start(PENDING_OPTIONS);
+    uint64_t xbow = REQUESTER(0) + BIC_IO;
+    uint64_t packet = (UINT64_C(1) << 47) | (UINT64_C(7) << 39) | 0x1800090;
+
+    pending_write(qts, 0, 0x10, UINT64_MAX);
+    pending_write(qts, 1, 0x10, UINT64_MAX);
+    qtest_writel(qts, xbow + 0x34, (16U << 24) | (0xaU << 16) |
+                 (packet >> 32));
+    qtest_writel(qts, xbow + 0x3c, packet);
+    qtest_writel(qts, xbow + 0x24, 1U << 5);
+    qtest_writeb(qts, xbow + 0x20, 0);
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, UINT64_C(1) << 16);
+    g_assert_cmphex(pending_read(qts, 1, 0), ==, 0);
+    qtest_readl(qts, xbow + 0x54);
+    g_assert_cmphex(pending_read(qts, 0, 0), ==, 0);
+    qtest_writel(qts, xbow + 0x3c, packet + 0x200000);
+    qtest_writeb(qts, xbow + 0x20, 0);
+    g_assert_cmphex(pending_read(qts, 1, 0), ==, UINT64_C(1) << 16);
+    qtest_readl(qts, xbow + 0x54);
+    pending_write(qts, 1, 0x10, 0);
+    qtest_writeb(qts, xbow + 0x20, 0);
+    g_assert_cmphex(pending_read(qts, 1, 0), ==, 0);
+    qtest_quit(qts);
 }
 
 static void test_processor_absence_refusals(void)
@@ -1429,6 +1644,65 @@ static void test_processor_absence_remap(void)
     absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_DECODE_ERROR);
     absence_words(qts, 9);
     qtest_quit(qts);
+}
+
+static void test_pending_migration(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-pending-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = management_start(kind == 2 ? ABSENCE_OPTIONS :
+                                       PENDING_OPTIONS);
+    QTestState *to = management_start(kind == 1 ?
+        ABSENCE_OPTIONS " -incoming defer" : kind == 3 ?
+        PENDING_OPTIONS " -global sgi-pci-expansion-ni-fixture."
+        "compute-origins=4 -incoming defer" :
+        PENDING_OPTIONS " -incoming defer");
+
+    g_assert_no_error(error);
+    if (kind != 2) {
+        for (unsigned pi = 0; pi < 2; pi++) {
+            pending_write(from, pi, 0x10, 0x76543210);
+            pending_write(from, pi, 0x90, 0x110 + pi);
+            pending_write(from, pi, 0x180, 0x152 + pi);
+        }
+    }
+    if (kind == 4) {
+        power_set(from, false);
+    }
+    if (kind && kind != 4) {
+        qtest_set_expected_status(to, EXIT_FAILURE);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    if (kind && kind != 4) {
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        qtest_wait_qemu(to);
+    } else {
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration_status(to, "completed", 30);
+        if (kind == 4) {
+            qtest_readq(to, PENDING_BASE(0) + 0x98);
+            result(to, 0, MEMTX_ACCESS_ERROR);
+            power_set(to, true);
+        }
+        for (unsigned pi = 0; pi < 2; pi++) {
+            g_assert_cmphex(pending_read(to, pi, 0), ==,
+                            UINT64_C(1) << (16 + pi));
+            g_assert_cmphex(pending_read(to, pi, 1), ==,
+                            UINT64_C(1) << (18 + pi));
+            g_assert_cmphex(qtest_readq(to, PENDING_BASE(0) +
+                                      pi * 0x200000 + 0x10), ==, 0x76543210);
+            result(to, 0, MEMTX_OK);
+        }
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_rmdir(dir);
 }
 
 static void test_processor_absence_migration(const void *data)
@@ -1499,7 +1773,7 @@ static void test_processor_absence_old_stream(const void *data)
     header[0] = sizeof(name) - 1;
     memcpy(header + 1, name, sizeof(name) - 1);
     stl_be_p(header + sizeof(name), 0);
-    stl_be_p(header + sizeof(name) + 4, 7);
+    stl_be_p(header + sizeof(name) + 4, 8);
     for (gsize i = 0; i + sizeof(header) < length; i++) {
         if (!memcmp(stream + i, header, sizeof(header))) {
             payload = i + sizeof(header);
@@ -1508,12 +1782,14 @@ static void test_processor_absence_old_stream(const void *data)
     }
     g_assert_cmpuint(found, ==, 1);
     g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
-    g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 2);
-    g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 1);
+    g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 0);
+    g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 0);
+    g_assert_cmpuint(ldl_be_p(stream + payload + 6), ==, 2);
+    g_assert_cmpuint((uint8_t)stream[payload + 10], ==, 1);
     /* Remove UART selection/count and processor-absence selection for v5. */
     stl_be_p(stream + payload - 4, 5);
-    memmove(stream + payload, stream + payload + 6, length - payload - 6);
-    g_assert_true(g_file_set_contents(file, stream, length - 6, &error));
+    memmove(stream + payload, stream + payload + 11, length - payload - 11);
+    g_assert_true(g_file_set_contents(file, stream, length - 11, &error));
     g_assert_no_error(error);
     if (selected) {
         qtest_set_expected_status(to, EXIT_FAILURE);
@@ -2760,7 +3036,7 @@ static void test_uart_old_stream(void)
         header[0] = sizeof(name) - 1;
         memcpy(header + 1, name, sizeof(name) - 1);
         stl_be_p(header + sizeof(name), 0);
-        stl_be_p(header + sizeof(name) + 4, 7);
+        stl_be_p(header + sizeof(name) + 4, 8);
         for (gsize i = 0; i + sizeof(header) < length; i++) {
             if (!memcmp(stream + i, header, sizeof(header))) {
                 payload = i + sizeof(header);
@@ -2769,10 +3045,12 @@ static void test_uart_old_stream(void)
         }
         g_assert_cmpuint(found, ==, 1);
         g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
-        g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 2);
+        g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 0);
+        g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 0);
+        g_assert_cmpuint(ldl_be_p(stream + payload + 6), ==, 2);
         stl_be_p(stream + payload - 4, 6);
-        memmove(stream + payload, stream + payload + 5, length - payload - 5);
-        g_assert_true(g_file_set_contents(file, stream, length - 5, &error));
+        memmove(stream + payload, stream + payload + 10, length - payload - 10);
+        g_assert_true(g_file_set_contents(file, stream, length - 10, &error));
         g_assert_no_error(error);
         qtest_set_expected_status(to, EXIT_FAILURE);
         qtest_qmp_assert_success(to,
@@ -2821,6 +3099,32 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_uart_migration);
     qtest_add_data_func("/sgi/pci-expansion-ni/uart/migration-off",
                         GUINT_TO_POINTER(1), test_uart_migration);
+    qtest_add_data_func("/sgi/pci-expansion-ni/pending-registers/two-cpus",
+                        GUINT_TO_POINTER(2), test_pending_registers);
+    qtest_add_data_func("/sgi/pci-expansion-ni/pending-registers/four-cpus",
+                        GUINT_TO_POINTER(4), test_pending_registers);
+    qtest_add_data_func("/sgi/pci-expansion-ni/pending-registers/migration",
+                        GUINT_TO_POINTER(0), test_pending_migration);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/pending-registers/selected-mismatch",
+                        GUINT_TO_POINTER(1), test_pending_migration);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/pending-registers/unselected-mismatch",
+                        GUINT_TO_POINTER(2), test_pending_migration);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/pending-registers/count-mismatch",
+                        GUINT_TO_POINTER(3), test_pending_migration);
+    qtest_add_data_func("/sgi/pci-expansion-ni/pending-registers/migration-off",
+                        GUINT_TO_POINTER(4), test_pending_migration);
+    qtest_add_func("/sgi/pci-expansion-ni/pending-registers/refusals",
+                   test_pending_refusals);
+    qtest_add_func("/sgi/pci-expansion-ni/pending-registers/permissions",
+                   test_pending_permissions);
+    qtest_add_func(
+        "/sgi/pci-expansion-ni/pending-registers/child-compatibility",
+                   test_pending_child_compatibility);
+    qtest_add_func("/sgi/pci-expansion-ni/pending-registers/crossbar",
+                   test_pending_crossbar);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/read",
                    test_processor_absence);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/refusals",

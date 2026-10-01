@@ -310,6 +310,23 @@ class BedrockConfigurationTests(unittest.TestCase):
 class RecordShapeTests(unittest.TestCase):
     """Compile shape per record type, read off real resolved fixtures."""
 
+    def test_synthetic_expansion_pending_selection(self):
+        model = _resolved(
+            "origin300-pci-expansion-unconnected-uart-experiment")
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        raw["pending_register_experiment"] = True
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertTrue(descriptor["pending_register_experiment"])
+        raw["pending_register_experiment"] = False
+        with self.assertRaisesRegex(
+                CompileError, "pending-register experiment"):
+            compile_model(model)
+        raw["pending_register_experiment"] = True
+        del raw["unconnected_uart"]
+        with self.assertRaisesRegex(
+                CompileError, "pending-register experiment"):
+            compile_model(model)
+
     def test_synthetic_expansion_uart_selection(self):
         model = _resolved(
             "origin300-pci-expansion-configuration-storage-experiment")
