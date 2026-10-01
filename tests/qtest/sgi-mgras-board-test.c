@@ -1431,6 +1431,25 @@ static void test_board_re4_status_keeps_revision_bits(void)
 }
 
 /*
+ * The RDRAM data port answers for the RE that register 0x112 selects, with
+ * the same word for each RE the board has (an approximation the kernel's
+ * per-RE loops accept). An RE the board lacks does not answer.
+ */
+static void test_board_rdram_data_same_for_each_re(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+
+    for (uint32_t re = 0; re < 4; re++) {
+        board_select_re(s, re);
+        g_assert_cmphex(qtest_readl(s, MGRAS_REG(0x02c574)), ==,
+                        re < e->re ? 0x8 : 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/*
  * The board's RE count, not a separate switch, decides how many PP1s answer
  * behind PP1SELECT: two per RE. A write
  * to every PP1 reaches each one the board has, and each reports the board's
@@ -1753,6 +1772,15 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, e, test_board_identity);
         qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
         qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
+        if (e->implemented && (!strcmp(e->board, "si") ||
+                               !strcmp(e->board, "ssi"))) {
+            g_autofree char *rdram = g_strdup_printf(
+                "sn0/origin2000/mgras/rdram-data-same-for-each-re/%s",
+                e->board);
+
+            qtest_add_data_func(rdram, e,
+                                test_board_rdram_data_same_for_each_re);
+        }
         if (e->implemented && (!strcmp(e->board, "si") ||
                                !strcmp(e->board, "ssi") ||
                                !strcmp(e->board, "essi"))) {
