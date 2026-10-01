@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Byte offsets into the exception record, shared by the assembly exception
  * handler and the C tests that read it. rom.h declares the matching C struct

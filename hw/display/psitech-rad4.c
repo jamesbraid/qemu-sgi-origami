@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* PsiTech RAD4 (12d1:0104) and RAD4-KM primary PCI heads on an Origin 200
  * Bridge slot. */
 /*

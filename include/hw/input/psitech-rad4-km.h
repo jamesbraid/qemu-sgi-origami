@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* PsiTech RAD4-KM keyboard and mouse register definitions. */
 /*
  * A child of hw/display/psitech-rad4.c, instantiated only when that device

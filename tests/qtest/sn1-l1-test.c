@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Isolated L1 protocol checks; this fixture does not execute firmware. */
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"

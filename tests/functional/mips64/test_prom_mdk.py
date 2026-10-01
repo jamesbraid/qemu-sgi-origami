@@ -4,7 +4,7 @@
 # micro-diagnostic kernel (cpu.mdk) BY PATH over SLIRP usermode
 # networking, and require its primary-data-cache test to pass
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 MDK 1.6 is SGI's own PROM-bootable field diagnostic for the Origin
 200/2000/Onyx2: a standalone kernel with built-in hardware tests, booted

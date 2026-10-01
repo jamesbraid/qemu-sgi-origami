@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * DS1742 native 2 KiB timekeeping SRAM.
  * An optional 2 KiB drive holds the SRAM and calendar; a separate clock

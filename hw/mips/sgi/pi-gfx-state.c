@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Graphics flow control in the Hub and Bedrock processor interfaces: the
  * migrated state and the node interface. See the header for the contract.

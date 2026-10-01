@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside chassis (CMN A015) on its own 4P1G5_MPLN midplane:
 # two node slots joined by a Null Router, one Crossbow, a BaseIO-G fixed in
 # XIO slot 1, four more XIO slots numbered 2, 3, 5 and 6, and the graphics

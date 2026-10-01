@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 200 MSC: checksummed ASCII command/reply, arbitration grants and AUX
  * serial.

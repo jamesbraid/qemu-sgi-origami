@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Broadcom BCM570x integrated copper PHY. */
 /*
  * The PHY has no address of its own on the bus: software reaches it by

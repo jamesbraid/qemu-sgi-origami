@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Test the Origin 200 PROM I/O bus-error probe with an executing CPU. qtest
  * MMIO cannot see CPU exceptions; each slice probes with a guest DBE handler

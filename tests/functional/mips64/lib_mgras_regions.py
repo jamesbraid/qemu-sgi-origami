@@ -1,7 +1,7 @@
 # Expected colours for named regions of IRIX 6.5's xdm greeter and
 # default desktop, as SI/MGRAS graphics should display them
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 IRIX 6.5.30's stock xdm greeter and its default 4Dwm desktop draw the
 same chrome at the same 1280x1024 positions on every boot, whatever

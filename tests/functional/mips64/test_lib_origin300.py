@@ -3,7 +3,7 @@
 # Unit tests for lib_origin300: the synthesized identity records and the
 # machine properties that carry them
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, no qemu_test import. The launch cases build
 the boot flash from a stand-in payload, so they patch the reviewed seed

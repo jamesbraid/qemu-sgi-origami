@@ -1,6 +1,6 @@
 # Tests for the generic graphics-device evidence-capture sequence
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `python3 tests/functional/mips64/test_lib_evidence_capture.py`. Every

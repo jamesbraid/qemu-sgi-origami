@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* DS2505-family add-only EPROM device declarations. */
 #ifndef HW_1WIRE_DS2505_H
 #define HW_1WIRE_DS2505_H

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Dallas/Maxim 1-Wire CRC-8 and CRC-16 helpers. */
 #include "qemu/osdep.h"
 #include "hw/1wire/crc.h"

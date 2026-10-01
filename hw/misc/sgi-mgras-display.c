@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Host scanout is derived from guest-visible state and is never its source. */
 /* The display subset follows the SI visual-emulator architecture contract. */
 #include "qemu/osdep.h"

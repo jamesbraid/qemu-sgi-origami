@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-baseio's three presets, and sgi-pci-expansion: widget identity, PCI
  * population per device number, and the interrupt chain from a device to the

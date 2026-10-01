@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 # The ROM suite, and which processor models each ROM can be run against.
 #
 # test_sgi_roms.py reads this. A ROM listed for more than one model checks

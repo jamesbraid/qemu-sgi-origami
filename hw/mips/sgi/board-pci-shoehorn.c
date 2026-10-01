@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-pci-shoehorn: the SGI "PCI-XTALK ADAPTER" (the "PCI shoehorn"), a
  * single-XIO-slot XIO->PCI converter board on the sgi-xio-board base class,

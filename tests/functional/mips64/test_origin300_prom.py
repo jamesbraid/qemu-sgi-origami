@@ -2,7 +2,7 @@
 #
 # Boots the real IP35 PROM on the Origin 300 to its first console line
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """origin300 takes only a raw stock PROM image as -bios and refuses
 -kernel outright (hw/mips/sgi/sn1.c, sn1_load_prom); there is no
 synthesized-firmware bypass the way origin200 has, so the real image is

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI KONA register-contract, one-wire identity and textport qtests.
  * These tests exercise the model's identity registers, textport commands,

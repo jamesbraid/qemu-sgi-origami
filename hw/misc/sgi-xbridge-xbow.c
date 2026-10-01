@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * XBridge widget 0: crossbar-style per-port status and control, with one
  * reader-specific MMIO view per port.

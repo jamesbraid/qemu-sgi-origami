@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Neterion/S2io Xframe PCI 10-Gigabit Ethernet controller. */
 /*
  * See include/hw/net/xframe.h for what this device is. This models the

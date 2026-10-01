@@ -4,7 +4,7 @@
  * Qtest cannot distinguish refused access from zero without a CPU, and
  * splits wide reads into legal accesses before the chip can reject them.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

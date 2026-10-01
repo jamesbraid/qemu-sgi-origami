@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * XBridge-mode crossbar at widget 0, with two port views to distinguish
  * source-port reporting from packet routing; no Origin 300 model.

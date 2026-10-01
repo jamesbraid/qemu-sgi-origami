@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check node-qualified Hub routing from all four processors. Scratch
  * markers expose accesses folded to one node; other configurations fail.

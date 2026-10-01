@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # A GIGAchannel-converted Origin 200 module looped back on itself.
 layer_version: 1
 layer:

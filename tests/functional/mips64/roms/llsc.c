@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * R10000 load-linked/store-conditional behavior (User's Manual 2.0;
  * MD00087 6.06).

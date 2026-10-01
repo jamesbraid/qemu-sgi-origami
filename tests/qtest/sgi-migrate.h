@@ -2,7 +2,7 @@
  * Migrate paused SGI qtest machines and check device state; qtest runs no
  * guest code. See sn0-migration-test.c for the same migration-test scope.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef SGI_MIGRATE_H

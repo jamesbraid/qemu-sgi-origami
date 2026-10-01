@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-board-test-fixture: the smallest stand-in for what a machine builder
  * does with an XIO board or sgi-baseio, so a qtest can build one standalone

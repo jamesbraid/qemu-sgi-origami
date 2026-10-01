@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test WatchLo and WatchHi address matching, Watch exceptions, and
  * delayed exceptions while EXL or ERL is set.

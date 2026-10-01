@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * UHI semihosting uses $25 for the operation, $4-$6 for arguments, and a
  * software breakpoint with code 1. Start QEMU with semihosting enabled. Each

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Native DS1742 register contract, without an IOC4 board mapping. */
 #include "qemu/osdep.h"
 #include "qemu/bcd.h"

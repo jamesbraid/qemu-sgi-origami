@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 
 sgi_rom_cc = find_program('mips64-linux-gnuabi64-gcc', required: false)
 sgi_rom_objcopy = find_program('mips64-linux-gnuabi64-objcopy', required: false)

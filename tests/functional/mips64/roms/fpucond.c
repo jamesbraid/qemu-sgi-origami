@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Check R10000 FSR condition bits and floating-point result behavior. */
 
 #include "rom.h"

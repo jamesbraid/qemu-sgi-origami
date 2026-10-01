@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Neterion/S2io Xframe register and device definitions. */
 /*
  * A public third-party PCI add-in card, not SGI silicon. The SGI 10-Gigabit

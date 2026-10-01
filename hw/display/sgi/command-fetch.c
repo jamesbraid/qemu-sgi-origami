@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI graphics command fetch. See the header for the contract and for what
  * is known and not known about the first user's pool format.

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Shared SN0 address architecture. Product and board facts do not belong here.
 layer_version: 1
 layer:

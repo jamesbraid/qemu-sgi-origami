@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test monitor CP0 dumps, CPU trace lines parsed by host syscall tracers,
  * x-query-mips-tlb, and ASID/ExcCode-filtered x-mips-debug-breakpoint.

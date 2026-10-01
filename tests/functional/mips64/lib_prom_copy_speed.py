@@ -2,7 +2,7 @@
 # boots against, factored out so test_prom_copy_speed_verdict.py can
 # exercise it without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The copy loop is bracketed by two sgi_hub_led progress codes (see
 test_prom_copy_speed.py for the full account); this module turns the

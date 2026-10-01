@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Check R10000 Random, Cause, and LLAddr register behavior. */
 
 #include "rom.h"

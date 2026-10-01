@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Two-chassis Origin 300 node decoding in hw/mips/sgi/sn1-node.c. Numbered
  * accesses reach the claiming node; local forms reach the reader.

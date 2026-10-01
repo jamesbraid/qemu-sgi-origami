@@ -1,7 +1,7 @@
 /*
  * Test R10000 performance counters and secondary cache.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  *
  * Origin 200 and Origin 2000 use the only CPU built here; firmware is off so
  * each guest fragment owns the reset vector and low RAM.

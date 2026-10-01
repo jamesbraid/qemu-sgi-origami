@@ -2,7 +2,7 @@
  * SGI Crossbow registers and routing on an isolated switch, not Origin 2000.
  * Three RAM widget faces and per-port views distinguish packet entry ports
  * from destination widgets; machine wiring is tested with the machine.
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #include "qemu/osdep.h"

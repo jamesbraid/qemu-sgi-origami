@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The BASEIO PROM flash model uses a 1 MB, 512K x16 top-boot part
  * answering the AMD command set with manufacturer 0x01 and device

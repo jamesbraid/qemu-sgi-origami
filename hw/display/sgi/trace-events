@@ -1,5 +1,5 @@
 # See docs/devel/tracing.rst for syntax documentation.
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 #
 # Shared events, named by role. A family's own events (sgi_mgras_dma_chunk
 # and the rest) stay in the family's directory, where its tools parse them.

@@ -3,7 +3,7 @@
 # Unit tests for lib_prom_smdk: the manifest, the status-table reading and
 # the monitor dialogue
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest with no QEMU or qemu_test dependency. The status-table
 fixtures are captured monitor output; the dialogue cases use a scripted

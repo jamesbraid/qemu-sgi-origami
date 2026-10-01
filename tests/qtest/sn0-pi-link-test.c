@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The machine gives a placed XIO board its graphics credit link: a board
  * with a "pi" link fitted by slot name is linked to the Hub of the node that

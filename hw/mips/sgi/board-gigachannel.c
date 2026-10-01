@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-gigachannel: the Origin 200 GIGAchannel expansion cabinet's own I/O,
  * as the cabinet's Crossbow sees it on link 8: a Bridge with four PCI

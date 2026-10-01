@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Two-chassis Origin 300: two full base modules joined by one NUMAlink 3 cable.
 layer_version: 1
 layer:

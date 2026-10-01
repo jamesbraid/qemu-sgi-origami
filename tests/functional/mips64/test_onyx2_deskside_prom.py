@@ -3,7 +3,7 @@
 # Boots the real IP27 PROM on the Onyx2 deskside and checks the slots it
 # names
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot the IP27 PROM with the deskside topology and check its `hinv -v`
 output for the expected node, BaseIO, and KONA entries. This verifies the
 emulated configuration and PROM interaction.

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Expected OpenGL doorbell layouts are listed independently of the selector
  * table. A changed argument count or layout status therefore fails here.

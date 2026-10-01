@@ -2,7 +2,7 @@
 # against, and the argv it boots with, factored out so
 # test_prom_diagnostics_verdict.py can exercise them without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Pure PROM transcript parsing and verdict logic used by
 test_prom_diagnostics.py. No qemu_test import is needed, so the verdict

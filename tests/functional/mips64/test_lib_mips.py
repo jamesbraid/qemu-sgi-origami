@@ -4,7 +4,7 @@
 # the xkphys address form, and the reset-window reader the bare-metal
 # exercises in this directory read their answer out of
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 A plain unittest -- no QEMU, no qemu_test import, runnable with just
 `python3 tests/functional/mips64/test_lib_mips.py`.

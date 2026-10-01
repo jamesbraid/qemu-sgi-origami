@@ -1,7 +1,7 @@
 # The POD sanity pass condition test_prom_pod.py boots against, factored
 # out so test_prom_pod_verdict.py can exercise it without booting
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 test_prom_pod.py's docstring gives the account of POD and of which
 commands are driven and which are deliberately not. No qemu_test import,

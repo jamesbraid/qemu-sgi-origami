@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Broadcom BCM570x copper PHY interface. */
 /*
  * The Broadcom NetXtreme BCM570x integrated copper PHY, reached through the

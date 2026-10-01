@@ -1,6 +1,6 @@
 # Structural checks for the IRIX 6.5.30 SI/MGRAS greeter
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Check the chooser's painted panel, account icon and label before login.
 
 The desktop functional test applies these checks to its greeter screenshot.

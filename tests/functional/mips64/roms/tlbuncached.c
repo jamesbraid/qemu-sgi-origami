@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test that a translated uncached page reaches the space selected by
  * its TLB Uncached Attribute field. The R10000 manual distinguishes

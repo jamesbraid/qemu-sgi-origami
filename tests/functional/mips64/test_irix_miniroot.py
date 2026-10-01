@@ -4,7 +4,7 @@
 # 6.5.30 miniroot kernel (unix.IP27) over SLIRP usermode networking, and
 # require the miniroot kernel's own release banner
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Boots the IRIX miniroot kernel with no netinst server and no external
 network: the whole install dance (a BOOTP/TFTP server container, fx to

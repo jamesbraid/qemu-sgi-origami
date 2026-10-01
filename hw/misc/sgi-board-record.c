@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI board-identity records on DS2505-class one-wire parts. */
 
 #include "qemu/osdep.h"

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Shared SGI graphics command-port framing, without device behavior. */
 #ifndef HW_MISC_SGI_COMMAND_PORT_H
 #define HW_MISC_SGI_COMMAND_PORT_H

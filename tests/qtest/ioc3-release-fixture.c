@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * sgi-ioc3-release-fixture: realize an IOC3 behind a Bridge and release it
  * again while the machine lives on, the way a builder drops a chip it has

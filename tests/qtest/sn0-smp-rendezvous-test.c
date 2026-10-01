@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  * Dual-module Origin 200 PROM rendezvous: vector PIO reaches an unnumbered
  * peer Hub; NASID-qualified PIO reaches one after numbering.
  * Five of eight bare-metal tests moved from

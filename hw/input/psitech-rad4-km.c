@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* PsiTech RAD4-KM keyboard and mouse controller. */
 /*
  * See include/hw/input/psitech-rad4-km.h for the register contract this file

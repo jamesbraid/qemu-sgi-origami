@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * SGI Odyssey (VPro) graphics board, as an XIO board carrying one crosstalk
  * widget. Crosstalk part 0xc013, manufacturer 0x023.

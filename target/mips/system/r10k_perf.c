@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The R10000 family's performance counters: the counting model, their
  * share of the IP[7] interrupt line, and the deadline timer that delivers

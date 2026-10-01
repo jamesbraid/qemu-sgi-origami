@@ -1,7 +1,7 @@
 # Scripted keyboard/mouse input over HMP, for functional tests that need
 # to drive a guest's UI rather than only read its console
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Every command here goes through the project's existing
 `vm.cmd('human-monitor-command', command_line=...)` convention (already

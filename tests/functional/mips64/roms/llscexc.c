@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * A breakpoint between R10000 LL/SC must invalidate the reservation
  * (User's Manual 2.0).

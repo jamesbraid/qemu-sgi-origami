@@ -1,7 +1,7 @@
 # The IRIX online-diagnostic matrix: which check runs on which IOC3 flavour,
 # the manifest that says so, and the verdicts and parsers its boots use
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 irix-diag-matrix is a table with one row per machine flavour we model an
 IOC3 on and one column per check. A cell is either `run` or the key of a

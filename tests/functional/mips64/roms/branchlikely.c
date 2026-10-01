@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Check delay-slot nullification and link values for MIPS branch-likely
  * instructions (MIPS64 ISA reference MD00087 rev. 6.06). Ordinary branches

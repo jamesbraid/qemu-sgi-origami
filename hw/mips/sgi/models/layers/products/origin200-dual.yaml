@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Published dual-module product limits and the four-CPU emulator projection.
 layer_version: 1
 # The catalogue citation checker (tools/check-citations) resolves a sources: entry

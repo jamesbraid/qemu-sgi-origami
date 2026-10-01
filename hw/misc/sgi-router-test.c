@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Host-only Router qtest fixture without a machine fabric; QOM controls call
  * the vector target, not guest registers or fabric replies.

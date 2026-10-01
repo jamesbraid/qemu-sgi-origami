@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Reset leaves memory and general registers undefined. Clear ERL for TLB and
  * cache tests, but keep BEV so exceptions use the ROM vectors. Tests that clear

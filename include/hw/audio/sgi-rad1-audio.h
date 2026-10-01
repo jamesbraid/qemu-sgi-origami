@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI MediaIO RAD1 audio register and device definitions. */
 /*
  * The MediaIO daughtercard's audio device: one PCI BAR carrying the register

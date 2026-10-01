@@ -2,7 +2,7 @@
 #
 # IRIX online diagnostics and IOC3 port checks on the one-chassis Origin 200
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 The origin200 row of irix-diag-matrix, in its own meson target so the
 nightly runs it beside the other flavours. test_irix_diag.py owns the

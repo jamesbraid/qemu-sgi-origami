@@ -5,7 +5,7 @@
 # install, and require it reach the installer's own "CONGRATULATIONS!"
 # completion banner
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot OpenBSD/sgi 6.9 from the stock PROM and run its interactive
 installer to completion. The PROM netboots the install ramdisk; the test
 answers the installer prompts in order and requires its completion banner.

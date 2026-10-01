@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: BSD-3-Clause */
 #include "qemu/osdep.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/onewire.h"

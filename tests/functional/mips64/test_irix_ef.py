@@ -2,7 +2,7 @@
 #
 # IRIX onboard IOC3 Ethernet data-path test.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """Boot installed IRIX and move checked TCP payloads plus UDP packets over ef0.
 
 The Origin 200's machine default NIC is its onboard IOC3 Ethernet, which IRIX

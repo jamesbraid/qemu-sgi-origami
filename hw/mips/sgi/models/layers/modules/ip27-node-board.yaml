@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Reusable Origin 2000 IP27 node board: one Hub, two CPUs, main and
 # directory memory, the BX memory-interface ASIC, boot flash and the
 # module-management PCF8584 adapter. A module layer that carries one or

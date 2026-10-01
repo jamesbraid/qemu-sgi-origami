@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Test TLB conflict behavior and verify that a replacement translation
  * is used instead of a stale cached mapping.

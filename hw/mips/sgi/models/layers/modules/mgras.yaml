@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The SI graphics board (MGRAS, sold for the Origin 2000 and Onyx2 as SI
 # Viz): an XIO board whose HQ4 host interface answers XIO directly,
 # with no Bridge or PCI bus. A composition fits it into an XIO slot

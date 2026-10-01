@@ -4,7 +4,7 @@
 # and require sane configuration, memory-test, register and error-state
 # output from the commands SGI's own field documentation reaches for
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 This test enters POD mode, runs configuration, memory, TLB, switch, and
 error-reporting commands, and checks their output. Memory tests use

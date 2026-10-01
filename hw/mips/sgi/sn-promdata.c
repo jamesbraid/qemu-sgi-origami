@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Per-CPU cache-as-RAM window shared by sgi-sn0-node and sgi-sn1-node. */
 
 #include "qemu/osdep.h"

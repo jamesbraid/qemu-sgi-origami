@@ -2,7 +2,7 @@
 #
 # The Origin 200 PROM-boot family: one script, one boot per manifest cell
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Merges what were four separate scripts, each booting the real IP27 PROM on
 -M origin200 on its own, into this one: the origin200-matrix manifest's own

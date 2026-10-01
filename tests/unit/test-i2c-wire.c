@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Timed pin fixtures exercise the shared engine, not PCF register timing. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"

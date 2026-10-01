@@ -3,7 +3,7 @@
 # The graphics device test matrix: one boot-drive-screendump test per
 # manifest cell
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Shared per-row boot and screendump test logic for graphics-matrix.
 test_graphics_matrix_thorough.py registers the thorough rows. Each method

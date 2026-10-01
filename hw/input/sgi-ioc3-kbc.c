@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* SGI IOC3 PS/2 keyboard and mouse controller. */
 /*
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The block is a

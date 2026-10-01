@@ -3,7 +3,7 @@
  * derived state. Bridge window access must reach its card after load;
  * VMSTATE_UINT32_ARRAY alone preserves only the slot register bits.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 /*

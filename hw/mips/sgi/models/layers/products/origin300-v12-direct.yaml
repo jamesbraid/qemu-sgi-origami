@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Emulated Origin 300 with one V12 widget directly on its XBridge.
 layer_version: 1
 layer:

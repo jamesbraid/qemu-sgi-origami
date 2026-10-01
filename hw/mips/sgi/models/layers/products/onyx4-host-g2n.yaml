@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # An Onyx4 boot host plus a G2N compute brick; graphics internals omitted.
 layer_version: 1
 layer:

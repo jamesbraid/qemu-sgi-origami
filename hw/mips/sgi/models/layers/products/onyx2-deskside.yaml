@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # The Onyx2 deskside: two node boards on the 4P1G5 midplane, a BaseIO-G in
 # IO1 and one InfiniteReality pipe on XIO4 (docs/datasheets/onyx2.md,
 # Deskside). layers/modules/onyx2-deskside-module.yaml holds the chassis.

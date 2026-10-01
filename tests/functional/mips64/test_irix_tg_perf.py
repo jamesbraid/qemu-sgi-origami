@@ -5,7 +5,7 @@
 # transfer, plus ttcp TCP and UDP throughput runs -- measuring the rate and
 # confirming the IP/TCP/UDP layers processed it via netstat protocol stats.
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Where test_irix_tg.py proves pings cross tg
 byte-for-byte, this test exercises the transport layers more fully and

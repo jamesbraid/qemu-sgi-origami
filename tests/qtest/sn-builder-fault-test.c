@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Two machine types that run the real builder (sgi_machine_init) over a
  * topology no shipped product carries, each turned on only by its own

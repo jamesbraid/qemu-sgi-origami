@@ -8,7 +8,7 @@
  * of the same model. Modelled from the published Tigon host interface the
  * public NetBSD and OpenBSD "ti" drivers implement.
  *
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 
 #ifndef HW_NET_TIGON_H

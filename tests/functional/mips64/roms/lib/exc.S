@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Eight vectors funnel into one handler, which records exception state without
  * clobbering test registers. It can refill the TLB, resume at an armed address,

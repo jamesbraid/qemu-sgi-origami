@@ -6,7 +6,7 @@
 # carries no driver for it, but genuinely composed onto the guest's PCI
 # bus through the machine's Bridge
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: BSD-3-Clause
 """
 Boots the same kernel and installed disk as the network transfer test
 (see that file's own docstring for where they come from and why 128 MiB),

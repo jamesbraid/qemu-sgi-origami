@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Parse embedded hw/mips/sgi/sn-catalogue.json into qapi/sgi-sn.json's
  * SGIModelCatalogue once. Retain it for the process lifetime;

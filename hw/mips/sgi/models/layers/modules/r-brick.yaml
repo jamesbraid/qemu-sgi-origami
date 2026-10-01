@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
 # Origin 3000 R-brick: an eight-port SN1 router, one port cabled to a C-brick.
 layer_version: 1
 layer:
