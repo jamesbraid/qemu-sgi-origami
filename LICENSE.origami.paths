@@ -483,7 +483,9 @@ tests/functional/mips64/mgras-reference/si-lit3d.json
 tests/functional/mips64/mgras-reference/si-pixels.json
 tests/functional/mips64/mgras-reference/si-t-lit3d.json
 tests/functional/mips64/mgras-reference/si-t-pixels.json
+tests/functional/mips64/mgras-reference/ssi-doublebuffer.json
 tests/functional/mips64/mgras-reference/ssi-lit3d.json
+tests/functional/mips64/mgras-reference/ssi-pixels.json
 tests/functional/mips64/origin200-matrix
 tests/functional/mips64/roms/README.rst
 tests/functional/mips64/roms/addrspace.c
