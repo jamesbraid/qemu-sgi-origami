@@ -4694,6 +4694,21 @@ static void test_the_backed_clock_survives_migration_source_quit(
     g_rmdir(dir);
 }
 
+static void test_the_clock_refuses_a_reference_without_storage(const void *data)
+{
+    g_autofree char *reference = rtc_tmp_file("sn0-ioc3-clock-XXXXXX", 512);
+    g_autofree char *drive = g_strdup_printf(
+        "if=none,id=reference,file=%s,format=raw", reference);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-accel", "qtest",
+        "-display", "none", "-S", "-nodefaults", "-qmp", "stdio",
+        "-drive", drive, "-global", "m48t35.clock-drive=reference", NULL,
+    };
+
+    assert_launch_rejected(args, "m48t35: clock-drive requires drive");
+    g_assert_cmpint(unlink(reference), ==, 0);
+}
+
 /*
  * A reference drive too small for its 16-byte record would fail every save
  * and lose the elapsed time without saying so; realize refuses it instead.
@@ -5962,6 +5977,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/clock-backing/migration-stopped",
                         GINT_TO_POINTER(1),
                         test_the_backed_clock_survives_migration_source_quit);
+    qtest_add_data_func("sn0/ioc3/clock-config/reference-without-storage", NULL,
+                        test_the_clock_refuses_a_reference_without_storage);
     qtest_add_data_func("sn0/ioc3/clock-config/year-base", NULL,
                         test_the_clock_has_a_selected_year_base);
     qtest_add_data_func("sn0/ioc3/clock-config/initial-range", NULL,

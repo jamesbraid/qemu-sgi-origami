@@ -577,6 +577,10 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
 {
     M48T35State *s = M48T35(dev);
 
+    if (s->clock_blk && !s->blk) {
+        error_setg(errp, "m48t35: clock-drive requires drive");
+        return;
+    }
     if (s->year_base != 1968 && s->year_base != M48T35_YEAR_BASE) {
         error_setg(errp, "m48t35: unsupported software year base %u",
                    s->year_base);
