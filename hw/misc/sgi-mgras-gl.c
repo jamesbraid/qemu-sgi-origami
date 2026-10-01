@@ -31,6 +31,7 @@
 #include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/misc/sgi-mgras-texture.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "trace.h"
 
@@ -380,7 +381,8 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * whose values fall in the same set also goes unlogged; that loses
  * nothing, since nothing is textured. Any other 0xec10, an application's
  * table with another value or a texture path's own register (0x191,
- * 0x193, 0x1a4), is logged.
+ * 0x193, 0x1a4), is logged. On a board with TRAM the texture path takes
+ * the 0x191 and 0x193 tables first (hw/misc/sgi-mgras-texture.c).
  */
 #define MGRAS_GL_TEXTURE_TABLE   0x0000ec10
 #define MGRAS_GL_BANKS           0x00009808
@@ -450,7 +452,8 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * (the 2026-09-28 demo survey's -d unimp logs), and mirrors and perfly
  * glTexCoord4f. The model retains coordinates for current-attribute
  * queries and captures the texture-matrix result at raster-position
- * updates. Native texture upload and sampling remain unsupported.
+ * updates. On a board with TRAM the texture path
+ * (hw/misc/sgi-mgras-texture.c) samples a loaded level with them.
  */
 #define MGRAS_GL_VERTEX3I        0x3800000c
 #define MGRAS_GL_RASTER_POS3I    0x3800380c
@@ -823,6 +826,9 @@ bool sgi_mgras_gl_header(uint32_t header)
             return true;
         }
     }
+    if (sgi_mgras_texture_header(header)) {
+        return true;
+    }
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_CLEAR_COLOR_BUF:
@@ -1119,6 +1125,7 @@ void sgi_mgras_gl_cleanup(SGIMgrasState *s)
 {
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         sgi_gl_cleanup(&s->gl[i]);
+        sgi_mgras_texture_reset(&s->gl_context[i].tex);
     }
 }
 
@@ -1132,6 +1139,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
                sizeof(s->gl_context[i].readback));
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
+        sgi_mgras_texture_reset(&s->gl_context[i].tex);
         sgi_gl_reset(&s->gl[i], 0);
         if (!sgi_gl_enable_polygon_modes(&s->gl[i], &sink) ||
             !sgi_gl_enable_line_stipple(&s->gl[i], &sink)) {
@@ -1161,6 +1169,7 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
     memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
+    sgi_mgras_texture_reset(&s->gl_context[i].tex);
 }
 
 /* The entry holding slot's state, taking a new one if it has none. */
@@ -2022,8 +2031,10 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
         return words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
     }
     if (cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
-        return (reg == MGRAS_GL_BITMAP_OP || reg == MGRAS_GL_PIXELS_OP) &&
-               payload_count == MGRAS_GL_BITMAP_WORDS &&
+        return (((reg == MGRAS_GL_BITMAP_OP || reg == MGRAS_GL_PIXELS_OP) &&
+                 payload_count == MGRAS_GL_BITMAP_WORDS) ||
+                (reg == SGI_MGRAS_TEX_RECORDS_OP &&
+                 payload_count == SGI_MGRAS_TEX_RECORD_SLOTS)) &&
                words_remaining <= SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS + 1;
     }
     if (cls == SGI_MGRAS_CMD_TOKEN_GE_LOAD) {
@@ -2050,7 +2061,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
         if (!sgi_gl_context_valid(&s->gl[i], NULL) ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count) ||
-            !mgras_gl_pixels_valid(&s->gl_context[i].pixels)) {
+            !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
+            !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
             return false;
         }
     }
@@ -2246,9 +2258,11 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
+    SGIGLTexImage image;
     SGIGLDrawResult result;
 
     t.opaque = s;
+    t.texture = sgi_mgras_texture_image(s, &image);
     result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     s->dirty = true;
     return result;
@@ -2284,6 +2298,7 @@ static void mgras_gl_context_start(SGIMgrasState *s)
     SGIGLContext *gl = mgras_gl(s);
 
     sgi_gl_reset(gl, gl->hw_id);
+    sgi_mgras_texture_reset(&s->gl_context[s->gl_current].tex);
     mgras_gl_bind(s);
 }
 
@@ -2708,6 +2723,18 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel draw ended after "
                       "%u of %u rows by the next\n", px->row, px->h);
     }
+    /* A texture load's image is the texture path's, never drawn here. */
+    if (sgi_mgras_texture_load_start(s, payload)) {
+        *px = (SGIMgrasGLPixels) {
+            .active = 1,
+            .format = MGRAS_GL_PIXELS_FORMATS,
+            .bpp = 1,
+            .w = MGRAS_GL_PIXELS_MAX,
+            .h = 1,
+            .dma_only = !!(payload[7] & MGRAS_GL_PIXELS_BY_DMA),
+        };
+        return;
+    }
     if (!mgras_gl_pixels_program(s, payload[0], px)) {
         px->format = MGRAS_GL_PIXELS_FORMATS;
         px->bpp = 1;
@@ -2902,7 +2929,10 @@ bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
 
-    *take = false;
+    if (sgi_mgras_texture_dma(s, rows, bpr, take)) {
+        memset(px, 0, sizeof(*px));
+        return true;
+    }
     if (!px->active) {
         return false;
     }
@@ -2925,11 +2955,15 @@ bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
 void sgi_mgras_gl_pixels_abort(SGIMgrasState *s)
 {
     memset(mgras_gl_pixels(s), 0, sizeof(SGIMgrasGLPixels));
+    sgi_mgras_texture_abort(s);
 }
 
 void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
                              uint32_t n)
 {
+    if (sgi_mgras_texture_row(s, bytes, n)) {
+        return;
+    }
     if (mgras_gl_pixels(s)->active) {
         mgras_gl_pixels_bytes(s, bytes, n);
         mgras_gl_pixels_row_end(s);
@@ -2954,7 +2988,8 @@ bool sgi_mgras_gl_block(SGIMgrasState *s, uint32_t header)
         s->cmd_token_payload_count = MGRAS_GL_GE_LOAD_SLOTS;
         return true;
     }
-    if (mgras_gl_pixels_block(s, header)) {
+    if (mgras_gl_pixels_block(s, header) ||
+        sgi_mgras_texture_records(s, header)) {
         return true;
     }
     if (s->cmd_token_class != 0 || s->cmd_token_reg != MGRAS_GL_BITMAP_OP ||
@@ -2984,6 +3019,10 @@ void sgi_mgras_gl_block_word(SGIMgrasState *s, uint32_t word)
 
     if (s->cmd_token_reg == MGRAS_GL_PIXELS_OP) {
         mgras_gl_pixels_word(s, word);
+        return;
+    }
+    if (s->cmd_token_reg == SGI_MGRAS_TEX_RECORDS_OP) {
+        sgi_mgras_texture_record_word(s, word);
         return;
     }
     for (int i = 0; i < 4; i++) {
@@ -3210,7 +3249,8 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         mgras_gl_command(s, SGI_GL_OP_END, payload, 0);
         return;
     }
-    if (mgras_gl_lighting(s, header, payload, words)) {
+    if (mgras_gl_lighting(s, header, payload, words) ||
+        sgi_mgras_texture_execute(s, header, payload, words)) {
         return;
     }
     switch (header) {
