@@ -319,7 +319,8 @@ static void test_gl_texture_tl_mode_persists(void)
 
 /*
  * What the model does not draw stays untextured rather than drawn wrong:
- * TEXMODE1 bit 0 clear, a mipmap filter's bit 5 (TEXMODE2),
+ * TEXMODE1 bit 0 clear, only one of the two mipmap bits (5 or 19 of
+ * TEXMODE2),
  * a detail texture (bit 9), environment code 3 on a colour class, a
  * level kept at depth code 3, which is not defined and not stored, and
  * 0x0c00 after the bind. Each quad is white.
@@ -329,6 +330,7 @@ static void test_gl_texture_unsupported_draws_untextured(void)
     static const uint32_t cases[][3] = {
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON & ~1u, TEX_TEXMODE2_RGBA8 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x20 },
+        { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80000 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x200 },
         { TEX_TL_MODE_RGBA8, TEX_TEXMODE1_ON | 6, TEX_TEXMODE2_RGBA8 },
         { 0x34066, TEX_TEXMODE1_ON, 0x1000c },
@@ -606,6 +608,7 @@ typedef struct TexScene {
     uint32_t extra[8][2];       /* registers after the bind */
     unsigned n_extra;
     const float (*quad)[4];     /* x, y, s, t a corner; tex_quad's if NULL */
+    const uint8_t *mip[3];      /* levels 1 to 3, same format; NULL skips */
 } TexScene;
 
 static uint32_t tex_mode1(uint32_t env, uint32_t layout, uint32_t cls,
@@ -643,6 +646,18 @@ static void tex_scene(QTestState *t, const TexScene *sc)
     tex_load_fmt(t, true, 0x34000 | sc->layout << 1 | sc->depth << 5, spec,
                  sc->texels, w, h, tex_bytes_a_texel(sc->layout, sc->depth),
                  box, true, 0, 0);
+    for (uint32_t n = 1; n <= 3; n++) {
+        uint32_t lw = MAX(1, w >> n), lh = MAX(1, h >> n);
+        uint32_t lbox[6] = { 0, 0, lw, lh, lh << 16 | lw, 0 };
+
+        if (sc->mip[n - 1]) {
+            tex_load_fmt(t, true, 0x34000 | sc->layout << 1 | sc->depth << 5,
+                         n | tex_log2(lh) << 8 | tex_log2(lw) << 4,
+                         sc->mip[n - 1], lw, lh,
+                         tex_bytes_a_texel(sc->layout, sc->depth), lbox, true,
+                         0, 0);
+        }
+    }
     tex_bind(t, tex_mode1(sc->env, sc->layout, sc->cls, sc->depth),
              0x10000 | sc->depth << 2 | sc->mode2);
     tex_records(t, (const uint32_t[]){ TEX_TXSIZE, size << 8 | size,
@@ -1233,6 +1248,133 @@ static void test_gl_texture_depth12_halfword(void)
     qtest_quit(t);
 }
 
+#define TEX_MIP               0x80020   /* bits 5 and 19: more than a level */
+#define TEX_MIP_BETWEEN       0x0040    /* bit 6: blend between levels */
+
+/*
+ * The board derives its level of detail from the iterators, so a test
+ * sets it through the geometry: a square of 16 pixels whose texture
+ * coordinates span k texels of the 4-by-4 base level has rho = k / 16
+ * and lambda = log2(rho). This quad has rho of the given value.
+ */
+static void tex_lambda_quad(float quad[4][4], double rho)
+{
+    float span = rho * 16 / 4;
+    const float c[4][4] = {
+        { 16, 16, 0, 0 }, { 32, 16, 1, 0 }, { 32, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+
+    for (int i = 0; i < 4; i++) {
+        quad[i][0] = c[i][0];
+        quad[i][1] = c[i][1];
+        quad[i][2] = c[i][2] * span;
+        quad[i][3] = c[i][3] * span;
+    }
+}
+
+static void tex_flat(uint8_t *texels, unsigned n, uint32_t rgba)
+{
+    for (unsigned i = 0; i < n; i++) {
+        stl_be_p(&texels[4 * i], rgba);
+    }
+}
+
+/*
+ * Nearest-mipmap level selection. Three flat levels, red 4 by 4, green
+ * 2 by 2, blue 1 by 1, drawn at lambda 0, 1 and 2 (k / n of 1, 2, 4) give
+ * each in turn; lambda 3 is past the last level and gives the last, and
+ * lambda -2 magnifies and gives the base level, never a level below it.
+ * A minimum LOD of 1 in TXLOD bits 25:16 makes the lambda 0 draw return
+ * level 1. A chain with a hole at level 1 draws untextured.
+ */
+static void test_gl_texture_mip_level_select(void)
+{
+    static const struct {
+        double rho;
+        uint32_t txlod;
+        uint32_t want;
+    } cases[] = {
+        { 1, 2, 0xff0000 }, { 2, 2, 0x00ff00 }, { 4, 2, 0x0000ff },
+        { 8, 2, 0x0000ff }, { 0.25, 2, 0xff0000 },
+        { 1, 64 << 16 | 2, 0x00ff00 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t l0[64], l1[16], l2[4];
+
+    tex_flat(l0, 16, 0xff0000ff);
+    tex_flat(l1, 4, 0x00ff00ff);
+    tex_flat(l2, 1, 0x0000ffff);
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        float quad[4][4];
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .w = 4, .h = 4, .texels = l0, .mip = { l1, l2 },
+            .mode2 = TEX_MIP, .quad = quad,
+            .extra = { { TEX_TXLOD, cases[i].txlod } }, .n_extra = 1,
+        };
+
+        tex_lambda_quad(quad, cases[i].rho);
+        tex_scene(t, &sc);
+        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, cases[i].want);
+    }
+    {
+        float quad[4][4];
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .w = 4, .h = 4, .texels = l0, .mip = { NULL, l2 },
+            .mode2 = TEX_MIP, .quad = quad,
+            .extra = { { TEX_TXLOD, 2 } }, .n_extra = 1,
+        };
+
+        tex_lambda_quad(quad, 2);
+        tex_scene(t, &sc);
+        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, 0xffffff);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * Trilinear blends the two levels around lambda by its fraction: red
+ * over green at lambda 0.5 gives half and half, at 0.25 three to one.
+ * At or past the last level (TXLOD bits 3:0 = 1) the result is that
+ * level alone, with no level beyond it fetched, which a model that
+ * went to level 2 would draw untextured.
+ */
+static void test_gl_texture_trilinear_blend(void)
+{
+    static const struct {
+        double rho;
+        double r, g;
+    } cases[] = {
+        { 1.4142135623730951, 0.5, 0.5 },
+        { 1.189207115002721, 0.75, 0.25 },
+        { 2, 0, 1 },
+        { 2.8284271247461903, 0, 1 },
+        { 8, 0, 1 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t l0[64], l1[16];
+
+    tex_flat(l0, 16, 0xff0000ff);
+    tex_flat(l1, 4, 0x00ff00ff);
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        float quad[4][4];
+        TexScene sc = {
+            .layout = TEX_LAYOUT_RGBA, .depth = 1, .cls = TEX_CLASS_COLOUR,
+            .w = 4, .h = 4, .texels = l0, .mip = { l1 },
+            .mode2 = TEX_MIP | TEX_MIP_BETWEEN | TEX_MIN_LINEAR,
+            .quad = quad, .extra = { { TEX_TXLOD, 1 } }, .n_extra = 1,
+        };
+
+        tex_lambda_quad(quad, cases[i].rho);
+        tex_scene(t, &sc);
+        tex_expect(gl_window_pixel(t, 24, 24), cases[i].r, cases[i].g, 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1293,6 +1435,10 @@ int main(int argc, char **argv)
                    test_gl_texture_linear_edge_wrap);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-depth12-halfword",
                    test_gl_texture_depth12_halfword);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-mip-level-select",
+                   test_gl_texture_mip_level_select);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-trilinear-blend",
+                   test_gl_texture_trilinear_blend);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/current",
                     test_gl_native_texcoord_current);
     qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/raster",
