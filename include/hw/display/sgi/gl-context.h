@@ -39,6 +39,9 @@ typedef enum SGIRasterKind {
  */
 typedef uint32_t SGIColourTarget;
 
+/* Draw-buffer bits 0 to 3 each name one colour target. */
+#define SGI_GL_MAX_TARGETS      4
+
 /* The channels glColorMask lets a draw or clear write (4.2.2). */
 #define SGI_GL_COLOUR_MASK_RED   0x1
 #define SGI_GL_COLOUR_MASK_GREEN 0x2
@@ -87,7 +90,7 @@ typedef struct SGIRasterBitmap {
 typedef struct SGIRasterOp {
     uint32_t kind;              /* SGIRasterKind */
     /* The colour targets written, as the drawable names them. */
-    SGIColourTarget targets[2];
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
     uint32_t ntargets;
     int32_t x0, y0, x1, y1;
     /*
@@ -209,6 +212,8 @@ enum {
 };
 #define SGI_GL_DRAW_FRONT       0x1
 #define SGI_GL_DRAW_BACK        0x2
+#define SGI_GL_DRAW_EXTRA0      0x4
+#define SGI_GL_DRAW_EXTRA1      0x8
 #define SGI_GL_NEVER_ENUM       0x0200
 #define SGI_GL_CURRENT_COLOR    0x0b00
 #define SGI_GL_CURRENT_INDEX    0x0b01
@@ -471,6 +476,12 @@ typedef struct SGIGLDrawable {
     /* The colour targets glDrawBuffer's front and back buffers name. */
     SGIColourTarget front;
     SGIColourTarget back;
+    /*
+     * The colour targets draw-buffer bits 2 and 3 name, for a family whose
+     * board has them; zero where it has none, and the bit is then ignored.
+     * The bits have no fixed front or back meaning.
+     */
+    SGIColourTarget extra[2];
 } SGIGLDrawable;
 
 /* The GL state a draw is made under. */
@@ -488,7 +499,7 @@ typedef struct SGIGLDrawState {
      * map normalized depth to window depth.
      */
     float depth_range[2];
-    /* SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK; other bits are ignored. */
+    /* SGI_GL_DRAW_* bits; those the drawable has no target for are ignored. */
     uint32_t draw_buffers;
     /*
      * 0 in RGBA mode; in colour-index mode the bits a colour index holds,
@@ -943,11 +954,11 @@ void sgi_gl_set_drawable(SGIGLContext *c, const SGIGLDrawable *d);
  */
 bool sgi_gl_set_matrix(SGIGLContext *c, uint32_t slot, const float m[16]);
 /*
- * The colour targets the draw state's draw buffers select, front before
- * back and each once, into out; returns how many.
+ * The colour targets the draw state's draw buffers select, in bit order
+ * and each once, into out; returns how many.
  */
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
-                             SGIColourTarget out[2]);
+                             SGIColourTarget out[SGI_GL_MAX_TARGETS]);
 /*
  * Put the context in colour-index mode with index_bits bits a colour
  * index, or in RGBA mode for 0: a property of the context's visual, which

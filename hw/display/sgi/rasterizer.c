@@ -42,7 +42,7 @@ typedef struct SGISoftDraw {
     const SGIRasterTarget *t;
     const SGIGLDrawState *st;
     SGISoftWindow win;
-    SGIColourTarget targets[2];
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
     uint32_t ntargets;
     /* Back-facing polygons take the vertices' back colours. */
     bool back_colors;
@@ -246,7 +246,8 @@ static bool sgi_soft_rgba_capable(const SGIRasterRules *r,
 static bool sgi_soft_rgba_load(const SGIRasterRules *r,
                               const SGIRasterTarget *t,
                               const SGIColourTarget *targets, unsigned count,
-                              int x, int y, SGIRasterColour dest[2],
+                              int x, int y,
+                              SGIRasterColour dest[SGI_GL_MAX_TARGETS],
                               bool *reported)
 {
     for (unsigned i = 0; i < count; i++) {
@@ -1298,7 +1299,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     int x = r->win.ox + px, y = r->win.oy + py;
     uint32_t zq, colour, smax = 0, sref = 0;
     bool stencil;
-    SGIRasterColour dest[2] = { 0 };
+    SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
 
     if (!(z >= 0.0 && z <= 1.0)) {
         return;
@@ -2979,7 +2980,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
-    r.ntargets = MIN(op->ntargets, 2);
+    r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     memcpy(r.targets, op->targets, sizeof(r.targets));
     if (!sgi_soft_setup_ops(&r)) {
         return;
@@ -3024,6 +3025,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     bool rgba_read = colour && op->ntargets && rgba_mask &&
                      rgba_mask != sgi_soft_rgba_mask(rules,
                                                     SGI_GL_COLOUR_MASK_ALL);
+    uint32_t ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     bool rgba_reported = false;
     SGIRasterColour clear = { 0 };
 
@@ -3070,7 +3072,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     }
     for (int y = op->y0; y <= op->y1; y++) {
         for (int x = op->x0; x <= op->x1; x++) {
-            SGIRasterColour dest[2] = { 0 };
+            SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
 
             if (op->clip.n > 1 && !sgi_clip_contains(&op->clip, x, y)) {
                 continue;
@@ -3078,8 +3080,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
 
             if (rgba && rgba_read &&
                 !sgi_soft_rgba_load(rules, t, op->targets,
-                                    MIN(op->ntargets, 2), x, y, dest,
-                                    &rgba_reported)) {
+                                    ntargets, x, y, dest, &rgba_reported)) {
                 continue;
             }
             if (depth) {
@@ -3095,7 +3096,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
                                   ~smask & smax) |
                                  (op->clear_stencil & smask));
             }
-            for (uint32_t i = 0; colour && i < MIN(op->ntargets, 2); i++) {
+            for (uint32_t i = 0; colour && i < ntargets; i++) {
                 if (op->index_bits) {
                     t->store_index(t->opaque, op->targets[i], x, y,
                                    op->clear_index, op->index_mask);
