@@ -3236,6 +3236,8 @@ bool sgi_mgras_gl_pixels_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
     uint32_t row_bytes = px->w * px->bpp;
 
+    /* A transfer this ends without drawing moves nothing. */
+    *take = false;
     if (sgi_mgras_texture_dma(s, rows, bpr, take)) {
         memset(px, 0, sizeof(*px));
         return true;
