@@ -1205,6 +1205,53 @@ static void test_cpu_number_fallback(void)
     }
 }
 
+/*
+ * SGI Performer reads PI_RT_COUNTER through a 32-bit user mapping. Sub-8-byte
+ * reads of the counter must return the correct big-endian half, while 4-byte
+ * writes and 4-byte reads of other registers must be rejected.
+ */
+static void test_rt_counter_access_width(void)
+{
+    QTestState *s = start_clock("");
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, PI(0, RT_COUNTER), 0x00123456789abcdeULL);
+    qtest_writeq(s, PI(1, RT_COUNTER), 0x00123456789abcdeULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==,
+                    0x00123456789abcdeULL);
+
+    /* 4-byte reads return the corresponding big-endian half. */
+    g_assert_cmphex(qtest_readl(s, PI(0, RT_COUNTER)), ==, 0x00123456);
+    g_assert_cmphex(qtest_readl(s, PI(0, RT_COUNTER) + 4), ==, 0x789abcde);
+
+    /* Clock advances reflect in 4-byte reads. */
+    qtest_clock_step(s, 5 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readl(s, PI(0, RT_COUNTER) + 4), ==, 0x789abce3);
+
+    /* PI1 supports the same 4-byte counter reads. */
+    g_assert_cmphex(qtest_readl(s, PI(1, RT_COUNTER)), ==, 0x00123456);
+    g_assert_cmphex(qtest_readl(s, PI(1, RT_COUNTER) + 4), ==, 0x789abce3);
+
+    /*
+     * 4-byte writes to RT_COUNTER are rejected and do not modify the counter.
+     */
+    qtest_writel(s, PI(0, RT_COUNTER), 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(s, PI(0, RT_COUNTER)), ==, 0x00123456);
+    qtest_writel(s, PI(0, RT_COUNTER) + 4, 0xdeadbeef);
+    g_assert_cmphex(qtest_readl(s, PI(0, RT_COUNTER) + 4), ==, 0x789abce3);
+
+    /*
+     * 4-byte reads of other registers are rejected (unassigned read returns 0).
+     */
+    g_assert_cmphex(qtest_readq(s, PI(1, CPU_NUMBER)), ==, 2);
+    g_assert_cmphex(qtest_readl(s, PI(1, CPU_NUMBER) + 4), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, REGION_PRESENT)), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readl(s, PI(0, REGION_PRESENT)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, PI(0, REGION_PRESENT) + 4), ==, 0);
+
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1241,6 +1288,8 @@ int main(int argc, char **argv)
                    test_error_pending_survives_reset);
     qtest_add_func("sn1/bedrock-pi/real-time-comparators",
                    test_real_time_comparators);
+    qtest_add_func("sn1/bedrock-pi/rt-counter-access-width",
+                   test_rt_counter_access_width);
     qtest_add_func("sn1/bedrock-pi/profile-counter-wrap",
                    test_profile_and_counter_wrap);
     qtest_add_func("sn1/bedrock-pi/timer-reset-model",
