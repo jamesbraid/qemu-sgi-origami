@@ -18,6 +18,44 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_LOG_TEXT 48
 
 typedef struct SGIL1ProductProfile SGIL1ProductProfile;
+typedef struct SGIL1QueryRouter SGIL1QueryRouter;
+
+typedef struct SGIL1QueryOwner {
+    SGIL1State *controller;
+    uint64_t identity;
+} SGIL1QueryOwner;
+
+typedef struct SGIL1QueryAssociation {
+    uint32_t from;
+    uint32_t to;
+    bool reachable;
+} SGIL1QueryAssociation;
+
+struct SGIL1QueryRouter {
+    SGIL1QueryOwner *owners;
+    unsigned owner_count;
+    SGIL1QueryAssociation *associations;
+    unsigned association_count;
+    bool active;
+};
+
+/* The synchronous return path is private to this request. */
+typedef struct SGIL1QueryRequest {
+    SGIL1State *issuer;
+    SGIL1State *recipient;
+    uint32_t destination;
+    const uint8_t *payload;
+    unsigned length;
+    uint8_t channel;
+} SGIL1QueryRequest;
+
+void sgi_l1_query_router_init(SGIL1QueryRouter *router,
+                             SGIL1QueryOwner *owners, unsigned owner_count,
+                             SGIL1QueryAssociation *associations,
+                             unsigned association_count, Error **errp);
+void sgi_l1_query_router_destroy(SGIL1QueryRouter *router);
+void sgi_l1_query_route(SGIL1QueryRouter *router,
+                       const SGIL1QueryRequest *request);
 
 typedef struct SGIL1EEPROM {
     uint32_t length;
@@ -56,6 +94,8 @@ struct SGIL1State {
      */
     struct SGIL1State *peer;
     bool network_422;
+    SGIL1QueryRouter *query_router;
+    uint64_t query_owner_identity;
     /* While answering a peer's forwarded request, where its replies go. */
     struct SGIL1State *reply_to;
     CharFrontend chr;
