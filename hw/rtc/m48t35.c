@@ -9,6 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "block/block-io.h"
 #include "qemu/bcd.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
@@ -242,11 +243,17 @@ static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
     }
 }
 
+static bool m48t35_drive_writable(BlockBackend *blk)
+{
+    BlockDriverState *bs = blk ? blk_bs(blk) : NULL;
+
+    return bs && bdrv_is_writable(bs);
+}
+
 /*
- * Save the running calendar into the backing image's clock cells, in the
- * part's format, and the moment of the save into the reference record. The
- * weekday cell between them is storage and keeps what the guest wrote; no
- * other cell is touched. See the header.
+ * Save the complete image with the running calendar in its clock cells,
+ * and the moment of the save in the reference record. The weekday and
+ * ordinary storage retain the bytes the guest wrote. See the header.
  */
 static void m48t35_save_clock(M48T35State *s)
 {
@@ -254,7 +261,7 @@ static void m48t35_save_clock(M48T35State *s)
     int64_t host = m48t35_host_seconds();
     M48T35Calendar c;
 
-    if (!s->blk) {
+    if (!m48t35_drive_writable(s->blk)) {
         return;
     }
     m48t35_part_calendar(m48t35_running(s), &c);
@@ -265,14 +272,14 @@ static void m48t35_save_clock(M48T35State *s)
     s->cell[M48T35_DAY] = to_bcd(c.mday);
     s->cell[M48T35_MONTH] = to_bcd(c.mon + 1);
     s->cell[M48T35_YEAR] = to_bcd(c.year);
-    if (blk_pwrite(s->blk, M48T35_SECONDS, M48T35_YEAR - M48T35_SECONDS + 1,
-                   &s->cell[M48T35_SECONDS], 0) < 0) {
-        error_report("m48t35: saving the clock to the backing store failed");
+    /* Migrated RAM must reach the destination's backing store too. */
+    if (blk_pwrite(s->blk, 0, M48T35_SIZE, s->cell, 0) < 0) {
+        error_report("m48t35: saving the image to the backing store failed");
     }
     trace_m48t35_clock_saved(c.year, c.mon + 1, c.mday, c.hour, c.min, c.sec,
                              host);
 
-    if (s->clock_blk) {
+    if (m48t35_drive_writable(s->clock_blk)) {
         memcpy(record, M48T35_CLOCK_REF_MAGIC, 8);
         stq_le_p(record + 8, host);
         if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
