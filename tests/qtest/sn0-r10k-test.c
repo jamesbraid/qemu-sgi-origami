@@ -51,11 +51,13 @@
 typedef struct GuestImage {
     uint8_t *code;
     unsigned int pos;
+    unsigned int size;
 } GuestImage;
 
 static void emit(GuestImage *img, uint32_t insn)
 {
-    g_assert_cmpuint(img->pos + 4, <=, IMAGE_SIZE);
+    unsigned int size = img->size ? img->size : IMAGE_SIZE;
+    g_assert_cmpuint(img->pos + 4, <=, size);
     stl_be_p(img->code + img->pos, insn);
     img->pos += 4;
 }
@@ -781,6 +783,198 @@ static void test_cpu(gconstpointer opaque)
     qtest_quit(qts);
 }
 
+/* ---------------------------------------------------------------- */
+/* Indirect branch cache and unmapped cross-page chaining           */
+/* ---------------------------------------------------------------- */
+
+#define CHAIN_IMAGE_SIZE        0x2000
+#define CHAIN_DONE_MAGIC        0x5afe1000
+#define CHAIN_PAGE1_TARGET      0x1020
+#define CHAIN_PAGE0_TARGET      0x200
+
+#define CHAIN_SUB_A_OFF         0x300
+#define CHAIN_SUB_B_OFF         0x320
+#define CHAIN_SUB_C_OFF         0x340
+
+#define CHAIN_DONE_OFF          0x380
+#define CHAIN_COUNT_A_OFF       0x388
+#define CHAIN_COUNT_B_OFF       0x390
+#define CHAIN_COUNT_C_OFF       0x398
+#define CHAIN_FAULT_OFF         0x3a0
+
+#define OPC_JALR                (0x09u | OPC_SPECIAL)
+#define R_A0                    4
+#define R_A1                    5
+#define R_S1                    17
+#define R_S2                    18
+#define R_RA                    31
+
+static void emit_jr(GuestImage *img, int rs)
+{
+    emit(img, OPC_JR | (rs << 21));
+}
+
+static void emit_jalr(GuestImage *img, int rd, int rs)
+{
+    emit(img, OPC_JALR | (rs << 21) | (rd << 11));
+}
+
+static void chain_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(CHAIN_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = CHAIN_IMAGE_SIZE };
+    ssize_t written;
+
+    /* Fault handlers at standard vectors */
+    img.pos = VEC_TLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, CHAIN_FAULT_OFF);
+    img.pos = VEC_XTLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, CHAIN_FAULT_OFF);
+    img.pos = VEC_CACHE_ERROR;
+    emit_report_and_spin(&img, FAULT_MAGIC, CHAIN_FAULT_OFF);
+    img.pos = VEC_GENERAL;
+    emit_report_and_spin(&img, FAULT_MAGIC, CHAIN_FAULT_OFF);
+
+    /*
+     * 1. Subroutines in Page 0:
+     * sub_a at 0x300: $s0++
+     * sub_b at 0x320: $s1++
+     * sub_c at 0x340: $s2++
+     */
+    img.pos = CHAIN_SUB_A_OFF;
+    emit_addiu(&img, R_S0, R_S0, 1);
+    emit_jr(&img, R_RA);
+    emit_nop(&img);
+
+    img.pos = CHAIN_SUB_B_OFF;
+    emit_addiu(&img, R_S1, R_S1, 1);
+    emit_jr(&img, R_RA);
+    emit_nop(&img);
+
+    img.pos = CHAIN_SUB_C_OFF;
+    emit_addiu(&img, R_S2, R_S2, 1);
+    emit_jr(&img, R_RA);
+    emit_nop(&img);
+
+    /*
+     * 2. Page 1 target at 0x1020:
+     * Reached via cross-page branch from Page 0 in unmapped KSEG1.
+     * Branches BACK to Page 0 at CHAIN_PAGE0_TARGET (0x200).
+     */
+    img.pos = CHAIN_PAGE1_TARGET;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CHAIN_PAGE0_TARGET);
+    emit_nop(&img);
+
+    /*
+     * 3. Reset Vector at 0x000:
+     * Clears counters ($s0, $s1, $s2 = 0).
+     * Branches forward across page boundary to Page 1 at CHAIN_PAGE1_TARGET.
+     */
+    img.pos = 0;
+    emit_addiu(&img, R_S0, R_ZERO, 0);
+    emit_addiu(&img, R_S1, R_ZERO, 0);
+    emit_addiu(&img, R_S2, R_ZERO, 0);
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CHAIN_PAGE1_TARGET);
+    emit_nop(&img);
+
+    /*
+     * 4. Page 0 loop body at CHAIN_PAGE0_TARGET (0x200):
+     * Returned from Page 1 via cross-page goto_tb.
+     *
+     * Loop 1: Call sub_a 50 times (repeated returns with same target).
+     * Loop 2: Call sub_a, sub_b, sub_c 50 times (alternating indirect targets).
+     */
+    img.pos = CHAIN_PAGE0_TARGET;
+
+    emit_lui(&img, R_A0, 0xbfc0);
+    emit_addiu(&img, R_A0, R_A0, CHAIN_SUB_A_OFF);
+
+    emit_lui(&img, R_A1, 0xbfc0);
+    emit_addiu(&img, R_A1, R_A1, CHAIN_SUB_B_OFF);
+
+    emit_lui(&img, R_T1, 0xbfc0);
+    emit_addiu(&img, R_T1, R_T1, CHAIN_SUB_C_OFF);
+
+    /* Loop 1: 50 calls to sub_a */
+    emit_addiu(&img, R_T2, R_ZERO, 50);
+    unsigned int loop1_start = img.pos;
+    emit_jalr(&img, R_RA, R_A0);
+    emit_nop(&img);
+    emit_addiu(&img, R_T2, R_T2, -1);
+    emit_branch(&img, OPC_BNE, R_T2, R_ZERO, loop1_start);
+    emit_nop(&img);
+
+    /* Loop 2: 50 iterations calling sub_a, sub_b, sub_c in order */
+    emit_addiu(&img, R_T2, R_ZERO, 50);
+    unsigned int loop2_start = img.pos;
+    emit_jalr(&img, R_RA, R_A0);
+    emit_nop(&img);
+    emit_jalr(&img, R_RA, R_A1);
+    emit_nop(&img);
+    emit_jalr(&img, R_RA, R_T1);
+    emit_nop(&img);
+    emit_addiu(&img, R_T2, R_T2, -1);
+    emit_branch(&img, OPC_BNE, R_T2, R_ZERO, loop2_start);
+    emit_nop(&img);
+
+    /* Write final results to STATE_PHYS */
+    emit_lui(&img, R_T3, STATE_KSEG1_HI);
+    emit_sd(&img, R_S0, R_T3, CHAIN_COUNT_A_OFF);
+    emit_sd(&img, R_S1, R_T3, CHAIN_COUNT_B_OFF);
+    emit_sd(&img, R_S2, R_T3, CHAIN_COUNT_C_OFF);
+
+    /* Publish DONE magic and spin */
+    emit_lui(&img, R_T2, (uint16_t)(CHAIN_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(CHAIN_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T3, CHAIN_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, CHAIN_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, CHAIN_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_indirect_and_unmapped_chaining(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-chain-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    chain_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + CHAIN_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + CHAIN_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)CHAIN_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + CHAIN_DONE_OFF), ==,
+                    (uint64_t)CHAIN_DONE_MAGIC);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + CHAIN_COUNT_A_OFF), ==, 100);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + CHAIN_COUNT_B_OFF), ==, 50);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + CHAIN_COUNT_C_OFF), ==, 50);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -795,6 +989,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
     qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
     g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
+    qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
+                   test_indirect_and_unmapped_chaining);
 
     return g_test_run();
 }
