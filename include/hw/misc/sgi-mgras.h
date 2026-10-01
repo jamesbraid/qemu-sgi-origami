@@ -621,6 +621,21 @@ struct SGIMgrasState {
     uint64_t gl_selected[SGI_MGRAS_GL_CONTEXTS];
     uint64_t gl_selections;
     uint32_t gl_current;
+    /*
+     * The kernel's moves of GL contexts out of and back into GE external
+     * RAM (sgi-mgras-gl.c, "Context eviction"). gl_saved[i] is the host
+     * address entry i's context was last read out to, or 0 while the
+     * entry holds its slot. eram_* is the transfer between a DMA kick and
+     * the ERAM token that names its GE address, and the restore that
+     * later chunks of one image continue.
+     */
+    uint64_t gl_saved[SGI_MGRAS_GL_CONTEXTS];
+    uint32_t eram_state;
+    uint64_t eram_host;
+    uint32_t eram_rows;
+    uint32_t eram_bpr;
+    uint64_t eram_next_host;
+    uint32_t eram_next_addr;
     /* Host ownership and bounded diagnostics; never serialized. */
     bool gl_restore_in_progress;
     bool gl_cleanup_registered;
