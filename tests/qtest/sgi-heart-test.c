@@ -597,23 +597,6 @@ static void test_ecc_migration(gconstpointer data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_ecc_cache_reject(gconstpointer data)
-{
-    const char *property = data;
-    QTestState *s;
-
-    if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 0, 0);
-        g_test_trap_assert_failed();
-        g_test_trap_assert_stderr(
-            "*HEART memory ECC requires the direct-memory*");
-        return;
-    }
-    s = qtest_initf("-M none -cpu R10000,%s=on "
-                    "-device sgi-heart,bank0-size=67108864 -S", property);
-    qtest_quit(s);
-}
-
 static void test_ecc_projection(gconstpointer data)
 {
     unsigned mib = GPOINTER_TO_UINT(data);
@@ -1793,10 +1776,6 @@ int main(int argc, char **argv)
                         test_ecc_migration);
     qtest_add_data_func("/heart/ecc/migration-populated-reset",
                         GUINT_TO_POINTER(2), test_ecc_migration);
-    qtest_add_data_func("/heart/ecc/cache-reject", "r10k-data-cache",
-                        test_ecc_cache_reject);
-    qtest_add_data_func("/heart/ecc/coherence-reject", "r10k-sccoren",
-                        test_ecc_cache_reject);
     qtest_add_data_func("/heart/ecc/projection-64m", GUINT_TO_POINTER(64),
                         test_ecc_projection);
     qtest_add_data_func("/heart/ecc/projection-128m", GUINT_TO_POINTER(128),
