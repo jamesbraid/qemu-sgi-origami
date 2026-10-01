@@ -1161,6 +1161,15 @@ static void test_storage_failed_incoming(const void *data)
         octane_attach(qts);
         g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
     }
+    for (int i = 0; i < 5; i++) {
+        qtest_qmp_assert_success(qts, "{'execute':'query-status'}");
+        g_assert_true(g_file_get_contents(store, &stored, &len, NULL));
+        g_assert_cmpmem(stored, len, image, sizeof(image));
+        g_clear_pointer(&stored, g_free);
+        g_assert_true(g_file_get_contents(clock, &stored, &len, NULL));
+        g_assert_cmpmem(stored, len, reference, sizeof(reference));
+        g_clear_pointer(&stored, g_free);
+    }
     qtest_quit(qts);
     g_assert_true(g_file_get_contents(store, &stored, &len, NULL));
     g_assert_cmpmem(stored, len, image, sizeof(image));
@@ -1212,14 +1221,17 @@ static void test_storage_snapshot(const void *data)
     g_assert_nonnull(reply);
     g_assert_null(strstr(reply, "Error"));
     g_clear_pointer(&reply, g_free);
-    reg_write(qts, R_RAM_LOW, 0x5a);
-    reg_write(qts, R_SECONDS, 33);
-    reply = qtest_hmp(qts, "loadvm rtc-state");
-    g_assert_nonnull(reply);
-    g_assert_null(strstr(reply, "Error"));
-    g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
-    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 55);
-    g_assert_cmphex(reg_read(qts, R_CTRL_A) & A_DV1, ==, 0);
+    for (int i = 0; i < 3; i++) {
+        reg_write(qts, R_RAM_LOW, 0x5a + i);
+        reg_write(qts, R_SECONDS, 33 + i);
+        reply = qtest_hmp(qts, "loadvm rtc-state");
+        g_assert_nonnull(reply);
+        g_assert_null(strstr(reply, "Error"));
+        g_clear_pointer(&reply, g_free);
+        g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
+        g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 55);
+        g_assert_cmphex(reg_read(qts, R_CTRL_A) & A_DV1, ==, 0);
+    }
     qtest_system_reset(qts);
     octane_attach(qts);
     reg_write(qts, R_CTRL_B, B_DM | B_24_12);
@@ -1335,10 +1347,19 @@ static void test_storage_migration(const void *data)
     g_autofree char *suffix = g_build_filename(dir, "suffix.stream", NULL);
     g_autofree char *fifo = g_build_filename(dir, "resume.fifo", NULL);
     bool staged = data && !strcmp(data, "staged");
-    bool counting = data && !staged;
+    bool paused = data && !strcmp(data, "paused");
+    bool counting = data && !staged && !paused;
     int resume_fd = -1;
     gsize len;
     QTestState *from, *to;
+
+    if (paused && !g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(
+            "*ds1685: persistent storage deferred while backing is inactive*");
+        return;
+    }
 
     create_store(store, clock);
     {
@@ -1388,7 +1409,7 @@ static void test_storage_migration(const void *data)
         ",ds1685-drive=rtc-store -rtc base=2034-01-01T00:00:00,clock=vm"
         " -drive if=none,id=rtc-store,file=%s,format=raw"
         " -drive if=none,id=rtc-store-clock,file=%s,format=raw"
-        " -incoming defer", dst, dst_clock);
+        " -incoming defer %s", dst, dst_clock, paused ? "-S" : "");
     qtest_irq_intercept_out_named(to, "/machine/peripheral/octane/ds1685",
                                   "sysbus-irq");
     g_assert_false(qtest_get_irq(to, 0));
@@ -1404,15 +1425,42 @@ static void test_storage_migration(const void *data)
         /* Exercise the save refusal while whole-stream success is unknown. */
         octane_attach(to);
         g_assert_cmphex(reg_read(to, R_RAM_LOW), ==, 0xa5);
-        g_assert_true(g_file_get_contents(dst, &image, &len, NULL));
-        g_assert_cmphex((uint8_t)image[R_RAM_LOW], ==, 0x5a);
-        g_clear_pointer(&image, g_free);
+        for (int i = 0; i < 5; i++) {
+            char sentinel[512] = { 0 }, reference[24];
+
+            sentinel[R_RAM_LOW] = 0x5a;
+            memset(reference, 0xa5, sizeof(reference));
+            qtest_qmp_assert_success(to, "{'execute':'query-status'}");
+            g_assert_true(g_file_get_contents(dst, &image, &len, NULL));
+            g_assert_cmpmem(image, len, sentinel, sizeof(sentinel));
+            g_clear_pointer(&image, g_free);
+            g_assert_true(g_file_get_contents(dst_clock, &image, &len, NULL));
+            g_assert_cmpmem(image, len, reference, sizeof(reference));
+            g_clear_pointer(&image, g_free);
+        }
         g_assert_cmpint(write(resume_fd, "go\n", 3), ==, 3);
         close(resume_fd);
     } else {
         sgi_migrate_stopped(from, uri);
     }
     sgi_wait_migration_status(to, "completed", 30);
+    if (paused) {
+        char sentinel[512] = { 0 }, reference[24];
+        QDict *status = qtest_qmp_assert_success_ref(to,
+            "{'execute':'query-status'}");
+
+        g_assert_cmpstr(qdict_get_str(status, "status"), ==, "paused");
+        qobject_unref(status);
+        sentinel[R_RAM_LOW] = 0x5a;
+        memset(reference, 0xa5, sizeof(reference));
+        g_assert_true(g_file_get_contents(dst, &image, &len, NULL));
+        g_assert_cmpmem(image, len, sentinel, sizeof(sentinel));
+        g_clear_pointer(&image, g_free);
+        g_assert_true(g_file_get_contents(dst_clock, &image, &len, NULL));
+        g_assert_cmpmem(image, len, reference, sizeof(reference));
+        g_clear_pointer(&image, g_free);
+        qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    }
     g_assert_true(qtest_get_irq(to, 0));
     /* Completion must persist without an RTC access or process shutdown. */
     g_assert_true(g_file_get_contents(dst, &image, &len, NULL));
@@ -1714,6 +1762,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/ds1685/storage-all-ram", NULL,
                         test_storage_all_ram);
     qtest_add_data_func("/sn0/ds1685/storage-running-migration", "running",
+                        test_storage_migration);
+    qtest_add_data_func("/sn0/ds1685/storage-paused-migration", "paused",
                         test_storage_migration);
     qtest_add_data_func("/sn0/ds1685/storage-staged-migration", "staged",
                         test_storage_migration);

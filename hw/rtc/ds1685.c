@@ -18,11 +18,12 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qapi/error.h"
+#include "block/block-global-state.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "system/block-backend.h"
 #include "migration/migration.h"
-#include "migration/misc.h"
+#include "migration/register.h"
 #include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
@@ -331,18 +332,26 @@ static bool ds1685_can_save(DS1685State *s)
         return false;
     }
     if (s->load_pending) {
+        if (!s->load_accepted) {
+            return false;
+        }
         if (s->incoming) {
-            if (migration_incoming_get_current()->state !=
-                MIGRATION_STATUS_COMPLETED) {
+            if (!s->incoming_success) {
                 return false;
             }
         } else if (state != RUN_STATE_PAUSED && state != RUN_STATE_RUNNING) {
             return false;
         }
-        s->load_pending = false;
-        s->incoming = false;
     }
     return true;
+}
+
+static bool ds1685_backend_inactive(BlockBackend *blk)
+{
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
+    BlockDriverState *bs = blk ? blk_bs(blk) : NULL;
+
+    return bs && bdrv_is_inactive(bs);
 }
 
 static bool ds1685_write_backend(DS1685State *s, BlockBackend *blk,
@@ -373,6 +382,18 @@ static void ds1685_save(DS1685State *s)
     if (!s->blk || !ds1685_can_save(s)) {
         return;
     }
+    if (ds1685_backend_inactive(s->blk) ||
+        ds1685_backend_inactive(s->clock_blk)) {
+        if (!s->storage_deferred) {
+            error_report("ds1685: persistent storage deferred while backing "
+                         "is inactive");
+        }
+        s->storage_deferred = true;
+        return;
+    }
+    s->storage_deferred = false;
+    s->load_pending = false;
+    s->incoming = false;
     now = ds1685_reference_seconds();
     seconds = s->counter_held ? s->held_seconds : now + s->time_offset;
     ds1685_copy_image(s, image, false);
@@ -396,20 +417,46 @@ static void ds1685_save_after_load(void *opaque)
     ds1685_save(opaque);
 }
 
-static void ds1685_incoming_complete(Notifier *notify, void *data)
+static int ds1685_storage_load_setup(QEMUFile *f, void *opaque, Error **errp)
 {
-    DS1685State *s = container_of(notify, DS1685State, incoming_complete);
+    DS1685State *s = opaque;
 
-    if (s->incoming && s->load_pending) {
+    qemu_bh_cancel(s->save_bh);
+    s->load_active = true;
+    s->load_accepted = false;
+    s->load_pending = true;
+    s->incoming = runstate_check(RUN_STATE_INMIGRATE);
+    s->incoming_success = false;
+    return 0;
+}
+
+static int ds1685_storage_load_cleanup(void *opaque)
+{
+    DS1685State *s = opaque;
+
+    if (!s->load_active) {
+        return 0;
+    }
+    s->load_active = false;
+    if (s->incoming && s->load_accepted &&
+        migration_incoming_get_current()->state == MIGRATION_STATUS_COMPLETED) {
+        s->incoming_success = true;
         ds1685_save(s);
     }
+    return 0;
 }
+
+/* No wire section: this entry owns only the storage load lifecycle. */
+static const SaveVMHandlers ds1685_storage_handlers = {
+    .load_setup = ds1685_storage_load_setup,
+    .load_cleanup = ds1685_storage_load_cleanup,
+};
 
 static void ds1685_vm_state_change(void *opaque, bool running, RunState state)
 {
     DS1685State *s = opaque;
 
-    if (!running || s->load_pending) {
+    if (!running || s->load_pending || s->storage_deferred) {
         ds1685_save(s);
     }
 }
@@ -1018,9 +1065,9 @@ static void ds1685_realize(DeviceState *dev, Error **errp)
                                      ds1685_periodic_tick, s);
 
     if (s->blk) {
-        s->incoming_complete.notify = ds1685_incoming_complete;
-        migration_add_incoming_completion_notifier(&s->incoming_complete);
         s->save_bh = qemu_bh_new(ds1685_save_after_load, s);
+        register_savevm_live("ds1685-storage", VMSTATE_INSTANCE_ID_ANY, 0,
+                             &ds1685_storage_handlers, s);
         s->vmstate_change =
             qemu_add_vm_change_state_handler(ds1685_vm_state_change, s);
     }
@@ -1044,7 +1091,7 @@ static void ds1685_unrealize(DeviceState *dev)
         s->vmstate_change = NULL;
     }
     if (s->save_bh) {
-        notifier_remove(&s->incoming_complete);
+        unregister_savevm(NULL, "ds1685-storage", s);
         qemu_bh_delete(s->save_bh);
         s->save_bh = NULL;
     }
@@ -1080,6 +1127,7 @@ static int ds1685_post_load(void *opaque, int version_id)
     }
     /* Derived rather than carried, on both sides of the stream. */
     ds1685_update_irq(s);
+    s->load_accepted = true;
     if (s->save_bh && !s->incoming) {
         qemu_bh_schedule(s->save_bh);
     }

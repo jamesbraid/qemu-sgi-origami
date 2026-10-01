@@ -20,7 +20,6 @@
 #include "qemu/madvise.h"
 #include "exec/target_page.h"
 #include "migration.h"
-#include "migration/misc.h"
 #include "qemu-file.h"
 #include "savevm.h"
 #include "postcopy-ram.h"
@@ -2353,9 +2352,6 @@ static void postcopy_incoming_complete_bh(void *opaque)
     MigrationState *s = migrate_get_current();
     MigrationIncomingState *mis = migration_incoming_get_current();
 
-    if (mis->state == MIGRATION_STATUS_COMPLETED) {
-        migration_incoming_complete_notify();
-    }
     migration_incoming_state_destroy();
 
     if (mis->state == MIGRATION_STATUS_FAILED && mis->exit_on_error) {

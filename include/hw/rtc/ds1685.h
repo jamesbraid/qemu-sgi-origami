@@ -157,9 +157,12 @@ struct DS1685State {
     BlockBackend *clock_blk;
     VMChangeStateEntry *vmstate_change;
     QEMUBH *save_bh;
-    Notifier incoming_complete;
     bool incoming;
     bool load_pending;
+    bool load_active;
+    bool load_accepted;
+    bool incoming_success;
+    bool storage_deferred;
     bool storage_failed;
 
     /*
