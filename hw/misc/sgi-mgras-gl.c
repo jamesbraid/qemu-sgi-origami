@@ -2008,7 +2008,12 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
             continue;
         }
         element += mgras_gl_queries[i].element;
-        assert(element < n);
+        if (element >= n) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL state query index "
+                          "0x%x names word %u of an answer of %u words; "
+                          "answered with zero\n", index, element, n);
+            return 0;
+        }
         switch (mgras_gl_queries[i].packing) {
         case MGRAS_GL_QUERY_BOX_END:
             return out[element - 2] + out[element] - 1;

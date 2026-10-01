@@ -616,7 +616,9 @@ static uint32_t mgras_xmap_read(SGIMgrasState *s, hwaddr addr)
         return x->config;
     case SGI_MGRAS_REPP_STATUS_4: return x->config_b;
     default:
-        g_assert_not_reached();
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: XMAP read of 0x%" HWADDR_PRIx
+                      " is not modelled; read as zero\n", addr);
+        return 0;
     }
 }
 
@@ -652,7 +654,10 @@ static void mgras_xmap_write(SGIMgrasState *s, hwaddr addr, uint32_t value)
             x->config_b = value;
             break;
         default:
-            g_assert_not_reached();
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: XMAP write of 0x%x to "
+                          "0x%" HWADDR_PRIx " is not modelled; ignored\n",
+                          value, addr);
+            break;
         }
     }
     s->dirty = true;
