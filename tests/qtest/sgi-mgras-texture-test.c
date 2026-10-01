@@ -1487,6 +1487,7 @@ static void test_gl_texture_raster_records_are_not_logged(void)
  * an odd row; a quad two pixels tall with t from 0 to 0.25 keeps both in
  * texel row 0 of the 4-by-2 level, so each must read that row's texels.
  */
+#define MXI_TEX_BASE_HDR      0x0000eb04
 #define MXI_ROW_EVEN          16
 #define MXI_ROW_ODD           17
 
@@ -1531,6 +1532,34 @@ static void test_mxi_texture_rows_match(gconstpointer data)
 
     tex_texels(texels);
     tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    mxi_two_row_quad(t);
+    mxi_expect_rows(t, texels, true);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * One base word applies to the whole store, so to both rows. A level
+ * loaded under base 5 is found again when 0xeb04 names 5 after the load,
+ * and not under base 0, which holds no level: the draw is the quad's
+ * white. A base consumed by one RE only would split the rows.
+ */
+static void test_mxi_texbase_both_rows(gconstpointer data)
+{
+    QTestState *t = mxi_start(data);
+    uint8_t texels[32];
+
+    gl_one(t, MXI_TEX_BASE_HDR, 5);
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+
+    gl_one(t, MXI_TEX_BASE_HDR, 0);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    mxi_two_row_quad(t);
+    mxi_expect_rows(t, texels, false);
+
+    gl_one(t, MXI_TEX_BASE_HDR, 5);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     mxi_two_row_quad(t);
     mxi_expect_rows(t, texels, true);
@@ -1618,6 +1647,10 @@ int main(int argc, char **argv)
                         "mxi", test_mxi_texture_rows_match);
     qtest_add_data_func("sn0/origin2000/mgras/mxi-texture-rows-match/emxi",
                         "emxi", test_mxi_texture_rows_match);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-texbase-both-rows",
+                        "mxi", test_mxi_texbase_both_rows);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-texbase-both-rows/emxi",
+                        "emxi", test_mxi_texbase_both_rows);
 
     ret = g_test_run();
     qtest_quit(qts);
