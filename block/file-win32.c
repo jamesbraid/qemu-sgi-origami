@@ -492,6 +492,26 @@ static int coroutine_fn raw_co_truncate(BlockDriverState *bs, int64_t offset,
     return 0;
 }
 
+static int64_t coroutine_fn
+raw_co_get_full_raw_file_length(BlockDriverState *bs)
+{
+    BDRVRawState *s = bs->opaque;
+    BY_HANDLE_FILE_INFORMATION info;
+    uint64_t length;
+
+    if (s->type != FTYPE_FILE || GetFileType(s->hfile) != FILE_TYPE_DISK) {
+        return -ENOTSUP;
+    }
+    if (!GetFileInformationByHandle(s->hfile, &info)) {
+        return -EIO;
+    }
+    if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        return -ENOTSUP;
+    }
+    length = ((uint64_t)info.nFileSizeHigh << 32) | info.nFileSizeLow;
+    return length <= INT64_MAX ? length : -EFBIG;
+}
+
 static int64_t coroutine_fn raw_co_getlength(BlockDriverState *bs)
 {
     BDRVRawState *s = bs->opaque;
@@ -730,6 +750,7 @@ BlockDriver bdrv_file = {
 
     .bdrv_co_truncate   = raw_co_truncate,
     .bdrv_co_getlength  = raw_co_getlength,
+    .bdrv_co_get_full_raw_file_length = raw_co_get_full_raw_file_length,
     .bdrv_co_get_allocated_file_size
                         = raw_co_get_allocated_file_size,
 

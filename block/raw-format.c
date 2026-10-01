@@ -38,6 +38,7 @@ typedef struct BDRVRawState {
     uint64_t offset;
     uint64_t size;
     bool has_size;
+    bool has_offset;
 } BDRVRawState;
 
 static const char *const mutable_opts[] = { "offset", "size", NULL };
@@ -73,7 +74,8 @@ static QemuOptsList raw_create_opts = {
     }
 };
 
-static int raw_read_options(QDict *options, uint64_t *offset, bool *has_size,
+static int raw_read_options(QDict *options, bool *has_offset,
+                            uint64_t *offset, bool *has_size,
                             uint64_t *size, Error **errp)
 {
     QemuOpts *opts = NULL;
@@ -85,6 +87,7 @@ static int raw_read_options(QDict *options, uint64_t *offset, bool *has_size,
         goto end;
     }
 
+    *has_offset = qemu_opt_find(opts, "offset");
     *offset = qemu_opt_get_size(opts, "offset", 0);
     *has_size = qemu_opt_find(opts, "size");
     *size = qemu_opt_get_size(opts, "size", 0);
@@ -141,6 +144,7 @@ raw_apply_options(BlockDriverState *bs, BDRVRawState *s, uint64_t offset,
 static int raw_reopen_prepare(BDRVReopenState *reopen_state,
                               BlockReopenQueue *queue, Error **errp)
 {
+    BDRVRawState *s;
     bool has_size;
     uint64_t offset, size;
     int ret;
@@ -151,9 +155,10 @@ static int raw_reopen_prepare(BDRVReopenState *reopen_state,
     assert(reopen_state != NULL);
     assert(reopen_state->bs != NULL);
 
-    reopen_state->opaque = g_new0(BDRVRawState, 1);
+    s = reopen_state->opaque = g_new0(BDRVRawState, 1);
 
-    ret = raw_read_options(reopen_state->options, &offset, &has_size, &size,
+    ret = raw_read_options(reopen_state->options, &s->has_offset,
+                           &offset, &has_size, &size,
                            errp);
     if (ret < 0) {
         return ret;
@@ -477,7 +482,8 @@ static int raw_open(BlockDriverState *bs, QDict *options, int flags,
 
     GLOBAL_STATE_CODE();
 
-    ret = raw_read_options(options, &offset, &has_size, &size, errp);
+    ret = raw_read_options(options, &s->has_offset, &offset, &has_size,
+                           &size, errp);
     if (ret < 0) {
         return ret;
     }
@@ -532,6 +538,20 @@ static int raw_open(BlockDriverState *bs, QDict *options, int flags,
     }
 
     return 0;
+}
+
+static int64_t coroutine_fn GRAPH_RDLOCK
+raw_co_get_full_raw_file_length(BlockDriverState *bs)
+{
+    BDRVRawState *s = bs->opaque;
+    BlockDriverState *file = bs->file->bs;
+
+    if (s->has_offset || s->has_size || bdrv_cow_child(bs) || !file->drv ||
+        !file->drv->protocol_name ||
+        strcmp(file->drv->protocol_name, "file")) {
+        return -ENOTSUP;
+    }
+    return bdrv_co_get_full_raw_file_length(file);
 }
 
 static int raw_probe(const uint8_t *buf, int buf_size, const char *filename)
@@ -658,6 +678,7 @@ BlockDriver bdrv_raw = {
     .bdrv_co_copy_range_to  = &raw_co_copy_range_to,
     .bdrv_co_truncate     = &raw_co_truncate,
     .bdrv_co_getlength    = &raw_co_getlength,
+    .bdrv_co_get_full_raw_file_length = raw_co_get_full_raw_file_length,
     .is_format            = true,
     .bdrv_measure         = &raw_measure,
     .bdrv_co_get_info     = &raw_co_get_info,

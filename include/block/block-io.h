@@ -85,6 +85,17 @@ int64_t coroutine_mixed_fn bdrv_nb_sectors(BlockDriverState *bs);
 int64_t coroutine_fn GRAPH_RDLOCK bdrv_co_getlength(BlockDriverState *bs);
 int64_t co_wrapper_mixed_bdrv_rdlock bdrv_getlength(BlockDriverState *bs);
 
+/*
+ * Exact byte length of a full regular file, directly or through raw format.
+ * Offset/size options and other formats, protocols and filters are unsupported.
+ * Returns -ENOTSUP when unsupported, or another negative errno on failure.
+ * This observes the opened file; it does not prevent later external resizing.
+ */
+int64_t coroutine_fn GRAPH_RDLOCK
+bdrv_co_get_full_raw_file_length(BlockDriverState *bs);
+int64_t co_wrapper_mixed_bdrv_rdlock
+bdrv_get_full_raw_file_length(BlockDriverState *bs);
+
 int64_t coroutine_fn GRAPH_RDLOCK
 bdrv_co_get_allocated_file_size(BlockDriverState *bs);
 

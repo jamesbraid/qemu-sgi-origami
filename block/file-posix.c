@@ -2985,6 +2985,21 @@ static int64_t raw_getlength(BlockDriverState *bs)
 }
 #endif
 
+static int64_t coroutine_fn
+raw_co_get_full_raw_file_length(BlockDriverState *bs)
+{
+    BDRVRawState *s = bs->opaque;
+    struct stat st;
+
+    if (fstat(s->fd, &st) < 0) {
+        return -errno;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return -ENOTSUP;
+    }
+    return st.st_size;
+}
+
 static int64_t coroutine_fn raw_co_getlength(BlockDriverState *bs)
 {
     return raw_getlength(bs);
@@ -4029,6 +4044,7 @@ BlockDriver bdrv_file = {
 
     .bdrv_co_truncate                   = raw_co_truncate,
     .bdrv_co_getlength                  = raw_co_getlength,
+    .bdrv_co_get_full_raw_file_length    = raw_co_get_full_raw_file_length,
     .bdrv_co_get_info                   = raw_co_get_info,
     .bdrv_get_specific_info             = raw_get_specific_info,
     .bdrv_co_get_allocated_file_size    = raw_co_get_allocated_file_size,
