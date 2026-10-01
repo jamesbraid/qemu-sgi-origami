@@ -256,7 +256,6 @@ tests_mips64_system_quick = [
   'octane_flash_execution',
   'r10k_fpu',
   'r10000_tlb_cache',
-  'r10000_coherence',
   'sn0_smp',
   'sn0_reset',
   'sn1_l1_reset',

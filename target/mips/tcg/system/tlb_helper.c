@@ -1189,25 +1189,6 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
                       (CP0WL_R10K_R | CP0WL_R10K_W)))) {
             mips_r10k_watch_fill(cs, env, address, physical);
         }
-        if (MIPS_CPU(cs)->r10k_data_cache) {
-            if (access_type == MMU_INST_FETCH) {
-                /* Instruction fetching is outside this data-cache model. */
-                prot &= PAGE_EXEC;
-            } else {
-                prot &= ~PAGE_EXEC;
-                if (attrs.mips_cca == 5 && !env->r10k->system_requests) {
-                    cpu_abort(cs, "R10000 CCA 5 requires an external agent");
-                }
-                if (attrs.mips_cca == 3 || attrs.mips_cca == 5) {
-                    attrs.mips_data_cache = 1;
-                    /* Carry VA[13:12] beside the 40-bit physical address. */
-                    physical |= (hwaddr)extract64(address, 12, 2) << 40;
-                } else if (attrs.mips_cca != 2 && attrs.mips_cca != 7) {
-                    cpu_abort(cs, "R10000 data cache does not support CCA %u",
-                              attrs.mips_cca);
-                }
-            }
-        }
         tlb_set_page_with_attrs(cs, address & TARGET_PAGE_MASK,
                                 physical & TARGET_PAGE_MASK, attrs, prot,
                                 mmu_idx, TARGET_PAGE_SIZE);
@@ -1739,15 +1720,6 @@ void mips_cpu_do_interrupt(CPUState *cs)
 
 bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
-    if (interrupt_request & CPU_INTERRUPT_SRESET) {
-        CPUMIPSState *env = cpu_env(cs);
-
-        cpu_reset_interrupt(cs, CPU_INTERRUPT_SRESET);
-        cs->exception_index = EXCP_SRESET;
-        env->error_code = 0;
-        mips_cpu_do_interrupt(cs);
-        return true;
-    }
     if (interrupt_request & CPU_INTERRUPT_NMI) {
         CPUMIPSState *env = cpu_env(cs);
 
@@ -1756,11 +1728,6 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         env->error_code = 0;
         mips_cpu_do_interrupt(cs);
         return true;
-    }
-    /* Complete the stalled instruction before admitting maskable interrupts. */
-    if (cpu_env(cs)->r10k &&
-        cpu_env(cs)->r10k->request.phase != R10K_REQUEST_FREE) {
-        return false;
     }
     if ((interrupt_request & CPU_INTERRUPT_DWATCH) &&
         mips_r10k_deliver_delayed_watch(cs)) {
