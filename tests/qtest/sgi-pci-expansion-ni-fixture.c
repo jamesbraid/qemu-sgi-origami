@@ -213,6 +213,7 @@ struct NIFixtureState {
     uint8_t bic_number;
     bool connected;
     uint8_t intx_map;
+    uint8_t isp_head;
     uint64_t compute_device_mask;
     uint64_t interrupt_count;
     uint64_t interrupt_address;
@@ -472,10 +473,11 @@ static const VMStateDescription vmstate_management_attachment = {
 
 static const VMStateDescription vmstate_fixture = {
     .name = TYPE_NI_FIXTURE,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .pre_save = fixture_pre_save,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_EQUAL(isp_head, NIFixtureState),
         VMSTATE_SINGLE(management, NIFixtureState, 0,
                        vmstate_info_uint8_equal, bool),
         VMSTATE_STRUCT_ARRAY(owners, NIFixtureState, 2, 0,
@@ -501,6 +503,10 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     static const uint8_t ports[] = { 8, 9, 0xc, 0xd };
     unsigned i;
 
+    if (s->isp_head != UINT8_MAX && s->isp_head >= SGI_ORIGIN300_PCI_HEADS) {
+        error_setg(errp, "Invalid ISP1040 experiment head %u", s->isp_head);
+        return;
+    }
     if (!memory_region_init_ram(&s->ram, OBJECT(s), "ni-fixture.ram",
                                 RAM_BYTES, errp)) {
         return;
@@ -583,15 +589,18 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         }
     }
     for (i = 0; i < 6; i++) {
-        DeviceState *card = qdev_new(TYPE_NI_CARD);
+        bool isp = i == s->isp_head;
+        DeviceState *card = qdev_new(isp ? "qlogic-isp1040" : TYPE_NI_CARD);
         PCIBus *bus = sgi_origin300_pci_expansion_bus(
             SGI_ORIGIN300_PCI_EXPANSION(s->chassis), i);
         g_autofree char *name = g_strdup_printf("card%u", i);
 
         object_property_add_child(OBJECT(s), name, OBJECT(card));
-        qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
+        if (!isp) {
+            qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
+        }
         qdev_prop_set_uint32(card, "addr", PCI_DEVFN(1, 0));
-        if (s->intx_map) {
+        if (s->intx_map && !isp) {
             qdev_prop_set_bit(card, "multifunction", true);
         }
         if (!qdev_realize(card, BUS(bus), errp)) {
@@ -603,6 +612,9 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             PCIBus *bus = sgi_origin300_pci_expansion_bus(
                 SGI_ORIGIN300_PCI_EXPANSION(s->chassis), i);
 
+            if (i == s->isp_head) {
+                continue;
+            }
             for (unsigned device = 1;
                  device <= (s->intx_map == 3 ? 3 : 2); device++) {
                 for (unsigned pin = 0; pin < PCI_NUM_PINS; pin++) {
@@ -712,6 +724,7 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_UINT32("attached-issuer", NIFixtureState, attachment.issuer, 0),
     DEFINE_PROP_UINT32("attached-owner", NIFixtureState, attachment.owner, 1),
     DEFINE_PROP_UINT8("intx-map", NIFixtureState, intx_map, 0),
+    DEFINE_PROP_UINT8("isp-head", NIFixtureState, isp_head, UINT8_MAX),
     DEFINE_PROP_UINT8("compute-number", NIFixtureState, compute_number, 3),
     DEFINE_PROP_UINT8("bic-number", NIFixtureState, bic_number, 7),
     DEFINE_PROP_BOOL("connected", NIFixtureState, connected, true),
