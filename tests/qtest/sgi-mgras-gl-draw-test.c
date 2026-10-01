@@ -1167,6 +1167,46 @@ static void test_gl_strip_spans_a_context_switch(void)
     g_assert_cmphex(gl_window_pixel(qts, 50, 90), ==, 0xff00ff);
 }
 
+#define GL_SWAP_TMESH_HDR     0x0000dc00
+
+/*
+ * The client sends IRIS GL's swaptmesh as the word 0xdc00 inside a
+ * triangle strip (its triangle-mesh emitter writes it where the host
+ * would exchange two retained vertices). The vertex after it makes its
+ * triangle with the strip's oldest vertex and its newest, so v0 v1 v2 and
+ * v3 draw the triangles v0 v1 v2 and v0 v2 v3, not v1 v2 v3. Flat colour
+ * is the last vertex's: the triangle (10, 10), (60, 10), (10, 60) is
+ * blue, and v3, (60, 60), is green. A pixel in the swapped triangle and in
+ * the first, (15, 45), ends green with the swap and blue without. A pixel
+ * only the unswapped second triangle covers, (58, 30), stays black with
+ * the swap.
+ */
+static void test_gl_swap_tmesh_makes_a_fan(void)
+{
+    for (int swap = 0; swap < 2; swap++) {
+        gl_transform_start(qts);
+        gl_clear_color(qts, 0, 0, 0, 1);
+        gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+        gl_word(qts, GL_BEGIN_TRI_STRIP);
+        gl_color3f(qts, 1, 0, 0);
+        gl_vertex2f(qts, 10, 10);
+        gl_vertex2f(qts, 60, 10);
+        gl_color3f(qts, 0, 0, 1);
+        gl_vertex2f(qts, 10, 60);
+        if (swap) {
+            gl_word(qts, GL_SWAP_TMESH_HDR);
+        }
+        gl_color3f(qts, 0, 1, 0);
+        gl_vertex2f(qts, 60, 60);
+        gl_word(qts, GL_END_OF(GL_BEGIN_TRI_STRIP));
+        g_assert_cmphex(gl_window_pixel(qts, 15, 45), ==,
+                        swap ? 0x00ff00 : 0x0000ff);
+        g_assert_cmphex(gl_window_pixel(qts, 58, 30), ==,
+                        swap ? 0x000000 : 0x00ff00);
+        g_assert_cmphex(gl_window_pixel(qts, 50, 15), ==, 0x0000ff);
+    }
+}
+
 /*
  * The diamond-exit rule (OpenGL 1.2.1, 3.4.1) keeps a segment's starting
  * pixel and leaves out the one it ends in, so a strip's shared vertex is
@@ -3000,6 +3040,8 @@ int main(int argc, char **argv)
                    test_gl_quad_splits_from_its_first_vertex);
     qtest_add_func("sn0/origin2000/mgras/gl-strip-spans-a-context-switch",
                    test_gl_strip_spans_a_context_switch);
+    qtest_add_func("sn0/origin2000/mgras/gl-swap-tmesh-makes-a-fan",
+                   test_gl_swap_tmesh_makes_a_fan);
     qtest_add_func("sn0/origin2000/mgras/gl-line-leaves-out-its-last-pixel",
                    test_gl_line_leaves_out_its_last_pixel);
     qtest_add_func("sn0/origin2000/mgras/gl-line-bounded-by-the-viewport",
