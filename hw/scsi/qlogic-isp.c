@@ -443,6 +443,9 @@ struct QLogicISPRequest {
     SCSIRequest *sreq;
     QEMUSGList qsg;
     uint64_t described;         /* Buffer bytes the descriptors named. */
+    uint64_t transferred;
+    uint64_t sg_offset;
+    uint32_t sg_index;
     uint32_t handle;
     /* The completion a recovery command owes this handle; 0 if none does. */
     uint16_t retire_completion;
@@ -1440,14 +1443,19 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
     }
 
     /*
-     * The core counts what the command's own length did not deliver.
-     * Descriptors past that length were never offered to the target, so
-     * they went unfilled too, and the residual names every byte of the
-     * described buffer the transfer left alone.
+     * Buffered transfers count successful PCI DMA, independently of the
+     * target's offered chunks. A short write uses the direct SCSI path.
+     * Descriptors beyond the command length also remain unfilled.
      */
-    unused = resid;
-    if (req->described > sreq->cmd.xfer) {
-        unused += req->described - sreq->cmd.xfer;
+    if (sreq->sg) {
+        moved = sreq->cmd.xfer > resid ? sreq->cmd.xfer - resid : 0;
+        unused = resid;
+        if (req->described > sreq->cmd.xfer) {
+            unused += req->described - sreq->cmd.xfer;
+        }
+    } else {
+        moved = req->transferred;
+        unused = MAX(req->described, sreq->cmd.xfer) - moved;
     }
 
     /*
@@ -1472,7 +1480,6 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
      * sense.
      */
     if (QLOGIC_ISP_GET_CLASS(s)->info->derived_phase_flags) {
-        moved = sreq->cmd.xfer > resid ? sreq->cmd.xfer - resid : 0;
         state_flags = ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
                       ISP_STATE_FLAG_SENT_CDB | ISP_STATE_FLAG_GOT_STATUS;
         if (moved > 0) {
@@ -1534,15 +1541,64 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
     qlogic_isp_free_request(req);
 }
 
-/*
- * Without this, a data-carrying command reaches scsi_req_data() with no
- * sg list and the core falls back to transfer_data(), undefined here.
- */
+static void qlogic_isp_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
+{
+    QLogicISPRequest *req = sreq->hba_private;
+    PCIDevice *pci = PCI_DEVICE(req->dev);
+    uint8_t *buf = scsi_req_get_buf(sreq);
+    uint32_t offset = 0;
+
+    while (offset < len && req->sg_index < req->qsg.nsg) {
+        ScatterGatherEntry *sg = &req->qsg.sg[req->sg_index];
+        uint32_t count = MIN(len - offset, sg->len - req->sg_offset);
+        dma_addr_t addr = sg->base + req->sg_offset;
+        MemTxResult result;
+
+        if (sreq->cmd.mode == SCSI_XFER_FROM_DEV) {
+            result = pci_dma_write(pci, addr, buf + offset, count);
+        } else {
+            result = pci_dma_read(pci, addr, buf + offset, count);
+        }
+        if (result != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "qlogic-isp: payload DMA for handle 0x%x refused "
+                          "by the fabric\n", req->handle);
+            return;
+        }
+        req->transferred += count;
+        req->sg_offset += count;
+        offset += count;
+        if (req->sg_offset == sg->len) {
+            req->sg_index++;
+            req->sg_offset = 0;
+        }
+    }
+
+    /* A read can drain target bytes beyond the host's described buffer. */
+    if (offset < len && sreq->cmd.mode == SCSI_XFER_TO_DEV) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "qlogic-isp: payload buffer for handle 0x%x exhausted\n",
+                      req->handle);
+        return;
+    }
+    /* Continuing may synchronously complete and free the wrapper. */
+    scsi_req_continue(sreq);
+}
+
 static QEMUSGList *qlogic_isp_get_sg_list(SCSIRequest *sreq)
 {
     QLogicISPRequest *req = sreq->hba_private;
 
-    return &req->qsg;
+    /*
+     * A short write must not pad the target's private buffer. Keep its
+     * bounded direct transfer; stopped short writes retain the SCSI core's
+     * residual-accounting limitation on retry.
+     */
+    if (sreq->cmd.mode == SCSI_XFER_TO_DEV &&
+        req->qsg.size < sreq->cmd.xfer) {
+        return &req->qsg;
+    }
+    return NULL;
 }
 
 /* Restores the HBA half behind hba_private; the shape is mptsas's. */
@@ -1557,6 +1613,10 @@ static void qlogic_isp_save_request(QEMUFile *f, SCSIRequest *sreq)
         qemu_put_be64(f, req->qsg.sg[i].base);
         qemu_put_be64(f, req->qsg.sg[i].len);
     }
+    qemu_put_be64(f, req->described);
+    qemu_put_be64(f, req->transferred);
+    qemu_put_be32(f, req->sg_index);
+    qemu_put_be64(f, req->sg_offset);
 }
 
 /*
@@ -1603,16 +1663,36 @@ static void *qlogic_isp_load_request(QEMUFile *f, SCSIRequest *sreq)
         uint64_t base = qemu_get_be64(f);
         uint64_t len = qemu_get_be64(f);
 
+        if (!len || req->qsg.size > sreq->cmd.xfer ||
+            len > sreq->cmd.xfer - req->qsg.size ||
+            base > UINT64_MAX - len || qemu_file_get_error(f)) {
+            qemu_file_set_error(f, -EINVAL);
+            return req;
+        }
         qemu_sglist_add(&req->qsg, base, len);
     }
-    /*
-     * described normally counts the whole named length, trimmed segment
-     * bytes included, and the stream carries only the trimmed list. Block
-     * I/O drains before a save, so no request arriving here still has a
-     * transfer left to measure a residual against and the list's own size
-     * is all the count has to be.
-     */
-    req->described = req->qsg.size;
+    req->described = qemu_get_be64(f);
+    req->transferred = qemu_get_be64(f);
+    req->sg_index = qemu_get_be32(f);
+    req->sg_offset = qemu_get_be64(f);
+    if (req->described < req->qsg.size ||
+        req->qsg.size > sreq->cmd.xfer ||
+        req->sg_index > req->qsg.nsg ||
+        (req->sg_index == req->qsg.nsg ? req->sg_offset != 0 :
+         req->sg_offset >= req->qsg.sg[req->sg_index].len)) {
+        qemu_file_set_error(f, -EINVAL);
+        return req;
+    }
+    {
+        uint64_t transferred = req->sg_offset;
+
+        for (i = 0; i < req->sg_index; i++) {
+            transferred += req->qsg.sg[i].len;
+        }
+        if (transferred != req->transferred || qemu_file_get_error(f)) {
+            qemu_file_set_error(f, -EINVAL);
+        }
+    }
 
     return req;
 }
@@ -1622,6 +1702,7 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
     .max_target = ISP_MAX_TARGET_ID,
     .max_lun = ISP_MAX_LUN,
     .get_sg_list = qlogic_isp_get_sg_list,
+    .transfer_data = qlogic_isp_scsi_transfer_data,
     .complete = qlogic_isp_scsi_complete,
     .cancel = qlogic_isp_scsi_cancel,
     .save_request = qlogic_isp_save_request,
