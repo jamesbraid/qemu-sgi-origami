@@ -681,11 +681,10 @@ static void test_gl_smooth_is_perspective_correct(void)
 }
 
 /*
- * A deep double-buffered visual's client sends draw-buffer bit 2 for its
- * back buffer, and a stereo one bit 3 as well (mgras-dual-re.md, "What
- * IRIX sends a two-engine board"). On a two-RE board each bit is a colour
- * buffer a clear lands in and a read-back sees; bit 2 does not write the
- * front or back bank, and bit 0 still does. Scanout is not asserted: which
+ * A deep double-buffered visual's client sends draw-buffer bit 2 for its back
+ * buffer, and a stereo one bit 3 as well. On a two-RE board each bit is a
+ * colour buffer a clear lands in and a read-back sees; bit 2 does not write
+ * the front or back bank, and bit 0 still does. Scanout is not asserted: which
  * slot a swap displays is unknown.
  */
 static void test_gl_deep_bit2_draws_ssi(void)
@@ -766,9 +765,8 @@ static void test_gl_triangle_spans_a_context_switch(void)
 }
 
 /*
- * glColor3ub, glColor4ub and glVertex2i (mgras-gl-commands.md, vertex
- * attributes): 0x34800203 and one word, 0x14800204 and one word,
- * 0x58000008 and two ints.
+ * glColor3ub, glColor4ub and glVertex2i: 0x34800203 and one word, 0x14800204
+ * and one word, 0x58000008 and two ints.
  */
 #define GL_COLOR3UB_HDR       0x34800203
 #define GL_COLOR4UB_HDR       0x14800204
@@ -863,15 +861,14 @@ static void test_gl_rotate_about_a_general_axis(void)
 }
 
 /*
- * The probe's primitive, transform and format cases (Origami branch
- * mgras-probes-primitives, gl_min_probe.c's prim_cases), sent as the
- * IRIX 6.5.30 client frames them: glViewport, glDisable(GL_DITHER)
- * (0x6704 + 0), glShadeModel(GL_FLAT), a blue clear, glOrtho(0, 128, 0,
- * 128, -1, 1) on the projection, then the case's matrix commands and
- * primitives in order, then glFlush. Each window must match the image
- * gl_min_expected.py computes from the OpenGL 1.1 rules, which Mesa
- * llvmpipe matches exactly; the SHA-256 is of its 128x128 RGB bytes, top
- * row first, never of this model's output.
+ * The probe's primitive, transform and format cases (the probe's prim_cases),
+ * sent as the IRIX 6.5.30 client frames them: glViewport, glDisable(GL_DITHER)
+ * (0x6704 + 0), glShadeModel(GL_FLAT), a blue clear, glOrtho(0, 128, 0, 128,
+ * -1, 1) on the projection, then the case's matrix commands and primitives in
+ * order, then glFlush. Each window must match the image gl_min_expected.py
+ * computes from the OpenGL 1.1 rules, which Mesa llvmpipe matches exactly; the
+ * SHA-256 is of its 128x128 RGB bytes, top row first, never of this model's
+ * output.
  */
 enum {
     GL_PRIM_END, GL_PRIM_DRAW, GL_PRIM_PUSH, GL_PRIM_POP, GL_PRIM_TRANSLATE,
@@ -900,7 +897,7 @@ typedef struct GlPrimCase {
     int count;
     GlPrimVertex v[8];
 } GlPrimCase;
-/* glBegin's token; glEnd's is 0x0a00 above it (mgras-gl-commands.md). */
+/* glBegin's token; glEnd's is 0x0a00 above it. */
 #define GL_BEGIN_POINTS       0x00001600
 #define GL_BEGIN_TRI_FAN      0x00001c00
 #define GL_BEGIN_QUAD_STRIP   0x00001e00
@@ -1780,8 +1777,7 @@ static void test_gl_stencil_masks_drawing(void)
 
 /*
  * glStencilOp's codes 3 and 4 are GL_INCR and GL_DECR, as the listing's
- * table gives them (__glMgrim_StencilOp 0xd95ef80, its mapping at
- * 0xd95f074-0xd95f1b4, in mgras-gl-commands.md). Over a stencil cleared
+ * table gives them. Over a stencil cleared
  * to 5, one pass with code 3 leaves 6 and then two with code 4 leave 4,
  * each shown by a green fill where the stencil equals the expected value
  * and not where it equals the other.

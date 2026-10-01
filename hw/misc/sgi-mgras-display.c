@@ -272,8 +272,7 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
  * This is inferred, not established hardware behaviour: the table walk
  * from every timing table IRIX ships and MAME's VC2 model, the PLL
  * relation and the clock ratio from the rates SGI's timing compiler
- * records for those tables. See the timing section of
- * docs/datasheets/mgras-raster-display.md in the Origami repository.
+ * records for those tables.
  *
  * The kernel sets 0x072408 bit 24 when a timing file asks for the other
  * PLL reference, but no shipped file does, and nothing gives that

@@ -488,9 +488,8 @@ static void test_pp1_scanout_follows_first_pp1(void)
 
 /*
  * With every PP1 selected, a read answers from PP1 0. That is an
- * approximation: what hardware returns then is unknown
- * (docs/datasheets/mgras-dual-re.md). The four PP1s differ first, so the
- * answer shows which one gave it.
+ * approximation: what hardware returns then is unknown. The four PP1s differ
+ * first, so the answer shows which one gave it.
  */
 static void test_pp1_select_all_reads_first_pp1(void)
 {
@@ -538,7 +537,7 @@ static void test_pp1_select_ignores_bits_7_to_3(void)
 /*
  * 0x071f00 and 0x071f80 sit among the XMAP registers IRIX reaches through
  * PP1SELECT, but the model keeps no copy of them for any PP1, an
- * approximation the datasheet's model contract names: under every
+ * approximation of the model: under every
  * selection they read 1 and 0x101, and a write under any selection is
  * dropped.
  */
@@ -569,12 +568,11 @@ static void test_pp1_select_leaves_sync_registers_shared(void)
 }
 
 /*
- * Both REs of a two-RE board draw into one set of planes in the model.
- * The OCTANE Technical Report has the second RE take alternate spans, so
- * on hardware adjacent rows may belong to different REs; no software path
- * IRIX uses can tell, and the model does not split them
- * (docs/datasheets/mgras-dual-re.md). Two adjacent rows filled with
- * different colours both read back from the planes scanout uses. A model
+ * Both REs of a two-RE board draw into one set of planes in the model. The
+ * OCTANE Technical Report has the second RE take alternate spans, so on
+ * hardware adjacent rows may belong to different REs; no software path IRIX
+ * uses can tell, and the model does not split them. Two adjacent rows filled
+ * with different colours both read back from the planes scanout uses. A model
  * that split the REs' pixels would have to change this deliberately.
  */
 static void test_two_re_board_draws_one_set_of_planes(void)
@@ -728,7 +726,7 @@ static void test_dac_lut_load(void)
  * unless the address reads back, register 3 (the DAC ID) is 0x79 with
  * register 0xb (its revision) at 1 -- or 0x76 with 0, which it warns
  * about -- and each register it programs reads back under mask 0xff.
- * A captured IRIX desktop session programs the same registers, in the
+ * A recorded IRIX desktop session programs the same registers, in the
  * same order, before each gamma-table load (0x0600 takes 0xec there).
  */
 static void test_dac_register_file_matches_ide_reset(void)
@@ -1313,7 +1311,7 @@ static QTestState *mgras_board_init(const MgrasBoardExpect *e)
 
 /*
  * Every identity read the IRIX kernel makes, at the widths it makes them,
- * answers the datasheet's value for the selected board, and those values
+ * answers the documented value for the selected board, and those values
  * decode to the board's counts and hinv name.
  */
 static void test_board_identity(gconstpointer data)
@@ -1380,7 +1378,7 @@ static void test_board_identity(gconstpointer data)
 
 /*
  * The board's RE count, not a separate switch, decides how many PP1s answer
- * behind PP1SELECT: two per RE (docs/datasheets/mgras-dual-re.md). A write
+ * behind PP1SELECT: two per RE. A write
  * to every PP1 reaches each one the board has, and each reports the board's
  * PP1 revision; a PP1 past the board's count reads 0.
  */

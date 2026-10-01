@@ -29,10 +29,8 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_context_parser;
 extern const VMStateDescription vmstate_sgi_mgras_gl_readback;
 
 /*
- * An inline data block's header: bit 31, the byte offset of its first
- * byte in its first word in bits 23:22, and its byte length in bits 19:0
- * (mgras-gl-commands.md, "Word framing"; the offset from __glMgrim_Bitmap
- * in the IRIX 6.5.30 IP27GR532 libGLcore.so). It takes
+ * An inline data block's header: bit 31, the byte offset of its first byte in
+ * its first word in bits 23:22, and its byte length in bits 19:0. It takes
  * (offset + length + 3) / 4 words.
  */
 #define SGI_MGRAS_CMD_BLOCK_OFFSET 0x00c00000u

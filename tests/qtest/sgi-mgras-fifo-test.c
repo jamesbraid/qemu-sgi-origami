@@ -102,9 +102,9 @@ static uint32_t mgras_test_overlay(QTestState *qts, uint32_t x, uint32_t y)
 }
 
 /*
- * Screen-to-host read (FIX-SPEC.md section 3): the trace's own read
+ * Screen-to-host read: the trace's own read
  * descriptor, hw-y box (0,1023)-(3,1020), pitch 4, over the seed weave
- * (FIX-SPEC.md section 0) painted directly at screen (0,0)-(3,3). Checks
+ * painted directly at screen (0,0)-(3,3). Checks
  * the read lands the box top-down at pitch 4 in host memory and leaves
  * 0x020010 bit 16 alone, then replays the paired 0xb1 write -- the same
  * host bytes, reusing the read's page-list mapping -- to confirm the
@@ -2355,8 +2355,7 @@ static void test_hq_flags_set_and_clear(void)
 }
 
 /*
- * Two more queries wait on flag bit 17 and read 0x028004
- * (notes-return-mode-queries.md, "Other queries answered at 0x028004"):
+ * Two more queries wait on flag bit 17 and read 0x028004: 
  * 0xa104 with one index, which __Mgr_GetCurrentAttrState sends for
  * GL_CURRENT_COLOR (indices 4 to 7, read as floats) and the other
  * current attributes, and 0x8b08 with two words, one per histogram bin.
@@ -2404,12 +2403,11 @@ static void test_hq_attribute_queries_set_flag_after_arguments(void)
 
 /*
  * __Mgr_GetCurrentAttrState reads 0xa104 indices 8 to 10 as
- * GL_CURRENT_NORMAL's floats, 11 to 14 as GL_CURRENT_TEXTURE_COORDS' and
- * 15 as GL_EDGE_FLAG, true when the answer has any of bits 0x01c00000
- * (notes-return-mode-queries.md). A new context answers OpenGL's initial
- * normal (0, 0, 1), texture coordinates (0, 0, 0, 1) and edge flag true
- * (2.7), and glNormal3f (0x070c) and glEdgeFlag (0x0f00 true, 0x1000
- * false) change the answers.
+ * GL_CURRENT_NORMAL's floats, 11 to 14 as GL_CURRENT_TEXTURE_COORDS' and 15 as
+ * GL_EDGE_FLAG, true when the answer has any of bits 0x01c00000. A new context
+ * answers OpenGL's initial normal (0, 0, 1), texture coordinates (0, 0, 0, 1)
+ * and edge flag true (2.7), and glNormal3f (0x070c) and glEdgeFlag (0x0f00
+ * true, 0x1000 false) change the answers.
  */
 static void test_hq_attribute_query_answers_normal_and_edge_flag(void)
 {
