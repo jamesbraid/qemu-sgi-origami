@@ -673,6 +673,7 @@ static const uint8_t sgi_gl_nargs[] = {
     [SGI_GL_OP_TEXCOORD3F] = 3,
     [SGI_GL_OP_TEXCOORD4F] = 4,
     [SGI_GL_OP_TEX_ENV] = 5,
+    [SGI_GL_OP_SWAP_TMESH] = 0,
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
@@ -1196,12 +1197,35 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
         if (n < 2) {
             break;
         }
+        if (c->strip_swap && c->strip_prev) {
+            /*
+             * After a swap the vertex replaces the middle one of the
+             * three the strip keeps, so its triangle shares the
+             * strip's oldest and newest vertices, and keeps the facing
+             * of the triangle before it, as a fan's does. The oldest
+             * stays the oldest for the next swap.
+             */
+            if (c->strip_odd) {
+                sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h2, h1, cur,
+                              NULL);
+            } else {
+                sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h1, h2, cur,
+                              NULL);
+            }
+            c->strip_swap = 0;
+            sgi_gl_hold(c, 0, h1);
+            sgi_gl_hold(c, 1, cur);
+            return;
+        }
+        c->strip_swap = 0;
         if (c->strip_odd) {
             sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h1, h0, cur, NULL);
         } else {
             sgi_gl_submit(c, sink, SGI_GL_TRIANGLES, 3, h0, h1, cur, NULL);
         }
         c->strip_odd = !c->strip_odd;
+        sgi_gl_hold(c, 2, h0);
+        c->strip_prev = 1;
         sgi_gl_hold(c, 0, h1);
         sgi_gl_hold(c, 1, cur);
         return;
@@ -2289,6 +2313,21 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->begin_mode = a[0];
         c->nheld = 0;
         c->strip_odd = 0;
+        c->strip_prev = c->strip_swap = 0;
+        return;
+    case SGI_GL_OP_SWAP_TMESH:
+        if (!c->in_begin || c->begin_mode != SGI_GL_TRIANGLE_STRIP) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: a mesh swap outside an "
+                          "open triangle strip ignored\n");
+            return;
+        }
+        if (!c->strip_prev) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-gl: a mesh swap before the "
+                          "strip's first triangle ignored\n");
+            return;
+        }
+        /* Two swaps before a vertex undo each other. */
+        c->strip_swap ^= 1;
         return;
     case SGI_GL_OP_END:
         if (!c->in_begin && c->polygon.enabled) {
@@ -2330,6 +2369,7 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         c->begin_mode = 0;
         c->nheld = 0;
         c->strip_odd = 0;
+        c->strip_prev = c->strip_swap = 0;
         return;
     case SGI_GL_OP_VERTEX2F:
     case SGI_GL_OP_VERTEX3F:
@@ -2898,6 +2938,8 @@ bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
     }
     /* The strip's next triangle faces as its count's parity says. */
     c->strip_odd = mode == SGI_GL_TRIANGLE_STRIP && k == 2 ? count & 1 : 0;
+    /* The oldest retained vertex of a resumed strip is not sent. */
+    c->strip_prev = c->strip_swap = 0;
     return true;
 }
 
@@ -2935,6 +2977,8 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "cur_edge", c->cur_edge },
         { "raster_valid", c->raster_valid },
         { "strip_odd", c->strip_odd },
+        { "strip_prev", c->strip_prev },
+        { "strip_swap", c->strip_swap },
         { "in_begin", c->in_begin },
     };
     const struct {
@@ -3804,6 +3848,25 @@ static const VMStateDescription vmstate_sgi_gl_line_phase = {
     },
 };
 
+static bool sgi_gl_strip_mesh_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque;
+
+    return c->strip_prev || c->strip_swap;
+}
+
+static const VMStateDescription vmstate_sgi_gl_strip_mesh = {
+    .name = "sgi-gl-context/strip-mesh",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_strip_mesh_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(strip_prev, SGIGLContext),
+        VMSTATE_UINT32(strip_swap, SGIGLContext),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Old streams omit the optional pattern, including on a reused context. */
 static int sgi_gl_context_pre_load(void *opaque)
 {
@@ -3811,6 +3874,7 @@ static int sgi_gl_context_pre_load(void *opaque)
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
     c->line_phase = 0;
+    c->strip_prev = c->strip_swap = 0;
     c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
     c->polygon.error = 0;
@@ -3933,6 +3997,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         &vmstate_sgi_gl_rasterization,
         &vmstate_sgi_gl_polygon_stipple,
         &vmstate_sgi_gl_line_phase,
+        &vmstate_sgi_gl_strip_mesh,
         &vmstate_sgi_gl_polygon,
         &vmstate_sgi_gl_draw_error,
         &vmstate_sgi_gl_texture_coords,

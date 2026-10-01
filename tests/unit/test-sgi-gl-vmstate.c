@@ -134,6 +134,8 @@ static void populate(SGIGLContext *c, bool other)
     c->cur_edge = !other;
     c->raster_valid = !other;
     c->strip_odd = !other;
+    c->strip_prev = !other;
+    c->strip_swap = other;
     c->mv_depth = other ? 5 : SGI_GL_STACK_DEPTH - 1;
     c->pr_depth = other ? SGI_GL_STACK_DEPTH - 2 : 7;
     c->tx_depth = other ? 0 : 2;
@@ -754,6 +756,8 @@ static const Corruption corruptions[] = {
     BAD(cur_edge, 0x80000000, "cur_edge"),
     BAD(raster_valid, 2, "raster_valid"),
     BAD(strip_odd, 2, "strip_odd"),
+    BAD(strip_prev, 2, "strip_prev"),
+    BAD(strip_swap, 2, "strip_swap"),
     BAD(cur.drawable.bound, 2, "drawable.bound"),
     BAD(cur.drawable.clip.empty, 2, "drawable.clip.empty"),
     BAD(cur.window_matrix_given, 2, "window_matrix_given"),
