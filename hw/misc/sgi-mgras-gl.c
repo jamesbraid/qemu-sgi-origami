@@ -1291,6 +1291,9 @@ static void mgras_gl_eram_read(SGIMgrasState *s, uint32_t addr,
             return;
         }
     }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: ERAM read of %u words at 0x%x "
+                  "matches no GL context the model tracks; nothing is "
+                  "saved for a later write-back\n", words, addr);
 }
 
 static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
