@@ -3191,12 +3191,32 @@ static const VMStateDescription vmstate_sgi_gl_clip_empty = {
     },
 };
 
+static bool sgi_gl_drawable_extra_needed(void *opaque)
+{
+    SGIGLDrawable *d = opaque;
+
+    return d->extra[0] != 0 || d->extra[1] != 0;
+}
+
+/* Sent only while a deep visual names a third or fourth target. */
+static const VMStateDescription vmstate_sgi_gl_drawable_extra = {
+    .name = "sgi-gl-drawable/extra",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_drawable_extra_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(extra, SGIGLDrawable, 2),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_drawable = {
     .name = "sgi-gl-drawable",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 1,
+    .minimum_version_id = 1,
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_clip_empty,
+        &vmstate_sgi_gl_drawable_extra,
         NULL
     },
     .fields = (const VMStateField[]) {
@@ -3207,7 +3227,6 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
                              vmstate_sgi_clip_rect, SGIClipRect),
         VMSTATE_UINT32(front, SGIGLDrawable),
         VMSTATE_UINT32(back, SGIGLDrawable),
-        VMSTATE_UINT32_ARRAY(extra, SGIGLDrawable, 2),
         VMSTATE_END_OF_LIST()
     },
 };

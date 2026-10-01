@@ -146,6 +146,8 @@ static void populate(SGIGLContext *c, bool other)
     c->cur.drawable.bound = !other;
     c->cur.drawable.clip.empty = !other;
     c->cur.drawable.clip.n = other ? 3 : SGI_CLIP_MAX;
+    c->cur.drawable.extra[0] = other ? 0x11 : 0x22;
+    c->cur.drawable.extra[1] = other ? 0x33 : 0x44;
     c->lights_enabled = other ? 0x5a : 0xa5;
     c->color_material_face = other ? SGI_GL_FRONT : SGI_GL_BACK;
     c->color_material_mode = other ? SGI_GL_EMISSION : SGI_GL_SPECULAR;
