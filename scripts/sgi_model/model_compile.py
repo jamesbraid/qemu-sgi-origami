@@ -1361,6 +1361,7 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
     placements = set(range(len(index_graph(model)["nodes"])))
     used_peers = set()
     used_modules = set()
+    used_power_issuers = set()
     for raw in model["machine"].get("emulation", {}).get("io_assemblies", []):
         def number(name, maximum):
             value = raw.get(name)
@@ -1412,6 +1413,30 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
             "head_ports": ports.copy(), "controller_profile": "pci-expansion",
             "bic_identity": identity,
         }
+        if ("main_power" in raw) != ("initial_main_power" in raw):
+            raise CompileError(
+                    "I/O assembly main power requires selection "
+                    "and initial state")
+        if "main_power" in raw:
+            if (raw["main_power"] != "functional-experiment"
+                    or type(raw["initial_main_power"]) is not bool):
+                raise CompileError(
+                    "unsupported I/O assembly main power selection or state")
+            record["main_power"] = raw["main_power"]
+            record["initial_main_power"] = raw["initial_main_power"]
+        if "power_command_issuer" in raw:
+            issuer = controller_indices.get(raw["power_command_issuer"])
+            if ("main_power" not in raw or issuer is None
+                    or issuer in used_power_issuers
+                    or controllers[issuer]["kind"] != "L1"):
+                raise CompileError("invalid I/O assembly power command issuer")
+            issuer_module = modules[controllers[issuer]["module_index"]]
+            if (not issuer_module["nodes"]
+                    or issuer_module["controller_index"] != issuer):
+                raise CompileError(
+                    "I/O assembly power command issuer is not compute-owned")
+            record["power_command_issuer"] = issuer
+            used_power_issuers.add(issuer)
         if "controller_startup" in raw:
             if raw["controller_startup"] != "bic-functional-experiment":
                 raise CompileError(

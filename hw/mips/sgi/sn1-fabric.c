@@ -153,6 +153,10 @@ MemTxResult sn1_fabric_destination_rw(void *opaque, const SGIXioSource *source,
             "node %u (source widget %u)\n", address, number, source->widget);
         return MEMTX_DECODE_ERROR;
     }
+    if (!sgi_bedrock_available(endpoint->bedrock) ||
+        !sgi_bedrock_available(target->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     /* II source_rw has checked both register endpoints. Memory needs it too. */
     for (unsigned device = source->device_known ? source->device : 0;
          device <= (source->device_known ? source->device : 7); device++) {

@@ -12,6 +12,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIOrigin300PciExpansionState,
 
 #define SGI_ORIGIN300_PCI_HEADS 6
 
+typedef struct SGIL1State SGIL1State;
+typedef bool (*SGIOrigin300PowerOperation)(void *opaque, bool on,
+                                          Error **errp);
+bool sgi_origin300_pci_expansion_bind_power(
+    SGIOrigin300PciExpansionState *s, SGIL1State *owner,
+    uint64_t identity, bool initial_on, SGIOrigin300PowerOperation operation,
+    void *opaque, Error **errp);
+bool sgi_origin300_pci_expansion_request_power(
+    SGIOrigin300PciExpansionState *s, SGIL1State *issuer,
+    uint64_t identity, bool on, Error **errp);
+bool sgi_origin300_pci_expansion_power_requested(
+    SGIOrigin300PciExpansionState *s);
+bool sgi_origin300_pci_expansion_main_power_available(
+    SGIOrigin300PciExpansionState *s);
+
 /* Synthetic device indices 1 and 2; pins A/B/C/D select head inputs 0..7. */
 typedef struct SGIOrigin300PciIntxMap {
     uint8_t pin[SGI_ORIGIN300_PCI_HEADS][2][PCI_NUM_PINS];

@@ -469,6 +469,70 @@ class RecordShapeTests(unittest.TestCase):
         self.assertNotIn("initial_latch", descriptor)
         self.assertNotIn("intx_map", descriptor)
 
+    def test_expansion_main_power_requires_explicit_selection_and_state(self):
+        model = self._expansion_descriptor_model()
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        self.assertNotIn("main_power", compile_model(model)["io_assemblies"][0])
+        for initial in (True, False):
+            raw.update(main_power="functional-experiment",
+                       initial_main_power=initial)
+            descriptor = compile_model(model)["io_assemblies"][0]
+            self.assertEqual(descriptor["main_power"], "functional-experiment")
+            self.assertIs(descriptor["initial_main_power"], initial)
+            emitted = json.loads(
+                render_catalogue_json([model]))["topologies"][0]
+            self.assertIs(emitted["io-assemblies"][0]["initial-main-power"],
+                          initial)
+        for fields in ({"main_power": "functional-experiment"},
+                       {"initial_main_power": True},
+                       {"main_power": "physical", "initial_main_power": True},
+                       {"main_power": "functional-experiment",
+                        "initial_main_power": 1}):
+            raw.pop("main_power", None)
+            raw.pop("initial_main_power", None)
+            raw.update(fields)
+            with self.assertRaisesRegex(CompileError, "main power"):
+                compile_model(model)
+
+    def test_power_command_requires_selected_power_and_compute_owner(self):
+        model = _resolved("origin300-pci-expansion-experiment")
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        raw["power_command_issuer"] = "compute-l1"
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertEqual(descriptor["power_command_issuer"], 0)
+        emitted = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(emitted["io-assemblies"][0]["power-command-issuer"], 0)
+        for issuer in ("missing", "expansion-l1", 0):
+            raw["power_command_issuer"] = issuer
+            with self.assertRaisesRegex(CompileError, "power command issuer"):
+                compile_model(model)
+        raw["power_command_issuer"] = "compute-l1"
+        del raw["main_power"]
+        del raw["initial_main_power"]
+        with self.assertRaisesRegex(CompileError, "power command issuer"):
+            compile_model(model)
+
+    def test_power_command_issuer_cannot_control_two_assemblies(self):
+        from sgi_model.model_compile import _compile_io_assemblies
+        model = _resolved("origin300-pci-expansion-experiment")
+        compiled = compile_model(model)
+        peers = copy.deepcopy(compiled["io_peers"])
+        modules = copy.deepcopy(compiled["modules"])
+        controllers = copy.deepcopy(compiled["controllers"])
+        module_index, controller_index = len(modules), len(controllers)
+        peer = dict(peers[0], id="second-peer", module_index=module_index)
+        peers.append(peer)
+        modules.append(dict(modules[1], id="second-module",
+                            controller_index=controller_index, io_peers=[1]))
+        controllers.append(dict(controllers[1], id="second-l1",
+                                module_index=module_index))
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        model["machine"]["emulation"]["io_assemblies"].append(dict(
+            raw, peer="second-peer", module="second-module",
+            controller="second-l1", placement=2))
+        with self.assertRaisesRegex(CompileError, "power command issuer"):
+            _compile_io_assemblies(model, {}, peers, modules, controllers)
+
     def test_expansion_controller_startup_is_explicit_and_typed(self):
         model = self._expansion_descriptor_model()
         self.assertNotIn("controller_startup",

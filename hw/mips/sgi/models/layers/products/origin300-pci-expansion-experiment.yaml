@@ -97,6 +97,9 @@ layer:
             controller_profile: pci-expansion
             # Functional controller assignment; not a physical BIC bus model.
             controller_startup: bic-functional-experiment
+            main_power: functional-experiment
+            initial_main_power: true
+            power_command_issuer: compute-l1
             bic_identity: 49152
             intx_map: [0, 1, 2, 3, 4, 5, 6, 7,
                        0, 1, 2, 3, 4, 5, 6, 7,

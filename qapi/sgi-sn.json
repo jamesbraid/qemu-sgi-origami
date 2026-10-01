@@ -488,6 +488,19 @@
   'data': [ 'bic-functional-experiment' ] }
 
 ##
+# @SGIModelMainPower:
+#
+# Explicit functional main-power availability experiment.
+#
+# @functional-experiment: Retain device state while controlling
+#     access.
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelMainPower',
+  'data': [ 'functional-experiment' ] }
+
+##
 # @SGIModelIoAssembly:
 #
 # Versioned synthetic construction policy, separate from physical
@@ -523,6 +536,16 @@
 # @controller-startup: Optional functional startup experiment.
 #     Omission performs no controller assignment.
 #
+# @main-power: Optional functional main-power experiment.
+#     Requires @initial-main-power; omission preserves existing
+#     behavior.
+#
+# @initial-main-power: Explicit initial main-power state.
+#     Requires @main-power.
+#
+# @power-command-issuer: Optional compute L1 controller index allowed
+#     to forward power commands.  Requires @main-power.
+#
 # @initial-latch: Optional synthetic latch; omission starts unknown.
 #
 # @intx-map: Optional 48-entry synthetic board-owned PCI interrupt
@@ -544,6 +567,9 @@
             'controller-profile': 'str',
             'bic-identity': 'uint64',
             '*controller-startup': 'SGIModelControllerStartup',
+            '*main-power': 'SGIModelMainPower',
+            '*power-command-issuer': 'uint32',
+            '*initial-main-power': 'bool',
             '*initial-latch': 'uint16',
             '*intx-map': ['uint8'] } }
 

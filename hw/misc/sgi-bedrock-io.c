@@ -188,6 +188,12 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     SGIBedrockIOState *target = ii_serving(s, node);
     uint8_t buffer[8];
 
+    if (!sgi_bedrock_available(s->bedrock) ||
+        (target && !sgi_bedrock_available(target->bedrock))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-io: powered-off BTE interrupt refused\n");
+        return;
+    }
     if (!target) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: BTE completion "
                       "interrupt to node %u reaches no node\n", node);
@@ -225,6 +231,11 @@ static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint64_t value;
 
+    if (!sgi_bedrock_available(s->bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-io: powered-off BTE completion refused\n");
+        return;
+    }
     if (!(bte->control & (1 << 4))) {
         bte->signal_pending = true;
         qemu_bh_schedule(bte->signal_bh);
@@ -271,6 +282,11 @@ static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     while (remaining) {
         MemTxResult result = MEMTX_OK;
 
+        if (!sgi_bedrock_available(s->bedrock)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-io: powered-off BTE transfer refused\n");
+            return;
+        }
         if (!(bte->control & 1)) {
             result = dma_memory_read(s->dma_as, bte->source, buffer,
                                      sizeof(buffer), MEMTXATTRS_UNSPECIFIED);
@@ -544,6 +560,9 @@ static MemTxResult ii_pio_rw(SGIBedrockIOState *s, hwaddr offset,
     hwaddr target;
     MemTxResult result;
 
+    if (!sgi_bedrock_available(s->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     if (offset < 0x10000000) {
         widget = offset >> 24;
         target = offset & 0xffffff;
@@ -637,6 +656,9 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
                       "access to node %u arrives nowhere\n", node);
         return MEMTX_DECODE_ERROR;
     }
+    if (!sgi_bedrock_available(target->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
+    }
     /* Another node's packet: that node's interface serves it as its own. */
     s = target;
     if ((window & ~II_XIO_HUB_MASK) != II_XIO_HUB_WINDOW) {
@@ -675,6 +697,10 @@ MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write)
 {
+    if (!sgi_bedrock_available(s->bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: main power off\n");
+        return MEMTX_ACCESS_ERROR;
+    }
     if (!ii_inbound_permitted(s, widget, device)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound %s from "
                       "widget %u device %u at 0x%" HWADDR_PRIx " refused "
@@ -710,6 +736,10 @@ MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
     unsigned first, last;
     MemTxResult result;
 
+    if (!sgi_bedrock_available(s->bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: main power off\n");
+        return MEMTX_ACCESS_ERROR;
+    }
     if (!source || !source->widget_known || source->widget > 15 ||
         (source->device_known && source->device > 7)) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -726,6 +756,9 @@ MemTxResult sgi_bedrock_io_source_rw(SGIBedrockIOState *s,
         if (!target) {
             return MEMTX_DECODE_ERROR;
         }
+    }
+    if (!sgi_bedrock_available(target->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
     }
     first = source->device_known ? source->device : 0;
     last = source->device_known ? source->device : 7;
@@ -874,8 +907,36 @@ static MemTxResult ii_pio_write(void *opaque, hwaddr offset, uint64_t value,
     return ii_pio_rw(opaque, offset, &value, size, true);
 }
 
+static MemTxResult ii_register_read(void *opaque, hwaddr offset,
+                                    uint64_t *value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    SGIBedrockIOState *s = opaque;
+
+    if (!sgi_bedrock_available(s->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
+    }
+    *value = ii_read(opaque, offset, size);
+    return MEMTX_OK;
+}
+
+static MemTxResult ii_register_write(void *opaque, hwaddr offset,
+                                     uint64_t value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SGIBedrockIOState *s = opaque;
+
+    if (!sgi_bedrock_available(s->bedrock)) {
+        return MEMTX_ACCESS_ERROR;
+    }
+    ii_write(opaque, offset, value, size);
+    return MEMTX_OK;
+}
+
 static const MemoryRegionOps ii_ops = {
-    .read = ii_read, .write = ii_write, .endianness = DEVICE_BIG_ENDIAN,
+    .read_with_attrs = ii_register_read,
+    .write_with_attrs = ii_register_write,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 8, .max_access_size = 8 },
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };

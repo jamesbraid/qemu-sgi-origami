@@ -390,7 +390,7 @@ static void xbridge_error_packet(SGIXBridgeHeadState *s)
         return;
     }
     result = xbridge_send_interrupt(s, dest, REG(s, 0x128) & 0xff,
-                                     true, false);
+                                     true, true);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: error destination refused write\n");
@@ -1312,6 +1312,27 @@ static MemoryRegion *chip_widget_view(SGIXBridgeState *s, unsigned widget)
         return &s->external[widget - CHIP_LINK_FIRST].view;
     }
     return NULL;
+}
+
+void sgi_xbridge_reevaluate_assertions(SGIXBridgeState *s)
+{
+    if (!s->superbridge) {
+        sgi_xbridge_xbow_reevaluate_assertion(&s->xbow);
+    }
+    for (unsigned head = 0; head < 2; head++) {
+        SGIXBridgeHeadState *h = &s->head[head];
+        uint8_t enabled = h->pins & REG(h, 0x108);
+
+        if (REG(h, 0x100) & REG(h, 0x108) & (1U << 24)) {
+            xbridge_error_packet(h);
+        }
+
+        for (unsigned pin = 0; pin < SGI_XBRIDGE_HEAD_PINS; pin++) {
+            if (enabled & (1U << pin)) {
+                xbridge_packet(h, pin, true);
+            }
+        }
+    }
 }
 
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)

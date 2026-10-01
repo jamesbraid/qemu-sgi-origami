@@ -66,6 +66,9 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
             a->initial_node_number >= 128 || a->bedrock_revision != 2 ||
             a->xbridge_revision != 2 || !a->controller_profile ||
             strcmp(a->controller_profile, "pci-expansion") ||
+            a->has_main_power != a->has_initial_main_power ||
+            (a->has_main_power &&
+             a->main_power != SGI_MODEL_MAIN_POWER_FUNCTIONAL_EXPERIMENT) ||
             (a->bic_identity & 0xf000) != 0xc000 ||
             QAPI_LIST_LENGTH(a->head_ports) != 4 ||
             (a->has_intx_map && QAPI_LIST_LENGTH(a->intx_map) != 48)) {
@@ -83,10 +86,32 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
             controller->module_index != a->module_index) {
             goto unsupported;
         }
+        if (a->has_power_command_issuer) {
+            const SGIModelController *issuer;
+            const SGIModelModule *issuer_module;
+
+            if (!a->has_main_power || a->power_command_issuer >= controllers) {
+                goto unsupported;
+            }
+            issuer = SGI_MODEL_NTH(t->controllers, a->power_command_issuer);
+            if (issuer->kind != SGI_MODEL_CONTROLLER_KIND_L1 ||
+                issuer->module_index >= modules) {
+                goto unsupported;
+            }
+            issuer_module = SGI_MODEL_NTH(t->modules, issuer->module_index);
+            if (!issuer_module->nodes ||
+                issuer_module->controller_index != a->power_command_issuer) {
+                goto unsupported;
+            }
+        }
         for (other = t->io_assemblies; other != entry; other = other->next) {
             if (other->value->placement == a->placement ||
                 other->value->module_index == a->module_index ||
-                other->value->controller_index == a->controller_index) {
+                other->value->controller_index == a->controller_index ||
+                (a->has_power_command_issuer &&
+                 other->value->has_power_command_issuer &&
+                 other->value->power_command_issuer ==
+                 a->power_command_issuer)) {
                 goto unsupported;
             }
         }

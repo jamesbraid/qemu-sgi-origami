@@ -15,6 +15,8 @@
 #define TYPE_SGI_BEDROCK "sgi-bedrock"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 
+bool sgi_bedrock_available(SGIBedrockState *s);
+
 #define SGI_BEDROCK_SIZE 0x7e0048
 
 /* The four physical processor slots a node's two PIs together address. */
@@ -33,6 +35,8 @@ typedef enum SGIBedrockHoldKind {
 
 struct SGIBedrockState {
     SysBusDevice parent_obj;
+    bool (*available)(void *opaque);
+    void *available_opaque;
     MemoryRegion mmio;
     /*
      * A zero-based view of the register window, so a vector request from a

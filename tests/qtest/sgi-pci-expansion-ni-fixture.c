@@ -5,7 +5,9 @@
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "system/reset.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "migration/vmstate.h"
@@ -195,6 +197,21 @@ struct NIFixtureState {
     DeviceState *uart[2];
     MemoryRegion uart_view[2];
     bool management;
+    bool power;
+    bool initial_power;
+    bool power_failure;
+    uint32_t power_result;
+    DeviceState *cards[6];
+    DeviceState *board;
+    bool power_reset_registered;
+    AddressSpace adapter_work;
+    bool adapter_work_initialized;
+    AddressSpace power_views[12];
+    bool power_views_initialized;
+    MemTxResult view_result;
+    uint64_t view_value;
+    int32_t active_capture_result;
+    bool bte_queued;
     char *record[2];
     MemoryRegion management_control;
     SGIL1QueryOwner owners[2];
@@ -368,6 +385,22 @@ static uint64_t status_read(void *opaque, hwaddr offset, unsigned size)
         return s->interrupt_data;
     case 5:
         return s->interrupt_source;
+    case 6:
+        return sgi_origin300_pci_expansion_power_requested(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis));
+    case 7:
+        return sgi_origin300_pci_expansion_main_power_available(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis));
+    case 8:
+        return s->power_result;
+    case 9:
+        return s->view_result;
+    case 10:
+        return s->view_value;
+    case 11:
+        return s->active_capture_result;
+    case 12:
+        return s->bte_queued;
     default:
         return 0;
     }
@@ -394,6 +427,22 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
 {
     NIFixtureState *s = opaque;
 
+    if (offset >= 0x600 && offset < 0xe00 && s->adapter_work_initialized) {
+        uint8_t bytes[2];
+
+        address_space_read(&s->adapter_work, (offset - 0x600) / 8,
+                           MEMTXATTRS_UNSPECIFIED, bytes, 2);
+        return lduw_le_p(bytes);
+    }
+    if (offset >= 0x100 && offset < 0x100 + 6 * 0x40) {
+        unsigned head = (offset - 0x100) / 0x40;
+        unsigned reg = (offset - 0x100) % 0x40;
+
+        if (object_dynamic_cast(OBJECT(s->cards[head]), TYPE_NI_CARD)) {
+            return card_read(NI_CARD(s->cards[head]), reg, size);
+        }
+        return 0;
+    }
     return offset == 0 ? s->associations[0].reachable |
                         (s->associations[1].reachable << 1) : 0;
 }
@@ -403,11 +452,70 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
 {
     NIFixtureState *s = opaque;
 
-    if (offset == 0) {
+    if (offset >= 0x600 && offset < 0xe00 && s->adapter_work_initialized) {
+        uint8_t bytes[2];
+
+        /* Native adapter work while processor accesses are refused. */
+        stw_le_p(bytes, value);
+        address_space_write(&s->adapter_work, (offset - 0x600) / 8,
+                            MEMTXATTRS_UNSPECIFIED, bytes, 2);
+    } else if (offset == 0) {
         s->associations[0].reachable = value & 1;
         s->associations[1].reachable = value & 2;
     } else if (offset == 8 && value < 2) {
         resettable_reset(OBJECT(s->l1[value]), RESET_TYPE_COLD);
+    } else if (offset == 16 || offset == 24) {
+        Error *error = NULL;
+        unsigned owner = offset == 16 ? 1 : 0;
+
+        s->power_result = sgi_origin300_pci_expansion_request_power(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), SGI_L1(s->l1[owner]),
+            s->owners[owner].identity, value != 0, &error);
+        error_free(error);
+    } else if (offset == 56) {
+        SN1FabricEndpoint *endpoint =
+            SGI_SN1_FABRIC_GET_CLASS(s->chassis)->endpoint(OBJECT(s->chassis));
+        uint8_t bytes[8] = { 0 };
+        Error *error = NULL;
+
+        /* Power changes before the queued completion can leave this access. */
+        address_space_write(&s->power_views[0], 0x410018,
+                            MEMTXATTRS_UNSPECIFIED, bytes, sizeof(bytes));
+        s->bte_queued = endpoint->bedrock->io.bte[0].signal_pending;
+        if (value) {
+            s->power_result = sgi_origin300_pci_expansion_request_power(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), SGI_L1(s->l1[1]),
+                s->owners[1].identity, false, &error);
+            error_free(error);
+        }
+    } else if (offset == 64 && value < 3) {
+        g_autofree char *name = g_strdup_printf("u%u", (unsigned)value);
+        Object *chip = object_resolve_path_component(OBJECT(s->chassis), name);
+
+        /* Native retained work still uses the ordinary chip packet path. */
+        sgi_xbridge_reevaluate_assertions(SGI_XBRIDGE(chip));
+    } else if (offset == 48) {
+        if (s->board) {
+            device_cold_reset(s->board);
+        }
+    } else if (offset >= 0x400 && offset < 0x400 + 12 * 8) {
+        unsigned view = (offset - 0x400) / 8;
+        uint8_t bytes[8] = { 0 };
+
+        s->view_result = address_space_read(&s->power_views[view], value,
+            MEMTXATTRS_UNSPECIFIED, bytes, 4);
+        s->view_value = ldl_be_p(bytes);
+    } else if (offset == 40) {
+        SGI_L1(s->l1[0])->power_command_reachable = value != 0;
+    } else if (offset == 32) {
+        s->power_failure = value != 0;
+    } else if (offset >= 0x100 && offset < 0x100 + 6 * 0x40) {
+        unsigned head = (offset - 0x100) / 0x40;
+        unsigned reg = (offset - 0x100) % 0x40;
+
+        if (object_dynamic_cast(OBJECT(s->cards[head]), TYPE_NI_CARD)) {
+            card_write(NI_CARD(s->cards[head]), reg, value, size);
+        }
     }
 }
 
@@ -423,6 +531,9 @@ static void fixture_reset_hold(Object *obj, ResetType type)
 {
     NIFixtureState *s = NI_FIXTURE(obj);
 
+    if (s->power && s->l1[0]) {
+        SGI_L1(s->l1[0])->power_command_reachable = true;
+    }
     s->router.active = false;
     s->associations[0].reachable = true;
     s->associations[1].reachable = true;
@@ -430,7 +541,25 @@ static void fixture_reset_hold(Object *obj, ResetType type)
 
 static void fixture_unrealize(DeviceState *dev)
 {
-    sgi_l1_query_router_destroy(&NI_FIXTURE(dev)->router);
+    NIFixtureState *s = NI_FIXTURE(dev);
+
+    sgi_l1_query_router_destroy(&s->router);
+    if (s->adapter_work_initialized) {
+        address_space_destroy(&s->adapter_work);
+        s->adapter_work_initialized = false;
+    }
+    if (s->power_views_initialized) {
+        for (unsigned view = 0; view < 12; view++) {
+            address_space_destroy(&s->power_views[view]);
+        }
+        s->power_views_initialized = false;
+    }
+    if (s->power_reset_registered) {
+        qemu_unregister_resettable(OBJECT(s->l1[0]));
+        qemu_unregister_resettable(OBJECT(s->l1[1]));
+        qemu_unregister_resettable(OBJECT(s->board));
+        s->power_reset_registered = false;
+    }
 }
 
 static int fixture_pre_save(void *opaque)
@@ -490,6 +619,26 @@ static const VMStateDescription vmstate_fixture = {
         VMSTATE_END_OF_LIST()
     },
 };
+
+static bool fixture_power_request(Object *receiver, SGIL1State *issuer,
+    uint64_t identity, bool on, Error **errp)
+{
+    return sgi_origin300_pci_expansion_request_power(
+        SGI_ORIGIN300_PCI_EXPANSION(receiver), issuer, identity, on, errp);
+}
+
+static bool fixture_power_operation(void *opaque, bool on, Error **errp)
+{
+    NIFixtureState *s = opaque;
+
+    s->active_capture_result = DEVICE_GET_CLASS(s->chassis)->vmsd->pre_save(
+        s->chassis);
+    if (s->power_failure) {
+        error_setg(errp, "injected power operation failure");
+        return false;
+    }
+    return true;
+}
 
 static void fixture_realize(DeviceState *dev, Error **errp)
 {
@@ -567,11 +716,46 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+    if (s->power) {
+        if (!s->management) {
+            error_setg(errp, "power fixture needs management owner");
+            return;
+        }
+        s->board = qdev_new(TYPE_SGI_BIC_BOARD_INTERFACE);
+        object_property_add_child(OBJECT(s), "board", OBJECT(s->board));
+        qdev_prop_set_uint64(s->board, "identity", 0xc000);
+        qdev_prop_set_bit(s->board, "initial-latch-set", true);
+        qdev_prop_set_uint16(s->board, "initial-latch", 0x1234);
+        if (!qdev_realize(s->board, NULL, errp) ||
+            !sgi_origin300_pci_expansion_attach_board_interface(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis),
+                SGI_BIC_BOARD_INTERFACE(s->board), errp)) {
+            return;
+        }
+        device_cold_reset(s->board);
+        s->l1[1] = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(OBJECT(s), "l1power", OBJECT(s->l1[1]));
+        qdev_prop_set_string(s->l1[1], "brick-type", "pci-expansion");
+        if (!sgi_origin300_pci_expansion_bind_power(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), SGI_L1(s->l1[1]),
+                s->owners[1].identity, s->initial_power,
+                fixture_power_operation, s, errp) ||
+            !sgi_l1_bind_expansion_power(SGI_L1(s->l1[1]), OBJECT(s->chassis),
+                s->owners[1].identity, fixture_power_request, errp)) {
+            return;
+        }
+    }
     if (!sgi_origin300_pci_expansion_enable_ni_route(
             SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
         return;
     }
+    for (unsigned view = 0; view < 12; view++) {
+        address_space_init(&s->power_views[view],
+            sysbus_mmio_get_region(SYS_BUS_DEVICE(s->chassis), view),
+            "fixture.power-view");
+    }
+    s->power_views_initialized = true;
     bic_endpoint = SGI_SN1_FABRIC_GET_CLASS(s->chassis)->endpoint(
         OBJECT(s->chassis));
     if (s->connected) {
@@ -596,6 +780,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         g_autofree char *name = g_strdup_printf("card%u", i);
 
         object_property_add_child(OBJECT(s), name, OBJECT(card));
+        s->cards[i] = card;
         if (!isp) {
             qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
         }
@@ -605,6 +790,11 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         }
         if (!qdev_realize(card, BUS(bus), errp)) {
             return;
+        }
+        if (isp) {
+            address_space_init(&s->adapter_work,
+                PCI_DEVICE(card)->io_regions[1].memory, "fixture.adapter-work");
+            s->adapter_work_initialized = true;
         }
     }
     if (s->intx_map) {
@@ -650,7 +840,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &r->view);
     }
     memory_region_init_io(&s->status, OBJECT(s), &status_ops, s,
-                          "ni-fixture.status", 48);
+                          "ni-fixture.status", 104);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->status);
     memory_region_init_alias(&s->ram_observation, OBJECT(s),
         "ni-fixture.ram-observation", &s->ram, 0, RAM_BYTES);
@@ -665,8 +855,11 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             g_autofree char *uart = g_strdup_printf("uart%u", i);
             g_autofree char *view = g_strdup_printf("ni-fixture.uart%u", i);
 
-            s->l1[i] = qdev_new(TYPE_SGI_L1);
-            object_property_add_child(OBJECT(s), controller, OBJECT(s->l1[i]));
+            if (!s->l1[i]) {
+                s->l1[i] = qdev_new(TYPE_SGI_L1);
+                object_property_add_child(OBJECT(s), controller,
+                                           OBJECT(s->l1[i]));
+            }
             qdev_prop_set_string(s->l1[i], "brick-type",
                                  i ? "pci-expansion" : "ip45");
             qdev_prop_set_uint32(s->l1[i], "rack", 1);
@@ -696,6 +889,16 @@ static void fixture_realize(DeviceState *dev, Error **errp)
                 0, SGI_L1_SIZE);
             sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->uart_view[i]);
         }
+        if (s->power && !sgi_l1_bind_power_command(SGI_L1(s->l1[0]),
+                SGI_L1(s->l1[1]), s->owners[1].identity, errp)) {
+            return;
+        }
+        if (s->power) {
+            qemu_register_resettable(OBJECT(s->l1[0]));
+            qemu_register_resettable(OBJECT(s->l1[1]));
+            qemu_register_resettable(OBJECT(s->board));
+            s->power_reset_registered = true;
+        }
         s->associations[0] = (SGIL1QueryAssociation) { 0, 1, true };
         s->associations[1] = (SGIL1QueryAssociation) { 1, 0, true };
         sgi_l1_query_router_init(&s->router, s->owners, 2,
@@ -710,12 +913,15 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             return;
         }
         memory_region_init_io(&s->management_control, OBJECT(s),
-                              &management_ops, s, "ni-fixture.management", 16);
+                              &management_ops, s,
+                              "ni-fixture.management", 0xe00);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->management_control);
     }
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_BOOL("power", NIFixtureState, power, false),
+    DEFINE_PROP_BOOL("initial-power", NIFixtureState, initial_power, true),
     DEFINE_PROP_BOOL("management", NIFixtureState, management, false),
     DEFINE_PROP_STRING("record0", NIFixtureState, record[0]),
     DEFINE_PROP_STRING("record1", NIFixtureState, record[1]),
