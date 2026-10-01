@@ -960,12 +960,12 @@ static MemTxResult sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        return sgi_bridge_window_read_split(s, 0, 0, true, false, &s->pci_mmio_as,
-                                            addr, data);
+        return sgi_bridge_window_read_split(s, 0, 0, true, false,
+                                            &s->pci_mmio_as, addr, data);
     }
 
-    return sgi_bridge_window_read_word(s, 0, 0, true, false, &s->pci_mmio_as, addr,
-                                       size, data);
+    return sgi_bridge_window_read_word(s, 0, 0, true, false,
+                                       &s->pci_mmio_as, addr, size, data);
 }
 
 static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
@@ -975,15 +975,15 @@ static MemTxResult sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
     SGIBridgeState *s = opaque;
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr,
-                                     val >> 32, 4);
-        sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr + 4,
-                                     val, 4);
+        sgi_bridge_window_write_word(s, 0, 0, true, false,
+                                     &s->pci_mmio_as, addr, val >> 32, 4);
+        sgi_bridge_window_write_word(s, 0, 0, true, false,
+                                     &s->pci_mmio_as, addr + 4, val, 4);
         return MEMTX_OK;
     }
 
-    sgi_bridge_window_write_word(s, 0, 0, true, false, &s->pci_mmio_as, addr, val,
-                                 size);
+    sgi_bridge_window_write_word(s, 0, 0, true, false,
+                                 &s->pci_mmio_as, addr, val, size);
     return MEMTX_OK;
 }
 
