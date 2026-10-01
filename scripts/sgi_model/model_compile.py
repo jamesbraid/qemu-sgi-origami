@@ -175,7 +175,8 @@ def _positioned(components: dict[str, dict], predicate: Callable[[dict], bool],
 
 
 def _fabric_links(model: dict, components: dict[str, dict],
-                   node_index: dict[str, int], router_index: dict[str, int]) -> list[dict]:
+                   node_index: dict[str, int], router_index: dict[str, int],
+                   io_peer_index: dict[str, int]) -> list[dict]:
     """Fabric-bus links between two Hub/Router endpoints, port-numbered.
 
     Mirrors `origin2000_model.compile_physical_graph`'s link extraction,
@@ -191,7 +192,8 @@ def _fabric_links(model: dict, components: dict[str, dict],
     """
     per_row = bool((model["composition"].get("topology") or {}).get("node_populations"))
     vertices = {**{cid: ("NODE", index) for cid, index in node_index.items()},
-                **{cid: ("ROUTER", index) for cid, index in router_index.items()}}
+                **{cid: ("ROUTER", index) for cid, index in router_index.items()},
+                **{cid: ("IO_PEER", index) for cid, index in io_peer_index.items()}}
     occupied = set()
     links = []
     for bus in model["buses"]:
@@ -231,7 +233,7 @@ def _fabric_links(model: dict, components: dict[str, dict],
         for attachment in real:
             cid = attachment["component"]
             vertex_kind, index = vertices[cid]
-            if vertex_kind == "NODE":
+            if vertex_kind in {"NODE", "IO_PEER"}:
                 port = 0
             else:
                 port = _integer(attachment, "fabric_port", f"router '{cid}' fabric endpoint", 8)
@@ -336,11 +338,15 @@ def _occupied_connectors(model: dict, components: dict[str, dict]) -> dict[str, 
     would be a contradiction, not a refinement.
     """
     occupied = {}
+    xio_buses = {bus["id"] for bus in model["buses"] if bus["kind"] == "xio"}
     for selection in model["composition"].get("connector_population", []):
         if selection.get("occupancy") != "occupied":
             continue
         connector = selection["component"]
         occupant = selection["occupant"]
+        if not any(item["component"] == connector and item["bus"] in xio_buses
+                   for item in model["connections"]):
+            continue
         # Everything fitted under the connector, not only the occupant's
         # own subtree: an Onyx2 rack's Xtown occupies the slot, and the
         # pipe whose XG answers on the slot's link hangs beside it.
@@ -383,6 +389,12 @@ def index_graph(model: dict) -> dict:
     components = _components_by_id(model)
     modules: dict[str, int] = {}
     nodes = _positioned(components, lambda item: item.get("kind") == "node-asic", modules)
+    io_peers = _positioned(
+        components,
+        lambda item: (item.get("kind") == "bus-controller"
+                      and item.get("hardware_kind") == "bedrock"),
+        modules,
+    )
     routers = _positioned(components, lambda item: item.get("kind") == "router-asic", modules)
     split_bridges = _split_bridge_parents(model, components)
     io_board_components = {cid: item for cid, item in components.items()
@@ -402,6 +414,7 @@ def index_graph(model: dict) -> dict:
         key=lambda item: item["id"])
     crossbar_index = {item["id"]: index for index, item in enumerate(crossbars)}
     node_index = {item["id"]: index for index, item in enumerate(nodes)}
+    io_peer_index = {item["id"]: index for index, item in enumerate(io_peers)}
     # A XIO attachment's `controlled_by` names the controlling
     # node's *board*, not its Hub component, so a lookup by board id
     # reaches the same node index.
@@ -620,12 +633,13 @@ def index_graph(model: dict) -> dict:
             f"I/O boards {[board['id'] for board in io_boards]} are not in "
             f"XIO attachment order {board_order}")
 
-    links = _fabric_links(model, components, node_index, router_index)
+    links = _fabric_links(model, components, node_index, router_index, io_peer_index)
 
     module_order = sorted(modules.items(), key=lambda item: item[1])
     return {
         "components": components,
-        "nodes": nodes, "routers": routers, "crossbars": crossbars,
+        "nodes": nodes, "io_peers": io_peers,
+        "routers": routers, "crossbars": crossbars,
         "io_boards": io_boards, "xio_attachments": xio_attachments,
         "xio_slots": xio_slots, "links": links,
         "modules": [{"id": module_id, "index": index} for module_id, index in module_order],
@@ -1248,6 +1262,32 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     }
 
 
+def _compile_io_peer(model: dict, components: dict[str, dict], entry: dict,
+                     position: int) -> dict:
+    peer = entry["component"]
+    scope = _board_ancestor(components, peer) or _grouping_module(components, peer)
+    for item in components.values():
+        if (item.get("kind") in {"cpu", "memory", "flash"}
+                and _is_within(components, item, scope["id"])):
+            raise CompileError(
+                f"I/O peer '{peer['id']}' cannot own {item['kind']} "
+                f"component '{item['id']}'")
+    if not isinstance(peer.get("identity"), dict):
+        raise CompileError(f"I/O peer '{peer['id']}' has no identity block")
+    if not peer.get("datasheet_contracts"):
+        raise CompileError(f"I/O peer '{peer['id']}' has no datasheet contracts")
+    explicit = model["machine"].get("emulation", {}).get("synthetic_identities", [])
+    if not any(item.get("component") == peer["id"] for item in explicit):
+        raise CompileError(f"I/O peer '{peer['id']}' requires an explicit synthetic identity")
+    identity = _node_identity(model, components, peer, "bedrock", position)
+    if identity["i2c_controller"] or identity["system_controller"]:
+        raise CompileError(f"I/O peer '{peer['id']}' cannot host an embedded controller")
+    return {
+        "id": peer["id"], "module_index": entry["module_index"],
+        "slot": entry["slot"], "asic_kind": "BEDROCK", "identity": identity,
+    }
+
+
 def _one_wire_identities(model: dict, components: dict[str, dict],
                           master_id: str) -> list[str]:
     """Every `identity.part` an `identity`-kind component answers with on the
@@ -1682,7 +1722,8 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
 
 
 def _compile_module(model: dict, module_id: str, module_index: int,
-                     node_entries: list[dict], controllers: list[dict]) -> dict:
+                     node_entries: list[dict], controllers: list[dict],
+                     io_peer_entries: list[dict]) -> dict:
     emulation = model["machine"].get("emulation", {})
     serial = ""
     for item in emulation.get("module_semantic_serials", []) or []:
@@ -1698,10 +1739,15 @@ def _compile_module(model: dict, module_id: str, module_index: int,
              if controller["module_index"] == module_index]
     if len(owned) > 1:
         raise CompileError(f"module '{module_id}' has more than one controller")
-    return {
+    record = {
         "id": module_id, "serial": serial, "initial_module_number": initial_number,
         "controller_index": owned[0] if owned else -1, "nodes": nodes,
     }
+    peers = [index for index, entry in enumerate(io_peer_entries)
+             if entry["module_index"] == module_index]
+    if peers:
+        record["io_peers"] = peers
+    return record
 
 
 def _compile_router(model: dict, entry: dict, router_index: int) -> dict:
@@ -1867,6 +1913,8 @@ def _compile_node_populations(model: dict, graph: dict, nodes: list[dict],
     """
     authored = (model["composition"].get("topology") or {}).get("node_populations")
     links = graph["links"]
+    if authored and graph.get("io_peers"):
+        raise CompileError("authored node-population rows with I/O peers are unsupported")
     if not authored:
         return [{
             "nodes": list(range(len(nodes))),
@@ -2027,11 +2075,15 @@ def compile_model(model: dict) -> dict:
         validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
+        if graph["io_peers"] and generation != "SN1":
+            raise CompileError("I/O-only Bedrock peers require generation SN1")
+        io_peers = [_compile_io_peer(model, components, entry, node_count + position)
+                    for position, entry in enumerate(graph["io_peers"])]
         routers = [_compile_router(model, entry, index)
                    for index, entry in enumerate(graph["routers"])]
         controllers = _compile_controllers(model, components, modules_by_id)
         modules = [_compile_module(model, module["id"], module["index"],
-                                    graph["nodes"], controllers)
+                                    graph["nodes"], controllers, graph["io_peers"])
                    for module in graph["modules"]]
         used_l1 = set()
         for node in nodes:
@@ -2096,7 +2148,7 @@ def compile_model(model: dict) -> dict:
         model, graph, nodes, io_boards, xio_attachments, xio_slots,
         supported_cpu_populations)
 
-    return {
+    topology = {
         "name": model["composition"]["product"],
         "generation": generation,
         "description": description,
@@ -2114,3 +2166,6 @@ def compile_model(model: dict) -> dict:
         "supported_cpu_populations": supported_cpu_populations,
         "node_populations": node_populations,
     }
+    if io_peers:
+        topology["io_peers"] = io_peers
+    return topology

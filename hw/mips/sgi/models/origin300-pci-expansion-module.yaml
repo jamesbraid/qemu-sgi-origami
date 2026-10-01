@@ -1,0 +1,24 @@
+# Direct LINK/NI connection to the Origin 300 PCI expansion module.
+configuration_version: 1
+layers:
+  - layers/architectures/sn1.yaml
+  - layers/assemblies/ip45.yaml
+  - layers/modules/origin300-base.yaml
+  - layers/products/origin300-pci-expansion-module.yaml
+module_instances:
+  - model: layers/modules/origin300-pci-expansion-module.yaml
+    prefix: expansion-
+    parent: link-connector
+    bus_bindings: {upstream-numalink: numalink}
+connector_population:
+  - component: link-connector
+    occupancy: occupied
+    occupant: expansion-bic
+    reason: The PCI expansion module's BIC connects to the compute module's LINK/NI connector.
+    provenance: vendor-document
+    sources: ["007-4499-002 printed page 12"]
+  - component: xio-connector
+    occupancy: empty
+    reason: The PCI expansion module uses LINK/NI rather than the rear XIO connector.
+    provenance: vendor-document
+    sources: ["007-4499-002 printed pages 12 and 38"]

@@ -1,0 +1,192 @@
+# Published Origin 300 PCI expansion module. Runtime routes are unresolved.
+layer_version: 1
+layer:
+  kind: module
+  id: origin300-pci-expansion-module
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: enclosure
+        name: Origin 300 PCI expansion module
+        kind: module
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 12 and 38 to 40"]
+      - id: bic
+        name: Bedrock interface card
+        kind: board
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 38 to 40 and 50"]
+      - id: bedrock
+        name: I/O-only Bedrock
+        kind: bus-controller
+        hardware_kind: bedrock
+        parent: bic
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 40 and 50"]
+        notes: NI and II are used. Processor and memory interfaces are unused. No node identity or register contract is assigned.
+      - id: link-port
+        name: PCI expansion LINK connector
+        kind: connector
+        parent: enclosure
+        connector: {interface: NUMAlink 3, location: enclosure rear, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 12, 38 and 52"]
+      - id: u0
+        name: XBridge U0
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+        notes: Serves buses 3 and 4 and connects to U1 and U2. Widget addresses and forwarding are unknown.
+      - id: u1
+        name: XBridge U1
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+        notes: Serves buses 1 and 2. Widget addresses are unknown.
+      - id: u2
+        name: XBridge U2
+        kind: pci-host-bridge
+        hardware_kind: xbridge
+        pci_host_bridge: {heads: 2}
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+        notes: Serves buses 5 and 6. Widget addresses are unknown.
+      - id: l1
+        name: PCI expansion L1 controller
+        kind: system-controller
+        hardware_kind: l1
+        system_controller: {kind: l1}
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 36, 48 and 50"]
+        notes: Protocol, identity and slot-power effects are unknown.
+      - id: serial-id
+        name: Serial ID EEPROM
+        kind: identity
+        parent: enclosure
+        provenance: vendor-document
+        sources: ["007-4499-002 printed page 46"]
+        notes: Contents and read path are unknown.
+      - id: pci-1-slot-1
+        name: PCI bus 1 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 1 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-1-slot-2
+        name: PCI bus 1 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 1 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-2-slot-1
+        name: PCI bus 2 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 2 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-2-slot-2
+        name: PCI bus 2 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 2 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-3-slot-1
+        name: PCI bus 3 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 3 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-3-slot-2
+        name: PCI bus 3 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 3 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-4-slot-1
+        name: PCI bus 4 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 4 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-4-slot-2
+        name: PCI bus 4 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 4 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-5-slot-1
+        name: PCI bus 5 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 5 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-5-slot-2
+        name: PCI bus 5 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 5 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-6-slot-1
+        name: PCI bus 6 slot 1
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 6 slot 1, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+      - id: pci-6-slot-2
+        name: PCI bus 6 slot 2
+        kind: connector
+        parent: enclosure
+        connector: {interface: PCI, location: bus 6 slot 2, occupancy: opaque}
+        provenance: vendor-document
+        sources: ["007-4499-002 printed pages 39 to 41"]
+    buses:
+      - {id: bic-ii, name: BIC I/O interface, kind: xio, master: bedrock, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40 and 50"]}
+      - {id: u0-u1, name: U0 to U1, kind: xio, master: u0, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {id: u0-u2, name: U0 to U2, kind: xio, master: u0, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {id: pci-1, name: PCI bus 1, kind: pci, master: u1, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {id: pci-2, name: PCI bus 2, kind: pci, master: u1, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {id: pci-3, name: PCI bus 3, kind: pci, master: u0, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {id: pci-4, name: PCI bus 4, kind: pci, master: u0, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {id: pci-5, name: PCI bus 5, kind: pci, master: u2, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {id: pci-6, name: PCI bus 6, kind: pci, master: u2, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+    connections:
+      - {component: link-port, bus: upstream-numalink, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 12 and 52"]}
+      - {component: bedrock, bus: upstream-numalink, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 38 to 40 and 50"]}
+      - {component: bedrock, bus: bic-ii, role: master, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40 and 50"]}
+      - {component: u0, bus: bic-ii, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {component: u0, bus: u0-u1, role: master, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {component: u1, bus: u0-u1, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {component: u0, bus: u0-u2, role: master, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {component: u2, bus: u0-u2, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 40"]}
+      - {component: pci-1-slot-1, bus: pci-1, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-1-slot-2, bus: pci-1, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-2-slot-1, bus: pci-2, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-2-slot-2, bus: pci-2, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-3-slot-1, bus: pci-3, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-3-slot-2, bus: pci-3, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-4-slot-1, bus: pci-4, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-4-slot-2, bus: pci-4, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-5-slot-1, bus: pci-5, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-5-slot-2, bus: pci-5, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-6-slot-1, bus: pci-6, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
+      - {component: pci-6-slot-2, bus: pci-6, role: endpoint, provenance: vendor-document, sources: ["007-4499-002 printed pages 39 to 41"]}
