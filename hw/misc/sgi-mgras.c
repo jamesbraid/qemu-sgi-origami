@@ -1774,7 +1774,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 25, .minimum_version_id = 25,
+    .name = TYPE_SGI_MGRAS, .version_id = 26, .minimum_version_id = 26,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -1937,6 +1937,15 @@ static const VMStateDescription vmstate_sgi_mgras = {
         /* Bank 1's format tag, since that bank holds indices too. */
         VMSTATE_VARRAY_UINT32(back_format, SGIMgrasState, back_count, 24,
                               vmstate_info_uint8, uint8_t),
+        /* Contexts read out of GE external RAM, and the transfer under way. */
+        VMSTATE_UINT64_ARRAY_V(gl_saved, SGIMgrasState,
+                               SGI_MGRAS_GL_CONTEXTS, 26),
+        VMSTATE_UINT32_V(eram_state, SGIMgrasState, 26),
+        VMSTATE_UINT64_V(eram_host, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_rows, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_bpr, SGIMgrasState, 26),
+        VMSTATE_UINT64_V(eram_next_host, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_next_addr, SGIMgrasState, 26),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

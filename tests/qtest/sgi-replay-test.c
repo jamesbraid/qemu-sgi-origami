@@ -116,6 +116,7 @@ static const ReplayHead *find_head(const char *codename)
     "gl-new-context-slot-reuse.replay"
 #define GL_TEXTURE_RGBA4_QUAD \
     "gl-texture-rgba4-quad.replay"
+#define GL_EVICTION_I3DM  "gl-eviction-i3dm.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -1001,6 +1002,16 @@ static void test_gl_texture_rgba4_quad(void)
     run_fixture(GL_TEXTURE_RGBA4_QUAD, NULL);
 }
 
+/*
+ * The kernel reads i3dm's top view's context out of ERAM address 0x9d19
+ * and writes it back at 0x5420, the tool panel's, and the view's clear
+ * then covers the whole view (run irix-20260930T234501-dc3029).
+ */
+static void test_gl_eviction_i3dm(void)
+{
+    run_fixture(GL_EVICTION_I3DM, NULL);
+}
+
 static void test_cmap_xmap_wid(void)
 {
     run_fixture(CMAP_XMAP_WID, NULL);
@@ -1335,6 +1346,8 @@ int main(int argc, char **argv)
                    test_gl_new_context_slot_reuse);
     qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",
                    test_gl_texture_rgba4_quad);
+    qtest_add_func("sgi-replay/mgras/gl-eviction-i3dm",
+                   test_gl_eviction_i3dm);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);

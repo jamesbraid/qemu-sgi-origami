@@ -86,6 +86,24 @@ extern const VMStateDescription vmstate_sgi_mgras_gl_pixels;
 /* Each context's DMA mark on a waiting pixel draw, while one has it. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags;
 
+/*
+ * The kernel's context eviction (sgi-mgras-gl.c, "Context eviction"). A
+ * DMA read with no raster box that fits it may be the read-out of a
+ * context, which the 0xfc08 after it confirms; host is the address of its
+ * first byte, rows and bpr its descriptor for the log line if nothing
+ * claims it. A write kick with the GE port named, no pixel draw waiting
+ * and an 0xfd04 count before it carries a context back in, which the
+ * 0xfb08 after it places.
+ */
+void sgi_mgras_gl_eram_read_kicked(SGIMgrasState *s, uint64_t host,
+                                   uint32_t rows, uint32_t bpr);
+bool sgi_mgras_gl_eram_write_armed(SGIMgrasState *s);
+void sgi_mgras_gl_eram_write_kicked(SGIMgrasState *s, uint64_t host);
+/* Note a header for a pending ERAM transfer, which only its token claims. */
+void sgi_mgras_gl_eram_header(SGIMgrasState *s, uint32_t header);
+/* Whether migrated ERAM transfer state is in range. */
+bool sgi_mgras_gl_eram_valid(SGIMgrasState *s);
+
 /* Note GE-port traffic the per-context state cannot follow. */
 void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write);
 /* The command parser's position, to set aside and take up again. */
