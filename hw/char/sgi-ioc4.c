@@ -21,10 +21,17 @@
 #define IOC4_PORTS 4
 #define IOC4_BAR_SIZE 0x100000
 #define IOC4_UART_BASE 0x380
+#define IOC4_CLOCK_BAR 0x87ff8
+#define IOC4_CLOCK_NATIVE 0x7f8
+#define IOC4_CLOCK_SIZE 8
 
 typedef struct SGIIOC4State {
     PCIDevice parent_obj;
     MemoryRegion bar;
+    MemoryRegion clock_alias;
+    MemoryRegion *clock;
+    bool clock_alias_initialized;
+    bool clock_alias_mapped;
     SerialState uart[IOC4_PORTS];
     IRQState uart_irq[IOC4_PORTS];
     uint32_t serial_pending;
@@ -224,6 +231,10 @@ static void ioc4_exit(PCIDevice *dev)
         memory_region_del_subregion(&s->bar, &s->uart[i].io);
         qdev_unrealize(DEVICE(&s->uart[i]));
     }
+    if (s->clock_alias_mapped) {
+        memory_region_del_subregion(&s->bar, &s->clock_alias);
+        s->clock_alias_mapped = false;
+    }
 }
 
 static void ioc4_realize(PCIDevice *dev, Error **errp)
@@ -235,12 +246,27 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
         error_setg(errp, "sgi-ioc4 clock-hz must be 33333333 or 66666667");
         return;
     }
+    if (s->clock && memory_region_size(s->clock) < 0x800) {
+        error_setg(errp, "sgi-ioc4 clock region must be at least 0x800 bytes");
+        return;
+    }
 
     /* Local PCI IRQ output needs a pin; IO9 board wiring is not modeled. */
     dev->config[PCI_INTERRUPT_PIN] = 1;
 
     memory_region_init_io(&s->bar, OBJECT(s), &ioc4_ops, s, "sgi-ioc4",
                           IOC4_BAR_SIZE);
+    if (s->clock && !s->clock_alias_initialized) {
+        memory_region_init_alias(&s->clock_alias, OBJECT(s),
+                                 "sgi-ioc4-clock", s->clock,
+                                 IOC4_CLOCK_NATIVE, IOC4_CLOCK_SIZE);
+        s->clock_alias_initialized = true;
+    }
+    if (s->clock) {
+        memory_region_add_subregion(&s->bar, IOC4_CLOCK_BAR,
+                                    &s->clock_alias);
+        s->clock_alias_mapped = true;
+    }
     for (i = 0; i < IOC4_PORTS; i++) {
         SerialState *uart = &s->uart[i];
 
@@ -249,6 +275,10 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
             while (i--) {
                 memory_region_del_subregion(&s->bar, &s->uart[i].io);
                 qdev_unrealize(DEVICE(&s->uart[i]));
+            }
+            if (s->clock_alias_mapped) {
+                memory_region_del_subregion(&s->bar, &s->clock_alias);
+                s->clock_alias_mapped = false;
             }
             return;
         }
@@ -263,6 +293,8 @@ static void ioc4_realize(PCIDevice *dev, Error **errp)
 
 static const Property ioc4_properties[] = {
     DEFINE_PROP_UINT32("clock-hz", SGIIOC4State, clock_hz, 33333333),
+    DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
     DEFINE_PROP_CHR("chardev1", SGIIOC4State, uart[0].chr),
     DEFINE_PROP_CHR("chardev2", SGIIOC4State, uart[1].chr),
     DEFINE_PROP_CHR("chardev3", SGIIOC4State, uart[2].chr),
