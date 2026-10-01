@@ -2,6 +2,7 @@
 /* Synthetic compute/BIC NI composition, without firmware or PCI wiring. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "system/block-backend-global-state.h"
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -198,6 +199,15 @@ struct NIFixtureState {
     MemoryRegion uart_view[2];
     bool management;
     bool power;
+    bool storage;
+    char *storage_drive;
+    char *storage_module_id;
+    char *storage_controller_id;
+    bool storage_late;
+    bool storage_late_refused;
+    uint64_t storage_direct_address;
+    uint64_t storage_direct_payload;
+    MemTxResult storage_direct_result;
     bool initial_power;
     bool power_failure;
     uint32_t power_result;
@@ -443,6 +453,12 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
         }
         return 0;
     }
+    if (offset == 112) {
+        return s->storage_direct_result;
+    }
+    if (offset == 80) {
+        return s->storage_late_refused;
+    }
     return offset == 0 ? s->associations[0].reachable |
                         (s->associations[1].reachable << 1) : 0;
 }
@@ -459,6 +475,21 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
         stw_le_p(bytes, value);
         address_space_write(&s->adapter_work, (offset - 0x600) / 8,
                             MEMTXATTRS_UNSPECIFIED, bytes, 2);
+    } else if (offset == 88) {
+        s->storage_direct_address = value;
+    } else if (offset == 96) {
+        s->storage_direct_payload = value;
+    } else if (offset == 104) {
+        uint8_t bytes[16];
+        size_t length = value & 0xff;
+        bool write = value & (UINT64_C(1) << 32);
+
+        stq_be_p(bytes, s->storage_direct_payload);
+        stq_be_p(bytes + 8, s->storage_direct_payload);
+        s->storage_direct_result = length <= sizeof(bytes) ?
+            sn1_fabric_processor_rw(&s->endpoint, 0,
+                s->storage_direct_address, bytes, length, write,
+                MEMTXATTRS_UNSPECIFIED) : MEMTX_ERROR;
     } else if (offset == 0) {
         s->associations[0].reachable = value & 1;
         s->associations[1].reachable = value & 2;
@@ -745,10 +776,32 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+    if (!s->storage_late && (s->storage || s->storage_drive)) {
+        if (!s->storage || !s->storage_drive ||
+            !sgi_origin300_pci_expansion_bind_storage(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis),
+                s->storage_module_id ? s->storage_module_id : "fixture-module",
+                s->storage_controller_id ? s->storage_controller_id :
+                    "fixture-controller",
+                    blk_by_name(s->storage_drive), errp)) {
+            if (!s->storage || !s->storage_drive) {
+                error_setg(errp, "storage fixture needs selection and backend");
+            }
+            return;
+        }
+    }
     if (!sgi_origin300_pci_expansion_enable_ni_route(
             SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
         return;
+    }
+    if (s->storage_late) {
+        Error *error = NULL;
+
+        s->storage_late_refused = !sgi_origin300_pci_expansion_bind_storage(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), "fixture-module",
+            "fixture-controller", blk_by_name(s->storage_drive), &error);
+        error_free(error);
     }
     for (unsigned view = 0; view < 12; view++) {
         address_space_init(&s->power_views[view],
@@ -920,6 +973,12 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_BOOL("storage", NIFixtureState, storage, false),
+    DEFINE_PROP_BOOL("storage-late", NIFixtureState, storage_late, false),
+    DEFINE_PROP_STRING("storage-module-id", NIFixtureState, storage_module_id),
+    DEFINE_PROP_STRING("storage-controller-id", NIFixtureState,
+                       storage_controller_id),
+    DEFINE_PROP_STRING("storage-drive", NIFixtureState, storage_drive),
     DEFINE_PROP_BOOL("power", NIFixtureState, power, false),
     DEFINE_PROP_BOOL("initial-power", NIFixtureState, initial_power, true),
     DEFINE_PROP_BOOL("management", NIFixtureState, management, false),

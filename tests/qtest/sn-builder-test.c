@@ -103,6 +103,9 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
      * SIGSEGV; WIFSIGNALED distinguishes signals from nonzero status.
      */
     g_assert_false(WIFSIGNALED(wait_status));
+    if (!strstr(error_output->str, message)) {
+        g_test_message("QEMU rejection: %s", error_output->str);
+    }
     g_assert_nonnull(strstr(error_output->str, message));
 }
 
@@ -1743,6 +1746,196 @@ static char *expansion_prom(void)
     return path;
 }
 
+static void test_expansion_storage_binding_required(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "origin300,topology=origin300-pci-expansion-configuration-storage-experiment",
+        "-cpu", "R14000", "-smp", "2", "-m", "512M", "-S",
+        "-nodefaults", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+        "configuration storage selection requires one image binding");
+}
+
+#define STORAGE_TOPOLOGY \
+    "origin300,topology=origin300-pci-expansion-configuration-storage-experiment"
+#define STORAGE_BINDING "expansion-storage.0=expansion-enclosure=cfg"
+
+static char *expansion_storage_image(off_t size)
+{
+    GError *error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("expansion-storage-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_expansion_storage_input_refusals(void)
+{
+    static const struct {
+        const char *machine;
+        const char *message;
+    } cases[] = {
+        { "origin300,topology=origin300-pci-expansion-experiment,"
+          STORAGE_BINDING, "binding requires selection" },
+        { STORAGE_TOPOLOGY ",expansion-storage.0=unknown=cfg",
+          "names an unselected module" },
+        { STORAGE_TOPOLOGY ",expansion-storage.0=compute-module=cfg",
+          "names an unselected module" },
+        { STORAGE_TOPOLOGY "," STORAGE_BINDING ","
+          "expansion-storage.1=expansion-enclosure=cfg",
+          "accepts one image binding" },
+        { STORAGE_TOPOLOGY ",expansion-storage.0==cfg",
+          "expected module-id=backend-id" },
+        { STORAGE_TOPOLOGY ",expansion-storage.0=expansion-enclosure=",
+          "expected module-id=backend-id" },
+        { STORAGE_TOPOLOGY ",expansion-storage.0=expansion-enclosure=cfg=extra",
+          "expected module-id=backend-id" },
+        { STORAGE_TOPOLOGY "," STORAGE_BINDING,
+          "backend 'cfg' does not exist" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        const char *args[] = { qtest_qemu_binary(NULL), "-M", cases[i].machine,
+            "-cpu", "R14000", "-smp", "2", "-m", "512M", "-S",
+            "-nodefaults", "-display", "none", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+}
+
+static void test_expansion_storage_backend_refusals(void)
+{
+    g_autofree char *small = expansion_storage_image(16 * 1024 * 1024 - 1);
+    g_autofree char *large = expansion_storage_image(16 * 1024 * 1024 + 1);
+    g_autofree char *raw = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *qcow = expansion_storage_image(0);
+    g_autofree char *prom = expansion_prom();
+    const struct {
+        const char *path;
+        const char *format;
+        const char *interface;
+        bool readonly;
+        const char *message;
+    } cases[] = {
+        { small, "raw", "none", false, "image of exactly 16 MiB" },
+        { large, "raw", "none", false, "image of exactly 16 MiB" },
+        { raw, "raw", "none", true, "image of exactly 16 MiB" },
+        { qcow, "qcow2", "none", false, "image of exactly 16 MiB" },
+        { raw, "raw", "pflash", false, "already in use" },
+    };
+
+    g_assert_true(mkimg(qcow, "qcow2", 16));
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_test_message("storage backend refusal: case %u, format %s, "
+                       "interface %s, readonly %u", i, cases[i].format,
+                       cases[i].interface, cases[i].readonly);
+        const char *readonly = "off";
+
+        if (cases[i].readonly) {
+            readonly = "on";
+        }
+        g_autofree char *drive = g_strdup_printf(
+            "if=%s,id=cfg,file=%s,format=%s,readonly=%s", cases[i].interface,
+            cases[i].path, cases[i].format,
+            readonly);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M",
+            STORAGE_TOPOLOGY "," STORAGE_BINDING, "-cpu", "R14000",
+            "-smp", "2", "-m", "512M", "-S", "-drive", drive,
+            "-bios", prom, "-nodefaults", "-display", "none", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+    g_assert_cmpint(unlink(small), ==, 0);
+    g_assert_cmpint(unlink(large), ==, 0);
+    g_assert_cmpint(unlink(raw), ==, 0);
+    g_assert_cmpint(unlink(qcow), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+static void test_expansion_storage_provider_refusals(void)
+{
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    const char *options[] = {
+        "driver=raw,file.driver=file,file.filename=%s,offset=0",
+        "driver=raw,file.driver=file,file.filename=%s,offset=512",
+        "driver=raw,file.driver=file,file.filename=%s,size=16777216",
+        "driver=raw,file.driver=blkdebug,file.image.driver=file,"
+        "file.image.filename=%s",
+        "driver=raw,file.driver=null-co,file.size=16777216",
+        "format=raw,file=%s,snapshot=on",
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(options); i++) {
+        g_autofree char *provider = g_strdup_printf(options[i], image);
+        g_autofree char *drive = g_strdup_printf("if=none,id=cfg,%s", provider);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M",
+            STORAGE_TOPOLOGY "," STORAGE_BINDING, "-cpu", "R14000",
+            "-smp", "2", "-m", "512M", "-S", "-drive", drive,
+            "-bios", prom, "-nodefaults", "-display", "none", NULL };
+
+        g_test_message("storage provider refusal: case %u", i);
+        assert_qemu_rejects(args, "full regular raw-to-file image");
+    }
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+static void test_expansion_storage_composed_read(void)
+{
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *compute = expansion_storage_image(16 * 1024 * 1024);
+    uint8_t bytes[8];
+    int fd = open(image, O_WRONLY);
+    QTestState *qts;
+
+    stq_be_p(bytes, UINT64_C(0xfedcba9876543210));
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x9e0000),
+                    ==, sizeof(bytes));
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = open(compute, O_WRONLY);
+    g_assert_cmpint(fd, >=, 0);
+    stq_be_p(bytes, UINT64_C(0x0123456789abcdef));
+    g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x9e0000),
+                    ==, sizeof(bytes));
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = open(image, O_WRONLY);
+    g_assert_cmpint(fd, >=, 0);
+    memset(bytes, 0xff, sizeof(bytes));
+    g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), 0x820000),
+                    ==, sizeof(bytes));
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M %s,%s -cpu R14000 -smp 2 -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-drive if=pflash,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none", STORAGE_TOPOLOGY,
+        STORAGE_BINDING, image, compute, prom);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    g_assert_cmphex(qtest_readq(qts, UINT64_C(0x23a1e0000)), ==,
+                    UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1001a1e0000)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_writeq(qts, UINT64_C(0x23a002aa8), 0xaa);
+    qtest_writeq(qts, UINT64_C(0x23a001550), 0x55);
+    qtest_writeq(qts, UINT64_C(0x23a002aa8), 0xa0);
+    qtest_writeq(qts, UINT64_C(0x23a080000), 0x1234);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x23a020000)), ==, 0x1234);
+    g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1001a1e0000)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_assert_cmpint(unlink(compute), ==, 0);
+}
+
 static void test_expansion_controller_inputs(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -2435,6 +2628,16 @@ int main(int argc, char **argv)
                         NULL, test_expansion_controller_serial);
     qtest_add_data_func("sn/builder/expansion/controller-serial/refusals",
                         NULL, test_expansion_serial_refusals);
+    qtest_add_func("sn/builder/expansion/storage/input-refusals",
+                   test_expansion_storage_input_refusals);
+    qtest_add_func("sn/builder/expansion/storage/backend-refusals",
+                   test_expansion_storage_backend_refusals);
+    qtest_add_func("sn/builder/expansion/storage/provider-refusals",
+                   test_expansion_storage_provider_refusals);
+    qtest_add_func("sn/builder/expansion/storage/composed-read",
+                   test_expansion_storage_composed_read);
+    qtest_add_func("sn/builder/expansion/storage/binding-required",
+                   test_expansion_storage_binding_required);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",
                         NULL, test_expansion_controller_inputs);
     qtest_add_data_func("sn/builder/expansion/controller-refusals",

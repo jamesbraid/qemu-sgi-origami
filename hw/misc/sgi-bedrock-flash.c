@@ -27,6 +27,8 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "exec/memop.h"
+#include "block/block.h"
+#include "qobject/qdict.h"
 #include "hw/block/flash.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -208,6 +210,20 @@ static const VMStateDescription vmstate_flash = {
     },
 };
 
+BlockDriverState *sgi_bedrock_flash_open_slice(BlockDriverState *backing,
+                                                    int64_t offset,
+                                                    int flags, Error **errp)
+{
+    QDict *options = qdict_new();
+
+    qdict_put_str(options, "driver", "raw");
+    qdict_put_str(options, "file", bdrv_get_node_name(backing));
+    qdict_put_int(options, "offset", offset);
+    qdict_put_int(options, "size", SGI_BEDROCK_FLASH_PART_SIZE);
+    return bdrv_open(NULL, NULL, options, flags, errp);
+}
+
+
 static void flash_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockFlashState *s = SGI_BEDROCK_FLASH(dev);
@@ -215,7 +231,8 @@ static void flash_realize(DeviceState *dev, Error **errp)
     for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
         g_autofree char *drive =
             object_property_get_str(OBJECT(s->flash[i]), "drive", NULL);
-        g_autofree char *name = s->node ?
+        g_autofree char *name = s->name_prefix ?
+            g_strdup_printf("%s.prom%u", s->name_prefix, i) : s->node ?
             g_strdup_printf("%s.node%u.prom%u", TYPE_SGI_BEDROCK_FLASH,
                             s->node, i) :
             g_strdup_printf("%s.prom%u", TYPE_SGI_BEDROCK_FLASH, i);
@@ -286,6 +303,7 @@ static void flash_init(Object *obj)
 
 static const Property flash_properties[] = {
     DEFINE_PROP_UINT32("node", SGIBedrockFlashState, node, 0),
+    DEFINE_PROP_STRING("name-prefix", SGIBedrockFlashState, name_prefix),
 };
 
 static void flash_class_init(ObjectClass *klass, const void *data)

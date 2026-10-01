@@ -49,6 +49,29 @@ class CheckSystemModelTests(unittest.TestCase):
         )
 
 
+    def test_expansion_configuration_storage_schema(self):
+        schema = self.checker_module.schema(INPUTS)
+        item = schema["properties"]["machine"]["properties"]["emulation"][
+            "properties"]["io_assemblies"]["items"]
+        validator = self.checker_module.jsonschema.Draft202012Validator(
+            dict(item, **{"$defs": schema["$defs"]}))
+        entry = {
+            "version": 1, "kind": "origin300-pci-expansion", "peer": "io-peer",
+            "module": "io-module", "controller": "io-l1", "placement": 1,
+            "initial_node_number": 0, "bedrock_revision": 2,
+            "xbridge_revision": 2, "head_ports": [8, 9, 12, 13],
+            "controller_profile": "pci-expansion", "bic_identity": 49152,
+            "configuration_storage": "bedrock-flash-experiment",
+            "main_power": "functional-experiment", "initial_main_power": True,
+        }
+        self.assertEqual(list(validator.iter_errors(entry)), [])
+        del entry["main_power"]
+        del entry["initial_main_power"]
+        self.assertTrue(list(validator.iter_errors(entry)))
+        entry.update(main_power="functional-experiment",
+                     initial_main_power=True, configuration_storage="physical")
+        self.assertTrue(list(validator.iter_errors(entry)))
+
     def test_expansion_main_power_schema_requires_both_fields(self):
         schema = self.checker_module.schema(INPUTS)
         item = schema["properties"]["machine"]["properties"]["emulation"][

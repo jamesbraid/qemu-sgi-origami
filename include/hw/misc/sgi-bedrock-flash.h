@@ -79,6 +79,11 @@ struct SGIBedrockFlashState {
      * snapshots carry, a later node's carry its index as well.
     */
     uint32_t node;
+    char *name_prefix;
 };
+
+BlockDriverState *sgi_bedrock_flash_open_slice(BlockDriverState *backing,
+                                               int64_t offset, int flags,
+                                               Error **errp);
 
 #endif

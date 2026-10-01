@@ -501,6 +501,19 @@
   'data': [ 'functional-experiment' ] }
 
 ##
+# @SGIModelConfigurationStorage:
+#
+# Explicit caller-backed functional configuration storage experiment.
+#
+# @bedrock-flash-experiment: Two independent 8 MiB flash positions
+#     backed by one caller-supplied raw image.
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelConfigurationStorage',
+  'data': [ 'bedrock-flash-experiment' ] }
+
+##
 # @SGIModelIoAssembly:
 #
 # Versioned synthetic construction policy, separate from physical
@@ -540,6 +553,10 @@
 #     Requires @initial-main-power; omission preserves existing
 #     behavior.
 #
+# @configuration-storage: Optional caller-backed storage.
+#     Requires @main-power and an explicit runtime image
+#     binding.
+#
 # @initial-main-power: Explicit initial main-power state.
 #     Requires @main-power.
 #
@@ -568,6 +585,7 @@
             'bic-identity': 'uint64',
             '*controller-startup': 'SGIModelControllerStartup',
             '*main-power': 'SGIModelMainPower',
+            '*configuration-storage': 'SGIModelConfigurationStorage',
             '*power-command-issuer': 'uint32',
             '*initial-main-power': 'bool',
             '*initial-latch': 'uint16',

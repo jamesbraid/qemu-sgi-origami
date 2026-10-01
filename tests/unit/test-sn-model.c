@@ -723,7 +723,10 @@ static void test_existing_topologies_have_no_io_peers(void)
         const SGIModelModuleList *module;
 
         if (g_str_equal(entry->value->name,
-                        "origin300-pci-expansion-experiment")) {
+                        "origin300-pci-expansion-experiment") ||
+            g_str_equal(
+                entry->value->name,
+                "origin300-pci-expansion-configuration-storage-experiment")) {
             continue;
         }
         g_assert_false(entry->value->has_io_peers);
@@ -799,6 +802,73 @@ static void test_expansion_offering(void)
     a->has_main_power = true;
     g_assert_true(sgi_model_check_runtime_endpoints(t, &err));
     g_assert_null(err);
+}
+
+static void test_expansion_storage_offering(void)
+{
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    SGIModelTopologyList *entry;
+    SGIModelTopology *topology = NULL;
+    SGIModelIoAssembly *assembly;
+    SGIModelIoAssemblyList duplicate;
+    Error *error = NULL;
+    uint32_t owner;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->name,
+                "origin300-pci-expansion-configuration-storage-experiment")) {
+            topology = entry->value;
+            break;
+        }
+    }
+    g_assert_nonnull(topology);
+    assembly = topology->io_assemblies->value;
+    g_assert_true(assembly->has_configuration_storage);
+    g_assert_cmpint(assembly->configuration_storage, ==,
+                    SGI_MODEL_CONFIGURATION_STORAGE_BEDROCK_FLASH_EXPERIMENT);
+    g_assert_true(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_null(error);
+
+    assembly->has_main_power = false;
+    assembly->has_initial_main_power = false;
+    g_assert_false(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_nonnull(error);
+    error_free(error);
+    error = NULL;
+    assembly->has_main_power = true;
+    assembly->has_initial_main_power = true;
+    assembly->configuration_storage = SGI_MODEL_CONFIGURATION_STORAGE__MAX;
+    g_assert_false(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_nonnull(error);
+    error_free(error);
+    error = NULL;
+    assembly->has_configuration_storage = false;
+    g_assert_true(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_null(error);
+    assembly->has_configuration_storage = true;
+    assembly->configuration_storage =
+        SGI_MODEL_CONFIGURATION_STORAGE_BEDROCK_FLASH_EXPERIMENT;
+
+    owner = assembly->module_index;
+    assembly->module_index = 0;
+    g_assert_false(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_nonnull(error);
+    error_free(error);
+    error = NULL;
+    assembly->module_index = owner;
+    owner = assembly->controller_index;
+    assembly->controller_index = 0;
+    g_assert_false(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_nonnull(error);
+    error_free(error);
+    error = NULL;
+    assembly->controller_index = owner;
+    duplicate = (SGIModelIoAssemblyList) { .value = assembly };
+    topology->io_assemblies->next = &duplicate;
+    g_assert_false(sgi_model_check_runtime_endpoints(topology, &error));
+    g_assert_nonnull(error);
+    error_free(error);
+    topology->io_assemblies->next = NULL;
 }
 
 static void test_io_peer_runtime_refusal(const void *data)
@@ -1035,6 +1105,8 @@ int main(int argc, char **argv)
                     test_existing_topologies_have_no_io_peers);
     g_test_add_func("/sn-model/io-peer/expansion-offering",
                     test_expansion_offering);
+    g_test_add_func("/sn-model/io-peer/expansion-storage-offering",
+                    test_expansion_storage_offering);
     g_test_add_data_func("/sn-model/io-peer/runtime-refuses-peer", NULL,
                          test_io_peer_runtime_refusal);
     g_test_add_data_func("/sn-model/io-peer/runtime-refuses-module-only",
