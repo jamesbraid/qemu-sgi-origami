@@ -807,7 +807,7 @@ static void test_translation_entries_reset_clear(const void *data)
  * The transfer source's second BAR, the 64-bit register window, put one
  * megabyte above its first so the device-size window base (a 1 MB-granular
  * field) names it cleanly. WIDE_FIXED is the read-only register's offset, and
- * the two goldens are its constant read whole and read byte-reversed.
+ * the goldens describe its unchanged, whole-reversed and word-reversed bytes.
  */
 #define WIDE_CARD_MMIO          (DMA_CARD_MMIO + 0x100000u)
 #define WIDE_FIXED              0x00
@@ -815,6 +815,8 @@ static void test_translation_entries_reset_clear(const void *data)
 #define WIDE_ROUNDTRIP_VALUE    0xdeadbeefcafef00dULL
 #define WIDE_GOLDEN_UNCHANGED   0x0123456789abcdefULL
 #define WIDE_GOLDEN_MIRRORED    0xefcdab8967452301ULL
+#define WIDE_GOLDEN_WORD_SWAPPED 0x67452301efcdab89ULL
+#define WIDE_WRITE_WORD_SWAPPED  0xefbeadde0df0fecaULL
 
 /*
  * The translated window, and the two pages of it this test uses. A page is 4
@@ -1839,8 +1841,8 @@ static void test_dma_direct_window_64bit_ignores_the_offset_step(const void *dat
  * eight-byte access as one cycle and mirrors the doubleword on the
  * programmed-access swap bit. Read a fixed register whole under both
  * settings (unchanged clear, byte-reversed set), confirm a 32-bit slot still
- * splits and never mirrors, and round-trip the scratch through the write
- * path.
+ * splits and reverses each word separately, and round-trip the scratch through
+ * the write path.
  */
 static void test_dma_device_window_64bit_doubleword(const void *data)
 {
@@ -1866,19 +1868,22 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
                     WIDE_GOLDEN_MIRRORED);
 
-    /* Clear the device-size bit: a 32-bit slot splits the doubleword into
-     * two word cycles (big-endian high word at the lower offset) and does
-     * not consult the programmed-access swap bit, so the read is the natural
-     * doubleword, the same as the one-cycle read, whether that bit is set or
-     * not. */
+    /*
+     * A 32-bit slot splits the doubleword into two word cycles. The swap
+     * bit reverses bytes within each word, preserving their order.
+     */
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
                     WIDE_GOLDEN_UNCHANGED);
     qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
                  DEV_MEMORY_SPACE | DEV_SWAP_PROGRAMMED | (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
+                    0xefcdab89);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_FIXED + 4), ==,
+                    0x67452301);
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_FIXED), ==,
-                    WIDE_GOLDEN_UNCHANGED);
+                    WIDE_GOLDEN_WORD_SWAPPED);
 
     /*
      * The write direction round-trips a doubleword to the scratch. The swap
@@ -1915,6 +1920,20 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
                  DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
     g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
                     WIDE_ROUNDTRIP_VALUE);
+
+    /* Read a swapped split write through the unswapped one-cycle path. */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_SWAP_PROGRAMMED |
+                 (WIDE_CARD_MMIO >> 20));
+    qtest_writeq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH, WIDE_ROUNDTRIP_VALUE);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(DMA_SLOT)),
+                 DEV_MEMORY_SPACE | DEV_64BIT_DEVICE | (WIDE_CARD_MMIO >> 20));
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
+                    0x0df0feca);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH + 4), ==,
+                    0xefbeadde);
+    g_assert_cmphex(qtest_readq(qts, WINDOW(DMA_SLOT) + WIDE_SCRATCH), ==,
+                    WIDE_WRITE_WORD_SWAPPED);
 
     qtest_quit(qts);
 }
