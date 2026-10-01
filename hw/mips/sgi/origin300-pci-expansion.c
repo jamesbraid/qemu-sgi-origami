@@ -565,8 +565,10 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
         qemu_log_mask(LOG_GUEST_ERROR, "pci-expansion: main power off\n");
         return MEMTX_ACCESS_ERROR;
     }
-    if (local >= UINT64_C(0x38000000) && local < UINT64_C(0x40000000)) {
-        offset = local - UINT64_C(0x38000000);
+    if ((local >= UINT64_C(0x38000000) && local < UINT64_C(0x40000000)) ||
+        (local >= UINT64_C(0x10038000000) &&
+         local < UINT64_C(0x10040000000))) {
+        offset = (local & UINT64_C(0xffffffff)) - UINT64_C(0x38000000);
         if (!s->storage_space_initialized || !size ||
             size > SGI_BEDROCK_FLASH_WINDOW_SIZE - offset) {
             return MEMTX_DECODE_ERROR;

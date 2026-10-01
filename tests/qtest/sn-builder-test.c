@@ -1921,6 +1921,14 @@ static void test_expansion_storage_composed_read(void)
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     g_assert_cmphex(qtest_readq(qts, UINT64_C(0x23a1e0000)), ==,
                     UINT64_C(0xfedcba9876543210));
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x1023a1e0000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, UINT64_C(0xfedcba9876543210));
+        g_assert_true(qtest_memread_cpu(qts, cpu, UINT64_C(0x1043a1e0000),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
     g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1001a1e0000)), ==,
                     UINT64_C(0x0123456789abcdef));
     qtest_writeq(qts, UINT64_C(0x23a002aa8), 0xaa);
@@ -1928,8 +1936,18 @@ static void test_expansion_storage_composed_read(void)
     qtest_writeq(qts, UINT64_C(0x23a002aa8), 0xa0);
     qtest_writeq(qts, UINT64_C(0x23a080000), 0x1234);
     g_assert_cmphex(qtest_readw(qts, UINT64_C(0x23a020000)), ==, 0x1234);
+    g_assert_true(qtest_memread_cpu(qts, 0, UINT64_C(0x1023a020000),
+                                   bytes, 2));
+    g_assert_cmphex(lduw_be_p(bytes), ==, 0x1234);
     g_assert_cmphex(qtest_readq(qts, UINT64_C(0x1001a1e0000)), ==,
                     UINT64_C(0x0123456789abcdef));
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(7) << 32);
+    g_assert_true(qtest_memread_cpu(qts, 0, UINT64_C(0x1023a1e0000),
+                                   bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    g_assert_true(qtest_memread_cpu(qts, 0, UINT64_C(0x10e3a1e0000),
+                                   bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes), ==, UINT64_C(0xfedcba9876543210));
     qtest_quit(qts);
     g_assert_cmpint(unlink(image), ==, 0);
     g_assert_cmpint(unlink(prom), ==, 0);

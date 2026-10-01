@@ -263,9 +263,10 @@ protocols are unsupported. The backend remains reserved by the expansion
 assembly; separate raw slices supply two independently stateful 8 MiB CFI
 positions. The attachment creates no image or default contents.
 
-Only the expansion RBOOT window is connected. NASID 1 physical address
-``0x23a1e0000`` reads image offset ``0x9e0000``. LBOOT and executable aliases
-are absent. Main power off refuses guest access while an already accepted
+Only the expansion RBOOT window is connected. NASID 1 node-special address
+``0x23a1e0000`` reads image offset ``0x9e0000``. Its CPU Hub-space reference
+uses QEMU's 42-bit carrier ``0x1023a1e0000`` and reaches the same provider.
+LBOOT and executable aliases are absent. Main power off refuses guest access while an already accepted
 flash timer continues. Power transitions preserve command state; whole
 machine reset returns array mode without erasing bytes. Isolated controller
 reset preserves flash state. Migration requires the same storage selection,
