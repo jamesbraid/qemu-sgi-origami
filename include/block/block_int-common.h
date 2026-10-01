@@ -727,6 +727,10 @@ struct BlockDriver {
     int64_t coroutine_fn GRAPH_RDLOCK_PTR (*bdrv_co_getlength)(
         BlockDriverState *bs);
 
+    /* See bdrv_get_full_raw_file_length(). No generic child forwarding. */
+    int64_t coroutine_fn GRAPH_RDLOCK_PTR (*bdrv_co_get_full_raw_file_length)(
+        BlockDriverState *bs);
+
     int64_t coroutine_fn GRAPH_RDLOCK_PTR (*bdrv_co_get_allocated_file_size)(
         BlockDriverState *bs);
 

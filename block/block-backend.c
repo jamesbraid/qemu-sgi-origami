@@ -1674,6 +1674,17 @@ int64_t coroutine_fn blk_co_getlength(BlockBackend *blk)
     return bdrv_co_getlength(blk_bs(blk));
 }
 
+int64_t coroutine_fn blk_co_get_full_raw_file_length(BlockBackend *blk)
+{
+    IO_CODE();
+    GRAPH_RDLOCK_GUARD();
+
+    if (!blk_co_is_available(blk)) {
+        return -ENOMEDIUM;
+    }
+    return bdrv_co_get_full_raw_file_length(blk_bs(blk));
+}
+
 int64_t coroutine_fn blk_co_nb_sectors(BlockBackend *blk)
 {
     BlockDriverState *bs = blk_bs(blk);

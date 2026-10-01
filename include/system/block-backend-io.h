@@ -89,6 +89,10 @@ void co_wrapper blk_eject(BlockBackend *blk, bool eject_flag);
 int64_t coroutine_fn blk_co_getlength(BlockBackend *blk);
 int64_t co_wrapper_mixed blk_getlength(BlockBackend *blk);
 
+/* See bdrv_get_full_raw_file_length(). An empty backend returns -ENOMEDIUM. */
+int64_t coroutine_fn blk_co_get_full_raw_file_length(BlockBackend *blk);
+int64_t co_wrapper_mixed blk_get_full_raw_file_length(BlockBackend *blk);
+
 void coroutine_fn blk_co_get_geometry(BlockBackend *blk,
                                       uint64_t *nb_sectors_ptr);
 void blk_get_geometry(BlockBackend *blk, uint64_t *nb_sectors_ptr);

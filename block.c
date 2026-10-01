@@ -6114,6 +6114,20 @@ int64_t coroutine_fn bdrv_co_getlength(BlockDriverState *bs)
     return ret * BDRV_SECTOR_SIZE;
 }
 
+int64_t coroutine_fn bdrv_co_get_full_raw_file_length(BlockDriverState *bs)
+{
+    IO_CODE();
+    assert_bdrv_graph_readable();
+
+    if (!bs->drv) {
+        return -ENOMEDIUM;
+    }
+    if (!bs->drv->bdrv_co_get_full_raw_file_length) {
+        return -ENOTSUP;
+    }
+    return bs->drv->bdrv_co_get_full_raw_file_length(bs);
+}
+
 bool bdrv_is_sg(BlockDriverState *bs)
 {
     IO_CODE();
