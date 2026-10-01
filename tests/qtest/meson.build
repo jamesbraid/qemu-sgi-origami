@@ -327,7 +327,11 @@ else
   dbus_vmstate1 = []
 endif
 
-qtests_x86_64 = qtests_i386
+qtests_x86_64 = qtests_i386 + \
+  (config_all_devices.has_key('CONFIG_USB_OHCI_PCI') and \
+   config_all_devices.has_key('CONFIG_I440FX') and \
+   config_all_devices.has_key('CONFIG_USB_HID') ? \
+    ['usb-ohci-transfer-test'] : [])
 
 qtests_alpha = ['boot-serial-test'] + \
   qtests_filter + \
