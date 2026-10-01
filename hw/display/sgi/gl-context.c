@@ -676,25 +676,40 @@ static const uint8_t sgi_gl_nargs[] = {
 };
 
 uint32_t sgi_gl_draw_targets(const SGIGLDrawState *st,
-                             SGIColourTarget out[2])
+                             SGIColourTarget out[SGI_GL_MAX_TARGETS])
 {
+    const SGIColourTarget pick[SGI_GL_MAX_TARGETS] = {
+        st->drawable.front, st->drawable.back,
+        st->drawable.extra[0], st->drawable.extra[1],
+    };
     uint32_t n = 0;
 
-    if (st->draw_buffers & ~(SGI_GL_DRAW_FRONT | SGI_GL_DRAW_BACK)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: draw buffers 0x%x beyond the "
-                      "front and back buffers ignored\n", st->draw_buffers);
+    for (int bit = 0; bit < SGI_GL_MAX_TARGETS; bit++) {
+        bool dup = false;
+
+        if (!(st->draw_buffers & (1u << bit))) {
+            continue;
+        }
+        if (bit >= 2 && !pick[bit]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: draw buffer bit %d of 0x%x has "
+                          "no buffer; ignored\n", bit, st->draw_buffers);
+            continue;
+        }
+        /*
+         * A drawable whose buffers are one target, as a single-buffered
+         * one may be, is stored to once: a read-modify-write stage in front
+         * of the store must not apply twice.
+         */
+        for (uint32_t i = 0; i < n; i++) {
+            dup |= out[i] == pick[bit];
+        }
+        if (!dup) {
+            out[n++] = pick[bit];
+        }
     }
-    if (st->draw_buffers & SGI_GL_DRAW_FRONT) {
-        out[n++] = st->drawable.front;
-    }
-    /*
-     * A drawable whose front and back are one target, as a single-buffered
-     * one may be, is stored to once: a read-modify-write stage in front of
-     * the store must not apply twice.
-     */
-    if ((st->draw_buffers & SGI_GL_DRAW_BACK) &&
-        !(n && st->drawable.back == out[0])) {
-        out[n++] = st->drawable.back;
+    if (st->draw_buffers & ~0xfu) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: draw buffers 0x%x beyond bit 3 "
+                      "ignored\n", st->draw_buffers);
     }
     return n;
 }
@@ -3178,8 +3193,8 @@ static const VMStateDescription vmstate_sgi_gl_clip_empty = {
 
 static const VMStateDescription vmstate_sgi_gl_drawable = {
     .name = "sgi-gl-drawable",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_gl_clip_empty,
         NULL
@@ -3192,6 +3207,7 @@ static const VMStateDescription vmstate_sgi_gl_drawable = {
                              vmstate_sgi_clip_rect, SGIClipRect),
         VMSTATE_UINT32(front, SGIGLDrawable),
         VMSTATE_UINT32(back, SGIGLDrawable),
+        VMSTATE_UINT32_ARRAY(extra, SGIGLDrawable, 2),
         VMSTATE_END_OF_LIST()
     },
 };
