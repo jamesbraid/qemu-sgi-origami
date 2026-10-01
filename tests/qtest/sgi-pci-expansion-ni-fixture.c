@@ -198,6 +198,9 @@ struct NIFixtureState {
     DeviceState *uart[2];
     MemoryRegion uart_view[2];
     bool management;
+    bool processor_absence;
+    bool absence_duplicate_refused;
+    bool absence_late_refused;
     bool power;
     bool storage;
     char *storage_drive;
@@ -453,6 +456,12 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
         }
         return 0;
     }
+    if (offset == 120) {
+        return s->absence_duplicate_refused;
+    }
+    if (offset == 128) {
+        return s->absence_late_refused;
+    }
     if (offset == 112) {
         return s->storage_direct_result;
     }
@@ -475,6 +484,13 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
         stw_le_p(bytes, value);
         address_space_write(&s->adapter_work, (offset - 0x600) / 8,
                             MEMTXATTRS_UNSPECIFIED, bytes, 2);
+    } else if (offset == 120) {
+        Error *error = NULL;
+
+        s->absence_late_refused =
+            !sgi_origin300_pci_expansion_enable_processor_absence(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), &error);
+        error_free(error);
     } else if (offset == 88) {
         s->storage_direct_address = value;
     } else if (offset == 96) {
@@ -791,8 +807,23 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         }
     }
     if (!sgi_origin300_pci_expansion_enable_ni_route(
-            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp) ||
-        !sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp)) {
+        return;
+    }
+    if (s->processor_absence &&
+        !sgi_origin300_pci_expansion_enable_processor_absence(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), errp)) {
+        return;
+    }
+    if (s->processor_absence) {
+        Error *error = NULL;
+
+        s->absence_duplicate_refused =
+            !sgi_origin300_pci_expansion_enable_processor_absence(
+                SGI_ORIGIN300_PCI_EXPANSION(s->chassis), &error);
+        error_free(error);
+    }
+    if (!sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
         return;
     }
     if (s->storage_late) {
@@ -979,6 +1010,8 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_STRING("storage-controller-id", NIFixtureState,
                        storage_controller_id),
     DEFINE_PROP_STRING("storage-drive", NIFixtureState, storage_drive),
+    DEFINE_PROP_BOOL("processor-absence", NIFixtureState,
+                     processor_absence, false),
     DEFINE_PROP_BOOL("power", NIFixtureState, power, false),
     DEFINE_PROP_BOOL("initial-power", NIFixtureState, initial_power, true),
     DEFINE_PROP_BOOL("management", NIFixtureState, management, false),

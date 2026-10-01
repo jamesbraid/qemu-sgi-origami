@@ -1312,6 +1312,225 @@ static void storage_program(QTestState *qts, uint64_t base, uint64_t offset,
     storage_cycle(qts, base, offset * 4, value);
 }
 
+#define ABSENCE_OPTIONS "-global sgi-pci-expansion-ni-fixture.power=on " \
+                        "-global sgi-pci-expansion-ni-fixture." \
+                        "processor-absence=on"
+static const uint64_t presence_offsets[] = { 0x40, 0x48, 0x200040, 0x200048 };
+
+static void absence_words(QTestState *qts, unsigned nasid)
+{
+    for (unsigned requester = 0; requester < 2; requester++) {
+        for (unsigned word = 0; word < G_N_ELEMENTS(presence_offsets); word++) {
+            uint64_t address = REQUESTER(requester) + IO + NODE(nasid) +
+                               0x1800000 + presence_offsets[word];
+
+            g_assert_cmphex(qtest_readq(qts, address), ==, 0);
+            result(qts, requester, MEMTX_OK);
+        }
+    }
+}
+
+static void test_processor_absence(void)
+{
+    QTestState *qts = management_start(ABSENCE_OPTIONS);
+
+    absence_words(qts, 7);
+    g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 120), ==, 1);
+    qtest_writeq(qts, MANAGEMENT + 120, 1);
+    g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 128), ==, 1);
+    for (unsigned word = 0; word < G_N_ELEMENTS(presence_offsets); word++) {
+        uint64_t address = REQUESTER(0) + BIC_IO +
+                           0x1800000 + presence_offsets[word];
+
+        g_assert_cmphex(qtest_readq(qts, COMPUTE + presence_offsets[word]),
+                        ==, word < 2);
+        qtest_writeq(qts, address, UINT64_MAX);
+        result(qts, 0, MEMTX_OK);
+    }
+    absence_words(qts, 7);
+    for (unsigned owner = 0; owner < 2; owner++) {
+        qtest_writeq(qts, MANAGEMENT + 8, owner);
+        absence_words(qts, 7);
+    }
+    qtest_writeq(qts, MANAGEMENT + 48, 1);
+    absence_words(qts, 7);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    absence_words(qts, 7);
+    qtest_quit(qts);
+}
+
+static void absence_transfer(QTestState *qts, uint64_t address,
+                             unsigned length, bool write,
+                             MemTxResult expected)
+{
+    qtest_writeq(qts, MANAGEMENT + 88, address);
+    qtest_writeq(qts, MANAGEMENT + 96, UINT64_MAX);
+    qtest_writeq(qts, MANAGEMENT + 104,
+                 length | ((uint64_t)write << 32));
+    g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 112), ==, expected);
+}
+
+static void test_processor_absence_refusals(void)
+{
+    static const unsigned widths[] = { 1, 2, 4, 16 };
+    QTestState *qts = management_start(ABSENCE_OPTIONS);
+
+    for (unsigned word = 0; word < G_N_ELEMENTS(presence_offsets); word++) {
+        uint64_t offset = presence_offsets[word];
+        uint64_t address = BIC_IO + 0x1800000 + offset;
+
+        for (unsigned width = 0; width < G_N_ELEMENTS(widths); width++) {
+            for (unsigned write = 0; write < 2; write++) {
+                absence_transfer(qts, address, widths[width], write,
+                                 MEMTX_ERROR);
+            }
+        }
+        absence_transfer(qts, address + 1, 8, false, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, address + 1, 8, true, MEMTX_DECODE_ERROR);
+        absence_transfer(qts, BIC_HUB + offset, 8, false,
+                         MEMTX_DECODE_ERROR);
+        absence_transfer(qts, BIC_HUB + offset, 8, true,
+                         MEMTX_DECODE_ERROR);
+    }
+    absence_transfer(qts, BIC_IO + 0x1800050, 8, false, MEMTX_DECODE_ERROR);
+    absence_transfer(qts, BIC_IO + 0x18000a0, 8, false, MEMTX_DECODE_ERROR);
+    absence_transfer(qts, IO + NODE(8) + 0x1800040, 8, false,
+                     MEMTX_DECODE_ERROR);
+    absence_words(qts, 7);
+    power_set(qts, false);
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_ACCESS_ERROR);
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, true, MEMTX_ACCESS_ERROR);
+    power_set(qts, true);
+    absence_words(qts, 7);
+    qtest_quit(qts);
+
+    qts = management_start(ABSENCE_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.connected=off");
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+    qts = management_start("-global sgi-pci-expansion-ni-fixture.power=on");
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_DECODE_ERROR);
+    qtest_writeq(qts, MANAGEMENT + 120, 1);
+    g_assert_cmpuint(qtest_readq(qts, MANAGEMENT + 128), ==, 1);
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_processor_absence_remap(void)
+{
+    QTestState *qts = management_start(ABSENCE_OPTIONS);
+    uint64_t address = REQUESTER(0) + BIC_IO + 0x1e00000;
+    uint64_t revision = qtest_readq(qts, address);
+
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, address,
+                 (revision & ~(UINT64_C(0xff) << 32)) | (UINT64_C(9) << 32));
+    result(qts, 0, MEMTX_OK);
+    absence_transfer(qts, BIC_IO + 0x1800040, 8, false, MEMTX_DECODE_ERROR);
+    absence_words(qts, 9);
+    qtest_quit(qts);
+}
+
+static void test_processor_absence_migration(const void *data)
+{
+    unsigned kind = GPOINTER_TO_UINT(data);
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("ni-absence-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = management_start(kind == 2 ?
+        "-global sgi-pci-expansion-ni-fixture.power=on" : ABSENCE_OPTIONS);
+    QTestState *to = management_start(kind == 1 ?
+        "-global sgi-pci-expansion-ni-fixture.power=on -incoming defer" :
+        ABSENCE_OPTIONS " -incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    if (kind) {
+        qtest_set_expected_status(to, EXIT_FAILURE);
+    } else {
+        absence_words(from, 7);
+        power_set(from, false);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    if (kind) {
+        qtest_qmp_assert_success(from,
+            "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+        qtest_wait_qemu(to);
+    } else {
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration_status(to, "completed", 30);
+        absence_transfer(to, BIC_IO + 0x1800040, 8, false, MEMTX_ACCESS_ERROR);
+        power_set(to, true);
+        absence_words(to, 7);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    if (unlink(socket)) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_processor_absence_old_stream(const void *data)
+{
+    bool selected = GPOINTER_TO_UINT(data);
+    static const char name[] = "sgi-origin300-pci-expansion-module";
+    uint8_t header[1 + sizeof(name) - 1 + 8];
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("ni-absence-v5-XXXXXX", &error);
+    g_autofree char *file = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *stream = NULL;
+    gsize length, found = 0, payload = 0;
+    QTestState *from = management_start(ABSENCE_OPTIONS);
+    QTestState *to = management_start(selected ?
+        ABSENCE_OPTIONS " -incoming defer" :
+        "-global sgi-pci-expansion-ni-fixture.power=on -incoming defer");
+
+    g_assert_no_error(error);
+    file = g_build_filename(directory, "migration.bin", NULL);
+    uri = g_strdup_printf("file:%s", file);
+    sgi_migrate_stopped(from, uri);
+    g_assert_true(g_file_get_contents(file, &stream, &length, &error));
+    g_assert_no_error(error);
+    header[0] = sizeof(name) - 1;
+    memcpy(header + 1, name, sizeof(name) - 1);
+    stl_be_p(header + sizeof(name), 0);
+    stl_be_p(header + sizeof(name) + 4, 6);
+    for (gsize i = 0; i + sizeof(header) < length; i++) {
+        if (!memcmp(stream + i, header, sizeof(header))) {
+            payload = i + sizeof(header);
+            found++;
+        }
+    }
+    g_assert_cmpuint(found, ==, 1);
+    g_assert_cmpuint((uint8_t)stream[payload], ==, 1);
+    /* Reconstruct the prior layout by removing only the new selection byte. */
+    stl_be_p(stream + payload - 4, 5);
+    memmove(stream + payload, stream + payload + 1, length - payload - 1);
+    g_assert_true(g_file_set_contents(file, stream, length - 1, &error));
+    g_assert_no_error(error);
+    if (selected) {
+        qtest_set_expected_status(to, EXIT_FAILURE);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    if (selected) {
+        qtest_wait_qemu(to);
+    } else {
+        sgi_wait_migration_status(to, "completed", 30);
+        absence_transfer(to, BIC_IO + 0x1800040, 8, false,
+                         MEMTX_DECODE_ERROR);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(unlink(file), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_storage_cpu_carrier(void)
 {
     g_autofree char *image = storage_image();
@@ -2197,6 +2416,26 @@ static void test_power_adapter(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/processor-absence/read",
+                   test_processor_absence);
+    qtest_add_func("/sgi/pci-expansion-ni/processor-absence/refusals",
+                   test_processor_absence_refusals);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/processor-absence/old-stream-selected",
+                        GUINT_TO_POINTER(1), test_processor_absence_old_stream);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/processor-absence/old-stream-unselected",
+                        GUINT_TO_POINTER(0), test_processor_absence_old_stream);
+    qtest_add_func("/sgi/pci-expansion-ni/processor-absence/remap",
+                   test_processor_absence_remap);
+    qtest_add_data_func("/sgi/pci-expansion-ni/processor-absence/migration",
+                        GUINT_TO_POINTER(0), test_processor_absence_migration);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/processor-absence/migration-selected-mismatch",
+                        GUINT_TO_POINTER(1), test_processor_absence_migration);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/processor-absence/migration-unselected-mismatch",
+                        GUINT_TO_POINTER(2), test_processor_absence_migration);
     qtest_add_func("/sgi/pci-expansion-ni/storage/read", test_storage_read);
     qtest_add_func("/sgi/pci-expansion-ni/storage/cpu-carrier",
                    test_storage_cpu_carrier);

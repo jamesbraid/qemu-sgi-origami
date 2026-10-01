@@ -2944,6 +2944,13 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             return false;
         }
         object_unref(OBJECT(interface));
+        if (a->has_controller_startup &&
+            a->controller_startup ==
+                SGI_MODEL_CONTROLLER_STARTUP_BIC_FUNCTIONAL_EXPERIMENT &&
+            !sgi_origin300_pci_expansion_enable_processor_absence(assembly,
+                                                                  errp)) {
+            return false;
+        }
         if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
             return false;
         }

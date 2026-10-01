@@ -240,6 +240,27 @@ Without either input, its serial remains absent. Compute L1 controllers
 continue to use the global property. An expansion entry overrides the
 global value only for its selected controller.
 
+Expansion processor-absence experiment
+======================================
+
+The existing typed assembly selection
+``controller_startup: bic-functional-experiment`` also selects bounded
+processor-absence visibility. Both functional expansion topologies use it.
+Assemblies without that selection retain their PI access refusal. The physical
+reference composition has no runtime offering.
+
+Only PI0/PI1 CPU-present A/B words, at offsets ``0x40``, ``0x48``,
+``0x200040`` and ``0x200048``, are accessible through the addressed BIC's
+remote I/O register window. Transfers must originally be aligned eight-byte
+reads or writes. Reads use the existing PI handlers with zero configured
+processors. Writes retain their ignored hardware-set-register behavior.
+Hub-special PI accesses and all other PI registers remain unsupported.
+
+This is a functional approximation: physical BIC PI visibility and reset
+values are unknown. It adds no processor, memory or local PI interrupt sink.
+NASID resolution, direct-link reachability and completed main power still
+control access. Migration requires matching immutable experiment selection.
+
 Expansion configuration storage experiment
 ==========================================
 
