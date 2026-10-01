@@ -2076,6 +2076,79 @@ static void test_lighting_two_sided_draws(void)
     }
 }
 
+/* The triangles a draw hands the sink, as the x of each vertex times ten. */
+typedef struct MeshLog {
+    unsigned n;
+    int vertex[64];
+} MeshLog;
+
+static void mesh_draw(void *opaque, const SGIGLDraw *d)
+{
+    MeshLog *log = opaque;
+
+    g_assert_cmpuint(d->mode, ==, SGI_GL_TRIANGLES);
+    for (uint32_t i = 0; i < d->count; i++) {
+        g_assert_cmpuint(log->n, <, ARRAY_SIZE(log->vertex));
+        log->vertex[log->n++] = lrintf(
+            d->vertices[i * SGI_GL_VERTEX_FLOATS + SGI_GL_V_POSITION] * 10);
+    }
+}
+
+/*
+ * IRIS GL's swaptmesh reaches the head as one word inside a triangle
+ * strip. The vertex after it takes the strip's oldest retained vertex and
+ * its newest instead of its two newest, so the strip turns into a fan
+ * around the oldest, and the triangle faces as the one before it does:
+ * every shared edge is walked in opposite directions. Vertices 0 to 4
+ * sit at x of 0 to 0.4.
+ */
+static void mesh_strip(SGIGLContext *c, const SGIGLSink *sink,
+                       const char *script)
+{
+    uint32_t word[3] = { SGI_GL_TRIANGLE_STRIP };
+
+    command(c, sink, SGI_GL_OP_BEGIN, word, 1);
+    for (const char *p = script; *p; p++) {
+        if (*p == 's') {
+            command(c, sink, SGI_GL_OP_SWAP_TMESH, word, 0);
+        } else {
+            word[0] = bits((*p - '0') / 10.0f);
+            word[1] = bits(0);
+            word[2] = bits(0);
+            command(c, sink, SGI_GL_OP_VERTEX3F, word, 3);
+        }
+    }
+    command(c, sink, SGI_GL_OP_END, word, 0);
+}
+
+static void mesh_check(const char *script, const int *want, unsigned n)
+{
+    MeshLog log = { 0 };
+    SGIGLSink sink = { .draw = mesh_draw, .opaque = &log };
+    SGIGLContext c;
+
+    context_init(&c);
+    mesh_strip(&c, &sink, script);
+    g_assert_cmpuint(log.n, ==, n);
+    for (unsigned i = 0; i < n; i++) {
+        g_assert_cmpint(log.vertex[i], ==, want[i]);
+    }
+}
+
+static void test_swap_tmesh_makes_a_fan(void)
+{
+    /* No swap: 012, 213, 234. */
+    mesh_check("01234", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
+    /* One before vertex 3: 012, 023, then the strip goes on, 324. */
+    mesh_check("012s34", (int[]){ 0, 1, 2, 0, 2, 3, 3, 2, 4 }, 9);
+    /* Two in a row make the fan: 012, 023, 034. */
+    mesh_check("012s3s4", (int[]){ 0, 1, 2, 0, 2, 3, 0, 3, 4 }, 9);
+    /* Two swaps before a vertex cancel. */
+    mesh_check("012ss34", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
+    /* A swap before the first triangle has nothing to swap. */
+    mesh_check("01s234", (int[]){ 0, 1, 2, 2, 1, 3, 2, 3, 4 }, 9);
+}
+
 /*
  * Rescaling multiplies the transformed normal by 1 / |row 3 of M^-1|
  * (2.10.3, m31, m32 and m33 of M^-1), M the modelview. With M's third
@@ -8492,6 +8565,7 @@ int main(int argc, char **argv)
                     test_lighting_raster_position);
     g_test_add_func("/sgi-gl/lighting-two-sided-draws",
                     test_lighting_two_sided_draws);
+    g_test_add_func("/sgi-gl/swap-tmesh", test_swap_tmesh_makes_a_fan);
     g_test_add_func("/sgi-gl/lighting-rescale-normal-uses-a-row",
                     test_lighting_rescale_normal_uses_a_row);
     g_test_add_func("/sgi-gl/lighting-both-at-infinity",
