@@ -631,6 +631,23 @@ typedef struct SGIGLDrawState {
     float window_matrix[16];
     float window_depth_scale;
     uint32_t window_rows_down;          /* 0 or 1 */
+    /*
+     * A fog factor a family supplies, for a board that takes fog as a
+     * compiled curve rather than glFog's mode, density, start and end.
+     * While fog is enabled and fog_factor is set, the rasterizer calls it
+     * once per fragment, after interpolation, with the fragment's window
+     * depth in [0, 1] (the z its depth test uses) and its eye distance
+     * |z| (the fog coordinate the built-in modes take), and uses the
+     * return value clamped to [0, 1] as f in place of the mode's. The
+     * blend with the fog colour and fog index is unchanged. With
+     * fog_factor NULL the built-in mode applies.
+     *
+     * Not GL state and not migrated: the family sets both fields on its
+     * context after creating it and again after restoring one, as it
+     * does its callbacks. fog_opaque is passed back as given.
+     */
+    float (*fog_factor)(void *opaque, float window_z, float eye_z);
+    void *fog_opaque;
     /* The texture environment belongs to the context, not its objects. */
     uint32_t texture_2d;
     uint32_t texture_env_mode;

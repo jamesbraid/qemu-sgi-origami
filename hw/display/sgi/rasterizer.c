@@ -1226,25 +1226,26 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
  * Fog (3.10): the fog factor f from the fragment's fog coordinate c by
  * the mode, clamped to [0, 1], blends an RGBA fragment's red, green and
  * blue toward the fog colour, f C + (1 - f) Cf, and adds (1 - f) times
- * the fog index to a colour index. GL_LINEAR with start equal to end
- * divides by zero; the model takes f as 1 before the end and 0 from it,
- * the limit of the equation from either side.
+ * the fog index to a colour index. A family's fog_factor, where set, gives
+ * f from the window depth and fog coordinate instead. GL_LINEAR with start
+ * equal to end divides by zero; the model takes f as 1 before the end and
+ * 0 from it, the limit of the equation from either side.
  */
-static void sgi_soft_fog(const SGIGLDrawState *st, SGISoftFrag *frag)
+static void sgi_soft_fog(const SGIGLDrawState *st, SGISoftFrag *frag,
+                         double z)
 {
     double c = frag->fog, f;
 
-    switch (st->fog_mode) {
-    case SGI_GL_LINEAR:
+    if (st->fog_factor) {
+        /* A family's own curve replaces the mode; the blend is the same. */
+        f = st->fog_factor(st->fog_opaque, z, c);
+    } else if (st->fog_mode == SGI_GL_LINEAR) {
         f = st->fog_end == st->fog_start ? (c < st->fog_end ? 1 : 0) :
             (st->fog_end - c) / (st->fog_end - st->fog_start);
-        break;
-    case SGI_GL_EXP2:
+    } else if (st->fog_mode == SGI_GL_EXP2) {
         f = exp(-(st->fog_density * c) * (st->fog_density * c));
-        break;
-    default:
+    } else {
         f = exp(-st->fog_density * c);
-        break;
     }
     f = f >= 1 ? 1 : f > 0 ? f : 0;
     if (st->index_bits) {
@@ -1308,7 +1309,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
         return;
     }
     if (r->st->fog) {
-        sgi_soft_fog(r->st, &fogged);
+        sgi_soft_fog(r->st, &fogged, z);
     }
     if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
         return;

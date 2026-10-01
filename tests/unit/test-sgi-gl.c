@@ -3703,6 +3703,76 @@ static void test_fog(void)
     g_assert_cmpuint(frag_count(&f, 4), ==, W * H);
 }
 
+typedef struct FogHook {
+    float ret;
+    float window_z, eye_z;
+    unsigned calls;
+} FogHook;
+
+static float fog_hook(void *opaque, float window_z, float eye_z)
+{
+    FogHook *h = opaque;
+
+    h->window_z = window_z;
+    h->eye_z = eye_z;
+    h->calls++;
+    return h->ret;
+}
+
+/*
+ * A family's fog_factor replaces the mode's factor while fog is enabled
+ * and leaves the blend alone. A blue quad at z -0.5 under identity
+ * matrices has eye distance 0.5 and window depth 0.25, and fogs toward
+ * red:
+ *
+ * - the hook is not called while fog is disabled;
+ * - a factor of 0.25 gives the blend 0xbf0040, whatever the mode says;
+ * - factors past either end clamp to 1 (unfogged) and 0 (fog colour);
+ * - the hook gets the fragment's window depth and eye distance;
+ * - unset, the mode's factor applies again.
+ */
+static void test_fog_factor_hook(void)
+{
+    static FragScene f;
+    FogHook h = { .ret = 0.25f };
+
+    frag_init(&f);
+    frag_fog(&f, SGI_GL_FOG_COLOR, 1, 0, 0, 1);
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 2, 0, 0, 0);
+    f.c.cur.fog_factor = fog_hook;
+    f.c.cur.fog_opaque = &h;
+
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(h.calls, ==, 0);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+
+    enable(&f.c, SGI_GL_FOG, true);
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(h.calls, >=, W * H);
+    g_assert_cmpuint(frag_count(&f, 0xbf0040), ==, W * H);
+    g_assert_cmpfloat(h.window_z, ==, 0.25f);
+    g_assert_cmpfloat(h.eye_z, ==, 0.5f);
+
+    h.ret = 7;
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
+    h.ret = -3;
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
+
+    /* A different depth reaches the hook as given. */
+    h.ret = 1;
+    frag_quad_at(&f, 0, 0, 1, 1, 0.5f);
+    g_assert_cmpfloat(h.window_z, ==, 0.75f);
+    g_assert_cmpfloat(h.eye_z, ==, 0.5f);
+
+    /* Unset, GL_LINEAR from 0 to 2 gives f 0.75 as test_fog expects. */
+    f.c.cur.fog_factor = NULL;
+    frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
+    g_assert_cmpuint(frag_count(&f, 0x4000bf), ==, W * H);
+}
+
 static void frag_offset(FragScene *f, SGIGLOp op, float factor, float c)
 {
     uint32_t word[2] = { bits(factor), bits(c) };
@@ -8447,6 +8517,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
     g_test_add_func("/sgi-gl/fog", test_fog);
+    g_test_add_func("/sgi-gl/fog-factor-hook", test_fog_factor_hook);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
     g_test_add_func("/sgi-gl/alpha-storage", test_alpha_storage);
