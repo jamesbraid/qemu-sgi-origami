@@ -124,6 +124,9 @@
 
 #define ISP_MBOX_CMD_MAILBOX_REG_TEST 0x0006
 #define ISP_MBOX_CMD_ABORT_COMMAND 0x0015
+#define ISP_MBOX_CMD_ABORT_DEVICE 0x0016
+#define ISP_MBOX_CMD_ABORT_TARGET 0x0017
+#define ISP_MBOX_CMD_BUS_RESET 0x0018
 #define ISP_MBOX_CMD_INIT_REQ_QUEUE_A64 0x0052
 #define ISP_MBOX_CMD_INIT_RSP_QUEUE_A64 0x0053
 #define ISP_MBOX_COMPLETE 0x4000
@@ -1175,6 +1178,9 @@ static void expect_retry_complete(const uint8_t *status)
 typedef enum PendingRetryCase {
     RETRY_READ_RESUME,
     RETRY_READ_ABORT,
+    RETRY_ABORT_DEVICE,
+    RETRY_TARGET_RESET,
+    RETRY_BUS_RESET,
     RETRY_WRITE_RESUME,
     RETRY_SHORT_READ,
 } PendingRetryCase;
@@ -1182,7 +1188,10 @@ typedef enum PendingRetryCase {
 static void test_pending_retry(const void *data)
 {
     PendingRetryCase test_case = GPOINTER_TO_INT(data);
-    bool abort = test_case == RETRY_READ_ABORT;
+    bool recovery = test_case == RETRY_READ_ABORT ||
+                    test_case == RETRY_ABORT_DEVICE ||
+                    test_case == RETRY_TARGET_RESET ||
+                    test_case == RETRY_BUS_RESET;
     bool write = test_case == RETRY_WRITE_RESUME;
     bool short_read = test_case == RETRY_SHORT_READ;
     const uint32_t handles[] = { 0x12345671, 0x89abcd72 };
@@ -1212,14 +1221,36 @@ static void test_pending_retry(const void *data)
         wait_for_retry_stop(qts, &events);
     }
 
-    if (abort) {
-        const uint16_t in[] = {
-            ISP_DEVICE_WORD(1, DISK_TARGET, 0),
-            handles[1] >> 16, (uint16_t)handles[1],
-        };
+    if (recovery) {
+        uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0 };
+        uint16_t command;
+        unsigned count = ARRAY_SIZE(in);
 
-        g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_ABORT_COMMAND, in,
-                                 ARRAY_SIZE(in)), ==, ISP_MBOX_COMPLETE);
+        switch (test_case) {
+        case RETRY_READ_ABORT:
+            command = ISP_MBOX_CMD_ABORT_COMMAND;
+            in[1] = handles[1] >> 16;
+            in[2] = (uint16_t)handles[1];
+            break;
+        case RETRY_ABORT_DEVICE:
+            command = ISP_MBOX_CMD_ABORT_DEVICE;
+            break;
+        case RETRY_TARGET_RESET:
+            command = ISP_MBOX_CMD_ABORT_TARGET;
+            in[1] = 1;
+            count = 2;
+            break;
+        case RETRY_BUS_RESET:
+            command = ISP_MBOX_CMD_BUS_RESET;
+            in[0] = 1;
+            in[1] = 1;
+            count = 2;
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        g_assert_cmphex(isp_mbox(qts, command, in, count), ==,
+                        ISP_MBOX_COMPLETE);
         isp_mbox_ack(qts);
         wait_for_completion(qts);
         take_status(qts, handles[1], status);
@@ -1227,7 +1258,7 @@ static void test_pending_retry(const void *data)
         qtest_memread(qts, BUF_PHYS + SECTOR_BYTES, victim, sizeof(victim));
     }
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
-    if (abort) {
+    if (recovery) {
         wait_for_completion(qts);
         take_status(qts, handles[0], status);
         expect_retry_complete(status);
@@ -1276,7 +1307,7 @@ static void test_pending_retry(const void *data)
     expect_retry_complete(status);
     expect_first_sector(after, 0);
     expect_no_status(qts);
-    if (abort) {
+    if (recovery) {
         qtest_memread(qts, BUF_PHYS + SECTOR_BYTES, after, sizeof(after));
         g_assert_cmpmem(after, sizeof(after), victim, sizeof(victim));
     }
@@ -1351,6 +1382,14 @@ int main(int argc, char **argv)
                         test_pending_retry);
     qtest_add_data_func("fuel/scsi/pending-retry-command-abort",
                         GINT_TO_POINTER(RETRY_READ_ABORT), test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-abort-device",
+                        GINT_TO_POINTER(RETRY_ABORT_DEVICE),
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-target-reset",
+                        GINT_TO_POINTER(RETRY_TARGET_RESET),
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-bus-reset",
+                        GINT_TO_POINTER(RETRY_BUS_RESET), test_pending_retry);
     qtest_add_data_func("fuel/scsi/pending-retry-write-resume",
                         GINT_TO_POINTER(RETRY_WRITE_RESUME),
                         test_pending_retry);
