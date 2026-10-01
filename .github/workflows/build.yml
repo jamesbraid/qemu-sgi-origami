@@ -468,8 +468,10 @@ jobs:
             python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
               --expect /src/build-ci/full-unit.expected
 
-            # This make job count also sets Meson's qtest worker count.
-            make -j2 -C /src/build-ci check-qtest-mips64
+            # Use the same thorough setup and worker count as smoke.
+            "$meson" test -C /src/build-ci --setup qemu:thorough \
+              --logbase full-qtest --num-processes 2 --print-errorlogs \
+              --suite qemu:qtest-mips64
           '
 
       - name: retain failure diagnostics
