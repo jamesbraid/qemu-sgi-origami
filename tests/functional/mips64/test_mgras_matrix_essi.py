@@ -17,10 +17,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import test_mgras_desktop as desktop  # noqa: E402
-from lib_mgras_boot import run_board  # noqa: E402
+from lib_mgras_boot import (DISK_REL, DISK_SHA256,  # noqa: E402
+                            run_board)
 from qemu_test import QemuSystemTest  # noqa: E402
 from qemu_test import skipSlowTest, skipBigDataTest  # noqa: E402
 from qemu_test import skipIfMissingEnv  # noqa: E402
+from qemu_test.asset import LocalAsset  # noqa: E402
 
 BOARD = 'essi'
 
@@ -29,7 +31,7 @@ class MgrasMatrixEssi(QemuSystemTest):
     """the ESSI board's desktop and drawing features"""
 
     ASSET_FIRMWARE = desktop.MgrasDesktop.ASSET_FIRMWARE
-    ASSET_DISK = desktop.MgrasDesktop.ASSET_DISK
+    ASSET_DISK = LocalAsset(DISK_REL, DISK_SHA256)
 
     @skipBigDataTest()
     @skipSlowTest()
