@@ -164,8 +164,8 @@ static uint32_t mgras_bank_bgr(SGIMgrasState *s, uint32_t word,
  * covers every kind. A main display ID whose bit is set in the XMAP
  * buffer-select word under index 0 shows bank 1, which holds the GL
  * client's direct colours and colour indices, each resolved by bank 1's
- * own format tag (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h); every other
- * pixel shows bank 0.
+ * own format tag (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h), or slot 2 for
+ * a pixel a deep window drew there; every other pixel shows bank 0.
  */
 static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
                                         uint8_t main_did, uint8_t overlay_did)
@@ -176,6 +176,15 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
         return overlay;
     }
     if ((s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
+        /*
+         * A deep double-buffered window's pair is bank 0 and slot 2, so the
+         * set bit shows slot 2 where a draw wrote it (inferred, see the
+         * draw-buffer mapping in sgi-mgras-gl.c); elsewhere bank 1.
+         */
+        if (s->slot[0] && (s->slot[0][i] & SGI_MGRAS_SLOT_WRITTEN)) {
+            return mgras_bank_bgr(s, s->slot[0][i],
+                                  SGI_MGRAS_PIXEL_FORMAT_RGB, main_did);
+        }
         return mgras_bank_bgr(s, s->back[i], s->back_format[i], main_did);
     }
     return mgras_bank_bgr(s, s->front[i], s->format[i], main_did);

@@ -1275,6 +1275,57 @@ static void test_gl_colour_index_swap_shows_the_drawn_bank(void)
 }
 
 /*
+ * A deep double-buffered window's client draws BACK as draw-buffer bit 2
+ * only, and the kernel moves the bank token and the select bit together at
+ * each swap. The pair is bank 0 and slot 2: frame A lands in slot 2 and the
+ * first swap, bit set, shows it; frame B lands in bank 0 behind it and the
+ * swap back, bit clear, shows that. Read through scanout, so a model that
+ * draws the frames right but displays bank 1 shows black.
+ */
+static void test_gl_deep_swap_shows_the_drawn_buffer_ssi(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    gl_deep_scene(s);
+    mgras_tag_wid(s, 256, 256, 383, 383, 14);
+    gl_draw_buffer(s, 4);
+    gl_clear_color(s, 1, 0, 1, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0);
+    gl_swap(s, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0xff00ff);
+
+    gl_clear_color(s, 0, 1, 0, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(s, 300, 300), ==, 0x00ff00);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0xff00ff);
+    gl_swap(s, 1, 0);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0x00ff00);
+
+    gl_clear_color(s, 0, 0, 1, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_slot_pixel(s, 0, 300, 300), ==, 0x0000ff);
+    gl_swap(s, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0x0000ff);
+    qtest_quit(s);
+}
+
+/* A shallow back buffer keeps showing bank 1 on the same board. */
+static void test_gl_shallow_swap_still_shows_bank_one_ssi(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+    gl_deep_scene(s);
+    mgras_tag_wid(s, 256, 256, 383, 383, 14);
+    gl_draw_buffer(s, 2);
+    gl_clear_color(s, 1, 0, 1, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    gl_swap(s, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0xff00ff);
+    qtest_quit(s);
+}
+
+/*
  * The client reads GL_CURRENT_INDEX through the 0xa104 query at index 4,
  * GL_CURRENT_COLOR's red, and GL_CURRENT_RASTER_INDEX through 0xa20c at
  * 0x351, the raster colour's red. In a
@@ -1850,6 +1901,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-colour-index-swap-shows-the-drawn-bank",
                    test_gl_colour_index_swap_shows_the_drawn_bank);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-deep-swap-shows-the-drawn-buffer-ssi",
+                   test_gl_deep_swap_shows_the_drawn_buffer_ssi);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-shallow-swap-still-shows-bank-one-ssi",
+                   test_gl_shallow_swap_still_shows_bank_one_ssi);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
     qtest_add_func("sn0/origin2000/mgras/"

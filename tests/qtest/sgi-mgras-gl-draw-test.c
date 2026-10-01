@@ -684,8 +684,8 @@ static void test_gl_smooth_is_perspective_correct(void)
  * A deep double-buffered visual's client sends draw-buffer bit 2 for its back
  * buffer, and a stereo one bit 3 as well. On a two-RE board each bit is a
  * colour buffer a clear lands in and a read-back sees; bit 2 does not write
- * the front or back bank, and bit 0 still does. Scanout is not asserted: which
- * slot a swap displays is unknown.
+ * the front or back bank, and bit 0 still does. Which slot a swap shows is
+ * asserted in sgi-mgras-gl-test.c.
  */
 static void test_gl_deep_bit2_draws_ssi(void)
 {
