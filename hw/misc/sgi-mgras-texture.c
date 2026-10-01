@@ -32,17 +32,21 @@
  *   parameter 0xe38; it does not read the destination corners, which are
  *   0, 0, w, h here where the image path's are inclusive, and it does not
  *   read the bytes a pixel from XFRMODE, 0xc00080 on these four-byte
- *   levels. The pixel program must be the one the client loads for
- *   GL_RGBA unsigned bytes; the host bytes are then R, G, B, A a texel,
- *   the bottom row (t = 0) first, established for that format and type
- *   only. Routine 0x511a is taken as the identity at the default pixel
- *   transfer state, as the image path takes 0x49d0: an approximation, as
- *   the GE program is not read. TL_MODE is state that persists across
+ *   levels. The kept format is TL_MODE's layout (one component, luminance
+ *   alpha, RGB, RGBA) and depth (4 or 8 bits), the host bytes the
+ *   components in order a byte each, the bottom row (t = 0) first;
+ *   established for RGBA unsigned bytes, inferred for the rest. The
+ *   transfer must be exactly width times height times the format's bytes
+ *   a texel. The pixel program is not read, approximated: only the
+ *   four-unsigned-byte one was traced, so the others are taken as the
+ *   identity, as routine 0x511a is at the default pixel transfer state,
+ *   as the image path takes 0x49d0.
+ *   TL_MODE is state that persists across
  *   loads, since the client skips it when reloading the image it loaded
  *   last. An unpaired 0x9c00, which the client's untraced wide-level
  *   branch sends, and a 0x511a transfer outside a bracket are logged and
- *   not rejected. An inline image, another pixel program, another kept
- *   layout than RGBA, or a 12-bit depth is logged and nothing is stored.
+ *   not rejected. An inline image, GL_ABGR_EXT, a 12-bit depth or a
+ *   transfer of another byte count is logged and nothing is stored.
  *
  * - Storage. Approximated: a level is stored per GL context keyed by the
  *   base block the kernel's 0xeb04 names and TL_SPEC's level number, not
@@ -74,6 +78,13 @@
  *   a one-dimensional texture: nearest sampling with repeat wrap, through
  *   the shared rasterizer's texture sampling. Anything else draws
  *   untextured, logged.
+ *
+ * - Class. A one-component level is stored once; TEXMODE1 11:9 of the
+ *   draw says whether it is alpha (1), luminance (2) or intensity (3),
+ *   and 4 is RGB or RGBA by layout. Alpha comes with environment code 3,
+ *   which the model reads as the OpenGL alpha function (modulate) for
+ *   every code. Established as words; the texel to fragment arithmetic
+ *   is the shared rasterizer's, OpenGL 1.2.1, approximated.
  *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
@@ -113,17 +124,25 @@
 #define MGRAS_TEX_TL_MODE        0x1a1
 #define MGRAS_TEX_TL_SPEC        0x1a2
 
-/* TEXMODE1 fields. */
+/* TEXMODE1 fields: bits 2:1 environment, 4:3 layout, 11:9 class. */
+#define MGRAS_TEXMODE1_CLASS(m)    (((m) >> 9) & 7)
+#define MGRAS_TEXMODE1_LAYOUT(m)   (((m) >> 3) & 3)
+#define MGRAS_TEXMODE1_ENV(m)      (((m) >> 1) & 3)
+#define MGRAS_TEX_CLASS_ALPHA      1
+#define MGRAS_TEX_CLASS_LUMINANCE  2
+#define MGRAS_TEX_CLASS_INTENSITY  3
+#define MGRAS_TEX_CLASS_COLOUR     4
+#define MGRAS_TEX_ENV_MODULATE     0
+
 #define MGRAS_TEXMODE1_ENABLE    0x00000001u
-#define MGRAS_TEXMODE1_ENV       0x00000006u
 #define MGRAS_TEXMODE1_SELECT    0x00000180u
 #define MGRAS_TEXMODE1_TABLE     0x0000f000u
 /*
- * TEXMODE2 bits the model does not draw: 5 to 10 filtering, mipmap and
- * detail control, 11 to 14 the clamps, 19 mipmap and detail control, 23 a
- * volume and 24 a one-dimensional texture.
+ * TEXMODE2 bits the model does not draw: 4 the multi-buffer read, 5 to
+ * 10 filtering, mipmap and detail control, 11 to 14 the clamps, 19 mipmap
+ * and detail control, 23 a volume and 24 a one-dimensional texture.
  */
-#define MGRAS_TEXMODE2_UNDRAWN   0x01887fe0u
+#define MGRAS_TEXMODE2_UNDRAWN   0x01887ff0u
 
 /* The pixel transfer's routine word in 0x8d20's payload, and its value. */
 #define MGRAS_TEX_ROUTINE_WORD   6
@@ -132,21 +151,18 @@
 #define MGRAS_TEX_FLAGS_BY_DMA   0x80
 
 /*
- * The GE pixel program the client loads for four unsigned bytes a pixel, the
- * one the image path also knows, at GE parameters 0x13b on; the size word
- * at 0xe34 + 4; and the HQ pixel-format word's GL_ABGR_EXT bit.
+ * The size word at GE parameter 0xe34 + 4, and the HQ pixel-format word's
+ * GL_ABGR_EXT bit.
  */
-#define MGRAS_TEX_GE_PROGRAM     0x13b
 #define MGRAS_TEX_GE_SIZE        (0xe34 + 4)
-#define MGRAS_TEX_UNPACK_4UB     0x4064
 #define MGRAS_TEX_HQ_ABGR        0x80
-static const uint32_t mgras_tex_program_4ub[] = {
-    0x1f44, 0x3e65, 0x156a, 0x352d,
-};
 
 /* TL_MODE and TL_SPEC fields, and the kept formats the model stores. */
 #define MGRAS_TEX_LAYOUT(mode)   (((mode) >> 1) & 3)
 #define MGRAS_TEX_DEPTH(mode)    (((mode) >> 5) & 3)
+#define MGRAS_TEX_LAYOUT_ONE     0
+#define MGRAS_TEX_LAYOUT_LA      1
+#define MGRAS_TEX_LAYOUT_RGB     2
 #define MGRAS_TEX_LAYOUT_RGBA    3
 #define MGRAS_TEX_DEPTH_4        0
 #define MGRAS_TEX_DEPTH_8        1
@@ -175,15 +191,22 @@ static SGIMgrasTexture *mgras_tex(SGIMgrasState *s)
     return &s->gl_context[s->gl_current].tex;
 }
 
-static uint32_t mgras_tex_texel_bytes(uint32_t mode)
+/* Components a texel of a kept layout: L, LA, RGB, RGBA. */
+static uint32_t mgras_tex_components(uint32_t mode)
 {
-    return MGRAS_TEX_DEPTH(mode) == MGRAS_TEX_DEPTH_4 ? 2 : 4;
+    return MGRAS_TEX_LAYOUT(mode) + 1;
+}
+
+/* Bytes a texel in the host image, a byte a component at 4 and 8 bits. */
+static uint32_t mgras_tex_host_texel(uint32_t mode)
+{
+    return mgras_tex_components(mode);
 }
 
 static uint64_t mgras_tex_level_bytes(uint32_t spec, uint32_t mode)
 {
-    return (1ull << MGRAS_TEX_SPEC_LOG2W(spec)) <<
-           MGRAS_TEX_SPEC_LOG2H(spec) << (mgras_tex_texel_bytes(mode) / 2);
+    return ((1ull << MGRAS_TEX_SPEC_LOG2W(spec)) <<
+            MGRAS_TEX_SPEC_LOG2H(spec)) * mgras_tex_components(mode);
 }
 
 static void mgras_tex_level_free(SGIMgrasTexLevel *l)
@@ -418,22 +441,6 @@ void sgi_mgras_texture_record_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
-/* Whether the GE program loaded is the client's four-unsigned-byte one. */
-static bool mgras_tex_program_known(SGIMgrasState *s)
-{
-    const uint32_t *ge = s->ge_param;
-    uint32_t n = ARRAY_SIZE(mgras_tex_program_4ub);
-    uint32_t params = ge[MGRAS_TEX_GE_PROGRAM + 3];
-
-    for (uint32_t i = 0; i < n; i++) {
-        if (ge[MGRAS_TEX_GE_PROGRAM + 2 * i] != mgras_tex_program_4ub[i]) {
-            return false;
-        }
-    }
-    return params < SGI_MGRAS_GE_PARAM_WORDS - 1 &&
-           ge[params + 1] == MGRAS_TEX_UNPACK_4UB;
-}
-
 bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasTexture *t = mgras_tex(s);
@@ -460,14 +467,18 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       "inline is not modelled; nothing stored\n");
         return true;
     }
-    if (!mgras_tex_program_known(s) ||
-        (s->dma_desc_30000[0] & MGRAS_TEX_HQ_ABGR)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load through GE pixel "
-                      "program 0x%x, 0x%x (HQ pixel format 0x%x) is not "
-                      "modelled; nothing stored\n",
-                      s->ge_param[MGRAS_TEX_GE_PROGRAM],
-                      s->ge_param[MGRAS_TEX_GE_PROGRAM + 2],
-                      s->dma_desc_30000[0]);
+    /*
+     * The pixel program is not read: only the four-unsigned-byte one was
+     * traced, and the others are unknown. Approximated: the load is keyed
+     * on routine 0x511a and the byte count of the kept format, so a
+     * program that reorders or converts components would be taken as the
+     * identity. The one thing checked is the HQ pixel format's GL_ABGR_EXT
+     * bit, which swaps components and is not modelled.
+     */
+    if (s->dma_desc_30000[0] & MGRAS_TEX_HQ_ABGR) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with HQ pixel "
+                      "format 0x%x (GL_ABGR_EXT) is not modelled; nothing "
+                      "stored\n", s->dma_desc_30000[0]);
         return true;
     }
     if (size != (h << 16 | w)) {
@@ -476,8 +487,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       size, spec, w, h);
         return true;
     }
-    if (MGRAS_TEX_LAYOUT(mode) != MGRAS_TEX_LAYOUT_RGBA ||
-        MGRAS_TEX_DEPTH(mode) > MGRAS_TEX_DEPTH_8) {
+    if (MGRAS_TEX_DEPTH(mode) > MGRAS_TEX_DEPTH_8) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture kept as TL_MODE 0x%x "
                       "(layout %u, depth code %u) is not modelled; nothing "
                       "stored\n", mode, MGRAS_TEX_LAYOUT(mode),
@@ -500,14 +510,19 @@ bool sgi_mgras_texture_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
                            bool *take)
 {
     SGIMgrasTexture *t = mgras_tex(s);
-    uint64_t host = (1ull << MGRAS_TEX_SPEC_LOG2W(t->load_spec)) <<
-                    MGRAS_TEX_SPEC_LOG2H(t->load_spec) << 2;
+    uint64_t host = ((1ull << MGRAS_TEX_SPEC_LOG2W(t->load_spec)) <<
+                     MGRAS_TEX_SPEC_LOG2H(t->load_spec)) *
+                    mgras_tex_host_texel(t->load_mode);
 
     *take = false;
     if (!t->load) {
         return false;
     }
-    /* Each traced level came as one row; rows are taken end to end. */
+    /*
+     * Each traced level came as one row; rows are taken end to end, and
+     * the whole level's bytes must arrive: width times height times the
+     * kept format's bytes a texel, which also refuses row padding.
+     */
     if ((uint64_t)rows * bpr != host) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
                       "bytes for a texture level of %" PRIu64 " bytes; "
@@ -541,7 +556,7 @@ static void mgras_tex_commit(SGIMgrasState *s)
     SGIMgrasTexture *t = mgras_tex(s);
     uint32_t level = MGRAS_TEX_SPEC_LEVEL(t->load_spec);
     uint32_t bytes = mgras_tex_level_bytes(t->load_spec, t->load_mode);
-    uint32_t texels = t->staging_bytes / 4;
+    uint32_t comps = mgras_tex_components(t->load_mode);
     uint64_t board = 0;
     SGIMgrasTexLevel *l = NULL, *free = NULL;
     const uint8_t *in = t->staging;
@@ -568,13 +583,12 @@ static void mgras_tex_commit(SGIMgrasState *s)
     }
     mgras_tex_level_free(l);
     out = g_malloc(bytes);
-    for (uint32_t i = 0; i < texels; i++, in += 4) {
-        if (MGRAS_TEX_DEPTH(t->load_mode) == MGRAS_TEX_DEPTH_4) {
-            /* Truncation to 4 bits, the model's choice. */
-            out[2 * i] = (in[0] & 0xf0) | in[1] >> 4;
-            out[2 * i + 1] = (in[2] & 0xf0) | in[3] >> 4;
-        } else {
-            memcpy(&out[4 * i], in, 4);
+    for (uint32_t i = 0; i < t->staging_bytes / comps; i++) {
+        for (uint32_t k = 0; k < comps; k++, in++) {
+            /* Truncation to 4 bits, the model's choice, as above. */
+            out[comps * i + k] =
+                MGRAS_TEX_DEPTH(t->load_mode) == MGRAS_TEX_DEPTH_4 ?
+                *in >> 4 : *in;
         }
     }
     *l = (SGIMgrasTexLevel) {
@@ -620,24 +634,62 @@ void sgi_mgras_texture_abort(SGIMgrasState *s)
     t->load = 0;
 }
 
-/* A stored texel as canonical RRGGBBAA, a 4-bit component replicated. */
-static bool mgras_tex_read_texel(void *opaque, uint32_t x, uint32_t y,
-                                 uint32_t *rgba)
+/*
+ * A stored texel as the sampler's canonical RRGGBBAA, a 4-bit component
+ * replicated to 8 bits. A one-component texel is set in both the red and
+ * alpha bytes and a two-component one's luminance in red, since the class
+ * that reads it is the draw's and the sampler takes the byte it needs.
+ */
+static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
+                                 uint32_t y, uint32_t *rgba)
 {
     const SGIMgrasTexLevel *l = opaque;
-    uint32_t i = (y << l->log2w) + x;
+    uint32_t comps = mgras_tex_components(l->mode);
+    const uint8_t *p = &l->texels[((y << l->log2w) + x) * comps];
+    uint32_t c[4];
 
-    if (MGRAS_TEX_DEPTH(l->mode) == MGRAS_TEX_DEPTH_4) {
-        uint32_t v = lduw_be_p(&l->texels[2 * i]);
-
-        *rgba = 0;
-        for (int k = 0; k < 4; k++) {
-            *rgba = *rgba << 8 | ((v >> (12 - 4 * k)) & 0xf) * 0x11;
-        }
-    } else {
-        *rgba = ldl_be_p(&l->texels[4 * i]);
+    for (uint32_t k = 0; k < comps; k++) {
+        c[k] = MGRAS_TEX_DEPTH(l->mode) == MGRAS_TEX_DEPTH_4 ? p[k] * 0x11 :
+                                                              p[k];
+    }
+    switch (MGRAS_TEX_LAYOUT(l->mode)) {
+    case MGRAS_TEX_LAYOUT_ONE:
+        *rgba = c[0] << 24 | c[0];
+        break;
+    case MGRAS_TEX_LAYOUT_LA:
+        *rgba = c[0] << 24 | c[1];
+        break;
+    case MGRAS_TEX_LAYOUT_RGB:
+        *rgba = c[0] << 24 | c[1] << 16 | c[2] << 8;
+        break;
+    default:
+        *rgba = c[0] << 24 | c[1] << 16 | c[2] << 8 | c[3];
+        break;
     }
     return true;
+}
+
+/* The sampler's base format for a layout and the class the draw names. */
+static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
+{
+    switch (layout) {
+    case MGRAS_TEX_LAYOUT_ONE:
+        *format = cls == MGRAS_TEX_CLASS_ALPHA ? SGI_GL_ALPHA :
+                  cls == MGRAS_TEX_CLASS_LUMINANCE ? SGI_GL_LUMINANCE :
+                  cls == MGRAS_TEX_CLASS_INTENSITY ? SGI_GL_INTENSITY : 0;
+        break;
+    case MGRAS_TEX_LAYOUT_LA:
+        *format = cls == MGRAS_TEX_CLASS_LUMINANCE ?
+                  SGI_GL_LUMINANCE_ALPHA : 0;
+        break;
+    case MGRAS_TEX_LAYOUT_RGB:
+        *format = cls == MGRAS_TEX_CLASS_COLOUR ? SGI_GL_RGB : 0;
+        break;
+    default:
+        *format = cls == MGRAS_TEX_CLASS_COLOUR ? SGI_GL_RGBA : 0;
+        break;
+    }
+    return *format;
 }
 
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
@@ -645,7 +697,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
 {
     SGIMgrasTexture *t = mgras_tex(s);
     SGIMgrasTexLevel *l = NULL;
-    uint32_t size;
+    uint32_t size, format, cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
 
     if (!mgras_tex_present(s) ||
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
@@ -663,10 +715,18 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         return NULL;
     }
     size = l->log2h << 4 | l->log2w;
+    /*
+     * The class is the draw's (TEXMODE1 11:9) and must suit the level's
+     * layout. Class 1, alpha, comes with environment code 3 from the
+     * client, whatever glTexEnv set; the model reads the alpha class as
+     * its function for every code. Any other environment is not drawn yet.
+     */
     if ((t->txsize & 0xffff) != (size << 8 | size) ||
-        (t->texmode1 & (MGRAS_TEXMODE1_ENV | MGRAS_TEXMODE1_SELECT |
-                        MGRAS_TEXMODE1_TABLE)) ||
-        ((t->texmode1 >> 3) & 3) != MGRAS_TEX_LAYOUT(l->mode) ||
+        (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||
+        (cls != MGRAS_TEX_CLASS_ALPHA &&
+         MGRAS_TEXMODE1_ENV(t->texmode1) != MGRAS_TEX_ENV_MODULATE) ||
+        MGRAS_TEXMODE1_LAYOUT(t->texmode1) != MGRAS_TEX_LAYOUT(l->mode) ||
+        !mgras_tex_format(MGRAS_TEX_LAYOUT(l->mode), cls, &format) ||
         (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
         ((t->texmode2 >> 2) & 3) != MGRAS_TEX_DEPTH(l->mode) ||
         t->t_offset) {
@@ -677,16 +737,25 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                       t->t_offset, 1u << l->log2w, 1u << l->log2h, l->mode);
         return NULL;
     }
-    *image = (SGIGLTexImage) {
+    t->sampler_levels[0] = (SGIGLTexLevel) {
+        .level = 0,
         .width = 1u << l->log2w,
         .height = 1u << l->log2h,
-        .base_format = SGI_GL_RGBA,
+        .base_format = format,
+        .internal_format = format,
+        .read_texel = mgras_tex_read_texel,
+        .opaque = l,
+    };
+    t->pyramid = (SGIGLTexPyramid) {
+        .levels = t->sampler_levels,
+        .count = 1,
+    };
+    *image = (SGIGLTexImage) {
         .min_filter = SGI_GL_NEAREST,
         .mag_filter = SGI_GL_NEAREST,
         .wrap_s = SGI_GL_REPEAT,
         .wrap_t = SGI_GL_REPEAT,
-        .read_texel = mgras_tex_read_texel,
-        .opaque = l,
+        .pyramid = &t->pyramid,
     };
     return image;
 }
@@ -708,8 +777,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         return false;
     }
     if (t->load &&
-        (MGRAS_TEX_LAYOUT(t->load_mode) != MGRAS_TEX_LAYOUT_RGBA ||
-         MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_8 ||
+        (MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_8 ||
          mgras_tex_level_bytes(t->load_spec, t->load_mode) >
          MGRAS_TEX_CONTEXT_BYTES)) {
         return false;
@@ -734,7 +802,6 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         }
         if (l->used != 1 || l->level > 0xf || l->log2w > 0xf ||
             l->log2h > 0xf || !l->texels ||
-            MGRAS_TEX_LAYOUT(l->mode) != MGRAS_TEX_LAYOUT_RGBA ||
             MGRAS_TEX_DEPTH(l->mode) > MGRAS_TEX_DEPTH_8 ||
             l->bytes != mgras_tex_level_bytes(spec, l->mode)) {
             return false;

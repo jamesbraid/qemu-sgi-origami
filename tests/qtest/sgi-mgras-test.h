@@ -1508,6 +1508,8 @@ static inline void gl_pixels_dma(QTestState *qts, const uint8_t *image,
 {
     gl_pixels_dma_on(qts, 0, image, len, pitch, rows, bpr, kick);
 }
+static inline void gl_color4f(QTestState *qts, float r, float g, float b,
+                              float a);
 #define TEX_RECORDS           0x00007c08
 #define TEX_ON                0x00000b00
 #define TEX_OFF               0x00000c00
@@ -1577,14 +1579,14 @@ static inline void tex_record(QTestState *t, uint32_t reg, uint32_t value)
  * goes out only when send_mode is set, as the client skips it on a
  * reload; box is the destination rectangle and size word.
  */
-static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
-                                 uint32_t spec, const uint8_t *texels,
-                                 uint32_t w, uint32_t h, const uint32_t box[6],
-                                 bool bracket, unsigned int nasid,
-                                 uint32_t src_bytes)
+static inline void tex_load_fmt(QTestState *t, bool send_mode, uint32_t mode,
+                                uint32_t spec, const uint8_t *texels,
+                                uint32_t w, uint32_t h, uint32_t bpt,
+                                const uint32_t box[6], bool bracket,
+                                unsigned int nasid, uint32_t src_bytes)
 {
     static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
-    uint32_t bytes = w * h * 4;
+    uint32_t bytes = w * h * bpt;
 
     if (send_mode) {
         tex_record(t, TEX_TL_MODE, mode);
@@ -1599,7 +1601,8 @@ static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
     if (bracket) {
         gl_word(t, TEX_LOAD_OPEN);
     }
-    gl_pixels_program(t, GL_PIX_4UB, bytes / 4, 0, 0, w - 1, h - 1, 1);
+    gl_pixels_program(t, GL_PIX_4UB, DIV_ROUND_UP(bytes, 4), 0, 0, w - 1, h - 1,
+                      1);
     gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
     gl_word(t, TEX_PAIRS);
     gl_word(t, 1);
@@ -1608,13 +1611,13 @@ static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
     gl_word(t, 0x159);
     gl_word(t, 0xc00080);
     gl_word(t, GL_PIXELS_HDR);
-    gl_word(t, bytes / 4);
+    gl_word(t, DIV_ROUND_UP(bytes, 4));
     for (int i = 1; i < 8; i++) {
         gl_word(t, draw[i]);
     }
     if (src_bytes) {
         /* Pitch 0 rereads the one source row for every row of the level. */
-        gl_pixels_dma_on(t, nasid, texels, src_bytes, 0, h, w * 4, 0xa7);
+        gl_pixels_dma_on(t, nasid, texels, src_bytes, 0, h, w * bpt, 0xa7);
     } else {
         gl_pixels_dma_on(t, nasid, texels, bytes, bytes, 1, bytes, 0xa7);
     }
@@ -1623,6 +1626,17 @@ static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
     }
     gl_word(t, TEX_RESTORE_RSS);
     tex_record(t, TEX_TXSIZE, 0);
+}
+
+/* The same load for a level of four unsigned bytes a texel. */
+static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
+                                 uint32_t spec, const uint8_t *texels,
+                                 uint32_t w, uint32_t h, const uint32_t box[6],
+                                 bool bracket, unsigned int nasid,
+                                 uint32_t src_bytes)
+{
+    tex_load_fmt(t, send_mode, mode, spec, texels, w, h, 4, box, bracket,
+                 nasid, src_bytes);
 }
 
 static inline void tex_load_as(QTestState *t, bool send_mode, uint32_t mode,
@@ -1663,13 +1677,10 @@ static inline void tex_bind(QTestState *t, uint32_t texmode1, uint32_t texmode2)
  * texture coordinates 0 to 1, so each texel of a 4-by-2 level covers 8
  * by 8 pixels, then the client's close of the draw.
  */
-static inline void tex_quad(QTestState *t)
+static inline void tex_quad_rect(QTestState *t, const float c[4],
+                                 const float v[4][4])
 {
-    static const float v[4][4] = {
-        { 16, 16, 0, 0 }, { 48, 16, 1, 0 }, { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
-    };
-
-    gl_color3f(t, 1, 1, 1);
+    gl_color4f(t, c[0], c[1], c[2], c[3]);
     gl_word(t, GL_BEGIN_QUADS);
     for (int i = 0; i < 4; i++) {
         gl_word(t, GL_TEX_COORD2F_HDR);
@@ -1684,6 +1695,16 @@ static inline void tex_quad(QTestState *t)
     }
     gl_one(t, TEX_T_OFFSET, 0);
     gl_word(t, TEX_OFF);
+}
+
+static inline void tex_quad(QTestState *t)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 }, { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+
+    tex_quad_rect(t, white, v);
 }
 
 /* The centre pixel of texel (x, y) under tex_quad(). */
