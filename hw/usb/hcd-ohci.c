@@ -953,7 +953,7 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         }
 
         pktlen = len;
-        if (len) {
+        if (len && dir != OHCI_TD_DIR_IN) {
             /* The endpoint may not allow us to transfer it all now */
             pktlen = (ed->flags & OHCI_ED_MPS_MASK) >> OHCI_ED_MPS_SHIFT;
             /*
@@ -970,11 +970,10 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             if (pktlen > len) {
                 pktlen = len;
             }
-            if (!completion && dir != OHCI_TD_DIR_IN) {
+            if (!completion) {
                 if (ohci_copy_td(ohci, &td, ohci->usb_buf, pktlen,
                                  DMA_DIRECTION_TO_DEVICE)) {
                     ohci_die(ohci);
-                    return 1;
                 }
             }
         }
@@ -1028,7 +1027,6 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
             if (ohci_copy_td(ohci, &td, ohci->usb_buf, ret,
                              DMA_DIRECTION_FROM_DEVICE)) {
                 ohci_die(ohci);
-                return 1;
             }
             ohci_td_pkt("IN", ohci->usb_buf, pktlen);
         } else {
@@ -1053,8 +1051,8 @@ static int ohci_service_td(OHCIState *ohci, struct ohci_ed *ed)
         OHCI_SET_BM(td.flags, TD_CC, OHCI_CC_NOERROR);
         OHCI_SET_BM(td.flags, TD_EC, 0);
 
-        if (ret == pktlen && ret != len) {
-            /* A full packet with data remaining keeps the TD active. */
+        if ((dir != OHCI_TD_DIR_IN) && (ret != len)) {
+            /* Partial packet transfer: TD not ready to retire yet */
             goto exit_no_retire;
         }
 
@@ -1185,9 +1183,6 @@ static int ohci_service_ed_list(OHCIState *ohci, uint32_t head)
             }
         }
 
-        if (ohci->intr_status & OHCI_INTR_UE) {
-            return active;
-        }
         if (ohci_put_ed(ohci, cur, &ed)) {
             ohci_die(ohci);
             return 0;
@@ -1213,31 +1208,18 @@ static void ohci_sof(OHCIState *ohci)
 /* Process Control and Bulk lists. */
 static void ohci_process_lists(OHCIState *ohci)
 {
-    int active;
-
-    if (ohci->intr_status & OHCI_INTR_UE) {
-        return;
-    }
     if ((ohci->ctl & OHCI_CTL_CLE) && (ohci->status & OHCI_STATUS_CLF)) {
         if (ohci->ctrl_cur && ohci->ctrl_cur != ohci->ctrl_head) {
             trace_usb_ohci_process_lists(ohci->ctrl_head, ohci->ctrl_cur);
         }
-        active = ohci_service_ed_list(ohci, ohci->ctrl_head);
-        if (ohci->intr_status & OHCI_INTR_UE) {
-            return;
-        }
-        if (!active) {
+        if (!ohci_service_ed_list(ohci, ohci->ctrl_head)) {
             ohci->ctrl_cur = 0;
             ohci->status &= ~OHCI_STATUS_CLF;
         }
     }
 
     if ((ohci->ctl & OHCI_CTL_BLE) && (ohci->status & OHCI_STATUS_BLF)) {
-        active = ohci_service_ed_list(ohci, ohci->bulk_head);
-        if (ohci->intr_status & OHCI_INTR_UE) {
-            return;
-        }
-        if (!active) {
+        if (!ohci_service_ed_list(ohci, ohci->bulk_head)) {
             ohci->bulk_cur = 0;
             ohci->status &= ~OHCI_STATUS_BLF;
         }
@@ -1262,10 +1244,6 @@ static void ohci_frame_boundary(void *opaque)
 
         n = ohci->frame_number & 0x1f;
         ohci_service_ed_list(ohci, le32_to_cpu(hcca.intr[n]));
-    }
-
-    if (ohci->intr_status & OHCI_INTR_UE) {
-        return;
     }
 
     /* Cancel all pending packets if either of the lists has been disabled. */

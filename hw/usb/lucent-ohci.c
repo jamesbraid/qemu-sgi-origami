@@ -119,6 +119,16 @@ static OHCIState *lucent_ohci_core(PCIDevice *dev)
     return container_of(dev->io_regions[0].memory, OHCIState, mem);
 }
 
+static void lucent_ohci_die(OHCIState *ohci)
+{
+    PCIDevice *dev = PCI_DEVICE(memory_region_owner(&ohci->mem));
+
+    ohci_sysbus_die(ohci);
+    pci_set_word(dev->config + PCI_STATUS,
+                 pci_get_word(dev->config + PCI_STATUS) |
+                 PCI_STATUS_DETECTED_PARITY);
+}
+
 /*
  * Straight to the core's handlers: both are little-endian four-byte
  * registers, and a dispatch through the memory API would be refused as the
@@ -459,6 +469,7 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
      * regions are allocated rather than embedded.
      */
     ohci = lucent_ohci_core(dev);
+    ohci->ohci_die = lucent_ohci_die;
     lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_COMMAND_STATUS, 4,
                         &lucent_ohci_command_ops,
                         "lucent-ohci.command-status");
