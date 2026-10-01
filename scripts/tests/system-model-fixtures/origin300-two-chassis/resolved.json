@@ -2710,7 +2710,31 @@
           "reason": "The slave's IOC3 identity, one past the master's.",
           "serial": "0x5e7000000003"
         }
-      ]
+      ],
+      "system_timekeepers": {
+        "master-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
+            "docs/reviews/fuel-rtc-refinement-review-20261001.md"
+          ],
+          "year_base": 1968
+        },
+        "slave-xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
+            "docs/reviews/fuel-rtc-refinement-review-20261001.md"
+          ],
+          "year_base": 1968
+        }
+      }
     },
     "generation": "SN1",
     "kernel_ip": "IP27",

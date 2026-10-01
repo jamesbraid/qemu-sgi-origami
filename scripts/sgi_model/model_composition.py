@@ -731,18 +731,36 @@ def validate_system_timekeepers(model: dict[str, Any]) -> None:
     components = {c["id"]: c for c in model.get("components", [])}
     for board, policy in selected.items():
         fitted = components.get(board, {})
-        if fitted.get("kind") != "board" or not any(
-                c.get("parent") == board and c.get("hardware_kind") == "ioc3"
-                for c in components.values()):
+        machine = model["machine"]
+        is_fuel = (machine.get("generation") == "SN1"
+                   and machine.get("board_ip") == "IP34"
+                   and machine["emulation"].get("machine_name") == "fuel"
+                   and fitted.get("kind") == "board"
+                   and fitted.get("hardware_kind") == "ip34")
+        parent = components.get(fitted.get("parent"), {})
+        is_io8 = (machine.get("generation") == "SN1"
+                  and machine.get("board_ip") == "IP45"
+                  and machine["emulation"].get("machine_name") == "origin300"
+                  and fitted.get("kind") == "subfunction"
+                  and parent.get("hardware_kind") == "xbridge")
+        if is_fuel:
+            has_ioc3 = any(c.get("parent") == board
+                           and c.get("hardware_kind") == "ioc3"
+                           for c in components.values())
+        elif is_io8:
+            buses = {bus["id"] for bus in model.get("buses", [])
+                     if bus.get("kind") == "pci" and bus.get("master") == board}
+            has_ioc3 = any(
+                connection.get("bus") in buses
+                and components.get(connection.get("component"), {}).get(
+                    "hardware_kind") == "ioc3"
+                for connection in model.get("connections", []))
+        else:
+            raise ResolutionError(
+                "system Timekeeper selection requires Fuel or Origin 300")
+        if not has_ioc3:
             raise ResolutionError(
                 f"system Timekeeper board '{board}' has no fitted IOC3")
-        machine = model["machine"]
-        if (machine.get("generation") != "SN1"
-                or machine.get("board_ip") != "IP34"
-                or machine["emulation"].get("machine_name") != "fuel"
-                or fitted.get("hardware_kind") != "ip34"):
-            raise ResolutionError(
-                "system Timekeeper selection requires Fuel's SN1 IP34 board")
         if (policy.get("kind") != "m48t35-compatible"
                 or type(policy.get("year_base")) is not int
                 or policy["year_base"] != 1968

@@ -55,6 +55,14 @@ layer:
         one owner's two cabled Origin 300s appear as modules 001c01 and 001c02 at
         nasids 0 and 1, and OpenBSD trapped on them (the OpenBSD captures).
       emulation:
+        system_timekeepers:
+          xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174", "docs/reviews/fuel-rtc-refinement-review-20261001.md"]
+            notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.
         machine_name: origin300
         display_description: SGI Origin 300 (IP45)
         profile: base

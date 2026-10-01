@@ -281,6 +281,13 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     object_property_add_child(OBJECT(s), child_name, OBJECT(ioc3));
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind", timekeeper);
+    if (timekeeper == SGI_IOC3_TIMEKEEPER_M48T35 &&
+        s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
+        qdev_prop_set_uint32(DEVICE(&SGI_IOC3(ioc3)->rtc), "year-base",
+                             s->system_timekeeper_year_base);
+        qdev_prop_set_bit(DEVICE(&SGI_IOC3(ioc3)->rtc), "initial-ip27-fixture",
+                          false);
+    }
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", onewire_serial);
     if (has_subsystem_id) {
         qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", subsystem_id);
@@ -960,9 +967,11 @@ static void baseio_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_NONE &&
-        strcmp(s->preset, "fuel")) {
-        error_setg(errp, "system Timekeeper selection requires "
-                   "the fuel preset");
+        ((strcmp(s->preset, "fuel") && strcmp(s->preset, "io8")) ||
+         s->system_timekeeper_kind != SGI_IOC3_TIMEKEEPER_M48T35 ||
+         s->system_timekeeper_year_base != 1968)) {
+        error_setg(errp, "unsupported system Timekeeper policy for preset '%s'",
+                   s->preset);
         return;
     }
     if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_NONE &&

@@ -1318,7 +1318,20 @@
           "reason": "Stable synthetic IOC3 identity for this selected emulated installation, in the same \"5e70...\" shape Origin 200's own IOC3 uses, one past its value.",
           "serial": "0x5e7000000002"
         }
-      ]
+      ],
+      "system_timekeepers": {
+        "xbridge-bridge-f": {
+          "initial_ip27_fixture": false,
+          "kind": "m48t35-compatible",
+          "notes": "IP35 software uses the 1968 year convention. Blank initial storage is emulator policy. Existing compatibility part, capacity and mapping assumptions are unchanged.",
+          "provenance": "derived",
+          "sources": [
+            "openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174",
+            "docs/reviews/fuel-rtc-refinement-review-20261001.md"
+          ],
+          "year_base": 1968
+        }
+      }
     },
     "generation": "SN1",
     "harness": {

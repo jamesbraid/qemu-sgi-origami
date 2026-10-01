@@ -6760,10 +6760,23 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1,
+            3
+          ],
+          "clock-reference": true,
           "count": 2,
+          "drive-indices": [
+            0,
+            1
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -6916,10 +6929,23 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1,
+            3
+          ],
+          "clock-reference": true,
           "count": 2,
+          "drive-indices": [
+            0,
+            1
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7072,10 +7098,23 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1,
+            3
+          ],
+          "clock-reference": true,
           "count": 2,
+          "drive-indices": [
+            0,
+            1
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7228,10 +7267,23 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1,
+            3
+          ],
+          "clock-reference": true,
           "count": 2,
+          "drive-indices": [
+            0,
+            1
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7373,10 +7425,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7497,10 +7560,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7621,10 +7695,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7745,10 +7830,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7869,10 +7965,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7993,10 +8100,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -12212,7 +12330,12 @@
           "part": "030-1673-003",
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         },
         {
           "attachment": 2,
@@ -12235,7 +12358,12 @@
           "part": "030-1673-003",
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004296
+          "serial": 47413004296,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "junk-uart": -1,
@@ -12541,7 +12669,12 @@
           "part": "030-1673-003",
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         },
         {
           "attachment": 2,
@@ -12744,7 +12877,12 @@
           "part": "030-1673-003",
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         },
         {
           "attachment": 2,
@@ -12949,7 +13087,12 @@
           "part": "030-1673-003",
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "junk-uart": -1,

@@ -15,7 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = "8043bfb395b001443f62184bb80d514fc119dabae097671b57272aebb8fd34fc"
+EXPECTED_CATALOGUE_SHA256 = "859d6114b229980d44fed396fa3fa5deca0cfb0d1c55cd109f14b143ee1358da"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -163,6 +163,58 @@ class GeneratorTests(unittest.TestCase):
                 "hw/mips/sgi/sn-catalogue.json", "hw/mips/sgi/sn-model.json"})
             self.assertFalse((tree / "docs/datasheets").exists())
             self.assertFalse((tree / "assets").exists())
+
+
+class Origin300TimekeeperTests(unittest.TestCase):
+    def test_origin300_export_has_per_node_timekeeper_policy(self):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sn-catalogue.json"])
+        topologies = {row["name"]: row for row in catalogue["topologies"]
+                      if row["product"] == "origin300"}
+        policy = {"kind": "m48t35-compatible", "year-base": 1968,
+                  "initial-ip27-fixture": False}
+        for topology in topologies.values():
+            fitted = [index for index, board in enumerate(topology["io-boards"])
+                      if board["preset"] == "io8" and "ioc3-serial" in board]
+            for index, board in enumerate(topology["io-boards"]):
+                with self.subTest(topology=topology["name"], board=index):
+                    if index in fitted:
+                        self.assertEqual(board.get("system-timekeeper"), policy)
+                    else:
+                        self.assertNotIn("system-timekeeper", board)
+            for offering in catalogue["offerings"]:
+                if offering["topology"] != topology["name"]:
+                    continue
+                resources = [item for item in offering["resources"]
+                             if item["kind"] == "nvram"]
+                self.assertEqual(len(resources), 1)
+                resource = resources[0]
+                self.assertEqual(resource["count"], len(fitted))
+                self.assertEqual(resource["board-indices"], fitted)
+                self.assertEqual(resource["drive-indices"],
+                                 list(range(len(fitted))))
+                self.assertEqual(resource["argument"], "-drive if=mtd,index=N")
+                self.assertEqual(resource["size"], 32768)
+                self.assertIs(resource["clock-reference"], True)
+                self.assertEqual(resource["year-base"], 1968)
+                self.assertIs(resource["initial-ip27-fixture"], False)
+                self.assertEqual(resource["system-timekeeper-kind"],
+                                 "m48t35-compatible")
+        pair = topologies["origin300-two-chassis"]
+        self.assertEqual([board["id"] for board in pair["io-boards"]
+                          if "system-timekeeper" in board],
+                         ["master-xbridge-bridge-f", "slave-xbridge-bridge-f"])
+
+    def test_origin300_timekeeper_rejects_empty_or_unknown_head(self):
+        model = load_checked_system_model(
+            INPUTS / "origin300.yaml", model_schema=schema(INPUTS))
+        policy = {"kind": "m48t35-compatible", "year_base": 1968,
+                  "initial_ip27_fixture": False}
+        for head in ("xbridge-bridge-e", "absent", "ioc3"):
+            altered = copy.deepcopy(model)
+            altered["machine"]["emulation"]["system_timekeepers"] = {head: policy}
+            with self.subTest(head=head), self.assertRaises(ResolutionError):
+                model_composition.validate_system_timekeepers(altered)
 
 
 class FuelTests(unittest.TestCase):
