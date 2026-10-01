@@ -1094,7 +1094,7 @@ static void test_overlay_migration(void)
  * screen DMA draw's source bytes reach the model: DMA_IMAGE_TRANSFER's two
  * 'dma' lines preload the page-list entry and the pixel row at their plain
  * node addresses, exactly matching what
- * sn0-origin2000-mgras-test.c's test_dma_image_transfer_traces_source_chunks
+ * sgi-mgras-pixels-test.c's test_dma_image_transfer_traces_source_chunks
  * proved a real capture of this same register sequence records, before the
  * kick that makes the model read them back. The fixture also carries its
  * own command-channel handshake (copied from fill.replay), since unlike a
