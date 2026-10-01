@@ -31,11 +31,18 @@ typedef struct SGIL1QueryAssociation {
     bool reachable;
 } SGIL1QueryAssociation;
 
+typedef struct SGIL1QueryAttachment {
+    uint32_t issuer;
+    uint32_t owner;
+} SGIL1QueryAttachment;
+
 struct SGIL1QueryRouter {
     SGIL1QueryOwner *owners;
     unsigned owner_count;
     SGIL1QueryAssociation *associations;
     unsigned association_count;
+    SGIL1QueryAttachment *attachments;
+    unsigned attachment_count;
     bool active;
 };
 
@@ -53,6 +60,9 @@ void sgi_l1_query_router_init(SGIL1QueryRouter *router,
                              SGIL1QueryOwner *owners, unsigned owner_count,
                              SGIL1QueryAssociation *associations,
                              unsigned association_count, Error **errp);
+bool sgi_l1_query_router_set_attached(SGIL1QueryRouter *router,
+                                     SGIL1QueryAttachment *attachments,
+                                     unsigned count, Error **errp);
 void sgi_l1_query_router_destroy(SGIL1QueryRouter *router);
 void sgi_l1_query_route(SGIL1QueryRouter *router,
                        const SGIL1QueryRequest *request);
