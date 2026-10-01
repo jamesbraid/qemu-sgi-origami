@@ -1454,9 +1454,19 @@ static void test_io8_ioc3_attachment(const void *data)
 
 static void test_io8_ioc3_timekeeper(const void *data)
 {
-    QTestState *qts = machine_start();
+    QTestState *qts = machine_start_with(prom_path,
+        "-rtc base=2026-01-02T03:04:05,clock=vm -S");
 
     io8_ioc3_attach(qts);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
+                 IO8_IOC3_RTC_READ);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_YEAR),
+                    ==, 0x58);
+    qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL, 0);
+    for (unsigned int i = 0; i < 0x7ff8; i++) {
+        g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                    IO8_IOC3_BYTEBUS_DEV0 + i), ==, 0);
+    }
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0, 0x5a);
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL - 1, 0xa5);
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL,
@@ -1469,7 +1479,12 @@ static void test_io8_ioc3_timekeeper(const void *data)
                                 IO8_IOC3_RTC_CONTROL), ==,
                     IO8_IOC3_RTC_READ);
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_RTC_CONTROL, 0);
-
+    qtest_system_reset(qts);
+    io8_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_BYTEBUS_DEV0), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                IO8_IOC3_RTC_CONTROL - 1), ==, 0xa5);
     qtest_quit(qts);
 }
 
@@ -1479,12 +1494,17 @@ static void test_io8_ioc3_nvram_drive(const void *data)
     g_autofree char *path = NULL;
     g_autofree char *quoted = NULL;
     g_autofree char *extra = NULL;
+    uint8_t supplied[0x8000] = { 0 };
     QTestState *qts;
     int fd;
 
+    supplied[0] = 0xa5;
+    supplied[0x4bc] = 0x6d;
+    supplied[0x3883] = 0x03;
     fd = g_file_open_tmp("sn1-ioc3-nvram-XXXXXX", &path, NULL);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
+    g_assert_cmpint(write(fd, supplied, sizeof(supplied)), ==,
+                    (ssize_t)sizeof(supplied));
     g_assert_cmpint(close(fd), ==, 0);
     quoted = g_shell_quote(path);
     extra = g_strdup_printf("-drive %s,file=%s,format=raw", drive_options,
@@ -1492,6 +1512,11 @@ static void test_io8_ioc3_nvram_drive(const void *data)
 
     qts = machine_start_with(prom_path, extra);
     io8_ioc3_attach(qts);
+    for (unsigned int i = 0; i < 0x7ff8; i++) {
+        g_assert_cmphex(qtest_readb(qts, IO8_IOC3_WINDOW +
+                                    IO8_IOC3_BYTEBUS_DEV0 + i),
+                        ==, supplied[i]);
+    }
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_BYTEBUS_DEV0 + 0x100,
                  0xc3);
     qtest_quit(qts);

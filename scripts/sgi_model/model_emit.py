@@ -529,25 +529,28 @@ def _resources_for(topology: dict, harness: dict, product: dict,
     if fuel_boards and harness.get("timekeeper_nvram", True):
         if len(fuel_boards) != 1:
             raise ValueError("Fuel requires exactly one fitted system board")
-        index, board = fuel_boards[0]
-        selected = board.get("system_timekeeper")
-        resource = {
-            "kind": "nvram", "scope": "board", "count": 1,
-            "board-indices": [index], "drive-indices": [0],
-        }
-        if not selected:
+        if not fuel_boards[0][1].get("system_timekeeper"):
             raise ValueError("Fuel requires a fitted system Timekeeper")
-        resource.update({
+    selected_boards = [(index, board)
+                       for index, board in enumerate(topology["io_boards"])
+                       if board.get("system_timekeeper")]
+    if selected_boards and harness.get("timekeeper_nvram", True):
+        selected = selected_boards[0][1]["system_timekeeper"]
+        resources.append({
+            "kind": "nvram", "scope": "board", "count": len(selected_boards),
+            "board-indices": [index for index, _ in selected_boards],
+            "drive-indices": [topology["xio_attachments"][board["slot_index"]][
+                "node_index"] for _, board in selected_boards],
             "argument": _TIMEKEEPER_ARGUMENT, "part": "m48t35",
-            "size": 32768, "clock-reference": True,
+            "size": _TIMEKEEPER_NVRAM_BYTES, "clock-reference": True,
             "system-timekeeper-kind": selected["kind"],
             "year-base": selected["year_base"],
             "initial-ip27-fixture": selected["initial_ip27_fixture"],
         })
-        resources.append(resource)
     timekeeper_boards = sum(
         1 for board in topology["io_boards"]
         if board["board_kind"] in _TIMEKEEPER_BOARD_KINDS
+        and not board.get("system_timekeeper")
         and any(function["kind"] == "IOC3" for function in board["pci"]))
     if timekeeper_boards:
         resources.append({

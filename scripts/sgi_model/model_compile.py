@@ -1502,6 +1502,13 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
             "pci": pci,
             "ioc3_serial": ioc3_serial,
         })
+        selected = model["machine"]["emulation"].get(
+            "system_timekeepers", {}).get(head["id"])
+        if selected is not None:
+            io_boards[-1]["system_timekeeper"] = {
+                "kind": selected["kind"], "year_base": selected["year_base"],
+                "initial_ip27_fixture": selected["initial_ip27_fixture"],
+            }
         xio_attachments.append({
             "crossbar_index": -1, "widget": widget, "node_index": node_index,
         })
