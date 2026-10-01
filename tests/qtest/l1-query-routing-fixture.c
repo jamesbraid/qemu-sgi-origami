@@ -18,6 +18,9 @@ struct L1QueryFixtureState {
     SGIL1QueryOwner owners[4];
     SGIL1QueryAssociation associations[12];
     SGIL1QueryRouter router;
+    SGIL1QueryAttachment attachments[4];
+    uint32_t attached_owner[4];
+    uint32_t attachment_count;
     uint32_t topology;
     uint32_t initial_reachable;
     uint32_t association_count;
@@ -93,6 +96,7 @@ static const MemoryRegionOps fixture_ops = {
 static void fixture_realize(DeviceState *dev, Error **errp)
 {
     L1QueryFixtureState *s = L1_QUERY_FIXTURE(dev);
+    Error *local_error = NULL;
 
     if ((s->topology & ~UINT32_C(0xffff)) ||
         (s->topology & UINT32_C(0x8421)) ||
@@ -116,8 +120,23 @@ static void fixture_realize(DeviceState *dev, Error **errp)
             }
         }
     }
+    for (unsigned i = 0; i < 4; i++) {
+        if (s->attached_owner[i] != UINT32_MAX) {
+            SGIL1QueryAttachment *a = &s->attachments[s->attachment_count++];
+            a->issuer = i;
+            a->owner = s->attached_owner[i];
+        }
+    }
     sgi_l1_query_router_init(&s->router, s->owners, 4, s->associations,
-                            s->association_count, errp);
+                            s->association_count, &local_error);
+    if (local_error) {
+        error_propagate(errp, local_error);
+        return;
+    }
+    if (!sgi_l1_query_router_set_attached(&s->router, s->attachments,
+                                         s->attachment_count, errp)) {
+        sgi_l1_query_router_destroy(&s->router);
+    }
 }
 
 static void fixture_unrealize(DeviceState *dev)
@@ -164,15 +183,29 @@ static const VMStateDescription vmstate_query_association = {
     },
 };
 
-static const VMStateDescription vmstate_query_fixture = {
-    .name = TYPE_L1_QUERY_FIXTURE,
+static const VMStateDescription vmstate_query_attachment = {
+    .name = "sgi-l1-query-routing-fixture/attachment",
     .version_id = 1,
     .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(issuer, SGIL1QueryAttachment),
+        VMSTATE_UINT32_EQUAL(owner, SGIL1QueryAttachment),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_query_fixture = {
+    .name = TYPE_L1_QUERY_FIXTURE,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .pre_save = fixture_pre_save,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(topology, L1QueryFixtureState),
         VMSTATE_UINT32_EQUAL(initial_reachable, L1QueryFixtureState),
         VMSTATE_UINT32_EQUAL(association_count, L1QueryFixtureState),
+        VMSTATE_UINT32_EQUAL(attachment_count, L1QueryFixtureState),
+        VMSTATE_STRUCT_ARRAY(attachments, L1QueryFixtureState, 4, 0,
+                             vmstate_query_attachment, SGIL1QueryAttachment),
         VMSTATE_STRUCT_ARRAY(owners, L1QueryFixtureState, 4, 0,
                              vmstate_query_owner, SGIL1QueryOwner),
         VMSTATE_STRUCT_ARRAY(associations, L1QueryFixtureState, 12, 0,
@@ -207,6 +240,14 @@ static const Property fixture_properties[] = {
                      TYPE_SGI_L1, DeviceState *),
     DEFINE_PROP_UINT64("identity3", L1QueryFixtureState,
                        owners[3].identity, 0),
+    DEFINE_PROP_UINT32("attached0", L1QueryFixtureState, attached_owner[0],
+                       UINT32_MAX),
+    DEFINE_PROP_UINT32("attached1", L1QueryFixtureState, attached_owner[1],
+                       UINT32_MAX),
+    DEFINE_PROP_UINT32("attached2", L1QueryFixtureState, attached_owner[2],
+                       UINT32_MAX),
+    DEFINE_PROP_UINT32("attached3", L1QueryFixtureState, attached_owner[3],
+                       UINT32_MAX),
     DEFINE_PROP_UINT32("topology", L1QueryFixtureState, topology, 0),
     DEFINE_PROP_UINT32("reachable", L1QueryFixtureState, initial_reachable, 0),
 };

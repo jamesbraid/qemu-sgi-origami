@@ -691,7 +691,7 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
                           const uint8_t *args, unsigned args_len,
                           unsigned count)
 {
-    uint8_t fields[10] = { 0 };
+    uint8_t fields[40] = { 0 };
 
     switch (command) {
     case 3:
@@ -703,7 +703,7 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         }
         stl_be_p(fields + 1, (s->rack << 6) | s->bay);
         stl_be_p(fields + 6, l1_brick_type_character(s));
-        l1_reply_direct(recipient, channel, 0, 2, fields, sizeof(fields));
+        l1_reply_direct(recipient, channel, 0, 2, fields, 10);
         return true;
     case 6:
         if (count < 4 || args_len < 20) {
@@ -718,6 +718,9 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
         } else {
             l1_selected_format(s, recipient, channel, ldl_be_p(args + 1));
         }
+        return true;
+    case 0xc:
+        l1_reply_direct(recipient, channel, 0, 8, fields, sizeof(fields));
         return true;
     default:
         return false;
@@ -1233,6 +1236,46 @@ void sgi_l1_query_router_init(SGIL1QueryRouter *router,
     }
 }
 
+bool sgi_l1_query_router_set_attached(SGIL1QueryRouter *router,
+                                     SGIL1QueryAttachment *attachments,
+                                     unsigned count, Error **errp)
+{
+    if (router->active || (count && !attachments)) {
+        error_setg(errp, "Invalid L1 attached-controller configuration");
+        return false;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        SGIL1QueryAttachment *a = &attachments[i];
+        bool associated = false;
+
+        if (a->issuer >= router->owner_count ||
+            a->owner >= router->owner_count || a->issuer == a->owner) {
+            error_setg(errp, "Invalid L1 attached owner %u", i);
+            return false;
+        }
+        for (unsigned j = 0; j < i; j++) {
+            if (a->issuer == attachments[j].issuer) {
+                error_setg(errp, "Duplicate L1 attached issuer %u", a->issuer);
+                return false;
+            }
+        }
+        for (unsigned j = 0; j < router->association_count; j++) {
+            SGIL1QueryAssociation *edge = &router->associations[j];
+            if (edge->from == a->issuer && edge->to == a->owner) {
+                associated = true;
+                break;
+            }
+        }
+        if (!associated) {
+            error_setg(errp, "L1 attached owner has no registry association");
+            return false;
+        }
+    }
+    router->attachments = attachments;
+    router->attachment_count = count;
+    return true;
+}
+
 void sgi_l1_query_router_destroy(SGIL1QueryRouter *router)
 {
     for (unsigned i = 0; i < router->owner_count; i++) {
@@ -1245,6 +1288,23 @@ void sgi_l1_query_router_destroy(SGIL1QueryRouter *router)
     memset(router, 0, sizeof(*router));
 }
 
+static void l1_serve_query(SGIL1State *serving,
+                           const SGIL1QueryRequest *request)
+{
+    const uint8_t *p = request->payload;
+    unsigned count = request->length == 7 ? 0 : p[7];
+    unsigned args_len = request->length > 8 ? request->length - 8 : 0;
+    const uint8_t *args = p + MIN(request->length, 8);
+
+    assert(l1_local(serving, ldl_be_p(p + 1)));
+    if (!l1_arguments(args, args_len, count)) {
+        l1_reply_direct(request->recipient, request->channel, -100, 0, NULL, 0);
+    } else {
+        l1_read_query(serving, request->recipient, request->channel,
+                      lduw_be_p(p + 5), args, args_len, count);
+    }
+}
+
 void sgi_l1_query_route(SGIL1QueryRouter *router,
                        const SGIL1QueryRequest *request)
 {
@@ -1252,24 +1312,29 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
     unsigned issuer = router->owner_count;
     unsigned matches = 0;
     bool reachable = false;
+    bool attached = request->destination == UINT32_C(0x4ffff006);
     uint32_t key = request->destination >> 12;
     const uint8_t *p = request->payload;
     unsigned length = request->length;
     uint16_t command;
-    unsigned count, args_len;
-    const uint8_t *args;
+    SGIL1QueryRequest forwarded = *request;
+    uint8_t copy[SGI_L1_FRAME_SIZE];
     uint8_t failure[] = { 0x20 | request->channel,
                          0xff, 0xff, 0xff, 0xff, 0, 0, 0, 8 };
 
-    if (router->active || length < 7 || (p[0] & 0xe0) ||
-        ldl_be_p(p + 1) != request->destination ||
+    if (router->active || length < 7 || length > sizeof(copy) ||
+        (p[0] & 0xe0) || ldl_be_p(p + 1) != request->destination ||
         (p[0] & 0x1f) != request->channel ||
-        request->destination >> 28 || (key >> 6) == 0x3ff ||
-        (key & 0x3f) == 0x3f || (request->destination & 0x1f) != 6) {
+        (request->destination & 0x1f) != 6) {
+        goto refused;
+    }
+    if (!attached && (request->destination >> 28 ||
+                     (key >> 6) == 0x3ff || (key & 0x3f) == 0x3f)) {
         goto refused;
     }
     command = lduw_be_p(p + 5);
-    if (command != 3 && command != 6 && command != 7) {
+    if (command != 3 && command != 6 && command != 7 &&
+        !(attached && command == 0xc)) {
         goto refused;
     }
     for (unsigned i = 0; i < router->owner_count; i++) {
@@ -1278,29 +1343,50 @@ void sgi_l1_query_route(SGIL1QueryRouter *router,
             break;
         }
     }
-    for (unsigned i = 0; i < router->association_count; i++) {
-        SGIL1QueryAssociation *a = &router->associations[i];
-        SGIL1State *candidate = router->owners[a->to].controller;
-        if (a->from == issuer &&
-            key == ((candidate->rack << 6) | candidate->bay)) {
-            matches++;
-            serving = candidate;
-            reachable = a->reachable;
+    if (attached) {
+        unsigned owner = router->owner_count;
+
+        for (unsigned i = 0; i < router->attachment_count; i++) {
+            if (router->attachments[i].issuer == issuer) {
+                owner = router->attachments[i].owner;
+                break;
+            }
+        }
+        if (owner == router->owner_count) {
+            goto refused;
+        }
+        serving = router->owners[owner].controller;
+        for (unsigned i = 0; i < router->association_count; i++) {
+            SGIL1QueryAssociation *a = &router->associations[i];
+            if (a->from == issuer && a->to == owner) {
+                reachable = a->reachable;
+                break;
+            }
+        }
+        memcpy(copy, p, length);
+        forwarded.destination = request->destination & UINT32_C(0x0fffffff);
+        stl_be_p(copy + 1, forwarded.destination);
+        forwarded.payload = copy;
+    } else {
+        for (unsigned i = 0; i < router->association_count; i++) {
+            SGIL1QueryAssociation *a = &router->associations[i];
+            SGIL1State *candidate = router->owners[a->to].controller;
+            if (a->from == issuer &&
+                key == ((candidate->rack << 6) | candidate->bay)) {
+                matches++;
+                serving = candidate;
+                reachable = a->reachable;
+            }
+        }
+        if (matches != 1) {
+            goto refused;
         }
     }
-    if (matches != 1 || !reachable) {
+    if (!reachable) {
         goto refused;
     }
-    count = length == 7 ? 0 : p[7];
-    args = p + MIN(length, 8);
-    args_len = length > 8 ? length - 8 : 0;
     router->active = true;
-    if (!l1_arguments(args, args_len, count)) {
-        l1_reply_direct(request->recipient, request->channel, -100, 0, NULL, 0);
-    } else {
-        l1_read_query(serving, request->recipient, request->channel,
-                      command, args, args_len, count);
-    }
+    l1_serve_query(serving, &forwarded);
     router->active = false;
     return;
 
@@ -1452,7 +1538,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
     if (!l1_local(s, address)) {
-        if (s->query_router && (address >> 28) == 0) {
+        if (s->query_router && ((address >> 28) == 0 ||
+            (address == UINT32_C(0x4ffff006) &&
+             s->query_router->attachment_count))) {
             SGIL1QueryRequest request = {
                 .issuer = s,
                 .recipient = s,
@@ -1572,10 +1660,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         field_length = 10;
         memset(fields, 0, field_length);
         break;
-    case 0xc:
     case 0xd:
         /* No attached bricks: rack 0, bay 0, type 0 per port. */
-        field_count = command == 0xc ? 8 : 4;
+        field_count = 4;
         field_length = 5 * field_count;
         memset(fields, 0, field_length);
         break;
