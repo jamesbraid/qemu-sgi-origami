@@ -1039,9 +1039,14 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
     """
     identity = node.get("identity") or {}
     ni_field, widget_field = _ASIC_IDENTITY_REVISION_FIELDS[asic_kind]
-    ni_revision = (_hub_ni_revision(model, node, identity) if asic_kind == "hub"
-                   else _integer(identity, ni_field, f"node '{node['id']}'", 8))
-    widget_revision = _integer(identity, widget_field, f"node '{node['id']}'", 8)
+    revisions = {}
+    if asic_kind == "hub" or "hardware_revision" in identity:
+        revisions["ni_revision"] = (
+            _hub_ni_revision(model, node, identity) if asic_kind == "hub"
+            else _integer(identity, ni_field, f"node '{node['id']}'", 8)
+        )
+        revisions["widget_revision"] = _integer(
+            identity, widget_field, f"node '{node['id']}'", 8)
     serial = _synthetic_serial(model, node["id"], asic_kind, node_index)
 
     found = _node_i2c_adapter(model, components, node)
@@ -1060,7 +1065,7 @@ def _node_identity(model: dict, components: dict[str, dict], node: dict,
                 system_controller = True
                 break
     return {
-        "ni_revision": ni_revision, "widget_revision": widget_revision, "serial": serial,
+        **revisions, "serial": serial,
         "i2c_controller": found is not None, "system_controller": system_controller,
     }
 
@@ -1242,6 +1247,7 @@ def _one_wire_identities(model: dict, components: dict[str, dict],
 
 
 _HUB_PCI_KINDS = {"isp1040": "ISP1040", "ioc3": "IOC3"}
+_BEDROCK_IO_BOARD_KINDS = {"ip34": "FUEL", "io8": "IO8"}
 _BEDROCK_PCI_KINDS = {"isp12160": "ISP12160", "ioc3": "IOC3", "lucent-ohci": "LUCENT_OHCI"}
 
 
@@ -1338,6 +1344,81 @@ def _board_pci_population(model: dict, components: dict[str, dict], kinds: dict[
     return pci, ioc3_serial
 
 
+def _compile_fitted_bedrock_io_board(model: dict, components: dict[str, dict],
+                                    bedrock_id: str, heads: list,
+                                    node_index: int, module_index: int,
+                                    first_attachment: int
+                                    ) -> tuple[list[dict], list[dict]]:
+    """Compile IP34 without attributing XBridge identity to the board."""
+    head_ids = {head["id"] for head, _, _ in heads}
+    pci_buses = {item["id"] for item in model["buses"]
+                 if item["kind"] == "pci"
+                 and item.get("master") in head_ids}
+    fitted_parts = [components[item["component"]]
+                    for item in model["connections"]
+                    if item["bus"] in pci_buses
+                    and item["component"] in components
+                    and components[item["component"]].get("hardware_kind")
+                    in _BEDROCK_PCI_KINDS]
+    if not any(part.get("hardware_kind") == "ioc3" for part in fitted_parts):
+        raise CompileError(
+            f"Bedrock '{bedrock_id}' has no fitted base I/O IOC3")
+    ancestors = [_board_ancestor(components, part) for part in fitted_parts]
+    boards = {board["id"]: board for board in ancestors if board is not None}
+    if None in ancestors or len(boards) != 1:
+        raise CompileError(
+            f"Bedrock '{bedrock_id}' base I/O parts need one physical board")
+    board = next(iter(boards.values()))
+    board_kind = _BEDROCK_IO_BOARD_KINDS.get(board.get("hardware_kind"))
+    if board_kind is None:
+        raise CompileError(
+            f"Bedrock '{bedrock_id}' base I/O board '{board['id']}' has "
+            "no supported design")
+
+    xio_attachments = []
+    populated = []
+    for slot, (head, parent, attachment) in enumerate(heads):
+        widget = _integer(
+            attachment, "widget", f"XIO attachment '{head['id']}'", 8)
+        pci, ioc3_serial = _board_pci_population(
+            model, components, _BEDROCK_PCI_KINDS, {head["id"]})
+        if pci:
+            populated.append((first_attachment + slot, pci, ioc3_serial))
+        xio_attachments.append({
+            "crossbar_index": -1, "widget": widget, "node_index": node_index,
+        })
+    if len(populated) != 1:
+        raise CompileError(
+            f"Bedrock '{bedrock_id}' base I/O parts need "
+            "one populated XBridge head")
+    slot_index, pci, ioc3_serial = populated[0]
+    identity = board.get("identity") or {}
+    if "revision" in identity or "serial" in identity:
+        raise CompileError(
+            f"Bedrock I/O board '{board['id']}' has no established XBridge "
+            "route for its revision or serial")
+    io_board = {
+        "id": board["id"],
+        "module_index": module_index,
+        "board_kind": board_kind,
+        "slot_index": slot_index,
+        "revision": identity.get("revision"),
+        "serial": identity.get("serial"),
+        "part": identity.get("part"),
+        "other_identities": [],
+        "pci": pci,
+        "ioc3_serial": ioc3_serial,
+    }
+    selected = model["machine"]["emulation"].get(
+        "system_timekeepers", {}).get(board["id"])
+    if selected is not None:
+        io_board["system_timekeeper"] = {
+            "kind": selected["kind"], "year_base": selected["year_base"],
+            "initial_ip27_fixture": selected["initial_ip27_fixture"],
+        }
+    return [io_board], xio_attachments
+
+
 def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock_id: str,
                                 node_index: int, module_index: int,
                                 first_attachment: int = 0) -> tuple[list[dict], list[dict]]:
@@ -1395,10 +1476,17 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
         raise CompileError(f"XIO bus '{bus['id']}' hosts no PCI bridge head")
     heads.sort(key=lambda item: item[0]["id"])
 
+    if any(board.get("hardware_kind") == "ip34"
+           for board in components.values() if board.get("kind") == "board"):
+        return _compile_fitted_bedrock_io_board(
+            model, components, bedrock_id, heads, node_index, module_index,
+            first_attachment)
+
     io_boards = []
     xio_attachments = []
     for slot, (head, parent, attachment) in enumerate(heads):
-        widget = _integer(attachment, "widget", f"XIO attachment '{head['id']}'", 8)
+        widget = _integer(
+            attachment, "widget", f"XIO attachment '{head['id']}'", 8)
         pci, ioc3_serial = _board_pci_population(
             model, components, _BEDROCK_PCI_KINDS, {head["id"]})
         parent_identity = parent.get("identity") or {}

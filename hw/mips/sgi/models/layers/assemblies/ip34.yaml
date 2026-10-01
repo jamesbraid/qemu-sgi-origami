@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Fuel system board capacity. The selected population is in the product layer.
+layer_version: 1
+layer:
+  kind: assembly
+  id: ip34
+  platform: ip35
+  requires: {architecture: sn1}
+  contract: {board_ip: IP34}
+  capacity:
+    cpu_slots_per_node: 1
+    dimm_slots_per_node: 4
+    memory_banks_per_node: 8
+    dimms_per_bank: 1
+    supported_bank_sizes_mib: [256]
+    provenance: vendor-document
+    sources: ["007-4480-001 printed pages 30 to 32 and 60: one processor PIMM and four DDR sockets populated in equal-density pairs"]
+  memory_kits:
+    - id: fuel-512-test-map
+      dimms: 2
+      dimm_mib: 256
+      banks: [256, 256]
+      bank_positions: [0, 1]
+      provenance: derived
+      sources: ["comp.sys.sgi.hardware <slrndfs77l.6o9.wilhelm.greiner@sammy.erwo.net> 2005-08-13: revision F Fuel software inventory reports 256 MiB banks 0 and 1"]
+      notes: >-
+        Emulator test hypothesis only. The reported software bank numbers do
+        not establish which physical Bedrock banks receive sockets 0 and 2.
