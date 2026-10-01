@@ -63,6 +63,11 @@ static void fixture_write(void *opaque, hwaddr offset, uint64_t value,
             s->result = sgi_bic_board_read(bic, s->offset, s->size, &s->value);
         }
         break;
+    case 56:
+        s->controller_result = sgi_bic_board_controller_operation(
+            OBJECT(bic), value >> 32, value >> 24, value >> 16,
+            value >> 8, value) ? MEMTX_OK : MEMTX_ERROR;
+        break;
     case 40:
         s->controller_result = sgi_bic_board_controller_byte(bic, value >> 16,
                                                    value & 0x100, value,

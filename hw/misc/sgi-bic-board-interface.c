@@ -20,6 +20,19 @@ struct SGIBICBoardInterfaceState {
     bool low_valid;
 };
 
+bool sgi_bic_board_controller_operation(Object *receiver, unsigned position,
+                                      uint8_t bus, uint8_t address,
+                                      uint8_t command, uint8_t value)
+{
+    if (position != 0 || bus != 0 || address != 0x8c ||
+        (command != 0x13 && command != 0x12)) {
+        return false;
+    }
+    return sgi_bic_board_controller_byte(SGI_BIC_BOARD_INTERFACE(receiver),
+                                         position, command == 0x13,
+                                         value, true) == MEMTX_OK;
+}
+
 MemTxResult sgi_bic_board_read(SGIBICBoardInterfaceState *s, hwaddr offset,
                               unsigned size, uint64_t *value)
 {

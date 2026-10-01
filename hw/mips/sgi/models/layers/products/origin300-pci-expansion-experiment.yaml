@@ -40,7 +40,8 @@ layer:
         and RAM-free BIC, NI route and synthetic interrupt adapter. The BIC
         resets with node number zero. Firmware must discover it by route
         and assign its node number. Board records are optional operator
-        inputs; no BIC latch initialization or controller startup is supplied.
+        inputs. The selected functional controller startup experiment assigns
+        rack and bay through completed BIC bytes; it models no physical bus.
         Construction support does not establish stock PROM or IRIX acceptance.
       emulation:
         machine_name: origin300
@@ -94,6 +95,8 @@ layer:
             xbridge_revision: 2
             head_ports: [8, 9, 12, 13]
             controller_profile: pci-expansion
+            # Functional controller assignment; not a physical BIC bus model.
+            controller_startup: bic-functional-experiment
             bic_identity: 49152
             intx_map: [0, 1, 2, 3, 4, 5, 6, 7,
                        0, 1, 2, 3, 4, 5, 6, 7,

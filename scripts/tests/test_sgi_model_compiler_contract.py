@@ -469,6 +469,22 @@ class RecordShapeTests(unittest.TestCase):
         self.assertNotIn("initial_latch", descriptor)
         self.assertNotIn("intx_map", descriptor)
 
+    def test_expansion_controller_startup_is_explicit_and_typed(self):
+        model = self._expansion_descriptor_model()
+        self.assertNotIn("controller_startup",
+                         compile_model(model)["io_assemblies"][0])
+        raw = model["machine"]["emulation"]["io_assemblies"][0]
+        raw["controller_startup"] = "bic-functional-experiment"
+        descriptor = compile_model(model)["io_assemblies"][0]
+        self.assertEqual(descriptor["controller_startup"],
+                         "bic-functional-experiment")
+        emitted = json.loads(render_catalogue_json([model]))["topologies"][0]
+        self.assertEqual(emitted["io-assemblies"][0]["controller-startup"],
+                         "bic-functional-experiment")
+        raw["controller_startup"] = "physical-bus"
+        with self.assertRaisesRegex(CompileError, "startup selection"):
+            compile_model(model)
+
     def test_management_ownership_and_attachment_are_separate_from_ni(self):
         model = self._expansion_descriptor_model()
         controllers = compile_model(model)["controllers"]

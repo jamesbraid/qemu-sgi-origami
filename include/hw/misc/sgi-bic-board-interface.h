@@ -17,4 +17,8 @@ MemTxResult sgi_bic_board_write(SGIBICBoardInterfaceState *s, hwaddr offset,
 MemTxResult sgi_bic_board_controller_byte(SGIBICBoardInterfaceState *s,
                                    unsigned position, bool high,
                                    uint8_t value, bool completed);
+/* Functional operation adapter; accepts only the fitted destination. */
+bool sgi_bic_board_controller_operation(Object *receiver, unsigned position,
+                                      uint8_t bus, uint8_t address,
+                                      uint8_t command, uint8_t value);
 #endif

@@ -475,6 +475,19 @@
 { 'enum': 'SGIModelIoAssemblyKind', 'data': ['origin300-pci-expansion'] }
 
 ##
+# @SGIModelControllerStartup:
+#
+# Explicit functional controller startup experiment.
+#
+# @bic-functional-experiment: Assign rack and bay through completed
+#     BIC bytes.
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelControllerStartup',
+  'data': [ 'bic-functional-experiment' ] }
+
+##
 # @SGIModelIoAssembly:
 #
 # Versioned synthetic construction policy, separate from physical
@@ -507,6 +520,9 @@
 # @bic-identity: Synthetic whole BIC identity with expansion field
 #     0xc000.
 #
+# @controller-startup: Optional functional startup experiment.
+#     Omission performs no controller assignment.
+#
 # @initial-latch: Optional synthetic latch; omission starts unknown.
 #
 # @intx-map: Optional 48-entry synthetic board-owned PCI interrupt
@@ -527,6 +543,7 @@
             'head-ports': ['uint8'],
             'controller-profile': 'str',
             'bic-identity': 'uint64',
+            '*controller-startup': 'SGIModelControllerStartup',
             '*initial-latch': 'uint16',
             '*intx-map': ['uint8'] } }
 

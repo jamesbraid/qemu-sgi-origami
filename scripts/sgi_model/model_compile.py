@@ -1412,6 +1412,11 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
             "head_ports": ports.copy(), "controller_profile": "pci-expansion",
             "bic_identity": identity,
         }
+        if "controller_startup" in raw:
+            if raw["controller_startup"] != "bic-functional-experiment":
+                raise CompileError(
+                    "unsupported I/O controller startup selection")
+            record["controller_startup"] = raw["controller_startup"]
         if "initial_latch" in raw:
             record["initial_latch"] = number("initial_latch", 65535)
         if "intx_map" in raw:
