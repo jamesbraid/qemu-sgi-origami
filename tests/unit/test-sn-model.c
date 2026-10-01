@@ -769,6 +769,143 @@ static void test_io_peer_runtime_refusal(const void *data)
     error_free(err);
 }
 
+typedef struct PeerPopulationFixture {
+    SGIModelTopology topology;
+    SGIModelNode nodes[2];
+    SGIModelNodeList node_list[2];
+    SGIModelIoPeer peer;
+    SGIModelIoPeerList peers;
+    SGIModelModule modules[2];
+    SGIModelModuleList module_list[2];
+    SGIModelController controller;
+    SGIModelControllerList controllers;
+    SGIModelCable cable;
+    SGIModelCableList cables;
+    SGIModelLinkEnd ends[2];
+    SGIModelLinkEndList end_list[2];
+    SGIModelNodePopulation row;
+    uint32List row_nodes[2];
+    uint32List row_cables;
+    uint32List membership;
+} PeerPopulationFixture;
+
+static PeerPopulationFixture *peer_population_fixture(void)
+{
+    /* Population views retain pointers to their input records. */
+    PeerPopulationFixture *f = g_new0(PeerPopulationFixture, 1);
+
+    f->node_list[0] = (SGIModelNodeList) {
+        .value = &f->nodes[0], .next = &f->node_list[1],
+    };
+    f->node_list[1].value = &f->nodes[1];
+    f->peer.module_index = 1;
+    f->peers.value = &f->peer;
+    f->membership.value = 0;
+    f->modules[0].controller_index = -1;
+    f->modules[1] = (SGIModelModule) {
+        .has_io_peers = true, .io_peers = &f->membership,
+        .controller_index = 0,
+    };
+    f->module_list[0] = (SGIModelModuleList) {
+        .value = &f->modules[0], .next = &f->module_list[1],
+    };
+    f->module_list[1].value = &f->modules[1];
+    f->controller.module_index = 1;
+    f->controllers.value = &f->controller;
+    f->ends[0].kind = SGI_MODEL_LINK_END_KIND_NODE;
+    f->ends[1].kind = SGI_MODEL_LINK_END_KIND_IO_PEER;
+    f->end_list[0] = (SGIModelLinkEndList) {
+        .value = &f->ends[0], .next = &f->end_list[1],
+    };
+    f->end_list[1].value = &f->ends[1];
+    f->cable.ends = &f->end_list[0];
+    f->cables.value = &f->cable;
+    f->row_nodes[0] = (uint32List) {
+        .value = 0, .next = &f->row_nodes[1],
+    };
+    f->row_nodes[1].value = 1;
+    f->row.nodes = &f->row_nodes[0];
+    f->row.cables = &f->row_cables;
+    f->topology = (SGIModelTopology) {
+        .name = (char *)"peer-population", .nodes = &f->node_list[0],
+        .has_io_peers = true, .io_peers = &f->peers,
+        .modules = &f->module_list[0], .controllers = &f->controllers,
+        .cables = &f->cables,
+    };
+    return f;
+}
+
+static void test_io_peer_population_preserved(void)
+{
+    PeerPopulationFixture *f = peer_population_fixture();
+    const SGIModelTopology *view;
+    Error *err = NULL;
+
+    view = sgi_model_population_view(&f->topology, &f->row, &err);
+    g_assert_null(err);
+    g_assert_nonnull(view);
+    g_assert_true(view->has_io_peers);
+    g_assert_true(view->io_peers == &f->peers);
+    g_assert_true(view->controllers == &f->controllers);
+    g_assert_true(view->modules->next->value->has_io_peers);
+    g_assert_cmpuint(view->modules->next->value->io_peers->value, ==, 0);
+    g_assert_cmpint(view->modules->next->value->controller_index, ==, 0);
+    g_assert_cmpint(view->cables->value->ends->next->value->kind, ==,
+                    SGI_MODEL_LINK_END_KIND_IO_PEER);
+    g_assert_cmpuint(view->cables->value->ends->next->value->index, ==, 0);
+}
+
+static void test_io_peer_population_rejects_reduced(void)
+{
+    PeerPopulationFixture *f = peer_population_fixture();
+    Error *err = NULL;
+
+    f->row_nodes[0].next = NULL;
+    g_assert_null(sgi_model_population_view(&f->topology, &f->row, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "complete population"));
+    error_free(err);
+}
+
+static void test_io_peer_population_rejects_missing_cable(void)
+{
+    PeerPopulationFixture *f = peer_population_fixture();
+    Error *err = NULL;
+
+    f->row.cables = NULL;
+    g_assert_null(sgi_model_population_view(&f->topology, &f->row, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "complete population"));
+    error_free(err);
+}
+
+static void test_existing_population_views(void)
+{
+    /* Like the embedded catalogue, inputs outlive all cached projections. */
+    SGIModelCatalogue *catalogue = load_catalogue();
+    const SGIModelTopologyList *topology;
+
+    for (topology = catalogue->topologies; topology;
+         topology = topology->next) {
+        const SGIModelNodePopulationList *row;
+
+        for (row = topology->value->node_populations; row; row = row->next) {
+            const SGIModelTopology *view;
+            Error *err = NULL;
+
+            if (row->value->grade == SGI_MODEL_EVIDENCE_GRADE_UNKNOWN) {
+                continue;
+            }
+            view = sgi_model_population_view(topology->value, row->value, &err);
+            g_assert_null(err);
+            g_assert_nonnull(view);
+            g_assert_cmpuint(QAPI_LIST_LENGTH(view->nodes), ==,
+                             QAPI_LIST_LENGTH(row->value->nodes));
+            g_assert_null(view->io_peers);
+        }
+    }
+}
+
 static void test_io_peer_runtime_accepts_absent_and_empty(void)
 {
     char name[] = "no-io-peers";
@@ -807,6 +944,14 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sn-model/origin300-vbrick-attachment",
                          "origin300-vbrick",
                          test_origin300_graphics_attachment);
+    g_test_add_func("/sn-model/existing-population-views",
+                    test_existing_population_views);
+    g_test_add_func("/sn-model/io-peer/population-preserved",
+                    test_io_peer_population_preserved);
+    g_test_add_func("/sn-model/io-peer/population-rejects-reduced",
+                    test_io_peer_population_rejects_reduced);
+    g_test_add_func("/sn-model/io-peer/population-rejects-missing-cable",
+                    test_io_peer_population_rejects_missing_cable);
     g_test_add_func("/sn-model/io-peer/descriptor", test_io_peer_descriptor);
     g_test_add_func("/sn-model/io-peer/requires-identity",
                     test_io_peer_requires_identity);

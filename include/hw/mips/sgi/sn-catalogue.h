@@ -50,7 +50,10 @@ const SGIModelNodePopulation *sgi_model_default_population(
  * Its node_populations holds that one row in its own numbering. Built
  * once per row and kept for the process lifetime, like the catalogue
  * itself; NULL with @errp set when the row names a record out of range
- * or keeps one that needs a node board it does not fit.
+ * or keeps one that needs a node board it does not fit. I/O peers require
+ * the full node, Router and cable population and retain their indices.
+ * This structural view does not authorize runtime construction: machine
+ * callers must separately check sgi_model_check_runtime_endpoints().
  */
 const SGIModelTopology *sgi_model_population_view(
     const SGIModelTopology *t, const SGIModelNodePopulation *row,
