@@ -1787,7 +1787,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 27, .minimum_version_id = 27,
+    .name = TYPE_SGI_MGRAS, .version_id = 28, .minimum_version_id = 28,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -1957,7 +1957,6 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT64_V(eram_host, SGIMgrasState, 26),
         VMSTATE_UINT32_V(eram_rows, SGIMgrasState, 26),
         VMSTATE_UINT32_V(eram_bpr, SGIMgrasState, 26),
-        VMSTATE_UINT64_V(eram_next_host, SGIMgrasState, 26),
         VMSTATE_UINT32_V(eram_next_addr, SGIMgrasState, 26),
         /* A host read through the data port, between its reads. */
         VMSTATE_BOOL_V(pio_read_active, SGIMgrasState, 27),
