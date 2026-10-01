@@ -287,7 +287,7 @@ to ``QEMU_TEST_SGI_ASSET_DIR``:
        ``82e394e28cbe1bf92aa08f01216636bdff7a0b224d15166f321e1f075b253e66``.
        The IP35 diagnostic disk uses the checksum listed for the installed
        Origin 300 image above.
-   * - ``test_irix_tg.py`` and ``test_irix_tg_perf.py``
+   * - ``test_irix_tg.py``
      - The IP27 PROM and ``irix/6.5.30/root.qcow2``
    * - ``test_irix_eg.py`` and ``test_irix_ef.py``
      - The IP27 PROM and ``irix/6.5.30/root.qcow2``

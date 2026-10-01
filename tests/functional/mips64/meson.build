@@ -158,21 +158,16 @@ test_mips64_timeouts = {
   'irix_eg_frag' : 1800,
   'irix_tg_frag' : 1800,
   'irix_ef_frag' : 1800,
-  # The same full multiuser boot of the installed IRIX 6.5.30 disk, with the
-  # tg (Broadcom BCM570x) adapter brought up instead, its link awaited, and
-  # the SLIRP gateway pinged so tg1's own packet counters can be read back.
-  # The boot is the long pole, the same as irix_eg_net; LOGIN_BUDGET_SECONDS
-  # in test_irix_tg.py keeps a margin under this, with the bring-up steps on
-  # their own fixed timeouts on top.
-  'irix_tg' : 1800,
+  # One installed IRIX boot checks tg packet counters, a byte-checked TCP
+  # transfer, TCP/UDP throughput, and guest-to-host TCP and UDP. Keep the
+  # former throughput test's limit; the added counter and ping checks run
+  # on its existing guest.
+  'irix_tg' : 2700,
   # Boot installed IRIX on the Origin 200 and check deterministic TCP data
   # in both directions plus UDP receive and transmit on the onboard IOC3.
   # The real PROM boot dominates the run; the transfer checks have fixed
   # per-operation timeouts.
   'irix_ef' : 2700,
-  # Same boot, then bulk transfers on top of it: throughput needs the traffic
-  # to run long enough to be worth timing.
-  'irix_tg_perf' : 2700,
   # Boot to the POD prompt plus sixteen immediate commands; BOOT_TIMEOUT
   # in test_prom_pod.py keeps the usual 60s margin under this.
   'prom_pod' : 900,
@@ -300,7 +295,6 @@ tests_mips64_system_thorough = [
   'irix_ef_frag',
   'irix_ef',
   'irix_tg',
-  'irix_tg_perf',
   'linux_kernel',
   'linux_multiuser',
   'openbsd_net_transfer',
