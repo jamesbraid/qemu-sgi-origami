@@ -8,12 +8,6 @@
 #include "qemu/timer.h"
 #include "hw/core/clock.h"
 
-static int cpu_pre_load(void *opaque)
-{
-    MIPS_CPU(opaque)->r10k_data_cache_stream = false;
-    return 0;
-}
-
 static int cpu_pre_save(void *opaque)
 {
     MIPSCPU *cpu = opaque;
@@ -55,14 +49,6 @@ static int cpu_post_load(void *opaque, int version_id)
     /* PRId is immutable configuration, including the value used by reset. */
     if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
         env->CP0_PRid != cpu->r10000_prid) {
-        return -EINVAL;
-    }
-    if (cpu->r10k_data_cache != cpu->r10k_data_cache_stream) {
-        return -EINVAL;
-    }
-    if (!strcmp(MIPS_CPU_GET_CLASS(cpu)->cpu_def->name, "R10000") &&
-        !!(env->CP0_Config0 & (1 << CP0C0_R10K_SK)) !=
-        cpu->r10k_sccoren) {
         return -EINVAL;
     }
     if (env->timer_adjacent_pending) {
@@ -586,7 +572,6 @@ const VMStateDescription vmstate_mips_cpu = {
     .name = "cpu",
     .version_id = 23,
     .minimum_version_id = 23,
-    .pre_load = cpu_pre_load,
     .pre_save = cpu_pre_save,
     .post_save = cpu_post_save,
     .post_load = cpu_post_load,
@@ -710,7 +695,6 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r14k_performance,
         &mips_vmstate_r10k,
-        &mips_vmstate_r10k_data_cache,
         &mips_vmstate_r14k_scache,
         &mips_vmstate_r12000_extra,
         &mips_vmstate_r10k_scache_4m,

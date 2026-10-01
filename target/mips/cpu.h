@@ -1520,7 +1520,6 @@ struct ArchCPU {
     bool r12000_set[5];
     uint32_t r12000_migration_profile[5];
     mips_def_t *r12000_cpu_model;
-    mips_def_t *r10k_cpu_model;
     bool r12000_profile_valid;
     /*
      * Where an uncached or uncached-accelerated reference resolves when a
@@ -1530,21 +1529,13 @@ struct ArchCPU {
      * RAM. Unlinked, every reference resolves in the one space as before.
      */
     MemoryRegion *uncached_memory;
-#ifndef CONFIG_USER_ONLY
-    bool r10k_data_cache;
-    bool r10k_sccoren;
-    uint32_t r10k_scache_line_size;
-    bool r10k_data_cache_stream;
-    MemoryRegion r10k_data_memory;
-#endif
 };
 
 /* Address-space indices: cached references first, uncached ones second. */
 enum {
     MIPSASIdx_CACHED = 0,
     MIPSASIdx_UNCACHED = 1,
-    MIPSASIdx_DATA_CACHE = 2,
-    MIPSASIdx_MAX = MIPSASIdx_DATA_CACHE,
+    MIPSASIdx_MAX = MIPSASIdx_UNCACHED,
 };
 
 /**
@@ -1666,9 +1657,6 @@ enum {
 
 /* An NMI input edge waits here until the execution loop takes the exception. */
 #define CPU_INTERRUPT_NMI CPU_INTERRUPT_TGT_EXT_0
-
-/* Completion of an R10000 soft-reset sequence, delivered as an exception. */
-#define CPU_INTERRUPT_SRESET CPU_INTERRUPT_TGT_EXT_1
 
 #define CPU_RESOLVING_TYPE TYPE_MIPS_CPU
 

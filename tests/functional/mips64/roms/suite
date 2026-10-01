@@ -56,8 +56,6 @@ addrspace        R10000 R14000
 # this row runs on origin200 only.
 tlbuncached      R10000
 r10000_remap     R10000
-# r10000_cache_storage remains explicit until secondary dirty data and
-# writeback exist in the R10000 model.
 tlbspan          R4000 R10000 R14000
 tlbconflict      R10000 R14000
 framemask        R10000 R14000

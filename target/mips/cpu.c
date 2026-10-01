@@ -25,9 +25,6 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "cpu.h"
-#ifndef CONFIG_USER_ONLY
-#include "hw/core/boards.h"
-#endif
 #include "internal.h"
 #include "qemu/module.h"
 #include "qemu/qtree.h"
@@ -152,12 +149,8 @@ static bool mips_cpu_has_work(CPUState *cs)
     CPUMIPSState *env = cpu_env(cs);
     bool has_work = false;
 
-    if (cpu_test_interrupt(cs, CPU_INTERRUPT_NMI | CPU_INTERRUPT_SRESET)) {
+    if (cpu_test_interrupt(cs, CPU_INTERRUPT_NMI)) {
         return true;
-    }
-
-    if (env->r10k && env->r10k->coherence_waiting) {
-        return false;
     }
 
     /*
@@ -283,7 +276,6 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
         R10KState *r10k = env->r10k;
 
         memset(r10k, 0, offsetof(R10KState, system_requests));
-        r10k->globally_performed = true;
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =
@@ -549,7 +541,6 @@ static void mips_cpu_finalize(Object *obj)
 
     mips_octeon_destroy_llm_state(&cpu->env.octeon_crypto);
     g_free(cpu->r12000_cpu_model);
-    g_free(cpu->r10k_cpu_model);
 }
 
 static void mips_cpu_disas_set_info(const CPUState *cs, disassemble_info *info)
@@ -762,34 +753,6 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(dev);
     Error *local_err = NULL;
 
-#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
-    if (cpu->r10k_data_cache &&
-        (strcmp(mcc->cpu_def->name, "R10000") ||
-         MACHINE(qdev_get_machine())->smp.cpus != 1)) {
-        error_setg(errp, "r10k-data-cache requires one R10000 CPU");
-        return;
-    }
-    if (cpu->r10k_scache_line_size != 64 && cpu->r10k_scache_line_size != 128) {
-        error_setg(errp, "r10k-scache-line-size must be 64 or 128");
-        return;
-    }
-    if (cpu->r10k_sccoren || cpu->r10k_scache_line_size != 128) {
-        if (strcmp(mcc->cpu_def->name, "R10000")) {
-            error_setg(errp, "r10k-sccoren requires an R10000 CPU");
-            return;
-        }
-        cpu->r10k_cpu_model = g_new(mips_def_t, 1);
-        *cpu->r10k_cpu_model = *env->cpu_model;
-        if (cpu->r10k_sccoren) {
-            cpu->r10k_cpu_model->CP0_Config0 |= 1 << CP0C0_R10K_SK;
-        }
-        cpu->r10k_cpu_model->cfg.scache_line_size = cpu->r10k_scache_line_size;
-        cpu->r10k_cpu_model->CP0_Config0 = deposit32(
-            cpu->r10k_cpu_model->CP0_Config0, CP0C0_R10K_SB, 1,
-            cpu->r10k_scache_line_size == 128);
-        env->cpu_model = cpu->r10k_cpu_model;
-    }
-#endif
     if (!strcmp(mcc->cpu_def->name, "R12000") &&
         !mips_r12000_validate(cpu, errp)) {
         return;
@@ -840,16 +803,11 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
      * With an uncached view linked, both spaces exist before the vCPU
      * thread starts; qemu_init_vcpu() then leaves the default alone.
      */
-    if (cpu->uncached_memory || cpu->r10k_data_cache) {
+    if (cpu->uncached_memory) {
         cpu_address_space_init(cs, MIPSASIdx_CACHED, "cpu-memory",
                                cs->memory);
         cpu_address_space_init(cs, MIPSASIdx_UNCACHED, "cpu-uncached",
                                cpu->uncached_memory ?: cs->memory);
-    }
-#endif
-#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
-    if (cpu->r10k_data_cache) {
-        mips_r10k_data_cache_init(cpu);
     }
 #endif
     qemu_init_vcpu(cs);
@@ -866,26 +824,12 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
     g_free(cpu->env.r10k);
     cpu->env.cpu_model = mcc->cpu_def;
     g_clear_pointer(&cpu->r12000_cpu_model, g_free);
-    g_clear_pointer(&cpu->r10k_cpu_model, g_free);
     cpu->r12000_profile_valid = false;
 
     mcc->parent_unrealize(dev);
 }
 
 #ifndef CONFIG_USER_ONLY
-/*
- * A pulse reports completion of the CPU's soft-reset sequence. This is not
- * the timed SysReset* pin: a board must establish its signal mapping before
- * driving it. The exception preserves caches and enters the uncached reset
- * vector (R10000 User's Manual v2.0, printed page 163).
- */
-static void mips_cpu_soft_reset(void *opaque, int irq, int level)
-{
-    if (level) {
-        cpu_interrupt(CPU(opaque), CPU_INTERRUPT_SRESET);
-    }
-}
-
 static void mips_cpu_set_nmi(void *opaque, int irq, int level)
 {
     MIPSCPU *cpu = opaque;
@@ -929,10 +873,6 @@ static void mips_cpu_initfn(Object *obj)
     }
 #ifndef CONFIG_USER_ONLY
     qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_set_nmi, "nmi", 1);
-    if (!strcmp(mcc->cpu_def->name, "R10000")) {
-        qdev_init_gpio_in_named(DEVICE(obj), mips_cpu_soft_reset,
-                               "soft-reset", 1);
-    }
 #endif
 }
 
@@ -958,9 +898,6 @@ static ObjectClass *mips_cpu_class_by_name(const char *cpu_model)
 /* The uncached space exists only where a board linked one. */
 static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
 {
-    if (attrs.mips_data_cache) {
-        return MIPSASIdx_DATA_CACHE;
-    }
     return attrs.mips_uncached && MIPS_CPU(cs)->uncached_memory ?
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
 }
@@ -976,12 +913,6 @@ static const struct SysemuCPUOps mips_sysemu_ops = {
 static const Property mips_cpu_properties[] = {
     DEFINE_PROP_BOOL("big-endian", MIPSCPU, is_big_endian, TARGET_BIG_ENDIAN),
 #ifndef CONFIG_USER_ONLY
-#ifdef CONFIG_TCG
-    DEFINE_PROP_BOOL("r10k-data-cache", MIPSCPU, r10k_data_cache, false),
-    DEFINE_PROP_BOOL("r10k-sccoren", MIPSCPU, r10k_sccoren, false),
-    DEFINE_PROP_UINT32("r10k-scache-line-size", MIPSCPU,
-                       r10k_scache_line_size, 128),
-#endif
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 #endif

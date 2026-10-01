@@ -11446,11 +11446,6 @@ static void gen_sync(DisasContext *ctx, int stype)
         break;
     }
 
-#ifndef CONFIG_USER_ONLY
-    if (ctx->insn_flags & INSN_R10K) {
-        gen_helper_r10k_sync(tcg_env);
-    }
-#endif
     tcg_gen_mb(tcg_mo);
 }
 

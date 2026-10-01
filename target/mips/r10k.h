@@ -140,7 +140,6 @@ typedef struct R10KState {
 
     /* CP0 CacheErr is copied from the reporting cache on exception delivery. */
     int32_t CP0_CacheErr;
-    uint32_t scache_local_cacheerr;
 
     /* R10000 external secondary-cache diagnostic state. */
     uint32_t scache_taglo[R10K_SCACHE_4M_TAGS];
@@ -166,18 +165,9 @@ typedef struct R10KState {
     uint8_t dcache_lru[R10K_DCACHE_SETS];
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
-    R10KTransaction request;
-    R10KTransaction outgoing;
-    R10KExternalTransaction external[2];
-    unsigned int external_count;
-    bool coherence_waiting;
-    bool coherence_sync_waiting;
-    bool globally_performed;
-
-    /* Board links and request identities survive reset. */
+    /* Board links survive reset. */
     MemoryRegion *system_requests;
     uint16_t requester_id;
-    uint64_t next_request_id;
 } R10KState;
 
 #endif /* MIPS_R10K_H */

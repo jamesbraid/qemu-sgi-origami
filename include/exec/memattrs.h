@@ -68,10 +68,9 @@ typedef struct MemTxAttrs {
 
     /* MIPS: the access uses an uncached or uncached-accelerated CCA. */
     uint8_t mips_uncached:1;
-    /* MIPS: translated cache algorithm and CPU-local data-cache view. */
+    /* MIPS: the reference's cache algorithm, zero for none recorded. */
     uint8_t mips_cca:3;
-    uint8_t mips_data_cache:1;
-    uint8_t _reserved1:3;
+    uint8_t _reserved1:4;
     uint16_t _reserved2;
 } MemTxAttrs;
 

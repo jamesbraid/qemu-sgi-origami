@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Separate R10000 TLB remapping from ordinary data-cache storage.
+"""Exercise R10000 TLB remapping and diagnostic cache separation.
 
 Public contract: MIPS R10000 User's Manual v2.0, October 10, 1996,
 pp. 48, 53-54, 162-163, 239, 280, 283 and 287-288. No firmware is required.
 """
 
 import re
-import socket
 import struct
 import time
 from pathlib import Path
@@ -23,8 +22,6 @@ VIRTUAL = 0x40000000
 FIRST = 0x10203040
 SECOND = 0x55667788
 DONE = 0x43414348
-ECC_EXCEPTION = 0x45584350
-ECC_NORMAL = 0x4e4f524d
 
 
 def insn_i(op, rs, rt, imm):
@@ -57,10 +54,10 @@ def mapping(paddr, cca):
             entry |= 3 << 62
         code += constant(8, entry)
         code += [0x40a00000 | 8 << 16 | cp0 << 11, 0, 0, 0, 0]
-    return code + [0x42000002, 0, 0, 0, 0]  # tlbwi
+    return code + [0x42000002, 0, 0, 0, 0]
 
 
-def diagnostic_rom(mode, migration=False):
+def diagnostic_rom(mode):
     signed_remap = mode == 'cached-remap-signed'
     first = 0x12345678 if signed_remap else FIRST
     second = 0x87654321 if signed_remap else SECOND
@@ -107,23 +104,14 @@ def diagnostic_rom(mode, migration=False):
             code += mfc0(8, 29) + [insn_i(0x2b, 12, 8, 12 + way * 12)]
             code += [insn_i(0x2f, 10, 0x19, way), 0, 0, 0, 0]
             code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 16 + way * 12)]
-        # A dirty primary line must remain invisible through the RAM alias.
+        # Default CPU references update RAM rather than diagnostic arrays.
         code += [insn_i(0x23, 9, 8, 0), insn_i(0x2b, 12, 8, 36)]
         # Rewriting only CCA must discard the translated cache access path.
         code += mapping(PAGE, 2) + constant(11, VIRTUAL)
         code += [insn_i(0x23, 11, 8, 0), insn_i(0x2b, 12, 8, 56)]
         code += mapping(PAGE, 3)
         code += [insn_i(0x23, 11, 8, 0), insn_i(0x2b, 12, 8, 60)]
-        if migration:
-            # Keep one dirty L1 line and a different dirty L2 line in flight.
-            code += constant(8, 0xabcdef01)
-            code += [insn_i(0x2b, 10, 8, 128),
-                     insn_i(0x2f, 10, 0x15, 128), 0, 0, 0, 0]
-            code += constant(8, 0x52454144)
-            code += [insn_i(0x2b, 12, 8, 68),
-                     insn_i(0x23, 12, 8, 72),
-                     insn_i(0x04, 8, 0, -2), 0]
-        # Primary writeback updates secondary storage without updating RAM.
+        # Diagnostic CACHE operations leave ordinary memory current.
         code += [insn_i(0x2f, 10, 0x15, 0), 0, 0, 0, 0,
                  insn_i(0x23, 9, 8, 0), insn_i(0x2b, 12, 8, 40)]
         code += [insn_i(0x2f, 10, 0x07, 0), 0, 0, 0, 0]
@@ -132,36 +120,6 @@ def diagnostic_rom(mode, migration=False):
         code += mfc0(8, 29) + [insn_i(0x2b, 12, 8, 48)]
         code += [insn_i(0x2f, 10, 0x17, 0), 0, 0, 0, 0,
                  insn_i(0x23, 9, 8, 0), insn_i(0x2b, 12, 8, 52)]
-        if migration:
-            code += [insn_i(0x2f, 10, 0x17, 128), 0, 0, 0, 0,
-                     insn_i(0x23, 9, 8, 128), insn_i(0x2b, 12, 8, 64)]
-        if mode == 'operations':
-            code += constant(8, 0x20410080) + mtc0(8, 12)  # CU1
-            code += constant(10, 0x9800000000000000 | (PAGE + 0x100))
-            for size, offset, value in ((0x28, 0, 0x12), (0x29, 2, 0x3456),
-                                       (0x2b, 4, 0x789abcde),
-                                       (0x3f, 8, 0x1122334455667788)):
-                code += constant(8, value) + [insn_i(size, 10, 8, offset)]
-            for operation, offset, output in ((0x24, 0, 64), (0x25, 2, 68),
-                                              (0x27, 4, 72)):
-                code += [insn_i(operation, 10, 8, offset),
-                         insn_i(0x2b, 12, 8, output)]
-            code += [insn_i(0x37, 10, 8, 8), insn_i(0x3f, 12, 8, 80)]
-            code += [insn_i(0x30, 10, 8, 4), insn_i(0x09, 8, 8, 1),
-                     insn_i(0x38, 10, 8, 4), insn_i(0x2b, 12, 8, 88),
-                     insn_i(0x23, 10, 8, 4), insn_i(0x2b, 12, 8, 92)]
-            code += [insn_i(0x31, 10, 0, 4), insn_i(0x39, 10, 0, 16),
-                     insn_i(0x35, 10, 2, 8), insn_i(0x3d, 10, 2, 24),
-                     insn_i(0x23, 10, 8, 16), insn_i(0x2b, 12, 8, 96),
-                     insn_i(0x37, 10, 8, 24), insn_i(0x3f, 12, 8, 104)]
-            code += constant(8, SECOND)
-            code += [insn_i(0x2a, 10, 8, 33), insn_i(0x2e, 10, 8, 36),
-                     insn_i(0x23, 10, 8, 32), insn_i(0x2b, 12, 8, 112),
-                     insn_i(0x23, 10, 8, 36), insn_i(0x2b, 12, 8, 116)]
-            code += constant(8, 0x1122334455667788)
-            code += [insn_i(0x2c, 10, 8, 41), insn_i(0x2d, 10, 8, 48),
-                     insn_i(0x37, 10, 8, 40), insn_i(0x3f, 12, 8, 120),
-                     insn_i(0x23, 10, 8, 48), insn_i(0x2b, 12, 8, 128)]
     code += constant(8, DONE)
     code += [0x0000000f, insn_i(0x2b, 12, 8, 32),
              insn_i(0x04, 0, 0, -1), 0]
@@ -171,341 +129,15 @@ def diagnostic_rom(mode, migration=False):
     return image
 
 
-def reset_rom():
-    # Record reset status before enabling 64-bit address construction.
-    code = mfc0(16, 12)
-    code += constant(8, 0x00410080) + mtc0(8, 12)
-    code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(9, 0x9600000000000000 | PAGE)
-    code += constant(10, 0x9800000000000000 | PAGE)
-    code += [insn_i(0x23, 12, 8, 72)]
-    branch = len(code)
-    code += [0, 0]
-    code += constant(8, 0x12345000) + mtc0(8, 18)
-    code += constant(8, FIRST)
-    code += [insn_i(0x2b, 9, 8, 0), insn_i(0x2b, 9, 8, 128)]
-    code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
-    code += constant(8, 0xabcdef01)
-    code += [insn_i(0x2b, 10, 8, 128),
-             insn_i(0x2f, 10, 0x15, 128), 0, 0, 0, 0]
-    code += constant(8, 0x52454144)
-    code += [insn_i(0x2b, 12, 8, 68), insn_i(0x04, 0, 0, -1), 0]
-    code[branch] = insn_i(0x05, 8, 0, len(code) - branch - 1)
-    # The soft-reset handler uses uncached instructions and CACHE only.
-    for operation, offset, register, output in ((0x05, 0, 28, 0),
-                                               (0x19, 0, 28, 4),
-                                               (0x07, 128, 28, 8),
-                                               (0x1b, 128, 29, 12)):
-        code += [insn_i(0x2f, 10, operation, offset), 0, 0, 0, 0]
-        code += mfc0(8, register) + [insn_i(0x2b, 12, 8, output)]
-    for offset, output in ((0, 16), (128, 20)):
-        code += [insn_i(0x23, 9, 8, offset), insn_i(0x2b, 12, 8, output)]
-    for offset, output in ((0, 24), (128, 28)):
-        code += [insn_i(0x2f, 10, 0x17, offset), 0, 0, 0, 0,
-                 insn_i(0x23, 9, 8, offset), insn_i(0x2b, 12, 8, output)]
-    code += [insn_i(0x2b, 12, 16, 36)]
-    code += mfc0(8, 18) + [insn_i(0x2b, 12, 8, 40)]
-    code += constant(8, DONE)
-    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    image = bytearray(0x400 + len(code) * 4)
-    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
-    return image
-
-
-def rom_data_rom(address=0x980000001fc00200, offset=0x200):
-    code = constant(8, 0x00410080) + mtc0(8, 12)
-    code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(10, address)
-    code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 0),
-             insn_i(0x23, 10, 8, 4), insn_i(0x2b, 12, 8, 4)]
-    # The tag/data observation proves the ROM read allocated a cache line.
-    code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
-    code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 8)]
-    code += [insn_i(0x2f, 10, 0x19, 0), 0, 0, 0, 0]
-    code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12)]
-    code += constant(8, DONE)
-    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    image = bytearray(max(0x400 + len(code) * 4, offset + 8))
-    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into('>II', image, offset, FIRST, SECOND)
-    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
-    return image
-
-
-def refused_rom_store_rom(romd):
-    address = 0x1e000200 if romd else 0x1fc00200
-    code = constant(8, 0x00410080) + mtc0(8, 12)
-    code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(10, 0x9800000000000000 | address)
-    if romd:
-        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 8)]
-    code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
-    # A refused store must leave an existing line unchanged.
-    for way in (0, 1):
-        code += [insn_i(0x2f, 10, 0x05, way), 0, 0, 0, 0]
-        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, way * 4)]
-    if romd:
-        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 20)]
-    else:
-        # Refuse the same store when the immutable ROM line is already cached.
-        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 8)]
-        code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
-        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12)]
-        code += constant(8, SECOND) + [insn_i(0x2b, 10, 8, 0)]
-        code += [insn_i(0x2f, 10, 0x05, 0), 0, 0, 0, 0]
-        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 16)]
-        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 20)]
-    # Neither refusal nor subsequent writeback may issue a device command.
-    for operation in (0x15, 0x17):
-        code += [insn_i(0x2f, 10, operation, 0), 0, 0, 0, 0]
-    for way in (0, 1):
-        code += [insn_i(0x2f, 10, 0x07, way), 0, 0, 0, 0]
-        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 24 + way * 4)]
-    if romd:
-        # Positive control: an uncached Read Array command invokes the callback.
-        code += constant(9, 0xffffffffa0000000 | address)
-        code += constant(8, 0xff) + [insn_i(0x28, 9, 8, 0)]
-    code += constant(8, DONE)
-    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    image = bytearray(0x400 + len(code) * 4)
-    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into('>I', image, 0x200, FIRST)
-    if romd:
-        # Record any unexpected exception so a failed load does not hang.
-        handler = mfc0(26, 13) + [insn_i(0x2b, 12, 26, 36)]
-        handler += mfc0(26, 14) + [insn_i(0x09, 26, 26, 4)]
-        handler += mtc0(26, 14) + [0x42000018, 0]
-        assert len(handler) * 4 <= 0x80
-        struct.pack_into(f'>{len(handler)}I', image, 0x380, *handler)
-    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
-    return image
-
-
-def secondary_ecc_rom():
-    code = constant(8, 0x00410080) + mtc0(8, 12)  # BEV, DE, KX
-    code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(9, 0x9600000000000000 | PAGE)
-    code += constant(10, 0x9800000000000000 | PAGE)
-    code += constant(8, 0x80000000)
-    code += [insn_i(0x2b, 9, 8, 0), insn_i(0x23, 10, 8, 0),
-             insn_i(0x2b, 12, 8, 8)]
-    for way in (0, 1):
-        code += [insn_i(0x2f, 10, 0x1b, way), 0, 0, 0, 0]
-        code += mfc0(8, 26) + [insn_i(0x2b, 12, 8, way * 4)]
-        code += [insn_i(0x2f, 10, 0x07, way), 0, 0, 0, 0]
-        code += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 12 + way * 4)]
-    code += constant(8, 1)
-    code += [insn_i(0x2b, 10, 8, 28),
-             insn_i(0x2f, 10, 0x15, 28), 0, 0, 0, 0]
-    code += constant(11, (0x9800000000000000 | PAGE) + 16)
-    for way in (0, 1):
-        code += [insn_i(0x2f, 11, 0x1b, way), 0, 0, 0, 0]
-        code += mfc0(8, 26) + [insn_i(0x2b, 12, 8, 20 + way * 4)]
-    code += constant(8, DONE)
-    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    image = bytearray(0x400 + len(code) * 4)
-    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
-    return image
-
-
-def secondary_error_rom(mode):
-    status = 0x00400080  # BEV, KX
-    if mode == 'de':
-        status |= 1 << 16
-    if mode == 'erl':
-        status |= 1 << 2
-    code = constant(8, status) + mtc0(8, 12)
-    code += constant(12, 0xffffffffa0000000 | MAILBOX)
-    code += constant(10, 0x9800000000000000 | PAGE)
-    if mode == 'way1':
-        code += constant(11, 0x9800000000000000 | (PAGE + 0x100000))
-        code += [insn_i(0x23, 11, 8, 0)]
-    code += [insn_i(0x23, 10, 8, 0)]
-    if mode == 'writeback':
-        code += constant(8, 0x1234) + [insn_i(0x2b, 10, 8, 64)]
-    code += [insn_i(0x2f, 10, 0x11, 0), 0, 0, 0, 0]
-    code += mtc0(0, 28)
-    injected = (0 if mode == 'parity_only' else
-                0xc0000000 if mode == 'two_data' else 0x80000000)
-    code += constant(8, injected) + mtc0(8, 29)
-    check = (0x200 if mode == 'parity_only' else
-             0 if mode in ('correctable', 'two_data') else 0x100)
-    code += constant(8, check)
-    code += mtc0(8, 26)
-    for way in (0, 1):
-        code += [insn_i(0x2f, 10, 0x1f, way), 0, 0, 0, 0]
-    error_pc = 0xbfc00400 + len(code) * 4
-    if mode == 'writeback':
-        code += [insn_i(0x2f, 10, 0x17, 0), 0, 0, 0, 0]
-    else:
-        code += [insn_i(0x23, 10, 8, 0), insn_i(0x2b, 12, 8, 12)]
-    code += mfc0(8, 27) + [insn_i(0x2b, 12, 8, 0)]
-    code += mfc0(8, 12) + [insn_i(0x2b, 12, 8, 4)]
-    code += mfc0(8, 30) + [insn_i(0x2b, 12, 8, 8)]
-    code += constant(8, ECC_NORMAL)
-    code += [insn_i(0x2b, 12, 8, 16)]
-    code += constant(8, DONE)
-    code += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-
-    handler = mfc0(8, 27) + [insn_i(0x2b, 12, 8, 0)]
-    handler += mfc0(8, 12) + [insn_i(0x2b, 12, 8, 4)]
-    handler += mfc0(8, 30) + [insn_i(0x2b, 12, 8, 8)]
-    for way in (0, 1):
-        handler += [insn_i(0x2f, 10, 0x05, way), 0, 0, 0, 0]
-        handler += mfc0(8, 28) + [insn_i(0x2b, 12, 8, 20 + way * 4)]
-    handler += constant(8, ECC_EXCEPTION)
-    handler += [insn_i(0x2b, 12, 8, 16)]
-    handler += constant(8, DONE)
-    handler += [insn_i(0x2b, 12, 8, 32), insn_i(0x04, 0, 0, -1), 0]
-    assert len(handler) * 4 <= 0x100
-
-    image = bytearray(0x400 + len(code) * 4)
-    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
-    struct.pack_into(f'>{len(handler)}I', image, 0x300, *handler)
-    struct.pack_into(f'>{len(code)}I', image, 0x400, *code)
-    return image, error_pc
-
-
 class R10000TLBCache(QemuSystemTest):
-    def run_secondary_error(self, mode, correction=False, log_unimp=False):
-        image = self.scratch_file('secondary-error.bin')
-        rom, error_pc = secondary_error_rom(mode)
-        Path(image).write_bytes(rom)
-        self.set_machine('malta')
-        cpu = 'R10000,r10k-data-cache=on'
-        if correction:
-            cpu += ',r10k-sccoren=on'
-        self.vm.add_args('-accel', 'tcg,thread=single', '-cpu', cpu,
-                         '-m', '128M', '-bios', image, '-nodefaults')
-        if log_unimp:
-            self.vm.add_args('-d', 'unimp', '-D', self.log_file('ecc.trace'))
-        self.vm.launch()
-        deadline = time.monotonic() + 10
-        while True:
-            output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /9wx {MAILBOX:#x}')
-            words = [int(word, 16) for word in
-                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
-            if len(words) == 9 and words[8] == DONE:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        return words, error_pc, output
+    timeout = 60
 
-    def test_secondary_uncorrectable_error_vector(self):
-        words, error_pc, output = self.run_secondary_error('uncorrectable')
-        self.assertEqual(words[4], ECC_EXCEPTION, output)
-        self.assertEqual(words[0] & 0xc0000000, 0x80000000, output)
-        self.assertEqual(words[0] & 0x0c000000, 0x04000000, output)
-        self.assertEqual(words[0] & 0x007fffc0, PAGE & 0x007fff80,
-                         output)
-        self.assertTrue(words[1] & 4, output)
-        self.assertEqual(words[2], error_pc, output)
-        for tag in words[5:7]:
-            self.assertFalse(tag & 0xc0, output)
-
-    def test_secondary_error_reports_way_one(self):
-        words, error_pc, output = self.run_secondary_error('way1')
-        self.assertEqual(words[4], ECC_EXCEPTION, output)
-        self.assertEqual(words[0] & 0x0c000000, 0x08000000, output)
-        self.assertEqual(words[2], error_pc, output)
-        self.assertFalse(any((tag & 0xc0) and
-                             (tag >> 8) == (PAGE >> 12)
-                             for tag in words[5:7]), output)
-
-    def test_secondary_writeback_checks_ecc(self):
-        words, error_pc, output = self.run_secondary_error('writeback')
-        self.assertEqual(words[4], ECC_EXCEPTION, output)
-        self.assertEqual(words[2], error_pc, output)
-        self.assertEqual(words[0] & 0xc0000000, 0x80000000, output)
-
-    def test_secondary_correctable_error(self):
-        words, _, output = self.run_secondary_error('correctable')
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertEqual(words[3], 0, output)
-        self.assertFalse(words[1] & 4, output)
-        self.assertEqual(words[0], 0, output)
-
-    def test_secondary_de_suppresses_posting(self):
-        words, _, output = self.run_secondary_error('de')
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertFalse(words[1] & 4, output)
-        self.assertEqual(words[0], 0, output)
-
-    def test_secondary_erl_suppresses_delivery(self):
-        words, _, output = self.run_secondary_error('erl')
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertTrue(words[1] & 4, output)
-        self.assertEqual(words[0], 0, output)
-
-    def test_secondary_correction_mode_detects_two_data_bits(self):
-        words, error_pc, output = self.run_secondary_error('two_data', True)
-        self.assertEqual(words[4], ECC_EXCEPTION, output)
-        self.assertEqual(words[2], error_pc, output)
-        self.assertTrue(words[1] & 4, output)
-
-    def test_secondary_parity_mode_skips_two_data_bits(self):
-        words, _, output = self.run_secondary_error('two_data')
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertEqual(words[3], 0xc0000000, output)
-        self.assertFalse(words[1] & 4, output)
-
-    def test_secondary_parity_only_is_reported_as_unimplemented(self):
-        words, _, output = self.run_secondary_error('parity_only',
-                                                    log_unimp=True)
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertEqual(words[3], 0, output)
-        self.assertEqual(words[0], 0, output)
-        self.assertFalse(words[1] & 4, output)
-        self.assertIn('secondary parity-only error',
-                      Path(self.log_file('ecc.trace')).read_text())
-
-    def test_secondary_correction_mode_parity_only(self):
-        words, _, output = self.run_secondary_error('parity_only', True,
-                                                    log_unimp=True)
-        self.assertEqual(words[4], ECC_NORMAL, output)
-        self.assertEqual(words[3], 0, output)
-        self.assertEqual(words[0], 0, output)
-        self.assertFalse(words[1] & 4, output)
-        self.assertIn('secondary parity-only error',
-                      Path(self.log_file('ecc.trace')).read_text())
-
-    def test_secondary_ecc_from_fill_and_writeback(self):
-        image = self.scratch_file('secondary-ecc.bin')
-        Path(image).write_bytes(secondary_ecc_rom())
-        self.set_machine('malta')
-        self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
-                         '-m', '128M', '-bios', image, '-nodefaults')
-        self.vm.launch()
-        deadline = time.monotonic() + 10
-        while True:
-            output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /9wx {MAILBOX:#x}')
-            words = [int(word, 16) for word in
-                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
-            if len(words) == 9 and words[8] == DONE:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        self.assertEqual(sorted(words[:2]), [0, 0x3c0], output)
-        self.assertEqual(words[2], 0x80000000, output)
-        self.assertEqual(sorted(words[5:7]), [0, 0x207], output)
-        valid_ways = [way for way, tag in enumerate(words[3:5])
-                      if tag & (3 << 10)]
-        self.assertEqual(len(valid_ways), 1, output)
-        self.assertEqual(words[valid_ways[0]], 0x3c0, output)
-        self.assertEqual(words[5 + valid_ways[0]], 0x207, output)
-
-    def run_rom(self, mode, cache=True):
+    def run_rom(self, mode):
         image = self.scratch_file(f'{mode}.bin')
         Path(image).write_bytes(diagnostic_rom(mode))
         self.set_machine('malta')
-        cpu = 'R10000,r10k-data-cache=on' if cache else 'R10000'
         self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', cpu,
+                         '-cpu', 'R10000',
                          '-m', '128M', '-bios', image, '-nodefaults')
         self.vm.launch()
         deadline = time.monotonic() + 10
@@ -530,264 +162,8 @@ class R10000TLBCache(QemuSystemTest):
         self.assertEqual(words[:2], expected, output)
         return words, output
 
-    def check_cache(self, mode):
-        words, output = self.run_rom(mode)
-        ways = [words[2:5], words[5:8]]
-        matches = [(lo, hi, data) for lo, hi, data in ways
-                   if (lo & 0xc0) and
-                   (((hi & 0xf) << 24) | (lo >> 8)) == PAGE >> 12]
-        self.assertEqual(len(matches), 1,
-                         f'cached store left no unique valid tag: {output}')
-        self.assertEqual(matches[0][2], SECOND,
-                         f'ordinary store missing from cache data: {output}')
-
-        self.assertEqual(words[9:11], [FIRST, FIRST], output)
-        self.assertEqual((words[11] >> 10) & 3, 3, output)
-        self.assertEqual(words[12:14], [SECOND, SECOND], output)
-        self.assertEqual(words[14:16], [FIRST, SECOND], output)
-
-    def test_data_widths_and_llsc(self):
-        words, output = self.run_rom('operations')
-        self.assertEqual(words[16:19], [0x12, 0x3456, 0x789abcde], output)
-        self.assertEqual(words[20:24], [0x11223344, 0x55667788,
-                                      1, 0x789abcdf], output)
-        self.assertEqual(words[24], 0x789abcdf, output)
-        self.assertEqual(words[26:33], [0x11223344, 0x55667788,
-                                      0x00556677, 0x88000000,
-                                      0x00112233, 0x44556677,
-                                      0x88000000], output)
-
-    def run_dirty_cache_migration(self, source_line=128, destination_line=128):
-        image = self.scratch_file('migration.bin')
-        rom = diagnostic_rom('mapped', migration=True)
-        Path(image).write_bytes(rom)
-        self.set_machine('malta')
-        destination = self.get_vm('destination')
-        for vm, line_size in ((self.vm, source_line),
-                              (destination, destination_line)):
-            vm.add_args('-accel', 'tcg,thread=single',
-                        '-cpu', 'R10000,r10k-data-cache=on,'
-                        f'r10k-scache-line-size={line_size}',
-                        '-m', '128M', '-bios', image, '-nodefaults', '-S')
-        control = f'{self.socket_dir().name}/cache-control.sock'
-        destination.add_args('-incoming', 'defer',
-                             '-qtest', f'unix:{control},server=on,wait=off')
-        self.vm.launch()
-        destination.launch()
-        self.vm.cmd('cont')
-        deadline = time.monotonic() + 10
-        while True:
-            output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /1wx {MAILBOX + 68:#x}')
-            if '0x52454144' in output:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        self.vm.cmd('stop')
-        uri = f'unix:{self.socket_dir().name}/migration.sock'
-        destination.cmd('migrate-incoming', uri=uri)
-        self.vm.cmd('migrate', uri=uri)
-        if source_line != destination_line:
-            deadline = time.monotonic() + 20
-            while destination.exitcode() is None:
-                self.assertLess(time.monotonic(), deadline)
-                time.sleep(0.05)
-            self.assertEqual(destination.exitcode(), 1)
-            destination.wait()
-            output = destination.get_log()
-            self.assertIn("subsection 'cpu/functional-data-cache'", output)
-            self.assertIn(f'{destination_line:x} != {source_line:x}', output)
-            return
-        for vm in (self.vm, destination):
-            deadline = time.monotonic() + 20
-            while True:
-                state = vm.cmd('query-migrate')
-                if state.get('status') in ('completed', 'failed'):
-                    break
-                self.assertLess(time.monotonic(), deadline, state)
-                time.sleep(0.05)
-            self.assertEqual(state['status'], 'completed', state)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-            peer.settimeout(10)
-            peer.connect(control)
-            peer.sendall(f'writel {MAILBOX + 72:#x} 1\n'.encode())
-            self.assertEqual(peer.recv(128), b'OK\n')
-        destination.cmd('cont')
-        deadline = time.monotonic() + 10
-        while True:
-            output = destination.cmd('human-monitor-command',
-                                     command_line=f'xp /17wx {MAILBOX:#x}')
-            words = [int(word, 16) for word in
-                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
-            if len(words) == 17 and words[8] == DONE:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        self.assertEqual(words[12:14], [SECOND, SECOND], output)
-        self.assertEqual(words[16], 0xabcdef01, output)
-
-    def test_dirty_cache_migration(self):
-        self.run_dirty_cache_migration()
-
-    def test_dirty_cache_migration_64(self):
-        self.run_dirty_cache_migration(64, 64)
-
-    def test_dirty_cache_migration_rejects_smaller_line(self):
-        self.run_dirty_cache_migration(128, 64)
-
-    def test_dirty_cache_migration_rejects_larger_line(self):
-        self.run_dirty_cache_migration(64, 128)
-
-    def launch_reset_rom(self):
-        image = self.scratch_file('reset.bin')
-        Path(image).write_bytes(reset_rom())
-        self.set_machine('malta')
-        control = f'{self.socket_dir().name}/reset-control.sock'
-        self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
-                         '-m', '128M', '-bios', image, '-nodefaults',
-                         '-qtest', f'unix:{control},server=on,wait=off')
-        self.vm.launch()
-        deadline = time.monotonic() + 10
-        while True:
-            output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /1wx {MAILBOX + 68:#x}')
-            if '0x52454144' in output:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        self.vm.cmd('stop')
-        return control
-
-    def read_reset_result(self):
-        self.vm.cmd('cont')
-        deadline = time.monotonic() + 10
-        while True:
-            output = self.vm.cmd('human-monitor-command',
-                                 command_line=f'xp /11wx {MAILBOX:#x}')
-            words = [int(word, 16) for word in
-                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
-            if len(words) == 11 and words[8] == DONE:
-                break
-            self.assertLess(time.monotonic(), deadline, output)
-            time.sleep(0.05)
-        self.vm.cmd('stop')
-        Path(self.log_file('reset-mailbox.txt')).write_text(output)
-        return words
-
-    def check_reset(self, soft):
-        control = self.launch_reset_rom()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-            peer.settimeout(10)
-            peer.connect(control)
-            if not soft:
-                self.vm.cmd('system_reset')
-                self.vm.event_wait('RESET', timeout=10)
-            # Release the command mailbox after either reset path.
-            peer.sendall(f'writel {MAILBOX + 72:#x} 1\n'.encode())
-            self.assertEqual(peer.recv(128), b'OK\n')
-            if soft:
-                cpu = self.vm.cmd('query-cpus-fast')[0]['qom-path']
-                for level in (1, 0):
-                    peer.sendall(f'set_irq_in {cpu} soft-reset 0 '
-                                 f'{level}\n'.encode())
-                    self.assertEqual(peer.recv(128), b'OK\n')
-        words = self.read_reset_result()
-        self.assertEqual(words[4:6], [FIRST, FIRST])
-        self.assertEqual(bool(words[9] & (1 << 20)), soft)
-        self.assertEqual(words[10], 0x12345000 if soft else 0)
-        if soft:
-            self.assertEqual((words[0] >> 6) & 3, 3)
-            self.assertEqual((words[2] >> 10) & 3, 3)
-            self.assertEqual([words[1], words[3]], [SECOND, 0xabcdef01])
-            self.assertEqual(words[6:8], [SECOND, 0xabcdef01])
-        else:
-            self.assertEqual(words[:4], [0, 0, 0, 0])
-            self.assertEqual(words[6:8], [FIRST, FIRST])
-
-    def test_soft_reset_preserves_dirty_caches(self):
-        self.check_reset(soft=True)
-
-    def test_cold_reset_clears_dirty_caches(self):
-        self.check_reset(soft=False)
-
-    def test_cached_rom_data_read(self):
-        image = self.scratch_file('rom-data.bin')
-        Path(image).write_bytes(rom_data_rom())
-        self.set_machine('malta')
-        self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
-                         '-m', '128M', '-bios', image, '-nodefaults')
-        self.vm.launch()
-        words = self.read_reset_result()
-        self.assertEqual(words[:2], [FIRST, SECOND])
-        self.assertEqual((words[2] >> 6) & 3, 2)
-        self.assertEqual(words[2] >> 8, 0x1fc00)
-        self.assertEqual(words[3], FIRST)
-
-    def test_octane_cached_flash_read(self):
-        self.skipTest('Octane HEART requires the direct-memory CPU profile')
-        offset = 0x1bf9c
-        image = self.scratch_file('octane-flash.bin')
-        Path(image).write_bytes(rom_data_rom(0xffffffff9fc00000 | offset,
-                                             offset))
-        self.set_machine('octane')
-        self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
-                         '-m', '128M', '-bios', image, '-nodefaults')
-        self.vm.launch()
-        words = self.read_reset_result()
-        self.assertEqual(words[:2], [FIRST, SECOND])
-        self.assertEqual((words[2] >> 6) & 3, 2)
-        self.assertEqual(words[2] >> 8, 0x1fc1b)
-        self.assertEqual(words[3], FIRST)
-
-    def check_refused_rom_store(self, romd):
-        image = self.scratch_file('refused-rom-store.bin')
-        Path(image).write_bytes(refused_rom_store_rom(romd))
-        trace = self.log_file('flash.trace')
-        self.set_machine('malta')
-        self.vm.add_args('-accel', 'tcg,thread=single',
-                         '-cpu', 'R10000,r10k-data-cache=on',
-                         '-m', '128M', '-bios', image, '-nodefaults',
-                         '-d', 'unimp',
-                         '-trace', f'enable=pflash_io_write,file={trace}')
-        self.vm.launch()
-        words = self.read_reset_result()
-        self.vm.shutdown()
-        self.assertIn('experimental data cache: unsupported write',
-                      Path(trace).read_text())
-        callbacks = [line for line in Path(trace).read_text().splitlines()
-                     if 'pflash_io_write' in line]
-        if romd:
-            self.assertNotIn('experimental data cache: unsupported read',
-                             Path(trace).read_text())
-            self.assertEqual(words[9], 0)
-            self.assertEqual(words[2], FIRST)
-            self.assertEqual(words[5], FIRST)
-            self.assertEqual(sorted((tag >> 6) & 3 for tag in words[:2]),
-                             [0, 2])
-            self.assertEqual([(tag >> 10) & 3 for tag in words[6:8]],
-                             [0, 0])
-            self.assertEqual(len(callbacks), 1, callbacks)
-            self.assertIn('value:0x00ff', callbacks[0])
-        else:
-            self.assertEqual(words[:2], [0, 0])
-            self.assertEqual(words[2], FIRST)
-            self.assertEqual(words[3], words[4])
-            self.assertEqual((words[4] >> 6) & 3, 2)
-            self.assertEqual(words[5], FIRST)
-            self.assertEqual((words[6] >> 10) & 3, 0)
-            self.assertEqual(callbacks, [])
-
-    def test_cached_plain_rom_store_refused(self):
-        self.check_refused_rom_store(romd=False)
-
-    def test_cached_romd_store_has_no_device_callback(self):
-        self.check_refused_rom_store(romd=True)
-
     def test_default_cpu_bypasses_data_cache(self):
-        words, output = self.run_rom('mapped', cache=False)
+        words, output = self.run_rom('mapped')
         self.assertEqual(words[2:8], [0] * 6, output)
         self.assertEqual(words[9:11], [SECOND, SECOND], output)
         self.assertEqual(words[14:16], [SECOND, SECOND], output)
@@ -796,20 +172,11 @@ class R10000TLBCache(QemuSystemTest):
         self.run_rom('remap')
 
     def test_cached_tlb_remap_without_data_cache(self):
-        self.run_rom('cached-remap', cache=False)
-
-    def test_cached_tlb_remap_with_data_cache(self):
         self.run_rom('cached-remap')
 
     def test_cached_tlb_remap_sign_extends(self):
-        words, output = self.run_rom('cached-remap-signed', cache=False)
+        words, output = self.run_rom('cached-remap-signed')
         self.assertEqual(words[2:4], [0xffffffff, 0x87654321], output)
-
-    def test_mapped_cached_store(self):
-        self.check_cache('mapped')
-
-    def test_unmapped_cached_store(self):
-        self.check_cache('unmapped')
 
 
 if __name__ == '__main__':

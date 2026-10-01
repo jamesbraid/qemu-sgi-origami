@@ -673,7 +673,3 @@ DEF_HELPER_FLAGS_2(rddsp, 0, tl, tl, env)
 
 /* Vendor extensions */
 #include "tcg/vr54xx_helper.h.inc"
-
-#ifndef CONFIG_USER_ONLY
-DEF_HELPER_1(r10k_sync, void, env)
-#endif

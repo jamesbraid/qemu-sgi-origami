@@ -1054,20 +1054,7 @@ static const VMStateDescription vmstate_heart = {
 static void heart_realize(DeviceState *dev, Error **errp)
 {
     SGIHeartState *s = SGI_HEART(dev);
-    CPUState *cpu;
 
-    CPU_FOREACH(cpu) {
-        const char *controls[] = { "r10k-data-cache", "r10k-sccoren" };
-
-        for (unsigned i = 0; i < ARRAY_SIZE(controls); i++) {
-            if (object_property_find(OBJECT(cpu), controls[i]) &&
-                object_property_get_bool(OBJECT(cpu), controls[i], errp)) {
-                error_setg(errp, "HEART memory ECC requires the direct-memory "
-                           "CPU profile (%s is enabled)", controls[i]);
-                return;
-            }
-        }
-    }
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
         uint64_t capacity = s->capacity[bank];
         g_autofree char *bank_name = g_strdup_printf("heart.bank%u", bank);
