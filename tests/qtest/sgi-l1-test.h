@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Shared qtest framing for the existing L1 UART protocol. */
 #ifndef SGI_L1_TEST_H
 #define SGI_L1_TEST_H

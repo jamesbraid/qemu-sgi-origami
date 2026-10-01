@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Synthetic BIC inputs; no firmware or physical controller bus. */
 #include "qemu/osdep.h"
 #include "libqtest.h"

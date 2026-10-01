@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 300 PCI expansion chassis: CPU-free, RAM-free BIC and six PCI heads.
  * Revision 2 reuse is inferred. The caller chooses downstream head pairing.

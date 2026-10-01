@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SPDX-License-Identifier: BSD-3-Clause */
 /* Synthetic operation receiver; these registers are not a controller bus. */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
