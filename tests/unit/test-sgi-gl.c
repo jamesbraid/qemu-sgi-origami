@@ -2132,6 +2132,211 @@ static void test_lighting_both_at_infinity(void)
     assert_rgba(&cap.v[0][SGI_GL_V_COLOR], 0.5f, 0.5f, 0.5f, 1);
 }
 
+/* Vertex i of the resume tests, with its own colour. */
+static void resume_send(SGIGLContext *c, const SGIGLSink *sink,
+                        const float (*pos)[2], int i)
+{
+    uint32_t word[4];
+
+    for (int k = 0; k < 4; k++) {
+        word[k] = bits(k == 3 ? 1.0f : ((i * 37 + k * 91) % 100) / 100.0f);
+    }
+    command(c, sink, SGI_GL_OP_COLOR4F, word, 4);
+    word[0] = bits(pos[i][0]);
+    word[1] = bits(pos[i][1]);
+    command(c, sink, SGI_GL_OP_VERTEX2F, word, 2);
+}
+
+static void resume_context(SGIGLContext *c, bool cull)
+{
+    uint32_t back = SGI_GL_BACK;
+
+    context_init(c);
+    if (cull) {
+        enable(c, SGI_GL_CULL_FACE, true);
+        command(c, NULL, SGI_GL_OP_CULL_FACE, &back, 1);
+    }
+}
+
+/* The drawing of n vertices of a mode, sent without interruption. */
+static unsigned resume_whole(uint32_t mode, bool cull, const float (*pos)[2],
+                             int n, Planes *p)
+{
+    SGIGLContext c;
+    Recorder rec = { .rules = &rules_supported, .target = planes_target(p) };
+    SGIGLSink sink = recorder_sink(&rec);
+    uint32_t word = mode;
+
+    memset(p, 0, sizeof(*p));
+    resume_context(&c, cull);
+    command(&c, &sink, SGI_GL_OP_BEGIN, &word, 1);
+    for (int i = 0; i < n; i++) {
+        resume_send(&c, &sink, pos, i);
+    }
+    command(&c, &sink, SGI_GL_OP_END, &word, 0);
+    return rec.draws;
+}
+
+/*
+ * The same, but the context is lost after the first split vertices and
+ * a new one resumed from what the old one held, with a count that is
+ * off by the given amount. Returns the draws; *by_resume is how many the
+ * resume itself made.
+ */
+static unsigned resume_split(uint32_t mode, bool cull, const float (*pos)[2],
+                             int n, int split, int count_error, Planes *p,
+                             unsigned *by_resume)
+{
+    SGIGLContext a, b;
+    Recorder rec = { .rules = &rules_supported, .target = planes_target(p) };
+    SGIGLSink sink = recorder_sink(&rec);
+    uint32_t word = mode;
+    float held[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS];
+    unsigned before;
+
+    memset(p, 0, sizeof(*p));
+    resume_context(&a, cull);
+    command(&a, &sink, SGI_GL_OP_BEGIN, &word, 1);
+    for (int i = 0; i < split; i++) {
+        resume_send(&a, &sink, pos, i);
+    }
+    memcpy(held, a.held, sizeof(held));
+    before = rec.draws;
+
+    resume_context(&b, cull);
+    g_assert_true(sgi_gl_resume_primitive(&b, mode, held, a.nheld,
+                                          split + count_error));
+    *by_resume = rec.draws - before;
+    for (int i = split; i < n; i++) {
+        resume_send(&b, &sink, pos, i);
+    }
+    command(&b, &sink, SGI_GL_OP_END, &word, 0);
+    return rec.draws;
+}
+
+static void resume_positions(float (*pos)[2], int n)
+{
+    GRand *rand = g_rand_new_with_seed(4711);
+
+    for (int i = 0; i < n; i++) {
+        pos[i][0] = g_rand_double_range(rand, -0.9, 0.9);
+        pos[i][1] = g_rand_double_range(rand, -0.9, 0.9);
+    }
+    g_rand_free(rand);
+}
+
+/*
+ * Losing the context at any vertex and resuming with the true count
+ * draws what the uninterrupted primitive does, in every mode, and the
+ * resume itself draws nothing. Back-face culling makes a strip that
+ * resumes with the wrong winding show.
+ */
+static void test_resume_primitive_matches(void)
+{
+    static Planes whole, split;
+    float pos[NVERTS][2];
+
+    resume_positions(pos, NVERTS);
+    for (uint32_t mode = SGI_GL_POINTS; mode <= SGI_GL_POLYGON; mode++) {
+        for (int cull = 0; cull < 2; cull++) {
+            unsigned draws = resume_whole(mode, cull, pos, NVERTS, &whole);
+
+            g_assert_cmpuint(draws, >, 0);
+            for (int at = 0; at <= NVERTS; at++) {
+                unsigned by_resume;
+
+                g_assert_cmpuint(resume_split(mode, cull, pos, NVERTS, at, 0,
+                                              &split, &by_resume), ==, draws);
+                g_assert_cmpuint(by_resume, ==, 0);
+                g_assert(memcmp(&whole, &split, sizeof(whole)) == 0);
+            }
+        }
+    }
+}
+
+/*
+ * A count wrong in parity flips a triangle strip's winding, so the
+ * picture changes under culling for some split, while a count wrong by
+ * a whole period changes nothing.
+ */
+static void test_resume_primitive_uses_the_count(void)
+{
+    static Planes whole, split;
+    float pos[NVERTS][2];
+    unsigned by_resume, differing = 0;
+
+    resume_positions(pos, NVERTS);
+    resume_whole(SGI_GL_TRIANGLE_STRIP, true, pos, NVERTS, &whole);
+    for (int at = 3; at <= NVERTS; at++) {
+        resume_split(SGI_GL_TRIANGLE_STRIP, true, pos, NVERTS, at, 1, &split,
+                     &by_resume);
+        differing += memcmp(&whole, &split, sizeof(whole)) != 0;
+        resume_split(SGI_GL_TRIANGLE_STRIP, true, pos, NVERTS, at, 12,
+                     &split, &by_resume);
+        g_assert(memcmp(&whole, &split, sizeof(whole)) == 0);
+    }
+    g_assert_cmpuint(differing, >, 0);
+}
+
+/* A line loop resumed with its two held vertices closes once, at glEnd. */
+static void test_resume_primitive_line_loop(void)
+{
+    static const float pos[3][2] = { { -0.8f, -0.8f }, { 0.8f, -0.8f },
+                                     { 0.0f, 0.8f } };
+    SGIGLContext a, b;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    static Planes p;
+    uint32_t word = SGI_GL_LINE_LOOP;
+    float held[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS];
+
+    rec.target = planes_target(&p);
+    resume_context(&a, false);
+    command(&a, &sink, SGI_GL_OP_BEGIN, &word, 1);
+    resume_send(&a, &sink, pos, 0);
+    resume_send(&a, &sink, pos, 1);
+    g_assert_cmpuint(rec.draws, ==, 1);
+    memcpy(held, a.held, sizeof(held));
+
+    resume_context(&b, false);
+    g_assert_true(sgi_gl_resume_primitive(&b, SGI_GL_LINE_LOOP, held, 2, 2));
+    g_assert_cmpuint(rec.draws, ==, 1);
+    resume_send(&b, &sink, pos, 2);
+    g_assert_cmpuint(rec.draws, ==, 2);
+    command(&b, &sink, SGI_GL_OP_END, &word, 0);
+    g_assert_cmpuint(rec.draws, ==, 3);
+}
+
+/* Inconsistent calls are refused and leave the context alone. */
+static void test_resume_primitive_refuses(void)
+{
+    float v[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+    SGIGLContext c;
+    uint32_t word = SGI_GL_TRIANGLES;
+
+    context_init(&c);
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_TRIANGLES, v, 2, 4));
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_POINTS, v, 1, 1));
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_QUADS, v, 2, 3));
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_POLYGON + 1, v, 0, 0));
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_QUAD_STRIP, v, 2, 3));
+    g_assert_false(c.in_begin);
+    command(&c, NULL, SGI_GL_OP_BEGIN, &word, 1);
+    g_assert_false(sgi_gl_resume_primitive(&c, SGI_GL_TRIANGLES, v, 0, 0));
+}
+
+/* A resume leaves the line stipple phase as it found it. */
+static void test_resume_primitive_keeps_stipple_phase(void)
+{
+    float v[SGI_GL_HELD_VERTICES][SGI_GL_VERTEX_FLOATS] = { { 0 } };
+    SGIGLContext c;
+
+    context_init(&c);
+    c.line_phase = 5;
+    g_assert_true(sgi_gl_resume_primitive(&c, SGI_GL_LINE_STRIP, v, 1, 3));
+    g_assert_cmpuint(c.line_phase, ==, 5);
+}
+
 /* A clockwise and a counter-clockwise triangle, as two-sided-draws has. */
 static const float cull_cw[3][2] = { { -1, 0 }, { -1, 1 }, { 0, 0 } };
 static const float cull_ccw[3][2] = { { 0, -1 }, { 1, -1 }, { 1, 0 } };
@@ -8317,5 +8522,15 @@ int main(int argc, char **argv)
                     test_polygon_mode_activation_oom);
     g_test_add_func("/sgi-gl/polygon-mode-stipple-bounds",
                     test_polygon_mode_stipple_bounds);
+    g_test_add_func("/sgi-gl/resume-primitive-matches",
+                    test_resume_primitive_matches);
+    g_test_add_func("/sgi-gl/resume-primitive-uses-the-count",
+                    test_resume_primitive_uses_the_count);
+    g_test_add_func("/sgi-gl/resume-primitive-line-loop",
+                    test_resume_primitive_line_loop);
+    g_test_add_func("/sgi-gl/resume-primitive-refuses",
+                    test_resume_primitive_refuses);
+    g_test_add_func("/sgi-gl/resume-primitive-keeps-stipple-phase",
+                    test_resume_primitive_keeps_stipple_phase);
     return g_test_run();
 }
