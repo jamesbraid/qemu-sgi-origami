@@ -93,9 +93,10 @@
  *   is the shared rasterizer's, OpenGL 1.2.1, approximated.
  *
  * Not implemented, and logged with the draw untextured: the multi-buffer
- * read (TEXMODE2 bit 4 and TL_MODE bit 8), bordered textures (the
- * register that carries a border width is not identified, so a bordered
- * level draws as an unbordered one), detail, the texture colour table,
+ * read (TEXMODE2 bit 4 and TL_MODE bit 8), bordered textures (a load
+ * whose border word is neither of the traced unbordered values is not
+ * stored, so its draw has no level and is untextured), detail, the
+ * texture colour table,
  * one-dimensional and volume textures, texture-select groups and
  * GL_ABGR_EXT loads.
  *
@@ -205,6 +206,16 @@
  */
 #define MGRAS_TEX_GE_SIZE        (0xe34 + 4)
 #define MGRAS_TEX_HQ_ABGR        0x80
+
+/*
+ * The load's six GE words at 0xe3d: word 3 carries the level's first block
+ * in 7:0 and word 4 is the image's border offset plus that block. The
+ * traced unbordered levels give an offset of 0xffffffff (one level) or 0
+ * (mipmapped); any other offset is taken as a border (inferred).
+ */
+#define MGRAS_TEX_GE_LOAD        0xe3d
+#define MGRAS_TEX_GE_BLOCK       (MGRAS_TEX_GE_LOAD + 3)
+#define MGRAS_TEX_GE_BORDER      (MGRAS_TEX_GE_LOAD + 4)
 
 /* TL_MODE and TL_SPEC fields, and the kept formats the model stores. */
 #define MGRAS_TEX_LAYOUT(mode)   (((mode) >> 1) & 3)
@@ -506,6 +517,8 @@ void sgi_mgras_texture_record_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
+static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t level);
+
 bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasTexture *t = mgras_tex(s);
@@ -513,6 +526,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     uint32_t w = 1u << MGRAS_TEX_SPEC_LOG2W(spec);
     uint32_t h = 1u << MGRAS_TEX_SPEC_LOG2H(spec);
     uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
+    uint32_t border;
 
     if (!mgras_tex_present(s) ||
         payload[MGRAS_TEX_ROUTINE_WORD] != MGRAS_TEX_ROUTINE_LOAD) {
@@ -544,6 +558,20 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with HQ pixel "
                       "format 0x%x (GL_ABGR_EXT) is not modelled; nothing "
                       "stored\n", s->dma_desc_30000[0]);
+        return true;
+    }
+    border = s->ge_param[MGRAS_TEX_GE_BORDER] -
+             (s->ge_param[MGRAS_TEX_GE_BLOCK] & 0xff);
+    if (border && border != 0xffffffffu) {
+        SGIMgrasTexLevel *old = mgras_tex_find(t, MGRAS_TEX_SPEC_LEVEL(spec));
+
+        /* A level kept earlier under this slot would draw as the new one. */
+        if (old) {
+            mgras_tex_level_free(old);
+        }
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with a border "
+                      "(offset 0x%x) is not modelled; nothing stored\n",
+                      border);
         return true;
     }
     if (size != (h << 16 | w)) {
