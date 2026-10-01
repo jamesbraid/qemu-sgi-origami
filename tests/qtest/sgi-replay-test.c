@@ -37,7 +37,9 @@
  * window, @mmio_size that window's size; write and read offsets are checked
  * against it.  @qom_path is the head's device, which must provide the
  * x-test-pixel-x/-y selectors and the x-test-pixel, x-test-display-pixel,
- * x-test-wid and x-test-overlay values the pixel verbs read.  @width and
+ * x-test-wid and x-test-overlay values the pixel verbs read, and
+ * x-test-back-pixel, the second colour bank, for a fixture that reads it
+ * with back-pixel.  @width and
  * @height bound those verbs' coordinates.  @trace is the -trace arguments
  * that record the head's register accesses into SGI_REPLAY_TRACE.
  */
@@ -70,6 +72,23 @@ static const ReplayHead replay_heads[] = {
         .height = 1024,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
+    }, {
+        /*
+         * The same machine with the SI board's textured sibling, SI+T, for
+         * captures of the texture path. The model presents SI+T only on
+         * request, since it implements part of the texture engine.
+         */
+        .codename = "sgi-mgras-si-t",
+        .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=si-t,"
+                   "x-unimplemented-board=on",
+        .mmio_base = SPACE_IO + (0xfULL << 24),
+        .mmio_size = 2 * MiB,
+        .qom_path = "/machine/module0/io3",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_mgras_mmio "
+                 "-trace enable=sgi_mgras_control_mmio",
     },
 };
 
@@ -95,6 +114,8 @@ static const ReplayHead *find_head(const char *codename)
 #define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
 #define GL_NEW_CONTEXT_SLOT_REUSE \
     "gl-new-context-slot-reuse.replay"
+#define GL_TEXTURE_RGBA4_QUAD \
+    "gl-texture-rgba4-quad.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -291,9 +312,14 @@ static void replay_dma(QTestState *qts, const char *path, unsigned int line,
     qtest_memwrite(qts, addr, bytes, len);
 }
 
+/*
+ * Check one colour pixel: pixel and display-pixel read the first bank and
+ * the displayed result, back-pixel the second bank, where a GL client
+ * drawing to the buffer the bank token makes the front draws.
+ */
 static void replay_pixel(QTestState *qts, const ReplayHead *head,
                          const char *path, unsigned int line, char **words,
-                         bool display)
+                         const char *property)
 {
     uint64_t x, y, expected, actual;
 
@@ -306,7 +332,7 @@ static void replay_pixel(QTestState *qts, const ReplayHead *head,
     if (x >= head->width || y >= head->height || expected > UINT32_MAX) {
         g_error("%s:%u: pixel is outside the native surface", path, line);
     }
-    actual = pixel(qts, head, x, y, display);
+    actual = plane_value(qts, head, x, y, property);
     if (actual != expected) {
         g_error("%s:%u: pixel (%" PRIu64 ", %" PRIu64 ") returned 0x%"
                 PRIx64 ", expected 0x%" PRIx64,
@@ -536,9 +562,11 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "dma")) {
         replay_dma(qts, path, line, words);
     } else if (!strcmp(words[0], "pixel")) {
-        replay_pixel(qts, head, path, line, words, false);
+        replay_pixel(qts, head, path, line, words, "x-test-pixel");
     } else if (!strcmp(words[0], "display-pixel")) {
-        replay_pixel(qts, head, path, line, words, true);
+        replay_pixel(qts, head, path, line, words, "x-test-display-pixel");
+    } else if (!strcmp(words[0], "back-pixel")) {
+        replay_pixel(qts, head, path, line, words, "x-test-back-pixel");
     } else if (!strcmp(words[0], "pixels")) {
         replay_pixels(qts, head, path, line, words);
     } else if (!strcmp(words[0], "wid")) {
@@ -962,6 +990,17 @@ static void test_gl_new_context_slot_reuse(void)
     run_fixture(GL_NEW_CONTEXT_SLOT_REUSE, NULL);
 }
 
+/*
+ * ivview's RGBA4 textured quad on SI+T, as its client sent it: the load
+ * bracket, the 0x511a transfer by DMA with the host bytes added, the
+ * bind and the quad. The fixture checks the model's choice of truncation
+ * to 4 bits: every pixel of the quad is 0x114488.
+ */
+static void test_gl_texture_rgba4_quad(void)
+{
+    run_fixture(GL_TEXTURE_RGBA4_QUAD, NULL);
+}
+
 static void test_cmap_xmap_wid(void)
 {
     run_fixture(CMAP_XMAP_WID, NULL);
@@ -1294,6 +1333,8 @@ int main(int argc, char **argv)
                    test_gl_pixels_rectwrite);
     qtest_add_func("sgi-replay/mgras/gl-new-context-slot-reuse",
                    test_gl_new_context_slot_reuse);
+    qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",
+                   test_gl_texture_rgba4_quad);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);
