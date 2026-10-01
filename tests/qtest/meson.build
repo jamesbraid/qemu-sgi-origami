@@ -469,6 +469,9 @@ endif
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 sn1_board_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_BIC_BOARD_INTERFACE') and
+   config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
+    ['sgi-bic-board-interface-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?

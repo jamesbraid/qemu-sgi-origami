@@ -226,3 +226,8 @@ system_ss.add(when: 'CONFIG_SGI_HEART_XTALK_TEST',
 
 system_ss.add(when: 'CONFIG_MEMORY_TRANSACTION_TEST',
               if_true: files('memory-transaction-test.c'))
+
+system_ss.add(when: 'CONFIG_SGI_BIC_BOARD_INTERFACE',
+              if_true: files('sgi-bic-board-interface.c'))
+system_ss.add(when: ['CONFIG_SGI_BIC_BOARD_INTERFACE', 'CONFIG_TEST_DEVICES'],
+              if_true: files('../../tests/qtest/bic-board-interface-fixture.c'))

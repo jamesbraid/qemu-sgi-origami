@@ -444,3 +444,7 @@ config MEMORY_TRANSACTION_TEST
     bool
     default y if TEST_DEVICES
     depends on TEST_DEVICES
+
+config SGI_BIC_BOARD_INTERFACE
+    bool
+    default y if SGI_DEVICES
