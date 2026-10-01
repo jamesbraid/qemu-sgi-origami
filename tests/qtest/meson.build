@@ -137,14 +137,20 @@ slow_qtests = {
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.
   'sn1-bedrock-flash-test': 180,
-  # The register cases share one machine now; what is left is the eight
-  # migration cases, which start seventeen processes between them because a
-  # destination cannot share its source's. Measured 108.45s at the time.
-  # The suite has grown past that: 3 runs measured 313.35s-321.17s, already
-  # within the old 330s budget's margin of a timeout kill. Budget three
-  # times the highest of those three runs, the way the rest of this table
-  # does.
-  'sn0-origin2000-mgras-test': 970,
+  # The MGRAS cases are split by area so that no one binary approaches the
+  # runner's cap and the areas run in parallel. The register cases share one
+  # machine per binary; the migration cases start a source and a destination
+  # of their own each.
+  'sgi-mgras-board-test': 600,
+  'sgi-mgras-fifo-test': 300,
+  'sgi-mgras-gl-test': 600,
+  'sgi-mgras-gl-draw-test': 300,
+  'sgi-mgras-pixels-test': 300,
+  'sgi-mgras-texture-test': 300,
+  'sgi-mgras-migration-test': 600,
+  'sgi-mgras-migration-gl-test': 600,
+  'sgi-mgras-migration-glstate-test': 600,
+  'sgi-mgras-irq-test': 300,
   # Two machines, one per BaseIO preset, serve the whole file, but each is a
   # four-node module with eight processors and 256 MB and the timekeeper
   # repair-store loop resets one of them once per processor. It has grown
@@ -417,7 +423,13 @@ sn1_pci_expansion_qtests = \
 
 sn0_mgras_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-mgras-test', 'sgi-replay-test'] : [])
+    ['sgi-mgras-board-test', 'sgi-mgras-fifo-test',
+     'sgi-mgras-gl-test', 'sgi-mgras-gl-draw-test',
+     'sgi-mgras-pixels-test',
+     'sgi-mgras-texture-test', 'sgi-mgras-migration-test',
+     'sgi-mgras-migration-gl-test', 'sgi-mgras-migration-glstate-test',
+     'sgi-mgras-irq-test',
+     'sgi-replay-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_MGRAS')
   sn0_mgras_qtests = []
 endif
