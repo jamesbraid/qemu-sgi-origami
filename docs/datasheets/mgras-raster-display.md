@@ -667,7 +667,7 @@ including FILLMODE's own reset default of zero. Discriminating tests are
 `test_direct_glyph_row`, `test_direct_glyph_row_char_h_only`,
 `test_direct_glyph_row_char_l_execute`, `test_direct_byte_row`,
 `test_direct_byte_row_pitch_from_padding_field` and
-`test_direct_byte_row_pairs` in `tests/qtest/sn0-origin2000-mgras-test.c`,
+`test_direct_byte_row_pairs` in `tests/qtest/sgi-mgras-fifo-test.c`,
 and the `char-modes` and `root-icon` replay fixtures
 (`tests/data/mgras/char-modes.replay`, `tests/data/mgras/root-icon.replay`),
 the latter checked to fail on the model before PR 744 and pass after. This

@@ -256,7 +256,7 @@ table above); resolving it is not part of this contract.
 ### Outstanding DMA validation
 
 The engine is register-contract-tested:
-`tests/qtest/sn0-origin2000-mgras-test.c` covers slot-register read/write, the
+`tests/qtest/sgi-mgras-pixels-test.c` covers slot-register read/write, the
 list-entry byte offset `0x18`, kick-byte slot selection (including an
 unmapped slot completing as a safe no-op), a non-zero 8-aligned source
 offset, host-to-screen paint, and screen-to-host read-back with an explicit
@@ -635,7 +635,7 @@ object; its listing and names are under `docs/analysis/ide.IP30-stand/` and
 | Bounded raster submission | known state writes and executes | partial |
 | Scheduler write and FIFO wait | `0x040068` write, `0x020008 == 0` poll, and separate low-water arm/disarm sequence | missing |
 | Fences | acceptance, raster, DMA, and empty are distinct | missing |
-| DMA image-transfer and source-mapping | slot registers, list-entry offset, kick-byte slot/direction, aligned source offset, host-to-screen paint, screen-to-host read-back | covered (`tests/qtest/sn0-origin2000-mgras-test.c`); remote-node case missing |
+| DMA image-transfer and source-mapping | slot registers, list-entry offset, kick-byte slot/direction, aligned source offset, host-to-screen paint, screen-to-host read-back | covered (`tests/qtest/sgi-mgras-pixels-test.c`); remote-node case missing |
 | Interrupts | latch, mask, acknowledge, route, reset | retrace: one message per retrace while VC3 `0x1e` bit 0 is set, re-raised after the Hub clear (`retrace-interrupt-vector`, `retrace-interrupt-needs-vc3-enable`); the rest missing |
 | Error handling | malformed command, overflow, underflow, DMA fault | missing |
 | Migration | queue, decoder, DMA, interrupt, program state | missing |

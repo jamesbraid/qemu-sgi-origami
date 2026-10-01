@@ -183,28 +183,19 @@ class CheckSgiTestResults(unittest.TestCase):
                 '--allow-skips-from', str(manifest)])
         self.assertEqual(status, 0)
 
-    def test_allows_only_optional_v9_mgras_case(self):
+    def test_rejects_skipped_mgras_case(self):
+        # The split MGRAS binaries have no built-in optional skips.
         suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
-                 'qtest-mips64/sn0-origin2000-mgras-test')
-        case = ('156 /mips64/sn0/origin2000/mgras/'
-                'migration-from-v9-format-default')
-        for name, allowed in ((case, True),
-                              ('157 /mips64/sn0/origin2000/mgras/other', False)):
-            with self.subTest(name=name):
-                self.write_report(f'''<testsuite name="{suite}" tests="1"
-                    skipped="1">
-                  <testcase classname="{suite}"
-                            name="{name}">
-                    <skipped message="QTEST_QEMU_BINARY_MGRAS_V9 is not set"/>
-                  </testcase>
-                </testsuite>''')
-                if allowed:
-                    validate(read_report(self.junit),
-                             ['qtest-mips64/sn0-origin2000-mgras-test'])
-                else:
-                    with self.assertRaisesRegex(ResultError,
-                                                'skipped testcases'):
-                        read_report(self.junit)
+                 'qtest-mips64/sgi-mgras-migration-test')
+        self.write_report(f'''<testsuite name="{suite}" tests="1"
+            skipped="1">
+          <testcase classname="{suite}"
+                    name="156 /mips64/sgi/mgras/migration/any">
+            <skipped/>
+          </testcase>
+        </testsuite>''')
+        with self.assertRaisesRegex(ResultError, 'skipped testcases'):
+            read_report(self.junit)
 
     def test_rejects_failure_and_error(self):
         for tag in ('failure', 'error'):
