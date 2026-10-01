@@ -1,7 +1,7 @@
 /*
  * IOC4 revision 0x53 serial register tests through a standalone XBridge.
  * This fixture tests the PCI function without assuming an IO9 board route.
- * SPDX-License-Identifier: GPL-2.0-or-later
+ * SPDX-License-Identifier: BSD-3-Clause
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"

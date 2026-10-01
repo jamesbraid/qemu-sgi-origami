@@ -24,6 +24,7 @@ hw/1wire/meson.build
 hw/1wire/trace-events
 hw/audio/sgi-rad1-audio.c
 hw/char/sgi-ioc3-parallel.c
+hw/char/sgi-ioc4.c
 hw/display/psitech-rad1.c
 hw/display/psitech-rad4-mode0-fixture.h
 hw/display/psitech-rad4.c
@@ -216,6 +217,7 @@ hw/net/tigon.c
 hw/net/xframe.c
 hw/pci-host/sgi-bridge-stub.c
 hw/pci-host/sgi-bridge.c
+hw/pci-host/sgi-pic.c
 hw/pci-host/sgi-xbridge.c
 hw/rtc/ds1685.c
 hw/rtc/ds1742.c
@@ -288,6 +290,7 @@ include/hw/net/sgi-ioc3-eth.h
 include/hw/net/tigon.h
 include/hw/net/xframe.h
 include/hw/pci-host/sgi-bridge.h
+include/hw/pci-host/sgi-pic.h
 include/hw/pci-host/sgi-xbridge.h
 include/hw/rtc/ds1685.h
 include/hw/rtc/m48t35-ip27.h
@@ -655,6 +658,7 @@ tests/qtest/sgi-bridge-bus-test.c
 tests/qtest/sgi-command-port-test.c
 tests/qtest/sgi-debug-tools-test.c
 tests/qtest/sgi-ioc3-eth-test.c
+tests/qtest/sgi-ioc4-test.c
 tests/qtest/sgi-kona-read-defense-test.c
 tests/qtest/sgi-l1-identity-vectors.h
 tests/qtest/sgi-l1-test.h
@@ -674,6 +678,7 @@ tests/qtest/sgi-migrate.h
 tests/qtest/sgi-mips-emit.h
 tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c
+tests/qtest/sgi-pic-test.c
 tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-synthetic-serial-test.c
