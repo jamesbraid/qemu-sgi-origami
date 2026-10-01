@@ -2355,7 +2355,7 @@ static void test_hq_flags_set_and_clear(void)
 }
 
 /*
- * Two more queries wait on flag bit 17 and read 0x028004: 
+ * Two more queries wait on flag bit 17 and read 0x028004:
  * 0xa104 with one index, which __Mgr_GetCurrentAttrState sends for
  * GL_CURRENT_COLOR (indices 4 to 7, read as floats) and the other
  * current attributes, and 0x8b08 with two words, one per histogram bin.

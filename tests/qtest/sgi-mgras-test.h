@@ -1907,7 +1907,7 @@ static inline void gl_readback(QTestState *qts, uint32_t header, uint32_t a,
 }
 
 /*
- * The lighting enables and normals as the client sends them: 
+ * The lighting enables and normals as the client sends them:
  * glEnable and glDisable(GL_LIGHTING) 0x0d00 and 0x0e00 alone,
  * glEnable(GL_LIGHTi) 0x7104 and i, glDisable 0xa004 and i,
  * glEnable/glDisable(GL_NORMALIZE) 0xa304 with 1 or 0, glNormal3f 0x070c,

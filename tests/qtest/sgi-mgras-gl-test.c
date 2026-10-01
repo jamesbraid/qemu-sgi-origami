@@ -972,7 +972,7 @@ static void test_gl_matrix_stack_holds_32(void)
  * Each matrix query answers its own stack's current matrix, column-major,
  * whatever the matrix mode, from the loaded context: a translation's x is
  * element 12 of the modelview matrix, and glOrtho's x scale element 0 of
- * the projection matrix. perfly's draw process died reading zeros here. 
+ * the projection matrix. perfly's draw process died reading zeros here.
  */
 static void test_hq_query_answers_the_matrices(void)
 {
