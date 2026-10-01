@@ -9,6 +9,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/cutils.h"
+#include "qemu/units.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "system/dma.h"
@@ -2351,6 +2352,15 @@ static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
  */
 #define MGRAS_DMA_KICK_TO_RASTER 0x10
 
+/*
+ * The most one row of a transfer to the GE can hold: a texture level
+ * arrives as a single row, and the board keeps at most 4 MiB of texels a
+ * context. A pixel draw's rows are far shorter (4096 pixels of four
+ * bytes). The descriptor's row length is the guest's, so this bounds the
+ * host buffer that one row is copied through.
+ */
+#define MGRAS_DMA_GE_ROW_MAX (4 * MiB)
+
 static void mgras_raster_dma_ge_pixels(SGIMgrasState *s, uint32_t kick_byte)
 {
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
@@ -2368,6 +2378,18 @@ static void mgras_raster_dma_ge_pixels(SGIMgrasState *s, uint32_t kick_byte)
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
         !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        sgi_mgras_gl_pixels_abort(s);
+        return;
+    }
+    if (!rows) {
+        /* An empty transfer: nothing to take and nothing wrong. */
+        sgi_mgras_gl_pixels_abort(s);
+        return;
+    }
+    if (bpr > MGRAS_DMA_GE_ROW_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel DMA rows of %u "
+                      "bytes exceed the %u a row can hold; not drawn\n",
+                      bpr, (uint32_t)MGRAS_DMA_GE_ROW_MAX);
         sgi_mgras_gl_pixels_abort(s);
         return;
     }
