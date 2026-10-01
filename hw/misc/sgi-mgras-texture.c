@@ -691,6 +691,16 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     return image;
 }
 
+bool sgi_mgras_texture_board_valid(const SGIMgrasState *s)
+{
+    uint64_t board = 0;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        board += mgras_tex_bytes_kept(&s->gl_context[i].tex, NULL);
+    }
+    return board <= MGRAS_TEX_BOARD_BYTES;
+}
+
 bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 {
     if (t->on > 1 || t->bracket > 1 || t->load > 1 ||
@@ -713,6 +723,14 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
                 return false;
             }
             continue;
+        }
+        for (int j = 0; j < i; j++) {
+            const SGIMgrasTexLevel *o = &t->levels[j];
+
+            if (o->used && l->used && o->base == l->base &&
+                o->level == l->level) {
+                return false;
+            }
         }
         if (l->used != 1 || l->level > 0xf || l->log2w > 0xf ||
             l->log2h > 0xf || !l->texels ||
