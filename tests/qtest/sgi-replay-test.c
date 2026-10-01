@@ -117,6 +117,7 @@ static const ReplayHead *find_head(const char *codename)
 #define GL_TEXTURE_RGBA4_QUAD \
     "gl-texture-rgba4-quad.replay"
 #define GL_EVICTION_I3DM  "gl-eviction-i3dm.replay"
+#define PIO_READ_OGLSNOOP "pio-read-oglsnoop.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -1003,6 +1004,16 @@ static void test_gl_texture_rgba4_quad(void)
 }
 
 /*
+ * The X server reads two pixels through the raster engine's data port, as
+ * it did for oglsnoop (run irix-20260930T234501-dc3029), and each 8-byte
+ * unit comes back as the two pixels' words.
+ */
+static void test_pio_read_oglsnoop(void)
+{
+    run_fixture(PIO_READ_OGLSNOOP, NULL);
+}
+
+/*
  * The kernel reads i3dm's top view's context out of ERAM address 0x9d19
  * and writes it back at 0x5420, the tool panel's, and the view's clear
  * then covers the whole view (run irix-20260930T234501-dc3029).
@@ -1346,6 +1357,8 @@ int main(int argc, char **argv)
                    test_gl_new_context_slot_reuse);
     qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",
                    test_gl_texture_rgba4_quad);
+    qtest_add_func("sgi-replay/mgras/pio-read-oglsnoop",
+                   test_pio_read_oglsnoop);
     qtest_add_func("sgi-replay/mgras/gl-eviction-i3dm",
                    test_gl_eviction_i3dm);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);

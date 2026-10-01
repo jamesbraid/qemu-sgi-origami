@@ -42,6 +42,9 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_GE_CTRL_B 0x058044
 #define SGI_MGRAS_GE_READ_1 0x05822c
 #define SGI_MGRAS_GE_READ_2 0x058230
+/* The raster engine's host data port: a 64-bit unit's high, then low word. */
+#define SGI_MGRAS_RE_DATA_HI 0x02d1c0
+#define SGI_MGRAS_RE_DATA_LO 0x02c1c4
 
 /*
  * The widget interrupt destination pair of the block every XIO widget
@@ -603,6 +606,18 @@ struct SGIMgrasState {
     bool public_glyph_wide_valid;
     uint32_t pio_x;
     uint32_t pio_y;
+    /*
+     * A host read through the raster engine's data port (sgi-mgras-raster.c,
+     * mgras_pio_read_start()): its box, top row in screen rows, the next
+     * 64-bit unit and the low word the last high-word read latched.
+     */
+    bool pio_read_active;
+    uint32_t pio_read_x;
+    uint32_t pio_read_y;
+    uint32_t pio_read_w;
+    uint32_t pio_read_h;
+    uint32_t pio_read_next;
+    uint32_t pio_read_low;
     /* Parser state preserves FIFO ordering across separate stores. */
     uint32_t cmd_token_class;
     uint32_t cmd_token_reg;
