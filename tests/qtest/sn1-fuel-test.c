@@ -1421,15 +1421,28 @@ static void test_fuel_system_timekeeper_conflict(const void *data)
                             "fuel-rtc-decode*");
 }
 
-static void test_fuel_system_timekeeper(const void *data)
+static QTestState *fuel_start_system_timekeeper_args(const char *prom,
+                                                     const char *base,
+                                                     const char *extra)
 {
-    g_autofree char *quoted = g_shell_quote(data);
-    QTestState *qts = qtest_initf(
+    g_autofree char *quoted = g_shell_quote(prom);
+
+    return qtest_initf(
         "-M fuel,topology=fuel-m48t35-compatible,"
         "fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
         "fuel-l1-type-code=0x61,fuel-bedrock-revision=2 "
-        "-cpu R14000 -smp 1 -m 512M -bios %s -S "
-        "-rtc base=2026-01-02T03:04:05,clock=vm", quoted);
+        "-cpu R14000 -smp 1 -m 512M -bios %s "
+        "-rtc base=%s,clock=vm -d unimp,guest_errors %s", quoted, base, extra);
+}
+
+static QTestState *fuel_start_system_timekeeper(const char *prom)
+{
+    return fuel_start_system_timekeeper_args(prom, "2026-01-02T03:04:05", "-S");
+}
+
+static void test_fuel_system_timekeeper(const void *data)
+{
+    QTestState *qts = fuel_start_system_timekeeper(data);
 
     fuel_map_ioc3(qts);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0);
@@ -1447,6 +1460,295 @@ static void test_fuel_system_timekeeper(const void *data)
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x100), ==, 0x5a);
     g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x900), ==, 0xa5);
     qtest_quit(qts);
+}
+
+static void fuel_assert_clock(QTestState *qts, const uint8_t cells[7])
+{
+    for (unsigned int i = 0; i < 7; i++) {
+        g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9 + i), ==, cells[i]);
+    }
+}
+
+static void fuel_write_clock(QTestState *qts, const uint8_t cells[7])
+{
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x80);
+    for (unsigned int i = 0; i < 7; i++) {
+        qtest_writeb(qts, FUEL_RTC + 0x7ff9 + i, cells[i]);
+    }
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0);
+}
+
+static void test_fuel_system_timekeeper_clock(const void *data)
+{
+    static const uint8_t initial[7] = { 0x05, 0x04, 0x03, 0, 0x02, 0x01, 0x58 };
+    static const uint8_t feb2026[7] = {
+        0x59, 0x59, 0x23, 0x05, 0x28, 0x02, 0x58
+    };
+    static const uint8_t mar2026[7] = { 0, 0, 0, 0x05, 0x01, 0x03, 0x58 };
+    static const uint8_t feb2024[7] = {
+        0x59, 0x59, 0x23, 0x05, 0x28, 0x02, 0x56
+    };
+    static const uint8_t leap2024[7] = { 0, 0, 0, 0x05, 0x29, 0x02, 0x56 };
+    static const uint8_t dec2067[7] = {
+        0x59, 0x59, 0x23, 0x05, 0x31, 0x12, 0x99
+    };
+    static const uint8_t jan1968[7] = { 0, 0, 0, 0x05, 0x01, 0x01, 0 };
+    static const uint8_t jan1968_next[7] = {
+        0x01, 0, 0, 0x05, 0x01, 0x01, 0
+    };
+    QTestState *qts = fuel_start_system_timekeeper(data);
+
+    fuel_map_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0);
+    fuel_assert_clock(qts, initial);
+    qtest_writeb(qts, FUEL_RTC, 0x5a);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff7, 0xa5);
+    for (unsigned int i = 0; i < 8; i++) {
+        qtest_writeb(qts, FUEL_RTC + 0x7f8 + i, 0x30 + i);
+    }
+    qtest_writeb(qts, FUEL_RTC + 0x8000, 0x69);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x8000), ==, 0);
+
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x80);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x80);
+    for (unsigned int i = 0; i < 7; i++) {
+        qtest_writeb(qts, FUEL_RTC + 0x7ff9 + i, feb2024[i]);
+    }
+    /* Weekday is stored immediately; the six counters transfer on W clear. */
+    for (unsigned int i = 0; i < 7; i++) {
+        if (i != 3) {
+            g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9 + i),
+                            ==, initial[i]);
+        }
+    }
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0);
+    fuel_assert_clock(qts, feb2024);
+    qtest_clock_step(qts, NS_PER_SEC);
+    fuel_assert_clock(qts, leap2024);
+
+    fuel_write_clock(qts, feb2026);
+    fuel_assert_clock(qts, feb2026);
+    qtest_clock_step(qts, NS_PER_SEC);
+    fuel_assert_clock(qts, mar2026);
+
+    fuel_write_clock(qts, dec2067);
+    fuel_assert_clock(qts, dec2067);
+    qtest_clock_step(qts, NS_PER_SEC);
+    fuel_assert_clock(qts, jan1968);
+
+    fuel_write_clock(qts, dec2067);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x40);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff8), ==, 0x40);
+    /* Every counter changes at this rollover, exposing a partial freeze. */
+    qtest_clock_step(qts, 2LL * NS_PER_SEC);
+    fuel_assert_clock(qts, dec2067);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0);
+    fuel_assert_clock(qts, jan1968_next);
+
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x80);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff9, 0x82);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0);
+    qtest_clock_step(qts, 3LL * NS_PER_SEC);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x82);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0x80);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff9, 0x02);
+    qtest_writeb(qts, FUEL_RTC + 0x7ff8, 0);
+    qtest_clock_step(qts, NS_PER_SEC);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff9), ==, 0x03);
+
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7ff7), ==, 0xa5);
+    for (unsigned int i = 0; i < 8; i++) {
+        g_assert_cmphex(qtest_readb(qts, FUEL_RTC + 0x7f8 + i), ==, 0x30 + i);
+    }
+    qtest_quit(qts);
+}
+
+typedef struct FuelTimekeeperFiles {
+    char *image;
+    char *clock;
+} FuelTimekeeperFiles;
+
+static char *fuel_timekeeper_file(const char *template, size_t size)
+{
+    char *path = NULL;
+    int fd = g_file_open_tmp(template, &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void fuel_timekeeper_files_new(FuelTimekeeperFiles *files)
+{
+    files->image = fuel_timekeeper_file("fuel-timekeeper-nvram-XXXXXX", 0x8000);
+    files->clock = fuel_timekeeper_file("fuel-timekeeper-clock-XXXXXX", 16);
+}
+
+static void fuel_timekeeper_files_free(FuelTimekeeperFiles *files)
+{
+    g_assert_cmpint(g_unlink(files->image), ==, 0);
+    g_assert_cmpint(g_unlink(files->clock), ==, 0);
+    g_free(files->image);
+    g_free(files->clock);
+}
+
+static QTestState *fuel_start_timekeeper_backed(const char *prom,
+                                               const FuelTimekeeperFiles *files,
+                                               const char *base,
+                                               const char *uri)
+{
+    g_autofree char *image = g_shell_quote(files->image);
+    g_autofree char *clock = g_shell_quote(files->clock);
+    g_autofree char *incoming = uri ? g_strdup_printf("-incoming %s", uri)
+                                   : g_strdup("");
+    g_autofree char *extra = g_strdup_printf(
+        "-drive if=none,id=sgi-nvram0,file=%s,format=raw "
+        "-drive if=none,id=sgi-nvram0-clock,file=%s,format=raw %s",
+        image, clock, incoming);
+
+    return fuel_start_system_timekeeper_args(prom, base, extra);
+}
+
+static void fuel_timekeeper_set_storage(QTestState *qts, uint8_t cells[0x7ff8])
+{
+    for (unsigned int i = 0; i < 0x7ff8; i++) {
+        cells[i] = i * 37 + 11;
+    }
+    cells[0] = 0x5a;
+    cells[0x100] = 0x3c;
+    cells[0x900] = 0xc3;
+    cells[0x7ff7] = 0xa5;
+    qtest_memwrite(qts, FUEL_RTC, cells, 0x7ff8);
+}
+
+static void fuel_timekeeper_assert_storage(QTestState *qts,
+                                           const uint8_t cells[0x7ff8])
+{
+    uint8_t restored[0x7ff8];
+
+    qtest_memread(qts, FUEL_RTC, restored, sizeof(restored));
+    g_assert_cmpmem(restored, sizeof(restored), cells, sizeof(restored));
+}
+
+static void fuel_timekeeper_migration(const char *prom, bool stopped)
+{
+    uint8_t set[7] = { 0x59, 0x59, 0x23, 0x05, 0x31, 0x12, 0x99 };
+    uint8_t next[7] = { 0, 0, 0, 0x05, 0x01, 0x01, 0 };
+    uint8_t reopened[7] = { 0x10, 0, 0, 0x05, 0x01, 0x01, 0 };
+    uint8_t ordinary[0x7ff8];
+    g_autofree char *directory = g_dir_make_tmp("fuel-timekeeper-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", directory);
+    g_autofree char *before_image = NULL, *before_clock = NULL;
+    g_autofree char *after_image = NULL, *after_clock = NULL;
+    gsize before_image_len, before_clock_len, after_image_len, after_clock_len;
+    g_autoptr(QDict) status = NULL;
+    FuelTimekeeperFiles source, destination;
+    QTestState *from, *to;
+
+    g_assert_nonnull(directory);
+    if (stopped) {
+        set[0] |= 0x80;
+        memcpy(next, set, sizeof(next));
+        memcpy(reopened, set, sizeof(reopened));
+    }
+    fuel_timekeeper_files_new(&source);
+    fuel_timekeeper_files_new(&destination);
+    from = fuel_start_timekeeper_backed(prom, &source,
+                                        "2026-01-02T03:04:05", NULL);
+    fuel_map_ioc3(from);
+    fuel_timekeeper_set_storage(from, ordinary);
+    fuel_write_clock(from, set);
+    fuel_assert_clock(from, set);
+    to = fuel_start_timekeeper_backed(prom, &destination,
+                                      "2026-01-02T03:04:05", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    status = qtest_qmp_assert_success_ref(to, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+    g_clear_pointer(&status, qdict_unref);
+    status = qtest_qmp_assert_success_ref(from, "{'execute':'query-status'}");
+    g_assert_cmpstr(qdict_get_str(status, "status"), ==, "postmigrate");
+    /* Restored PCI decode must expose the clock before any remapping. */
+    fuel_timekeeper_assert_storage(to, ordinary);
+    fuel_assert_clock(to, set);
+
+    g_assert_true(g_file_get_contents(source.image, &before_image,
+                                      &before_image_len, NULL));
+    g_assert_true(g_file_get_contents(source.clock, &before_clock,
+                                      &before_clock_len, NULL));
+    qtest_qmp_assert_success(from, "{'execute':'quit'}");
+    qtest_wait_qemu(from);
+    qtest_quit(from);
+    g_assert_true(g_file_get_contents(source.image, &after_image,
+                                      &after_image_len, NULL));
+    g_assert_true(g_file_get_contents(source.clock, &after_clock,
+                                      &after_clock_len, NULL));
+    g_assert_cmpmem(after_image, after_image_len,
+                    before_image, before_image_len);
+    g_assert_cmpmem(after_clock, after_clock_len,
+                    before_clock, before_clock_len);
+
+    qtest_system_reset(to);
+    fuel_map_ioc3(to);
+    fuel_timekeeper_assert_storage(to, ordinary);
+    fuel_assert_clock(to, set);
+    qtest_clock_step(to, NS_PER_SEC);
+    fuel_assert_clock(to, next);
+    qtest_qmp_assert_success(to, "{'execute':'quit'}");
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+
+    to = fuel_start_timekeeper_backed(prom, &destination,
+                                      "2026-01-02T03:04:16", NULL);
+    fuel_map_ioc3(to);
+    fuel_timekeeper_assert_storage(to, ordinary);
+    fuel_assert_clock(to, reopened);
+    qtest_quit(to);
+    fuel_timekeeper_files_free(&source);
+    fuel_timekeeper_files_free(&destination);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_fuel_timekeeper_migration_running(const void *data)
+{
+    fuel_timekeeper_migration(data, false);
+}
+
+static void test_fuel_timekeeper_migration_stopped(const void *data)
+{
+    fuel_timekeeper_migration(data, true);
+}
+
+static void test_fuel_timekeeper_elapsed_rollover(const void *data)
+{
+    static const uint8_t saved[7] = {
+        0x59, 0x59, 0x23, 0x05, 0x31, 0x12, 0x99
+    };
+    static const uint8_t restored[7] = { 0, 0, 0, 0x05, 0x01, 0x01, 0 };
+    uint8_t ordinary[0x7ff8];
+    FuelTimekeeperFiles files;
+    QTestState *qts;
+
+    fuel_timekeeper_files_new(&files);
+    qts = fuel_start_timekeeper_backed(data, &files,
+                                      "2067-12-31T23:59:59", NULL);
+    fuel_map_ioc3(qts);
+    fuel_timekeeper_set_storage(qts, ordinary);
+    fuel_write_clock(qts, saved);
+    fuel_assert_clock(qts, saved);
+    qtest_qmp_assert_success(qts, "{'execute':'quit'}");
+    qtest_wait_qemu(qts);
+    qtest_quit(qts);
+
+    qts = fuel_start_timekeeper_backed(data, &files,
+                                      "2068-01-01T00:00:00", NULL);
+    fuel_map_ioc3(qts);
+    fuel_timekeeper_assert_storage(qts, ordinary);
+    fuel_assert_clock(qts, restored);
+    qtest_quit(qts);
+    fuel_timekeeper_files_free(&files);
 }
 
 static void test_fuel_rtc_decode(const void *data)
@@ -1682,6 +1984,14 @@ int main(int argc, char **argv)
                         test_fuel_system_timekeeper);
     qtest_add_data_func("fuel/system-timekeeper-conflict", prom,
                         test_fuel_system_timekeeper_conflict);
+    qtest_add_data_func("fuel/system-timekeeper-clock", prom,
+                        test_fuel_system_timekeeper_clock);
+    qtest_add_data_func("fuel/system-timekeeper-migration/running", prom,
+                        test_fuel_timekeeper_migration_running);
+    qtest_add_data_func("fuel/system-timekeeper-migration/stopped", prom,
+                        test_fuel_timekeeper_migration_stopped);
+    qtest_add_data_func("fuel/system-timekeeper-elapsed-rollover", prom,
+                        test_fuel_timekeeper_elapsed_rollover);
     status = g_test_run();
     g_assert_cmpint(g_unlink(prom), ==, 0);
     return status;
