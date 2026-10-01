@@ -454,7 +454,7 @@ static void test_draw_targets(void)
         .vertices = v,
         .state = &c.cur,
     };
-    SGIColourTarget targets[2];
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
 
     context_init(&c);
     sgi_gl_set_drawable(&c, &d);
@@ -474,6 +474,19 @@ static void test_draw_targets(void)
 
     c.cur.draw_buffers = 0;
     g_assert_cmpuint(sgi_gl_draw_targets(&c.cur, targets), ==, 0);
+
+    /* Bits 2 and 3 name targets only where the drawable gives them. */
+    c.cur.draw_buffers = SGI_GL_DRAW_EXTRA0 | SGI_GL_DRAW_EXTRA1;
+    g_assert_cmpuint(sgi_gl_draw_targets(&c.cur, targets), ==, 0);
+    d.extra[0] = 4;
+    d.extra[1] = 8;
+    sgi_gl_set_drawable(&c, &d);
+    c.cur.draw_buffers = SGI_GL_DRAW_FRONT | SGI_GL_DRAW_EXTRA0 |
+                         SGI_GL_DRAW_EXTRA1;
+    g_assert_cmpuint(sgi_gl_draw_targets(&c.cur, targets), ==, 3);
+    g_assert_cmpuint(targets[0], ==, 1);
+    g_assert_cmpuint(targets[1], ==, 4);
+    g_assert_cmpuint(targets[2], ==, 8);
 }
 
 static unsigned counted_stores;
@@ -509,7 +522,7 @@ static void test_same_front_and_back(void)
     };
     Recorder rec = { .rules = &rules_supported };
     SGIGLSink sink = recorder_sink(&rec);
-    SGIColourTarget targets[2];
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
     uint32_t word[1] = { SGI_GL_COLOR_BUFFER_BIT };
 
     context_init(&c);
