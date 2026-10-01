@@ -588,6 +588,17 @@ static uint32_t mgras_selected_re(SGIMgrasState *s)
 }
 
 /*
+ * What the RDRAM data port reads for one RE. Approximated: the same fixed
+ * word for every RE the board has, since the RDRAM contents are not
+ * modelled and the kernel's per-RE sync and CCR setup accept it. An RE the
+ * board lacks does not answer and reads 0.
+ */
+static uint32_t mgras_rdram_data(SGIMgrasState *s, uint32_t re)
+{
+    return re < s->board->re_count ? 0x8 : 0;
+}
+
+/*
  * The PP1 an XMAP read answers from, or NULL for one the board lacks. With
  * every PP1 selected the first answers; what real hardware returns then is
  * unknown.
@@ -843,8 +854,11 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* Bus and DMA activity are not modeled and report idle. */
     case 0x020100: return 0;
     case 0x020200: return 0;
-    /* Readback grammar is unsupported. These are fixed approximations. */
-    case 0x02c574: return 0x8;
+    /*
+     * Readback grammar is unsupported. The RDRAM data port answers for the
+     * RE that RSS register 0x112 bits 1:0 select.
+     */
+    case 0x02c574: return mgras_rdram_data(s, mgras_selected_re(s));
     /*
      * Bits 7:4 are the RE4 revision, bits 3:2 the selected RE and bits 1:0
      * the RE count less one. The rest is approximated.
