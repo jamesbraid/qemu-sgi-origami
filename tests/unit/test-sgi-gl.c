@@ -3709,10 +3709,15 @@ typedef struct FogHook {
     unsigned calls;
 } FogHook;
 
+/* The target's opaque is its planes; the hook's record is this one. */
+static FogHook fog_rec;
+static const Planes *fog_planes;
+
 static float fog_hook(void *opaque, float window_z, float eye_z)
 {
-    FogHook *h = opaque;
+    FogHook *h = &fog_rec;
 
+    g_assert_true(opaque == fog_planes);
     h->window_z = window_z;
     h->eye_z = eye_z;
     h->calls++;
@@ -3734,41 +3739,42 @@ static float fog_hook(void *opaque, float window_z, float eye_z)
 static void test_fog_factor_hook(void)
 {
     static FragScene f;
-    FogHook h = { .ret = 0.25f };
+    FogHook *h = &fog_rec;
 
+    *h = (FogHook) { .ret = 0.25f };
     frag_init(&f);
+    fog_planes = &f.p;
     frag_fog(&f, SGI_GL_FOG_COLOR, 1, 0, 0, 1);
     frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
     frag_fog(&f, SGI_GL_FOG_END, 2, 0, 0, 0);
-    f.c.cur.fog_factor = fog_hook;
-    f.c.cur.fog_opaque = &h;
+    f.rec.target.fog_factor = fog_hook;
 
     frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
-    g_assert_cmpuint(h.calls, ==, 0);
+    g_assert_cmpuint(h->calls, ==, 0);
     g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
 
     enable(&f.c, SGI_GL_FOG, true);
     frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
-    g_assert_cmpuint(h.calls, >=, W * H);
+    g_assert_cmpuint(h->calls, >=, W * H);
     g_assert_cmpuint(frag_count(&f, 0xbf0040), ==, W * H);
-    g_assert_cmpfloat(h.window_z, ==, 0.25f);
-    g_assert_cmpfloat(h.eye_z, ==, 0.5f);
+    g_assert_cmpfloat(h->window_z, ==, 0.25f);
+    g_assert_cmpfloat(h->eye_z, ==, 0.5f);
 
-    h.ret = 7;
+    h->ret = 7;
     frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
     g_assert_cmpuint(frag_count(&f, 0x0000ff), ==, W * H);
-    h.ret = -3;
+    h->ret = -3;
     frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
     g_assert_cmpuint(frag_count(&f, 0xff0000), ==, W * H);
 
     /* A different depth reaches the hook as given. */
-    h.ret = 1;
+    h->ret = 1;
     frag_quad_at(&f, 0, 0, 1, 1, 0.5f);
-    g_assert_cmpfloat(h.window_z, ==, 0.75f);
-    g_assert_cmpfloat(h.eye_z, ==, 0.5f);
+    g_assert_cmpfloat(h->window_z, ==, 0.75f);
+    g_assert_cmpfloat(h->eye_z, ==, 0.5f);
 
     /* Unset, GL_LINEAR from 0 to 2 gives f 0.75 as test_fog expects. */
-    f.c.cur.fog_factor = NULL;
+    f.rec.target.fog_factor = NULL;
     frag_quad_at(&f, 0, 0, 1, 1, -0.5f);
     g_assert_cmpuint(frag_count(&f, 0x4000bf), ==, W * H);
 }
