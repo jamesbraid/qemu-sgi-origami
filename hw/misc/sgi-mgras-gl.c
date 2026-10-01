@@ -387,6 +387,28 @@ static const uint16_t mgras_gl_stencil_ops[] = {
 #define MGRAS_GL_TEXTURE_TABLE   0x0000ec10
 #define MGRAS_GL_BANKS           0x00009808
 
+/*
+ * The kernel's GE external RAM transfers ("Context eviction" below): a
+ * read of an address and a word count after a DMA read kick, the word
+ * count of a write before its DMA kick, the write's address and count
+ * after it, and the end of a run of writes.
+ */
+#define MGRAS_GL_ERAM_READ       0x0000fc08
+#define MGRAS_GL_ERAM_COUNT      0x0000fd04
+#define MGRAS_GL_ERAM_WRITE      0x0000fb08
+#define MGRAS_GL_ERAM_END        0x0000fa00
+/* The class of the DMA descriptor words a write's count precedes. */
+#define MGRAS_GL_DMA_DESC_CLASS  0x0008
+
+/* Where an ERAM transfer stands between its DMA kick and its token. */
+enum {
+    MGRAS_ERAM_IDLE,
+    MGRAS_ERAM_READ_KICKED,
+    MGRAS_ERAM_WRITE_ARMED,
+    MGRAS_ERAM_WRITE_KICKED,
+    MGRAS_ERAM_STATES,
+};
+
 /* Vertex-attribute headers: the class names the source format. */
 #define MGRAS_GL_VERTEX2F        0x40000008
 #define MGRAS_GL_VERTEX3F        0x2000000c
@@ -917,6 +939,10 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_GET_LIGHT:
     case MGRAS_GL_GET_MATERIAL:
     case MGRAS_GL_BANKS:
+    case MGRAS_GL_ERAM_READ:
+    case MGRAS_GL_ERAM_COUNT:
+    case MGRAS_GL_ERAM_WRITE:
+    case MGRAS_GL_ERAM_END:
     case MGRAS_GL_VERTEX2F:
     case MGRAS_GL_VERTEX3F:
     case MGRAS_GL_VERTEX4F:
@@ -992,12 +1018,10 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  *
  * Approximated: the model keys its state by the slot address the kernel
  * chose, not by GE external RAM contents, and never interprets the GE
- * ports. When the kernel runs out of slots it copies one out through the
- * GE ports and later back in, possibly under another address; the model
- * cannot follow that. It keeps the old state under a reused address,
- * relying on the opener to start a new context, and cannot restore a
- * copied-back one. No capture has had enough GL contexts to show it. The
- * model holds 32 slots and replaces the least recently loaded when a 33rd
+ * ports. When the kernel runs out of room it reads a context out to host
+ * memory and later writes it back, possibly at another address; the model
+ * follows that by host address ("Context eviction" below). The model
+ * holds 32 slots and replaces the least recently loaded when a 33rd
  * arrives. The discriminating tests are gl-state-follows-the-context-slot,
  * gl-context-opener-resets-only-its-context and
  * gl-context-table-replaces-the-least-recent.
@@ -1156,9 +1180,13 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     s->ge_param_logged = false;
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
     memset(s->gl_selected, 0, sizeof(s->gl_selected));
+    memset(s->gl_saved, 0, sizeof(s->gl_saved));
     s->gl_selections = 0;
     s->gl_current = 0;
     s->gl_ge_port_logged = false;
+    s->eram_state = MGRAS_ERAM_IDLE;
+    s->eram_host = s->eram_next_host = 0;
+    s->eram_rows = s->eram_bpr = s->eram_next_addr = 0;
     /* The value every captured GL context image restores. */
     s->gl_banks[0] = s->gl_banks[1] = 1;
     mgras_gl_bind(s);
@@ -1171,13 +1199,17 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
 static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
 {
     sgi_gl_reset(&s->gl[i], hw_id);
+    s->gl_saved[i] = 0;
     memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
     sgi_mgras_texture_reset(&s->gl_context[i].tex);
 }
 
-/* The entry holding slot's state, taking a new one if it has none. */
+/*
+ * The entry holding slot's state, taking a new one if it has none. An
+ * entry read out to host memory holds no slot until it is written back.
+ */
 static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
 {
     unsigned int free = 0, oldest = 0;
@@ -1185,7 +1217,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
     for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         if (!s->gl_selected[i]) {
             free = free ? free : i;
-        } else if (s->gl_slot[i] == slot) {
+        } else if (s->gl_slot[i] == slot && !s->gl_saved[i]) {
             return i;
         } else if (!oldest || s->gl_selected[i] < s->gl_selected[oldest]) {
             oldest = i;
@@ -1200,6 +1232,164 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
     mgras_gl_forget(s, free, slot);
     s->gl_slot[free] = slot;
     return free;
+}
+
+/*
+ * Context eviction. The IRIX 6.5.30 kernel keeps each GL context in GE
+ * external RAM (ERAM) at the address its context image carries in word 0,
+ * and moves contexts between ERAM and a host buffer when it needs room.
+ * Established from mgras.o in the IRIX 6.5.30 IP27 mgras.a (SHA-256
+ * 6a65e70d3cdc...): MgrasEramRead (.text 0xf18) builds a DMA read
+ * descriptor, kicks it and then writes 0xfc08 with the ERAM address and a
+ * word count, then 0x0100; MgrasEramWrite (.text 0x11f0) sends the image
+ * back in chunks of at most 0x384 words, each 0xfd04 with the count, the
+ * descriptor and its kick, then 0xfb08 with the ERAM address and count,
+ * and ends with 0xfa00.
+ *
+ * Established from run irix-20260930T234501-dc3029 (i3dm, seq 3906430 to
+ * 3962650): three read-outs of 0x1854 words, from addresses 0x3bcd,
+ * 0x84c6 and 0x9d19, each kicked 0xbd from DMA-map slot 2 to offsets
+ * 0x9000, 0x21000 and 0x29000 of one kernel buffer; then one write-back,
+ * kicked 0xa5, of the image at offset 0x29000 to address 0x5420 in seven
+ * chunks of 0x384 words and one of 0x33b. Each address is the word 0 of
+ * the context images loaded before and after, so the context that drew
+ * i3dm's top view under 0x9d19 came back under 0x5420, whose earlier GL
+ * state, the tool panel's, the model then drew the view with: its
+ * 111-column scissor box clipped the view's clear, and the view stayed
+ * stale.
+ *
+ * The model follows the move without the bytes: a read-out marks the
+ * entry under the ERAM address as saved at the host address of the
+ * transfer's first byte, and a write-back whose first byte comes from
+ * that host address gives the entry the new ERAM address, dropping the
+ * one the write overwrites there. Inferred: that the kernel only stores
+ * and returns the buffer, since it writes back exactly what it read, from
+ * the same place. Approximated: the model writes nothing into the host
+ * buffer, where the board writes the context's ERAM image, and keeps the
+ * board's GE parameters (ge_param) for the board, not per context. A
+ * write-back from a buffer the model never saw read out leaves the
+ * address's GL state as it was, logged. The discriminating tests are
+ * gl-eviction-moves-the-context, gl-eviction-read-without-token-logs and
+ * the replay fixture gl-eviction-i3dm.
+ */
+static void mgras_gl_eram_read(SGIMgrasState *s, uint32_t addr,
+                               uint32_t words)
+{
+    if (s->eram_state != MGRAS_ERAM_READ_KICKED) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: ERAM read of %u words at "
+                      "0x%x with no DMA read kicked before it\n", words,
+                      addr);
+        return;
+    }
+    s->eram_state = MGRAS_ERAM_IDLE;
+    for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_selected[i] && !s->gl_saved[i] && s->gl_slot[i] == addr) {
+            s->gl_saved[i] = s->eram_host;
+            return;
+        }
+    }
+}
+
+static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
+                                uint32_t words)
+{
+    uint64_t host = s->eram_host;
+
+    if (s->eram_state != MGRAS_ERAM_WRITE_KICKED) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: ERAM write of %u words "
+                      "at 0x%x with no DMA kicked before it\n", words, addr);
+        return;
+    }
+    s->eram_state = MGRAS_ERAM_IDLE;
+    if (s->eram_next_host && host == s->eram_next_host &&
+        addr == s->eram_next_addr) {
+        /* The next chunk of the image being written back. */
+        s->eram_next_host += (uint64_t)words * sizeof(uint32_t);
+        s->eram_next_addr += words;
+        return;
+    }
+    s->eram_next_host = s->eram_next_addr = 0;
+    for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (!s->gl_selected[i] || s->gl_saved[i] != host) {
+            continue;
+        }
+        for (unsigned int j = 1; j < SGI_MGRAS_GL_CONTEXTS; j++) {
+            if (j != i && s->gl_selected[j] && !s->gl_saved[j] &&
+                s->gl_slot[j] == addr) {
+                mgras_gl_forget(s, j, 0);
+                s->gl_selected[j] = 0;
+                if (s->gl_current == j) {
+                    s->gl_current = i;
+                }
+            }
+        }
+        s->gl_saved[i] = 0;
+        s->gl_slot[i] = addr;
+        s->gl[i].hw_id = addr;
+        s->eram_next_host = host + (uint64_t)words * sizeof(uint32_t);
+        s->eram_next_addr = addr + words;
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: ERAM write of %u words at 0x%x "
+                  "from host 0x%" PRIx64 ", which the model saw no context "
+                  "read out to; that address keeps its GL state\n", words,
+                  addr, host);
+}
+
+void sgi_mgras_gl_eram_read_kicked(SGIMgrasState *s, uint64_t host,
+                                   uint32_t rows, uint32_t bpr)
+{
+    s->eram_state = MGRAS_ERAM_READ_KICKED;
+    s->eram_host = host;
+    s->eram_rows = rows;
+    s->eram_bpr = bpr;
+}
+
+bool sgi_mgras_gl_eram_write_armed(SGIMgrasState *s)
+{
+    return s->eram_state == MGRAS_ERAM_WRITE_ARMED;
+}
+
+void sgi_mgras_gl_eram_write_kicked(SGIMgrasState *s, uint64_t host)
+{
+    s->eram_state = MGRAS_ERAM_WRITE_KICKED;
+    s->eram_host = host;
+}
+
+void sgi_mgras_gl_eram_header(SGIMgrasState *s, uint32_t header)
+{
+    switch (s->eram_state) {
+    case MGRAS_ERAM_READ_KICKED:
+        if (header != MGRAS_GL_ERAM_READ) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA read of %u rows of %u "
+                          "bytes kicked with no raster box that fits it "
+                          "and no ERAM read after it; nothing transferred\n",
+                          s->eram_rows, s->eram_bpr);
+            s->eram_state = MGRAS_ERAM_IDLE;
+        }
+        break;
+    case MGRAS_ERAM_WRITE_ARMED:
+        /* The write's descriptor and kick come between count and kick. */
+        if (header >> 16 != MGRAS_GL_DMA_DESC_CLASS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: ERAM write count "
+                          "with no DMA kick after it, header 0x%08x\n",
+                          header);
+            s->eram_state = MGRAS_ERAM_IDLE;
+        }
+        break;
+    case MGRAS_ERAM_WRITE_KICKED:
+        if (header != MGRAS_GL_ERAM_WRITE) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA to the GE kicked "
+                          "for an ERAM write with no address after it\n");
+            s->eram_state = MGRAS_ERAM_IDLE;
+        }
+        break;
+    }
+}
+
+bool sgi_mgras_gl_eram_valid(SGIMgrasState *s)
+{
+    return s->eram_state < MGRAS_ERAM_STATES;
 }
 
 /*
@@ -2053,7 +2243,8 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
 bool sgi_mgras_gl_post_load(SGIMgrasState *s)
 {
     if (s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
-        (s->gl_current && !s->gl_selected[s->gl_current])) {
+        (s->gl_current && !s->gl_selected[s->gl_current]) ||
+        !sgi_mgras_gl_eram_valid(s)) {
         return false;
     }
     /*
@@ -3558,6 +3749,19 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         s->gl_banks[0] = payload[0];
         s->gl_banks[1] = payload[1];
         mgras_gl_bind(s);
+        return;
+    case MGRAS_GL_ERAM_READ:
+        mgras_gl_eram_read(s, payload[0], payload[1]);
+        return;
+    case MGRAS_GL_ERAM_COUNT:
+        s->eram_state = MGRAS_ERAM_WRITE_ARMED;
+        return;
+    case MGRAS_GL_ERAM_WRITE:
+        mgras_gl_eram_write(s, payload[0], payload[1]);
+        return;
+    case MGRAS_GL_ERAM_END:
+        s->eram_next_host = 0;
+        s->eram_next_addr = 0;
         return;
     case MGRAS_GL_COLOR3F:
         mgras_gl_command(s, SGI_GL_OP_COLOR3F, payload, 3);

@@ -17728,6 +17728,201 @@ static void test_credit_uncounted_store_returns_nothing(void)
     qtest_quit(s);
 }
 
+/*
+ * The kernel's context eviction (sgi-mgras-gl.c, "Context eviction") as
+ * run irix-20260930T234501-dc3029 captured it from i3dm: context 0x9d19's
+ * 0x1854 ERAM words read out by a DMA read kicked 0xbd from DMA-map slot
+ * 2, then that host image written back into 0x5420 in chunks of 0x384
+ * words kicked 0xa5. Here node 0's page list maps pages 7 to 14.
+ */
+#define GL_EVICT_LIST         0x2000u
+#define GL_EVICT_FROM         0x9d19
+#define GL_EVICT_TO           0x5420
+#define GL_EVICT_WORDS        0x1854
+#define GL_EVICT_CHUNK        0x384
+#define GL_ERAM_READ_HDR      0x0000fc08
+#define GL_ERAM_COUNT_HDR     0x0000fd04
+#define GL_ERAM_WRITE_HDR     0x0000fb08
+#define GL_ERAM_END           0x0000fa00
+#define GL_ERAM_READ_KICK     0xbd
+#define GL_ERAM_WRITE_KICK    0xa5
+
+static void gl_eram_map(QTestState *qts)
+{
+    static const uint8_t header[24] = { 0 };
+    uint8_t list[8 * 8] = { 0 };
+
+    for (int i = 0; i < 8; i++) {
+        list[8 * i + 7] = 7 + i;
+    }
+    qtest_memwrite(qts, GL_EVICT_LIST, header, sizeof(header));
+    qtest_memwrite(qts, GL_EVICT_LIST + 0x18, list, sizeof(list));
+    /* DMA-map slot 2: registers 0x24/0x25, 0x32 and 0x4d. */
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482408);
+    qtest_writeq(qts, MGRAS_REG(0x130400), GL_EVICT_LIST + 0x18);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483204 << 32) | 8);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484d04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+}
+
+/* One row of bpr bytes at offset in slot 2's pages, kicked with kick. */
+static void gl_eram_kick(QTestState *qts, uint32_t offset, uint32_t bpr,
+                         uint32_t kick)
+{
+    gl_word(qts, 0x00080004);
+    gl_word(qts, 0x80000000);
+    gl_word(qts, 0x00080404);
+    gl_word(qts, 0x20000);
+    gl_word(qts, 0x00080604);
+    gl_word(qts, offset & ~0xfffu);
+    gl_word(qts, 0x00080704);
+    gl_word(qts, 1);
+    gl_word(qts, 0x00080504);
+    gl_word(qts, offset & 0xfffu);
+    gl_word(qts, 0x00080804);
+    gl_word(qts, bpr);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(qts, 0x00080b04);
+    gl_word(qts, kick);
+}
+
+/* MgrasEramRead's form: the kick, then 0xfc08 with address and count. */
+static void gl_eram_read(QTestState *qts, uint32_t addr)
+{
+    gl_eram_kick(qts, 0, GL_EVICT_WORDS * 4, GL_ERAM_READ_KICK);
+    gl_word(qts, GL_ERAM_READ_HDR);
+    gl_word(qts, addr);
+    gl_word(qts, GL_EVICT_WORDS);
+}
+
+/* MgrasEramWrite's form for the image at offset 0: two chunks, the end. */
+static void gl_eram_write(QTestState *qts, uint32_t addr)
+{
+    for (uint32_t i = 0; i < 2; i++) {
+        gl_one(qts, GL_ERAM_COUNT_HDR, GL_EVICT_CHUNK);
+        gl_eram_kick(qts, i * GL_EVICT_CHUNK * 4, GL_EVICT_CHUNK * 4,
+                     GL_ERAM_WRITE_KICK);
+        gl_word(qts, GL_ERAM_WRITE_HDR);
+        gl_word(qts, addr + i * GL_EVICT_CHUNK);
+        gl_word(qts, GL_EVICT_CHUNK);
+    }
+    gl_word(qts, GL_ERAM_END);
+}
+
+/*
+ * Context a, red and unscissored, and context b, green and scissored to
+ * window columns and rows 0 to 7, both in one window, as i3dm's top view
+ * and tool panel were.
+ */
+static void gl_eviction_contexts(QTestState *qts)
+{
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_enter_slot(qts, GL_EVICT_FROM);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 1, 0, 0, 1);
+
+    gl_enter_slot(qts, GL_EVICT_TO);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_scissor(qts, 0, 0, 8, 8);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+}
+
+/*
+ * a is read out and written back under b's address, where its state, not
+ * b's, then draws: the clear fills the window in red. A new context under
+ * a's old address starts from OpenGL's initial state, not a's.
+ */
+static void test_gl_eviction_moves_the_context(void)
+{
+    mgras_reset();
+    gl_eviction_contexts(qts);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_eram_map(qts);
+    gl_eram_read(qts, GL_EVICT_FROM);
+
+    mgras_enter_gl_image(qts, GL_EVICT_FROM, 0xc0000000, 256, 640, 128, 128,
+                         0x11);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_eram_write(qts, GL_EVICT_TO);
+    gl_enter_slot(qts, GL_EVICT_TO);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0xff0000);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A read kick that any header but 0xfc08 follows is not a read-out: the
+ * later 0xfc08 saves nothing, the write-back finds no context saved at
+ * its host address, and b keeps its own state.
+ */
+static void test_gl_eviction_needs_the_read_token(void)
+{
+    mgras_reset();
+    gl_eviction_contexts(qts);
+
+    gl_enter_slot(qts, GL_SLOT_DEFAULT);
+    gl_eram_map(qts);
+    gl_eram_kick(qts, 0, GL_EVICT_WORDS * 4, GL_ERAM_READ_KICK);
+    gl_word(qts, GL_FLUSH);
+    gl_word(qts, GL_ERAM_READ_HDR);
+    gl_word(qts, GL_EVICT_FROM);
+    gl_word(qts, GL_EVICT_WORDS);
+    gl_eram_write(qts, GL_EVICT_TO);
+
+    gl_enter_slot(qts, GL_EVICT_TO);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 2), ==, 0x00ff00);
+    g_assert_cmphex(gl_window_pixel(qts, 100, 100), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/* A context read out before a migration is written back after it. */
+static void test_gl_eviction_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-eviction-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_eviction_contexts(from);
+    gl_enter_slot(from, GL_SLOT_DEFAULT);
+    gl_eram_map(from);
+    gl_eram_read(from, GL_EVICT_FROM);
+    gl_one(from, GL_ERAM_COUNT_HDR, GL_EVICT_CHUNK);
+    gl_eram_kick(from, 0, GL_EVICT_CHUNK * 4, GL_ERAM_WRITE_KICK);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, GL_ERAM_WRITE_HDR);
+    gl_word(to, GL_EVICT_TO);
+    gl_word(to, GL_EVICT_CHUNK);
+    gl_word(to, GL_ERAM_END);
+    gl_enter_slot(to, GL_EVICT_TO);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(gl_window_pixel(to, 100, 100), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -18242,6 +18437,12 @@ int main(int argc, char **argv)
                    test_gl_swap_pending_matches_the_reference);
     qtest_add_func("sn0/origin2000/mgras/gl-state-follows-the-context-slot",
                    test_gl_state_follows_the_context_slot);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-moves-the-context",
+                   test_gl_eviction_moves_the_context);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-needs-the-read-token",
+                   test_gl_eviction_needs_the_read_token);
+    qtest_add_func("sn0/origin2000/mgras/gl-eviction-migration",
+                   test_gl_eviction_migration);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-context-opener-resets-only-its-context",
                    test_gl_context_opener_resets_only_its_context);

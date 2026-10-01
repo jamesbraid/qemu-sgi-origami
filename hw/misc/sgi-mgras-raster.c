@@ -337,6 +337,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     reg = (token >> 8) & 0xff;
     payload_bytes = token & 0xff;
     sgi_mgras_gl_pixels_header(s, token);
+    sgi_mgras_gl_eram_header(s, token);
 
     if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
         reg == MGRAS_CMD_FIFO_FENCE_REG && payload_bytes == 0) {
@@ -2047,10 +2048,15 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
  * it reads with PP1FILLMODE 0x2200 and pixel format 0x200, the values of
  * the IRIX server's save-under reads, and writes the words back with
  * 0x6200 and 0x600.
+ *
+ * A read whose descriptor the box does not fit, in rows or in a pixel of
+ * one or four bytes, is not a raster read; this returns false for it and
+ * moves nothing. The kernel's context read-outs are such reads
+ * (sgi-mgras-gl.c, "Context eviction"), so the caller waits for the token
+ * that would name one before logging it.
  */
-static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
+static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
 {
-    unsigned int slot;
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
     uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
@@ -2062,34 +2068,18 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     unsigned int width, bpp;
     SGIPixelDMA d;
 
-    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
-        return;
-    }
     if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= s->width ||
         y0 >= s->height || y1 >= s->height) {
-        return;
+        return false;
     }
     x1 = MIN(x1, s->width - 1);
     width = x1 - x0 + 1;
-    if (bpr % width) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
-                      "bytes/row does not divide destination width %u\n",
-                      bpr, width);
-        return;
-    }
     bpp = bpr / width;
-    if (bpp != 1 && bpp != 4) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented DMA image "
-                      "transfer pixel width %u bytes\n", bpp);
-        return;
-    }
-
     y_top = s->height - 1 - y0;
     y_bottom = s->height - 1 - y1;
-    if (y_top > y_bottom || rows != (uint32_t)(y_bottom - y_top + 1)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer read box "
-                      "does not match rows %u\n", rows);
-        return;
+    if (bpr % width || (bpp != 1 && bpp != 4) || y_top > y_bottom ||
+        rows != (uint32_t)(y_bottom - y_top + 1)) {
+        return false;
     }
 
     d = (SGIPixelDMA) {
@@ -2103,6 +2093,62 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
         .offset = mgras_raster_dma_src_offset(s),
     };
     mgras_raster_dma_transfer(s, slot, &d, 0, 0);
+    return true;
+}
+
+/*
+ * The node address of a kicked transfer's first byte, the key the
+ * kernel's context read-outs and write-backs share (sgi-mgras-gl.c,
+ * "Context eviction"). False, logged, when the mapping cannot give one.
+ */
+static bool mgras_raster_dma_host(SGIMgrasState *s, unsigned int slot,
+                                  uint64_t *host)
+{
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    g_autofree uint64_t *page_addr = NULL;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+
+    if (!mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    if (offset / MGRAS_DMA_PAGE_SIZE >= pl.npages) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA offset 0x%" PRIx64
+                      " lies past its %u mapped pages\n", offset, pl.npages);
+        return false;
+    }
+    *host = page_addr[offset / MGRAS_DMA_PAGE_SIZE] |
+            (offset % MGRAS_DMA_PAGE_SIZE);
+    return true;
+}
+
+/* A read kick: a raster read, or else perhaps a context read-out. */
+static void mgras_raster_dma_read(SGIMgrasState *s, uint32_t kick_byte)
+{
+    unsigned int slot;
+    uint64_t host;
+
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        mgras_raster_dma_read_image(s, slot) ||
+        !mgras_raster_dma_host(s, slot, &host)) {
+        return;
+    }
+    sgi_mgras_gl_eram_read_kicked(s, host,
+                                  s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
+                                  s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR]);
+}
+
+/* A write kick to the GE after an ERAM count: a context write-back. */
+static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
+{
+    unsigned int slot;
+    uint64_t host;
+
+    if (mgras_raster_dma_select_slot(s, kick_byte, &slot) &&
+        mgras_raster_dma_host(s, slot, &host)) {
+        sgi_mgras_gl_eram_write_kicked(s, host);
+    }
 }
 
 /*
@@ -2174,7 +2220,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
     bool take;
 
     if (kick_word & MGRAS_DMA_KICK_DIRECTION_READ) {
-        mgras_raster_dma_read_image(s, kick_byte);
+        mgras_raster_dma_read(s, kick_byte);
         return;
     }
     if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
@@ -2184,6 +2230,9 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
         if (take) {
             mgras_raster_dma_ge_pixels(s, kick_byte);
         }
+    } else if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
+               sgi_mgras_gl_eram_write_armed(s)) {
+        mgras_raster_dma_eram_write(s, kick_byte);
     } else {
         mgras_raster_dma_draw_image(s, kick_byte);
     }
