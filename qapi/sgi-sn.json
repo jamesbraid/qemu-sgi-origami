@@ -224,6 +224,124 @@
   'data': { 'bank-mib': ['uint64'] } }
 
 ##
+# @SGIModelInputBinding:
+#
+# An existing public machine option permitted to supply one
+# configuration field.
+#
+# @option: compatibility option name
+# @required: whether launch requires the option even when a default
+#     exists
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelInputBinding',
+  'data': { 'option': 'str', 'required': 'bool' } }
+
+##
+# @SGIModelL1Revision:
+#
+# A reported controller version.  Each component is at most INT32_MAX.
+#
+# @major: major version
+# @minor: minor version
+# @patch: patch version
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Revision',
+  'data': { 'major': 'uint32', 'minor': 'uint32', 'patch': 'uint32' } }
+
+##
+# @SGIModelBedrockConfig:
+#
+# Node initialization selected by the authored configuration.
+#
+# @board-id-word: configured board identity response, when known
+# @board-id-input: operator input permitted to supply that response
+# @board-id-mask: mask for a board response constraint
+# @board-id-required-bits: required masked response, paired with
+#     @board-id-mask
+# @revision-input: input supplying the ASIC identity's widget revision
+# @local-region: local region value
+# @initiator-region: initiator region value
+# @installed-bank-mask: configured installed-bank indication
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBedrockConfig',
+  'data': { '*board-id-word': 'uint64',
+            '*board-id-input': 'SGIModelInputBinding',
+            '*board-id-mask': 'uint64',
+            '*board-id-required-bits': 'uint64',
+            '*revision-input': 'SGIModelInputBinding',
+            'local-region': 'uint8',
+            'initiator-region': 'uint8',
+            'installed-bank-mask': 'uint8' } }
+
+##
+# @SGIModelL1Config:
+#
+# Reported identity and allowed inputs for a node's shared controller.
+#
+# @reported-type: raw type response, when known
+# @reported-type-input: input permitted to supply that response
+# @revision: reported version, when available
+# @revision-input: input permitted to supply a complete reported
+#     version
+# @mac-eeprom-input: input supplying this controller's MAC EEPROM
+#     record
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Config',
+  'data': { '*reported-type': 'uint8',
+            '*reported-type-input': 'SGIModelInputBinding',
+            '*revision': 'SGIModelL1Revision',
+            '*revision-input': 'SGIModelInputBinding',
+            '*mac-eeprom-input': 'SGIModelInputBinding' } }
+
+##
+# @SGIModelPciFunctionKind:
+#
+# Implemented PCI parts selected for a Bedrock I/O assembly.
+#
+# @isp12160: QLogic ISP12160
+# @ioc3: SGI IOC3
+# @lucent-ohci: Lucent OHCI controller
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelPciFunctionKind',
+  'data': ['isp12160', 'ioc3', 'lucent-ohci'] }
+
+##
+# @SGIModelPciFunction:
+#
+# A fitted implemented part and its supported reported revision.
+#
+# @kind: selected PCI part
+# @revision: reported PCI revision, checked against the implemented
+#     part
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelPciFunction',
+  'data': { 'kind': 'SGIModelPciFunctionKind', 'revision': 'uint8' } }
+
+##
+# @SGIModelMacSource:
+#
+# Source of an assembly's optional supplied Ethernet address.
+#
+# @none: retain the device's existing address policy
+# @module-l1: obtain the address from the module's controller record
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelMacSource', 'data': ['none', 'module-l1'] }
+
+##
 # @SGIModelNode:
 #
 # One node board: a node ASIC, its populated processor slots, its
@@ -248,6 +366,8 @@
 #
 # @accepted-bank-layouts: selected valid bank populations where
 #     specified
+#
+# @bedrock: explicit initialization for a Bedrock node
 #
 # @cpu-slots: this node's processor-interface slots, populated and
 #     empty
@@ -276,6 +396,7 @@
             'asic-kind': 'SGIModelAsicKind',
             '*identity': 'SGIModelAsicIdentity',
             '*heart': 'SGIModelHeartIdentity',
+            '*bedrock': 'SGIModelBedrockConfig',
             'cpu-slots': ['SGIModelCpuSlot'],
             'bank-mib': ['uint64'],
             'accepted-memory-mib': ['uint64'],
@@ -618,6 +739,17 @@
 #
 # @serial: fitted-part one-wire serial, if known
 #
+# @populated: whether this record has a fitted assembly
+#
+# @pci-functions: fitted Bedrock assembly parts and their supported
+#     revisions
+#
+# @ioc3-subsystem-id: supplied IOC3 subsystem identity, when known
+#
+# @ioc3-subsystem-input: allowed operator input for that identity
+#
+# @mac-source: selected source for an optional supplied IOC3 address
+#
 # @system-timekeeper: explicit experimental fitted system-clock
 #     policy
 #
@@ -638,7 +770,12 @@
             '*revision': 'uint8',
             '*serial': 'uint64',
             '*ioc3-serial': 'uint64',
-            '*system-timekeeper': 'SGIModelSystemTimekeeper' } }
+            '*system-timekeeper': 'SGIModelSystemTimekeeper',
+            'populated': 'bool',
+            '*pci-functions': ['SGIModelPciFunction'],
+            '*ioc3-subsystem-id': 'uint16',
+            '*ioc3-subsystem-input': 'SGIModelInputBinding',
+            '*mac-source': 'SGIModelMacSource' } }
 
 ##
 # @SGIModelControllerKind:
@@ -666,12 +803,15 @@
 #
 # @kind: which shared controller this is
 #
+# @l1: initialization selected for a node-owned L1 controller
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelController',
   'data': { 'id': 'str',
             'module-index': 'uint32',
-            'kind': 'SGIModelControllerKind' } }
+            'kind': 'SGIModelControllerKind',
+            '*l1': 'SGIModelL1Config' } }
 
 ##
 # @SGIModelModule:
@@ -1052,6 +1192,40 @@
             'cache-mib': 'uint16', '*required-properties': ['str'] } }
 
 ##
+# @SGIModelSmdkTftpMode:
+#
+# Diagnostic package file-serving behavior.
+#
+# @fixed: serve successive files through the fixed boot filename
+# @requested: serve each filename requested by the diagnostic package
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelSmdkTftpMode', 'data': ['fixed', 'requested'] }
+
+##
+# @SGIModelSmdkRecipe:
+#
+# Diagnostic launch policy selected by this offering.
+#
+# @package-path: default diagnostic package directory
+# @tftp-mode: package file-serving behavior
+# @diagnostic-mac-bootarg: pass the supplied MAC to diagnostic boot
+# @requires-boot-flash: require a caller-supplied flash image
+# @requires-network-identity: require supplied MAC or EEPROM identity
+# @discovery-prerequisites: diagnostics requiring an iocfg pass first
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelSmdkRecipe',
+  'data': { 'package-path': 'str',
+            'tftp-mode': 'SGIModelSmdkTftpMode',
+            'diagnostic-mac-bootarg': 'bool',
+            'requires-boot-flash': 'bool',
+            'requires-network-identity': 'bool',
+            'discovery-prerequisites': ['str'] } }
+
+##
 # @SGIModelOffering:
 #
 # One accepted configuration a launcher may select: a product, a
@@ -1105,6 +1279,11 @@
 #
 # @identity-inputs: named identity/SPD inputs this offering accepts
 #
+# @hardware-inputs: configured allowed hardware input aliases and
+#     requirements
+#
+# @smdk: selected diagnostic launch recipe, when supported
+#
 # @supported-guests: guest operating systems documented to run on this
 #     offering
 #
@@ -1141,6 +1320,8 @@
             'disk-bus': 'str',
             'netboot-adapter': 'str',
             'identity-inputs': ['str'],
+            'hardware-inputs': ['SGIModelInputBinding'],
+            '*smdk': 'SGIModelSmdkRecipe',
             'supported-guests': ['str'],
             'install-media': ['str'],
             'default-cpu-model': 'str',

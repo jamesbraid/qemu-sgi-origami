@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from .model_composition import validate_initialization_policy
+
 from .model_shared import (
     _compile_r10000_reset_mode, _integer, _required, _validate_integer, num,
 )
@@ -1161,6 +1163,41 @@ def _node_cpus(model: dict, components: dict[str, dict], node: dict,
             if item.get("kind") == "cpu" and _is_within(components, item, board_id)]
 
 
+def _initialization(model: dict, section: str, cid: str) -> dict:
+    selected = model["machine"].get("emulation", {}).get(section, {}).get(cid)
+    if selected is None:
+        raise CompileError(f"component '{cid}' has no {section} initialization")
+    return {key: value for key, value in selected.items()
+            if key not in {"provenance", "sources", "notes"}}
+
+
+def _bedrock_configuration(model: dict, node: dict, banks: list[int]) -> dict:
+    configured = _initialization(model, "bedrock_nodes", node["id"])
+    mask = configured["installed_bank_mask"]
+    configured["installed_bank_mask"] = (
+        mask["value"] if mask["mode"] == "fixed"
+        else sum(1 << bank for bank, size in enumerate(banks) if size))
+    return configured
+
+
+def _bedrock_io_configuration(model: dict, board: dict) -> dict:
+    configured = {"populated": bool(board["pci"])}
+    if configured["populated"]:
+        if "system_timekeeper" not in board:
+            raise CompileError(
+                f"I/O assembly '{board['id']}' requires a Timekeeper policy")
+        kinds = [entry["kind"] for entry in board["pci"]]
+        if len(kinds) != 3 or set(kinds) != set(_BEDROCK_PCI_KINDS.values()):
+            raise CompileError(
+                f"I/O assembly '{board['id']}' requires its three "
+                "supported PCI parts")
+        configured.update(_initialization(model, "io_boards", board["id"]))
+        configured["pci_functions"] = [
+            {"kind": entry["kind"], "revision": entry["revision"]}
+            for entry in board["pci"]]
+    return configured
+
+
 def _compile_node(model: dict, components: dict[str, dict], entry: dict,
                    position: int, node_count: int) -> dict:
     node = entry["component"]
@@ -1188,6 +1225,9 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     processor["mode_bits"] = _mode_bits(model, node, processor)
     max_population = _node_max_population(model, position, node_count)
     identity = _node_identity(model, components, node, asic_kind, position)
+    banks = _node_bank_mib(model, position, node_count)
+    configuration = ({"bedrock": _bedrock_configuration(model, node, banks)}
+                     if asic_kind == "bedrock" else {})
     return {
         "id": node["id"],
         "module_index": entry["module_index"],
@@ -1199,8 +1239,9 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
         "hub_slot_bits": entry["hub_slot_bits"],
         "asic_kind": _ASIC_RECORD_KIND[asic_kind],
         "identity": identity,
+        **configuration,
         "cpu_slots": _cpu_slots(cpus, node, node_asic, processor, max_population),
-        "bank_mib": _node_bank_mib(model, position, node_count),
+        "bank_mib": banks,
         "accepted_memory_mib": _accepted_memory_mib(model),
         "flash": _flash(model, components, asic_kind, entry["board_id"]),
         "slave_role": position != 0,
@@ -1334,6 +1375,19 @@ def _board_pci_population(model: dict, components: dict[str, dict], kinds: dict[
     pci = []
     for _device, _function, kind, cid in entries:
         entry = {"kind": kind}
+        if kinds is _BEDROCK_PCI_KINDS:
+            component = components[cid]
+            selected = model["machine"]["emulation"].get(
+                "pci_function_revisions", {}).get(cid)
+            revision = (selected["revision"] if selected is not None
+                        else _integer(component.get("identity", {}),
+                                      "pci_revision", cid, 8))
+            supported = {"ISP12160": 6, "IOC3": 1, "LUCENT_OHCI": 16}
+            if revision != supported[kind]:
+                raise CompileError(
+                    f"PCI part '{cid}' has unsupported {kind} "
+                    f"revision {revision}")
+            entry["revision"] = revision
         if kind == "IOC3":
             entry["ethernet"] = _ioc3_has_ethernet(components, cid)
         pci.append(entry)
@@ -1416,6 +1470,7 @@ def _compile_fitted_bedrock_io_board(model: dict, components: dict[str, dict],
             "kind": selected["kind"], "year_base": selected["year_base"],
             "initial_ip27_fixture": selected["initial_ip27_fixture"],
         }
+    io_board.update(_bedrock_io_configuration(model, io_board))
     return [io_board], xio_attachments
 
 
@@ -1476,8 +1531,9 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
         raise CompileError(f"XIO bus '{bus['id']}' hosts no PCI bridge head")
     heads.sort(key=lambda item: item[0]["id"])
 
-    if any(board.get("hardware_kind") == "ip34"
-           for board in components.values() if board.get("kind") == "board"):
+    owner = _board_ancestor(components, components[bedrock_id])
+    if (owner is not None
+            and owner.get("hardware_kind") in _BEDROCK_IO_BOARD_KINDS):
         return _compile_fitted_bedrock_io_board(
             model, components, bedrock_id, heads, node_index, module_index,
             first_attachment)
@@ -1509,6 +1565,7 @@ def _compile_bedrock_io_boards(model: dict, components: dict[str, dict], bedrock
                 "kind": selected["kind"], "year_base": selected["year_base"],
                 "initial_ip27_fixture": selected["initial_ip27_fixture"],
             }
+        io_boards[-1].update(_bedrock_io_configuration(model, io_boards[-1]))
         xio_attachments.append({
             "crossbar_index": -1, "widget": widget, "node_index": node_index,
         })
@@ -1772,10 +1829,16 @@ def _compile_controllers(model: dict, components: dict[str, dict],
         if module["id"] not in modules:
             raise CompileError(
                 f"controller '{component['id']}' is not grouped under a positioned module")
+        configuration = {}
+        if (kind == "l1" and component["id"] in model["machine"][
+                "emulation"].get("l1_controllers", {})):
+            configuration["l1"] = _initialization(
+                model, "l1_controllers", component["id"])
         addresses = controller_addresses.get(kind, {})
         result.append({
             "id": component["id"],
             "kind": kinds[kind],
+            **configuration,
             "module_index": modules[module["id"]],
             "msc_address": addresses.get("msc_address", 0),
             "nvram_address": addresses.get("nvram_address", 0),
@@ -1961,6 +2024,7 @@ def compile_model(model: dict) -> dict:
     modules_by_id = {module["id"]: module["index"] for module in graph["modules"]}
 
     try:
+        validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
         routers = [_compile_router(model, entry, index)
@@ -1969,6 +2033,21 @@ def compile_model(model: dict) -> dict:
         modules = [_compile_module(model, module["id"], module["index"],
                                     graph["nodes"], controllers)
                    for module in graph["modules"]]
+        used_l1 = set()
+        for node in nodes:
+            if node["asic_kind"] != "BEDROCK":
+                continue
+            controller = modules[node["module_index"]]["controller_index"]
+            if controller < 0 or "l1" not in controllers[controller]:
+                raise CompileError(
+                    f"Bedrock '{node['id']}' has no configured L1 controller")
+            used_l1.add(controllers[controller]["id"])
+        configured_l1 = set(
+            machine.get("emulation", {}).get("l1_controllers", {}))
+        unused_l1 = configured_l1 - used_l1
+        if unused_l1:
+            raise CompileError(
+                f"configured L1 '{min(unused_l1)}' has no Bedrock owner")
         supported_cpu_populations = _supported_cpu_populations(model, node_count)
         description = _required(
             machine.get("emulation", {}), "display_description", "emulation")

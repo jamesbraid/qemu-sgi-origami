@@ -47,6 +47,44 @@ layer:
         explicit board inputs and synthetic node records.
         Physical board wiring and factory identity remain unverified.
       emulation:
+        bedrock_nodes:
+          bedrock:
+            board_id_input: {option: fuel-board-id-word, required: true}
+            board_id_mask: 61440
+            board_id_required_bits: 16384
+            revision_input: {option: fuel-bedrock-revision, required: true}
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        l1_controllers:
+          l1:
+            reported_type_input: {option: fuel-l1-type-code, required: true}
+            revision_input: {option: fuel-l1-revision, required: false}
+            mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
+            provenance: derived
+            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        io_boards:
+          ip34-system-board:
+            ioc3_subsystem_input: {option: fuel-ioc3-subsystem-id, required: true}
+            mac_source: module-l1
+            provenance: derived
+            sources: [hw/mips/sgi/baseio.c]
+            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.
+        pci_function_revisions:
+          scsi:
+            revision: 6
+            provenance: derived
+            sources: [hw/scsi/qlogic-isp.c]
+            notes: Preserves the implemented ISP12160 class revision. The Fuel silicon revision is unverified.
+          ioc3:
+            revision: 1
+            provenance: derived
+            sources: [include/hw/misc/sgi-ioc3.h]
+            notes: Preserves the implemented IOC3 class revision. The Fuel silicon revision is unverified.
         system_timekeepers:
           ip34-system-board:
             kind: m48t35-compatible
@@ -90,6 +128,14 @@ layer:
             widgets: [14, 15]
             reason: Both PCI bridge heads are present on the selected XBridge; startup health is emulator policy pending a Fuel reset test.
       harness:
+        # Preserve the existing diagnostic launch recipe.
+        smdk:
+          package_path: assets/boot/smdk-fuel-6526
+          tftp_mode: requested
+          diagnostic_mac_bootarg: true
+          requires_boot_flash: true
+          requires_network_identity: true
+          discovery_prerequisites: [io8bt, xbg, launcher]
         console: ioc3-serial-a
         prom_dialogue: ip35-l1-prompt
         default_cpu_model: R14000

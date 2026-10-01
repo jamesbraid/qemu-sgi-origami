@@ -115,7 +115,7 @@ def _node(raw: dict) -> dict:
             "accepted-bank-layouts": _kebab_keys(raw["accepted_bank_layouts"]),
             "flash": _flash(raw["flash"]), "slave-role": False,
         }
-    return {
+    node = {
         "id": raw["id"],
         "module-index": raw["module_index"],
         "slot": raw["slot"],
@@ -128,6 +128,9 @@ def _node(raw: dict) -> dict:
         "flash": _flash(raw["flash"]),
         "slave-role": raw["slave_role"],
     }
+    if "bedrock" in raw:
+        node["bedrock"] = _kebab_keys(raw["bedrock"])
+    return node
 
 
 # A Router's port count is fixed by the chip (six ports on every fitted
@@ -264,6 +267,7 @@ def _io_board(raw: dict) -> dict:
         "preset": _IO_BOARD_PRESET[raw["board_kind"]],
         "carrier": _IO_BOARD_CARRIER[raw["board_kind"]],
         "attachment": raw["slot_index"],
+        "populated": raw.get("populated", True),
         "other-identity-parts": raw["other_identities"],
     }
     if raw.get("label") is not None:
@@ -275,6 +279,13 @@ def _io_board(raw: dict) -> dict:
     if "system_timekeeper" in raw:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
 
+    for key in ("ioc3_subsystem_id", "ioc3_subsystem_input", "mac_source"):
+        if key in raw:
+            board[key.replace("_", "-")] = _kebab_keys(raw[key])
+    if "pci_functions" in raw:
+        board["pci-functions"] = [{"kind": _enum(entry["kind"]),
+                                   "revision": entry["revision"]}
+                                  for entry in raw["pci_functions"]]
     return board
 
 
@@ -282,11 +293,14 @@ def _io_board(raw: dict) -> dict:
 # chip and unread by the builder (module-management identity is built
 # from the module's own serial and slot, not from these); dropped.
 def _controller(raw: dict) -> dict:
-    return {
+    controller = {
         "id": raw["id"],
         "module-index": raw["module_index"],
         "kind": _enum(raw["kind"]),
     }
+    if "l1" in raw:
+        controller["l1"] = _kebab_keys(raw["l1"])
+    return controller
 
 
 def _render_topology(topology: dict, machine_name: str) -> dict:
@@ -523,14 +537,6 @@ def _resources_for(topology: dict, harness: dict, product: dict,
             {"kind": "rtc-clock", "scope": "board", "count": 1,
              "size": 24, "argument": "-drive if=none,id=sgi-nvram0-clock,..."},
         ])
-    fuel_boards = [(index, board)
-                   for index, board in enumerate(topology["io_boards"])
-                   if board["board_kind"] == "FUEL"]
-    if fuel_boards and harness.get("timekeeper_nvram", True):
-        if len(fuel_boards) != 1:
-            raise ValueError("Fuel requires exactly one fitted system board")
-        if not fuel_boards[0][1].get("system_timekeeper"):
-            raise ValueError("Fuel requires a fitted system Timekeeper")
     selected_boards = [(index, board)
                        for index, board in enumerate(topology["io_boards"])
                        if board.get("system_timekeeper")]
@@ -584,13 +590,13 @@ def _resources_for(topology: dict, harness: dict, product: dict,
     if "chassis-eeprom" in identity_inputs:
         resources.append({
             "kind": "identity-eeprom", "scope": "board",
-            "count": (1 if fuel_boards else 2) * chassis,
+            "count": len(harness["identity_record_slots"]) * chassis,
             "size": None, "argument": "chassis-eeprom.N=",
         })
     if "board-eeprom" in identity_inputs:
         resources.append({
             "kind": "identity-eeprom", "scope": "board",
-            "count": (1 if fuel_boards else 2) * chassis,
+            "count": len(harness["identity_record_slots"]) * chassis,
             "size": None, "argument": "board-eeprom.N=",
         })
     if "spd-eeprom" in identity_inputs:
@@ -600,6 +606,20 @@ def _resources_for(topology: dict, harness: dict, product: dict,
             "size": None, "argument": "spd-eeprom.N=",
         })
     return resources
+
+
+def _hardware_inputs(topology: dict) -> list[dict]:
+    bindings = []
+    records = ([node.get("bedrock", {}) for node in topology["nodes"]]
+               + [controller.get("l1", {})
+                  for controller in topology["controllers"]]
+               + topology["io_boards"])
+    for record in records:
+        for field in ("board_id_input", "revision_input", "reported_type_input",
+                      "mac_eeprom_input", "ioc3_subsystem_input"):
+            if field in record:
+                bindings.append(dict(record[field]))
+    return sorted(bindings, key=lambda entry: entry["option"])
 
 
 def _offerings_for(model: dict, topology: dict,
@@ -637,6 +657,9 @@ def _offerings_for(model: dict, topology: dict,
     consoles = _consoles_for(topology, harness)
     networks = _networks_for(topology)
     identity_inputs = harness.get("identity_inputs", ())
+    recipe = model["machine"].get("harness", {}).get(
+        "smdk", harness.get("smdk"))
+    diagnostic = {"smdk": _kebab_keys(recipe)} if recipe is not None else {}
     offerings = []
     rows = sorted((row for row in topology["node_populations"]
                    if row["grade"] != "UNKNOWN"),
@@ -675,6 +698,8 @@ def _offerings_for(model: dict, topology: dict,
                 "disk-bus": harness["disk_bus"],
                 "netboot-adapter": harness["netboot_adapter"],
                 "identity-inputs": list(identity_inputs),
+                "hardware-inputs": _hardware_inputs(topology),
+                **diagnostic,
                 "supported-guests": list(harness["supported_guests"]),
                 "install-media": list(harness["install_media"]),
                 "default-cpu-model": harness["default_cpu_model"],

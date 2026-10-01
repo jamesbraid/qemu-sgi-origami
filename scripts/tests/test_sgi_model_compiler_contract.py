@@ -41,6 +41,7 @@ import os
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FIXTURES = pathlib.Path(__file__).resolve().parent / "system-model-fixtures"
@@ -75,6 +76,235 @@ def render_catalogue_json(models: list[dict]) -> str:
         for product, model_name in PRODUCT_MODELS.items()
     }
     return _render_catalogue_json(models, product_models=product_models)
+
+
+
+class BedrockConfigurationTests(unittest.TestCase):
+    def catalogue(self, model):
+        return json.loads(render_catalogue_json([model]))["topologies"][0]
+
+    def test_origin300_initialization_comes_from_configuration(self):
+        model = _resolved("origin300")
+        policy = model["machine"]["emulation"]["bedrock_nodes"]["bedrock"]
+        policy["board_id_word"] = 0x9001
+        policy["local_region"] = 3
+        model["machine"]["emulation"]["l1_controllers"]["l1"].update({
+            "reported_type": 0x35,
+            "revision": {"major": 2, "minor": 3, "patch": 4},
+        })
+        bedrock = next(c for c in model["components"] if c["id"] == "bedrock")
+        bedrock["identity"]["hardware_revision"] = 3
+        topology = self.catalogue(model)
+        node = topology["nodes"][0]
+        self.assertEqual(node["bedrock"]["board-id-word"], 0x9001)
+        self.assertEqual(node["bedrock"]["local-region"], 3)
+        self.assertEqual(node["bedrock"]["installed-bank-mask"], 0x0c)
+        self.assertEqual(node["identity"]["widget-revision"], 3)
+        self.assertEqual(topology["controllers"][0]["l1"], {
+            "reported-type": 0x35,
+            "revision": {"major": 2, "minor": 3, "patch": 4},
+        })
+
+    def test_fuel_unknowns_preserve_required_and_optional_inputs(self):
+        topology = self.catalogue(_resolved("fuel"))
+        node = topology["nodes"][0]
+        self.assertNotIn("widget-revision", node["identity"])
+        self.assertNotIn("board-id-word", node["bedrock"])
+        self.assertEqual(node["bedrock"]["installed-bank-mask"], 3)
+        self.assertEqual(node["bedrock"]["board-id-input"], {
+            "option": "fuel-board-id-word", "required": True})
+        l1 = topology["controllers"][0]["l1"]
+        self.assertNotIn("reported-type", l1)
+        self.assertNotIn("revision", l1)
+        self.assertEqual(l1["reported-type-input"], {
+            "option": "fuel-l1-type-code", "required": True})
+        self.assertEqual(l1["revision-input"], {
+            "option": "fuel-l1-revision", "required": False})
+        board = topology["io-boards"][0]
+        self.assertTrue(board["populated"])
+        self.assertEqual(board["mac-source"], "module-l1")
+        self.assertNotIn("ioc3-subsystem-id", board)
+        self.assertEqual(board["ioc3-subsystem-input"], {
+            "option": "fuel-ioc3-subsystem-id", "required": True})
+        self.assertEqual(board["pci-functions"], [
+            {"kind": "isp12160", "revision": 6},
+            {"kind": "ioc3", "revision": 1},
+            {"kind": "lucent-ohci", "revision": 16},
+        ])
+
+    def test_fitted_assembly_presence_does_not_depend_on_serial(self):
+        model = _resolved("origin300")
+        from sgi_model.model_compile import _synthetic_serial
+        with mock.patch("sgi_model.model_compile._synthetic_serial",
+                        side_effect=lambda model, cid, *args: (
+                            None if cid == "ioc3"
+                            else _synthetic_serial(model, cid, *args))):
+            entry = compile_model(model)
+        self.assertFalse(entry["io_boards"][0]["populated"])
+        self.assertTrue(entry["io_boards"][1]["populated"])
+
+    def test_default_and_required_binding_are_distinct(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
+            "board_id_input"] = {
+                "option": "fuel-board-id-word", "required": False}
+        config = self.catalogue(model)["nodes"][0]["bedrock"]
+        self.assertEqual(config["board-id-word"], 0x8001)
+        self.assertFalse(config["board-id-input"]["required"])
+
+    def test_malformed_configuration_is_rejected(self):
+        mutations = [
+            ("bedrock_nodes", "bedrock", "board_id_input",
+             {"option": "fuel-l1-type-code", "required": True}),
+            ("bedrock_nodes", "bedrock", "local_region", -1),
+            ("bedrock_nodes", "bedrock", "board_id_mask", 0xf000),
+            ("l1_controllers", "l1", "reported_type", 0),
+            ("l1_controllers", "l1", "revision", {"major": 1}),
+            ("l1_controllers", "l1", "revision",
+             {"major": 2147483648, "minor": 0, "patch": 0}),
+            ("bedrock_nodes", "bedrock", "initiator_region", 64),
+            ("l1_controllers", "l1", "revision",
+             {"major": 1, "minor": -1, "patch": 1}),
+        ]
+        for section, owner, field, value in mutations:
+            with self.subTest(field=field):
+                model = _resolved("origin300")
+                model["machine"]["emulation"][section][owner][field] = value
+                with self.assertRaises(ValueError):
+                    compile_model(model)
+
+    def test_unsupported_pci_revision_is_rejected(self):
+        model = _resolved("origin300")
+        ioc3 = next(c for c in model["components"] if c["id"] == "ioc3")
+        ioc3["identity"]["pci_revision"] = 2
+        with self.assertRaisesRegex(ValueError, "revision"):
+            compile_model(model)
+
+
+    def test_populated_bedrock_board_requires_declared_clock_policy(self):
+        for name in ("fuel", "origin300"):
+            with self.subTest(machine=name):
+                model = _resolved(name)
+                model["machine"]["emulation"].pop("system_timekeepers")
+                with self.assertRaisesRegex(ValueError, "Timekeeper"):
+                    compile_model(model)
+
+    def test_unused_l1_cannot_accept_reported_configuration(self):
+        model = _resolved("origin300-vbrick")
+        model["machine"]["emulation"]["l1_controllers"]["graphics-l1"] = {
+            "reported_type": 0x34,
+            "revision_input": {"option": "fuel-l1-revision", "required": False},
+        }
+        with self.assertRaisesRegex(ValueError, "no Bedrock"):
+            compile_model(model)
+
+    def test_local_region_limit_matches_device(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
+            "local_region"] = 64
+        with self.assertRaisesRegex(ValueError, "local_region"):
+            compile_model(model)
+
+    def test_malformed_smdk_recipe_is_rejected(self):
+        for field, value in (("tftp_mode", "unknown"), ("package_path", ""),
+                             ("diagnostic_mac_bootarg", 1),
+                             ("discovery_prerequisites", ["io8bt", "io8bt"])):
+            with self.subTest(field=field):
+                model = _resolved("fuel")
+                model["machine"]["harness"]["smdk"][field] = value
+                with self.assertRaisesRegex(ValueError, "sMDK"):
+                    compile_model(model)
+
+    def test_smdk_recipe_follows_selected_configuration(self):
+        model = _resolved("origin300")
+        model["composition"]["product"] = "origin300-requested"
+        model["machine"]["harness"]["smdk"] = {
+            "package_path": "assets/boot/smdk-variant",
+            "tftp_mode": "requested",
+            "diagnostic_mac_bootarg": True, "requires_boot_flash": True,
+            "requires_network_identity": True,
+            "discovery_prerequisites": ["launcher"],
+        }
+        catalogue = json.loads(
+            render_catalogue_json([model, _resolved("fuel")]))
+        changed = next(item for item in catalogue["offerings"]
+                       if item["topology"] == "origin300-requested")
+        self.assertEqual(changed["smdk"], {
+            "package-path": "assets/boot/smdk-variant",
+            "tftp-mode": "requested",
+            "diagnostic-mac-bootarg": True, "requires-boot-flash": True,
+            "requires-network-identity": True,
+            "discovery-prerequisites": ["launcher"],
+        })
+        fuel = next(item for item in catalogue["offerings"]
+                    if item["topology"] == "fuel")
+        self.assertEqual(
+            fuel["smdk"]["package-path"], "assets/boot/smdk-fuel-6526")
+
+    def test_signed_l1_revision_boundary_is_preserved(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["l1_controllers"]["l1"]["revision"] = {
+            "major": 2147483647, "minor": 0, "patch": 0,
+        }
+        self.assertEqual(self.catalogue(model)["controllers"][0]["l1"][
+            "revision"]["major"], 2147483647)
+
+    def test_disconnected_product_board_does_not_select_node_assembly(self):
+        model = _resolved("origin300")
+        model["components"].append({
+            "id": "unconnected-board", "name": "Unconnected board",
+            "kind": "board",
+            "hardware_kind": "ip34", "provenance": "derived",
+        })
+        boards = compile_model(model)["io_boards"]
+        self.assertEqual(
+            [board["board_kind"] for board in boards], ["IO8", "IO8"])
+        self.assertEqual(
+            [board["populated"] for board in boards], [False, True])
+
+    def test_incomplete_required_values_are_rejected(self):
+        for section, owner, field in (
+                ("bedrock_nodes", "bedrock", "board_id_word"),
+                ("l1_controllers", "l1", "reported_type")):
+            with self.subTest(field=field):
+                model = _resolved("origin300")
+                del model["machine"]["emulation"][section][owner][field]
+                with self.assertRaisesRegex(ValueError, "required input"):
+                    compile_model(model)
+        model = _resolved("origin300")
+        model["machine"]["emulation"].pop("l1_controllers")
+        with self.assertRaisesRegex(ValueError, "configured L1"):
+            compile_model(model)
+        model = _resolved("fuel")
+        model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
+            "revision_input"]["required"] = False
+        with self.assertRaisesRegex(ValueError, "Bedrock revision"):
+            compile_model(model)
+
+    def test_binding_aliases_have_one_owner(self):
+        model = _resolved("origin300-two-chassis")
+        for entry in model["machine"]["emulation"]["l1_controllers"].values():
+            entry["revision_input"] = {
+                "option": "fuel-l1-revision", "required": False}
+        with self.assertRaisesRegex(ValueError, "multiple owners"):
+            compile_model(model)
+
+    def test_offering_inputs_follow_selected_configuration(self):
+        model = _resolved("fuel")
+        policy = model["machine"]["emulation"]["bedrock_nodes"]["bedrock"]
+        policy["board_id_word"] = 0x4000
+        policy["board_id_input"]["required"] = False
+        catalogue = json.loads(
+            render_catalogue_json([model, _resolved("origin300")]))
+        offerings = catalogue["offerings"]
+        fuel = next(item for item in offerings if item["topology"] == "fuel")
+        self.assertEqual(len(fuel["hardware-inputs"]), 6)
+        board = next(binding for binding in fuel["hardware-inputs"]
+                     if binding["option"] == "fuel-board-id-word")
+        self.assertFalse(board["required"])
+        for offering in offerings:
+            if offering["topology"] == "origin300":
+                self.assertEqual(offering["hardware-inputs"], [])
 
 
 class RecordShapeTests(unittest.TestCase):
@@ -229,7 +459,8 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(
             set(node), {"id", "module_index", "slot", "hub_slot_bits",
                         "asic_kind", "identity", "cpu_slots", "bank_mib",
-                        "accepted_memory_mib", "flash", "slave_role"})
+                        "accepted_memory_mib", "flash", "slave_role",
+                        "bedrock"})
         self.assertEqual(len(node["bank_mib"]), 8)
         # The Hub's own embedded system controller fields are unset for a
         # Bedrock node (its controller role belongs to the chassis L1).
@@ -1091,6 +1322,8 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
     def test_controller(self):
         self.assertEqual(self.entry["controllers"], [{
             "id": "l1", "kind": "L1", "module_index": 0,
+            "l1": {"reported_type": 52,
+                   "revision": {"major": 1, "minor": 18, "patch": 5}},
             "msc_address": 0, "nvram_address": 0,
             "nvram_address_count": 0, "nvram_bytes": 0,
         }])
@@ -1297,7 +1530,7 @@ class CatalogueJsonTests(unittest.TestCase):
         self.assertEqual(
             set(board) - {"ioc3-serial"},
             {"id", "module-index", "preset", "carrier", "attachment", "label",
-             "part", "other-identity-parts", "revision", "serial"})
+             "part", "other-identity-parts", "revision", "serial", "populated"})
         self.assertEqual(board["label"], "io1")
         self.assertNotIn("pci", board)
         router = topology["routers"][0]

@@ -166,6 +166,34 @@
           "required": ["machine_name", "display_description", "profile", "lifecycle"],
           "additionalProperties": false,
           "properties": {
+            "bedrock_nodes": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/bedrock-initialization"
+              }
+            },
+            "l1_controllers": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/l1-initialization"
+              }
+            },
+            "io_boards": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/io-board-initialization"
+              }
+            },
+            "pci_function_revisions": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "$ref": "#/$defs/pci-function-revision"
+              }
+            },
             "system_timekeepers": {
               "type": "object",
               "minProperties": 1,
@@ -381,6 +409,7 @@
             "operator_firmware": { "type": "boolean" },
             "firmware_bytes": { "type": "integer", "minimum": 1 },
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
+            "smdk": { "$ref": "#/$defs/smdk-recipe" },
             "console": { "enum": ["ioc3-serial-a", "l1-uart"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
             "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
             "disk_bus": { "type": "string", "minLength": 1, "description": "Default SCSI bus id guest launchers attach the boot disk to." },
@@ -1048,6 +1077,288 @@
       "description": "How many independent PCI buses this bridge presents: one for Bridge and for XBridge in Super Bridge mode, two for XBridge in XBridge mode and for PIC, whose two heads share one widget number.",
       "properties": {
         "heads": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "smdk-recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_path",
+        "tftp_mode",
+        "diagnostic_mac_bootarg",
+        "requires_boot_flash",
+        "requires_network_identity",
+        "discovery_prerequisites"
+      ],
+      "properties": {
+        "package_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tftp_mode": {
+          "enum": [
+            "fixed",
+            "requested"
+          ]
+        },
+        "diagnostic_mac_bootarg": {
+          "type": "boolean"
+        },
+        "requires_boot_flash": {
+          "type": "boolean"
+        },
+        "requires_network_identity": {
+          "type": "boolean"
+        },
+        "discovery_prerequisites": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+
+    "initialization-input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "option",
+        "required"
+      ],
+      "properties": {
+        "option": {
+          "enum": [
+            "fuel-board-id-word",
+            "fuel-bedrock-revision",
+            "fuel-l1-type-code",
+            "fuel-l1-revision",
+            "fuel-ioc3-subsystem-id",
+            "fuel-mac-eeprom"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "l1-revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "major",
+        "minor",
+        "patch"
+      ],
+      "properties": {
+        "major": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "patch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      }
+    },
+    "bedrock-initialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_region",
+        "initiator_region",
+        "installed_bank_mask",
+        "provenance",
+        "sources",
+        "notes"
+      ],
+      "properties": {
+        "board_id_word": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "board_id_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "board_id_mask": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "board_id_required_bits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "revision_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "local_region": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "initiator_region": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "installed_bank_mask": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "value"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "fixed"
+                },
+                "value": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 255
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "fitted-banks"
+                }
+              }
+            }
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/fact-provenance"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "l1-initialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "sources",
+        "notes"
+      ],
+      "properties": {
+        "reported_type": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255
+        },
+        "reported_type_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "revision": {
+          "$ref": "#/$defs/l1-revision"
+        },
+        "revision_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "mac_eeprom_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "provenance": {
+          "$ref": "#/$defs/fact-provenance"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "io-board-initialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mac_source",
+        "provenance",
+        "sources",
+        "notes"
+      ],
+      "properties": {
+        "ioc3_subsystem_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "ioc3_subsystem_input": {
+          "$ref": "#/$defs/initialization-input"
+        },
+        "mac_source": {
+          "enum": [
+            "none",
+            "module-l1"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/fact-provenance"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pci-function-revision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "provenance",
+        "sources",
+        "notes"
+      ],
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        "provenance": {
+          "$ref": "#/$defs/fact-provenance"
+        },
+        "sources": {
+          "$ref": "#/$defs/sources"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
 

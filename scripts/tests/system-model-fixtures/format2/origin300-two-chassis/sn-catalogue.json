@@ -34,6 +34,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -118,6 +119,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -203,6 +215,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -287,6 +300,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 6,
       "storage": [
         {
@@ -372,6 +396,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -456,6 +481,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 6,
       "storage": [
         {
@@ -541,6 +577,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -625,6 +662,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 8,
       "storage": [
         {
@@ -703,11 +751,27 @@
         {
           "id": "master-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         },
         {
           "id": "slave-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 1
         }
       ],
@@ -722,6 +786,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -731,9 +796,26 @@
           "carrier": "machine-placed",
           "id": "master-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295,
@@ -750,6 +832,7 @@
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004296
@@ -759,9 +842,26 @@
           "carrier": "machine-placed",
           "id": "slave-xbridge-bridge-f",
           "ioc3-serial": 103835129348099,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 1,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004296,
@@ -850,6 +950,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -939,6 +1045,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {

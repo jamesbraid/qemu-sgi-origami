@@ -381,6 +381,7 @@ static SGIModelIoBoard console_test_io_boards[] = {
     {
         .id = (char *)"baseio",
         .module_index = 0,
+        .populated = true,
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
@@ -395,6 +396,7 @@ static SGIModelIoBoard console_test_io_boards[] = {
     {
         .id = (char *)"baseio",
         .module_index = 1,
+        .populated = true,
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
@@ -641,8 +643,60 @@ static const TypeInfo bank_test_type = {
  * is unconditional; the qtest below supplies a blank one sized to
  * bedrock_test_flash.
  */
+/* Synthetic register fixtures use an implemented R14000 identity. */
+static SGIModelProcessor bedrock_test_processor = {
+    .id = (char *)"test-r14000",
+    .clock_hz = 500000000,
+    .kind = (char *)"R14000",
+    .cache_clock_hz = 250000000,
+    .cache_mib = 2,
+    .prid = 0x0f24,
+    .fpu_prid = 0,
+};
+
+static SGIModelBedrockConfig bedrock_test_config = {
+    .has_board_id_word = true,
+    .board_id_word = 0x8001,
+    .local_region = 0,
+    .initiator_region = 0,
+    .installed_bank_mask = 0x0c,
+};
+
+static SGIModelAsicIdentity bedrock_test_identity = {
+    .has_widget_revision = true,
+    .widget_revision = 2,
+};
+
+static SGIModelL1Revision bedrock_test_l1_revision = {
+    .major = 1, .minor = 18, .patch = 5,
+};
+
+static SGIModelL1Config bedrock_test_l1 = {
+    .has_reported_type = true,
+    .reported_type = 0x34,
+    .revision = &bedrock_test_l1_revision,
+};
+
+static SGIModelController bedrock_test_controllers[] = {
+    { .id = (char *)"l1-n0", .module_index = 0,
+      .kind = SGI_MODEL_CONTROLLER_KIND_L1, .l1 = &bedrock_test_l1 },
+    { .id = (char *)"l1-n1", .module_index = 1,
+      .kind = SGI_MODEL_CONTROLLER_KIND_L1, .l1 = &bedrock_test_l1 },
+};
+
+static SGIModelModule bedrock_test_modules[] = {
+    { .id = (char *)"module-n0", .controller_index = 0 },
+    { .id = (char *)"module-n1", .controller_index = 1 },
+};
+
+static SGIModelPciFunction bedrock_test_pci_functions[] = {
+    { .kind = SGI_MODEL_PCI_FUNCTION_KIND_ISP12160, .revision = 6 },
+    { .kind = SGI_MODEL_PCI_FUNCTION_KIND_IOC3, .revision = 1 },
+    { .kind = SGI_MODEL_PCI_FUNCTION_KIND_LUCENT_OHCI, .revision = 16 },
+};
+
 static SGIModelCpuSlot bedrock_test_cpu_slots[] = {
-    { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
+    { .interface = 0, .slot = 0, .assembly = &bedrock_test_processor },
 };
 
 static SGIModelFlash bedrock_test_flash = {
@@ -659,13 +713,17 @@ static SGIModelNode bedrock_test_nodes[] = {
         .slot = 0,
         .asic_kind = SGI_MODEL_ASIC_KIND_BEDROCK,
         .flash = &bedrock_test_flash,
+        .identity = &bedrock_test_identity,
+        .bedrock = &bedrock_test_config,
     },
     {
         .id = (char *)"n1",
-        .module_index = 0,
+        .module_index = 1,
         .slot = 1,
         .asic_kind = SGI_MODEL_ASIC_KIND_BEDROCK,
         .flash = &bedrock_test_flash,
+        .identity = &bedrock_test_identity,
+        .bedrock = &bedrock_test_config,
     },
 };
 
@@ -678,6 +736,7 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
     {
         .id = (char *)"io8-n0",
         .module_index = 0,
+        .populated = true,
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 0,
@@ -686,12 +745,17 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .has_serial = true,
         .serial = 0x60504030201,
         .part = (char *)"030-1673-003",
+        .has_ioc3_subsystem_id = true,
+        .ioc3_subsystem_id = 0xffff,
+        .has_mac_source = true,
+        .mac_source = SGI_MODEL_MAC_SOURCE_NONE,
         .has_ioc3_serial = true,
         .ioc3_serial = 0x5e7000000001,
     },
     {
         .id = (char *)"io8-n1",
-        .module_index = 0,
+        .module_index = 1,
+        .populated = true,
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 1,
@@ -700,6 +764,10 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .has_serial = true,
         .serial = 0x60504030202,
         .part = (char *)"030-1673-003",
+        .has_ioc3_subsystem_id = true,
+        .ioc3_subsystem_id = 0xffff,
+        .has_mac_source = true,
+        .mac_source = SGI_MODEL_MAC_SOURCE_NONE,
         .has_ioc3_serial = true,
         .ioc3_serial = 0x5e7000000002,
     },
@@ -810,7 +878,7 @@ static void bedrock_nasid_test_machine_init(MachineState *machine)
     }
 
     cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(cpu_refclk, console_test_r10000_180mhz.clock_hz);
+    clock_set_hz(cpu_refclk, bedrock_test_processor.clock_hz);
 
     for (i = 0; i < ARRAY_SIZE(bedrock_test_nodes); i++) {
         g_autofree char *name = g_strdup_printf("node%u", i);
@@ -832,6 +900,13 @@ static void bedrock_nasid_test_machine_init(MachineState *machine)
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", i);
         node->model_node = &bedrock_test_nodes[i];
+        qdev_prop_set_uint64(DEVICE(node), "board-id-word", 0x8001);
+        qdev_prop_set_uint32(DEVICE(node), "l1-type-code", 0x34);
+        qdev_prop_set_int32(DEVICE(node), "l1-revision-major", 1);
+        qdev_prop_set_int32(DEVICE(node), "l1-revision-minor", 18);
+        qdev_prop_set_int32(DEVICE(node), "l1-revision-patch", 5);
+        qdev_prop_set_uint8(DEVICE(node), "bedrock-revision", 2);
+        qdev_prop_set_uint8(DEVICE(node), "installed-bank-mask", 0x0c);
         node->xbridge_widgets = g_new0(unsigned int, 1);
         node->xbridge_widgets[0] = 0;
         node->xbridge_widget_count = 1;
@@ -888,6 +963,99 @@ static const TypeInfo bedrock_nasid_test_type = {
     .name = TYPE_SN_BUILDER_BEDROCK_NASID_TEST,
     .parent = TYPE_SGI_SN_MACHINE,
     .class_init = bedrock_nasid_test_class_init,
+};
+
+/* Clone catalogue ownership; change only these synthetic identity values. */
+static SGIModelTopology origin300_config_topology;
+static SGIModelNode origin300_config_node;
+static SGIModelNodeList origin300_config_nodes;
+static SGIModelNodePopulation origin300_config_population;
+static SGIModelNodePopulationList origin300_config_populations;
+static SGIModelAsicIdentity origin300_config_identity;
+static SGIModelBedrockConfig origin300_config_bedrock;
+static SGIModelController origin300_config_controller;
+static SGIModelControllerList origin300_config_controllers;
+static SGIModelL1Config origin300_config_l1;
+static SGIModelL1Revision origin300_config_revision = {
+    .major = 7, .minor = 8, .patch = 9,
+};
+static SGIModelController origin300_config_unused_controller = {
+    .id = (char *)"unused-l1", .kind = SGI_MODEL_CONTROLLER_KIND_L1,
+    .module_index = 0,
+};
+static SGIModelControllerList origin300_config_unused_controllers = {
+    .value = &origin300_config_unused_controller,
+};
+static bool origin300_config_unused_l1;
+static bool origin300_config_activate;
+static void (*origin300_config_parent_init)(MachineState *machine);
+
+static void origin300_config_set_activate(Object *obj, bool value, Error **errp)
+{
+    origin300_config_activate = value;
+}
+
+static void origin300_config_set_unused_l1(Object *obj, bool value,
+                                           Error **errp)
+{
+    origin300_config_unused_l1 = value;
+}
+
+static void origin300_config_init(MachineState *machine)
+{
+    if (origin300_config_activate) {
+        if (origin300_config_unused_l1) {
+            origin300_config_unused_controller.l1 = &origin300_config_l1;
+            origin300_config_controllers.next =
+                &origin300_config_unused_controllers;
+        }
+        origin300_config_parent_init(machine);
+    }
+}
+
+static void origin300_config_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *source = sgi_model_find_topology("origin300");
+
+    origin300_config_topology = *source;
+    origin300_config_topology.name = (char *)"sn-builder-origin300-config-test";
+    origin300_config_node = *source->nodes->value;
+    origin300_config_identity = *origin300_config_node.identity;
+    origin300_config_identity.widget_revision = 9;
+    origin300_config_node.identity = &origin300_config_identity;
+    origin300_config_bedrock = *origin300_config_node.bedrock;
+    origin300_config_bedrock.board_id_word = 0x8abc;
+    origin300_config_node.bedrock = &origin300_config_bedrock;
+    origin300_config_nodes.value = &origin300_config_node;
+    origin300_config_topology.nodes = &origin300_config_nodes;
+    /* Population views are cached by row address, so own this row too. */
+    g_assert_null(source->node_populations->next);
+    origin300_config_population = *source->node_populations->value;
+    origin300_config_populations.value = &origin300_config_population;
+    origin300_config_topology.node_populations = &origin300_config_populations;
+    origin300_config_controller = *source->controllers->value;
+    origin300_config_l1 = *origin300_config_controller.l1;
+    origin300_config_l1.reported_type = 0x41;
+    origin300_config_l1.revision = &origin300_config_revision;
+    origin300_config_controller.l1 = &origin300_config_l1;
+    origin300_config_controllers.value = &origin300_config_controller;
+    origin300_config_topology.controllers = &origin300_config_controllers;
+    smc->test_topology = &origin300_config_topology;
+    origin300_config_parent_init = mc->init;
+    mc->init = origin300_config_init;
+    mc->desc = "synthetic Origin 300 identity configuration";
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   origin300_config_set_activate);
+    object_class_property_add_bool(oc, "unused-l1", NULL,
+                                   origin300_config_set_unused_l1);
+}
+
+static const TypeInfo origin300_config_type = {
+    .name = MACHINE_TYPE_NAME("sn-builder-origin300-config-test"),
+    .parent = MACHINE_TYPE_NAME("origin300"),
+    .class_init = origin300_config_class_init,
 };
 
 static void sn_builder_fault_test_register_types(void)
@@ -973,6 +1141,30 @@ static void sn_builder_fault_test_register_types(void)
         uint32_list(bedrock_test_population_0,
                    ARRAY_SIZE(bedrock_test_population_0));
 
+    bedrock_test_modules[0].nodes =
+        uint32_list(console_test_m0_nodes, ARRAY_SIZE(console_test_m0_nodes));
+    bedrock_test_modules[1].nodes =
+        uint32_list(console_test_m1_nodes, ARRAY_SIZE(console_test_m1_nodes));
+    bedrock_test_topology.modules =
+        module_list(bedrock_test_modules, ARRAY_SIZE(bedrock_test_modules));
+    {
+        SGIModelControllerList **tail = &bedrock_test_topology.controllers;
+        SGIModelPciFunctionList *functions = NULL;
+        SGIModelPciFunctionList **function_tail = &functions;
+
+        for (unsigned int i = 0;
+             i < ARRAY_SIZE(bedrock_test_controllers); i++) {
+            QAPI_LIST_APPEND(tail, &bedrock_test_controllers[i]);
+        }
+        for (unsigned int i = 0;
+             i < ARRAY_SIZE(bedrock_test_pci_functions); i++) {
+            QAPI_LIST_APPEND(function_tail, &bedrock_test_pci_functions[i]);
+        }
+        for (unsigned int i = 0; i < ARRAY_SIZE(bedrock_test_io_boards); i++) {
+            bedrock_test_io_boards[i].pci_functions = functions;
+        }
+    }
+
     bedrock_test_topology.nodes =
         node_list(bedrock_test_nodes, ARRAY_SIZE(bedrock_test_nodes));
     bedrock_test_topology.xio_attachments =
@@ -992,6 +1184,7 @@ static void sn_builder_fault_test_register_types(void)
     type_register_static(&bank_test_type);
     type_register_static(&bedrock_test_type);
     type_register_static(&bedrock_nasid_test_type);
+    type_register_static(&origin300_config_type);
 }
 
 type_init(sn_builder_fault_test_register_types)

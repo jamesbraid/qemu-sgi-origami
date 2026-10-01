@@ -61,10 +61,13 @@ typedef struct SN1NodeState {
     uint32_t nasid;
     uint32_t l1_bay;
     uint64_t board_id_word;
-    bool is_fuel;
-    uint32_t fuel_l1_type_code;
-    int32_t fuel_l1_revision[3];
-    uint8_t fuel_bedrock_revision;
+    uint32_t l1_type_code;
+    int32_t l1_revision[3];
+    char *l1_mac_eeprom;
+    uint8_t bedrock_revision;
+    uint8_t local_region;
+    uint8_t initiator_region;
+    uint8_t installed_bank_mask;
     uint8_t io_board_widget;
     char *io_board_part;
     bool last_node;

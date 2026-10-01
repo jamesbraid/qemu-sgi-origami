@@ -96,18 +96,12 @@
 #define SN1_BEDROCK_NODE_ADDRESS UINT64_C(0x20001800000)
 #define SN1_BEDROCK_NODE_SIZE UINT64_C(0x800000)
 #define SN1_HUB_REMOTE_REGISTERS_ADDRESS UINT64_C(0x10030000000)
-#define SN1_BEDROCK_REVISION 2
-#define SN1_BEDROCK_LOCAL_REGION 0
-#define SN1_BEDROCK_INITIATOR_REGION 0
 #define SN1_XBRIDGE_HOST_PORT 0xa
 
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
-/* Bits 15:12 are the product code; the low byte selects the 500 MHz PSC. */
-#define SN1_BOARD_ID_VALUE UINT64_C(0x8001)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
-#define SN1_INSTALLED_BANK_MASK 0xc
 /*
  * Bedrock's architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS.
  */
@@ -503,18 +497,21 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
         return NULL;
     }
     if (!dinfo || extra) {
-        error_setg(errp, "origin300 accepts one 16 MiB pflash image");
+        error_setg(errp, "%s accepts one 16 MiB pflash image per node",
+                   MACHINE_GET_CLASS(qdev_get_machine())->name);
         return NULL;
     }
 
     blk = blk_by_legacy_dinfo(dinfo);
     backing = blk_bs(blk);
     if (strcmp(bdrv_get_format_name(backing), "raw")) {
-        error_setg(errp, "origin300 pflash image must use raw format");
+        error_setg(errp, "%s pflash image must use raw format",
+                   MACHINE_GET_CLASS(qdev_get_machine())->name);
         return NULL;
     }
     if (blk_getlength(blk) != SGI_BEDROCK_FLASH_SIZE) {
-        error_setg(errp, "origin300 pflash image must be exactly 16 MiB");
+        error_setg(errp, "%s pflash image must be exactly 16 MiB",
+                   MACHINE_GET_CLASS(qdev_get_machine())->name);
         return NULL;
     }
 
@@ -823,9 +820,8 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
     size_t i;
 
     if (length != prom_size) {
-        error_setg(errp,
-                   "origin300: PROM image must be exactly %" PRIu64 " bytes",
-                   prom_size);
+        error_setg(errp, "%s: PROM image must be exactly %" PRIu64 " bytes",
+                   MACHINE_GET_CLASS(qdev_get_machine())->name, prom_size);
         return false;
     }
 
@@ -905,8 +901,8 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
         uint64_t address;
 
         if (!sn1_node_flash_view_address(name, &address)) {
-            error_setg(errp, "origin300: flash view '%s' names no known "
-                      "boot space", name);
+            error_setg(errp, "%s: flash view '%s' names no known boot space",
+                       MACHINE_GET_CLASS(qdev_get_machine())->name, name);
             return false;
         }
         memory_region_init_alias(&node->prom_views[i], OBJECT(node),
@@ -1474,9 +1470,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
-    if (node->is_fuel) {
-        qdev_prop_set_uint32(node->l1, "brick-type-code",
-                             node->fuel_l1_type_code);
+    qdev_prop_set_uint32(node->l1, "brick-type-code", node->l1_type_code);
+    if (node->l1_mac_eeprom) {
+        qdev_prop_set_string(node->l1, "fuel-mac-eeprom", node->l1_mac_eeprom);
     }
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
@@ -1493,19 +1489,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (node->l1_bay) {
         qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
     }
-    /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
-    if (!node->is_fuel) {
-        qdev_prop_set_int32(node->l1, "revision-major", 1);
-        qdev_prop_set_int32(node->l1, "revision-minor", 18);
-        qdev_prop_set_int32(node->l1, "revision-patch", 5);
-    } else if (node->fuel_l1_revision[0] >= 0) {
-        qdev_prop_set_int32(node->l1, "revision-major",
-                           node->fuel_l1_revision[0]);
-        qdev_prop_set_int32(node->l1, "revision-minor",
-                           node->fuel_l1_revision[1]);
-        qdev_prop_set_int32(node->l1, "revision-patch",
-                           node->fuel_l1_revision[2]);
-    }
+    qdev_prop_set_int32(node->l1, "revision-major", node->l1_revision[0]);
+    qdev_prop_set_int32(node->l1, "revision-minor", node->l1_revision[1]);
+    qdev_prop_set_int32(node->l1, "revision-patch", node->l1_revision[2]);
     qdev_realize(node->l1, NULL, &error_fatal);
     object_unref(OBJECT(node->l1));
 
@@ -1555,29 +1541,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         grant |= 1U << sn1_cpu_slot(node->model_node, cpu);
     }
     qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
-    qdev_prop_set_uint8(node->bedrock, "revision",
-                        node->is_fuel ? node->fuel_bedrock_revision :
-                        SN1_BEDROCK_REVISION);
-    qdev_prop_set_uint8(node->bedrock, "local-region",
-                        SN1_BEDROCK_LOCAL_REGION);
+    qdev_prop_set_uint8(node->bedrock, "revision", node->bedrock_revision);
+    qdev_prop_set_uint8(node->bedrock, "local-region", node->local_region);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
-                        SN1_BEDROCK_INITIATOR_REGION);
-    /* Fuel's provisional bank placement is explicit in its descriptor. */
-    if (node->is_fuel) {
-        const uint64List *bank = node->model_node->bank_mib;
-        uint8_t mask = 0;
-
-        for (i = 0; i < SN1_ARCHITECTURAL_MEMORY_BANKS; i++) {
-            if (bank->value) {
-                mask |= 1U << i;
-            }
-            bank = bank->next;
-        }
-        qdev_prop_set_uint8(node->bedrock, "installed-bank-mask", mask);
-    } else {
-        qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
-                            SN1_INSTALLED_BANK_MASK);
-    }
+                        node->initiator_region);
+    qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
+                        node->installed_bank_mask);
     {
         const uint64List *bank_entry = node->model_node->bank_mib;
 
@@ -2022,19 +1991,17 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_UINT32("nr-cpus", SN1NodeState, nr_cpus, 0),
     DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
     DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
-    DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word,
-                       SN1_BOARD_ID_VALUE),
-    DEFINE_PROP_BOOL("fuel-board", SN1NodeState, is_fuel, false),
-    DEFINE_PROP_UINT32("fuel-l1-type-code", SN1NodeState,
-                       fuel_l1_type_code, 0),
-    DEFINE_PROP_INT32("fuel-l1-revision-major", SN1NodeState,
-                      fuel_l1_revision[0], -1),
-    DEFINE_PROP_INT32("fuel-l1-revision-minor", SN1NodeState,
-                      fuel_l1_revision[1], -1),
-    DEFINE_PROP_INT32("fuel-l1-revision-patch", SN1NodeState,
-                      fuel_l1_revision[2], -1),
-    DEFINE_PROP_UINT8("fuel-bedrock-revision", SN1NodeState,
-                      fuel_bedrock_revision, 0),
+    DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word, 0),
+    DEFINE_PROP_UINT32("l1-type-code", SN1NodeState, l1_type_code, 0),
+    DEFINE_PROP_INT32("l1-revision-major", SN1NodeState, l1_revision[0], -1),
+    DEFINE_PROP_INT32("l1-revision-minor", SN1NodeState, l1_revision[1], -1),
+    DEFINE_PROP_INT32("l1-revision-patch", SN1NodeState, l1_revision[2], -1),
+    DEFINE_PROP_STRING("l1-mac-eeprom", SN1NodeState, l1_mac_eeprom),
+    DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),
+    DEFINE_PROP_UINT8("local-region", SN1NodeState, local_region, 0),
+    DEFINE_PROP_UINT8("initiator-region", SN1NodeState, initiator_region, 0),
+    DEFINE_PROP_UINT8("installed-bank-mask", SN1NodeState,
+                      installed_bank_mask, 0),
     DEFINE_PROP_UINT8("io-board-widget", SN1NodeState, io_board_widget, 0),
     DEFINE_PROP_STRING("io-board-part", SN1NodeState, io_board_part),
     /* Set on a machine's last node: a pflash unit past it has no node. */
