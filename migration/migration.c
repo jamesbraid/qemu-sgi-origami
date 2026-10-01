@@ -71,6 +71,7 @@
 #define INMIGRATE_DEFAULT_EXIT_ON_ERROR true
 
 static GSList *migration_state_notifiers[MIG_MODE__MAX];
+
 /* Messages sent on the return path from destination to source */
 enum mig_rp_message_type {
     MIG_RP_MSG_INVALID = 0,  /* Must be 0 */
