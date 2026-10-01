@@ -31,6 +31,8 @@ struct SGIOrigin300PciExpansionState {
     SGIBICBoardInterfaceState *board_interface;
     uint8_t board_attached;
     uint8_t processor_absence_selected;
+    uint8_t pending_registers_selected;
+    uint32_t pending_origin_count;
     bool unconnected_uart;
     uint32_t uart_origin_count;
     SerialMM *uart;
@@ -393,6 +395,22 @@ bool sgi_origin300_pci_expansion_attach_board_interface(
     return true;
 }
 
+bool sgi_origin300_pci_expansion_enable_pending_registers(
+    SGIOrigin300PciExpansionState *s, uint32_t origin_count, Error **errp)
+{
+    if (DEVICE(s)->realized || s->pending_registers_selected ||
+        !s->processor_absence_selected || !s->unconnected_uart ||
+        (origin_count != 2 && origin_count != 4) ||
+        origin_count != s->uart_origin_count) {
+        error_setg(errp, "pending-register experiment requires selected UART "
+                   "and matching two/four compute origins before realization");
+        return false;
+    }
+    s->pending_registers_selected = 1;
+    s->pending_origin_count = origin_count;
+    return true;
+}
+
 bool sgi_origin300_pci_expansion_enable_processor_absence(
     SGIOrigin300PciExpansionState *s, Error **errp)
 {
@@ -553,6 +571,9 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
+    if (version < 8 && s->pending_registers_selected) {
+        return -EINVAL;
+    }
     if (version < 7 && s->unconnected_uart) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "pci-expansion: synthetic UART requires migration "
@@ -695,19 +716,25 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
          local - UINT64_C(0x20001800000) < SGI_BEDROCK_SIZE)) {
         offset = local >= UINT64_C(0x20001800000) ?
             local - UINT64_C(0x20001800000) : local - UINT64_C(0x10030000000);
-        /* Only the selected remote-I/O experiment exposes PI absence words. */
         if (offset < 0x400000) {
-            if (!s->processor_absence_selected ||
-                local < UINT64_C(0x20001800000) ||
-                (offset != 0x40 && offset != 0x48 &&
-                 offset != 0x200040 && offset != 0x200048)) {
+            hwaddr pi_offset = offset & ~UINT64_C(0x200000);
+            bool absence = s->processor_absence_selected &&
+                           (pi_offset == 0x40 || pi_offset == 0x48);
+            bool pending = s->pending_registers_selected &&
+                (pi_offset == 0x10 ||
+                 (write && (pi_offset == 0x90 || pi_offset == 0x180)) ||
+                 (!write && (pi_offset == 0x98 || pi_offset == 0xa0)));
+
+            if (local < UINT64_C(0x20001800000) || (!absence && !pending)) {
                 return MEMTX_DECODE_ERROR;
+            }
+            if (pending && origin >= s->pending_origin_count) {
+                return MEMTX_ACCESS_ERROR;
             }
             if (size != 8 || (offset & 7)) {
                 qemu_log_mask(LOG_GUEST_ERROR,
-                              "pci-expansion: unsupported processor-absence "
-                              "transfer at 0x%" HWADDR_PRIx " size %zu\n",
-                              offset, size);
+                              "pci-expansion: unsupported PI transfer "
+                              "at 0x%" HWADDR_PRIx " size %zu\n", offset, size);
                 return MEMTX_ERROR;
             }
         }
@@ -783,6 +810,13 @@ static void expansion_realize(DeviceState *dev, Error **errp)
     s->bic = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(s), "bic", OBJECT(s->bic));
     bic = SGI_BEDROCK(s->bic);
+    for (i = 0; i < 2; i++) {
+        if (s->pending_registers_selected &&
+            !sgi_bedrock_pi_select_pending_route(&bic->pi[i],
+                s->pending_origin_count, errp)) {
+            return;
+        }
+    }
     qdev_prop_set_uint32(s->bic, "processor-count", 0);
     qdev_prop_set_uint32(s->bic, "processor-mask", 0);
     bic->available = expansion_available;
@@ -1030,11 +1064,16 @@ static bool expansion_uart_state_needed(void *opaque, int version)
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 1,
     .pre_save = expansion_pre_save,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(pending_registers_selected,
+                       SGIOrigin300PciExpansionState, 8,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT32_EQUAL_V(pending_origin_count,
+                              SGIOrigin300PciExpansionState, 8),
         VMSTATE_SINGLE(unconnected_uart, SGIOrigin300PciExpansionState, 7,
                        vmstate_info_uint8_equal, bool),
         VMSTATE_SINGLE(uart_origin_count, SGIOrigin300PciExpansionState, 7,

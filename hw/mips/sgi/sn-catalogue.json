@@ -6807,6 +6807,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -6843,10 +6844,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -6874,6 +6886,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -6931,6 +6954,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -6967,10 +6991,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -6998,6 +7033,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -7055,6 +7101,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7091,10 +7138,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7122,6 +7180,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -7179,6 +7248,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7215,10 +7285,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7246,6 +7327,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -7303,6 +7395,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7339,10 +7432,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7370,6 +7474,311 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 2,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-pci-expansion-pending-register-experiment"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
+          "kind": "nvram",
+          "part": "m48t35",
+          "scope": "board",
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 2,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 4,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-pci-expansion-pending-register-experiment"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [],
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
+          "kind": "nvram",
+          "part": "m48t35",
+          "scope": "board",
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 2,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 2,
       "storage": [
         {
@@ -7427,6 +7836,7 @@
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
         "size": 1476264
       },
+      "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -7463,10 +7873,21 @@
       "resources": [
         {
           "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            1
+          ],
+          "clock-reference": true,
           "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
           "kind": "nvram",
+          "part": "m48t35",
           "scope": "board",
-          "size": 32768
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
         },
         {
           "argument": "-drive if=pflash,unit=N",
@@ -7494,6 +7915,17 @@
           "scope": "dimm"
         }
       ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
       "smp": 4,
       "storage": [
         {
@@ -13318,6 +13750,14 @@
         {
           "id": "compute-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         },
         {
@@ -13413,6 +13853,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -13422,12 +13863,34 @@
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "io-peers": [
@@ -13543,6 +14006,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -13658,6 +14127,14 @@
         {
           "id": "compute-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         },
         {
@@ -13752,6 +14229,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -13761,12 +14239,34 @@
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "io-peers": [
@@ -13882,6 +14382,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {
@@ -13997,6 +14503,393 @@
         {
           "id": "compute-l1",
           "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
+          "module-index": 0
+        },
+        {
+          "id": "expansion-l1",
+          "kind": "l1",
+          "module-index": 1
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Origin 300 (IP45), synthetic expansion UART and pending-register experiment",
+      "generation": "sn1",
+      "io-assemblies": [
+        {
+          "bedrock-revision": 2,
+          "bic-identity": 49152,
+          "configuration-storage": "bedrock-flash-experiment",
+          "controller-index": 1,
+          "controller-profile": "pci-expansion",
+          "controller-startup": "bic-functional-experiment",
+          "head-ports": [
+            8,
+            9,
+            12,
+            13
+          ],
+          "initial-main-power": true,
+          "initial-node-number": 0,
+          "intx-map": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "kind": "origin300-pci-expansion",
+          "main-power": "functional-experiment",
+          "module-index": 1,
+          "peer-index": 0,
+          "pending-register-experiment": true,
+          "placement": 1,
+          "power-command-issuer": 0,
+          "unconnected-uart": true,
+          "version": 1,
+          "xbridge-revision": 2
+        }
+      ],
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "compute-xbridge-bridge-e",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "populated": false,
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
+          "attachment": 1,
+          "carrier": "machine-placed",
+          "id": "compute-xbridge-bridge-f",
+          "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
+        }
+      ],
+      "io-peers": [
+        {
+          "asic-kind": "bedrock",
+          "id": "expansion-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 1193046,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 1,
+          "slot": 0
+        }
+      ],
+      "junk-uart": -1,
+      "l1-management": {
+        "associations": [
+          {
+            "from": 0,
+            "reachable": true,
+            "to": 1
+          },
+          {
+            "from": 1,
+            "reachable": true,
+            "to": 0
+          }
+        ],
+        "attachments": [
+          {
+            "issuer": 0,
+            "owner": 1
+          },
+          {
+            "issuer": 1,
+            "owner": 0
+          }
+        ],
+        "owners": [
+          {
+            "controller-index": 0,
+            "identity": 101
+          },
+          {
+            "controller-index": 1,
+            "identity": 102
+          }
+        ]
+      },
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "compute-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        },
+        {
+          "controller-index": 1,
+          "id": "expansion-enclosure",
+          "initial-module-number": 0,
+          "io-peers": [
+            0
+          ],
+          "nodes": [],
+          "serial": ""
+        }
+      ],
+      "name": "origin300-pci-expansion-pending-register-experiment",
+      "node-populations": [
+        {
+          "cables": [
+            0
+          ],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                2
+              ]
+            },
+            {
+              "cpus-per-node": [
+                4
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            0,
+            0,
+            256,
+            256,
+            0,
+            0,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "compute-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 14345375975688,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "origin300",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        }
+      ],
+      "xio-slots": []
+    },
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            },
+            {
+              "index": 0,
+              "kind": "io-peer",
+              "port": 0
+            }
+          ],
+          "kind": "cable",
+          "name": "expansion-cable"
+        }
+      ],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "compute-l1",
+          "kind": "l1",
+          "l1": {
+            "reported-type": 52,
+            "revision": {
+              "major": 1,
+              "minor": 18,
+              "patch": 5
+            }
+          },
           "module-index": 0
         },
         {
@@ -14093,6 +14986,7 @@
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "populated": false,
           "preset": "io8",
           "revision": 2,
           "serial": 47413004295
@@ -14102,12 +14996,34 @@
           "carrier": "machine-placed",
           "id": "compute-xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
+          "ioc3-subsystem-id": 65535,
+          "mac-source": "none",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
           "preset": "io8",
           "revision": 2,
-          "serial": 47413004295
+          "serial": 47413004295,
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
         }
       ],
       "io-peers": [
@@ -14223,6 +15139,12 @@
             0,
             0
           ],
+          "bedrock": {
+            "board-id-word": 32769,
+            "initiator-region": 0,
+            "installed-bank-mask": 12,
+            "local-region": 0
+          },
           "cpu-slots": [
             {
               "assembly": {

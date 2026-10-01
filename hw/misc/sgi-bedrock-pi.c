@@ -4,6 +4,7 @@
  * counter.
  */
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/core/cpu.h"
@@ -842,13 +843,38 @@ static int pi_pre_save(void *opaque)
     return 0;
 }
 
+bool sgi_bedrock_pi_select_pending_route(SGIBedrockPIState *s,
+                                         uint32_t origin_count, Error **errp)
+{
+    if (DEVICE(s)->realized || s->pending_route_selected ||
+        (origin_count != 2 && origin_count != 4)) {
+        error_setg(errp, "PI pending route requires two/four origins "
+                   "and selection before realization");
+        return false;
+    }
+    s->pending_route_selected = 1;
+    s->pending_route_origins = origin_count;
+    return true;
+}
+
+static bool pi_route_version(void *opaque, int version)
+{
+    SGIBedrockPIState *s = opaque;
+
+    return !s->pending_route_selected || version >= 7;
+}
+
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 5,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_VALIDATE("pending route version", pi_route_version),
+        VMSTATE_SINGLE(pending_route_selected, SGIBedrockPIState, 7,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT32_EQUAL_V(pending_route_origins, SGIBedrockPIState, 7),
         VMSTATE_UINT64(cpu_protect, SGIBedrockPIState),
         VMSTATE_UINT64(io_protect, SGIBedrockPIState),
         VMSTATE_UINT64(region_present, SGIBedrockPIState),

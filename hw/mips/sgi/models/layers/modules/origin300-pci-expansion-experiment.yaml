@@ -39,6 +39,7 @@ layer:
         name: XBridge U0
         kind: pci-host-bridge
         hardware_kind: xbridge
+        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -48,6 +49,7 @@ layer:
         name: XBridge U1
         kind: pci-host-bridge
         hardware_kind: xbridge
+        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -57,6 +59,7 @@ layer:
         name: XBridge U2
         kind: pci-host-bridge
         hardware_kind: xbridge
+        datasheet_contracts: [docs/datasheets/xbridge.md, docs/datasheets/bridge.md]
         pci_host_bridge: {heads: 2}
         parent: enclosure
         provenance: vendor-document
@@ -66,6 +69,7 @@ layer:
         name: PCI expansion L1 controller
         kind: system-controller
         hardware_kind: l1
+        datasheet_contracts: [docs/datasheets/l1-controller.md]
         system_controller: {kind: l1}
         parent: enclosure
         provenance: vendor-document

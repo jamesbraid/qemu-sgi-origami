@@ -20,6 +20,9 @@ typedef struct SGIBedrockPITimerLine {
     uint8_t cpu;
 } SGIBedrockPITimerLine;
 
+bool sgi_bedrock_pi_select_pending_route(SGIBedrockPIState *s,
+                                         uint32_t origin_count, Error **errp);
+
 struct SGIBedrockPIState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
@@ -28,6 +31,8 @@ struct SGIBedrockPIState {
     qemu_irq nmi[SGI_BEDROCK_PI_PROCESSORS];
     qemu_irq cpu_enable_out[SGI_BEDROCK_PI_PROCESSORS];
 
+    uint8_t pending_route_selected;
+    uint32_t pending_route_origins;
     uint32_t interface;
     /*
      * The vCPU index in each of this interface's two slots, -1 when the slot

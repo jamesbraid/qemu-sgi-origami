@@ -13,6 +13,8 @@
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "migration/vmstate.h"
+#include "migration/qemu-file.h"
+#include "io/channel-buffer.h"
 #include "qapi/error.h"
 #include "qobject/qlist.h"
 #include "../../hw/mips/sgi/sn1-fabric.h"
@@ -201,6 +203,7 @@ struct NIFixtureState {
     bool management;
     uint32_t compute_origins;
     uint32_t uart_origins;
+    bool pending_registers;
     bool processor_absence;
     bool absence_duplicate_refused;
     bool absence_late_refused;
@@ -486,6 +489,76 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
                         (s->associations[1].reachable << 1) : 0;
 }
 
+typedef struct PICompatibilityObserver {
+    Notifier notifier;
+    unsigned calls;
+} PICompatibilityObserver;
+
+static void fixture_pi_post_load(Notifier *notifier, void *data)
+{
+    PICompatibilityObserver *observer = container_of(
+        notifier, PICompatibilityObserver, notifier);
+
+    observer->calls++;
+}
+
+static uint64_t fixture_pi_compatibility(NIFixtureState *s, unsigned kind)
+{
+    SGIBedrockState *bedrock = kind == 3 ? SGI_BEDROCK(s->compute) :
+        SGI_BEDROCK(object_resolve_path_component(OBJECT(s->chassis), "bic"));
+    SGIBedrockPIState *pi = &bedrock->pi[0];
+    const VMStateDescription *vmsd = qdev_get_vmsd(DEVICE(pi));
+    QIOChannelBuffer *channel = qio_channel_buffer_new(4096);
+    QEMUFile *output = qemu_file_new_output(QIO_CHANNEL(channel));
+    QEMUFile *file;
+    uint64_t pending[2] = { pi->pending[0], pi->pending[1] };
+    uint64_t protect = pi->io_protect;
+    Error *error = NULL;
+    uint64_t incoming[2] = { pending[0] ^ (UINT64_C(1) << 21),
+                             pending[1] ^ (UINT64_C(1) << 22) };
+    uint64_t incoming_protect = protect ^ UINT64_C(0xa5a5a5a5);
+    bool loaded, unchanged, incoming_matches;
+    PICompatibilityObserver observer = {
+        .notifier.notify = fixture_pi_post_load,
+    };
+    int version = 7;
+
+    pi->pending[0] = incoming[0];
+    pi->pending[1] = incoming[1];
+    pi->io_protect = incoming_protect;
+    g_assert_true(vmstate_save_vmsd(output, vmsd, pi, NULL, &error));
+    g_assert_null(error);
+    g_assert_cmpint(qemu_fflush(output), ==, 0);
+    pi->pending[0] = pending[0];
+    pi->pending[1] = pending[1];
+    pi->io_protect = protect;
+    if (kind == 0 || kind == 3) {
+        memmove(channel->data, channel->data + 5, channel->usage - 5);
+        channel->usage -= 5;
+        version = 6;
+    } else if (kind == 1) {
+        channel->data[0] ^= 1;
+    } else {
+        stl_be_p(channel->data + 1, pi->pending_route_origins == 2 ? 4 : 2);
+    }
+    channel->offset = 0;
+    file = qemu_file_new_input(QIO_CHANNEL(channel));
+    sgi_bedrock_pi_add_cached_alias_notifier(pi, &observer.notifier);
+    loaded = vmstate_load_vmsd(file, vmsd, pi, version, &error);
+    notifier_remove(&observer.notifier);
+    unchanged = pi->pending[0] == pending[0] && pi->pending[1] == pending[1] &&
+                pi->io_protect == protect;
+    incoming_matches = pi->pending[0] == incoming[0] &&
+                       pi->pending[1] == incoming[1] &&
+                       pi->io_protect == incoming_protect;
+    error_free(error);
+    qemu_fclose(file);
+    qemu_fclose(output);
+    object_unref(OBJECT(channel));
+    return loaded | ((uint64_t)unchanged << 1) |
+           ((uint64_t)incoming_matches << 2) | ((uint64_t)observer.calls << 3);
+}
+
 static void management_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
@@ -500,6 +573,30 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
                             MEMTXATTRS_UNSPECIFIED, bytes, 2);
     } else if (offset == 144) {
         s->requester[0].origin = value;
+    } else if (offset == 192) {
+        SGIBedrockState *bic = SGI_BEDROCK(object_resolve_path_component(
+            OBJECT(s->chassis), "bic"));
+        AddressSpace *as = g_new0(AddressSpace, 1);
+        uint8_t bytes[8];
+
+        stq_be_p(bytes, s->storage_direct_payload);
+        address_space_init(as, &bic->io.inbound, "fixture.shared-packet");
+        s->storage_direct_result = address_space_rw(as,
+            s->storage_direct_address, MEMTXATTRS_UNSPECIFIED,
+            bytes, sizeof(bytes), value != 0);
+        address_space_destroy_free(as);
+    } else if (offset == 200) {
+        DeviceState *bic = DEVICE(object_resolve_path_component(
+            OBJECT(s->chassis), "bic"));
+
+        qemu_set_irq(qdev_get_gpio_in_named(bic, "xb-error", 0), value != 0);
+    } else if (offset == 184) {
+        s->storage_direct_result = fixture_pi_compatibility(s, value);
+    } else if (offset == 176) {
+        DeviceState *bic = DEVICE(object_resolve_path_component(
+            OBJECT(s->chassis), "bic"));
+
+        qemu_irq_pulse(qdev_get_gpio_in_named(bic, "local-reset", 0));
     } else if (offset == 152) {
         device_cold_reset(s->chassis);
     } else if (offset == 136) {
@@ -855,6 +952,12 @@ static void fixture_realize(DeviceState *dev, Error **errp)
                 SGI_ORIGIN300_PCI_EXPANSION(s->chassis), &error);
         error_free(error);
     }
+    if (s->pending_registers &&
+        !sgi_origin300_pci_expansion_enable_pending_registers(
+            SGI_ORIGIN300_PCI_EXPANSION(s->chassis), s->compute_origins,
+            errp)) {
+        return;
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(s->chassis), errp)) {
         return;
     }
@@ -1045,6 +1148,8 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_STRING("storage-controller-id", NIFixtureState,
                        storage_controller_id),
     DEFINE_PROP_STRING("storage-drive", NIFixtureState, storage_drive),
+    DEFINE_PROP_BOOL("pending-registers", NIFixtureState,
+                     pending_registers, false),
     DEFINE_PROP_BOOL("processor-absence", NIFixtureState,
                      processor_absence, false),
     DEFINE_PROP_BOOL("power", NIFixtureState, power, false),

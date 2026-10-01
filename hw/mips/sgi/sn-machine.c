@@ -2983,6 +2983,12 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             qdev_prop_set_uint32(dev, "uart-origin-count",
                 sgi_machine_io_origin_count(s, t, a->peer_index));
         }
+        if (a->has_pending_register_experiment &&
+            (!a->pending_register_experiment ||
+             !sgi_origin300_pci_expansion_enable_pending_registers(assembly,
+                 sgi_machine_io_origin_count(s, t, a->peer_index), errp))) {
+            return false;
+        }
         if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
             return false;
         }

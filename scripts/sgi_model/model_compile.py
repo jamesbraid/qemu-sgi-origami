@@ -1437,6 +1437,13 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
                 raise CompileError(
                     "synthetic UART requires selected configuration storage")
             record["unconnected_uart"] = True
+        if "pending_register_experiment" in raw:
+            if (raw["pending_register_experiment"] is not True
+                    or raw.get("unconnected_uart") is not True):
+                raise CompileError(
+                    "pending-register experiment requires selected "
+                    "synthetic UART")
+            record["pending_register_experiment"] = True
         if "power_command_issuer" in raw:
             issuer = controller_indices.get(raw["power_command_issuer"])
             if ("main_power" not in raw or issuer is None

@@ -21,4 +21,5 @@ IMPLEMENTED_TOPOLOGIES = (
     "origin300-pci-expansion-experiment",
     "origin300-pci-expansion-configuration-storage-experiment",
     "origin300-pci-expansion-unconnected-uart-experiment",
+    "origin300-pci-expansion-pending-register-experiment",
 )

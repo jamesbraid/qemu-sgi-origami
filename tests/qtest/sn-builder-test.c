@@ -2310,6 +2310,44 @@ static void test_expansion_six_head_pio(void)
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
+static void test_expansion_pending_registers(gconstpointer opaque)
+{
+    unsigned cpus = GPOINTER_TO_UINT(opaque);
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    uint8_t bytes[8];
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-pending-register-experiment,%s "
+        "-cpu R14000 -smp %u -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none",
+        STORAGE_BINDING, cpus, image, prom);
+
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned bank = 0; bank < 2; bank++) {
+            uint64_t base = UINT64_C(0x20201800000) + pi * 0x200000;
+            unsigned bit = 16 + pi + bank * 2;
+
+            stq_be_p(bytes, 0x100 | bank * 64 | bit);
+            g_assert_true(qtest_memwrite_cpu(qts, 0, base + 0x90,
+                                            bytes, sizeof(bytes)));
+            for (unsigned cpu = 0; cpu < cpus; cpu++) {
+                g_assert_true(qtest_memread_cpu(qts, cpu, base + 0x98 +
+                                               bank * 8, bytes, sizeof(bytes)));
+                g_assert_cmphex(ldq_be_p(bytes), ==, UINT64_C(1) << bit);
+                g_assert_true(qtest_memread_cpu(qts, cpu, base + 0x40,
+                                               bytes, sizeof(bytes)));
+                g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+            }
+        }
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_unconnected_uart(gconstpointer opaque)
 {
     unsigned cpus = GPOINTER_TO_UINT(opaque);
@@ -3123,6 +3161,10 @@ int main(int argc, char **argv)
                    test_expansion_processor_absence);
     qtest_add_func("sn/builder/expansion/six-head-pio",
                    test_expansion_six_head_pio);
+    qtest_add_data_func("sn/builder/expansion/pending-registers/two-cpus",
+                        GUINT_TO_POINTER(2), test_expansion_pending_registers);
+    qtest_add_data_func("sn/builder/expansion/pending-registers/four-cpus",
+                        GUINT_TO_POINTER(4), test_expansion_pending_registers);
     qtest_add_data_func("sn/builder/expansion/unconnected-uart/two-cpus",
                         GUINT_TO_POINTER(2), test_expansion_unconnected_uart);
     qtest_add_data_func("sn/builder/expansion/unconnected-uart/four-cpus",
