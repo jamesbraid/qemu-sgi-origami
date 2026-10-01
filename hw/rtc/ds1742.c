@@ -102,7 +102,7 @@ static bool ds1742_drive_writable(BlockBackend *blk)
 
 static void ds1742_save_clock(DS1742State *s)
 {
-    uint8_t image[8], record[CLOCK_REF_BYTES];
+    uint8_t image[SIZE], record[CLOCK_REF_BYTES];
 
     if (!ds1742_drive_writable(s->blk)) {
         return;
@@ -112,9 +112,11 @@ static void ds1742_save_clock(DS1742State *s)
                       "ds1742: unfinished W/R transaction cannot be restored "
                       "from backing store\n");
     }
-    ds1742_image(s, image);
-    if (blk_pwrite(s->blk, CTRL, sizeof(image), image, 0) < 0) {
-        error_report("ds1742: could not save calendar to backing store");
+    /* Migrated RAM must reach the destination's backing store too. */
+    memcpy(image, s->ram, CTRL);
+    ds1742_image(s, image + CTRL);
+    if (blk_pwrite(s->blk, 0, sizeof(image), image, 0) < 0) {
+        error_report("ds1742: could not save image to backing store");
     }
     if (ds1742_drive_writable(s->clock_blk)) {
         memcpy(record, CLOCK_REF_MAGIC, 8);
