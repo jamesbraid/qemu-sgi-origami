@@ -157,7 +157,7 @@ static int64_t m48t35_host_seconds(void)
 }
 
 /* The host's date written as the part would hold it. */
-static int64_t m48t35_host_part_seconds(void)
+static int64_t m48t35_host_part_seconds(M48T35State *s)
 {
     struct tm tm;
     M48T35Calendar c;
@@ -170,15 +170,24 @@ static int64_t m48t35_host_part_seconds(void)
         .mday = tm.tm_mday,
         .mon = tm.tm_mon,
         /* +100: C's remainder keeps the sign, and 1969 is cell 99. */
-        .year = ((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100) % 100,
+        .year = ((tm.tm_year + 1900 - (int)s->year_base) % 100 + 100) % 100,
     };
     return m48t35_part_seconds(&c);
 }
 
 /* Start the part at the host's date. */
-static void m48t35_follow_host(M48T35State *s)
+static bool m48t35_follow_host(M48T35State *s, Error **errp)
 {
-    s->time_offset = m48t35_host_part_seconds() - m48t35_host_seconds();
+    struct tm tm;
+
+    qemu_get_timedate(&tm, 0);
+    if (s->year_base == 1968 &&
+        (tm.tm_year + 1900 < 1968 || tm.tm_year + 1900 > 2067)) {
+        error_setg(errp, "m48t35: initial year is outside 1968-2067");
+        return false;
+    }
+    s->time_offset = m48t35_host_part_seconds(s) - m48t35_host_seconds();
+    return true;
 }
 
 /* The part's counters, whether or not a read has frozen the cells. */
@@ -303,7 +312,7 @@ static bool m48t35_clock_reference(M48T35State *s, int64_t *saved_at)
  * - otherwise the saved calendar plus the time since the save, counted in
  *   the part's calendar, so it rolls over February as the part would.
  */
-static void m48t35_restore_clock(M48T35State *s)
+static bool m48t35_restore_clock(M48T35State *s, Error **errp)
 {
     const uint8_t *cell = s->cell;
     uint8_t sec = cell[M48T35_SECONDS] & ~M48T35_SECONDS_STOP;
@@ -321,8 +330,7 @@ static void m48t35_restore_clock(M48T35State *s)
         !m48t35_is_bcd(cell[M48T35_MONTH], 1, 12) ||
         !m48t35_is_bcd(cell[M48T35_YEAR], 0, 99)) {
         trace_m48t35_clock_restore("never saved: following the host", 0);
-        m48t35_follow_host(s);
-        return;
+        return m48t35_follow_host(s, errp);
     }
 
     c = (M48T35Calendar) {
@@ -337,7 +345,7 @@ static void m48t35_restore_clock(M48T35State *s)
         trace_m48t35_clock_restore("stopped: no time added", 0);
         s->stopped = true;
         s->stopped_epoch = m48t35_part_seconds(&c);
-        return;
+        return true;
     }
     if (m48t35_clock_reference(s, &saved_at)) {
         elapsed = MAX(host - saved_at, 0);
@@ -349,6 +357,7 @@ static void m48t35_restore_clock(M48T35State *s)
         trace_m48t35_clock_restore("no reference: no time added", 0);
     }
     s->time_offset = m48t35_part_seconds(&c) + elapsed - host;
+    return true;
 }
 
 static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
@@ -561,6 +570,16 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
 {
     M48T35State *s = M48T35(dev);
 
+    if (s->year_base != 1968 && s->year_base != M48T35_YEAR_BASE) {
+        error_setg(errp, "m48t35: unsupported software year base %u",
+                   s->year_base);
+        return;
+    }
+    if (s->year_base == 1968 && s->initial_ip27_fixture) {
+        error_setg(errp, "m48t35: 1968 year base requires "
+                   "blank initial storage");
+        return;
+    }
     s->cell = g_malloc0(M48T35_SIZE);
 
     /* Exact size required, as hw/nvram/mac_nvram.c: a mismatch is a mistake. */
@@ -591,12 +610,18 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
         if (!m48t35_attach_clock_drive(s, errp)) {
             return;
         }
-        m48t35_restore_clock(s);
+        if (!m48t35_restore_clock(s, errp)) {
+            return;
+        }
         s->vmstate_change =
             qemu_add_vm_change_state_handler(m48t35_vm_state_change, s);
     } else {
-        m48t35_install_factory_image(s);
-        m48t35_follow_host(s);
+        if (!m48t35_follow_host(s, errp)) {
+            return;
+        }
+        if (s->initial_ip27_fixture) {
+            m48t35_install_factory_image(s);
+        }
     }
 
     memory_region_init_io(&s->iomem, OBJECT(dev), &m48t35_ops, s,
@@ -646,6 +671,9 @@ static const VMStateDescription vmstate_m48t35 = {
 };
 
 static const Property m48t35_properties[] = {
+    DEFINE_PROP_UINT32("year-base", M48T35State, year_base, M48T35_YEAR_BASE),
+    DEFINE_PROP_BOOL("initial-ip27-fixture", M48T35State,
+                     initial_ip27_fixture, true),
     DEFINE_PROP_DRIVE("drive", M48T35State, blk),
     DEFINE_PROP_DRIVE("clock-drive", M48T35State, clock_blk),
 };

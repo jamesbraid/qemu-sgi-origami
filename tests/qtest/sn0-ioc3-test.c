@@ -4498,6 +4498,105 @@ static void rtc_files_save(const RtcFiles *f, const RtcTime *t,
     }
 }
 
+#define RTC_1968_ARGS \
+    "-global m48t35.year-base=1968 -global m48t35.initial-ip27-fixture=off"
+
+static void test_the_clock_has_a_selected_year_base(const void *data)
+{
+    static const RtcTime expected = { 0x58, 0x08, 0x11, 0x12, 0x30, 0x05 };
+    uint8_t cells[0x7ff8], blank[0x7ff8] = { 0 };
+    QTestState *qts = qtest_init(RTC_ARGS " " RTC_1968_ARGS);
+
+    sn0_ioc3_attach(qts);
+    rtc_assert(qts, &expected);
+    qtest_memread(qts, BYTEBUS_DEV0, cells, sizeof(cells));
+    g_assert_cmpmem(cells, sizeof(cells), blank, sizeof(blank));
+    qtest_writeb(qts, BYTEBUS_DEV0 + 0x100, 0x35);
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + 0x100), ==, 0x35);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_the_clock_refuses_an_initial_year_outside_1968(
+    const void *data)
+{
+    static const char *const bases[] = {
+        "base=1967-12-31T23:59:59,clock=vm",
+        "base=2068-01-01T00:00:00,clock=vm",
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(bases); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200", "-accel", "qtest",
+            "-display", "none", "-S", "-nodefaults", "-qmp", "stdio",
+            "-rtc", bases[i], "-global", "m48t35.year-base=1968",
+            "-global", "m48t35.initial-ip27-fixture=off", NULL,
+        };
+
+        assert_launch_rejected(args, "initial year is outside 1968-2067");
+    }
+}
+
+static void test_the_1968_clock_wraps_and_restores(const void *data)
+{
+    static const RtcTime saved = { 0x99, 0x12, 0x31, 0x23, 0x59, 0x59 };
+    static const RtcTime later = { 0x00, 0x01, 0x01, 0x00, 0x00, 0x00 };
+    RtcFiles f;
+    QTestState *qts = qtest_init("-M origin200 " RTC_1968_ARGS
+                               " -rtc base=2067-12-31T23:59:59,clock=vm");
+
+    sn0_ioc3_attach(qts);
+    rtc_assert(qts, &saved);
+    qtest_clock_step(qts, 1000000000LL);
+    rtc_assert(qts, &later);
+    qtest_quit(qts);
+
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &saved, "2067-12-31T23:59:59");
+    qts = qtest_initf("-M origin200 " RTC_1968_ARGS
+                     " -rtc base=2068-01-01T00:00:00,clock=vm "
+                     "-drive if=none,id=sgi-nvram0,file=%s,format=raw "
+                     "-drive if=none,id=sgi-nvram0-clock,file=%s,format=raw",
+                     f.image, f.ref);
+    sn0_ioc3_attach(qts);
+    rtc_assert(qts, &later);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 0);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+static void test_the_1968_clock_keeps_supplied_storage(const void *data)
+{
+    static const RtcTime saved = { 0x58, 0x08, 0x11, 0x12, 0x30, 0x05 };
+    uint8_t cells[0x7ff8], expected[0x7ff8];
+    g_autofree uint8_t *image = g_malloc0(RTC_IMAGE_BYTES);
+    RtcFiles f;
+    QTestState *qts;
+
+    rtc_files_new(&f, true);
+    memset(expected, 0xa5, sizeof(expected));
+    memcpy(image, expected, sizeof(expected));
+    g_assert_true(g_file_set_contents(f.image, (const char *)image,
+                                      RTC_IMAGE_BYTES, NULL));
+    rtc_files_save(&f, &saved, RTC_BASE);
+    for (unsigned int i = 0; i < 2; i++) {
+        qts = qtest_initf(RTC_ARGS " " RTC_1968_ARGS
+                         " -drive if=none,id=sgi-nvram0,file=%s,format=raw "
+                         "-drive if=none,id=sgi-nvram0-clock,file=%s,format=raw",
+                         f.image, f.ref);
+        sn0_ioc3_attach(qts);
+        qtest_memread(qts, BYTEBUS_DEV0, cells, sizeof(cells));
+        g_assert_cmpmem(cells, sizeof(cells), expected, sizeof(expected));
+        rtc_assert(qts, &saved);
+        qtest_quit(qts);
+    }
+    rtc_files_free(&f);
+}
+
 /*
  * A reference drive too small for its 16-byte record would fail every save
  * and lose the elapsed time without saying so; realize refuses it instead.
@@ -5761,6 +5860,14 @@ int main(int argc, char **argv)
                         test_the_buffer_ram_parity_survives_migration);
     qtest_add_data_func("sn0/ioc3/size-probe-survives-parity-checking", NULL,
                         test_the_size_probe_survives_parity_checking);
+    qtest_add_data_func("sn0/ioc3/clock-config/year-base", NULL,
+                        test_the_clock_has_a_selected_year_base);
+    qtest_add_data_func("sn0/ioc3/clock-config/initial-range", NULL,
+                        test_the_clock_refuses_an_initial_year_outside_1968);
+    qtest_add_data_func("sn0/ioc3/clock-config/wrap-restore", NULL,
+                        test_the_1968_clock_wraps_and_restores);
+    qtest_add_data_func("sn0/ioc3/clock-config/supplied-storage", NULL,
+                        test_the_1968_clock_keeps_supplied_storage);
     qtest_add_data_func("sn0/ioc3/clock-reads-the-time-it-was-given", NULL,
                         test_the_clock_reads_the_time_it_was_given);
     qtest_add_data_func("sn0/ioc3/clock-fresh-image-follows-date", NULL,

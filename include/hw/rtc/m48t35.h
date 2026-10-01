@@ -40,8 +40,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 #define M48T35_CSR_WRITE    0x80
 
 /*
- * The two-digit year counts from 1970; every driver adds it back. Calendar
- * digits instead would boot cleanly and report the mid-1990s.
+ * Default software year base. The chip itself only keeps two year digits.
  */
 #define M48T35_YEAR_BASE    1970
 
@@ -96,6 +95,9 @@ struct M48T35State {
     SysBusDevice parent_obj;
 
     MemoryRegion iomem;
+
+    uint32_t year_base;
+    bool initial_ip27_fixture;
 
     /*
      * Allocated at realize. The clock's entries are unused: it answers
