@@ -23,6 +23,24 @@
 #include "system/runstate.h"
 #include "system/qtest.h"
 
+/* Product metadata does not describe physical UART wiring or power control. */
+struct SGIL1ProductProfile {
+    const char *name;
+    uint32_t identity;
+    unsigned board_count;
+    uint32_t board_capacity;
+    bool compute_services;
+};
+
+static const SGIL1ProductProfile l1_profiles[] = {
+    { "ip34", 0x61, 2, 0, true },
+    { "unknown", 0x34, 2, 0, true },
+    { "ip45", 0x34, 2, 0, true },
+    { "ip35", 0x43, 2, 0, true },
+    { "ip37", 0x33, 2, 0, true },
+    { "pci-expansion", 0x25, 4, 0x0200, false },
+};
+
 /*
  * The UART window: registers, interrupt and the byte queue toward the node.
  */
@@ -65,7 +83,9 @@ static bool l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
 /* The RS-422 pair is usable: a peer is cabled and both run network 422. */
 static SGIL1State *l1_linked_peer(SGIL1State *s)
 {
-    return s->peer && s->network_422 && s->peer->network_422 ? s->peer : NULL;
+    return s->profile->compute_services && s->peer &&
+           s->peer->profile->compute_services &&
+           s->network_422 && s->peer->network_422 ? s->peer : NULL;
 }
 
 /* The controller side: operator console text, display and log. */
@@ -100,8 +120,22 @@ static const char *l1_designation(SGIL1State *s)
     return names[subchannel <= 4 ? subchannel : 4];
 }
 
+static int l1_compute_unsupported(SGIL1State *s)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-l1: compute service unsupported on expansion profile\n");
+    l1_printf(s, "INFO: compute service is unsupported on expansion profile."
+              "\r\n");
+    return -1;
+}
+
 static void l1_mode_message(SGIL1State *s, bool returning)
 {
+    if (!s->profile->compute_services) {
+        l1_compute_unsupported(s);
+        l1_prompt(s);
+        return;
+    }
     s->console_mode = true;
     s->escaped = false;
     s->warned_off = false;
@@ -186,7 +220,7 @@ static uint32_t l1_brick_type_character(SGIL1State *s)
     if (!strcmp(s->brick_type, "ip37")) {
         return 0x33;
     }
-    return 0x34;
+    return s->profile->identity;
 }
 
 static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length);
@@ -265,6 +299,10 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
 {
     const char *source = l1_reasons[reason];
 
+    if (!s->profile->compute_services) {
+        return;
+    }
+
     if (!s->node_power) {
         return;
     }
@@ -302,6 +340,10 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
     const char *source = l1_reasons[reason];
     bool returning = s->escaped;
 
+    if (!s->profile->compute_services) {
+        return;
+    }
+
     l1_reason(s, reason);
     s->node_power = true;
     s->power_down_pending = false;
@@ -324,7 +366,7 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
 
 static void l1_node_reset(SGIL1State *s, uint8_t reason)
 {
-    if (!s->node_power) {
+    if (!s->profile->compute_services || !s->node_power) {
         return;
     }
     l1_reason(s, reason);
@@ -345,7 +387,7 @@ static void l1_after_node_reset(void *opaque)
     g_strlcpy(s->usb_test_descriptor_result, "none",
               sizeof(s->usb_test_descriptor_result));
 
-    if (s->power_up_pending) {
+    if (s->profile->compute_services && s->power_up_pending) {
         s->power_up_pending = false;
         qemu_bh_schedule(s->power_up_bh);
     }
@@ -770,6 +812,14 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             l1_prompt(s);
         }
         return 0;
+    }
+    if (!s->profile->compute_services &&
+        (l1_word(argv[0], "power", "pwr") ||
+         l1_word(argv[0], "reset", "rst") ||
+         l1_word(argv[0], "softreset", "softrst") ||
+         !strcmp(argv[0], "nmi") || l1_word(argv[0], "select", "sel"))) {
+        result = l1_compute_unsupported(s);
+        goto complete;
     }
     if (!strcmp(argv[0], "ctc") && argc > 1 && s->serving_peer) {
         /*
@@ -1200,6 +1250,11 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     unsigned field_count = 0, field_length = 0;
 
     if ((p[0] & 0xe0) == 0x40) {
+        if (!s->profile->compute_services) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: expansion processor console unsupported\n");
+            return;
+        }
         /* Console output on any subchannel retargets the operator's input. */
         s->port_field = (s->port_field & 0x60) | channel;
         if (s->console_mode && s->node_power) {
@@ -1243,6 +1298,12 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
         uint8_t payload[] = { (address >> 5) & 0x1f,
                               args_len >= 5 ? args[4] : 0 };
 
+        if (!s->profile->compute_services) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: expansion console task unsupported\n");
+            l1_reply(s, channel, -101, 0, NULL, 0);
+            return;
+        }
         if (!s->node_power) {
             uint8_t warning[40] = { 1 };
             g_autofree char *text = g_strdup_printf(
@@ -1276,6 +1337,16 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     if (s->promreq_debug) {
         l1_log(s, "L1REQ: %08x - %04x", (s->rack << 18) | (s->bay << 12) |
                ((((s->port_field >> 5) << 5) | channel) << 5) | 5, command);
+    }
+    if (!s->profile->compute_services &&
+        (command == 0x1002 || command == 0x1003 || command == 0x100b ||
+         command == 0x100c || command == 0x2001 || command == 0x2005 ||
+         command == 0x2006 || command == 0x2007 || command == 0x2008)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-l1: expansion compute request 0x%04x unsupported\n",
+                      command);
+        l1_reply(s, channel, -101, 0, NULL, 0);
+        return;
     }
     if (!l1_task_command(command)) {
         qemu_log_mask(LOG_UNIMP,
@@ -1729,7 +1800,8 @@ static bool l1_checksum_ok(const uint8_t *data, unsigned length)
 }
 
 static void l1_selected_board_area(SGIL1SelectedEEPROM *record,
-                                   unsigned area, unsigned header_byte)
+                                   unsigned area, unsigned header_byte,
+                                   uint32_t configured_capacity)
 {
     uint32_t start = record->image[header_byte] * 8;
     uint32_t length;
@@ -1745,7 +1817,8 @@ static void l1_selected_board_area(SGIL1SelectedEEPROM *record,
     } else {
         length = prefix[1] * 8;
     }
-    if (!length || start + length >= record->capacity) {
+    if (!length || start + length >= configured_capacity ||
+        start + length > record->capacity) {
         return;
     }
     if (!l1_checksum_ok(prefix, length)) {
@@ -1757,7 +1830,8 @@ static void l1_selected_board_area(SGIL1SelectedEEPROM *record,
     record->status[area] = 0;
 }
 
-static void l1_selected_board_scan(SGIL1SelectedEEPROM *record)
+static void l1_selected_board_scan(SGIL1SelectedEEPROM *record,
+                                   uint32_t configured_capacity)
 {
     memset(record->status, 1, 4);
     record->length[0] = 8;
@@ -1766,9 +1840,9 @@ static void l1_selected_board_scan(SGIL1SelectedEEPROM *record)
         return;
     }
     record->status[0] = 0;
-    l1_selected_board_area(record, 1, 2);
-    l1_selected_board_area(record, 2, 3);
-    l1_selected_board_area(record, 3, 1);
+    l1_selected_board_area(record, 1, 2, configured_capacity);
+    l1_selected_board_area(record, 2, 3, configured_capacity);
+    l1_selected_board_area(record, 3, 1, configured_capacity);
 }
 
 static void l1_selected_spd_scan(SGIL1SelectedEEPROM *record)
@@ -1788,12 +1862,16 @@ static void l1_selected_spd_scan(SGIL1SelectedEEPROM *record)
 }
 
 static bool l1_selected_valid(const SGIL1SelectedEEPROM *record,
-                              unsigned component)
+                              unsigned component,
+                              const SGIL1ProductProfile *profile)
 {
     if (!record->present) {
         return !record->kind && !record->capacity && !record->image;
     }
-    if (record->kind != (component < 2 ? 1 : 2) ||
+    if (record->kind != (component < profile->board_count ? 1 : 2) ||
+        (profile->board_capacity &&
+         (component >= profile->board_count ||
+          record->capacity > profile->board_capacity)) ||
         record->capacity > 65535 ||
         !!record->capacity != !!record->image) {
         return false;
@@ -1828,7 +1906,10 @@ static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
 
-    if (s->command_len >= sizeof(s->command) ||
+    if ((!s->profile->compute_services &&
+         (s->node_power || s->power_up_pending || s->power_down_pending ||
+          s->console_mode || s->escaped)) ||
+        s->command_len >= sizeof(s->command) ||
         s->frame_len > SGI_L1_FRAME_SIZE ||
         s->port_field > 0x7f ||
         s->revision_major < -1 || s->revision_minor < -1 ||
@@ -1858,7 +1939,8 @@ static int l1_post_load(void *opaque, int version_id)
                           l1_record_invalid(record, i / 16);
     }
     for (unsigned component = 0; component < 6; component++) {
-        if (!l1_selected_valid(&s->selected[component], component)) {
+        if (!l1_selected_valid(&s->selected[component], component,
+                               s->profile)) {
             return -EINVAL;
         }
         if (s->selected[component].present &&
@@ -1935,10 +2017,11 @@ static const VMStateDescription vmstate_l1_selected = {
 /* The selected record cache and raw identity code are controller state. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 10,
-    .minimum_version_id = 7,
+    .version_id = 11,
+    .minimum_version_id = 11,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(product_identity, SGIL1State),
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
         VMSTATE_STRUCT_ARRAY(selected, SGIL1State, 6, 8,
@@ -2129,15 +2212,32 @@ fuel_mac_done:
     if (!s->brick_type) {
         s->brick_type = g_strdup("ip45");
     }
-    if (strcmp(s->brick_type, "ip34") && strcmp(s->brick_type, "ip45") &&
-        strcmp(s->brick_type, "ip35") && strcmp(s->brick_type, "ip37") &&
-        strcmp(s->brick_type, "unknown")) {
-        error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, "
-                   "ip37 or unknown");
-        return;
-    }
     if (s->brick_type_code > 0xff) {
         error_setg(errp, "L1 brick-type-code must be one byte");
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(l1_profiles); i++) {
+        if (!strcmp(s->brick_type, l1_profiles[i].name)) {
+            s->profile = &l1_profiles[i];
+            break;
+        }
+    }
+    if (!s->profile) {
+        error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, unknown or "
+                   "pci-expansion");
+        return;
+    }
+    s->product_identity = s->profile->identity;
+    if (!s->profile->compute_services) {
+        s->auto_power = false;
+        s->processors = 0;
+    }
+    if (s->profile->board_capacity &&
+        (s->chassis_count || s->board_count || s->spd_count ||
+         s->spd_record_count ||
+         s->board_record_count > s->profile->board_count)) {
+        error_setg(errp, "L1 expansion profile accepts only four selected "
+                   "board records");
         return;
     }
     if (s->debug_switches > 0xffff || s->processors > 32 ||
@@ -2195,8 +2295,9 @@ fuel_mac_done:
         if (!board && !spd) {
             continue;
         }
-        if (board == spd || (board && component >= 2) ||
-            (spd && component < 2)) {
+        if (board == spd || (board && component >= s->profile->board_count) ||
+            (spd && (s->profile->board_capacity ||
+                     component < s->profile->board_count))) {
             error_setg(errp, "L1 selected EEPROM component kind is invalid");
             return;
         }
@@ -2212,7 +2313,10 @@ fuel_mac_done:
             g_error_free(local_error);
             return;
         }
-        if (length > 65535 || (board && length < 8) ||
+        if (length > 65535 ||
+            (s->profile->board_capacity &&
+             length > s->profile->board_capacity) ||
+            (board && length < 8) ||
             (spd && length != 160)) {
             error_setg(errp, "L1 selected EEPROM record length is invalid");
             g_free(data);
@@ -2223,7 +2327,8 @@ fuel_mac_done:
         record->capacity = length;
         record->image = (uint8_t *)data;
         if (board) {
-            l1_selected_board_scan(record);
+            l1_selected_board_scan(record, s->profile->board_capacity ?
+                                    s->profile->board_capacity : length);
         } else {
             l1_selected_spd_scan(record);
         }
