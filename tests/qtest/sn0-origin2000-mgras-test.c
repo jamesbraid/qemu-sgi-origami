@@ -7694,6 +7694,105 @@ static void test_gl_back_buffer_draws_into_bank_one(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 250, 300), ==, 0);
 }
 
+static uint32_t mgras_test_slot_pixel(QTestState *s, uint32_t slot,
+                                      uint32_t x, uint32_t y)
+{
+    mgras_test_pixel(s, x, y);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slot', 'value': %u}}", MGRAS_QOM_PATH, slot);
+    return mgras_qom_get_uint(s, "x-test-slot-pixel");
+}
+
+/* A GL window on a fresh board, as gl_scene_start() makes one. */
+static void gl_deep_scene(QTestState *s)
+{
+    mgras_enter_gl_window(s, 256, 640, 128, 128, 0x11);
+    qtest_writel(s, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_one(s, GL_SHADE_MODEL_HDR, GL_FLAT);
+}
+
+/*
+ * A deep double-buffered visual's client sends draw-buffer bit 2 for its
+ * back buffer, and a stereo one bit 3 as well (mgras-dual-re.md, "What
+ * IRIX sends a two-engine board"). On a two-RE board each bit is a colour
+ * buffer a clear lands in and a read-back sees; bit 2 does not write the
+ * front or back bank, and bit 0 still does. Scanout is not asserted: which
+ * slot a swap displays is unknown.
+ */
+static void test_gl_deep_bit2_draws_ssi(void)
+{
+    static const struct {
+        uint32_t word;
+        uint32_t front, back, slot0, slot1;
+    } cases[] = {
+        { 4, 0, 0, 0xff00ff, 0 },
+        { 8, 0, 0, 0, 0xff00ff },
+        { 0xc, 0, 0, 0xff00ff, 0xff00ff },
+        { 5, 0xff00ff, 0, 0xff00ff, 0 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+
+        gl_deep_scene(s);
+        gl_draw_buffer(s, cases[i].word);
+        gl_clear_color(s, 1, 0, 1, 1);
+        gl_word(s, GL_CLEAR_COLOR_BUFFER);
+        g_assert_cmphex(mgras_test_pixel(s, 300, 300), ==, cases[i].front);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-back-pixel"), ==,
+                        cases[i].back);
+        g_assert_cmphex(mgras_test_slot_pixel(s, 0, 300, 300), ==,
+                        cases[i].slot0);
+        g_assert_cmphex(mgras_test_slot_pixel(s, 1, 300, 300), ==,
+                        cases[i].slot1);
+        qtest_quit(s);
+    }
+}
+
+/* One RE has no slot 2: the bit stays ignored and nothing is drawn. */
+static void test_gl_deep_bit2_draws_si(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_draw_buffer(qts, 4);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"), ==, 0);
+    g_assert_cmphex(mgras_test_slot_pixel(qts, 0, 300, 300), ==, 0);
+}
+
+/* The slots migrate between two boards of the same build. */
+static void test_gl_deep_slots_migrate(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-slots-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
+                                   " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_deep_scene(from);
+    gl_draw_buffer(from, 8);
+    gl_clear_color(from, 1, 0, 1, 1);
+    gl_word(from, GL_CLEAR_COLOR_BUFFER);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(mgras_test_slot_pixel(to, 1, 300, 300), ==, 0xff00ff);
+    g_assert_cmphex(mgras_test_slot_pixel(to, 0, 300, 300), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 /* The front buffer is the bank the back is not. */
 static void test_gl_front_buffer_is_the_other_bank(void)
 {
@@ -18926,6 +19025,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-back-buffer-draws-into-bank-one",
                    test_gl_back_buffer_draws_into_bank_one);
+    qtest_add_func("sn0/origin2000/mgras/gl-deep-bit2-draws/ssi",
+                   test_gl_deep_bit2_draws_ssi);
+    qtest_add_func("sn0/origin2000/mgras/gl-deep-bit2-draws/si",
+                   test_gl_deep_bit2_draws_si);
+    qtest_add_func("sn0/origin2000/mgras/gl-deep-slots-migrate",
+                   test_gl_deep_slots_migrate);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-front-and-back-draw-into-both-banks",
                    test_gl_front_and_back_draw_into_both_banks);
