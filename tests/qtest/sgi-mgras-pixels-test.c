@@ -3420,6 +3420,53 @@ static void test_gl_copypixels_slow_path(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * A DMA descriptor with a row length no draw can have, or no rows, while
+ * a pixel draw waits: the transfer is refused or empty, the board does
+ * not abort, and nothing is drawn. The oversized one is logged as the
+ * guest's error; the empty one moves nothing.
+ */
+static char *gl_pixels_dma_refused(QTestState **t, uint32_t rows,
+                                   uint32_t bpr)
+{
+    static const uint8_t image[8] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+    };
+    char *path = gl_eviction_log_start(t, MACHINE_ARGS);
+
+    gl_enter_slot(*t, GL_SLOT_A);
+    gl_word(*t, GL_CONTEXT_OPENER);
+    gl_viewport(*t, 0, 0, 128, 128);
+    gl_window_projection(*t);
+    gl_pixels_program(*t, GL_PIX_4UB, 8, 50, 60, 51, 60, 1);
+    gl_pixels_draw_as(*t, 2, GL_PIXELS_BY_DMA);
+    gl_pixels_dma(*t, image, sizeof(image), 8, rows, bpr, 0xa7);
+    g_assert_cmphex(qtest_readl(*t, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(gl_window_pixel(*t, 50, 60), ==, 0);
+    return path;
+}
+
+static void test_gl_pixels_dma_oversized_row_is_refused(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *t;
+    char *path = gl_pixels_dma_refused(&t, 1, 0xffffffffu);
+
+    log = gl_eviction_log_end(t, path);
+    g_assert_nonnull(strstr(log, "sgi-mgras: DMA of 1 rows of 4294967295"));
+}
+
+static void test_gl_pixels_dma_no_rows_is_empty(void)
+{
+    g_autofree char *log = NULL;
+    QTestState *t;
+    char *path = gl_pixels_dma_refused(&t, 0, 8);
+
+    log = gl_eviction_log_end(t, path);
+    g_assert_null(strstr(log, "runs past"));
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3511,6 +3558,10 @@ int main(int argc, char **argv)
                    test_gl_eviction_needs_the_read_token);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
                    test_gl_eviction_chunks_need_not_be_adjacent);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-oversized-row",
+                   test_gl_pixels_dma_oversized_row_is_refused);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-no-rows",
+                   test_gl_pixels_dma_no_rows_is_empty);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-inline-write",
                    test_gl_eviction_inline_write_moves_nothing);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-buffer-on-another-node",
