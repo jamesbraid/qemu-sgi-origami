@@ -27,6 +27,7 @@
 #include "qobject/qstring.h"
 #include "sgi-test.h"
 #include "sgi-migrate.h"
+#include "sgi-l1-test.h"
 
 static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
 {
@@ -1783,6 +1784,180 @@ static void test_expansion_controller_inputs(const void *data)
     g_unlink(prom);
 }
 
+#define SERIAL_UART_BASE UINT64_C(0x40000000)
+
+static void expansion_serial_send(QTestState *qts, unsigned issuer,
+                                  uint32_t destination, uint16_t command,
+                                  uint8_t channel, const char *text)
+{
+    uint8_t request[128] = { channel };
+    size_t length = 8;
+
+    stl_be_p(request + 1, destination);
+    stw_be_p(request + 5, command);
+    if (text) {
+        request[7] = 1;
+        request[8] = 1;
+        memcpy(request + 9, text, strlen(text) + 1);
+        length += strlen(text) + 2;
+    }
+    sgi_l1_test_send(qts, SERIAL_UART_BASE + issuer * 0x1000,
+                     request, length, false);
+}
+
+static void expansion_serial_expect(QTestState *qts, unsigned issuer,
+                                    unsigned serving, uint8_t channel,
+                                    const char *serial)
+{
+    uint8_t reply[131], expected[64] = { 0x20 | channel };
+    size_t length = 6;
+
+    expansion_serial_send(qts, issuer,
+                          (1u << 18) | ((serving + 1) << 12) | 6,
+                          4, channel, NULL);
+    if (serial) {
+        expected[5] = 1;
+        expected[6] = 1;
+        memcpy(expected + 7, serial, strlen(serial) + 1);
+        length = strlen(serial) + 8;
+    } else {
+        stl_be_p(expected + 1, -104);
+    }
+    g_assert_cmpuint(sgi_l1_test_receive(qts,
+        SERIAL_UART_BASE + issuer * 0x1000, reply, sizeof(reply)), ==, length);
+    g_assert_cmpmem(reply, length, expected, length);
+    g_assert_cmphex(qtest_readq(qts,
+        SERIAL_UART_BASE + (issuer ^ 1) * 0x1000 + 0x28), ==, 0x60);
+}
+
+static void test_expansion_controller_serial(const void *data)
+{
+    static const struct {
+        const char *options;
+        const char *compute;
+        const char *expansion;
+    } cases[] = {
+        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+          "controller-brick-serial.0=1=EXP-A~} "
+          "-global sgi-l1.brick-serial=COMPUTE-A", "COMPUTE-A", "EXP-A~}" },
+        { "-M origin300,topology=origin300-pci-expansion-experiment",
+          NULL, NULL },
+        { "-M origin300,topology=origin300-pci-expansion-experiment "
+          "-global sgi-l1.brick-serial=SHARED", "SHARED", "SHARED" },
+        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+          "controller-brick-serial.0=1=SHARED "
+          "-global sgi-l1.brick-serial=SHARED", "SHARED", "SHARED" },
+        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+          "controller-brick-serial.0=1=12345678901234567890123456789012",
+          NULL, "12345678901234567890123456789012" },
+        { "-M origin300,topology=origin300-pci-expansion-experiment,"
+          "controller-brick-serial.0=1=part=serial", NULL, "part=serial" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *prom = expansion_prom();
+        QTestState *qts = qtest_initf(
+            "%s -device sgi-l1-uart,id=serial-expansion,"
+            "controller=/machine/module1/l1 -cpu R14000 -smp 2 -m 512M "
+            "-bios %s -nodefaults -display none", cases[i].options, prom);
+        uint8_t reply[131];
+
+        if (cases[i].compute) {
+            g_autofree char *serial = qom_get_str(qts, "/machine/node0/l1",
+                                                 "brick-serial");
+
+            g_assert_cmpstr(serial, ==, cases[i].compute);
+        }
+        if (cases[i].expansion) {
+            g_autofree char *serial = qom_get_str(qts, "/machine/module1/l1",
+                                                 "brick-serial");
+
+            g_assert_cmpstr(serial, ==, cases[i].expansion);
+        }
+        qtest_sysbus_mmio_map(qts, "/machine/node0/l1-uart", 0,
+                              SERIAL_UART_BASE);
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/serial-expansion", 0,
+                              SERIAL_UART_BASE + 0x1000);
+        expansion_serial_send(qts, 1, 0x0ffff003, 0, 16, "brick slot 2");
+        g_assert_cmpuint(sgi_l1_test_receive(qts, SERIAL_UART_BASE + 0x1000,
+            reply, sizeof(reply)), >=, 6);
+        g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+        expansion_serial_send(qts, 1, 0x0ffff003, 0, 16, "reboot_l1");
+        g_assert_cmpuint(sgi_l1_test_receive(qts, SERIAL_UART_BASE + 0x1000,
+            reply, sizeof(reply)), >=, 6);
+        g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/l1", "bay"),
+                         ==, 2);
+        for (unsigned issuer = 0; issuer < 2; issuer++) {
+            expansion_serial_expect(qts, issuer, 0, 5, cases[i].compute);
+            expansion_serial_expect(qts, issuer, 1, 21, cases[i].expansion);
+        }
+        if (i == 0) {
+            QDict *response = qtest_qmp(qts,
+                "{'execute':'qom-set','arguments':{'path':'/machine',"
+                "'property':'l1-association0-reachable','value':false}}");
+            uint8_t expected[] = { 0x25, 0xff, 0xff, 0xff, 0xff,
+                                   0, 0, 0, 8 };
+
+            g_assert_true(qdict_haskey(response, "return"));
+            qobject_unref(response);
+            expansion_serial_send(qts, 0, (1u << 18) | (2u << 12) | 6,
+                                  4, 5, NULL);
+            g_assert_cmpuint(sgi_l1_test_receive(qts, SERIAL_UART_BASE,
+                reply, sizeof(reply)), ==, sizeof(expected));
+            g_assert_cmpmem(reply, sizeof(expected),
+                            expected, sizeof(expected));
+            response = qtest_qmp(qts,
+                "{'execute':'qom-set','arguments':{'path':'/machine',"
+                "'property':'l1-association0-reachable','value':true}}");
+            g_assert_true(qdict_haskey(response, "return"));
+            qobject_unref(response);
+            expansion_serial_expect(qts, 0, 1, 21, cases[i].expansion);
+        }
+        qtest_quit(qts);
+        g_unlink(prom);
+    }
+}
+
+static void test_expansion_serial_refusals(const void *data)
+{
+    static const struct {
+        const char *input;
+        const char *message;
+    } cases[] = {
+        { "bad=SER", "expected owner=serial" },
+        { "-1=SER", "expected owner=serial" },
+        { "4294967296=SER", "expected owner=serial" },
+        { "1/0=SER", "expected owner=serial" },
+        { "1=", "expected owner=serial" },
+        { "2=SER", "not an expansion L1 owner" },
+        { "0=SER", "not an expansion L1 owner" },
+        { "1=SER,controller-brick-serial.1=01=OTHER",
+          "duplicate controller input" },
+        { "1=SER,controller-brick-serial.1=1=SER",
+          "duplicate controller input" },
+        { "1=123456789012345678901234567890123", "exceeds 32 bytes" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "origin300,topology=origin300-pci-expansion-experiment,"
+            "controller-brick-serial.0=%s", cases[i].input);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M", machine,
+            "-cpu", "R14000", "-smp", "2", "-m", "512M",
+            "-display", "none", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+    {
+        const char *args[] = { qtest_qemu_binary(NULL), "-M",
+            "origin300,controller-brick-serial.0=1=SER", "-cpu", "R14000",
+            "-smp", "2", "-m", "512M", "-display", "none", NULL };
+
+        assert_qemu_rejects(args, "not an expansion L1 owner");
+    }
+}
+
 static void test_expansion_controller_refusals(const void *data)
 {
     static const struct {
@@ -2256,6 +2431,10 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/cpu-board-load",
                         NULL, test_expansion_cpu_board_load);
+    qtest_add_data_func("sn/builder/expansion/controller-serial/override",
+                        NULL, test_expansion_controller_serial);
+    qtest_add_data_func("sn/builder/expansion/controller-serial/refusals",
+                        NULL, test_expansion_serial_refusals);
     qtest_add_data_func("sn/builder/expansion/controller-inputs",
                         NULL, test_expansion_controller_inputs);
     qtest_add_data_func("sn/builder/expansion/controller-refusals",
