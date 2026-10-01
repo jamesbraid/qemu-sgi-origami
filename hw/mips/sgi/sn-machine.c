@@ -268,6 +268,8 @@ struct SGIMachineState {
     SGIMachineNodeConfig *node_config;
     SGIMachineL1Config *l1_config;
     SGIMachineIoConfig *io_config;
+    DeviceState **io_peers;
+    unsigned int io_peer_count;
     /* Each Bedrock node's share of machine->ram, in node order. */
     MemoryRegion *bedrock_ram;
 
@@ -2204,14 +2206,44 @@ static void sgi_machine_build_fabric_links(SGIMachineState *s,
     }
 }
 
-/*
- * The Bedrock counterpart of the loop above: one sgi-net-cable per cable
- * record, each end a realized node's Bedrock at its one port, and each
- * Bedrock's own cable reference set to it. The two chassis's L1s become
- * each other's peer over the same cable.
- */
-static void sgi_machine_build_bedrock_links(SGIMachineState *s,
-                                            const SGIModelTopology *t)
+/* Resolve the declared endpoint kind independently of module ownership. */
+static SN1FabricEndpoint *sgi_machine_bedrock_endpoint(
+    SGIMachineState *s, const SGIModelLinkEnd *end, Error **errp)
+{
+    DeviceState *dev;
+
+    switch (end->kind) {
+    case SGI_MODEL_LINK_END_KIND_NODE:
+        if (end->index >= s->num_nodes) {
+            error_setg(errp, "Bedrock cable names node %u out of range",
+                       end->index);
+            return NULL;
+        }
+        dev = s->bedrock_nodes[end->index];
+        break;
+    case SGI_MODEL_LINK_END_KIND_IO_PEER:
+        if (end->index >= s->io_peer_count) {
+            error_setg(errp, "Bedrock cable names I/O peer %u without a "
+                       "constructed assembly", end->index);
+            return NULL;
+        }
+        dev = s->io_peers[end->index];
+        break;
+    default:
+        error_setg(errp, "Bedrock cable endpoint kind is unsupported");
+        return NULL;
+    }
+    if (!dev || !object_dynamic_cast(OBJECT(dev), TYPE_SGI_SN1_FABRIC)) {
+        error_setg(errp, "Bedrock cable endpoint has no fabric interface");
+        return NULL;
+    }
+    return SGI_SN1_FABRIC_GET_CLASS(dev)->endpoint(OBJECT(dev));
+}
+
+/* Existing compute pairs retain their separately modeled L1 peer relation. */
+static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
+                                           const SGIModelTopology *t,
+                                           Error **errp)
 {
     g_autofree const SGIModelCable **cables = NULL;
     size_t cable_count, i;
@@ -2219,37 +2251,59 @@ static void sgi_machine_build_bedrock_links(SGIMachineState *s,
     cables = sgi_model_cable_array(t->cables, &cable_count);
     for (i = 0; i < cable_count; i++) {
         const SGIModelCable *cable = cables[i];
-        const SGIModelLinkEnd *ends[2] = {
-            cable->ends->value, cable->ends->next->value,
-        };
-        DeviceState *dev = qdev_new(TYPE_SGI_NET_CABLE);
+        const SGIModelLinkEnd *ends[2];
+        SN1FabricEndpoint *endpoints[2];
+        DeviceState *dev;
         unsigned int side;
 
+        if (QAPI_LIST_LENGTH(cable->ends) != 2) {
+            error_setg(errp, "Bedrock cable '%s' needs exactly two endpoints",
+                       cable->name);
+            return false;
+        }
+        ends[0] = cable->ends->value;
+        ends[1] = cable->ends->next->value;
+        for (side = 0; side < 2; side++) {
+            endpoints[side] = sgi_machine_bedrock_endpoint(s, ends[side], errp);
+            if (!endpoints[side]) {
+                return false;
+            }
+        }
+        dev = qdev_new(TYPE_SGI_NET_CABLE);
         object_property_add_child(OBJECT(s), cable->name, OBJECT(dev));
         qdev_prop_set_uint32(dev, "kind", cable->kind);
         for (side = 0; side < 2; side++) {
-            g_assert(ends[side]->kind == SGI_MODEL_LINK_END_KIND_NODE);
-            sgi_net_cable_set_end(
-                SGI_NET_CABLE(dev), side,
-                OBJECT(SN1_NODE(s->bedrock_nodes[ends[side]->index])->bedrock),
-                ends[side]->port);
+            sgi_net_cable_set_end(SGI_NET_CABLE(dev), side,
+                                 OBJECT(endpoints[side]->bedrock),
+                                 ends[side]->port);
         }
-        qdev_realize_and_unref(dev, NULL, &error_fatal);
+        if (!qdev_realize(dev, NULL, errp)) {
+            object_unref(OBJECT(dev));
+            return false;
+        }
         for (side = 0; side < 2; side++) {
-            SN1NodeState *node = SN1_NODE(s->bedrock_nodes[ends[side]->index]);
-            SN1NodeState *other =
-                SN1_NODE(s->bedrock_nodes[ends[side ^ 1]->index]);
+            if (!object_property_set_link(OBJECT(endpoints[side]->bedrock),
+                                           "net-cable", OBJECT(dev), errp)) {
+                object_unref(OBJECT(dev));
+                return false;
+            }
+        }
+        object_unref(OBJECT(dev));
+        if (ends[0]->kind == SGI_MODEL_LINK_END_KIND_NODE &&
+            ends[1]->kind == SGI_MODEL_LINK_END_KIND_NODE) {
+            for (side = 0; side < 2; side++) {
+                SN1NodeState *node =
+                    SN1_NODE(s->bedrock_nodes[ends[side]->index]);
+                SN1NodeState *other =
+                    SN1_NODE(s->bedrock_nodes[ends[side ^ 1]->index]);
 
-            object_property_set_link(OBJECT(node->bedrock), "net-cable",
-                                     OBJECT(dev), &error_fatal);
-            /*
-             * The same cable carries the two L1s' RS-422 pair between the
-             * chassis (108-0240-002 printed page 2-47).
-             */
-            object_property_set_link(OBJECT(node->l1), "peer",
-                                     OBJECT(other->l1), &error_fatal);
+                /* The reviewed compute pair carries its L1 management path. */
+                object_property_set_link(OBJECT(node->l1), "peer",
+                                         OBJECT(other->l1), &error_fatal);
+            }
         }
     }
+    return true;
 }
 
 /* ---- The builder ---- */
@@ -3195,7 +3249,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
          * Bedrock while it realizes, and a Bedrock's cable reference may be
          * set afterwards. Then every node derives which numbers it reaches.
          */
-        sgi_machine_build_bedrock_links(s, t);
+        if (!sgi_machine_build_bedrock_links(s, t, errp)) {
+            return false;
+        }
         for (node_index = 0; node_index < node_count; node_index++) {
             sn1_node_update_claims(SN1_NODE(s->bedrock_nodes[node_index]));
         }
@@ -4161,6 +4217,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->node_config);
     g_free(s->l1_config);
     g_free(s->io_config);
+    g_free(s->io_peers);
     g_free(s->routers);
     g_free(s->crossbars);
     g_free(s->io_boards);
