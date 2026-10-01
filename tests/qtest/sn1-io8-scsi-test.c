@@ -25,6 +25,7 @@
 #include "libqos/libqos.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -1183,7 +1184,39 @@ typedef enum PendingRetryCase {
     RETRY_BUS_RESET,
     RETRY_WRITE_RESUME,
     RETRY_SHORT_READ,
+    RETRY_READ_MIGRATE,
+    RETRY_WRITE_MIGRATE,
+    RETRY_SHORT_READ_MIGRATE,
 } PendingRetryCase;
+
+static QTestState *migrate_pending_retry(QTestState *from, DiskPair *disks)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    g_autofree char *file0 = NULL;
+    g_autofree char *file1 = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *to;
+
+    /* Failed writes have not changed either source disk. */
+    disks_create(disks);
+    file0 = g_shell_quote(disks->path[0]);
+    file1 = g_shell_quote(disks->path[1]);
+    uri = g_strdup_printf("unix:%s/migrate.sock", disks->dir);
+    to = qtest_initf("%s -bios %s -incoming defer"
+                     " -drive if=none,id=d0,format=raw,file=%s"
+                     " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,"
+                     "drive=d0,rerror=stop,werror=stop,cyls=4,heads=16,secs=32"
+                     " -drive if=none,id=d1,format=raw,file=%s"
+                     " -device scsi-hd,bus=scsi.1,scsi-id=1,lun=0,"
+                     "drive=d1,rerror=stop,werror=stop,cyls=4,heads=16,secs=32",
+                     fuel.args, prom, file0, file1);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_quit(from);
+    return to;
+}
 
 static void test_pending_retry(const void *data)
 {
@@ -1192,10 +1225,15 @@ static void test_pending_retry(const void *data)
                     test_case == RETRY_ABORT_DEVICE ||
                     test_case == RETRY_TARGET_RESET ||
                     test_case == RETRY_BUS_RESET;
-    bool write = test_case == RETRY_WRITE_RESUME;
-    bool short_read = test_case == RETRY_SHORT_READ;
+    bool write = test_case == RETRY_WRITE_RESUME ||
+                 test_case == RETRY_WRITE_MIGRATE;
+    bool short_read = test_case == RETRY_SHORT_READ ||
+                      test_case == RETRY_SHORT_READ_MIGRATE;
+    bool migrate = test_case == RETRY_READ_MIGRATE ||
+                   test_case == RETRY_WRITE_MIGRATE ||
+                   test_case == RETRY_SHORT_READ_MIGRATE;
     const uint32_t handles[] = { 0x12345671, 0x89abcd72 };
-    DiskPair disks;
+    DiskPair disks, destination_disks;
     char *config[2];
     RetryEvents events = { .operation = write ? "write" : "read" };
     QTestState *qts = fuel_start_with_retry_disks(&disks, config, write);
@@ -1221,6 +1259,9 @@ static void test_pending_retry(const void *data)
         wait_for_retry_stop(qts, &events);
     }
 
+    if (migrate) {
+        qts = migrate_pending_retry(qts, &destination_disks);
+    }
     if (recovery) {
         uint16_t in[] = { ISP_DEVICE_WORD(1, DISK_TARGET, 0), 0, 0 };
         uint16_t command;
@@ -1312,6 +1353,9 @@ static void test_pending_retry(const void *data)
         g_assert_cmpmem(after, sizeof(after), victim, sizeof(victim));
     }
     qtest_quit(qts);
+    if (migrate) {
+        disks_remove(&destination_disks);
+    }
     for (i = 0; i < 2; i++) {
         g_assert_cmpint(unlink(config[i]), ==, 0);
         g_free(config[i]);
@@ -1395,6 +1439,16 @@ int main(int argc, char **argv)
                         test_pending_retry);
     qtest_add_data_func("fuel/scsi/pending-retry-short-read",
                         GINT_TO_POINTER(RETRY_SHORT_READ), test_pending_retry);
+
+    qtest_add_data_func("fuel/scsi/pending-retry-read-migration",
+                        GINT_TO_POINTER(RETRY_READ_MIGRATE),
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-write-migration",
+                        GINT_TO_POINTER(RETRY_WRITE_MIGRATE),
+                        test_pending_retry);
+    qtest_add_data_func("fuel/scsi/pending-retry-short-read-migration",
+                        GINT_TO_POINTER(RETRY_SHORT_READ_MIGRATE),
+                        test_pending_retry);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
