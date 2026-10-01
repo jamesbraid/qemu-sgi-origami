@@ -309,11 +309,6 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
     return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
 }
 
-const char *sgi_machine_fuel_mac_eeprom(MachineState *machine)
-{
-    return SGI_MACHINE(machine)->fuel_mac_eeprom;
-}
-
 /*
  * Copies the machine's own identity-record file lists onto an L1 device
  * before it is realized. Takes the L1 explicitly because it lives on the
@@ -331,6 +326,9 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
     unsigned int nodes = MAX(s->num_nodes, 1);
     size_t i;
 
+    if (s->fuel_mac_eeprom) {
+        qdev_prop_set_string(l1, "fuel-mac-eeprom", s->fuel_mac_eeprom);
+    }
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         const SGIMachineIdentityRecords *records =
             &sgi_machine_identity_records[i];
