@@ -649,7 +649,6 @@ struct SGIMgrasState {
     uint64_t eram_host;
     uint32_t eram_rows;
     uint32_t eram_bpr;
-    uint64_t eram_next_host;
     uint32_t eram_next_addr;
     /* Host ownership and bounded diagnostics; never serialized. */
     bool gl_restore_in_progress;
