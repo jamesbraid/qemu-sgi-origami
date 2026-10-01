@@ -721,7 +721,8 @@ static MemTxResult sgi_bridge_window_read_word(SGIBridgeState *s,
     assert(size <= sizeof(bytes));
     result = address_space_read(space, target, MEMTXATTRS_UNSPECIFIED, bytes,
                                 size);
-    *value = swap && size == 4 ? ldl_le_p(bytes) : ldn_be_p(bytes, size);
+    *value = swap && size == 4 ? (uint32_t)ldl_le_p(bytes) :
+             ldn_be_p(bytes, size);
     return sgi_bridge_window_failed(s, device, space, target, result);
 }
 
