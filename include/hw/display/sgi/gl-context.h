@@ -756,6 +756,15 @@ typedef struct SGIGLContext {
      * strip keeps the strip's orientation (2.6.1), which facing needs.
      */
     uint32_t strip_odd;
+    /*
+     * 1 while held[2] keeps the open triangle strip's oldest retained
+     * vertex, the one the strip's last triangle began with, which a
+     * swap makes the next triangle's first vertex. 0 before the first
+     * triangle of a strip.
+     */
+    uint32_t strip_prev;
+    /* 1 from a swap until the next vertex of the strip. */
+    uint32_t strip_swap;
     float cur_texcoord[4];
     float raster_texcoord[4];
     /* Host policy and migration-presence markers are never serialized. */
@@ -853,6 +862,12 @@ typedef enum SGIGLOp {
     SGI_GL_OP_TEXCOORD4F,       /* s, t, r, q */
     /* Parameter and four floats; mode's enumerant as a float. */
     SGI_GL_OP_TEX_ENV,
+    /*
+     * IRIS GL swaptmesh as the OpenGL client passes it through an open
+     * triangle strip: the next vertex makes its triangle with the strip's
+     * oldest retained vertex instead of its middle one.
+     */
+    SGI_GL_OP_SWAP_TMESH,
 } SGIGLOp;
 
 /*
