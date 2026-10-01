@@ -6,6 +6,7 @@
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/char/serial-mm.h"
 #include "system/reset.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci-host/sgi-xbridge.h"
@@ -198,6 +199,8 @@ struct NIFixtureState {
     DeviceState *uart[2];
     MemoryRegion uart_view[2];
     bool management;
+    uint32_t compute_origins;
+    uint32_t uart_origins;
     bool processor_absence;
     bool absence_duplicate_refused;
     bool absence_late_refused;
@@ -456,6 +459,17 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
         }
         return 0;
     }
+    if (offset == 160) {
+        Object *uart = object_resolve_path_component(OBJECT(s->chassis),
+                                                     "unconnected-uart");
+        SerialState *serial = &SERIAL_MM(uart)->serial;
+
+        return timer_pending(serial->fifo_timeout_timer) |
+               (timer_pending(serial->modem_status_poll) << 1) |
+               (timer_pending(serial->xmit_retry_timer) << 2) |
+               (!!serial->watch_tag << 3) |
+               (!!serial->xmit_dead_watch_tag << 4);
+    }
     if (offset == 120) {
         return s->absence_duplicate_refused;
     }
@@ -484,6 +498,22 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
         stw_le_p(bytes, value);
         address_space_write(&s->adapter_work, (offset - 0x600) / 8,
                             MEMTXATTRS_UNSPECIFIED, bytes, 2);
+    } else if (offset == 144) {
+        s->requester[0].origin = value;
+    } else if (offset == 152) {
+        device_cold_reset(s->chassis);
+    } else if (offset == 136) {
+        SGIXioSource source = {
+            .widget = value == 1 ? 16 : 10,
+            .widget_known = value != 2,
+            .device = 1,
+            .device_known = true,
+        };
+        uint8_t bytes[8] = { 0 };
+
+        s->storage_direct_result = sn1_fabric_destination_rw(&s->endpoint,
+            value == 3 ? NULL : &source, s->storage_direct_address,
+            bytes, sizeof(bytes), true);
     } else if (offset == 120) {
         Error *error = NULL;
 
@@ -714,7 +744,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint8(s->compute, "revision", 2);
     qdev_prop_set_uint64(s->compute, "device-mask-reset",
                          s->compute_device_mask);
-    qdev_prop_set_uint32(s->compute, "processor-count", 2);
+    qdev_prop_set_uint32(s->compute, "processor-count", s->compute_origins);
     qdev_prop_set_uint32(DEVICE(&compute->lb), "node-number",
                          s->compute_number);
     if (!object_property_set_link(OBJECT(s->compute), "dma-memory",
@@ -736,6 +766,8 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     s->chassis = qdev_new(TYPE_SGI_ORIGIN300_PCI_EXPANSION);
     object_property_add_child(OBJECT(s), "chassis", OBJECT(s->chassis));
     qdev_prop_set_uint32(s->chassis, "placement", 42);
+    qdev_prop_set_uint32(s->chassis, "uart-origin-count",
+        s->uart_origins == UINT32_MAX ? s->compute_origins : s->uart_origins);
     qdev_prop_set_uint8(s->chassis, "node-number", s->bic_number);
     qdev_prop_set_uint8(s->chassis, "bedrock-revision", 2);
     qdev_prop_set_uint8(s->chassis, "xbridge-revision", 2);
@@ -1004,6 +1036,9 @@ static void fixture_realize(DeviceState *dev, Error **errp)
 }
 
 static const Property fixture_properties[] = {
+    DEFINE_PROP_UINT32("compute-origins", NIFixtureState, compute_origins, 2),
+    DEFINE_PROP_UINT32("uart-origins", NIFixtureState,
+                       uart_origins, UINT32_MAX),
     DEFINE_PROP_BOOL("storage", NIFixtureState, storage, false),
     DEFINE_PROP_BOOL("storage-late", NIFixtureState, storage_late, false),
     DEFINE_PROP_STRING("storage-module-id", NIFixtureState, storage_module_id),

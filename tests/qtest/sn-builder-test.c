@@ -2225,6 +2225,42 @@ static void test_expansion_processor_absence(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_unconnected_uart(gconstpointer opaque)
+{
+    unsigned cpus = GPOINTER_TO_UINT(opaque);
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    const uint64_t uart = UINT64_C(0x10230000080);
+    uint8_t bytes[8];
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "-cpu R14000 -smp %u -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none",
+        STORAGE_BINDING, cpus, image, prom);
+
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    stq_be_p(bytes, UINT64_C(0x1122334455667788));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, uart + 7 * 8,
+                                    bytes, sizeof(bytes)));
+    for (unsigned cpu = 0; cpu < cpus; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, uart + 7 * 8,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0x88);
+        g_assert_true(qtest_memread_cpu(qts, cpu, uart + 6 * 8,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0xb0);
+        g_assert_true(qtest_memread_cpu(qts, cpu,
+                                       UINT64_C(0x102100000b8),
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_storage_composed_read(void)
 {
     g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
@@ -3000,6 +3036,10 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
+    qtest_add_data_func("sn/builder/expansion/unconnected-uart/two-cpus",
+                        GUINT_TO_POINTER(2), test_expansion_unconnected_uart);
+    qtest_add_data_func("sn/builder/expansion/unconnected-uart/four-cpus",
+                        GUINT_TO_POINTER(4), test_expansion_unconnected_uart);
     qtest_add_func("sn/builder/expansion/storage/composed-read",
                    test_expansion_storage_composed_read);
     qtest_add_func("sn/builder/expansion/storage/binding-required",

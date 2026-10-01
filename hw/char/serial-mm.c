@@ -84,7 +84,7 @@ static void serial_mm_realize(DeviceState *dev, Error **errp)
     sysbus_init_irq(SYS_BUS_DEVICE(smm), &smm->serial.irq);
 }
 
-static const VMStateDescription vmstate_serial_mm = {
+const VMStateDescription vmstate_serial_mm = {
     .name = "serial",
     .version_id = 3,
     .minimum_version_id = 2,

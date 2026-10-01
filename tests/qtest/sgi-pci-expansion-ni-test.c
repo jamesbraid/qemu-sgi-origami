@@ -1499,7 +1499,7 @@ static void test_processor_absence_old_stream(const void *data)
     header[0] = sizeof(name) - 1;
     memcpy(header + 1, name, sizeof(name) - 1);
     stl_be_p(header + sizeof(name), 0);
-    stl_be_p(header + sizeof(name) + 4, 6);
+    stl_be_p(header + sizeof(name) + 4, 7);
     for (gsize i = 0; i + sizeof(header) < length; i++) {
         if (!memcmp(stream + i, header, sizeof(header))) {
             payload = i + sizeof(header);
@@ -1507,11 +1507,13 @@ static void test_processor_absence_old_stream(const void *data)
         }
     }
     g_assert_cmpuint(found, ==, 1);
-    g_assert_cmpuint((uint8_t)stream[payload], ==, 1);
-    /* Reconstruct the prior layout by removing only the new selection byte. */
+    g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
+    g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 2);
+    g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 1);
+    /* Remove UART selection/count and processor-absence selection for v5. */
     stl_be_p(stream + payload - 4, 5);
-    memmove(stream + payload, stream + payload + 1, length - payload - 1);
-    g_assert_true(g_file_set_contents(file, stream, length - 1, &error));
+    memmove(stream + payload, stream + payload + 6, length - payload - 6);
+    g_assert_true(g_file_set_contents(file, stream, length - 6, &error));
     g_assert_no_error(error);
     if (selected) {
         qtest_set_expected_status(to, EXIT_FAILURE);
@@ -2413,9 +2415,412 @@ static void test_power_adapter(void)
     qtest_quit(qts);
 }
 
+#define UART_OPTIONS POWER_OPTIONS " -global " \
+    "sgi-origin300-pci-expansion-module.unconnected-uart-experiment=on"
+#define UART_BASE(n) (REQUESTER(n) + BIC_HUB + 0x80)
+
+static void uart_write(QTestState *qts, unsigned reg, uint64_t value)
+{
+    qtest_writeq(qts, UART_BASE(0) + reg * 8, value);
+    result(qts, 0, MEMTX_OK);
+}
+
+static uint64_t uart_read(QTestState *qts, unsigned reg)
+{
+    uint64_t value = qtest_readq(qts, UART_BASE(1) + reg * 8);
+
+    result(qts, 1, MEMTX_OK);
+    return value;
+}
+
+static void test_uart_registers(void)
+{
+    QTestState *qts = management_start(UART_OPTIONS);
+    QDict *error;
+
+    error = qtest_qmp_assert_failure_ref(qts,
+        "{'execute':'qom-set','arguments':{'path':'" PATH "/chassis',"
+        "'property':'unconnected-uart-experiment','value':false}}");
+    qobject_unref(error);
+    error = qtest_qmp_assert_failure_ref(qts,
+        "{'execute':'qom-set','arguments':{'path':'" PATH "/chassis',"
+        "'property':'uart-origin-count','value':4}}");
+    qobject_unref(error);
+    error = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'" PATH "/chassis/bic',"
+        "'property':'processor-count'}}");
+    g_assert_cmpint(qdict_get_int(error, "return"), ==, 0);
+    qobject_unref(error);
+    error = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'" PATH "/chassis/bic',"
+        "'property':'installed-bank-mask'}}");
+    g_assert_cmpint(qdict_get_int(error, "return"), ==, 0);
+    qobject_unref(error);
+    g_assert_cmphex(uart_read(qts, 6), ==, 0xb0);
+    g_assert_cmphex(uart_read(qts, 5), ==, 0x60);
+    uart_write(qts, 3, 0x80);
+    uart_write(qts, 0, UINT64_C(0xfedcba9876543234));
+    uart_write(qts, 1, UINT64_C(0x0123456789abcd12));
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x34);
+    g_assert_cmphex(uart_read(qts, 1), ==, 0x12);
+    uart_write(qts, 3, 3);
+    uart_write(qts, 7, UINT64_C(0x123456789abcdefa));
+    g_assert_cmphex(uart_read(qts, 7), ==, 0xfa);
+    uart_write(qts, 2, 0x41);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, UINT64_C(0x1122334455667742));
+    uart_write(qts, 0, 0x43);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x42);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x43);
+    g_assert_cmphex(uart_read(qts, 5) & 1, ==, 0);
+    uart_write(qts, 4, 8);
+    uart_write(qts, 0, 0x45);
+    g_assert_cmphex(uart_read(qts, 5), ==, 0x60);
+    management_empty(qts, 0);
+    management_empty(qts, 1);
+    g_assert_cmpuint(qtest_readq(qts, STATUS + 16), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_uart_refusals(void)
+{
+    QTestState *qts = management_start(POWER_OPTIONS);
+    const uint64_t refused[] = { BIC_HUB + 0x78, BIC_HUB + 0xc0,
+                                NODE(7) + UINT64_C(0x10010000080) };
+
+    qtest_readq(qts, UART_BASE(0));
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+    qts = management_start(UART_OPTIONS);
+    uart_write(qts, 2, 0x41);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, 0x42);
+    for (unsigned size = 1; size <= 4; size *= 2) {
+        uint8_t bytes[4];
+
+        qtest_memread(qts, UART_BASE(0), bytes, size);
+        result(qts, 0, MEMTX_ERROR);
+        qtest_memwrite(qts, UART_BASE(0) + 0x38, bytes, size);
+        result(qts, 0, MEMTX_ERROR);
+    }
+    qtest_writeq(qts, MANAGEMENT + 88, BIC_HUB + 0x81);
+    qtest_writeq(qts, MANAGEMENT + 104, 8);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), ==, MEMTX_ERROR);
+    for (unsigned origin = 2; origin < 4; origin++) {
+        qtest_writeq(qts, MANAGEMENT + 144, origin);
+        qtest_readq(qts, UART_BASE(0));
+        result(qts, 0, MEMTX_ACCESS_ERROR);
+    }
+    qtest_writeq(qts, MANAGEMENT + 144, 0);
+    management_cable(qts, true);
+    qtest_readq(qts, UART_BASE(0));
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    management_cable(qts, false);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x42);
+    for (unsigned i = 0; i < G_N_ELEMENTS(refused); i++) {
+        qtest_readq(qts, REQUESTER(0) + refused[i]);
+        result(qts, 0, MEMTX_DECODE_ERROR);
+    }
+    qtest_readq(qts, REQUESTER(0) + HUB + NODE(8) + 0x80);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_writeq(qts, MANAGEMENT + 88,
+                 (UINT64_C(1) << 47) | (UINT64_C(7) << 39) | 0x30000080);
+    for (unsigned source = 0; source < 4; source++) {
+        qtest_writeq(qts, MANAGEMENT + 136, source);
+        g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), !=, MEMTX_OK);
+    }
+    qtest_writeq(qts, REQUESTER(0) + BIC_HUB + 0x400118, 0);
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, MANAGEMENT + 136, 0);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 112), !=, MEMTX_OK);
+    uart_write(qts, 7, 0x99);
+    power_set(qts, false);
+    qtest_writeq(qts, UART_BASE(0) + 0x38, 0x55);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    power_set(qts, true);
+    g_assert_cmphex(uart_read(qts, 7), ==, 0);
+    qtest_quit(qts);
+    qts = management_start(UART_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.connected=off");
+    qtest_readq(qts, UART_BASE(0));
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_uart_lifecycle(void)
+{
+    QTestState *qts = management_start(UART_OPTIONS);
+    uint64_t sentinel = UINT64_C(0x123456789abcdef0);
+
+    qtest_writeq(qts, COMPUTE + 0x608000, sentinel);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x608000), ==, sentinel);
+    management_query(qts, 0, 0x4ffff006, 19);
+    management_query(qts, 1, management_address(0), 7);
+    qtest_writeq(qts, MANAGEMENT, 0);
+    uart_write(qts, 7, 0x88);
+    uart_write(qts, 3, 0x80);
+    uart_write(qts, 0, 1);
+    uart_write(qts, 3, 3);
+    uart_write(qts, 2, 0x41);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, 0x42);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 160) & 1, ==, 1);
+    qtest_writeq(qts, MANAGEMENT + 152, 0);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 160), ==, 0);
+    g_assert_cmphex(uart_read(qts, 7), ==, 0);
+    g_assert_cmphex(uart_read(qts, 5), ==, 0x60);
+    /* Generic serial reset clears FIFO contents without disabling FIFO mode. */
+    uart_write(qts, 3, 3);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, 0x42);
+    uart_write(qts, 0, 0x43);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x42);
+    g_assert_cmphex(uart_read(qts, 5) & 1, ==, 1);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x43);
+    g_assert_cmphex(uart_read(qts, 5) & 1, ==, 0);
+    uart_write(qts, 3, 0x80);
+    g_assert_cmphex(uart_read(qts, 0), ==, 12);
+    uart_write(qts, 3, 3);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x608000), ==, sentinel);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT), ==, 0);
+    management_identity(qts, 0, 19, 1);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, 0x43);
+    power_set(qts, false);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 160), ==, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_clock_step(qts, INT64_C(10000000000));
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT + 160), ==, 0);
+    power_set(qts, true);
+    g_assert_cmphex(uart_read(qts, 5), ==, 0x60);
+    uart_write(qts, 3, 3);
+    uart_write(qts, 4, 0x18);
+    uart_write(qts, 0, 0x42);
+    uart_write(qts, 0, 0x43);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x42);
+    g_assert_cmphex(uart_read(qts, 0), ==, 0x43);
+    g_assert_cmphex(uart_read(qts, 5) & 1, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x608000), ==, sentinel);
+    g_assert_cmphex(qtest_readq(qts, MANAGEMENT), ==, 0);
+    management_identity(qts, 1, 7, 0);
+    qtest_quit(qts);
+}
+
+static void test_uart_migration(gconstpointer opaque)
+{
+    bool off = GPOINTER_TO_UINT(opaque);
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-uart-migrate-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = management_start(UART_OPTIONS);
+    QTestState *to = management_start(UART_OPTIONS " -incoming defer");
+
+    g_assert_no_error(error);
+    uart_write(from, 3, 0x80);
+    uart_write(from, 0, 0x34);
+    uart_write(from, 1, 0x12);
+    uart_write(from, 3, 3);
+    uart_write(from, 7, 0xaa);
+    uart_write(from, 2, 0x41);
+    uart_write(from, 1, 1);
+    uart_write(from, 4, 0x18);
+    uart_write(from, 0, 0x42);
+    g_assert_cmphex(qtest_readq(from, MANAGEMENT + 160), ==, 1);
+    if (off) {
+        power_set(from, false);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    if (off) {
+        g_assert_cmphex(qtest_readq(to, MANAGEMENT + 160), ==, 0);
+        power_set(to, true);
+        g_assert_cmphex(uart_read(to, 7), ==, 0);
+        g_assert_cmphex(uart_read(to, 5), ==, 0x60);
+    } else {
+        g_assert_cmphex(uart_read(to, 7), ==, 0xaa);
+        g_assert_cmphex(uart_read(to, 3), ==, 3);
+        g_assert_cmphex(uart_read(to, 4), ==, 0x18);
+        g_assert_cmphex(qtest_readq(to, MANAGEMENT + 160), ==, 1);
+        uart_write(to, 3, 0x80);
+        g_assert_cmphex(uart_read(to, 0), ==, 0x34);
+        g_assert_cmphex(uart_read(to, 1), ==, 0x12);
+        uart_write(to, 3, 3);
+        qtest_qmp_assert_success(to, "{'execute':'cont'}");
+        qtest_clock_step(to, INT64_C(10000000000));
+        g_assert_cmphex(uart_read(to, 2) & 0xf, ==, 0xc);
+        g_assert_cmphex(uart_read(to, 0), ==, 0x42);
+        g_assert_cmphex(uart_read(to, 5) & 1, ==, 0);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_uart_origins(gconstpointer opaque)
+{
+    unsigned count = GPOINTER_TO_UINT(opaque);
+    g_autofree char *options = g_strdup_printf(UART_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.compute-origins=%u", count);
+    QTestState *qts = management_start(options);
+
+    uart_write(qts, 7, 0xaa);
+    qtest_writeq(qts, MANAGEMENT + 144, count - 1);
+    g_assert_cmphex(qtest_readq(qts, UART_BASE(0) + 0x38), ==, 0xaa);
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, MANAGEMENT + 144, count);
+    qtest_writeq(qts, UART_BASE(0) + 0x38, 0x55);
+    result(qts, 0, MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(uart_read(qts, 7), ==, 0xaa);
+    qtest_quit(qts);
+}
+
+static void test_uart_invalid_origins(gconstpointer opaque)
+{
+    unsigned count = GPOINTER_TO_UINT(opaque);
+
+    if (g_test_subprocess()) {
+        g_autofree char *options = g_strdup_printf(UART_OPTIONS
+            " -global sgi-pci-expansion-ni-fixture.uart-origins=%u", count);
+        QTestState *qts = management_start(options);
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*two or four compute origins*");
+}
+
+static void test_uart_migration_mismatch(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    static const char *const expected[] = {
+        "*device 'sgi-origin300-pci-expansion-module': 0 != 1*",
+        "*device 'sgi-origin300-pci-expansion-module': 1 != 0*",
+        "*device 'sgi-origin300-pci-expansion-module': 4 != 2*",
+        "*device 'sgi-origin300-pci-expansion-module': 2 != 4*",
+    };
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(expected[kind]);
+        return;
+    }
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("ni-uart-mismatch-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = management_start(kind == 1 ? POWER_OPTIONS :
+        kind == 3 ? UART_OPTIONS
+            " -global sgi-pci-expansion-ni-fixture.compute-origins=4" :
+        UART_OPTIONS);
+    QTestState *to = management_start(kind == 0 ?
+        POWER_OPTIONS " -incoming defer" : kind == 2 ? UART_OPTIONS
+        " -global sgi-pci-expansion-ni-fixture.compute-origins=4 "
+        "-incoming defer" :
+        UART_OPTIONS " -incoming defer");
+
+    g_assert_no_error(error);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
+static void test_uart_old_stream(void)
+{
+    if (g_test_subprocess()) {
+        static const char name[] = "sgi-origin300-pci-expansion-module";
+        uint8_t header[1 + sizeof(name) - 1 + 8];
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("ni-uart-v6-XXXXXX", &error);
+        g_autofree char *file = g_build_filename(dir, "migration.bin", NULL);
+        g_autofree char *uri = g_strdup_printf("file:%s", file);
+        g_autofree char *stream = NULL;
+        gsize length, found = 0, payload = 0;
+        QTestState *from = management_start(POWER_OPTIONS);
+        QTestState *to = management_start(UART_OPTIONS
+            " -d guest_errors -incoming defer");
+
+        g_assert_no_error(error);
+        sgi_migrate_stopped(from, uri);
+        g_assert_true(g_file_get_contents(file, &stream, &length, &error));
+        g_assert_no_error(error);
+        header[0] = sizeof(name) - 1;
+        memcpy(header + 1, name, sizeof(name) - 1);
+        stl_be_p(header + sizeof(name), 0);
+        stl_be_p(header + sizeof(name) + 4, 7);
+        for (gsize i = 0; i + sizeof(header) < length; i++) {
+            if (!memcmp(stream + i, header, sizeof(header))) {
+                payload = i + sizeof(header);
+                found++;
+            }
+        }
+        g_assert_cmpuint(found, ==, 1);
+        g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
+        g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 2);
+        stl_be_p(stream + payload - 4, 6);
+        memmove(stream + payload, stream + payload + 5, length - payload - 5);
+        g_assert_true(g_file_set_contents(file, stream, length - 5, &error));
+        g_assert_no_error(error);
+        qtest_set_expected_status(to, EXIT_FAILURE);
+        qtest_qmp_assert_success(to,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        qtest_wait_qemu(to);
+        qtest_quit(from);
+        qtest_quit(to);
+        g_assert_cmpint(g_unlink(file), ==, 0);
+        g_assert_cmpint(g_rmdir(dir), ==, 0);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_passed();
+    g_test_trap_assert_stderr("*synthetic UART requires migration version 7*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/sgi/pci-expansion-ni/uart/registers", test_uart_registers);
+    qtest_add_func("/sgi/pci-expansion-ni/uart/old-stream",
+                   test_uart_old_stream);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/two",
+                        GUINT_TO_POINTER(2), test_uart_origins);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/four",
+                        GUINT_TO_POINTER(4), test_uart_origins);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/zero",
+                        GUINT_TO_POINTER(0), test_uart_invalid_origins);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/three",
+                        GUINT_TO_POINTER(3), test_uart_invalid_origins);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/five",
+                        GUINT_TO_POINTER(5), test_uart_invalid_origins);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/migration-count-two-four",
+                        GUINT_TO_POINTER(2), test_uart_migration_mismatch);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/migration-count-four-two",
+                        GUINT_TO_POINTER(3), test_uart_migration_mismatch);
+    qtest_add_func("/sgi/pci-expansion-ni/uart/refusals", test_uart_refusals);
+    qtest_add_func("/sgi/pci-expansion-ni/uart/lifecycle", test_uart_lifecycle);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/uart/migration-selected-mismatch",
+                        GUINT_TO_POINTER(0), test_uart_migration_mismatch);
+    qtest_add_data_func(
+        "/sgi/pci-expansion-ni/uart/migration-unselected-mismatch",
+                        GUINT_TO_POINTER(1), test_uart_migration_mismatch);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/migration",
+                        GUINT_TO_POINTER(0), test_uart_migration);
+    qtest_add_data_func("/sgi/pci-expansion-ni/uart/migration-off",
+                        GUINT_TO_POINTER(1), test_uart_migration);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/read",
                    test_processor_absence);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/refusals",

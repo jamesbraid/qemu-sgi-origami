@@ -2768,6 +2768,29 @@ static uint64_t sgi_machine_controller_identity(const SGIModelTopology *t,
     return 0;
 }
 
+static uint32_t sgi_machine_io_origin_count(SGIMachineState *s,
+    const SGIModelTopology *t, uint32_t peer)
+{
+    const SGIModelCableList *entry;
+
+    for (entry = t->cables; entry; entry = entry->next) {
+        const SGIModelLinkEnd *ends[2] = {
+            entry->value->ends->value, entry->value->ends->next->value,
+        };
+
+        for (unsigned side = 0; side < 2; side++) {
+            if (ends[side]->kind == SGI_MODEL_LINK_END_KIND_IO_PEER &&
+                ends[side]->index == peer &&
+                ends[1 - side]->kind == SGI_MODEL_LINK_END_KIND_NODE) {
+                unsigned node = ends[1 - side]->index;
+
+                return SN1_NODE(s->bedrock_nodes[node])->nr_cpus;
+            }
+        }
+    }
+    return 0;
+}
+
 static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
     const SGIModelTopology *t, Error **errp)
 {
@@ -2950,6 +2973,15 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             !sgi_origin300_pci_expansion_enable_processor_absence(assembly,
                                                                   errp)) {
             return false;
+        }
+        if (a->has_unconnected_uart) {
+            if (!a->unconnected_uart) {
+                error_setg(errp, "synthetic expansion UART selection is false");
+                return false;
+            }
+            qdev_prop_set_bit(dev, "unconnected-uart-experiment", true);
+            qdev_prop_set_uint32(dev, "uart-origin-count",
+                sgi_machine_io_origin_count(s, t, a->peer_index));
         }
         if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
             return false;

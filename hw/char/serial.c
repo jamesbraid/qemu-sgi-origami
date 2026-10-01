@@ -992,6 +992,11 @@ static void serial_reset(void *opaque)
     serial_update_tx_ready(s);
 }
 
+void serial_reset_device(SerialState *s)
+{
+    serial_reset(s);
+}
+
 static int serial_be_change(void *opaque)
 {
     SerialState *s = opaque;
