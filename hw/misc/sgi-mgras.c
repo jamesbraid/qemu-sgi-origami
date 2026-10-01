@@ -2239,7 +2239,7 @@ static void mgras_test_get_slot_pixel(Object *obj, Visitor *v,
     if (DEVICE(obj)->realized && s->test_slot < 2 && s->slot[s->test_slot] &&
         s->test_pixel_x < s->width && s->test_pixel_y < s->height) {
         value = s->slot[s->test_slot][s->test_pixel_y * s->width +
-                                      s->test_pixel_x];
+                                      s->test_pixel_x] & 0xffffff;
     }
     visit_type_uint32(v, name, &value, errp);
 }

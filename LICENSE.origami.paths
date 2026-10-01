@@ -425,6 +425,7 @@ tests/data/mgras/cmap-high-byte.replay
 tests/data/mgras/cmap-xmap-wid.replay
 tests/data/mgras/dma-image-transfer.replay
 tests/data/mgras/fill.replay
+tests/data/mgras/gl-deep-swap-clock-ssi.replay
 tests/data/mgras/gl-eviction-i3dm.replay
 tests/data/mgras/gl-new-context-slot-reuse.replay
 tests/data/mgras/gl-pixels-rectwrite.replay

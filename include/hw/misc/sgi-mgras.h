@@ -246,6 +246,9 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
  * One PP1's XMAP register file: the index byte and every register it
  * indexes. Which of a board's PP1s a guest access reaches is PP1SELECT's.
  */
+/* Bit 31 of a slot 2 word: a draw wrote the pixel (sgi-mgras-gl.c). */
+#define SGI_MGRAS_SLOT_WRITTEN  0x80000000u
+
 typedef struct SGIMgrasXmap {
     uint8_t index;
     uint32_t config;            /* 0x071d00 */
@@ -541,7 +544,9 @@ struct SGIMgrasState {
      * Colour-buffer slots 2 and 3 of a two-RE board, written by GL's
      * draw-buffer bits 2 and 3 (hw/misc/sgi-mgras-gl.c); NULL, with a zero
      * slot_count, on a one-RE board. Direct colour or an index, with no
-     * format tag, and never scanned out.
+     * format tag. A pixel of slot 2 that a draw wrote carries
+     * SGI_MGRAS_SLOT_WRITTEN above its 24 colour bits, which tells scanout a
+     * deep window's pixel from a shallow one; slot 3 is never scanned out.
      */
     uint32_t *slot[2];
     uint32_t slot_count;
