@@ -1229,6 +1229,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     memset(s->gl_slot, 0, sizeof(s->gl_slot));
     memset(s->gl_selected, 0, sizeof(s->gl_selected));
     memset(s->gl_saved, 0, sizeof(s->gl_saved));
+    memset(s->gl_is_saved, 0, sizeof(s->gl_is_saved));
     s->gl_selections = 0;
     s->gl_current = 0;
     s->gl_ge_port_logged = false;
@@ -1248,6 +1249,7 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
 {
     sgi_gl_reset(&s->gl[i], hw_id);
     s->gl_saved[i] = 0;
+    s->gl_is_saved[i] = false;
     memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
@@ -1265,7 +1267,7 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
     for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         if (!s->gl_selected[i]) {
             free = free ? free : i;
-        } else if (s->gl_slot[i] == slot && !s->gl_saved[i]) {
+        } else if (s->gl_slot[i] == slot && !s->gl_is_saved[i]) {
             return i;
         } else if (!oldest || s->gl_selected[i] < s->gl_selected[oldest]) {
             oldest = i;
@@ -1331,8 +1333,10 @@ static void mgras_gl_eram_read(SGIMgrasState *s, uint32_t addr,
     }
     s->eram_state = MGRAS_ERAM_IDLE;
     for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-        if (s->gl_selected[i] && !s->gl_saved[i] && s->gl_slot[i] == addr) {
+        if (s->gl_selected[i] && !s->gl_is_saved[i] &&
+            s->gl_slot[i] == addr) {
             s->gl_saved[i] = s->eram_host;
+            s->gl_is_saved[i] = true;
             return;
         }
     }
@@ -1368,11 +1372,12 @@ static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
         return;
     }
     for (unsigned int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-        if (!s->gl_selected[i] || s->gl_saved[i] != host) {
+        if (!s->gl_selected[i] || !s->gl_is_saved[i] ||
+            s->gl_saved[i] != host) {
             continue;
         }
         for (unsigned int j = 1; j < SGI_MGRAS_GL_CONTEXTS; j++) {
-            if (j != i && s->gl_selected[j] && !s->gl_saved[j] &&
+            if (j != i && s->gl_selected[j] && !s->gl_is_saved[j] &&
                 s->gl_slot[j] == addr) {
                 mgras_gl_forget(s, j, 0);
                 s->gl_selected[j] = 0;
@@ -1382,6 +1387,7 @@ static void mgras_gl_eram_write(SGIMgrasState *s, uint32_t addr,
             }
         }
         s->gl_saved[i] = 0;
+        s->gl_is_saved[i] = false;
         s->gl_slot[i] = addr;
         s->gl[i].hw_id = addr;
         s->eram_next_addr = addr + words;
