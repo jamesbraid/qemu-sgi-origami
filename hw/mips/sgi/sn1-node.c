@@ -203,7 +203,8 @@ static void sn1_node_place_claims(SN1NodeState *node)
         }
         sn1_fabric_place_view(&node->endpoint, node->claim[view]);
         if (view < SN1_NODE_FABRIC_VIEW) {
-            bool typed = peer && peer->ready && peer->isolated_route;
+            bool typed = peer && peer->ready && peer->isolated_route &&
+                         sn1_fabric_number(peer) != own;
 
             for (unsigned space = 0; space < SN1_NODE_SPACES; space++) {
                 memory_region_set_enabled(

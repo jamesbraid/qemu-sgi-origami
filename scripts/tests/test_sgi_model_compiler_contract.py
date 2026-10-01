@@ -435,6 +435,29 @@ class RecordShapeTests(unittest.TestCase):
         }]
         return model
 
+    def test_expansion_experiment_owns_its_internal_xio_links(self):
+        model = _resolved("origin300-pci-expansion-experiment")
+        compiled = compile_model(model)
+        self.assertEqual(len(compiled["nodes"]), 1)
+        self.assertEqual(len(compiled["io_peers"]), 1)
+        self.assertEqual(len(compiled["controllers"]), 2)
+        self.assertEqual(compiled["io_assemblies"][0]["initial_node_number"], 0)
+        self.assertEqual(compiled["io_assemblies"][0]["head_ports"], [8, 9, 12, 13])
+        self.assertEqual(len(compiled["xio_attachments"]), 2)
+
+    def test_expansion_internal_xio_rejects_foreign_module_endpoint(self):
+        model = self._expansion_descriptor_model()
+        model["buses"].append({
+            "id": "assembly-xio", "kind": "xio", "master": "io-bedrock",
+        })
+        compute = next(c["id"] for c in model["components"]
+                       if c.get("kind") == "node-asic")
+        model["connections"].append({
+            "component": compute, "bus": "assembly-xio", "role": "endpoint",
+        })
+        with self.assertRaisesRegex(CompileError, "leaves its module"):
+            index_graph(model)
+
     def test_expansion_descriptor_retains_reset_zero_separately_from_placement(self):
         model = self._expansion_descriptor_model()
         descriptor = compile_model(model)["io_assemblies"][0]

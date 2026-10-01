@@ -1058,6 +1058,179 @@ static const TypeInfo origin300_config_type = {
     .class_init = origin300_config_class_init,
 };
 
+#define TYPE_SN_BUILDER_EXPANSION_TEST \
+    MACHINE_TYPE_NAME("sn-builder-expansion-test")
+
+static bool expansion_test_activate;
+
+static void expansion_test_set_activate(Object *obj, bool value, Error **errp)
+{
+    expansion_test_activate = value;
+}
+
+static void expansion_test_set_identity_mismatch(Object *obj, bool value,
+                                                  Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+
+    if (value) {
+        smc->test_topology->l1_management->owners->value->identity += 17;
+    }
+}
+
+static void expansion_test_set_attachment_mismatch(Object *obj, bool value,
+                                                    Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+
+    if (value) {
+        SGIModelL1Attachment *selection =
+            smc->test_topology->l1_management->attachments->value;
+
+        selection->issuer = 1;
+        selection->owner = 0;
+    }
+}
+
+static void expansion_test_set_ownership_mismatch(Object *obj, bool value,
+                                                   Error **errp)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    SGIModelL1OwnerList *owners = smc->test_topology->l1_management->owners;
+
+    if (value) {
+        owners->value->controller_index = 1;
+        owners->next->value->controller_index = 0;
+    }
+}
+
+static void expansion_test_machine_init(MachineState *machine)
+{
+    if (expansion_test_activate) {
+        sgi_machine_init(machine);
+    }
+}
+
+static void expansion_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *compute = sgi_model_find_topology("origin300");
+    SGIModelTopology *t = g_memdup2(compute, sizeof(*t));
+    SGIModelModule *module = g_new0(SGIModelModule, 1);
+    SGIModelController *controller = g_new0(SGIModelController, 1);
+    SGIModelIoPeer *peer = g_new0(SGIModelIoPeer, 1);
+    SGIModelIoAssembly *assembly = g_new0(SGIModelIoAssembly, 1);
+    SGIModelCable *cable = g_new0(SGIModelCable, 1);
+    SGIModelNodePopulation *row =
+        g_memdup2(compute->node_populations->value, sizeof(*row));
+    SGIModelModuleList **module_tail = &t->modules;
+    SGIModelControllerList **controller_tail = &t->controllers;
+    SGIModelL1Management *management = g_new0(SGIModelL1Management, 1);
+    uint8List **port_tail = &assembly->head_ports;
+    static const uint8_t ports[] = { 8, 9, 12, 13 };
+    static const unsigned zero[] = { 0 };
+
+    t->name = (char *)"sn-builder-expansion-test";
+    t->modules = NULL;
+    t->controllers = NULL;
+    QAPI_LIST_APPEND(module_tail, compute->modules->value);
+    module->id = (char *)"synthetic-expansion";
+    module->controller_index = 1;
+    module->io_peers = uint32_list(zero, 1);
+    QAPI_LIST_APPEND(module_tail, module);
+    QAPI_LIST_APPEND(controller_tail, compute->controllers->value);
+    controller->id = (char *)"synthetic-expansion-l1";
+    controller->kind = SGI_MODEL_CONTROLLER_KIND_L1;
+    controller->module_index = 1;
+    QAPI_LIST_APPEND(controller_tail, controller);
+    peer->id = (char *)"synthetic-bic";
+    peer->module_index = 1;
+    peer->asic_kind = SGI_MODEL_ASIC_KIND_BEDROCK;
+    peer->identity = g_new0(SGIModelAsicIdentity, 1);
+    peer->identity->ni_revision = peer->identity->widget_revision = 2;
+    peer->identity->serial = 0x123456;
+    t->has_io_peers = true;
+    t->io_peers = g_new0(SGIModelIoPeerList, 1);
+    t->io_peers->value = peer;
+    assembly->version = 1;
+    assembly->kind = SGI_MODEL_IO_ASSEMBLY_KIND_ORIGIN300_PCI_EXPANSION;
+    assembly->module_index = assembly->controller_index = 1;
+    assembly->placement = 1;
+    assembly->initial_node_number = 0;
+    assembly->bedrock_revision = assembly->xbridge_revision = 2;
+    assembly->controller_profile = (char *)"pci-expansion";
+    assembly->bic_identity = UINT64_C(0x123400000000c000);
+    for (unsigned i = 0; i < ARRAY_SIZE(ports); i++) {
+        QAPI_LIST_APPEND(port_tail, ports[i]);
+    }
+    t->has_io_assemblies = true;
+    t->io_assemblies = g_new0(SGIModelIoAssemblyList, 1);
+    t->io_assemblies->value = assembly;
+    cable->name = (char *)"expansion-link";
+    cable->kind = SGI_MODEL_CABLE_KIND_CABLE;
+    cable->ends = g_new0(SGIModelLinkEndList, 1);
+    cable->ends->value = g_new0(SGIModelLinkEnd, 1);
+    cable->ends->value->kind = SGI_MODEL_LINK_END_KIND_NODE;
+    cable->ends->next = g_new0(SGIModelLinkEndList, 1);
+    cable->ends->next->value = g_new0(SGIModelLinkEnd, 1);
+    cable->ends->next->value->kind = SGI_MODEL_LINK_END_KIND_IO_PEER;
+    t->cables = g_new0(SGIModelCableList, 1);
+    t->cables->value = cable;
+    row->cables = uint32_list(zero, 1);
+    t->node_populations = g_new0(SGIModelNodePopulationList, 1);
+    t->node_populations->value = row;
+    for (unsigned i = 0; i < 2; i++) {
+        SGIModelL1OwnerList **owner_tail = &management->owners;
+        SGIModelL1AssociationList **edge_tail = &management->associations;
+        SGIModelL1Owner *owner = g_new0(SGIModelL1Owner, 1);
+        SGIModelL1Association *edge = g_new0(SGIModelL1Association, 1);
+
+        while (*owner_tail) {
+            owner_tail = &(*owner_tail)->next;
+        }
+        while (*edge_tail) {
+            edge_tail = &(*edge_tail)->next;
+        }
+        owner->controller_index = i;
+        owner->identity = 101 + i;
+        edge->from = i;
+        edge->to = i ^ 1;
+        edge->reachable = true;
+        QAPI_LIST_APPEND(owner_tail, owner);
+        QAPI_LIST_APPEND(edge_tail, edge);
+    }
+    management->attachments = g_new0(SGIModelL1AttachmentList, 1);
+    management->attachments->value = g_new0(SGIModelL1Attachment, 1);
+    management->attachments->value->owner = 1;
+    t->l1_management = management;
+    smc->test_topology = t;
+    smc->product = "origin300";
+    smc->default_topology = "origin300";
+    mc->desc = "synthetic Origin 300 expansion builder fixture";
+    mc->init = expansion_test_machine_init;
+    mc->valid_cpu_types = bedrock_test_r14000_cpu_types;
+    mc->default_cpus = sgi_machine_topology_default_cpus(compute);
+    mc->min_cpus = mc->default_cpus;
+    mc->max_cpus = sgi_machine_product_max_cpus("origin300");
+    mc->default_ram_size = sgi_machine_topology_default_ram(compute);
+    mc->default_ram_id = "sn-builder-expansion-test.ram";
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   expansion_test_set_activate);
+    object_class_property_add_bool(oc, "identity-mismatch", NULL,
+                                   expansion_test_set_identity_mismatch);
+    object_class_property_add_bool(oc, "attachment-mismatch", NULL,
+                                   expansion_test_set_attachment_mismatch);
+    object_class_property_add_bool(oc, "ownership-mismatch", NULL,
+                                   expansion_test_set_ownership_mismatch);
+}
+
+static const TypeInfo expansion_test_type = {
+    .name = TYPE_SN_BUILDER_EXPANSION_TEST,
+    .parent = TYPE_SGI_SN_MACHINE,
+    .class_init = expansion_test_class_init,
+};
+
 static void sn_builder_fault_test_register_types(void)
 {
     /*
@@ -1185,6 +1358,7 @@ static void sn_builder_fault_test_register_types(void)
     type_register_static(&bedrock_test_type);
     type_register_static(&bedrock_nasid_test_type);
     type_register_static(&origin300_config_type);
+    type_register_static(&expansion_test_type);
 }
 
 type_init(sn_builder_fault_test_register_types)

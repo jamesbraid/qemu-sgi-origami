@@ -30,6 +30,7 @@
 #include "qemu/host-utils.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
+#include "qapi/util.h"
 #include "qapi/qapi-builtin-types.h"
 #include "qapi/qapi-visit-common.h"
 #include "qapi/visitor.h"
@@ -48,8 +49,11 @@
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/misc/sgi-elsc.h"
-#include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-bic-board-interface.h"
 #include "hw/misc/sgi-l1.h"
+#include "chardev/char.h"
+#include "migration/vmstate.h"
+#include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-router.h"
@@ -70,6 +74,7 @@
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sgi/net-cable.h"
 #include "sn0.h"
+#include "origin300-pci-expansion.h"
 
 /*
  * The compiled catalogue's QAPI-generated types (qapi/sgi-sn.json) hold
@@ -191,6 +196,17 @@ typedef struct SGIMachineIoConfig {
     uint8_t pci_revision[SGI_MODEL_PCI_FUNCTION_KIND__MAX];
 } SGIMachineIoConfig;
 
+typedef struct SGIMachinePeerNotifier {
+    Notifier notifier;
+    SN1FabricEndpoint *endpoint;
+} SGIMachinePeerNotifier;
+
+typedef struct SGIMachineAssemblyOwnership {
+    uint32_t peer;
+    uint32_t module;
+    uint32_t controller;
+} SGIMachineAssemblyOwnership;
+
 struct SGIMachineState {
     MachineState parent_obj;
 
@@ -270,6 +286,19 @@ struct SGIMachineState {
     SGIMachineIoConfig *io_config;
     DeviceState **io_peers;
     unsigned int io_peer_count;
+    SGIMachinePeerNotifier *io_peer_notifiers;
+    SGIMachineAssemblyOwnership *assembly_ownership;
+    DeviceState **controllers;
+    uint32_t controller_count;
+    uint32_t *owner_controllers;
+    SGIL1QueryOwner *query_owners;
+    SGIL1QueryAssociation *query_associations;
+    SGIL1QueryAttachment *query_attachments;
+    uint32_t association_count;
+    uint32_t attachment_count;
+    uint8_t *initial_reachability;
+    SGIL1QueryRouter query_router;
+    bool management_registered;
     /* Each Bedrock node's share of machine->ram, in node order. */
     MemoryRegion *bedrock_ram;
 
@@ -293,6 +322,8 @@ struct SGIMachineState {
     uint8_t fuel_bedrock_revision;
     bool fuel_bedrock_revision_set;
     char *fuel_mac_eeprom;
+    strList *controller_board_eeprom;
+    strList *controller_chardev;
 };
 
 /*
@@ -304,6 +335,7 @@ typedef struct SGIMachineIdentityRecords {
     const char *name;
     ptrdiff_t offset;
     const char *description;
+    bool targeted;
 } SGIMachineIdentityRecords;
 
 static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
@@ -318,6 +350,17 @@ static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
     {
         "spd-eeprom", offsetof(SGIMachineState, spd_eeprom),
         "Files holding the memory module presence-detect records, in order",
+    },
+    {
+        "controller-board-eeprom",
+        offsetof(SGIMachineState, controller_board_eeprom),
+        "Expansion board records as controller-index/component-index=path",
+        true,
+    },
+    {
+        "controller-chardev", offsetof(SGIMachineState, controller_chardev),
+        "Expansion host console as controller-index=chardev-id",
+        true,
     },
 };
 
@@ -379,7 +422,7 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
         size_t count = 0, share, position = 0;
         QList *files;
 
-        if (!head) {
+        if (!head || records->targeted) {
             continue;
         }
         for (file = head; file; file = file->next) {
@@ -400,6 +443,160 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
             }
         }
         qdev_prop_set_array(l1, records->name, files);
+    }
+    return true;
+}
+
+static bool sgi_machine_controller_input(const char *text, bool component,
+    unsigned *owner, unsigned *slot, const char **payload, Error **errp)
+{
+    const char *end;
+
+    if (!g_ascii_isdigit(text[0]) || qemu_strtoui(text, &end, 10, owner)) {
+        goto invalid;
+    }
+    if (component) {
+        if (*end != '/' || !g_ascii_isdigit(end[1]) ||
+            qemu_strtoui(end + 1, &end, 10, slot) || *slot >= 4) {
+            goto invalid;
+        }
+    }
+    if (*end != '=' || !end[1]) {
+        goto invalid;
+    }
+    *payload = end + 1;
+    return true;
+
+invalid:
+    error_setg(errp, "invalid controller input '%s'; expected %s", text,
+               component ? "owner/component=path" : "owner=chardev-id");
+    return false;
+}
+
+static bool sgi_machine_expansion_controller(const SGIModelTopology *t,
+                                             unsigned owner)
+{
+    const SGIModelIoAssemblyList *entry;
+
+    for (entry = t->io_assemblies; entry; entry = entry->next) {
+        if (entry->value->controller_index == owner) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    size_t count = QAPI_LIST_LENGTH(t->controllers);
+    g_autofree bool *boards = g_new0(bool, MAX(count * 4, 1));
+    g_autofree bool *consoles = g_new0(bool, MAX(count, 1));
+    const strList *entry, *prior;
+
+    for (unsigned kind = 0; kind < 2; kind++) {
+        const strList *head = kind ? s->controller_chardev :
+                                   s->controller_board_eeprom;
+
+        for (entry = head; entry; entry = entry->next) {
+            unsigned owner, slot = 0;
+            const char *payload;
+            bool *used;
+
+            if (!sgi_machine_controller_input(entry->value, !kind, &owner,
+                                               &slot, &payload, errp)) {
+                return false;
+            }
+            if (owner >= count || !sgi_machine_expansion_controller(t, owner)) {
+                error_setg(errp, "controller %u is not an expansion L1 owner",
+                           owner);
+                return false;
+            }
+            used = kind ? &consoles[owner] : &boards[owner * 4 + slot];
+            if (*used) {
+                error_setg(errp, "duplicate controller input for owner %u",
+                           owner);
+                return false;
+            }
+            *used = true;
+            for (prior = head; prior != entry; prior = prior->next) {
+                if (!strcmp(strchr(prior->value, '=') + 1, payload)) {
+                    error_setg(errp, "controller inputs reuse '%s'", payload);
+                    return false;
+                }
+            }
+            if (kind) {
+                if (!qemu_chr_find(payload)) {
+                    error_setg(errp, "controller chardev '%s' does not exist",
+                               payload);
+                    return false;
+                }
+            } else {
+                for (size_t i = 0; i < ARRAY_SIZE(sgi_machine_identity_records);
+                     i++) {
+                    const SGIMachineIdentityRecords *records =
+                        &sgi_machine_identity_records[i];
+                    const strList *raw;
+
+                    if (records->targeted) {
+                        continue;
+                    }
+                    raw = *sgi_machine_identity_slot(OBJECT(s),
+                                                      (void *)records);
+                    for (; raw; raw = raw->next) {
+                        if (!strcmp(raw->value, payload)) {
+                            error_setg(errp, "expansion record reuses compute "
+                                       "input '%s'", payload);
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
+    unsigned owner, DeviceState *l1, Error **errp)
+{
+    const strList *entry;
+    const char *paths[4] = { NULL };
+    bool supplied = false;
+
+    for (entry = s->controller_board_eeprom; entry; entry = entry->next) {
+        unsigned selected, slot;
+        const char *payload;
+
+        if (!sgi_machine_controller_input(entry->value, true, &selected,
+                                           &slot, &payload, errp)) {
+            return false;
+        }
+        if (selected == owner) {
+            paths[slot] = payload;
+            supplied = true;
+        }
+    }
+    if (supplied) {
+        QList *files = qlist_new();
+
+        for (unsigned i = 0; i < ARRAY_SIZE(paths); i++) {
+            qlist_append_str(files, paths[i] ? paths[i] : "");
+        }
+        qdev_prop_set_array(l1, "board-record-eeprom", files);
+    }
+    for (entry = s->controller_chardev; entry; entry = entry->next) {
+        unsigned selected, slot;
+        const char *payload;
+
+        if (!sgi_machine_controller_input(entry->value, false, &selected,
+                                           &slot, &payload, errp)) {
+            return false;
+        }
+        if (selected == owner &&
+            !object_property_set_str(OBJECT(l1), "chardev", payload, errp)) {
+            return false;
+        }
     }
     return true;
 }
@@ -2306,6 +2503,315 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
     return true;
 }
 
+static void sgi_machine_io_peer_number_changed(Notifier *notifier, void *data)
+{
+    SGIMachinePeerNotifier *peer =
+        container_of(notifier, SGIMachinePeerNotifier, notifier);
+
+    sn1_fabric_update_claims(peer->endpoint);
+}
+
+static const VMStateDescription vmstate_sgi_machine_owner = {
+    .name = "sgi-machine/l1-owner",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_EQUAL(identity, SGIL1QueryOwner),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_machine_association = {
+    .name = "sgi-machine/l1-association",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(from, SGIL1QueryAssociation),
+        VMSTATE_UINT32_EQUAL(to, SGIL1QueryAssociation),
+        VMSTATE_BOOL(reachable, SGIL1QueryAssociation),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_machine_attachment = {
+    .name = "sgi-machine/l1-attachment",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(issuer, SGIL1QueryAttachment),
+        VMSTATE_UINT32_EQUAL(owner, SGIL1QueryAttachment),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_machine_assembly_owner = {
+    .name = "sgi-machine/assembly-owner",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(peer, SGIMachineAssemblyOwnership),
+        VMSTATE_UINT32_EQUAL(module, SGIMachineAssemblyOwnership),
+        VMSTATE_UINT32_EQUAL(controller, SGIMachineAssemblyOwnership),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static int sgi_machine_management_pre_save(void *opaque)
+{
+    SGIMachineState *s = opaque;
+
+    return s->query_router.active ? -EBUSY : 0;
+}
+
+static const VMStateDescription vmstate_sgi_machine_management = {
+    .name = "sgi-machine/l1-management",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = sgi_machine_management_pre_save,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_EQUAL(controller_count, SGIMachineState),
+        VMSTATE_UINT32_EQUAL(io_peer_count, SGIMachineState),
+        VMSTATE_UINT32_EQUAL(association_count, SGIMachineState),
+        VMSTATE_UINT32_EQUAL(attachment_count, SGIMachineState),
+        VMSTATE_VARRAY_UINT32(owner_controllers, SGIMachineState,
+                             controller_count, 0, vmstate_info_uint32_equal,
+                             uint32_t),
+        VMSTATE_STRUCT_VARRAY_POINTER_UINT32(query_owners, SGIMachineState,
+            controller_count, vmstate_sgi_machine_owner, SGIL1QueryOwner),
+        VMSTATE_STRUCT_VARRAY_POINTER_UINT32(assembly_ownership,
+            SGIMachineState, io_peer_count, vmstate_sgi_machine_assembly_owner,
+            SGIMachineAssemblyOwnership),
+        VMSTATE_STRUCT_VARRAY_POINTER_UINT32(query_associations,
+            SGIMachineState, association_count, vmstate_sgi_machine_association,
+            SGIL1QueryAssociation),
+        VMSTATE_STRUCT_VARRAY_POINTER_UINT32(query_attachments, SGIMachineState,
+            attachment_count, vmstate_sgi_machine_attachment,
+            SGIL1QueryAttachment),
+        VMSTATE_VARRAY_UINT32(initial_reachability, SGIMachineState,
+                             association_count, 0, vmstate_info_uint8_equal,
+                             uint8_t),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void sgi_machine_get_association(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    SGIL1QueryAssociation *edge = opaque;
+    bool reachable = edge->reachable;
+
+    visit_type_bool(v, name, &reachable, errp);
+}
+
+static void sgi_machine_set_association(Object *obj, Visitor *v,
+    const char *name, void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    SGIL1QueryAssociation *edge = opaque;
+    bool reachable;
+
+    if (s->query_router.active) {
+        error_setg(errp, "cannot change L1 association during a query");
+        return;
+    }
+    if (visit_type_bool(v, name, &reachable, errp)) {
+        edge->reachable = reachable;
+    }
+}
+
+static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    const SGIModelIoAssemblyList *entry;
+    const SGIModelNodeList *node_entry;
+    const SGIModelL1OwnerList *owner_entry;
+    const SGIModelL1AssociationList *association;
+    const SGIModelL1AttachmentList *attachment;
+    size_t module_count;
+    unsigned index;
+    Error *local_error = NULL;
+    static const char *const port_names[] = {
+        "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
+    };
+
+    if (!t->io_assemblies) {
+        return true;
+    }
+    modules = sgi_model_module_array(t->modules, &module_count);
+    s->controller_count = QAPI_LIST_LENGTH(t->controllers);
+    s->controllers = g_new0(DeviceState *, s->controller_count);
+    s->io_peer_count = QAPI_LIST_LENGTH(t->io_peers);
+    s->io_peers = g_new0(DeviceState *, s->io_peer_count);
+    s->io_peer_notifiers = g_new0(SGIMachinePeerNotifier, s->io_peer_count);
+    s->assembly_ownership =
+        g_new0(SGIMachineAssemblyOwnership, s->io_peer_count);
+    for (node_entry = t->nodes, index = 0; node_entry;
+         node_entry = node_entry->next, index++) {
+        const SGIModelNode *node = node_entry->value;
+        int64_t owner;
+
+        if (node->module_index >= module_count) {
+            error_setg(errp, "compute L1 names an absent module");
+            return false;
+        }
+        owner = modules[node->module_index]->controller_index;
+        if (owner < 0 || owner >= s->controller_count ||
+            s->controllers[owner]) {
+            error_setg(errp, "compute L1 needs unique module-owned controller");
+            return false;
+        }
+        s->controllers[owner] = SN1_NODE(s->bedrock_nodes[index])->l1;
+        object_ref(OBJECT(s->controllers[owner]));
+    }
+    for (entry = t->io_assemblies; entry; entry = entry->next) {
+        const SGIModelIoAssembly *a = entry->value;
+        g_autofree char *module_name =
+            g_strdup_printf("module%u", a->module_index);
+        g_autofree char *prefix =
+            g_strdup_printf("expansion%u-", a->peer_index);
+        Object *module = object_resolve_path_component(OBJECT(s), module_name);
+        DeviceState *l1 = qdev_new(TYPE_SGI_L1);
+        DeviceState *interface = qdev_new(TYPE_SGI_BIC_BOARD_INTERFACE);
+        DeviceState *dev = qdev_new(TYPE_SGI_ORIGIN300_PCI_EXPANSION);
+        SGIOrigin300PciExpansionState *assembly =
+            SGI_ORIGIN300_PCI_EXPANSION(dev);
+        const uint8List *port;
+        SGIMachinePeerNotifier *notifier = &s->io_peer_notifiers[a->peer_index];
+
+        object_property_add_child(module, "l1", OBJECT(l1));
+        s->controllers[a->controller_index] = l1;
+        qdev_prop_set_string(l1, "brick-type", a->controller_profile);
+        if (!sgi_machine_set_expansion_inputs(s, a->controller_index,
+                                              l1, errp) ||
+            !qdev_realize(l1, NULL, errp)) {
+            object_unref(OBJECT(interface));
+            object_unref(OBJECT(dev));
+            return false;
+        }
+        object_property_add_child(module, "board-interface", OBJECT(interface));
+        qdev_prop_set_uint64(interface, "identity", a->bic_identity);
+        qdev_prop_set_bit(interface, "initial-latch-set", a->has_initial_latch);
+        qdev_prop_set_uint16(interface, "initial-latch", a->initial_latch);
+        if (!qdev_realize(interface, NULL, errp)) {
+            object_unref(OBJECT(interface));
+            object_unref(OBJECT(dev));
+            return false;
+        }
+        object_property_add_child(module, "assembly", OBJECT(dev));
+        s->io_peers[a->peer_index] = dev;
+        qdev_prop_set_uint32(dev, "placement", a->placement);
+        qdev_prop_set_uint8(dev, "node-number", a->initial_node_number);
+        qdev_prop_set_uint8(dev, "bedrock-revision", a->bedrock_revision);
+        qdev_prop_set_uint8(dev, "xbridge-revision", a->xbridge_revision);
+        qdev_prop_set_string(dev, "bus-prefix", prefix);
+        for (port = a->head_ports, index = 0; port;
+             port = port->next, index++) {
+            qdev_prop_set_uint8(dev, port_names[index], port->value);
+        }
+        if (a->has_intx_map) {
+            SGIOrigin300PciIntxMap map;
+            uint8_t *pins = &map.pin[0][0][0];
+            const uint8List *pin;
+
+            for (pin = a->intx_map, index = 0; pin; pin = pin->next, index++) {
+                pins[index] = pin->value;
+            }
+            if (!sgi_origin300_pci_expansion_set_intx_map(assembly, &map,
+                                                         errp)) {
+                object_unref(OBJECT(interface));
+                return false;
+            }
+        }
+        if (!sgi_origin300_pci_expansion_enable_ni_route(assembly, errp) ||
+            !sgi_origin300_pci_expansion_attach_board_interface(assembly,
+                SGI_BIC_BOARD_INTERFACE(interface), errp)) {
+            object_unref(OBJECT(interface));
+            return false;
+        }
+        object_unref(OBJECT(interface));
+        if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
+            return false;
+        }
+        notifier->endpoint =
+            SGI_SN1_FABRIC_GET_CLASS(dev)->endpoint(OBJECT(dev));
+        notifier->notifier.notify = sgi_machine_io_peer_number_changed;
+        sgi_bedrock_lb_add_node_notifier(&notifier->endpoint->bedrock->lb,
+                                         &notifier->notifier);
+        s->assembly_ownership[a->peer_index] = (SGIMachineAssemblyOwnership) {
+            .peer = a->peer_index, .module = a->module_index,
+            .controller = a->controller_index,
+        };
+    }
+    for (index = 0; index < s->controller_count; index++) {
+        if (!s->controllers[index]) {
+            error_setg(errp, "controller %u has no constructed L1 owner",
+                       index);
+            return false;
+        }
+    }
+    s->query_owners = g_new0(SGIL1QueryOwner, s->controller_count);
+    s->owner_controllers = g_new0(uint32_t, s->controller_count);
+    for (owner_entry = t->l1_management->owners, index = 0; owner_entry;
+         owner_entry = owner_entry->next, index++) {
+        const SGIModelL1Owner *owner = owner_entry->value;
+
+        if (owner->controller_index >= s->controller_count) {
+            error_setg(errp, "L1 management names controller out of range");
+            return false;
+        }
+        s->owner_controllers[index] = owner->controller_index;
+        s->query_owners[index] = (SGIL1QueryOwner) {
+            .controller = SGI_L1(s->controllers[owner->controller_index]),
+            .identity = owner->identity,
+        };
+    }
+    s->association_count = QAPI_LIST_LENGTH(t->l1_management->associations);
+    s->attachment_count = QAPI_LIST_LENGTH(t->l1_management->attachments);
+    s->query_associations = g_new0(SGIL1QueryAssociation, s->association_count);
+    s->initial_reachability = g_new0(uint8_t, s->association_count);
+    s->query_attachments = g_new0(SGIL1QueryAttachment, s->attachment_count);
+    for (association = t->l1_management->associations, index = 0; association;
+         association = association->next, index++) {
+        const SGIModelL1Association *edge = association->value;
+
+        s->query_associations[index] = (SGIL1QueryAssociation) {
+            .from = edge->from, .to = edge->to, .reachable = edge->reachable,
+        };
+        s->initial_reachability[index] = edge->reachable;
+    }
+    for (attachment = t->l1_management->attachments, index = 0; attachment;
+         attachment = attachment->next, index++) {
+        s->query_attachments[index] = (SGIL1QueryAttachment) {
+            .issuer = attachment->value->issuer,
+            .owner = attachment->value->owner,
+        };
+    }
+    sgi_l1_query_router_init(&s->query_router, s->query_owners,
+                             s->controller_count, s->query_associations,
+                             s->association_count, &local_error);
+    if (local_error) {
+        error_propagate(errp, local_error);
+        return false;
+    }
+    if (!sgi_l1_query_router_set_attached(&s->query_router,
+            s->query_attachments, s->attachment_count, errp)) {
+        return false;
+    }
+    for (index = 0; index < s->association_count; index++) {
+        g_autofree char *name =
+            g_strdup_printf("l1-association%u-reachable", index);
+
+        object_property_add(OBJECT(s), name, "bool",
+                            sgi_machine_get_association,
+                            sgi_machine_set_association, NULL,
+                            &s->query_associations[index]);
+    }
+    vmstate_register_any(NULL, &vmstate_sgi_machine_management, s);
+    s->management_registered = true;
+    return true;
+}
+
 /* ---- The builder ---- */
 
 /*
@@ -2918,6 +3424,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_resolve_config(s, t, errp)) {
         return false;
     }
+    if (!sgi_machine_validate_controller_inputs(s, t, errp)) {
+        return false;
+    }
     if (sgi_machine_has_identity_records(s)) {
         g_autofree const SGIModelController **controllers = NULL;
         size_t controller_count;
@@ -3244,6 +3753,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         g_assert(cpu_index == machine->smp.cpus);
+        if (!sgi_machine_build_io_assemblies(s, t, errp)) {
+            return false;
+        }
         /*
          * The NUMAlink cables join realized Bedrocks: each node creates its
          * Bedrock while it realizes, and a Bedrock's cable reference may be
@@ -3799,6 +4311,10 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     CPUState *cs;
     unsigned int node, slice;
 
+    for (unsigned int i = 0; i < s->association_count; i++) {
+        s->query_associations[i].reachable = s->initial_reachability[i];
+    }
+
     /*
      * Every Bedrock node resets itself: "start-powered-off" needs its
      * cpu_reset() to run before qemu_devices_reset(), the reverse of
@@ -4212,6 +4728,31 @@ static void sgi_machine_instance_finalize(Object *obj)
     SGIMachineState *s = SGI_MACHINE(obj);
     size_t i;
 
+    if (s->management_registered) {
+        vmstate_unregister(NULL, &vmstate_sgi_machine_management, s);
+    }
+    sgi_l1_query_router_destroy(&s->query_router);
+    for (i = 0; i < s->controller_count; i++) {
+        if (s->controllers[i]) {
+            object_unref(OBJECT(s->controllers[i]));
+        }
+    }
+    for (i = 0; i < s->io_peer_count; i++) {
+        if (s->io_peer_notifiers[i].endpoint) {
+            notifier_remove(&s->io_peer_notifiers[i].notifier);
+        }
+        if (s->io_peers[i]) {
+            object_unref(OBJECT(s->io_peers[i]));
+        }
+    }
+    g_free(s->controllers);
+    g_free(s->owner_controllers);
+    g_free(s->query_owners);
+    g_free(s->query_associations);
+    g_free(s->query_attachments);
+    g_free(s->initial_reachability);
+    g_free(s->io_peer_notifiers);
+    g_free(s->assembly_ownership);
     g_free(s->nodes);
     g_free(s->bedrock_nodes);
     g_free(s->node_config);

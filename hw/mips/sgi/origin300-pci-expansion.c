@@ -5,6 +5,7 @@
  * No external NI data route, discovery identity, flash or L1 UART is supplied.
  */
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
@@ -21,6 +22,8 @@
 struct SGIOrigin300PciExpansionState {
     SysBusDevice parent_obj;
     DeviceState *bic;
+    SGIBICBoardInterfaceState *board_interface;
+    uint8_t board_attached;
     DeviceState *chip[3];
     SGIXioLink host_link;
     SGIXioLink head_link[4];
@@ -86,6 +89,24 @@ static void expansion_view(SGIOrigin300PciExpansionState *s, unsigned index,
 /* This structural endpoint installs no NI address claims. */
 static void expansion_place_claims(SN1FabricEndpoint *endpoint)
 {
+}
+
+bool sgi_origin300_pci_expansion_attach_board_interface(
+    SGIOrigin300PciExpansionState *s, SGIBICBoardInterfaceState *interface,
+    Error **errp)
+{
+    if (DEVICE(s)->realized || s->board_interface || !interface ||
+        !DEVICE(interface)->realized) {
+        error_setg(errp, "BIC attachment needs a realized interface and must "
+                   "be selected once before assembly realization");
+        return false;
+    }
+    object_ref(OBJECT(interface));
+    s->board_interface = interface;
+    s->board_attached = true;
+    object_property_add_const_link(OBJECT(s), "board-interface",
+                                   OBJECT(interface));
+    return true;
 }
 
 bool sgi_origin300_pci_expansion_enable_ni_route(
@@ -212,6 +233,9 @@ static int expansion_post_load(void *opaque, int version)
 {
     SGIOrigin300PciExpansionState *s = opaque;
 
+    if (version < 3 && s->board_attached) {
+        return -EINVAL;
+    }
     if (version < 2 && s->intx_enabled) {
         return -EINVAL;
     }
@@ -243,6 +267,42 @@ static MemTxResult expansion_processor_rw(SN1FabricEndpoint *endpoint,
     hwaddr offset;
     AddressSpace *as;
 
+    if (local >= UINT64_C(0x30034000000) &&
+        local < UINT64_C(0x30036000000)) {
+        uint64_t value = 0;
+        MemTxResult result;
+
+        if (!s->board_interface || size > 8) {
+            return MEMTX_DECODE_ERROR;
+        }
+        offset = local - UINT64_C(0x30000000000);
+        if (write) {
+            switch (size) {
+            case 1:
+                value = *(uint8_t *)buffer;
+                break;
+            case 2:
+                value = lduw_be_p(buffer);
+                break;
+            case 4:
+                value = ldl_be_p(buffer);
+                break;
+            case 8:
+                value = ldq_be_p(buffer);
+                break;
+            }
+            return sgi_bic_board_write(s->board_interface, offset, size, value);
+        }
+        result = sgi_bic_board_read(s->board_interface, offset, size, &value);
+        if (result == MEMTX_OK) {
+            if (size == 8) {
+                stq_be_p(buffer, value);
+            } else {
+                stw_be_p(buffer, value);
+            }
+        }
+        return result;
+    }
     if ((local >= UINT64_C(0x10030000000) &&
          local - UINT64_C(0x10030000000) < SGI_BEDROCK_SIZE) ||
         (local >= UINT64_C(0x20001800000) &&
@@ -469,6 +529,9 @@ static void expansion_finalize(Object *obj)
         address_space_destroy(&s->bic_pio);
         address_space_destroy(&s->bic_registers);
     }
+    if (s->board_interface) {
+        object_unref(OBJECT(s->board_interface));
+    }
     g_free(s->host_link.name);
     for (i = 0; i < 4; i++) {
         g_free(s->head_link[i].name);
@@ -497,10 +560,12 @@ static const Property expansion_properties[] = {
 
 static const VMStateDescription vmstate_expansion = {
     .name = TYPE_SGI_ORIGIN300_PCI_EXPANSION,
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = expansion_post_load,
     .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(board_attached, SGIOrigin300PciExpansionState, 3,
+                       vmstate_info_uint8_equal, uint8_t),
         VMSTATE_UINT8_EQUAL(ni_route, SGIOrigin300PciExpansionState),
         VMSTATE_UINT32_EQUAL(placement, SGIOrigin300PciExpansionState),
         VMSTATE_UINT8_EQUAL(node_number, SGIOrigin300PciExpansionState),

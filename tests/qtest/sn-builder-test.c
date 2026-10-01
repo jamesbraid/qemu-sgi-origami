@@ -24,7 +24,9 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "qobject/qstring.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
 {
@@ -1706,6 +1708,238 @@ static void test_origin300_two_chassis_refuses_an_uneven_record_list(
  * the builder makes each chassis's L1 the other's peer when it wires the
  * cable.
  */
+#define EXPANSION_LB_LOCAL (SPACE_IO + UINT64_C(0x01000000))
+#define EXPANSION_LB_REVISION UINT64_C(0x600000)
+
+static uint64_t expansion_vector(QTestState *qts, uint64_t offset,
+                                 bool write, uint64_t value)
+{
+    uint64_t status;
+
+    qtest_readq(qts, EXPANSION_LB_LOCAL + 0x60c038);
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x60c008, 0);
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x60c010, value);
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x60c000,
+                 (offset & UINT64_C(0xfffff8)) | (UINT64_C(0x1c8) << 40) |
+                 write);
+    status = qtest_readq(qts, EXPANSION_LB_LOCAL + 0x60c020);
+    g_assert_cmphex(status & (UINT64_C(1) << 63), ==, UINT64_C(1) << 63);
+    g_assert_cmphex(status & 7, ==, write);
+    return qtest_readq(qts, EXPANSION_LB_LOCAL + 0x60c030);
+}
+
+static char *expansion_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn-builder-expansion-prom-XXXXXX.bin", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_expansion_controller_inputs(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *record = NULL;
+    uint8_t bytes[32] = { 1, 2, 0, 0, 0, 0, 0, 0xfd };
+    int fd = g_file_open_tmp("expansion-record-XXXXXX.bin", &record, &error);
+    QTestState *qts;
+    QDict *reply;
+    QList *files;
+    const QListEntry *entry;
+    g_autofree char *backend = NULL;
+
+    g_assert_no_error(error);
+    bytes[18] = 4;
+    bytes[31] = 0xfc;
+    g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M sn-builder-expansion-test,activate=true,"
+        "controller-board-eeprom.0=1/2=%s,controller-chardev.0=1=expansion "
+        "-chardev null,id=expansion -cpu R14000 -bios %s "
+        "-nodefaults -display none", record, prom);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module1/l1',"
+        "'property':'board-record-eeprom'}}");
+    files = qdict_get_qlist(reply, "return");
+    g_assert_cmpuint(qlist_size(files), ==, 4);
+    entry = qlist_first(files);
+    for (unsigned i = 0; i < 4; i++, entry = qlist_next(entry)) {
+        const char *value = qstring_get_str(qobject_to(QString,
+                                                      qlist_entry_obj(entry)));
+        g_assert_cmpstr(value, ==, i == 2 ? record : "");
+    }
+    qobject_unref(reply);
+    backend = qom_get_str(qts, "/machine/module1/l1", "chardev");
+    g_assert_cmpstr(backend, ==, "expansion");
+    qtest_quit(qts);
+    g_unlink(record);
+    g_unlink(prom);
+}
+
+static void test_expansion_controller_refusals(const void *data)
+{
+    static const struct {
+        const char *input;
+        const char *message;
+    } cases[] = {
+        { "controller-board-eeprom.0=0/0=/unused",
+          "controller 0 is not an expansion L1 owner" },
+        { "controller-board-eeprom.0=1/4=/unused",
+          "invalid controller input" },
+        { "controller-board-eeprom.0=1/0=", "invalid controller input" },
+        { "controller-board-eeprom.0=1/0=/unused,"
+          "controller-board-eeprom.1=1/0=/other",
+          "duplicate controller input" },
+        { "controller-board-eeprom.0=1/0=/unused,"
+          "controller-board-eeprom.1=1/1=/unused", "controller inputs reuse" },
+        { "controller-board-eeprom.0=1/0=/unused,board-eeprom.0=/unused",
+          "expansion record reuses compute input" },
+        { "controller-chardev.0=1=missing", "does not exist" },
+        { "controller-chardev.0=1/0=missing", "invalid controller input" },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "sn-builder-expansion-test,activate=true,%s", cases[i].input);
+        const char *args[] = { qtest_qemu_binary(NULL), "-M", machine,
+            "-cpu", "R14000", "-display", "none", NULL };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+}
+
+static void test_expansion_management_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *dir =
+        g_dir_make_tmp("expansion-management-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_initf("-M sn-builder-expansion-test,activate=true "
+        "-cpu R14000 -bios %s -nodefaults -display none", prom);
+    QTestState *to = qtest_initf("-M sn-builder-expansion-test,activate=true "
+        "-cpu R14000 -bios %s -nodefaults -display none -incoming defer", prom);
+    QDict *reply;
+
+    g_assert_no_error(error);
+    qtest_qmp_assert_success(from,
+        "{'execute':'qom-set','arguments':{'path':'/machine',"
+        "'property':'l1-association0-reachable','value':false}}");
+    expansion_vector(from, EXPANSION_LB_REVISION, true, UINT64_C(7) << 32);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    reply = qtest_qmp(to,
+        "{'execute':'qom-get','arguments':{'path':'/machine',"
+        "'property':'l1-association0-reachable'}}");
+    g_assert_false(qdict_get_bool(reply, "return"));
+    qobject_unref(reply);
+    g_assert_cmphex((expansion_vector(to, EXPANSION_LB_REVISION,
+                                     false, 0) >> 32) & 0xff, ==, 7);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_rmdir(dir);
+    g_unlink(prom);
+}
+
+static void test_expansion_management_mismatch(const void *data)
+{
+    const char *option = data;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *dir =
+        g_dir_make_tmp("expansion-mismatch-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_initf("-M sn-builder-expansion-test,activate=true "
+        "-cpu R14000 -bios %s -nodefaults -display none", prom);
+    QTestState *to = qtest_initf(
+        "-M sn-builder-expansion-test,activate=true,%s "
+        "-cpu R14000 -bios %s -nodefaults -display none -incoming defer",
+        option, prom);
+
+    g_assert_no_error(error);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+    g_unlink(prom);
+}
+
+static void test_expansion_builder(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("sn-builder-expansion-prom-XXXXXX.bin", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M sn-builder-expansion-test,activate=true "
+                      "-cpu R14000 -bios %s -nodefaults -display none", path);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly",
+                                 "placement"), ==, 1);
+    g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/assembly/bic/lb",
+                                 "node-number"), ==, 0);
+    {
+        uint64_t compute = qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                      EXPANSION_LB_REVISION);
+        uint64_t peer = expansion_vector(qts, EXPANSION_LB_REVISION, false, 0);
+        uint64_t assigned = (peer & ~(UINT64_C(0xff) << 32)) |
+                            (UINT64_C(7) << 32);
+
+        g_assert_cmphex((compute >> 32) & 0xff, ==, 0);
+        g_assert_cmphex((peer >> 32) & 0xff, ==, 0);
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, assigned);
+        g_assert_cmphex((expansion_vector(qts, EXPANSION_LB_REVISION,
+                                         false, 0) >> 32) & 0xff, ==, 7);
+        g_assert_cmphex(qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                   EXPANSION_LB_REVISION), ==, compute);
+        g_assert_cmphex(qtest_readq(qts, SPACE_IO + (UINT64_C(7) << 33) +
+                                   0x01800000 + EXPANSION_LB_REVISION),
+                        ==, assigned);
+        g_assert_cmphex(qtest_readq(qts, UINT64_C(0x30034000000) +
+                                   (UINT64_C(7) << 33)),
+                        ==, UINT64_C(0x123400000000c000));
+    }
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine',"
+        "'property':'l1-association0-reachable','value':false}}");
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    {
+        QDict *reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{'path':'/machine',"
+            "'property':'l1-association0-reachable'}}");
+
+        g_assert_true(qdict_get_bool(reply, "return"));
+        qobject_unref(reply);
+    }
+    g_assert_cmphex((expansion_vector(qts, EXPANSION_LB_REVISION,
+                                     false, 0) >> 32) & 0xff, ==, 0);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 static void test_origin300_two_chassis_l1s_are_peers(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -1837,6 +2071,23 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin300-two-chassis-refuses-an-uneven-record-list",
         NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
+    qtest_add_data_func("sn/builder/expansion/construction",
+                        NULL, test_expansion_builder);
+    qtest_add_data_func("sn/builder/expansion/controller-inputs",
+                        NULL, test_expansion_controller_inputs);
+    qtest_add_data_func("sn/builder/expansion/controller-refusals",
+                        NULL, test_expansion_controller_refusals);
+    qtest_add_data_func("sn/builder/expansion/management-migration",
+                        NULL, test_expansion_management_migration);
+    qtest_add_data_func("sn/builder/expansion/migration-identity-mismatch",
+                        "identity-mismatch=true",
+                        test_expansion_management_mismatch);
+    qtest_add_data_func("sn/builder/expansion/migration-attachment-mismatch",
+                        "attachment-mismatch=true",
+                        test_expansion_management_mismatch);
+    qtest_add_data_func("sn/builder/expansion/migration-ownership-mismatch",
+                        "ownership-mismatch=true",
+                        test_expansion_management_mismatch);
     qtest_add_data_func("sn/builder/origin300-two-chassis-l1s-are-peers",
                         NULL, test_origin300_two_chassis_l1s_are_peers);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
