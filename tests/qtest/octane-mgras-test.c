@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
-/* Optional textureless SI attachment with synthetic firmware and DMA data. */
+/* Optional MGRAS attachment with synthetic firmware and DMA data. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
@@ -20,6 +20,7 @@
 #define CONTROL 0x24
 #define COMMAND 0x120400
 #define MAPPING 0x130400
+#define NIC 0x011098
 #define CORE_LINKS 0x8100
 #define SI_LINKS 0x8900
 #define OCTANE2_CPU "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
@@ -384,15 +385,15 @@ static void test_core_link_reset_recovery(gconstpointer data)
     }
 }
 
-static void enter_context(QTestState *qts)
+static void enter_context(QTestState *qts, uint64_t sh)
 {
-    qtest_writel(qts, SI_SHORT + 0x011000, 0);
-    qtest_writel(qts, SI_SHORT + 0x130500, 0x4fc);
-    qtest_writel(qts, SI_SHORT + 0x011028, 0x80000);
+    qtest_writel(qts, sh + 0x011000, 0);
+    qtest_writel(qts, sh + 0x130500, 0x4fc);
+    qtest_writel(qts, sh + 0x011028, 0x80000);
     for (unsigned i = 0; i < 63; i++) {
-        qtest_writel(qts, SI_SHORT + COMMAND, i);
+        qtest_writel(qts, sh + COMMAND, i);
     }
-    qtest_writel(qts, SI_SHORT + 0x011028, 0x10000000);
+    qtest_writel(qts, sh + 0x011028, 0x10000000);
 }
 
 static void assert_reset(QTestState *qts)
@@ -411,7 +412,7 @@ static void test_reset(gconstpointer data)
 
     qtest_writel(qts, SI_SHORT + CONTROL, 0xc1d28354);
     qtest_writel(qts, SI_LONG + 0x040000, 0x75e68192);
-    enter_context(qts);
+    enter_context(qts, SI_SHORT);
     set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
     qtest_system_reset(qts);
     assert_reset(qts);
@@ -462,9 +463,10 @@ static void test_migration(gconstpointer data)
 #define RSS_EXEC(reg, value) \
     (((uint64_t)(0x70001 | ((reg) << 6)) << 34) | (uint32_t)(value))
 
-static void descriptor(QTestState *qts, uint8_t reg, uint32_t value)
+static void descriptor(QTestState *qts, uint64_t lo, uint8_t reg,
+                       uint32_t value)
 {
-    qtest_writeq(qts, SI_LONG + COMMAND,
+    qtest_writeq(qts, lo + COMMAND,
                  ((uint64_t)(0x00080004 | (reg << 8)) << 32) | value);
 }
 
@@ -475,9 +477,8 @@ static uint32_t pixel(QTestState *qts, unsigned x, unsigned y)
     return property(qts, "/machine/module0/mgras", "x-test-pixel");
 }
 
-static void test_local_dma(gconstpointer data)
+static void local_dma(QTestState *qts, uint64_t sh, uint64_t lo)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
     const uint8_t source[] = { 0, 0x11, 0x22, 0x33, 0, 0x44, 0x55, 0x66 };
     uint8_t returned[sizeof(source)];
 
@@ -486,51 +487,57 @@ static void test_local_dma(gconstpointer data)
     qtest_writeq(qts, 0x20008018, 0x20010);
     qtest_writeq(qts, 0x20008020, 0x20011);
     qtest_memwrite(qts, 0x20010ffc, source, sizeof(source));
-    enter_context(qts);
-    qtest_writel(qts, SI_SHORT + MAPPING, 0x00482008);
-    qtest_writeq(qts, SI_LONG + MAPPING, 0x20008018);
-    qtest_writeq(qts, SI_SHORT + MAPPING, 0x0048300400000002ULL);
-    qtest_writeq(qts, SI_LONG + MAPPING, 0x00484b0400080000ULL);
-    qtest_writeq(qts, SI_SHORT + COMMAND, RSS(0x162, 0));
-    qtest_writeq(qts, SI_LONG + COMMAND, RSS(0x163, 0x00ffffff));
-    qtest_writeq(qts, SI_SHORT + COMMAND, RSS(0x161, 3u << 26));
-    qtest_writeq(qts, SI_LONG + COMMAND, RSS(0x46, (50u << 16) | 50));
-    qtest_writeq(qts, SI_SHORT + COMMAND, RSS_EXEC(0x47, (51u << 16) | 50));
-    descriptor(qts, 4, 8);
-    descriptor(qts, 5, 4);
-    descriptor(qts, 6, 4088);
-    descriptor(qts, 7, 1);
-    descriptor(qts, 8, 8);
-    descriptor(qts, 11, 0xb1);
+    enter_context(qts, sh);
+    qtest_writel(qts, sh + MAPPING, 0x00482008);
+    qtest_writeq(qts, lo + MAPPING, 0x20008018);
+    qtest_writeq(qts, sh + MAPPING, 0x0048300400000002ULL);
+    qtest_writeq(qts, lo + MAPPING, 0x00484b0400080000ULL);
+    qtest_writeq(qts, sh + COMMAND, RSS(0x162, 0));
+    qtest_writeq(qts, lo + COMMAND, RSS(0x163, 0x00ffffff));
+    qtest_writeq(qts, sh + COMMAND, RSS(0x161, 3u << 26));
+    qtest_writeq(qts, lo + COMMAND, RSS(0x46, (50u << 16) | 50));
+    qtest_writeq(qts, sh + COMMAND, RSS_EXEC(0x47, (51u << 16) | 50));
+    descriptor(qts, lo, 4, 8);
+    descriptor(qts, lo, 5, 4);
+    descriptor(qts, lo, 6, 4088);
+    descriptor(qts, lo, 7, 1);
+    descriptor(qts, lo, 8, 8);
+    descriptor(qts, lo, 11, 0xb1);
     g_assert_cmphex(pixel(qts, 50, 50), ==, 0x00332211);
     g_assert_cmphex(pixel(qts, 51, 50), ==, 0x00665544);
     g_assert_cmphex(pixel(qts, 49, 50), ==, 0);
     g_assert_cmphex(pixel(qts, 52, 50), ==, 0);
     qtest_memset(qts, 0x20010ffc, 0xa5, sizeof(source));
-    qtest_writeq(qts, SI_LONG + COMMAND, RSS(0x46, (50u << 16) | 973));
-    qtest_writeq(qts, SI_SHORT + COMMAND, RSS_EXEC(0x47, (51u << 16) | 973));
-    descriptor(qts, 11, 0xb9);
+    qtest_writeq(qts, lo + COMMAND, RSS(0x46, (50u << 16) | 973));
+    qtest_writeq(qts, sh + COMMAND, RSS_EXEC(0x47, (51u << 16) | 973));
+    descriptor(qts, lo, 11, 0xb9);
     qtest_memread(qts, 0x20010ffc, returned, sizeof(returned));
     g_assert_cmpmem(returned, sizeof(returned), source, sizeof(source));
     g_assert_cmphex(property(qts, "/machine/module0/mgras", "x-test-error"),
                     ==, 0);
+}
+
+static void test_local_dma(gconstpointer data)
+{
+    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+
+    local_dma(qts, SI_SHORT, SI_LONG);
     qtest_quit(qts);
 }
 
 /* Synthetic programmed vectors exercise transport, not IP30 allocation. */
-static void test_interrupt_transport(gconstpointer data)
+static void interrupt_transport(QTestState *qts, uint64_t sh, uint64_t lo)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
     const uint64_t other = 1ULL << 5;
     const uint64_t pending = 1ULL << 18;
 
     qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
-    qtest_writel(qts, SI_SHORT + 0x011060, 8u << 24);
-    qtest_writel(qts, SI_LONG + 0x011068, 0x80);
-    qtest_writel(qts, SI_SHORT + 0x011070, 18u << 8);
-    qtest_writel(qts, SI_LONG + 0x011040, 0x80000);
-    qtest_writel(qts, SI_SHORT + 0x011000, 0);
-    qtest_writel(qts, SI_LONG + 0x130500, 0x4fc);
+    qtest_writel(qts, sh + 0x011060, 8u << 24);
+    qtest_writel(qts, lo + 0x011068, 0x80);
+    qtest_writel(qts, sh + 0x011070, 18u << 8);
+    qtest_writel(qts, lo + 0x011040, 0x80000);
+    qtest_writel(qts, sh + 0x011000, 0);
+    qtest_writel(qts, lo + 0x130500, 0x4fc);
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & pending, ==, pending);
     g_assert_false(qtest_get_irq(qts, 1));
     qtest_writeq(qts, HEART + 0x10000, pending);
@@ -541,21 +548,28 @@ static void test_interrupt_transport(gconstpointer data)
     qtest_writeq(qts, HEART + 0x10000, pending);
     g_assert_true(qtest_get_irq(qts, 1));
     qtest_writeq(qts, HEART + 0x10020, other);
-    qtest_writel(qts, SI_SHORT + 0x011028, 0x80000);
+    qtest_writel(qts, sh + 0x011028, 0x80000);
     g_assert_false(qtest_get_irq(qts, 1));
     g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & (pending | other), ==,
                     other);
-    qtest_writel(qts, SI_LONG + 0x130500, 0x4fc);
+    qtest_writel(qts, lo + 0x130500, 0x4fc);
     g_assert_true(qtest_get_irq(qts, 1));
-    qtest_writel(qts, SI_SHORT + 0x011028, 0x80000);
+    qtest_writel(qts, sh + 0x011028, 0x80000);
     qtest_writeq(qts, HEART + 0x10028, other);
-    qtest_writel(qts, SI_LONG + 0x011070, 7u << 8);
+    qtest_writel(qts, lo + 0x011070, 7u << 8);
     qtest_writeq(qts, HEART + 0x10000, 1u << 7);
-    qtest_writel(qts, SI_SHORT + 0x130500, 0x4fc);
+    qtest_writel(qts, sh + 0x130500, 0x4fc);
     g_assert_true(qtest_get_irq(qts, 0));
     g_assert_false(qtest_get_irq(qts, 1));
-    qtest_writel(qts, SI_LONG + 0x011028, 0x80000);
+    qtest_writel(qts, lo + 0x011028, 0x80000);
     g_assert_false(qtest_get_irq(qts, 0));
+}
+
+static void test_interrupt_transport(gconstpointer data)
+{
+    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+
+    interrupt_transport(qts, SI_SHORT, SI_LONG);
     qtest_quit(qts);
 }
 
@@ -567,7 +581,163 @@ static void test_rejected_selection(gconstpointer data)
         "octane,graphics-board=v12", "-display", "none", "-qmp", "stdio", NULL,
     };
 
-    assert_launch_rejected(args, "graphics must be none or si");
+    assert_launch_rejected(args, "graphics must be none or an MGRAS board");
+}
+
+static void test_rejected_widget(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const unsigned widgets[] = { 8, 13, 15 };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(widgets); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "%s,graphics-board=si,graphics-widget=%u",
+            octane2 ? "octane2" : "octane", widgets[i]);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-display", "none",
+            "-qmp", "stdio", NULL,
+        };
+
+        assert_launch_rejected(args, "graphics widget must be 9 to 12");
+    }
+}
+
+static uint64_t short_base(unsigned widget)
+{
+    return XBOW + ((uint64_t)widget << 24);
+}
+
+static uint64_t long_base(unsigned widget)
+{
+    return (uint64_t)widget << 36;
+}
+
+/* One MicroLAN bit slot on the board's serial-number chip. */
+static bool nic_slot(QTestState *qts, uint64_t base, unsigned pulse,
+                     unsigned sample)
+{
+    uint32_t result;
+
+    qtest_writel(qts, base + NIC, (pulse << 10) | (sample << 2));
+    result = qtest_readl(qts, base + NIC);
+    g_assert_cmphex(result & 2, ==, 2);
+    return result & 1;
+}
+
+static void nic_write_byte(QTestState *qts, uint64_t base, uint8_t value)
+{
+    for (unsigned bit = 0; bit < 8; bit++) {
+        nic_slot(qts, base, value & (1u << bit) ? 6 : 80,
+                 value & (1u << bit) ? 13 : 30);
+    }
+}
+
+static uint8_t nic_read_byte(QTestState *qts, uint64_t base)
+{
+    uint8_t value = 0;
+
+    for (unsigned bit = 0; bit < 8; bit++) {
+        value |= nic_slot(qts, base, 6, 13) << bit;
+    }
+    return value;
+}
+
+/* The board name the record carries, as the PROM's "Name:" text reads it. */
+static void assert_record_name(QTestState *qts, uint64_t base,
+                               const char *name, const char *barcode)
+{
+    uint8_t record[62];
+    char text[14];
+
+    g_assert_false(nic_slot(qts, base, 500, 65));
+    nic_write_byte(qts, base, 0xcc);
+    nic_write_byte(qts, base, 0xf0);
+    nic_write_byte(qts, base, 0);
+    nic_write_byte(qts, base, 0);
+    for (unsigned i = 0; i < sizeof(record); i++) {
+        record[i] = nic_read_byte(qts, base);
+    }
+    g_assert_cmpmem(record + 1, 10, barcode, 10);
+    memset(text, ' ', sizeof(text));
+    memcpy(text, name, strlen(name));
+    g_assert_cmpmem(record + 48, sizeof(text), text, sizeof(text));
+}
+
+typedef struct OctaneVariant {
+    const char *board;
+    unsigned widget;
+    bool implemented;
+    uint8_t version1;
+    const char *record;
+} OctaneVariant;
+
+/* Each variant at a port published inventories or the stock IDE use. */
+static const OctaneVariant variants[] = {
+    { "si", 11, true, 0x45, "GM10" },
+    { "si-t", 10, false, 0x45, "GM10" },
+    { "ssi", 9, true, 0x46, "GM20" },
+    { "mxi", 12, false, 0x46, "GM20" },
+    { "esi", 10, true, 0x51, "MOT10" },
+    { "esi-t", 11, false, 0x51, "MOT10" },
+    { "essi", 12, true, 0x52, "MOT20" },
+    { "emxi", 12, false, 0x52, "MOT20" },
+};
+
+/*
+ * Each variant answers its tuple and identity at its selected port only,
+ * adds only that port's presence bit, and names its board in the record.
+ */
+static void test_variants(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(variants); i++) {
+        const OctaneVariant *v = &variants[i];
+        g_autofree char *selection = g_strdup_printf(
+            ",graphics-board=%s,graphics-widget=%u", v->board, v->widget);
+        QTestState *qts = start(octane2, selection, v->implemented ? "" :
+                                "-global sgi-mgras.x-unimplemented-board=on");
+        uint64_t sh = short_base(v->widget);
+        uint32_t word;
+
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-present"),
+                        ==, CORE_LINKS | (1u << v->widget));
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, CORE_LINKS | (1u << v->widget));
+        g_assert_cmpuint(memtx_readl(qts, sh + 4, &word), ==, 0);
+        g_assert_cmphex(word, ==, SI_ID);
+        g_assert_cmpuint(memtx_readl(qts, long_base(v->widget) + 4, &word),
+                         ==, 0);
+        g_assert_cmphex(word, ==, SI_ID);
+        for (unsigned w = 9; w <= 12; w++) {
+            if (w != v->widget) {
+                g_assert_cmpuint(memtx_readl(qts, short_base(w) + 4, &word),
+                                 !=, 0);
+                g_assert_cmpuint(memtx_readl(qts, long_base(w) + 4, &word),
+                                 !=, 0);
+            }
+        }
+        g_assert_cmphex(qtest_readl(qts, sh + 0x072488) >> 24, ==,
+                        v->version1);
+        assert_record_name(qts, sh, v->record,
+                           octane2 ? "SIM3020005" : "SIM3010005");
+        assert_core(qts, octane2);
+        qtest_quit(qts);
+    }
+}
+
+/* DMA into HEART memory and interrupt packets to HEART from widget 12. */
+static void test_widget_transport(gconstpointer data)
+{
+    QTestState *qts = start(GPOINTER_TO_INT(data),
+                            ",graphics-board=essi,graphics-widget=12", "");
+
+    local_dma(qts, short_base(12), long_base(12));
+    qtest_quit(qts);
+    qts = start(GPOINTER_TO_INT(data),
+                ",graphics-board=essi,graphics-widget=12", "");
+    interrupt_transport(qts, short_base(12), long_base(12));
+    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
@@ -589,6 +759,9 @@ int main(int argc, char **argv)
         { "local-dma", test_local_dma },
         { "interrupt-transport", test_interrupt_transport },
         { "rejected-selection", test_rejected_selection },
+        { "rejected-widget", test_rejected_widget },
+        { "variants", test_variants },
+        { "widget-transport", test_widget_transport },
     };
     const uint8_t erased[] = { 0xff, 0xff, 0xff, 0xff };
     int fd, result;
