@@ -176,29 +176,29 @@ static void test_gl_texture_migration(void)
 }
 
 /*
- * Rewrite the level number of the one level record in a migration stream
- * of a 4-by-2 level of base 0 and TXMIPMAP word 0 with the number level.
+ * Rewrite the waiting load's base and TXMIPMAP word in a migration stream
+ * carrying one load of a 4-by-2 level of TL_MODE mode at base 0 and word
+ * 0, the nine fields from load on.
  */
-static void tex_patch_level_number(const char *path, uint32_t level,
-                                   uint32_t to)
+static void tex_patch_load_place(const char *path, uint32_t mode,
+                                 uint32_t base, uint32_t word)
 {
     g_autofree char *data = NULL;
     gsize len;
     int found = 0;
 
     g_assert_true(g_file_get_contents(path, &data, &len, NULL));
-    for (gsize i = 0; i + 32 <= len; i++) {
+    for (gsize i = 0; i + 36 <= len; i++) {
         const uint8_t *p = (const uint8_t *)data + i;
 
-        /*
-         * used, base, block 0, level, log2 width 2, log2 height 1, mode,
-         * 32 bytes
-         */
+        /* load, base, word, TL_SPEC, TL_MODE, x, y, size, host bytes */
         if (ldl_be_p(p) == 1 && ldl_be_p(p + 4) == 0 &&
-            ldl_be_p(p + 8) == 0 && ldl_be_p(p + 12) == level &&
-            ldl_be_p(p + 16) == 2 && ldl_be_p(p + 20) == 1 &&
-            ldl_be_p(p + 28) == 32) {
-            stl_be_p(data + i + 12, to);
+            ldl_be_p(p + 8) == 0 && ldl_be_p(p + 12) == TEX_SPEC_4X2 &&
+            ldl_be_p(p + 16) == mode && ldl_be_p(p + 20) == 0 &&
+            ldl_be_p(p + 24) == 0 && ldl_be_p(p + 28) == (2 << 16 | 4) &&
+            ldl_be_p(p + 32) == 0) {
+            stl_be_p(data + i + 4, base);
+            stl_be_p(data + i + 8, word);
             found++;
         }
     }
@@ -207,20 +207,20 @@ static void tex_patch_level_number(const char *path, uint32_t level,
 }
 
 /*
- * Two levels of one base and TXMIPMAP word with one level number are not
- * a state the model can reach (a load replaces), so a stream carrying them
- * is corrupt and is refused; the stream as saved, with levels 0 and 1,
- * loads.
+ * A load waiting for its transfer must have a place in TRAM: one whose base
+ * and TXMIPMAP word put it past TRAM's 256 blocks is not a state the model
+ * can reach (the load is refused when it starts), so a stream carrying it
+ * is corrupt and is refused; the stream as saved loads.
  */
-static void test_gl_texture_migration_rejects_duplicate_level(void)
+static void test_gl_texture_migration_rejects_load_past_tram(void)
 {
     static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    static const uint32_t draw[8] = { 8, 0, 0, 1, 0, 1, 0x511a, 0x98 };
     g_autofree char *tmpfs = NULL;
     g_autofree char *stream = NULL;
     g_autofree char *uri = NULL;
     GError *err = NULL;
     QTestState *from, *to;
-    uint8_t texels[32];
 
     tmpfs = g_dir_make_tmp("sn0-mgras-texture-XXXXXX", &err);
     g_assert_no_error(err);
@@ -228,10 +228,15 @@ static void test_gl_texture_migration_rejects_duplicate_level(void)
     uri = g_strdup_printf("file:%s", stream);
 
     from = tex_start(TEX_MIGRATION_ARGS);
-    tex_texels(texels);
-    tex_load(from, TEX_TL_MODE_RGBA8, texels);
-    tex_load_as(from, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2 | 1, texels, 4, 2,
-                box, true);
+    tex_record(from, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(from, TEX_TL_SPEC, TEX_SPEC_4X2);
+    gl_word(from, TEX_LOAD_OPEN);
+    gl_pixels_program(from, GL_PIX_4UB, 8, 0, 0, 3, 1, 1);
+    gl_ge_load(from, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(from, GL_PIXELS_HDR);
+    for (int i = 0; i < 8; i++) {
+        gl_word(from, draw[i]);
+    }
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
@@ -242,7 +247,7 @@ static void test_gl_texture_migration_rejects_duplicate_level(void)
     sgi_wait_migration_status(to, "completed", 30);
     qtest_quit(to);
 
-    tex_patch_level_number(stream, 1, 0);
+    tex_patch_load_place(stream, TEX_TL_MODE_RGBA8, 0xff, 0xff);
     to = qtest_init(TEX_MIGRATION_ARGS " -incoming defer");
     qtest_set_expected_status(to, 1);
     qtest_qmp_assert_success(
@@ -653,8 +658,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-migration",
                    test_gl_pixels_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration-rejects-"
-                   "duplicate-level",
-                   test_gl_texture_migration_rejects_duplicate_level);
+                   "load-past-tram",
+                   test_gl_texture_migration_rejects_load_past_tram);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
                    test_gl_texture_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-deep-slots-migrate",

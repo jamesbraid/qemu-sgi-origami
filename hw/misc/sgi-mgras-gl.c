@@ -2335,9 +2335,6 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             return false;
         }
     }
-    if (!sgi_mgras_texture_board_valid(s)) {
-        return false;
-    }
     /* An entry's identity is its slot, which the stream carries. */
     for (int i = 1; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl[i].hw_id = s->gl_selected[i] ? s->gl_slot[i] : 0;
@@ -3366,7 +3363,10 @@ static void mgras_gl_record_word(SGIMgrasState *s, uint32_t word)
         if (k % stride == stride - 1 &&
             !sgi_mgras_raster_record(s, slot[MGRAS_GL_REC_REG],
                                      slot[MGRAS_GL_REC_VALUE]) &&
-            !slot[MGRAS_GL_REC_TEXTURE]) {
+            !slot[MGRAS_GL_REC_TEXTURE] &&
+            (triples ||
+             !sgi_mgras_texture_kernel_record(s, slot[MGRAS_GL_REC_REG],
+                                              slot[MGRAS_GL_REC_VALUE]))) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: raster register record "
                           "0x%x value 0x%x is not modelled\n",
                           slot[MGRAS_GL_REC_REG], slot[MGRAS_GL_REC_VALUE]);

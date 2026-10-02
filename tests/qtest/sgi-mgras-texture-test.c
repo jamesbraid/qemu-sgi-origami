@@ -277,8 +277,9 @@ static void test_gl_texture_size_from_tl_spec(void)
 /*
  * TL_MODE is state: a reload of the same image without it, as the
  * client sends one, keeps the level in the kept format the earlier load
- * named. Levels belong to their context: another context has none, and
- * the first still draws its own after switching back. A 0x9c00 without
+ * named. Another context under a base of its own, as the kernel gives
+ * each, finds nothing loaded there, and the first still draws its own
+ * after switching back. A 0x9c00 without
  * its 0x9b00 and a 0x511a transfer outside a bracket are logged, not
  * refused.
  */
@@ -304,6 +305,7 @@ static void test_gl_texture_tl_mode_persists(void)
     gl_word(t, GL_CONTEXT_OPENER);
     gl_viewport(t, 0, 0, 128, 128);
     gl_window_projection(t);
+    gl_one(t, 0x0000eb04, 8);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
@@ -408,7 +410,7 @@ static void test_gl_texture_border_is_logged_untextured(void)
         { 0x14, 0x15 },
     };
     static const uint32_t bordered[6] = { 0, 0, 6, 4, 4 << 16 | 6, 0 };
-    static const uint32_t border_words[6] = { 4, 0, 0, 3, 2, 0 };
+    static const uint32_t border_words[6] = { 4, 0, 0, 9, 8, 0 };
     g_autofree char *tmpfs = NULL;
     g_autofree char *log = NULL;
     g_autofree char *args = NULL;
@@ -445,15 +447,16 @@ static void test_gl_texture_border_is_logged_untextured(void)
     gl_viewport(t, 0, 0, 128, 128);
     gl_window_projection(t);
     /*
-     * The load names TXMIPMAP word 3, and the draw goes through the same
-     * word, so the colour drawn shows whether the refused load stored a
-     * level there. The 0x5a image would not draw white.
+     * The load names TXMIPMAP word 9, which no load above reached, and the
+     * draw goes through the same word, so the colour drawn shows whether
+     * the refused load stored a level there. The 0x5a image would not
+     * draw white.
      */
     gl_ge_load(t, GL_GE_ERAM, 0xe3d, border_words, 6);
     tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, image, 6, 4,
                 bordered, true);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
-    tex_mipmap_word(t, 3);
+    tex_mipmap_word(t, 9);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
@@ -502,6 +505,42 @@ static void test_gl_texture_levels_by_block(void)
     tex_mipmap_word(t, 8);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A context holds as many textures as TRAM has room for, not a fixed
+ * count of levels. perfly's esprit and iris scenes and pointblank load
+ * more than sixteen levels into one context (esprit: two 7-level pyramids
+ * and a 9-level one, 23 levels in all), far below one TRAM's 4 MiB; a
+ * store of sixteen levels a context refused the seventeenth and the
+ * Performer logo drew white. Twenty one-level textures at blocks 0 to 19
+ * each draw their own texels.
+ */
+static void test_gl_texture_many_levels_in_one_context(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[20][32];
+
+    for (int k = 0; k < 20; k++) {
+        tex_texels(texels[k]);
+        for (int i = 0; i < 32; i++) {
+            if (i % 4 != 3) {
+                texels[k][i] ^= 4 * k;
+            }
+        }
+        tex_load_at(t, k, texels[k]);
+    }
+    for (int k = 0; k < 20; k++) {
+        const uint8_t *p = &texels[k][28];
+
+        tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+        tex_mipmap_word(t, k);
+        tex_quad(t);
+        g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==,
+                        p[0] << 16 | p[1] << 8 | p[2]);
+    }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
 }
@@ -648,9 +687,6 @@ static void test_gl_texture_load_from_another_node(void)
     qtest_quit(t);
 }
 
-/* A 1024-by-1024 RGBA8 level is exactly one TRAM's 4 MiB. */
-#define TEX_SPEC_1024_LEVEL1  0xaa1
-
 /* Context slot, with a viewport and projection, ready to load and draw. */
 static void tex_enter(QTestState *t, uint32_t slot)
 {
@@ -658,65 +694,6 @@ static void tex_enter(QTestState *t, uint32_t slot)
     gl_word(t, GL_CONTEXT_OPENER);
     gl_viewport(t, 0, 0, 128, 128);
     gl_window_projection(t);
-}
-
-/* Level 1 of a 1024-by-1024 in a fresh context. */
-static void tex_load_big(QTestState *t, uint32_t slot)
-{
-    static const uint32_t box[6] = { 0, 0, 1024, 1024, 1024 << 16 | 1024, 0 };
-    uint8_t row[4096];
-
-    memset(row, 0x5a, sizeof(row));
-    tex_enter(t, slot);
-    tex_load_full(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_1024_LEVEL1, row, 1024,
-                  1024, box, true, 0, sizeof(row));
-}
-
-/* Load a 4-by-2 level 0 in the current context and draw with it. */
-static void tex_small_level_draw(QTestState *t)
-{
-    uint8_t texels[32];
-
-    tex_texels(texels);
-    tex_load(t, TEX_TL_MODE_RGBA8, texels);
-    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
-    tex_quad(t);
-}
-
-/*
- * A context keeps at most one TRAM's 4 MiB: with a level of exactly that
- * size loaded, a further level has no room, is not stored (logged), and
- * the draw finds no level 0 and is untextured, the quad's own white.
- * gl-texture-load-draws-the-level is the same load in an empty context.
- */
-static void test_gl_texture_context_cap(void)
-{
-    QTestState *t = qtest_init(TEX_ARGS);
-
-    tex_load_big(t, GL_SLOT_A);
-    tex_small_level_draw(t);
-    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
-    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, TEX_WHITE);
-    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
-    qtest_quit(t);
-}
-
-/*
- * The board keeps four TRAMs' worth, 16 MiB, across its contexts: four
- * contexts holding 4 MiB each leave no room in a fifth.
- */
-static void test_gl_texture_board_cap(void)
-{
-    QTestState *t = qtest_init(TEX_ARGS);
-
-    for (uint32_t i = 0; i < 4; i++) {
-        tex_load_big(t, 0x1000 + i);
-    }
-    tex_enter(t, 0x1004);
-    tex_small_level_draw(t);
-    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
-    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
-    qtest_quit(t);
 }
 
 /*
@@ -1515,7 +1492,10 @@ static void tex_flat(uint8_t *texels, unsigned n, uint32_t rgba)
  * each in turn; lambda 3 is past the last level and gives the last, and
  * lambda -2 magnifies and gives the base level, never a level below it.
  * A minimum LOD of 1 in TXLOD bits 25:16 makes the lambda 0 draw return
- * level 1. A chain with a hole at level 1 draws untextured.
+ * level 1. A chain with no level 1 loaded reads TRAM where level 1 would
+ * lie, in the block level 0 was loaded to: on a fresh board those bits
+ * are 0, so the lambda 1 draw is black, as the board would read what its
+ * TRAM held.
  */
 static void test_gl_texture_mip_level_select(void)
 {
@@ -1556,9 +1536,11 @@ static void test_gl_texture_mip_level_select(void)
             .extra = { { TEX_TXLOD, 2 } }, .n_extra = 1,
         };
 
+        qtest_quit(t);
+        t = tex_start(TEX_ARGS);
         tex_lambda_quad(quad, 2);
         tex_scene(t, &sc);
-        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, 0);
     }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
@@ -1734,79 +1716,258 @@ static void test_mxi_texbase_both_rows(gconstpointer data)
 }
 
 /*
- * The kernel's TRAM save and restore of one 16 KiB block, in the words the
- * IRIX 6.5.30 IP27 kernel sends (sgi-mgras-texture.c, "TRAM save and
- * restore"): a save reads 32 rows of 0x200 bytes back through DMA-map
- * slot 2 after 0xe50c (rows, format, 0x400d) and closes with 0xda00 and
- * 0xd300; a restore opens with 0xe300, gives the GE its word count with
- * 0xd80c in three 9-bit parts, kicks slot 2 with 0xa5 and fences.
+ * TRAM's save and restore, in the words the IRIX 6.5.30 IP27 kernel and
+ * IP27GR532 client sent in a captured run (sgi-mgras-texture.c, "TRAM"):
+ * the kernel saves a block as 64 rows of 64 words, 16 KiB through one DMA
+ * row, kicked 0xbd from DMA-map slot 2 after 0xe50c (rows, format, 0x400d)
+ * and the 0xf200 sync request, and restores it after 0xe300 and a 0xd80c
+ * GE word count in three 9-bit parts, kicked 0xa5. Its register writes go
+ * as 0x7f08 pairs, with no GL context loaded. The host buffer sits 16 KiB
+ * into slot 2's pages, clear of the texel source the loads leave at their
+ * start.
  */
-#define TRAM_SAVE_RSS_HDR     0x0000d214
-#define TRAM_RESTORE_RSS      0x0000d300
 #define TRAM_READ_HDR         0x0000e50c
 #define TRAM_READ_LAST_WORD   0x0000400d
 #define TRAM_READ_DONE        0x0000da00
 #define TRAM_RESTORE_OPEN     0x0000e300
 #define TRAM_GE_COUNT_HDR     0x0000d80c
-#define TRAM_ROW_BYTES        0x200
-#define TRAM_BLOCK_ROWS       32
-#define TRAM_BUFFER           0x7000u
+#define TRAM_RE_SYNC          0x0000f200
+#define TRAM_READ_FENCE       0x000e0100
+#define TRAM_TEX_BASE_HDR     0x0000eb04
+#define TRAM_FORMAT_RGBA8     0x00400080
+#define TRAM_BLOCK_ROWS       0x40
+#define TRAM_BLOCK_BYTES      0x4000
+#define TRAM_BUFFER_OFFSET    0x4000u
+#define TRAM_BUFFER           (0x7000u + TRAM_BUFFER_OFFSET)
 #define TRAM_BUFFER_FILL      0x5a
+#define TEX_TL_ADDR           0x1a3
+#define TEX_TL_MIPMAP         0x1a4
+#define TEX_TL_SPEC_WHOLE     0xd60
 
-static void tram_save_block(QTestState *t)
+/* 0x7f08 register pairs, as the kernel's register-write routine sends. */
+static void tram_pairs(QTestState *t, const uint32_t *pairs, uint32_t n)
+{
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, n);
+    gl_word(t, 2 * n);
+    gl_word(t, GL_INLINE_BLOCK | 8 * n);
+    for (uint32_t i = 0; i < 2 * n; i++) {
+        gl_word(t, pairs[i]);
+    }
+}
+
+static void tram_save_rss(QTestState *t)
 {
     static const uint32_t save_rss[5] = {
         0xffffffff, 0x01001000, 0x001fc0ff, 0, 0,
     };
 
-    gl_word(t, TRAM_SAVE_RSS_HDR);
+    gl_word(t, TEX_SAVE_RSS);
     for (int i = 0; i < 5; i++) {
         gl_word(t, save_rss[i]);
     }
-    gl_word(t, TRAM_READ_HDR);
-    gl_word(t, TRAM_BLOCK_ROWS);
-    gl_word(t, 0x00400090);
-    gl_word(t, TRAM_READ_LAST_WORD);
-    gl_eram_kick(t, 0, TRAM_ROW_BYTES, GL_ERAM_READ_KICK);
-    gl_word(t, TRAM_READ_DONE);
-    gl_word(t, TRAM_RESTORE_RSS);
 }
 
-static void tram_restore_block(QTestState *t)
+/*
+ * 0xe50c for rows of TRAM in format, the sync request, then the read of
+ * bytes into the host buffer kicked kick, and the words that close it.
+ */
+static void tram_read(QTestState *t, uint32_t rows, uint32_t format,
+                      uint32_t bytes, uint32_t kick)
 {
-    uint32_t count = TRAM_ROW_BYTES / 4 * TRAM_BLOCK_ROWS;
+    gl_word(t, TRAM_READ_HDR);
+    gl_word(t, rows);
+    gl_word(t, format);
+    gl_word(t, TRAM_READ_LAST_WORD);
+    gl_word(t, TRAM_RE_SYNC);
+    g_assert_cmphex(qtest_readl(t, REG_HQ_STATUS) & 1, ==, 1);
+    gl_eram_map(t);
+    gl_eram_kick(t, TRAM_BUFFER_OFFSET, bytes, kick);
+    gl_word(t, TRAM_READ_FENCE);
+    gl_one(t, 0x000a0704, 0);
+    gl_word(t, TRAM_READ_DONE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
 
+/* The kernel's save of one block, its register pairs as traced. */
+static void tram_kernel_save(QTestState *t, uint32_t block)
+{
+    const uint32_t pairs[] = {
+        TEX_TXSIZE, 0xd6d6, TEX_TXLOD, 0, TEX_TXCLAMPSIZE, 0x80000,
+        TEX_TL_MODE, 0, TEX_TEXMODE1, 0x58, TEX_TEXMODE2, 0x11804,
+        TEX_TXADDR, 0, TEX_TXMIPMAP, block,
+    };
+
+    gl_one(t, TRAM_TEX_BASE_HDR, 0);
+    tram_pairs(t, pairs, ARRAY_SIZE(pairs) / 2);
+    tram_save_rss(t);
+    tram_read(t, TRAM_BLOCK_ROWS, TRAM_FORMAT_RGBA8, TRAM_BLOCK_BYTES,
+              GL_ERAM_READ_KICK);
+}
+
+/* The kernel's restore of one block from the host buffer, as traced. */
+static void tram_kernel_restore(QTestState *t, uint32_t block)
+{
+    const uint32_t pairs[] = {
+        TEX_TL_MODE, 0x4026, 0x1a0, 0, 0x18b, 1, TEX_TEXMODE2, 0x11804,
+        TEX_TEXMODE1, 0x58, TEX_TL_ADDR, 0, TEX_TL_MIPMAP, block,
+        TEX_TL_SPEC, TEX_TL_SPEC_WHOLE,
+    };
+    const uint32_t copy[] = {
+        0x1a9, 0x40, 0x1aa, TRAM_BLOCK_ROWS, 0x1ab, 0, 0x1ac, 0,
+    };
+    uint32_t count = TRAM_BLOCK_BYTES / 4;
+
+    gl_one(t, TRAM_TEX_BASE_HDR, 0);
+    tram_pairs(t, pairs, ARRAY_SIZE(pairs) / 2);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    tram_pairs(t, copy, ARRAY_SIZE(copy) / 2);
+    tram_pairs(t, (const uint32_t[]){ 0x159, 0x400080 }, 1);
+    tram_pairs(t, (const uint32_t[]){ 0x153, 0x400040 }, 1);
+    tram_pairs(t, (const uint32_t[]){ 0x158, 0x400040 }, 1);
     gl_word(t, TRAM_RESTORE_OPEN);
     gl_word(t, TRAM_GE_COUNT_HDR);
     gl_word(t, (count >> 18) & 0x1ff);
     gl_word(t, (count >> 9) & 0x1ff);
     gl_word(t, count & 0x1ff);
-    gl_eram_kick(t, 0, TRAM_ROW_BYTES, GL_ERAM_WRITE_KICK);
+    gl_eram_map(t);
+    gl_eram_kick(t, TRAM_BUFFER_OFFSET, TRAM_BLOCK_BYTES, GL_ERAM_WRITE_KICK);
     gl_word(t, MGRAS_FENCE_TOKEN);
     g_assert_cmphex(qtest_readl(t, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
-    gl_word(t, TRAM_RESTORE_RSS);
+    tram_pairs(t, (const uint32_t[]){ 0x156, 0xffffffff }, 1);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+/* Whether the n bytes of want lie in buf, in order, and only zeros else. */
+static bool tram_buffer_holds(const uint8_t *buf, size_t len,
+                              const uint8_t *want, size_t n)
+{
+    for (size_t at = 0; at + n <= len; at++) {
+        if (!memcmp(buf + at, want, n)) {
+            for (size_t i = 0; i < len; i++) {
+                if ((i < at || i >= at + n) && buf[i]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 /*
- * Save and restore around a context switch on MXI and EMXI, and SI+T,
- * which sends the same words. The model keeps each context's levels in
- * its own store, so the context still draws its texels on both rows
- * after the kernel has saved and restored the block they live in; and a
- * TRAM transfer is not a raster image, so neither the save's read nor
- * the restore's write may touch the planes, here under a raster box left
- * over screen row 0 that would take a 0x200-byte row as 128 pixels. A
- * model that drew the restored bytes there, as a write kick with nothing
- * waiting for it once did, fails the plane check; one that read the
- * planes into the save buffer fails the buffer check.
+ * The kernel's save of a block returns the texels a load put there: the
+ * 16 KiB read holds the RGBA8 level's 32 bytes, R, G, B and A of each
+ * texel in order, and zeros elsewhere, where TRAM has held nothing since
+ * reset. Which offset in the block the level takes is the model's own
+ * layout and is not asserted.
+ */
+static void test_tram_save_returns_the_block(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    g_autofree uint8_t *buffer = g_malloc(TRAM_BLOCK_BYTES);
+    uint8_t texels[32];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    memset(buffer, TRAM_BUFFER_FILL, TRAM_BLOCK_BYTES);
+    qtest_memwrite(t, TRAM_BUFFER, buffer, TRAM_BLOCK_BYTES);
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    tram_kernel_save(t, 0);
+    qtest_memread(t, TRAM_BUFFER, buffer, TRAM_BLOCK_BYTES);
+    g_assert_true(tram_buffer_holds(buffer, TRAM_BLOCK_BYTES, texels,
+                                    sizeof(texels)));
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * Every context loads into the one TRAM: context B, under the same base,
+ * loads its texels to the block context A drew from, and A then draws B's,
+ * which is why the kernel saves and restores. A level that would run past
+ * TRAM's 256 blocks (a 1024-by-1024 RGBA8 level, all 4 MiB, at block 1)
+ * is refused and draws untextured.
+ */
+#define TEX_SPEC_1024         0xaa0
+
+static void test_tram_load_is_one_store(void)
+{
+    static const uint32_t box[6] = { 0, 0, 1024, 1024, 1024 << 16 | 1024, 0 };
+    static const uint32_t at_block_1[6] = { 1024, 0, 0, 1, 0, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t first[32], second[32], row[4096];
+
+    tex_texels(first);
+    for (int i = 0; i < 32; i++) {
+        second[i] = i % 4 == 3 ? 0xff : first[i] ^ 0xa0;
+    }
+    tex_load(t, TEX_TL_MODE_RGBA8, first);
+
+    gl_enter_slot(t, GL_SLOT_B);
+    gl_word(t, GL_CONTEXT_OPENER);
+    tex_load(t, TEX_TL_MODE_RGBA8, second);
+
+    gl_enter_slot(t, GL_SLOT_A);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==,
+                    second[28] << 16 | second[29] << 8 | second[30]);
+
+    memset(row, 0x5a, sizeof(row));
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    gl_ge_load(t, GL_GE_ERAM, 0xe3d, at_block_1, 6);
+    tex_load_full(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_1024, row, 1024, 1024,
+                  box, true, 0, sizeof(row));
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_records(t, (const uint32_t[]){ TEX_TXSIZE, 0xaaaa }, 1);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 0);
+    tex_records(t, (const uint32_t[]){ TEX_TXADDR, 0 }, 1);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc52);
+    gl_word(t, 0xc53);
+    gl_word(t, TEX_TXMIPMAP);
+    gl_word(t, 1);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * MXI and EMXI: a TE1 and its TRAM on each of two REs. Save and restore
+ * around a context switch, on SI+T too, which sends the same words, as
+ * the kernel does when another context's run overlaps: A loads and draws,
+ * the kernel saves A's block with no GL context loaded, B loads its own
+ * texels over it, the kernel restores A's block, and A draws its own
+ * texels again on both rows with no fresh bind, only the 0x0b00 its next
+ * draw sends: the kernel's register pairs leave A's texture state alone.
+ * Neither transfer touches the planes, here under a raster box left over
+ * screen row 0 that would take a 16 KiB row as 4,096 pixels.
  */
 static void test_mxi_tram_save_restore(gconstpointer data)
 {
     QTestState *t = mxi_start(data);
-    uint8_t texels[32], buffer[TRAM_ROW_BYTES], want[TRAM_ROW_BYTES];
+    g_autofree uint8_t *buffer = g_malloc(TRAM_BLOCK_BYTES);
+    uint8_t texels[32], other[32];
     uint32_t before[4];
 
     tex_texels(texels);
+    for (int i = 0; i < 32; i++) {
+        other[i] = i % 4 == 3 ? 0xff : texels[i] ^ 0x5a;
+    }
     tex_load(t, TEX_TL_MODE_RGBA8, texels);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     mxi_two_row_quad(t);
@@ -1819,21 +1980,25 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     for (int i = 0; i < 4; i++) {
         before[i] = mgras_test_pixel(t, 32 * i + 3, 0);
     }
-    memset(want, TRAM_BUFFER_FILL, sizeof(want));
-    qtest_memwrite(t, TRAM_BUFFER, want, sizeof(want));
 
     gl_enter_slot(t, GL_SLOT_DEFAULT);
-    gl_eram_map(t);
-    tram_save_block(t);
-    qtest_memread(t, TRAM_BUFFER, buffer, sizeof(buffer));
-    g_assert_cmpmem(buffer, sizeof(buffer), want, sizeof(want));
-    tram_restore_block(t);
+    tram_kernel_save(t, 0);
+    qtest_memread(t, TRAM_BUFFER, buffer, TRAM_BLOCK_BYTES);
+    g_assert_true(tram_buffer_holds(buffer, TRAM_BLOCK_BYTES, texels,
+                                    sizeof(texels)));
+
+    gl_enter_slot(t, GL_SLOT_B);
+    gl_word(t, GL_CONTEXT_OPENER);
+    tex_load(t, TEX_TL_MODE_RGBA8, other);
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    tram_kernel_restore(t, 0);
     for (int i = 0; i < 4; i++) {
         g_assert_cmphex(mgras_test_pixel(t, 32 * i + 3, 0), ==, before[i]);
     }
 
     gl_enter_slot(t, GL_SLOT_A);
-    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    gl_word(t, TEX_ON);
     mxi_two_row_quad(t);
     mxi_expect_rows(t, texels, true);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
@@ -1867,6 +2032,9 @@ int main(int argc, char **argv)
                    test_gl_texture_unsupported_draws_untextured);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-levels-by-block",
                    test_gl_texture_levels_by_block);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-many-levels-in-one-context",
+                   test_gl_texture_many_levels_in_one_context);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-level-from-strips",
                    test_gl_texture_level_from_strips);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-rgb-image-into-rgba",
@@ -1876,13 +2044,13 @@ int main(int argc, char **argv)
                    test_gl_texture_textureless_board_ignores);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-load-from-another-node",
                    test_gl_texture_load_from_another_node);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-context-cap",
-                   test_gl_texture_context_cap);
+    qtest_add_func("sn0/origin2000/mgras/tram-load-is-one-store",
+                   test_tram_load_is_one_store);
+    qtest_add_func("sn0/origin2000/mgras/tram-save-returns-the-block",
+                   test_tram_save_returns_the_block);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-border-is-logged-untextured",
                    test_gl_texture_border_is_logged_untextured);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-board-cap",
-                   test_gl_texture_board_cap);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-table-defaults-are-silent",
                    test_gl_texture_table_defaults_are_silent);

@@ -1415,7 +1415,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->public_glyph_row = 0;
     s->public_glyph_armed = s->public_glyph_wide_valid = false;
     s->gl_re_count_word = s->gl_re_count_tokens = 0;
-    s->tram_transfer = 0;
+    sgi_mgras_texture_board_reset(s);
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1632,6 +1632,7 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
+    s->tram = g_malloc0(SGI_MGRAS_TRAM_BYTES);
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
@@ -1700,6 +1701,8 @@ static void mgras_unrealize(DeviceState *dev)
     g_free(s->back_format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
+    g_free(s->tram);
+    s->tram = NULL;
 }
 
 static bool mgras_xmap_indices_valid(SGIMgrasState *s)
@@ -1717,6 +1720,8 @@ static int mgras_pre_load(void *opaque)
     SGIMgrasState *s = opaque;
 
     s->gl_restore_in_progress = true;
+    /* TRAM's subsection comes only when a block was written. */
+    sgi_mgras_texture_board_reset(s);
     return 0;
 }
 
@@ -1887,7 +1892,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 31, .minimum_version_id = 31,
+    .name = TYPE_SGI_MGRAS, .version_id = 32, .minimum_version_id = 32,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2071,6 +2076,14 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(gl_re_count_word, SGIMgrasState, 30),
         VMSTATE_UINT32_V(gl_re_count_tokens, SGIMgrasState, 30),
         VMSTATE_UINT32_V(tram_transfer, SGIMgrasState, 31),
+        VMSTATE_UINT32_V(tram_rows, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_words, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_first_row, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_read_block, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_load_block, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_txaddr, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_tladdr, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_rows, SGIMgrasState, 32),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -2082,6 +2095,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_gl_pixels,
         &vmstate_sgi_mgras_gl_pixel_flags,
         &vmstate_sgi_mgras_texture,
+        &vmstate_sgi_mgras_tram,
         NULL
     }
 };
