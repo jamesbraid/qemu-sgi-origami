@@ -17,10 +17,10 @@
  *   TL_MODE 0x1a1 and TL_SPEC 0x1a2 whole, and TXMIPMAP 0x191 and
  *   TXBORDER 0x193 as tables the 0xec10 packets fill from TXADDR on, the
  *   index advancing one a packet (inferred from the single index write
- *   before 32 packets in mgrTM_Init). The shadow address is the GE's and
- *   is not used. Any other record is logged, as the whole packet was
- *   before. Registers are kept as written, without the diagnostic's
- *   width masks.
+ *   before 32 packets in the texture-memory initialization routine). The shadow
+ *   address is the GE's and is not used. Any other record is logged, as the
+ *   whole packet was before. Registers are kept as written, without the
+ *   diagnostic's width masks.
  *
  * - Load. 0x9b00 opens a load and 0x9c00 closes it, once per iteration of
  *   the client's load loop. Between them TL_MODE names the kept format

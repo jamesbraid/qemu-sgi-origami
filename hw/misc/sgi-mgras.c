@@ -31,7 +31,7 @@
 
 /*
  * VC3 register 0x1e: bit 2 enables the display, bit 0 enables the retrace
- * interrupt. The IRIX 6.5.30 kernel's MgrasEnableRetraceInterrupts sets bit
+ * interrupt. The IRIX 6.5.30 kernel's retrace-interrupt enable routine sets bit
  * 0 through 0x072038; the VC2's control register uses the same two bits
  * (Linux include/video/newport.h, VC2_CTRL_EVIRQ and VC2_CTRL_EVIDEO).
  */
@@ -354,7 +354,7 @@ static const SGIHeadOps mgras_scanout_ops = {
 
 /*
  * Take the retrace period from the current VC3 tables and DAC PLL. The
- * IRIX 6.5.30 kernel's MgrasSetTiming writes the DAC PLL bytes, then
+ * IRIX 6.5.30 kernel's timing-setup routine writes the DAC PLL bytes, then
  * 0x072408, then the VC3 SRAM tables and VID_EP, and only then enables
  * the display through VC3 register 0x1e, so the model reads them at that
  * write rather than on every SRAM store. A new period restarts the retrace
@@ -462,9 +462,9 @@ static void mgras_context_write(SGIMgrasState *s, uint32_t value)
     if (s->context_words >= 63) {
         /*
          * Established:
-         * MgrasCtxsw stores exactly 63 words and never reads or writes a
-         * closing token at 0x120400 -- the transaction completes as soon
-         * as the 63rd word lands. Defensive only: completion moves
+         * The context-switch routine stores exactly 63 words and never reads or
+         * writes a closing token at 0x120400 -- the transaction completes as
+         * soon as the 63rd word lands. Defensive only: completion moves
          * protocol off the image state, so mgras_write() already routes any
          * later word to the command parser and this branch is unreachable
          * through it.
@@ -780,9 +780,9 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /*
      * After the GE program verifies, the kernel takes the GE revision from
      * the low byte here; 3 or more marks an E-series board. Every class-0
-     * 0xa2 query, whether the kernel's own (MgrasFinish, index 0x1fa) or
-     * the OpenGL client's, is answered here once HQ flag bit 17 is set
-     * (see mgras_raster_command_fifo_dispatch()). Approximated: the model
+     * 0xa2 query, whether the kernel's own (the finish-fence routine, index
+     * 0x1fa) or the OpenGL client's, is answered here once HQ flag bit 17 is
+     * set (see mgras_raster_command_fifo_dispatch()). Approximated: the model
      * holds the GE revision from reset until the first query of either
      * kind, then gives that query's answer, sgi_mgras_gl_query_answer()'s.
      * When real hardware replaces the revision is unknown.
@@ -792,11 +792,11 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /*
      * Bits 7:4 are the attached monitor's ID. The kernel reads this byte while
      * it builds the board record and again on every OpenGL context query
-     * (MgrasGatherInfo, MgrasGatherDynamicInfo), and gfxinfo prints the field.
-     * Every captured Origin board reports 0xf, which gfxinfo prints as
-     * "unknown, assuming 19"" and which, like 0, selects the kernel's stock
-     * 1280x1024 60 Hz timing record. Bits 3:0 are never read; 0 is
-     * approximated.
+     * (the board-information routine, the dynamic board-information routine),
+     * and gfxinfo prints the field. Every captured Origin board reports 0xf,
+     * which gfxinfo prints as "unknown, assuming 19"" and which, like 0,
+     * selects the kernel's stock 1280x1024 60 Hz timing record. Bits 3:0 are
+     * never read; 0 is approximated.
      */
     case 0x071308: {
         uint8_t v = MGRAS_MONITOR_ID << 4;
@@ -1122,9 +1122,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     /*
      * Inferred: 0x011040 sets enables and 0x011048 clears them. The IRIX
      * 6.5.30 kernel stores 0x400 to 0x011040 before a swap, and nothing
-     * after that writes 0x011040 again before the next MgrasCtxsw sleeps on
-     * source 19; the switch's tail clears every enable at 0x011048 before
-     * restoring the incoming context's word. With a replacing store the
+     * after that writes 0x011040 again before the next context-switch routine
+     * sleeps on source 19; the switch's tail clears every enable at 0x011048
+     * before restoring the incoming context's word. With a replacing store the
      * source-19 wake never arrives, and the switch is left to its watchdog.
      * The discriminating tests are
      * irq-enable-set-and-clear-ports and swap-keeps-context-switch-enable.

@@ -29,9 +29,9 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /*
  * Uploaded program state is retained. Its protocol is unsupported.
- * Established from MgrasDownloadGE11Ucode (IRIX 6.5.30 mgras_init.o): the
- * kernel loads GE 0 through slot B's ports and GE 1 through slot A's,
- * setting 0x011000 bits 5:4 to 2 and 3 for them. A one-GE board uses
+ * Established from the GE11 microcode download routine (IRIX 6.5.30
+ * mgras_init.o): the kernel loads GE 0 through slot B's ports and GE 1 through
+ * slot A's, setting 0x011000 bits 5:4 to 2 and 3 for them. A one-GE board uses
  * slot B alone.
  */
 #define SGI_MGRAS_GE_WORDS (59392 * 3)
@@ -166,8 +166,8 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_XMAP_OVERLAY_MODE 0x071e80
 
 /*
- * MgrasSchedSwapBuf writes this XMAP-indexed port with the per-window swap
- * mask that takes effect at the next retrace. SGI's IDE XMAP test writes
+ * The swap-scheduling routine writes this XMAP-indexed port with the per-window
+ * swap mask that takes effect at the next retrace. SGI's IDE XMAP test writes
  * and reads it back under index byte 0 (all 32 bits, the main buffer
  * select) and index byte 4 (low 8 bits, which it calls the overlay buffer
  * select); the kernel reading takes index 4 as a second swap-mask word.
