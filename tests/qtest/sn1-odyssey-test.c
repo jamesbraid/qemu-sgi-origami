@@ -10516,6 +10516,31 @@ static void test_readback_object_source(void)
     qtest_quit(qts);
 }
 
+/* A V6 GL read of one RGBA8 texel uses class 2, code 8 and no format byte. */
+static void test_readback_gl_rgba8_object(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        0x16bc00, 0, 0x20, 0x10001, 0x80013042, 0, 4, 0x3201004b,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 4) };
+    const uint8_t texel[] = { 0x11, 0x22, 0x33, 0x44 };
+    uint8_t expect[36];
+
+    qtest_memwrite(qts, RB_PAGE_A + 16, texel, sizeof(texel));
+    readback_run(qts, hdr, pte, 1);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16bc00, 0, 0), ==,
+                    0x11223344);
+
+    readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+    hdr[7] = 0xb3010000;
+    readback_run(qts, hdr, pte, 1);
+    memcpy(&expect[16], texel, sizeof(texel));
+    readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    g_assert_true(readback_dma_done(qts));
+    qtest_quit(qts);
+}
+
 /*
  * An X index read (format byte 0x41) takes the plane word as an index only
  * where scanout does: the pixel's drawable (main id 0 here, which takes
@@ -10938,6 +10963,8 @@ int main(int argc, char **argv)
                    test_readback_page_crossing);
     qtest_add_func("sn1/odyssey/readback/object-source",
                    test_readback_object_source);
+    qtest_add_func("sn1/odyssey/readback/gl-rgba8-object",
+                   test_readback_gl_rgba8_object);
     qtest_add_func("sn1/odyssey/readback/index-follows-display-mode",
                    test_readback_index_follows_display_mode);
     qtest_add_func("sn1/odyssey/readback/greeter-caret-cell",

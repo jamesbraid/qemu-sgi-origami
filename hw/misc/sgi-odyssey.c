@@ -882,7 +882,8 @@ static unsigned odyssey_cmd_arity(uint32_t word)
 #define ODSY_DMA_FMT_CLASS_MASK 0x7        /* word 4 bits 2:0 */
 #define ODSY_DMA_FMT_CODE_SHIFT 3          /* word 4 bits 7:3 */
 #define ODSY_DMA_FMT_CODE_MASK 0x1f
-/* The GL library's source class for a 12-bit-a-channel RGBA window. */
+/* The GL library's source classes for 8- and 12-bit RGBA visuals. */
+#define ODSY_DMA_GL_CLASS_RGBA8 2
 #define ODSY_DMA_GL_CLASS_RGBA12 3
 
 /* Board-to-host and sentinel reports, each made once (dma_read_reported). */
@@ -5948,6 +5949,11 @@ static const OdysseyDMALayout odyssey_dma_gl_layouts[] = {
     { 7, 3, { 2, 1, 0 } },      /* BGR, UNSIGNED_BYTE */
 };
 
+/* An eight-bit RGBA visual uses code 8 for RGBA/UNSIGNED_BYTE. */
+static const OdysseyDMALayout odyssey_dma_gl_rgba8_layout = {
+    8, 4, { 0, 1, 2, 3 },
+};
+
 /*
  * X reads, by word 7's format byte: the upload decode
  * (odyssey_decode_pixel()) run backwards. The luminance code is not
@@ -5984,6 +5990,8 @@ static const OdysseyDMALayout *odyssey_dma_read_layout(SGIOdysseyState *s,
                 l = &odyssey_dma_gl_layouts[i];
             }
         }
+    } else if (cls == ODSY_DMA_GL_CLASS_RGBA8 && code == 8) {
+        l = &odyssey_dma_gl_rgba8_layout;
     }
     if (l && l->bytes == bpp) {
         return l;
