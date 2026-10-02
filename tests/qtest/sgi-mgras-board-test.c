@@ -758,17 +758,6 @@ static void test_dac_lut_load(void)
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 }
 
-/*
- * SGI's Octane IDE DAC reset (the DAC reset test, ide.IP30 6.5.30 at
- * 0xa800000020854920) addresses DAC registers through REG_DAC_LUT_INDEX,
- * a halfword whose high byte is the register number, and moves their
- * data through REG_DAC_LUT_DATA_2 a byte at a time. It fails the board
- * unless the address reads back, register 3 (the DAC ID) is 0x79 with
- * register 0xb (its revision) at 1 -- or 0x76 with 0, which it warns
- * about -- and each register it programs reads back under mask 0xff.
- * A recorded IRIX desktop session programs the same registers, in the
- * same order, before each gamma-table load (0x0600 takes 0xec there).
- */
 /* The DAC mode byte reads back each walking pattern the IDE writes. */
 static void test_dac_mode_byte_readback(void)
 {
@@ -784,6 +773,17 @@ static void test_dac_mode_byte_readback(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * SGI's Octane IDE DAC reset (the DAC reset test, ide.IP30 6.5.30 at
+ * 0xa800000020854920) addresses DAC registers through REG_DAC_LUT_INDEX,
+ * a halfword whose high byte is the register number, and moves their
+ * data through REG_DAC_LUT_DATA_2 a byte at a time. It fails the board
+ * unless the address reads back, register 3 (the DAC ID) is 0x79 with
+ * register 0xb (its revision) at 1 -- or 0x76 with 0, which it warns
+ * about -- and each register it programs reads back under mask 0xff.
+ * A recorded IRIX desktop session programs the same registers, in the
+ * same order, before each gamma-table load (0x0600 takes 0xec there).
+ */
 static void test_dac_register_file_matches_ide_reset(void)
 {
     static const struct {
@@ -1589,6 +1589,10 @@ static void test_board_re4_status_reports_selected_re(gconstpointer data)
  * The IDE's raster-register writer: RSS register 0x112 through the mapping
  * port with class 0x59 (the main port's 0x19 and token bit 22), then its
  * data word, selects the RE just as the main port's write does.
+ *
+ * Only the multi-RE variants (ssi, essi) pin the forwarding. A board with
+ * one RE can only select RE 0, which is the reset selection, so the si case
+ * passes without it and checks just that the token raises no error.
  */
 static void test_board_mapping_port_raster_write(gconstpointer data)
 {
