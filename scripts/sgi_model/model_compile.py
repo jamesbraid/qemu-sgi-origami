@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .model_composition import validate_initialization_policy
+from .model_composition import (
+    validate_initialization_policy, validate_io9_clock_links,
+)
 
 from . import synthetic_serial
 from .model_shared import (
@@ -2105,7 +2107,8 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
 
 def _compile_pic_io_records(model: dict, graph: dict,
                             modules_by_id: dict[str, int],
-                            first_attachment: int
+                            first_attachment: int,
+                            ds1742_boards: set[str],
                             ) -> tuple[list[dict], list[dict], list[dict]]:
     """Compile authored PIC hosts and IO9 boards without choosing
     hardware facts."""
@@ -2373,6 +2376,8 @@ def _compile_pic_io_records(model: dict, graph: dict,
             "pci": pci_functions,
             "pci_host_index": host_index[host_id], "pci_head": head,
         }
+        if board["id"] in ds1742_boards:
+            record["ds1742"] = True
         io9_boards.append(record)
 
     return host_records, io9_boards, host_attachments
@@ -2734,6 +2739,7 @@ def compile_model(model: dict) -> dict:
     modules_by_id = {module["id"]: module["index"] for module in graph["modules"]}
 
     try:
+        ds1742_boards = validate_io9_clock_links(model)
         validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
@@ -2807,7 +2813,7 @@ def compile_model(model: dict) -> dict:
                     "PIC host descriptors are supported only for SN1")
             pci_host_bridges, io9_boards, pic_attachments = (
                 _compile_pic_io_records(model, graph, modules_by_id,
-                                        len(xio_attachments)))
+                                        len(xio_attachments), ds1742_boards))
             io_boards.extend(io9_boards)
             xio_attachments.extend(pic_attachments)
     except CompileError:

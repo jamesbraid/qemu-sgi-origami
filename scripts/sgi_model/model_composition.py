@@ -101,6 +101,90 @@ def validate_component_ids(model: dict[str, Any]) -> None:
         seen.add(cid)
 
 
+def validate_io9_clock_links(model: dict[str, Any]) -> set[str]:
+    """Validate typed DS1742-to-IOC4 links and return their IO9 board IDs."""
+    links = model.get("links")
+    if links is None:
+        return set()
+    if not isinstance(links, list):
+        raise ResolutionError("links must be a list")
+
+    components = {
+        component["id"]: component
+        for component in model.get("components", [])
+        if isinstance(component, dict) and isinstance(component.get("id"), str)
+    }
+
+    def io9_board(component: dict[str, Any]) -> dict[str, Any] | None:
+        node = component
+        seen: set[str] = set()
+        while True:
+            if node.get("kind") == "board":
+                return node if node.get("hardware_kind") == "io9" else None
+            ident = node.get("id")
+            if ident in seen:
+                raise ResolutionError(f"cyclic containment at '{ident}'")
+            seen.add(ident)
+            parent = components.get(node.get("parent"))
+            if parent is None:
+                return None
+            node = parent
+
+    linked_boards: set[str] = set()
+    seen_links: set[tuple[str, str, str]] = set()
+    for index, link in enumerate(links):
+        label = f"link {index}"
+        if not isinstance(link, dict) or set(link) != {"kind", "source", "target"}:
+            raise ResolutionError(
+                f"{label} must contain only kind, source, and target"
+            )
+        if link["kind"] != "ioc4-clock":
+            raise ResolutionError(f"{label} has unsupported kind '{link['kind']}'")
+        source_id, target_id = link["source"], link["target"]
+        if (not isinstance(source_id, str) or not source_id or
+                not isinstance(target_id, str) or not target_id):
+            raise ResolutionError(f"{label} requires non-empty source and target ids")
+        key = (link["kind"], source_id, target_id)
+        if key in seen_links:
+            raise ResolutionError(f"duplicate IOC4 clock link '{source_id}' to '{target_id}'")
+        seen_links.add(key)
+        source, target = components.get(source_id), components.get(target_id)
+        if source is None or target is None:
+            raise ResolutionError(
+                f"{label} has dangling endpoint '{source_id if source is None else target_id}'"
+            )
+        if source.get("hardware_kind") != "ds1742":
+            raise ResolutionError(
+                f"IOC4 clock link '{source_id}' must source a DS1742"
+            )
+        if target.get("hardware_kind") != "ioc4":
+            raise ResolutionError(
+                f"IOC4 clock link '{target_id}' must target an IOC4"
+            )
+        source_board, target_board = io9_board(source), io9_board(target)
+        if source_board is None or target_board is None:
+            raise ResolutionError("IOC4 clock link endpoints must belong to an IO9 board")
+        if source_board["id"] != target_board["id"]:
+            raise ResolutionError("IOC4 clock link endpoints must belong to the same IO9 board")
+        board_id = source_board["id"]
+        if board_id in linked_boards:
+            raise ResolutionError(
+                f"IO9 board '{board_id}' has more than one IOC4 clock link"
+            )
+        linked_ioc4s = [
+            component for component in components.values()
+            if component.get("hardware_kind") == "ioc4"
+            and (board := io9_board(component)) is not None
+            and board["id"] == board_id
+        ]
+        if len(linked_ioc4s) != 1 or linked_ioc4s[0]["id"] != target_id:
+            raise ResolutionError(
+                f"IO9 board '{board_id}' clock link requires its one IOC4 component"
+            )
+        linked_boards.add(board_id)
+    return linked_boards
+
+
 def validate_population(product: dict[str, Any], assembly: dict[str, Any]) -> dict[str, Any]:
     product_id = product["id"]
     assembly_id = assembly["id"]
@@ -385,6 +469,7 @@ def validate_emulation_profile(model: dict[str, Any]) -> None:
 
 
 def validate_direct_model_references(model: dict[str, Any]) -> None:
+    validate_io9_clock_links(model)
     components = {
         component["id"]: component
         for component in model.get("components", [])

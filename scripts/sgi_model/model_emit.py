@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from .model_compile import compile_model
 
@@ -296,6 +297,8 @@ def _io_board(raw: dict) -> dict:
             board[name] = raw[key]
     if "system_timekeeper" in raw:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
+    if raw.get("ds1742") is True:
+        board["ds1742"] = True
 
     for key in ("ioc3_subsystem_id", "mac_source"):
         if key in raw:
@@ -427,6 +430,8 @@ _SCSI_TARGETS = {
 # node's L1 combines the console and the system controller dialogue on
 # one UART instead (include/hw/mips/sgi/sn-machine.h's
 # sgi_sn1_serial_line(): one `-serial chardev:l1` first).
+_DS1742_ARGUMENT = "-drive if=none,id=sgi-ds1742-data-BOARD"
+_DS1742_BYTES = 2048
 
 # Each Timekeeper kind's NVRAM and the clock reference record its model
 # keeps beside it: the m48t35 window (hw/rtc/m48t35.h's M48T35_SIZE and
@@ -673,11 +678,35 @@ def _init_inputs_for(topology: dict, storage: list[dict]) -> list[dict]:
 
 
 def _resources_for(topology: dict, harness: dict,
-                   dimms_per_node: tuple[int, ...]) -> list[dict]:
+                   dimms_per_node: tuple[int, ...],
+                   population_nodes: tuple[int, ...]) -> list[dict]:
     """The catalogue's `resources` list for one offering: identity and SPD
     inputs a launcher may supply beyond its writable `storage`.
     """
     resources = []
+    def ds1742_board_survives(board: dict) -> bool:
+        if board.get("ds1742") is not True:
+            return False
+        host = topology["pci_host_bridges"][board["pci_host_index"]]
+        attachment = topology["xio_attachments"][
+            host["xio_attachment_index"]]
+        return attachment["node_index"] in population_nodes
+
+    ds1742_board_ids = sorted(
+        board["id"] for board in topology["io_boards"]
+        if ds1742_board_survives(board)
+    )
+    if ds1742_board_ids:
+        if (len(set(ds1742_board_ids)) != len(ds1742_board_ids) or
+                any(not re.fullmatch(r"[a-z][a-z0-9-]*", board_id)
+                    for board_id in ds1742_board_ids)):
+            raise ValueError("DS1742 resource owners must be unique stable board IDs")
+        resources.append({
+            "kind": "ds1742", "scope": "board",
+            "count": len(ds1742_board_ids), "board-ids": ds1742_board_ids,
+            "argument": _DS1742_ARGUMENT, "part": "ds1742",
+            "size": _DS1742_BYTES, "clock-reference": True,
+        })
     # Origin 300's raw identity and SPD record overrides: the machine's
     # chassis-eeprom and board-eeprom arrays (one pair per board: the node
     # board and the IO-8) and spd-eeprom (one record per fitted DIMM).
@@ -798,7 +827,8 @@ def _offerings_for(model: dict, topology: dict,
                   key=lambda row: -len(row["nodes"]))
     for row in rows:
         nodes = len(row["nodes"])
-        resources = _resources_for(topology, harness, dimms_per_node[:nodes])
+        resources = _resources_for(topology, harness, dimms_per_node[:nodes],
+                                   tuple(row["nodes"]))
         storage = _storage_for(topology, harness, product,
                                list(row["nodes"]))
         init_inputs = _init_inputs_for(topology, storage)

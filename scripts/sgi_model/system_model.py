@@ -164,6 +164,7 @@ KNOWN_KINDS = REQUIRED_KINDS | {"module"}
 MODULE_GRAPH_FIELDS = (
     "components", "buses", "connections", "interrupts", "open_questions"
 )
+OPTIONAL_MODULE_GRAPH_FIELDS = ("links",)
 MODULE_INSTANCE_FIELDS = {
     "model", "prefix", "parent", "omit_buses",
     "observed_hardware", "module_role", "physical_slot", "bus_bindings",
@@ -251,7 +252,8 @@ def _layer(path: pathlib.Path, document: dict[str, Any] | None = None) -> dict[s
     if kind == "module":
         data = layer.get("data")
         if (not isinstance(data, dict) or
-                set(data) - set(MODULE_GRAPH_FIELDS) - {"module_instances"}):
+                set(data) - set(MODULE_GRAPH_FIELDS) -
+                set(OPTIONAL_MODULE_GRAPH_FIELDS) - {"module_instances"}):
             raise ResolutionError(f"module '{ident}' must contain only physical graph collections")
         if "module_instances" in data:
             layer["data"] = data = _expand_nested_module_instances(path, data)
@@ -432,6 +434,11 @@ def _instantiate_module_graph(
                 f"module contract field '{field}' must be a list"
             )
         graph[field] = copy.deepcopy(values)
+    if "links" in contract:
+        links = contract["links"]
+        if not isinstance(links, list):
+            raise ResolutionError("module contract field 'links' must be a list")
+        graph["links"] = copy.deepcopy(links)
 
     basis = _validate_observed_hardware_basis(observed_hardware)
     if contains_observed_hardware(graph):
@@ -442,6 +449,9 @@ def _instantiate_module_graph(
         graph = _apply_observed_hardware_basis(graph, basis)
 
     components = graph["components"]
+    original_component_ids = {
+        item.get("id") for item in components if isinstance(item, dict)
+    }
     omitted_components = {
         component["id"] for component in components
         if (isinstance(component, dict) and
@@ -464,6 +474,23 @@ def _instantiate_module_graph(
         if component.get("id") not in omitted_components
     ]
     graph["components"] = components
+    if "links" in graph:
+        retained_links = []
+        for link in graph["links"]:
+            if not isinstance(link, dict):
+                raise ResolutionError("module link must be a mapping")
+            source, target = link.get("source"), link.get("target")
+            if (not isinstance(source, str) or not source or
+                    not isinstance(target, str) or not target):
+                raise ResolutionError("module link requires source and target ids")
+            if source not in original_component_ids or target not in original_component_ids:
+                raise ResolutionError(
+                    f"module link '{source}' to '{target}' has a dangling endpoint"
+                )
+            if source in omitted_components or target in omitted_components:
+                continue
+            retained_links.append(link)
+        graph["links"] = retained_links
     buses = graph["buses"]
     component_ids = {
         item.get("id") for item in components if isinstance(item, dict)
@@ -586,6 +613,12 @@ def _instantiate_module_graph(
         if controller in component_ids:
             connection["controlled_by"] = _renamed(controller)
 
+    for link in graph.get("links", []):
+        for endpoint in ("source", "target"):
+            component_id = link[endpoint]
+            if component_id in component_ids:
+                link[endpoint] = _renamed(component_id)
+
     for interrupt in graph["interrupts"]:
         ident = interrupt.get("id")
         if isinstance(ident, str):
@@ -629,6 +662,10 @@ def _expand_nested_module_instances(
     graph: dict[str, list[Any]] = {
         field: copy.deepcopy(data.get(field, [])) for field in MODULE_GRAPH_FIELDS
     }
+    if "links" in data:
+        if not isinstance(data["links"], list):
+            raise ResolutionError("module contract field 'links' must be a list")
+        graph["links"] = copy.deepcopy(data["links"])
     seen_ids: dict[str, set[str]] = {
         field: {item.get("id") for item in graph[field]
                 if isinstance(item, dict) and isinstance(item.get("id"), str)}
@@ -697,6 +734,8 @@ def _expand_nested_module_instances(
                         )
                     seen_ids[field].add(ident)
             graph[field].extend(instance[field])
+        if "links" in instance:
+            graph.setdefault("links", []).extend(instance["links"])
 
     return graph
 
@@ -825,7 +864,10 @@ def _merge_module_instances(
                     "already authors one on its root component"
                 )
             root["physical_slot"] = copy.deepcopy(physical_slot)
-        for field in MODULE_GRAPH_FIELDS:
+        fields = list(MODULE_GRAPH_FIELDS)
+        fields.extend(field for field in OPTIONAL_MODULE_GRAPH_FIELDS
+                      if field in graph)
+        for field in fields:
             values = graph[field]
             current = resolved.setdefault(field, [])
             if not isinstance(current, list):

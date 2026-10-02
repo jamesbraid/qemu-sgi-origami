@@ -479,6 +479,102 @@ class SystemModelResolutionTests(unittest.TestCase):
                     self.load_module(self.BOARD_ON_AN_UPSTREAM_BUS, validate=False,
                                      **extra)
 
+    def test_module_instance_namespaces_optional_link_endpoints(self):
+        contract = {
+            "components": [
+                {"id": "io9", "kind": "board", "hardware_kind": "io9"},
+                {"id": "rtc", "kind": "rtc", "hardware_kind": "ds1742",
+                 "parent": "io9"},
+                {"id": "ioc4", "kind": "io-controller", "hardware_kind": "ioc4",
+                 "parent": "io9"},
+            ],
+            "links": [{"kind": "ioc4-clock", "source": "rtc", "target": "ioc4"}],
+        }
+        model = self.load_module(contract, validate=False)
+
+        self.assertEqual(model["links"], [{
+            "kind": "ioc4-clock", "source": "node0-rtc", "target": "node0-ioc4",
+        }])
+
+    def test_module_instance_omission_drops_a_link_to_the_omitted_component(self):
+        for omitted in ("rtc", "ioc4"):
+            with self.subTest(omitted=omitted):
+                contract = {
+                    "components": [
+                        {"id": "io9", "kind": "board", "hardware_kind": "io9"},
+                        {"id": "rtc", "kind": "rtc", "hardware_kind": "ds1742",
+                         "parent": "io9"},
+                        {"id": "ioc4", "kind": "io-controller",
+                         "hardware_kind": "ioc4", "parent": "io9"},
+                    ],
+                    "links": [{"kind": "ioc4-clock", "source": "rtc",
+                               "target": "ioc4"}],
+                }
+                next(component for component in contract["components"]
+                     if component["id"] == omitted)["optional"] = {"node": 1}
+
+                model = self.load_module(contract, validate=False)
+
+                self.assertNotIn(f"node0-{omitted}", {
+                    item["id"] for item in model["components"]
+                })
+                self.assertEqual(model["links"], [])
+
+    def test_legacy_module_without_links_keeps_the_field_absent(self):
+        model = self.load_module({
+            "components": [{"id": "board", "kind": "board"}],
+        }, validate=False)
+
+        self.assertNotIn("links", model)
+
+    def test_nested_module_composition_namespaces_link_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            leaf = root / "rtc.yaml"
+            leaf.write_text(yaml.safe_dump({
+                "layer_version": 1,
+                "layer": {
+                    "kind": "module", "id": "rtc-module",
+                    "requires": {"assembly": "ip29"},
+                    "data": {
+                        "components": [
+                            {"id": "io9", "kind": "board", "hardware_kind": "io9"},
+                            {"id": "rtc", "kind": "rtc", "hardware_kind": "ds1742",
+                             "parent": "io9"},
+                            {"id": "ioc4", "kind": "io-controller",
+                             "hardware_kind": "ioc4", "parent": "io9"},
+                        ],
+                        "links": [{"kind": "ioc4-clock", "source": "rtc",
+                                   "target": "ioc4"}],
+                    },
+                },
+            }))
+            parent = root / "parent.yaml"
+            parent.write_text(yaml.safe_dump({
+                "layer_version": 1,
+                "layer": {
+                    "kind": "module", "id": "parent-module",
+                    "requires": {"assembly": "ip29"},
+                    "data": {
+                        "components": [
+                            {"id": "chassis", "kind": "chassis"},
+                        ],
+                        "module_instances": [{
+                            "model": "rtc.yaml", "id": "io9-slot",
+                            "parent": "chassis",
+                            "physical_slot": {"kind": "io", "number": 9},
+                        }],
+                    },
+                },
+            }))
+
+            layer = self.resolver._layer(parent)
+
+        self.assertEqual(layer["data"]["links"], [{
+            "kind": "ioc4-clock", "source": "io9-slot-rtc",
+            "target": "io9-slot-ioc4",
+        }])
+
     def module_composition(self, directory, contract):
         root = pathlib.Path(directory)
         root.mkdir()
@@ -486,6 +582,8 @@ class SystemModelResolutionTests(unittest.TestCase):
             field: copy.deepcopy(contract.get(field, []))
             for field in self.resolver.MODULE_GRAPH_FIELDS
         }
+        if "links" in contract:
+            data["links"] = copy.deepcopy(contract["links"])
         path = root / "module.yaml"
         path.write_text(yaml.safe_dump({
             "layer_version": 1,
