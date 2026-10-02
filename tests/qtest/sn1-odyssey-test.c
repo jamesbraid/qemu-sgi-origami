@@ -8521,6 +8521,83 @@ static void texture_chain_upload_solid(QTestState *qts, uint32_t base,
     upload_end(qts);
 }
 
+static void texture_integer_quad(QTestState *qts, uint32_t x0, uint32_t y0,
+                                 uint32_t x1, uint32_t y1)
+{
+    const uint32_t vertex[][4] = {
+        { x0, y0, 0, 0 }, { x1, y0, ODSY_F_ONE, 0 },
+        { x1, y1, ODSY_F_ONE, ODSY_F_ONE },
+        { x0, y1, 0, ODSY_F_ONE },
+    };
+
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_CMD_GL_QUADS);
+    for (unsigned i = 0; i < ARRAY_SIZE(vertex); i++) {
+        user_cmd_push(qts, 0xc380c821);
+        user_cmd_push(qts, vertex[i][2]);
+        user_cmd_push(qts, vertex[i][3]);
+        user_cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+        user_cmd_push(qts, vertex[i][0]);
+        user_cmd_push(qts, vertex[i][1]);
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+static void test_texture_chain_integer_quads(void)
+{
+    const uint32_t binding[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000840, 4, 4, 1, 0x13000040, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010e82, 0x182000, 0x41100002, 0,
+        0x00010406, 0,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    const uint32_t colour[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff,
+    };
+    const uint32_t flipped[16] = {
+        ODSY_F_ONE, 0, 0, 0,
+        0, 0xbf800000, 0, 0x43000000,
+        0, 0, 0x4f7fffc0, 0x4f7fffc0,
+        0, 0, 0, ODSY_F_ONE,
+    };
+    const uint32_t lod0[] = { 0x00011013, 0, 0, 0, 0 };
+    const uint32_t clip[][4] = { { 100, 200, 227, 327 } };
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 4, colour[0]);
+    texture_chain_upload_solid(qts, 0x181000, 2, 2, colour[1]);
+    texture_chain_upload_solid(qts, 0x182000, 1, 1, colour[2]);
+    texture_adapter_window(qts);
+    odsy_test_pixel_write(qts, 80, 15, 0);
+    push_user_words(qts, binding, ARRAY_SIZE(binding));
+    for (unsigned i = 0; i < ARRAY_SIZE(colour); i++) {
+        const uint32_t lod[] = {
+            0x00011013, 0, 0, i << 8, i << 8,
+        };
+        uint32_t x = 10 + i * 20;
+
+        push_user_words(qts, lod, ARRAY_SIZE(lod));
+        texture_integer_quad(qts, x, 10, x + 10, 20);
+        g_assert_cmphex(odsy_test_pixel(qts, x + 5, 15), ==, colour[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 80, 15), ==, 0);
+
+    /* The GL matrix flips Y inside the placed window; the X path does not. */
+    window_origin(qts, 100, 200);
+    window_clip(qts, clip, ARRAY_SIZE(clip));
+    push_window_transform(qts, flipped);
+    push_user_words(qts, lod0, ARRAY_SIZE(lod0));
+    odsy_test_pixel_write(qts, 115, 215, 0);
+    texture_integer_quad(qts, 10, 10, 20, 20);
+    g_assert_cmphex(odsy_test_pixel(qts, 115, 313), ==, colour[0]);
+    g_assert_cmphex(odsy_test_pixel(qts, 115, 215), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_texture_chain_explicit_level(void)
 {
     QTestState *qts = board_start("");
@@ -11054,6 +11131,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
                    test_texture_chain_explicit_level);
+    qtest_add_func("sn1/odyssey/texture-adapter/integer-quads",
+                   test_texture_chain_integer_quads);
     qtest_add_func("sn1/odyssey/texture-adapter/height-one",
                    test_texture_chain_height_one);
     qtest_add_func("sn1/odyssey/texture-adapter/construction",
