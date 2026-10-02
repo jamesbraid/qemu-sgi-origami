@@ -2867,6 +2867,48 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
+/*
+ * Which of mgras_gl_pixel_programs[] the GE holds at 0x13b, or
+ * MGRAS_GL_PIXELS_FORMATS for none of them; *pairs is its length.
+ */
+static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
+{
+    uint32_t format;
+
+    *pairs = 0;
+    while (*pairs < MGRAS_GE_PIXEL_PROGRAM_PAIRS &&
+           ge[MGRAS_GE_PIXEL_PROGRAM + 2 * *pairs] != MGRAS_GE_ROUTINE_END) {
+        (*pairs)++;
+    }
+    (*pairs)++;
+    for (format = 0; format < ARRAY_SIZE(mgras_gl_pixel_programs); format++) {
+        bool same = mgras_gl_pixel_programs[format].pairs == *pairs;
+
+        for (uint32_t i = 0; same && i < *pairs; i++) {
+            same = ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] ==
+                   mgras_gl_pixel_programs[format].routine[i];
+        }
+        if (same && mgras_gl_pixel_programs[format].unpack) {
+            uint32_t params = ge[MGRAS_GE_PIXEL_PROGRAM + 3];
+
+            same = params < SGI_MGRAS_GE_PARAM_WORDS - 1 &&
+                   ge[params + 1] == mgras_gl_pixel_programs[format].unpack;
+        }
+        if (same) {
+            return format;
+        }
+    }
+    return MGRAS_GL_PIXELS_FORMATS;
+}
+
+bool sgi_mgras_gl_pixels_rgb8(SGIMgrasState *s)
+{
+    uint32_t pairs;
+
+    return mgras_gl_pixels_match(s->ge_param, &pairs) ==
+           MGRAS_GL_PIXELS_RGB8;
+}
+
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                     SGIMgrasGLPixels *px)
@@ -2877,7 +2919,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     /* The guest's words, so the differences are taken in 64 bits. */
     int64_t w = (int64_t)(int32_t)box[2] - (int32_t)box[0] + 1;
     int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
-    uint32_t pairs = 0, format;
+    uint32_t pairs, format;
 
     /*
      * A refused draw still owns the image that follows it: its rows as
@@ -2899,28 +2941,7 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         return false;
     }
     px->h = h;
-    while (pairs < MGRAS_GE_PIXEL_PROGRAM_PAIRS &&
-           ge[MGRAS_GE_PIXEL_PROGRAM + 2 * pairs] != MGRAS_GE_ROUTINE_END) {
-        pairs++;
-    }
-    pairs++;
-    for (format = 0; format < ARRAY_SIZE(mgras_gl_pixel_programs); format++) {
-        bool same = mgras_gl_pixel_programs[format].pairs == pairs;
-
-        for (uint32_t i = 0; same && i < pairs; i++) {
-            same = ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] ==
-                   mgras_gl_pixel_programs[format].routine[i];
-        }
-        if (same && mgras_gl_pixel_programs[format].unpack) {
-            uint32_t params = ge[MGRAS_GE_PIXEL_PROGRAM + 3];
-
-            same = params < SGI_MGRAS_GE_PARAM_WORDS - 1 &&
-                   ge[params + 1] == mgras_gl_pixel_programs[format].unpack;
-        }
-        if (same) {
-            break;
-        }
-    }
+    format = mgras_gl_pixels_match(ge, &pairs);
     if (format >= ARRAY_SIZE(mgras_gl_pixel_programs)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE pixel program of %u "
                       "routines from 0x%x, 0x%x is not modelled; its image "

@@ -547,6 +547,42 @@ static void test_gl_texture_level_from_strips(void)
 }
 
 /*
+ * An RGB image of unsigned bytes, loaded through the three-byte program
+ * into a level kept as RGBA4, as perfly's CH-53 body texture was: three
+ * host bytes a texel, each kept at four bits, and alpha 1, so blending
+ * by source alpha over black shows the texel's colour, not black.
+ */
+static void test_gl_texture_rgb_image_into_rgba(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], rgb[24];
+
+    tex_texels(texels);
+    for (int i = 0; i < 8; i++) {
+        memcpy(&rgb[3 * i], &texels[4 * i], 3);
+    }
+    tex_load_program(t, GL_PIX_3UB, true, TEX_TL_MODE_RGBA4, TEX_SPEC_4X2,
+                     rgb, 4, 2, 3, box, true, 0, 0);
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    gl_blend(t, GL_SRC_ALPHA, GL_SRC_ALPHA + 1, GL_FUNC_ADD);
+    gl_one(t, GL_BLEND_HDR, 1);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA4);
+    tex_quad(t);
+    for (int i = 0; i < 8; i++) {
+        uint32_t want = 0;
+
+        for (int k = 0; k < 3; k++) {
+            want = want << 8 | (rgb[3 * i + k] >> 4) * 0x11;
+        }
+        g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==, want);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
  * The SI has no TRAM: the same words draw the quad white, the records'
  * block and the transfer are consumed, and the fence after them parses.
  */
@@ -1718,6 +1754,8 @@ int main(int argc, char **argv)
                    test_gl_texture_levels_by_block);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-level-from-strips",
                    test_gl_texture_level_from_strips);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-rgb-image-into-rgba",
+                   test_gl_texture_rgb_image_into_rgba);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-textureless-board-ignores",
                    test_gl_texture_textureless_board_ignores);
