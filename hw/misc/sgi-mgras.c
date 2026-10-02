@@ -830,11 +830,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * (the board-information routine, the dynamic board-information routine),
      * and gfxinfo prints the field. Every captured Origin board reports 0xf,
      * which gfxinfo prints as "unknown, assuming 19"" and which, like 0,
-     * selects the kernel's stock 1280x1024 60 Hz timing record. Bits 3:0 are
-     * never read; 0 is approximated.
+     * selects the kernel's stock 1280x1024 60 Hz timing record. Bits 2:0
+     * are the first CMAP's revision: SGI's IP30 IDE reads them beside
+     * 0x071708's and fails a board whose two CMAP revisions differ or fall
+     * outside 2 to 3. The kernel never reads them. Bit 3 is approximated 0.
      */
     case 0x071308: {
-        uint8_t v = MGRAS_MONITOR_ID << 4;
+        uint8_t v = MGRAS_MONITOR_ID << 4 | (s->board->cmap_revision & 7);
 
         return size == 1 ? v : (uint32_t)v << 24;
     }
