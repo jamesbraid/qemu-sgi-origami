@@ -154,7 +154,12 @@
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
  * gl-texture-rgba4-truncates, gl-texture-unsupported-draws-untextured,
  * gl-texture-textureless-board-ignores, gl-texture-migration, the replay
- * fixture gl-texture-rgba4-quad, and for the formats, environments, wraps
+ * fixture gl-texture-rgba4-quad, gl-texture-many-levels-in-one-context,
+ * for the ABGR, short and bordered loads gl-texture-load-abgr-bytes,
+ * gl-texture-load-unsigned-shorts, gl-texture-load-abgr-shorts,
+ * gl-texture-shorts-reduce-rounded, gl-texture-load-rgb-shorts,
+ * gl-texture-bordered-image-stores-interior and
+ * gl-texture-bordered-strips, and for the formats, environments, wraps
  * and filters gl-texture-class-intensity-vs-luminance,
  * gl-texture-class-alpha, gl-texture-env-blend-constant,
  * gl-texture-replace-is-modulate, gl-texture-env-decal-rgba,
@@ -194,7 +199,7 @@
  * location (0xe50c's row count 0x40 and a 16 KiB DMA, format word
  * 0x400080), and the client's read of an RGB texture takes three bytes a
  * location (format 0x400070, 12 KiB for 64 rows): established as the
- * traced words of run irix-20261002T030031-a3ed43.
+ * words of a traced IRIX guest run.
  *
  * The model keeps the 4 MiB as those 32-bit words, 64 to a row and 64
  * rows to a block. How the board lays texels into them is unknown, so the
@@ -238,9 +243,11 @@
  * header's 12 bytes are those three words), and 0xf200 (a sync request,
  * sgi-mgras-raster.c), it kicks a read of the rows through DMA-map slot
  * 2 with (2 << 1) | 0xb9, 0xbd, and ends with 0xe0100, 0xa0704 0,
- * 0xda00 and 0xd300. When the context runs again the kernel, with no GL
- * context loaded and base 0, restores them: pairs TL_MODE, TL_WBUFFER,
- * TEXRBUFFER, TEXMODE2, TEXMODE1, TL_ADDR 0, TL_MIPMAP = the block and
+ * 0xc0004 0xe00 (the HQ pixel-format word back to its rest value, which
+ * the model ignores), 0xda00 and 0xd300. When the context runs again the
+ * kernel, with no GL context loaded and base 0, restores them: pairs
+ * TL_MODE, TL_WBUFFER, TEXRBUFFER, TEXMODE2, TEXMODE1, TL_ADDR 0,
+ * TL_MIPMAP = the block and
  * TL_SPEC 0xd60 (the same shape), 0xd214, the copy rectangle 64 by 64,
  * XFRMODE, XFRSIZE and XFRCOUNTERS, then 0xe300, 0xd80c with the
  * transfer's word count in three 9-bit parts (0, 8, 0), the DMA from slot
@@ -277,9 +284,18 @@
  * transfer neither reads nor writes the colour planes is inferred: each
  * names texture memory and no raster box.
  *
+ * The open save or restore is bounded: a transfer ends, logged, at a kick
+ * of the other direction or a read whose bytes are not whole words of its
+ * rows, and a second open replaces the first, logged; a save whose 0xda00
+ * never comes is forgotten at the next kick. That is the model's choice,
+ * made so a stray kick cannot be taken as a transfer's own; whether the
+ * board ends a transfer so is unknown, and a trace of a kernel read
+ * between a save's set-up and its kick would settle it.
+ *
  * The discriminating tests are tram-load-is-one-store,
- * tram-save-returns-the-block, tram-client-restore-round-trip and
- * mxi-tram-save-restore, on MXI, EMXI and SI+T.
+ * tram-save-returns-the-block, tram-client-restore-round-trip,
+ * tram-ge-dma-is-not-a-raster-image, tram-open-save-ends-at-other-kick
+ * and mxi-tram-save-restore, on MXI, EMXI and SI+T.
  */
 #define MGRAS_TEX_TRAM_READ      0x0000e50c
 #define MGRAS_TEX_TRAM_RESTORE   0x0000e300
