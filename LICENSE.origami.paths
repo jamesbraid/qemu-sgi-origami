@@ -138,6 +138,7 @@ hw/mips/sgi/models/layers/products/origin300-numalink-module.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-configuration-storage-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-module.yaml
+hw/mips/sgi/models/layers/products/origin300-pci-expansion-pending-register-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-pci-expansion-unconnected-uart-experiment.yaml
 hw/mips/sgi/models/layers/products/origin300-two-chassis.yaml
 hw/mips/sgi/models/layers/products/origin300-v12-direct.yaml
@@ -167,6 +168,7 @@ hw/mips/sgi/models/origin300-numalink-module.yaml
 hw/mips/sgi/models/origin300-pci-expansion-configuration-storage-experiment.yaml
 hw/mips/sgi/models/origin300-pci-expansion-experiment.yaml
 hw/mips/sgi/models/origin300-pci-expansion-module.yaml
+hw/mips/sgi/models/origin300-pci-expansion-pending-register-experiment.yaml
 hw/mips/sgi/models/origin300-pci-expansion-unconnected-uart-experiment.yaml
 hw/mips/sgi/models/origin300-two-chassis.yaml
 hw/mips/sgi/models/origin300-v12-direct.yaml
