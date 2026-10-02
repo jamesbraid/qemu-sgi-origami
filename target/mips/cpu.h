@@ -658,6 +658,9 @@ typedef struct MIPSOcteonCryptoState {
     QTree *llm64;
 } MIPSOcteonCryptoState;
 
+#define MIPS_TLB_HASH_BITS 5
+#define MIPS_TLB_HASH_SIZE (1 << MIPS_TLB_HASH_BITS)
+
 typedef struct CPUArchState {
     TCState active_tc;
     CPUMIPSFPUContext active_fpu;
@@ -1430,6 +1433,7 @@ typedef struct CPUArchState {
     uint64_t insn_flags; /* Supported instruction set */
     MIPSCPUConfig cfg; /* Behaviours this processor selects */
     int tlb_last_match;
+    int8_t tlb_hash[MIPS_TLB_HASH_SIZE];
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

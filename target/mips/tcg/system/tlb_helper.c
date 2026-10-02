@@ -37,7 +37,7 @@
 /* TLB management */
 void r4k_mips_tlb_flush_extra(CPUMIPSState *env, int first)
 {
-    env->tlb_last_match = -1;
+    mips_tlb_flush_caches(env);
     /* Discard entries from env->tlb[first] onwards.  */
     while (env->tlb->tlb_in_use > first) {
         r4k_invalidate_tlb(env, --env->tlb->tlb_in_use, 0);
@@ -61,7 +61,7 @@ void r4k_fill_tlb(CPUMIPSState *env, int idx)
     uint64_t lo0 = env->CP0_EntryLo0;
     uint64_t lo1 = env->CP0_EntryLo1;
 
-    env->tlb_last_match = -1;
+    mips_tlb_flush_caches(env);
 
 #if defined(TARGET_MIPS64)
     /*
@@ -609,6 +609,28 @@ static int fixed_mmu_map_address(CPUMIPSState *env, hwaddr *physical,
     return TLBRET_MATCH;
 }
 
+static inline bool r4k_tlb_entry_match(const r4k_tlb_t *tlb,
+                                       target_ulong address,
+                                       const CPUMIPSState *env,
+                                       uint32_t mmid, bool mi,
+                                       target_ulong *mask_out)
+{
+    target_ulong mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
+    target_ulong tag = address & ~mask;
+    target_ulong vpn = tlb->VPN & ~mask;
+    uint32_t tlb_mmid;
+
+#if defined(TARGET_MIPS64)
+    tag &= env->SEGMask;
+#endif
+    tlb_mmid = mi ? tlb->MMID : (uint32_t)tlb->ASID;
+    if ((tlb->G == 1 || tlb_mmid == mmid) && vpn == tag && !tlb->EHINV) {
+        *mask_out = mask;
+        return true;
+    }
+    return false;
+}
+
 /* MIPS32/MIPS64 R4000-style MMU emulation */
 static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                            target_ulong address, MMUAccessType access_type,
@@ -617,7 +639,6 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
-    uint32_t tlb_mmid;
     int i;
 
     MMID = mi ? MMID : (uint32_t) ASID;
@@ -625,90 +646,94 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
     r4k_tlb_t *tlb = NULL;
     target_ulong mask = 0;
 
+    uint32_t hash = ((address >> 13) ^ (address >> 18) ^ MMID) &
+                    (MIPS_TLB_HASH_SIZE - 1);
+
     int last = env->tlb_last_match;
     if (last >= 0 && last < env->tlb->tlb_in_use) {
         tlb = &env->tlb->mmu.r4k.tlb[last];
-        mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
-        target_ulong tag = address & ~mask;
-        target_ulong VPN = tlb->VPN & ~mask;
-#if defined(TARGET_MIPS64)
-        tag &= env->SEGMask;
-#endif
-        tlb_mmid = mi ? tlb->MMID : (uint32_t) tlb->ASID;
-        if ((tlb->G == 1 || tlb_mmid == MMID) && VPN == tag && !tlb->EHINV) {
+        if (r4k_tlb_entry_match(tlb, address, env, MMID, mi, &mask)) {
             i = last;
             goto match;
         }
     }
 
-    for (i = 0; i < env->tlb->tlb_in_use; i++) {
-        tlb = &env->tlb->mmu.r4k.tlb[i];
-        /* 1k pages are not supported. */
-        mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
-        target_ulong tag = address & ~mask;
-        target_ulong VPN = tlb->VPN & ~mask;
-#if defined(TARGET_MIPS64)
-        tag &= env->SEGMask;
-#endif
-
-        /* Check ASID/MMID, virtual page number & size */
-        tlb_mmid = mi ? tlb->MMID : (uint32_t) tlb->ASID;
-        if ((tlb->G == 1 || tlb_mmid == MMID) && VPN == tag && !tlb->EHINV) {
-match:
-            /* TLB match */
-            int n = !!(address & mask & ~(mask >> 1));
-            /* Check access rights */
-            if (!(n ? tlb->V1 : tlb->V0)) {
-                return TLBRET_INVALID;
-            }
-            if (access_type == MMU_INST_FETCH && (n ? tlb->XI1 : tlb->XI0)) {
-                return TLBRET_XI;
-            }
-            if (access_type == MMU_DATA_LOAD && (n ? tlb->RI1 : tlb->RI0)) {
-                return TLBRET_RI;
-            }
-            if (access_type != MMU_DATA_STORE || (n ? tlb->D1 : tlb->D0)) {
-                unsigned int cca = n ? tlb->C1 : tlb->C0;
-                hwaddr window = 0;
-
-                /*
-                 * A mapped reference carries the same uncached attribute an
-                 * unmapped one does, taken from the entry rather than from the
-                 * address, and only when the entry's cache algorithm is
-                 * uncached or uncached accelerated. Without this a mapped
-                 * uncached page aimed at the Hub or a crossbar widget would
-                 * quietly read node memory instead. The access is also marked
-                 * uncached, so the machine can tell an uncached reference to
-                 * memory from a cached one — the two have the same physical
-                 * address, since the attribute that names memory is window
-                 * zero.
-                 */
-                if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
-                    unsigned int uc = n ? tlb->UC1 : tlb->UC0;
-
-                    window = (hwaddr)((uc + 1) & 3) <<
-                             MIPS_UNCACHED_WINDOW_SHIFT;
-                    attrs->mips_uncached = 1;
-                }
-                if (env->cfg.uncached_attribute) {
-                    attrs->mips_cca = cca;
-                    attrs->requester_id = env->r10k->requester_id;
-                }
-
-                attrs->mips_cca = cca;
-                *physical = window | tlb->PFN[n] | (address & (mask >> 1));
-                *prot = PAGE_READ;
-                if (n ? tlb->D1 : tlb->D0) {
-                    *prot |= PAGE_WRITE;
-                }
-                if (!(n ? tlb->XI1 : tlb->XI0)) {
-                    *prot |= PAGE_EXEC;
-                }
-                env->tlb_last_match = i;
-                return TLBRET_MATCH;
-            }
-            return TLBRET_DIRTY;
+    int h_idx = env->tlb_hash[hash];
+    if (h_idx >= 0 && h_idx < env->tlb->tlb_in_use && h_idx != last) {
+        tlb = &env->tlb->mmu.r4k.tlb[h_idx];
+        if (r4k_tlb_entry_match(tlb, address, env, MMID, mi, &mask)) {
+            i = h_idx;
+            goto match;
         }
+    }
+
+    for (i = 0; i < env->tlb->tlb_in_use; i++) {
+        if (i == last || i == h_idx) {
+            continue;
+        }
+        tlb = &env->tlb->mmu.r4k.tlb[i];
+        if (r4k_tlb_entry_match(tlb, address, env, MMID, mi, &mask)) {
+            goto match;
+        }
+    }
+    return TLBRET_NOMATCH;
+
+match:
+    {
+        /* TLB match */
+        int n = !!(address & mask & ~(mask >> 1));
+        /* Check access rights */
+        if (!(n ? tlb->V1 : tlb->V0)) {
+            return TLBRET_INVALID;
+        }
+        if (access_type == MMU_INST_FETCH && (n ? tlb->XI1 : tlb->XI0)) {
+            return TLBRET_XI;
+        }
+        if (access_type == MMU_DATA_LOAD && (n ? tlb->RI1 : tlb->RI0)) {
+            return TLBRET_RI;
+        }
+        if (access_type != MMU_DATA_STORE || (n ? tlb->D1 : tlb->D0)) {
+            unsigned int cca = n ? tlb->C1 : tlb->C0;
+            hwaddr window = 0;
+
+            /*
+             * A mapped reference carries the same uncached attribute an
+             * unmapped one does, taken from the entry rather than from the
+             * address, and only when the entry's cache algorithm is
+             * uncached or uncached accelerated. Without this a mapped
+             * uncached page aimed at the Hub or a crossbar widget would
+             * quietly read node memory instead. The access is also marked
+             * uncached, so the machine can tell an uncached reference to
+             * memory from a cached one — the two have the same physical
+             * address, since the attribute that names memory is window
+             * zero.
+             */
+            if (env->cfg.uncached_attribute && (cca == 2 || cca == 7)) {
+                unsigned int uc = n ? tlb->UC1 : tlb->UC0;
+
+                window = (hwaddr)((uc + 1) & 3) <<
+                         MIPS_UNCACHED_WINDOW_SHIFT;
+                attrs->mips_uncached = 1;
+            }
+            if (env->cfg.uncached_attribute) {
+                attrs->mips_cca = cca;
+                attrs->requester_id = env->r10k->requester_id;
+            }
+
+            attrs->mips_cca = cca;
+            *physical = window | tlb->PFN[n] | (address & (mask >> 1));
+            *prot = PAGE_READ;
+            if (n ? tlb->D1 : tlb->D0) {
+                *prot |= PAGE_WRITE;
+            }
+            if (!(n ? tlb->XI1 : tlb->XI0)) {
+                *prot |= PAGE_EXEC;
+            }
+            env->tlb_last_match = i;
+            env->tlb_hash[hash] = i;
+            return TLBRET_MATCH;
+        }
+        return TLBRET_DIRTY;
     }
     return TLBRET_NOMATCH;
 }
@@ -767,7 +792,7 @@ void cpu_mips_tlb_flush(CPUMIPSState *env)
     /* Flush qemu's TLB and discard all shadowed entries.  */
     tlb_flush(env_cpu(env));
     env->tlb->tlb_in_use = env->tlb->nb_tlb;
-    env->tlb_last_match = -1;
+    mips_tlb_flush_caches(env);
 }
 
 static void raise_mmu_exception(CPUMIPSState *env, target_ulong address,
@@ -1809,7 +1834,7 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
 {
     CPUState *cs = env_cpu(env);
-    env->tlb_last_match = -1;
+    mips_tlb_flush_caches(env);
     r4k_tlb_t *tlb;
     target_ulong addr;
     target_ulong end;

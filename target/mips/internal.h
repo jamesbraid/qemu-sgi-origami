@@ -254,6 +254,12 @@ static inline bool cpu_mips_hw_interrupts_pending(const CPUMIPSState *env)
 
 #endif /* !CONFIG_USER_ONLY */
 
+static inline void mips_tlb_flush_caches(CPUMIPSState *env)
+{
+    env->tlb_last_match = -1;
+    memset(env->tlb_hash, -1, sizeof(env->tlb_hash));
+}
+
 void msa_reset(CPUMIPSState *env);
 
 /* cp0_timer.c */
