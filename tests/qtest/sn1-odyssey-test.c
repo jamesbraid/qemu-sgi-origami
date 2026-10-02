@@ -4445,6 +4445,111 @@ static void set_reg(QTestState *qts, uint32_t reg, uint32_t value)
     user_cmd_push(qts, value);
 }
 
+#define ODSY_REG_FOG 0x0001181a
+#define ODSY_MODE_FOG (1u << 22)
+
+static void push_fog(QTestState *qts, uint32_t scale, uint32_t bias,
+                     uint32_t p01, uint32_t p23)
+{
+    const uint32_t words[] = {
+        ODSY_REG_FOG, 0, 0x00ffffff, scale, bias, p01, p23,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+/* The local curve policy uses the fragment's window depth, 0.25 here. */
+static void test_command_fifo_gl_fog_curve(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_fog(qts, 0x7c0000, 0, 0x1000ab, 0x055000);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
+    push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0xbf0040ff);
+
+    /* Reversing the cubic makes the same pixel mostly fog blue. */
+    push_fog(qts, 0x7c0000, 0, 0x000055, 0x0ab100);
+    push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0x4000bfff);
+
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0xff0000ff);
+
+    qtest_system_reset(qts);
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
+    push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0x000000ff);
+    qtest_quit(qts);
+}
+
+/* Native packets exercise the local curve policy, not a board measurement. */
+static void test_command_fifo_gl_fog_native_packets(void)
+{
+    static const struct {
+        uint32_t scale, bias, p01, p23;
+        uint8_t red[3];
+    } cases[] = {
+        { 0x808000, 0,    0x1000aa, 0x055000, { 255, 191,   0 } },
+        { 0x808000, 0,    0x000055, 0x0aa100, {   0,  64, 255 } },
+        { 0x7c99e8, 0x20, 0x100fe1, 0x021005, { 163,  98,  20 } },
+        { 0x80ea5b, 0x45, 0x1000e8, 0xff3008, { 197,  99,   8 } },
+    };
+    static const float ndc_depth[] = { -1.0f, -7.0f / 9, -1.0f / 9 };
+
+    for (unsigned c = 0; c < ARRAY_SIZE(cases); c++) {
+        QTestState *qts = board_start("");
+
+        probe_window(qts);
+        push_fog(qts, cases[c].scale, cases[c].bias,
+                 cases[c].p01, cases[c].p23);
+        set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
+        for (unsigned i = 0; i < ARRAY_SIZE(ndc_depth); i++) {
+            uint32_t tri[ARRAY_SIZE(odsy_near_yellow)];
+            uint32_t z;
+
+            memcpy(&z, &ndc_depth[i], sizeof(z));
+            memcpy(tri, odsy_near_yellow, sizeof(tri));
+            tri[2] = tri[5] = tri[8] = z;
+            push_triangle_3f(qts, ODSY_F_ONE, 0, 0, tri);
+            g_assert_cmpuint(odsy_test_pixel(qts, 326, 340) >> 24,
+                             ==, cases[c].red[i]);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_fifo_gl_fog_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-gl-fog-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    push_fog(from, 0x7c0000, 0, 0x1000ab, 0x055000);
+    set_reg(from, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    probe_window(to);
+    push_triangle_3f(to, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(to, 326, 340), ==, 0xbf0040ff);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 /*
  * The probe's phases of depth.c. Under GL_LESS after a clear to 1.0 the
  * near yellow triangle stays in front where the far cyan one overlaps it;
@@ -11135,6 +11240,12 @@ int main(int argc, char **argv)
                    test_scanout_main_id_0_uses_drawable_1_mode);
     qtest_add_func("sn1/odyssey/command-fifo-gl-flat-shading",
                    test_command_fifo_gl_flat_shading);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-fog-curve",
+                   test_command_fifo_gl_fog_curve);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-fog-native-packets",
+                   test_command_fifo_gl_fog_native_packets);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-fog-migration",
+                   test_command_fifo_gl_fog_migration);
     qtest_add_func("sn1/odyssey/command-fifo-gl-dither",
                    test_command_fifo_gl_dither);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-test",

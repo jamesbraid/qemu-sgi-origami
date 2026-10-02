@@ -475,6 +475,7 @@ struct SGIOdysseyState {
      * own scissor box is transient render state and is not migrated.
      */
     uint32_t gl_clip_box[2];
+    uint32_t gl_fog[6];
 
     /*
      * Lighting (docs/analysis/odyssey-gl-shading-depth-lighting.md and
