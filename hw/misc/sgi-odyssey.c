@@ -2434,6 +2434,139 @@ static void odyssey_shadow_ring(SGIOdysseyState *s, uint64_t base,
     }
 }
 
+static void odyssey_open_current_records(SGIOdysseyState *s,
+                                         uint32_t record[19][5])
+{
+    static const uint32_t material[4] = {
+        ODSY_GL_MATERIAL_AMBIENT, ODSY_GL_MATERIAL_DIFFUSE,
+        ODSY_GL_MATERIAL_SPECULAR, ODSY_GL_MATERIAL_EMISSION,
+    };
+    static const uint32_t back_material[4] = {
+        ODSY_GL_BACK_AMBIENT, ODSY_GL_BACK_DIFFUSE,
+        ODSY_GL_BACK_SPECULAR, ODSY_GL_BACK_EMISSION,
+    };
+
+    memset(record, 0, 19 * 5 * sizeof(uint32_t));
+    memcpy(record[ODSY_HW_ATTR_INDEX], s->query_current[ODSY_QUERY_INDEX],
+           sizeof(record[0]));
+    memcpy(record[ODSY_HW_ATTR_COLOUR], s->query_current[ODSY_QUERY_COLOUR],
+           sizeof(record[0]));
+    memcpy(record[ODSY_HW_ATTR_NORMAL], s->query_current[ODSY_QUERY_NORMAL],
+           sizeof(record[0]));
+    memcpy(record[ODSY_HW_ATTR_TEXTURE],
+           s->query_current[ODSY_QUERY_TEXCOORD], sizeof(record[0]));
+    memcpy(record[ODSY_HW_ATTR_EDGE], s->query_current[ODSY_QUERY_EDGE],
+           sizeof(record[0]));
+    for (unsigned i = 0; i < 4; i++) {
+        record[ODSY_HW_ATTR_MATERIAL + i][0] = material[i];
+        memcpy(&record[ODSY_HW_ATTR_MATERIAL + i][1],
+               &s->gl_material[4 * i], 4 * sizeof(uint32_t));
+        record[ODSY_HW_ATTR_BACK_MATERIAL + i][0] = back_material[i];
+        memcpy(&record[ODSY_HW_ATTR_BACK_MATERIAL + i][1],
+               &s->gl_back_material[4 * i], 4 * sizeof(uint32_t));
+    }
+    record[ODSY_HW_ATTR_SHININESS][0] = ODSY_GL_SHININESS_SQRT;
+    record[ODSY_HW_ATTR_SHININESS][1] = s->gl_shininess_sqrt;
+    record[ODSY_HW_ATTR_BACK_SHININESS][0] = ODSY_GL_BACK_SHININESS_SQRT;
+    record[ODSY_HW_ATTR_BACK_SHININESS][1] = s->gl_back_shininess_sqrt;
+}
+
+static void odyssey_open_record_vertex(SGIOdysseyState *s, uint32_t word)
+{
+    SGIOdysseyOpenVertex v = { .word = word, .slot = s->gl_open_r };
+    SGIOdysseyOpenVertex *held = s->gl_open_vertex;
+    unsigned n = s->gl_open_held;
+
+    memcpy(v.operands, s->cmd_operand,
+           odyssey_cmd_arity(word) * sizeof(uint32_t));
+    odyssey_open_current_records(s, v.attribute);
+    if (s->gl_primitive == 2 || s->gl_primitive == 6) {
+        s->gl_open_r = s->gl_open_r == 3 ? 1 : s->gl_open_r + 1;
+    } else {
+        s->gl_open_r = (s->gl_open_r + 1) & 3;
+    }
+    s->gl_open_c = MIN(s->gl_open_c + 1, 7u);
+    s->gl_open_m3 = (s->gl_open_m3 + 1) % 3;
+    s->gl_open_m4 = (s->gl_open_m4 + 1) & 3;
+
+    switch (s->gl_primitive) {
+    case 0:                         /* Points retain no vertices. */
+        n = 0;
+        break;
+    case 1:                         /* Lines retain one of each pair. */
+        if (n) {
+            n = 0;
+        } else {
+            held[0] = v;
+            n = 1;
+        }
+        break;
+    case 2: case 6:                 /* Anchor and latest vertex. */
+        held[n ? 1 : 0] = v;
+        n = MIN(n + 1, 2u);
+        break;
+    case 3:                         /* Line strip. */
+        held[0] = v;
+        n = 1;
+        break;
+    case 4:                         /* Triangles. */
+    case 7:                         /* Quads. */
+        if (n == (s->gl_primitive == 4 ? 2 : 3)) {
+            n = 0;
+        } else {
+            held[n++] = v;
+        }
+        break;
+    case 5:                         /* Triangle strip. */
+        if (n == 2) {
+            held[0] = held[1];
+            held[1] = v;
+        } else {
+            held[n++] = v;
+        }
+        break;
+    case 8:                         /* Quad strip. */
+        if (n == 3) {
+            held[0] = held[2];
+            held[1] = v;
+            n = 2;
+        } else {
+            held[n++] = v;
+        }
+        break;
+    }
+    s->gl_open_held = n;
+}
+
+static void odyssey_restart_finish(SGIOdysseyState *s)
+{
+    uint32_t n = s->gl_open_held;
+    uint32_t count;
+
+    if (!s->gl_restart_armed || s->gl_restart_absorb) {
+        return;
+    }
+    if (s->gl_restart_m3 >= 3 || n != s->gl_restart_total) {
+        odyssey_cmd_unimplemented(s, 0x741);
+        s->gl_restart_armed = false;
+        return;
+    }
+    s->gl_open_c = s->gl_restart_c == 7 ? 7 :
+                   MIN(s->gl_restart_c + n, 7u);
+    s->gl_open_m3 = (s->gl_restart_m3 + n) % 3;
+    s->gl_open_m4 = (s->gl_restart_m4 + n) & 3;
+    count = s->gl_open_c;
+    if (count == 7) {
+        while ((count % 3 != s->gl_open_m3 ||
+                count % 4 != s->gl_open_m4) && count < 19) {
+            count++;
+        }
+    }
+    s->gl_in_prim = sgi_gl_resume_primitive(&s->gl_ctx, s->gl_restart_type,
+                                             s->gl_restart_vertex, n, count);
+    s->gl_restart_armed = false;
+}
+
 /*
  * The board's save of the outgoing context's geometry-engine state into the
  * hardware shadow, before the completion word. Register state needs no
@@ -2464,21 +2597,17 @@ static void odyssey_shadow_ring(SGIOdysseyState *s, uint64_t base,
  * switch-in replayed the template's false word and cleared the client's
  * flag. The board's saved edge word is unknown.
  *
- * Every save writes the descriptors: an idle page selects slot 0 for every
- * attribute in the current and the four per-vertex descriptors, so all ten
- * words are zero. The model has no other state for them to carry; a model
- * policy, since the board's descriptor values are unknown
- * (docs/reviews/odyssey-context-completeness-evidence-20261001.md's
- * descriptor correction). A failed descriptor store is reported once like
- * every other page store, and completion is still written.
- *
- * A switch inside BEGIN/END would need the buffered vertices and their
- * per-vertex descriptors in the rings. No capture of such a switch exists,
- * so it is not modeled: the page reports the pipe idle with zero
- * descriptors, the kernel replays no primitive, and the model's single
- * shared GL context keeps the vertices it holds. Ring 4 is not written
- * then, so a full restore replays the coordinate an earlier save left in
- * slot 0, or the template's word. The switch is reported once.
+ * Every save writes all ten descriptor words. Idle selects ring slot 0.
+ * A float primitive of type 0..8 packs its retained raw attribute records
+ * into ring slots 0..N-1 at save time, and current records into slot 3.
+ * Its descriptors point to those slots, while the raw vertex words retain
+ * their model cursor slots. The store itself leaves the primitive open,
+ * including for the 0x7f snapshot. Integer 2D, type 10 and type 9 polygon
+ * assembly still report an unsupported switch and save idle. Type 9's
+ * assembler holds every vertex, beyond this page policy's retained set.
+ * This producer and its restart
+ * decode are model approximations, not established board behavior
+ * (docs/reviews/odyssey-context-completeness-evidence-20261001.md).
  */
 static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
 {
@@ -2494,9 +2623,11 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
     const uint32_t *colour = s->query_current[ODSY_QUERY_COLOUR];
     const uint32_t *normal = s->query_current[ODSY_QUERY_NORMAL];
     uint32_t edge = s->query_current[ODSY_QUERY_EDGE][0];
+    bool open = s->gl_begin_open && !s->gl_integer_prim &&
+                s->gl_primitive <= 8;
     unsigned int i;
 
-    if (s->gl_in_prim && !s->ctx_open_prim_logged) {
+    if (s->gl_begin_open && !open && !s->ctx_open_prim_logged) {
         s->ctx_open_prim_logged = true;
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: context switch inside "
                       "primitive 0x%x; its buffered vertices are not saved\n",
@@ -2523,10 +2654,8 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_NORMAL, 0, normal[0],
                         &normal[1], odyssey_cmd_arity(normal[0]));
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_EDGE, 0, edge, NULL, 0);
-    if (!s->gl_in_prim) {
-        odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
-                            ODSY_GL_TEXCOORD_2F, s->tex_coord, 2);
-    }
+    odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
+                        ODSY_GL_TEXCOORD_2F, s->tex_coord, 2);
     for (i = 0; i < 4; i++) {
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_MATERIAL + i, 0,
                             material[i],
@@ -2541,6 +2670,43 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_BACK_SHININESS, 0,
                         ODSY_GL_BACK_SHININESS_SQRT,
                         &s->gl_back_shininess_sqrt, 1);
+    if (open) {
+        uint32_t current[19][5];
+        uint32_t state = s->gl_primitive | (s->gl_open_held << 4) |
+                         (s->gl_open_r << 6) | (s->gl_open_m3 << 12) |
+                         (s->gl_open_m4 << 14) | (s->gl_open_c << 21);
+
+        odyssey_open_current_records(s, current);
+        odyssey_shadow_put(s, base, ODSY_HW_PIPE_STATE, state);
+        for (i = 0; i < s->gl_open_held; i++) {
+            const SGIOdysseyOpenVertex *v = &s->gl_open_vertex[i];
+            unsigned slot = v->slot;
+            uint32_t selector = UINT32_C(0x55555555) * i;
+
+            odyssey_shadow_ring(s, base, 0, slot, v->word,
+                                v->operands, odyssey_cmd_arity(v->word));
+            odyssey_shadow_put(s, base, 0x8c + 8 * slot, selector);
+            odyssey_shadow_put(s, base, 0x90 + 8 * slot, selector);
+            for (unsigned a = 1; a < 19; a++) {
+                if (!v->attribute[a][0]) {
+                    continue;
+                }
+                odyssey_shadow_ring(s, base, a, i, v->attribute[a][0],
+                                    &v->attribute[a][1],
+                                    odyssey_cmd_arity(v->attribute[a][0]));
+            }
+        }
+        odyssey_shadow_put(s, base, 0x84, UINT32_MAX);
+        odyssey_shadow_put(s, base, 0x88, UINT32_MAX);
+        for (i = 0; i < 19; i++) {
+            if (!current[i][0]) {
+                continue;
+            }
+            odyssey_shadow_ring(s, base, i, 3, current[i][0],
+                                &current[i][1],
+                                odyssey_cmd_arity(current[i][0]));
+        }
+    }
 }
 
 /*
@@ -6789,6 +6955,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          * A window-relative vertex: the window origin places it on the screen
          * (always (0, 0) for the X server's own context).
          */
+        if (s->gl_begin_open) {
+            s->gl_integer_prim = true;
+        }
         odyssey_gl_vertex(s, s->cmd_operand[0] + s->win_origin[0],
                           s->cmd_operand[1] + s->win_origin[1]);
         break;
@@ -6935,14 +7104,31 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          * lazily, on the first float vertex, under the primitive the last
          * glBegin named -- so glBegin itself never diverts a 2D primitive.
          */
-        if (!s->gl_in_prim) {
+        if (!s->gl_in_prim && !s->gl_restart_absorb) {
             uint32_t mode = s->gl_primitive;
 
             odyssey_gl_feed(s, SGI_GL_OP_BEGIN, &mode, 1);
             s->gl_in_prim = true;
         }
+        if (s->gl_begin_open && !s->gl_integer_prim &&
+            s->gl_primitive <= 8) {
+            odyssey_open_record_vertex(s, tag);
+        }
         odyssey_gl_vertex_colour(s, tag == ODSY_GL_VERTEX_3F);
         odyssey_texture_vertex(s);
+        if (s->gl_restart_absorb) {
+            unsigned slot = s->gl_restart_total - s->gl_restart_absorb;
+
+            if (slot < ARRAY_SIZE(s->gl_restart_vertex)) {
+                sgi_gl_capture_vertex(&s->gl_ctx, s->gl_restart_type,
+                                      s->cmd_operand,
+                                      tag == ODSY_GL_VERTEX_3F ? 3 : 2,
+                                      s->gl_restart_vertex[slot]);
+            }
+            s->gl_restart_absorb--;
+            odyssey_restart_finish(s);
+            break;
+        }
         if (tag == ODSY_GL_VERTEX_3F) {
             odyssey_gl_feed(s, SGI_GL_OP_VERTEX3F, s->cmd_operand, 3);
         } else {
@@ -7152,6 +7338,10 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          */
         s->gl_primitive = s->cmd_operand[0];
         s->gl_vertex_count = 0;
+        s->gl_begin_open = true;
+        s->gl_integer_prim = false;
+        s->gl_open_r = s->gl_open_c = 0;
+        s->gl_open_m3 = s->gl_open_m4 = s->gl_open_held = 0;
         /* A polygon left open by a BEGIN without END encloses nothing. */
         odyssey_gl_polygon_close(s, false);
         s->image_active = s->cmd_operand[0] == ODSY_GL_PRIMITIVE_IMAGE;
@@ -7168,11 +7358,77 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          * A GL geometry primitive closes on the shared context; the greeter's
          * QUADS fill (and odyssey_putchar()'s stray END) close on the 2D path.
          */
+        s->gl_begin_open = false;
+        s->gl_open_held = 0;
         if (s->gl_in_prim) {
             odyssey_gl_feed(s, SGI_GL_OP_END, NULL, 0);
             s->gl_in_prim = false;
         } else {
             odyssey_gl_end(s);
+        }
+        s->gl_integer_prim = false;
+        break;
+    case 0x0400:                 /* Pending primitive for context restore. */
+        s->gl_restart_type = s->cmd_operand[0];
+        break;
+    case 0x0444:                 /* Drop an outgoing primitive, without draw. */
+        if (s->cmd_operand[0] == 0 && !s->gl_integer_prim &&
+            !(s->gl_begin_open && s->gl_primitive == 9)) {
+            sgi_gl_discard_primitive(&s->gl_ctx);
+            s->gl_in_prim = false;
+            s->gl_begin_open = false;
+            s->gl_open_held = 0;
+            s->gl_restart_absorb = 0;
+            s->gl_restart_armed = false;
+        } else if (s->cmd_operand[0]) {
+            odyssey_cmd_unimplemented(s, 0x10444);
+        }
+        break;
+    case 0x0850: {
+        uint32_t type = s->cmd_operand[0] & 0xf;
+
+        if (type == 0xf) {
+            if (!s->gl_integer_prim &&
+                !(s->gl_begin_open && s->gl_primitive == 9)) {
+                sgi_gl_discard_primitive(&s->gl_ctx);
+                s->gl_in_prim = false;
+                s->gl_begin_open = false;
+                s->gl_open_held = 0;
+                s->gl_restart_absorb = 0;
+                s->gl_restart_armed = false;
+            }
+        } else if (type <= 8) {
+            s->gl_primitive = type;
+            s->gl_restart_type = type;
+            s->gl_restart_absorb = (s->cmd_operand[0] >> 19) & 3;
+            s->gl_restart_total = s->gl_restart_absorb;
+            s->gl_restart_armed = true;
+            s->gl_restart_select = 0;
+            s->gl_begin_open = true;
+            s->gl_integer_prim = false;
+            s->gl_open_r = s->gl_open_c = 0;
+            s->gl_open_m3 = s->gl_open_m4 = s->gl_open_held = 0;
+        } else {
+            odyssey_cmd_unimplemented(s, 0x10850);
+        }
+        break;
+    }
+    case 0x0740:
+        s->gl_restart_select = s->cmd_operand[0];
+        if (s->gl_restart_select != 0x1e0) {
+            odyssey_cmd_unimplemented(s, 0x740);
+        }
+        break;
+    case 0x0741:
+        if (s->gl_restart_select == 0x1e0 && s->gl_restart_armed) {
+            uint32_t word = s->cmd_operand[0];
+
+            s->gl_restart_c = (word >> 21) & 7;
+            s->gl_restart_m3 = (word >> 12) & 3;
+            s->gl_restart_m4 = (word >> 14) & 3;
+            odyssey_restart_finish(s);
+        } else {
+            odyssey_cmd_unimplemented(s, 0x741);
         }
         break;
     case ODSY_CMD_IMAGE_HEADER:
@@ -7360,6 +7616,10 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if (word == 0x2f00c02e || word == 0x3000c02e) {
         odyssey_cmd_start(s, word, 0);
+        return;
+    }
+    if (word == 0x740 || word == 0x741) {
+        odyssey_cmd_start(s, word, 1);
         return;
     }
 
@@ -8192,6 +8452,14 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
         assert(sgi_gl_enable_line_stipple(&s->gl_ctx, &sink));
     }
     s->gl_in_prim = false;
+    s->gl_begin_open = false;
+    s->gl_integer_prim = false;
+    s->gl_open_r = s->gl_open_c = 0;
+    s->gl_open_m3 = s->gl_open_m4 = s->gl_open_held = 0;
+    s->gl_restart_type = s->gl_restart_select = 0;
+    s->gl_restart_absorb = s->gl_restart_total = 0;
+    s->gl_restart_c = s->gl_restart_m3 = s->gl_restart_m4 = 0;
+    s->gl_restart_armed = false;
     /*
      * The clip box and its scissor test (ODSY_REG_CLIP_BOX's comment):
      * sgi_gl_init() leaves the shared context's scissor box and test both
@@ -8875,10 +9143,18 @@ static const VMStateDescription vmstate_odyssey_back_material = {
 
 static int odyssey_pre_load(void *opaque)
 {
+    SGIOdysseyState *s = opaque;
+
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
     /* Before version 29 the records were not sent: load their defaults. */
     odyssey_query_records_reset(opaque);
+    s->gl_begin_open = false;
+    s->gl_integer_prim = false;
+    s->gl_open_r = s->gl_open_c = 0;
+    s->gl_open_m3 = s->gl_open_m4 = s->gl_open_held = 0;
+    s->gl_restart_absorb = s->gl_restart_total = 0;
+    s->gl_restart_armed = false;
     return 0;
 }
 

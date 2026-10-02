@@ -6366,11 +6366,9 @@ static void test_command_fifo_context_save_colour(void)
 }
 
 /*
- * The pipe state the save reports. Idle after a switch outside a
- * primitive. A switch inside BEGIN/END is not saved -- no capture shows
- * one -- so the page still reads idle and the switch is reported once; the
- * model's single GL context keeps the two vertices, and the third
- * completes the triangle.
+ * An idle save writes type 0xf. An open triangle writes the reviewed state
+ * word and raw held vertices. A shadow snapshot leaves the assembler open,
+ * so the third vertex still completes the triangle without replay words.
  */
 static void test_command_fifo_context_save_idle_state(void)
 {
@@ -6406,9 +6404,15 @@ static void test_command_fifo_context_save_idle_state(void)
     user_cmd_push(qts, 0x3f400000);
     user_cmd_push(qts, 0xbf200000);
     qtest_writel(qts, p + ODSY_CTX_SWITCH_DONE_OFFSET, 0);
-    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                 (UINT64_C(7) << 40) | (UINT64_C(0x7f) << 16) | 1);
     g_assert_cmphex(qtest_readl(qts, p + ODSY_CTX_SWITCH_DONE_OFFSET), ==, 1);
-    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE) & 0xf, ==, 0xf);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==,
+                    0x0040a0a4);
+    g_assert_cmphex(qtest_readl(qts, p + 0x100), ==, ODSY_GL_VERTEX_2F);
+    g_assert_cmphex(qtest_readl(qts, p + 0x104), ==, ODSY_GL_VERTEX_2F);
+    g_assert_cmphex(qtest_readl(qts, p + 0x300), ==, 0xbf400000);
+    g_assert_cmphex(qtest_readl(qts, p + 0x310), ==, 0x3f400000);
     user_cmd_push(qts, ODSY_GL_VERTEX_2F);
     user_cmd_push(qts, 0xbe000000);
     user_cmd_push(qts, 0x3f3c0000);
@@ -6418,8 +6422,328 @@ static void test_command_fifo_context_save_idle_state(void)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
-    g_assert_nonnull(strstr(log, "context switch inside primitive 0x4"));
+    g_assert_null(strstr(log, "context switch inside primitive 0x4"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+static void test_context_restart_triangle(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, 0x3f800000);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_TRIANGLES);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0x3f400000);
+    user_cmd_push(qts, 0xbf200000);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==,
+                    0x0040a0a4);
+
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x7f00f);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10400);
+    cmd_push(qts, 4);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x00101004);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x740);
+    cmd_push(qts, 0x1e0);
+    cmd_push(qts, 0x741);
+    cmd_push(qts, 4);
+    for (unsigned slot = 0; slot < 2; slot++) {
+        cmd_push(qts, qtest_readl(qts, p + 0x100 + 4 * slot));
+        cmd_push(qts, qtest_readl(qts, p + 0x300 + 16 * slot));
+        cmd_push(qts, qtest_readl(qts, p + 0x304 + 16 * slot));
+    }
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbe000000);
+    user_cmd_push(qts, 0x3f3c0000);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
+    qtest_quit(qts);
+}
+
+static void test_context_restart_edited_page(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, 0x3f800000);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_TRIANGLES);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0x3f400000);
+    user_cmd_push(qts, 0xbf200000);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    /* Collapse the triangle through guest RAM, after the model saved it. */
+    qtest_writel(qts, p + 0x310, 0xbf400000);
+    qtest_writel(qts, p + 0x314, 0xbf400000);
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10400);
+    cmd_push(qts, 4);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x00101004);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x740);
+    cmd_push(qts, 0x1e0);
+    cmd_push(qts, 0x741);
+    cmd_push(qts, 4);
+    for (unsigned slot = 0; slot < 2; slot++) {
+        cmd_push(qts, qtest_readl(qts, p + 0x100 + 4 * slot));
+        cmd_push(qts, qtest_readl(qts, p + 0x300 + 16 * slot));
+        cmd_push(qts, qtest_readl(qts, p + 0x304 + 16 * slot));
+    }
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbe000000);
+    user_cmd_push(qts, 0x3f3c0000);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_context_save_primitive_records(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    const uint32_t colour[4][3] = {
+        { 0x3f800000, 0, 0 }, { 0, 0x3f800000, 0 },
+        { 0, 0, 0x3f800000 }, { 0x3f800000, 0x3f800000, 0 },
+    };
+    QTestState *qts = shadow_start("");
+
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_QUADS);
+    for (unsigned i = 0; i < 4; i++) {
+        user_cmd_push(qts, ODSY_GL_COLOR_3F);
+        push_user_words(qts, colour[i], 3);
+        if (i < 3) {
+            user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+            user_cmd_push(qts, i << 20);
+            user_cmd_push(qts, i << 20);
+        }
+    }
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==,
+                    (3u << 21) | (3u << 14) |
+                    (3u << 6) | (3u << 4) | 7u);
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t descriptor = qtest_readl(qts, p +
+                                          (i == 3 ? 0x84 : 0x8c + 8 * i));
+
+        g_assert_cmphex((descriptor >> 28) & 3, ==, i);
+        g_assert_cmphex(qtest_readl(qts, p + 0x120 + 4 * i), ==,
+                        ODSY_GL_COLOR_3F);
+        for (unsigned j = 0; j < 3; j++) {
+            g_assert_cmphex(qtest_readl(qts, p + 0x380 + 16 * i + 4 * j),
+                            ==, colour[i][j]);
+        }
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    qtest_quit(qts);
+}
+
+static void test_context_save_zero_vertex_primitive(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 5);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==, 5);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==, 0xf);
+    qtest_quit(qts);
+}
+
+static void test_context_restart_one_vertex_strip(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+    uint32_t first;
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_MODE_CULL_FACE | ODSY_MODE_CULL_BACK);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, ODSY_F_ONE);
+    user_cmd_push(qts, ODSY_F_ONE);
+    user_cmd_push(qts, ODSY_F_ZERO);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 5);
+    user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+    push_user_words(qts, odsy_near_yellow, 3);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    first = qtest_readl(qts, p + ODSY_HW_PIPE_STATE);
+    g_assert_cmphex(first, ==,
+                    (1u << 21) | (1u << 14) | (1u << 12) |
+                    (1u << 6) | (1u << 4) | 5u);
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10400);
+    cmd_push(qts, 5);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x00081005);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x740);
+    cmd_push(qts, 0x1e0);
+    cmd_push(qts, 0x741);
+    cmd_push(qts, 0);
+    cmd_push(qts, qtest_readl(qts, p + 0x100));
+    for (unsigned i = 0; i < 3; i++) {
+        cmd_push(qts, qtest_readl(qts, p + 0x300 + 4 * i));
+    }
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, p + 0x1000);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + 0x1000 + ODSY_HW_PIPE_STATE), ==,
+                    first);
+    for (unsigned vertex = 1; vertex < 3; vertex++) {
+        user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+        push_user_words(qts, &odsy_near_yellow[3 * vertex], 3);
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+    qtest_quit(qts);
+}
+
+static void test_context_switch_integer_quad(void)
+{
+    const uint64_t p = ODSY_SHADOW_PAGE;
+    QTestState *qts = shadow_start("");
+
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_CMD_GL_QUADS);
+    cmd_push(qts, ODSY_CMD_GL_COLOR_3UB);
+    cmd_push(qts, 0x11);
+    cmd_push(qts, 0x22);
+    cmd_push(qts, 0x33);
+    cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+    cmd_push(qts, 10);
+    cmd_push(qts, 20);
+    cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+    cmd_push(qts, 40);
+    cmd_push(qts, 20);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, p + ODSY_HW_PIPE_STATE), ==, 0xf);
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x7f00f);
+    cmd_push(qts, 0);
+    cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+    cmd_push(qts, 40);
+    cmd_push(qts, 60);
+    cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+    cmd_push(qts, 10);
+    cmd_push(qts, 60);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 266, 276), ==, 0x112233ff);
+    qtest_quit(qts);
+}
+
+static void test_context_switch_polygon_assembly(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("odyssey-polygon-switch-XXXXXX", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = shadow_start(extra);
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, 0x3f800000);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 9);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, 0xbf400000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0x3f400000);
+    user_cmd_push(qts, 0xbf200000);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0xbe000000);
+    user_cmd_push(qts, 0x3f3c0000);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, ODSY_SHADOW_PAGE +
+                                ODSY_HW_PIPE_STATE), ==, 0xf);
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x7f00f);
+    cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, ODSY_PLANE_RED);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    g_assert_cmpuint(count_substr(log, "context switch inside primitive 0x9"),
+                     ==, 1);
+}
+
+static void test_context_restart_unsupported_words(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("odyssey-restart-words-XXXXXX", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = shadow_start(extra);
+    for (unsigned i = 0; i < 2; i++) {
+        cmd_push(qts, 0x740);
+        cmd_push(qts, 0x1ed);
+        cmd_push(qts, 0x741);
+        cmd_push(qts, 0);
+        cmd_push(qts, 0x10850);
+        cmd_push(qts, 0xa);
+        cmd_push(qts, 0);
+    }
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, ODSY_SHADOW_PAGE +
+                                ODSY_HW_PIPE_STATE), ==, 0xf);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    g_assert_cmpuint(count_substr(log, "word 0x00000740"), ==, 1);
+    g_assert_cmpuint(count_substr(log, "word 0x00000741"), ==, 1);
+    g_assert_cmpuint(count_substr(log, "word 0x00010850"), ==, 1);
 }
 
 /*
@@ -8601,10 +8925,12 @@ static void test_context_save_texture_coordinate_active_primitive(void)
     done = qtest_readl(qts, page + ODSY_CTX_SWITCH_DONE_OFFSET);
     for (unsigned slot = 0; slot < 4; slot++) {
         g_assert_cmphex(qtest_readl(qts, page + 0x140 + 4 * slot), ==,
-                        0xa5a5a5a5);
+                        slot == 0 || slot == 3 ? 0xc380c821 : 0xa5a5a5a5);
         for (unsigned i = 0; i < 4; i++) {
             g_assert_cmphex(qtest_readl(qts, page + 0x400 +
-                                        16 * slot + 4 * i), ==, 0x5a5a5a5a);
+                                        16 * slot + 4 * i), ==,
+                            (slot == 0 || slot == 3) && i < 2 ?
+                            (i ? 0x3e800000 : 0x3f400000) : 0x5a5a5a5a);
         }
     }
     user_cmd_push(qts, ODSY_CMD_GL_END);
@@ -8614,7 +8940,7 @@ static void test_context_save_texture_coordinate_active_primitive(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
     g_test_message("active primitive: completion %08x; %s", done, log);
     g_assert_cmphex(done, ==, 1);
-    g_assert_nonnull(strstr(log, "context switch inside primitive 0x4"));
+    g_assert_null(strstr(log, "context switch inside primitive 0x4"));
     g_assert_cmpuint(count_substr(log, "context shadow store"), ==, 1);
 }
 
@@ -10771,6 +11097,22 @@ int main(int argc, char **argv)
                    test_command_fifo_context_save_colour);
     qtest_add_func("sn1/odyssey/command-fifo-context-save-idle-state",
                    test_command_fifo_context_save_idle_state);
+    qtest_add_func("sn1/odyssey/context-restart-triangle",
+                   test_context_restart_triangle);
+    qtest_add_func("sn1/odyssey/context-restart-edited-page",
+                   test_context_restart_edited_page);
+    qtest_add_func("sn1/odyssey/context-save-primitive-records",
+                   test_context_save_primitive_records);
+    qtest_add_func("sn1/odyssey/context-save-zero-vertex-primitive",
+                   test_context_save_zero_vertex_primitive);
+    qtest_add_func("sn1/odyssey/context-restart-one-vertex-strip",
+                   test_context_restart_one_vertex_strip);
+    qtest_add_func("sn1/odyssey/context-switch-integer-quad",
+                   test_context_switch_integer_quad);
+    qtest_add_func("sn1/odyssey/context-switch-polygon-assembly",
+                   test_context_switch_polygon_assembly);
+    qtest_add_func("sn1/odyssey/context-restart-unsupported-words",
+                   test_context_restart_unsupported_words);
     qtest_add_func("sn1/odyssey/context-switch-completion",
                    test_context_switch_completion);
     qtest_add_func("sn1/odyssey/context-switch-without-shadow-address",

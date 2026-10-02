@@ -76,6 +76,13 @@ OBJECT_DECLARE_TYPE(SGIOdysseyState, SGIOdysseyClass, SGI_ODYSSEY)
 #define SGI_ODYSSEY_WIDTH 1280
 #define SGI_ODYSSEY_HEIGHT 1024
 
+typedef struct SGIOdysseyOpenVertex {
+    uint32_t word;
+    uint32_t operands[4];
+    uint32_t attribute[19][5];
+    uint32_t slot;
+} SGIOdysseyOpenVertex;
+
 struct SGIOdysseyState {
     SGIXioBoardState parent_obj;
 
@@ -398,6 +405,23 @@ struct SGIOdysseyState {
      */
     SGIGLContext gl_ctx;
     bool gl_in_prim;
+    bool gl_begin_open;
+    bool gl_integer_prim;
+    uint32_t gl_open_r;
+    uint32_t gl_open_c;
+    uint32_t gl_open_m3;
+    uint32_t gl_open_m4;
+    uint32_t gl_open_held;
+    SGIOdysseyOpenVertex gl_open_vertex[3];
+    uint32_t gl_restart_type;
+    uint32_t gl_restart_select;
+    uint32_t gl_restart_absorb;
+    uint32_t gl_restart_total;
+    uint32_t gl_restart_c;
+    uint32_t gl_restart_m3;
+    uint32_t gl_restart_m4;
+    bool gl_restart_armed;
+    float gl_restart_vertex[3][SGI_GL_VERTEX_FLOATS];
     uint32_t gl_matrix_slot;
     uint32_t gl_matrix[16];
     uint32_t gl_texture_matrix[16];
