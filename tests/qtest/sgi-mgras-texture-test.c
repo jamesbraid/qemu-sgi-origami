@@ -2213,14 +2213,30 @@ static void test_tram_load_is_one_store(void)
  * texels again on both rows with no fresh bind, only the 0x0b00 its next
  * draw sends: the kernel's register pairs leave A's texture state alone.
  * Neither transfer touches the planes, here under a raster box left over
- * screen row 0 that would take a 16 KiB row as 4,096 pixels.
+ * screen row 0. A 16 KiB DMA row cannot fill that box or any box on this
+ * screen (it would be 4,096 pixels a row), so a restore drawn as a raster
+ * image would leave the pixels alone; what it does leave is a "DMA image
+ * transfer" line under -d unimp, which the test requires to be absent.
  */
 static void test_mxi_tram_save_restore(gconstpointer data)
 {
-    QTestState *t = mxi_start(data);
     g_autofree uint8_t *buffer = g_malloc(TRAM_BLOCK_BYTES);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
     uint8_t texels[32], other[32];
     uint32_t before[4];
+    QTestState *t;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-tram-restore-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    args = g_strdup_printf(MACHINE_ARGS " -global sgi-mgras.board=%s"
+                           MXI_BOARD_FLAG " -d unimp -D %s",
+                           (const char *)data, log);
+    t = tex_start(args);
 
     tex_texels(texels);
     for (int i = 0; i < 32; i++) {
@@ -2261,6 +2277,12 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     mxi_expect_rows(t, texels, true);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
+
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_null(strstr(contents, "DMA image transfer"));
+    unlink(log);
+    g_rmdir(tmpfs);
 }
 
 /* DMA-map slot 1's page list, eight pages from frame first, as the kernel. */
