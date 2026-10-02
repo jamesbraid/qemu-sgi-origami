@@ -27,6 +27,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_parser;
 /* Each context's light or material readback, once one has been asked. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_readback;
+extern const VMStateDescription vmstate_sgi_mgras_gl_clip_query;
 
 /*
  * An inline data block's header: bit 31, the byte offset of its first byte in

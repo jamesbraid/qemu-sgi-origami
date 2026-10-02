@@ -1218,6 +1218,8 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
         memset(s->gl_context[i].readback, 0,
                sizeof(s->gl_context[i].readback));
+        memset(s->gl_context[i].clip_query, 0,
+               sizeof(s->gl_context[i].clip_query));
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
         sgi_mgras_texture_reset(&s->gl_context[i].tex);
@@ -1256,6 +1258,8 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
     s->gl_is_saved[i] = false;
     memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
+    memset(s->gl_context[i].clip_query, 0,
+           sizeof(s->gl_context[i].clip_query));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
     sgi_mgras_texture_reset(&s->gl_context[i].tex);
 }
@@ -1943,6 +1947,49 @@ static bool mgras_gl_raster_query(SGIMgrasState *s, uint32_t index,
 #define MGRAS_GL_QUERY_CLIP_ENABLES 0xb87
 #define MGRAS_GL_QUERY_CLIP_PLANES 0xb8d
 
+#define MGRAS_GL_QUERY_PIXEL_CLIP_0 0x28c
+#define MGRAS_GL_QUERY_PIXEL_CLIP_1 0x28e
+#define MGRAS_GL_RECORD_PIXEL_CLIP_0 0x113
+#define MGRAS_GL_RECORD_PIXEL_CLIP_1 0x114
+
+static bool mgras_gl_pixel_clip_query(SGIMgrasState *s, uint32_t index,
+                                      uint32_t *answer)
+{
+    uint32_t element;
+
+    switch (index) {
+    case MGRAS_GL_QUERY_PIXEL_CLIP_0:
+        element = 0;
+        break;
+    case MGRAS_GL_QUERY_PIXEL_CLIP_1:
+        element = 1;
+        break;
+    default:
+        return false;
+    }
+    *answer = s->gl_context[s->gl_current].clip_query[element];
+    return true;
+}
+
+static bool mgras_gl_pixel_clip_record(SGIMgrasState *s, uint32_t reg,
+                                      uint32_t value)
+{
+    uint32_t element;
+
+    switch (reg) {
+    case MGRAS_GL_RECORD_PIXEL_CLIP_0:
+        element = 0;
+        break;
+    case MGRAS_GL_RECORD_PIXEL_CLIP_1:
+        element = 1;
+        break;
+    default:
+        return false;
+    }
+    s->gl_context[s->gl_current].clip_query[element] = value;
+    return true;
+}
+
 static bool mgras_gl_clip_query(SGIMgrasState *s, uint32_t index,
                                 uint32_t *answer)
 {
@@ -1982,6 +2029,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         return 0;
     }
     if (mgras_gl_raster_query(s, index, &out[0])) {
+        return out[0];
+    }
+    if (mgras_gl_pixel_clip_query(s, index, &out[0])) {
         return out[0];
     }
     if (index == MGRAS_GL_QUERY_WINDOW_ORIGIN &&
@@ -2136,6 +2186,43 @@ const VMStateDescription vmstate_sgi_mgras_gl_readback = {
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
                              SGI_MGRAS_GL_CONTEXTS, 1,
                              vmstate_sgi_mgras_gl_context_readback,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_context_clip_query = {
+    .name = TYPE_SGI_MGRAS "/gl-context-clip-query",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(clip_query, SGIMgrasGLContext, 2),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_gl_clip_query_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].clip_query[0] ||
+            s->gl_context[i].clip_query[1]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_clip_query = {
+    .name = TYPE_SGI_MGRAS "/gl-clip-query",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_clip_query_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_clip_query,
                              SGIMgrasGLContext),
         VMSTATE_END_OF_LIST()
     }
@@ -3368,6 +3455,8 @@ static void mgras_gl_record_word(SGIMgrasState *s, uint32_t word)
         if (k % stride == stride - 1 &&
             !sgi_mgras_raster_record(s, slot[MGRAS_GL_REC_REG],
                                      slot[MGRAS_GL_REC_VALUE]) &&
+            !mgras_gl_pixel_clip_record(s, slot[MGRAS_GL_REC_REG],
+                                        slot[MGRAS_GL_REC_VALUE]) &&
             !slot[MGRAS_GL_REC_TEXTURE] &&
             (triples ||
              !sgi_mgras_texture_kernel_record(s, slot[MGRAS_GL_REC_REG],
