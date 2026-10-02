@@ -3375,6 +3375,50 @@ static void test_gl_readpixels_dataport_rgba(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+#define GL_READ_SYNC          0x0000f200
+#define HQ_STATUS_SYNC        0x1
+
+/*
+ * The client's poll of HQ status bit 0: six reads back to back, then the
+ * same again without bound. Six reads that miss it are a client that
+ * never returns.
+ */
+static bool hq_sync_seen(QTestState *qts)
+{
+    for (int i = 0; i < 6; i++) {
+        if (qtest_readl(qts, REG_HQ_STATUS) & HQ_STATUS_SYNC) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Both of the client's pixel reads wait for HQ status bit 0 before they
+ * go on: a DMA read into a buffer that is not 8-byte aligned after its
+ * 0xf200, and a data-port read after its 0x8f08. glReadPixels in the SGI
+ * pandora exerciser spun forever on the first while bit 0 read clear.
+ */
+static void test_gl_readpixels_sync_bit_set(void)
+{
+    static const uint32_t row0[2] = { 0x010203ff, 0x040506ff };
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 10, 20, row0, 2);
+
+    gl_word(qts, GL_READ_OPEN);
+    gl_word(qts, GL_READ_SYNC);
+    g_assert_true(hq_sync_seen(qts));
+    gl_word(qts, GL_READ_CLOSE);
+
+    gl_client_read_row(qts, 10, 20, 2, 1);
+    g_assert_true(hq_sync_seen(qts));
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x030201);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x060504);
+    gl_word(qts, GL_READ_CLOSE);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 /* The transfer modes the model has no evidence for read zero, logged. */
 static void test_gl_readpixels_other_mode_reads_zero(void)
 {
@@ -3678,6 +3722,8 @@ int main(int argc, char **argv)
                    test_gl_records_apply_the_read_registers);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
                    test_gl_readpixels_dataport_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-sync-bit-set",
+                   test_gl_readpixels_sync_bit_set);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-other-mode-reads-zero",
                    test_gl_readpixels_other_mode_reads_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
