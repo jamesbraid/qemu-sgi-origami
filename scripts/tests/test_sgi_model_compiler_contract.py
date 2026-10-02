@@ -51,6 +51,7 @@ MACHINES = ROOT / "hw/mips/sgi/models"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model.model_compile import CompileError, compile_model, index_graph
+from sgi_model.model_emit import _io_board as _emit_io_board
 from sgi_model.model_emit import render_catalogue_json as _render_catalogue_json, render_manifest
 from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.registry import PRODUCT_MODELS
@@ -402,10 +403,11 @@ class PicIo9DescriptorTests(unittest.TestCase):
              "kind": "board", "hardware_kind": "io9",
              "parent": "bedrock", "provenance": "derived",
              "identity": {"part": "synthetic-io9-part"}},
-            {"id": "fixture-ioc3", "name": "PCI function fixture",
-             "kind": "io-controller", "hardware_kind": "ioc3",
+            {"id": "fixture-ioc4", "name": "Synthetic IOC4 fixture",
+             "kind": "io-controller", "hardware_kind": "ioc4",
              "parent": "fixture-io9", "provenance": "derived",
-             "identity": {"pci_revision": 1}},
+             "identity": {"pci_revision": 0x53},
+             "ioc4": {"clock_hz": 33333333}},
         ])
         model["buses"].append({"id": "fixture-pic-pci0",
                                "name": "Synthetic PCI bus",
@@ -430,8 +432,9 @@ class PicIo9DescriptorTests(unittest.TestCase):
             {"component": "fixture-pic", "bus": "fixture-pic-pci0",
              "role": "bridge-downstream", "pci_head": 0,
              "provenance": "derived"},
-            {"component": "fixture-ioc3", "bus": "fixture-pic-pci0",
-             "role": "endpoint", "pci_device": 0, "pci_function": 0,
+            {"component": "fixture-ioc4", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 1, "pci_function": 0,
+             "intx_pin": "inta", "pic_input": 0,
              "provenance": "derived"},
         ])
         return model
@@ -449,7 +452,12 @@ class PicIo9DescriptorTests(unittest.TestCase):
         self.assertEqual(board["pci_host_index"], 0)
         self.assertEqual(board["pci_head"], 0)
         self.assertTrue(board["populated"])
-        self.assertEqual(board["pci"], [])
+        self.assertEqual(board["pci"], [{
+            "kind": "ioc4", "revision": 0x53,
+            "pci_device": 1, "pci_function": 0,
+            "intx_pin": "inta", "pic_input": 0,
+            "clock_hz": 33333333,
+        }])
         self.assertNotIn("slot_index", board)
         self.assertEqual(
             entry["xio_attachments"][host["xio_attachment_index"]], {
@@ -469,7 +477,200 @@ class PicIo9DescriptorTests(unittest.TestCase):
                           exported_board["pci-head"]), (0, 0))
         self.assertNotIn("attachment", exported_board)
         self.assertTrue(exported_board["populated"])
-        self.assertNotIn("pci", exported_board)
+        self.assertEqual(exported_board["pci-functions"], [{
+            "kind": "ioc4", "revision": 0x53,
+            "pci-device": 1, "pci-function": 0,
+            "intx-pin": "inta", "pic-input": 0,
+            "clock-hz": 33333333,
+        }])
+
+    def test_io9_functions_preserve_positions_routes_revisions_and_clock(self):
+        model = self.model_with_pic_io9()
+        model["components"] = [
+            component for component in model["components"]
+            if component["id"] != "fixture-ioc4"
+        ]
+        model["components"].extend([
+            {"id": "fixture-ioc4", "name": "Synthetic IOC4",
+             "kind": "io-controller", "hardware_kind": "ioc4",
+             "parent": "fixture-io9", "provenance": "derived",
+             "identity": {"pci_revision": 0x53},
+             "ioc4": {"clock_hz": 33333333}},
+            {"id": "fixture-bcm5701", "name": "Synthetic BCM5701",
+             "kind": "bus-controller", "hardware_kind": "bcm5701",
+             "parent": "fixture-io9", "provenance": "derived",
+             "identity": {"pci_revision": 0}},
+        ])
+        model["connections"] = [
+            connection for connection in model["connections"]
+            if connection.get("component") != "fixture-ioc4"
+        ]
+        model["connections"].extend([
+            {"component": "fixture-bcm5701", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 4,
+             "intx_pin": "intd", "pic_input": 7,
+             "provenance": "derived"},
+            {"component": "fixture-ioc4", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 1, "pci_function": 2,
+             "intx_pin": "inta", "pic_input": 3,
+             "provenance": "derived"},
+        ])
+
+        from jsonschema import Draft202012Validator
+        errors = list(Draft202012Validator(schema(MACHINES)).iter_errors(model))
+        self.assertEqual(errors, [])
+        entry = compile_model(model)
+        board = next(item for item in entry["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertEqual(board["pci"], [
+            {"kind": "ioc4", "revision": 0x53,
+             "pci_device": 1, "pci_function": 2,
+             "intx_pin": "inta", "pic_input": 3,
+             "clock_hz": 33333333},
+            {"kind": "bcm5701", "revision": 0,
+             "pci_device": 4, "pci_function": 0,
+             "intx_pin": "intd", "pic_input": 7},
+        ])
+        exported = json.loads(render_catalogue_json([model]))[
+            "topologies"][0]
+        output_board = next(item for item in exported["io-boards"]
+                            if item["id"] == "fixture-io9")
+        self.assertEqual(output_board["pci-functions"], [
+            {"kind": "ioc4", "revision": 0x53,
+             "pci-device": 1, "pci-function": 2,
+             "intx-pin": "inta", "pic-input": 3,
+             "clock-hz": 33333333},
+            {"kind": "bcm5701", "revision": 0,
+             "pci-device": 4, "pci-function": 0,
+             "intx-pin": "intd", "pic-input": 7},
+        ])
+
+    def test_io9_rejects_device_zero_duplicate_devfn_and_bad_routes(self):
+        mutations = (
+            ("pci_device", 0, "device"),
+            ("pci_device", 32, "device"),
+            ("pci_function", 8, "function"),
+            ("intx_pin", "inte", "INTx"),
+            ("pic_input", 8, "PIC input"),
+        )
+        for field, value, message in mutations:
+            with self.subTest(field=field, value=value):
+                model = self.io9_with_ioc4_and_bcm5701()
+                connection = next(item for item in model["connections"]
+                                  if item["component"] == "fixture-ioc4")
+                connection[field] = value
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(model)
+
+        model = self.io9_with_ioc4_and_bcm5701()
+        model["connections"][-1]["pci_device"] = 1
+        model["connections"][-1]["pci_function"] = 2
+        with self.assertRaisesRegex(CompileError, "duplicate PCI devfn"):
+            compile_model(model)
+
+    def test_io9_requires_explicit_placement_route_and_clock(self):
+        mutations = (
+            ("pci_device", None, "pci_device"),
+            ("intx_pin", None, "INTx pin"),
+            ("pic_input", None, "PIC input"),
+        )
+        for field, value, message in mutations:
+            with self.subTest(field=field):
+                model = self.io9_with_ioc4_and_bcm5701()
+                connection = next(item for item in model["connections"]
+                                  if item["component"] == "fixture-ioc4")
+                if value is None:
+                    connection.pop(field)
+                else:
+                    connection[field] = value
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(model)
+
+        model = self.io9_with_ioc4_and_bcm5701()
+        ioc4 = next(item for item in model["components"]
+                    if item["id"] == "fixture-ioc4")
+        ioc4["ioc4"].pop("clock_hz")
+        with self.assertRaisesRegex(CompileError, "clock_hz"):
+            compile_model(model)
+
+        model = self.io9_with_ioc4_and_bcm5701()
+        ioc4 = next(item for item in model["components"]
+                    if item["id"] == "fixture-ioc4")
+        ioc4.pop("ioc4")
+        with self.assertRaisesRegex(CompileError, "clock_hz"):
+            compile_model(model)
+
+    def test_io9_revision_override_and_unsupported_revision(self):
+        model = self.io9_with_ioc4_and_bcm5701()
+        model["machine"]["emulation"]["pci_function_revisions"] = {
+            "fixture-ioc4": {
+                "revision": 0x53, "provenance": "derived",
+                "sources": ["synthetic compiler fixture"],
+                "notes": "Synthetic revision override fixture.",
+            }
+        }
+        from jsonschema import Draft202012Validator
+        errors = list(Draft202012Validator(schema(MACHINES)).iter_errors(model))
+        self.assertEqual(errors, [])
+        entry = compile_model(model)
+        board = next(item for item in entry["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertEqual(board["pci"][0]["revision"], 0x53)
+
+        model = self.io9_with_ioc4_and_bcm5701()
+        next(item for item in model["components"]
+             if item["id"] == "fixture-ioc4")["identity"]["pci_revision"] = 0x52
+        with self.assertRaisesRegex(CompileError, "unsupported ioc4 revision"):
+            compile_model(model)
+
+    def test_io9_rejects_clock_values_and_shared_pic_inputs(self):
+        for clock_hz in (0, 1, 4294967296):
+            with self.subTest(clock_hz=clock_hz):
+                model = self.io9_with_ioc4_and_bcm5701()
+                next(item for item in model["components"]
+                     if item["id"] == "fixture-ioc4")["ioc4"][
+                         "clock_hz"] = clock_hz
+                with self.assertRaisesRegex(CompileError, "clock_hz"):
+                    compile_model(model)
+
+        model = self.io9_with_ioc4_and_bcm5701()
+        next(item for item in model["connections"]
+             if item["component"] == "fixture-bcm5701")["pic_input"] = 3
+        with self.assertRaisesRegex(CompileError, "multiple PCI functions"):
+            compile_model(model)
+
+    def io9_with_ioc4_and_bcm5701(self):
+        model = self.model_with_pic_io9()
+        model["components"] = [
+            component for component in model["components"]
+            if component["id"] != "fixture-ioc4"
+        ]
+        model["components"].extend([
+            {"id": "fixture-ioc4", "name": "Synthetic IOC4",
+             "kind": "io-controller", "hardware_kind": "ioc4",
+             "parent": "fixture-io9", "provenance": "derived",
+             "identity": {"pci_revision": 0x53},
+             "ioc4": {"clock_hz": 33333333}},
+            {"id": "fixture-bcm5701", "name": "Synthetic BCM5701",
+             "kind": "bus-controller", "hardware_kind": "bcm5701",
+             "parent": "fixture-io9", "provenance": "derived",
+             "identity": {"pci_revision": 0}},
+        ])
+        model["connections"] = [
+            connection for connection in model["connections"]
+            if connection.get("component") != "fixture-ioc4"
+        ]
+        model["connections"].extend([
+            {"component": "fixture-ioc4", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 1, "pci_function": 2,
+             "intx_pin": "inta", "pic_input": 3,
+             "provenance": "derived"},
+            {"component": "fixture-bcm5701", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 4,
+             "intx_pin": "intd", "pic_input": 7,
+             "provenance": "derived"},
+        ])
+        return model
 
     def test_pic_crossbar_route_is_preserved_as_authored(self):
         entry = compile_model(self.model_with_pic_io9(crossbar=True))
@@ -526,10 +727,10 @@ class PicIo9DescriptorTests(unittest.TestCase):
         model = self.model_with_pic_io9()
         model["components"] = [
             item for item in model["components"]
-            if item["id"] not in {"fixture-io9", "fixture-ioc3"}
+            if item["id"] not in {"fixture-io9", "fixture-ioc4"}
         ]
         model["connections"] = [item for item in model["connections"]
-                                if item.get("component") != "fixture-ioc3"]
+                                if item.get("component") != "fixture-ioc4"]
         next(item for item in model["components"]
              if item["id"] == "fixture-pic")["hardware_kind"] = (
                  "unsupported-host")
@@ -546,7 +747,7 @@ class PicIo9DescriptorTests(unittest.TestCase):
     def test_io9_requires_a_fitted_pci_endpoint(self):
         model = self.model_with_pic_io9()
         model["connections"] = [item for item in model["connections"]
-                                if not (item.get("component") == "fixture-ioc3"
+                                if not (item.get("component") == "fixture-ioc4"
                                         and item.get("role") == "endpoint")]
         with self.assertRaisesRegex(CompileError, "no authored PCI functions"):
             compile_model(model)
@@ -596,8 +797,9 @@ class PicIo9DescriptorTests(unittest.TestCase):
             {"component": "fixture-pic", "bus": "fixture-pic-pci1",
              "role": "bridge-downstream", "pci_head": 1,
              "provenance": "derived"},
-            {"component": "fixture-ioc3", "bus": "fixture-pic-pci1",
-             "role": "endpoint", "pci_device": 1, "pci_function": 0,
+            {"component": "fixture-ioc4", "bus": "fixture-pic-pci1",
+             "role": "endpoint", "pci_device": 2, "pci_function": 0,
+             "intx_pin": "intb", "pic_input": 1,
              "provenance": "derived"},
         ])
         with self.assertRaisesRegex(
@@ -610,14 +812,16 @@ class PicIo9DescriptorTests(unittest.TestCase):
             {"id": "fixture-io9-second", "name": "Second IO9 fixture",
              "kind": "board", "hardware_kind": "io9", "parent": "bedrock",
              "provenance": "derived"},
-            {"id": "fixture-ioc3-second", "name": "Second PCI function",
-             "kind": "io-controller", "hardware_kind": "ioc3",
+            {"id": "fixture-ioc4-second", "name": "Second IOC4 function",
+             "kind": "io-controller", "hardware_kind": "ioc4",
              "parent": "fixture-io9-second", "provenance": "derived",
-             "identity": {"pci_revision": 1}},
+             "identity": {"pci_revision": 0x53},
+             "ioc4": {"clock_hz": 33333333}},
         ])
         model["connections"].append({
-            "component": "fixture-ioc3-second", "bus": "fixture-pic-pci0",
-            "role": "endpoint", "pci_device": 1, "pci_function": 0,
+            "component": "fixture-ioc4-second", "bus": "fixture-pic-pci0",
+            "role": "endpoint", "pci_device": 2, "pci_function": 0,
+            "intx_pin": "intb", "pic_input": 1,
             "provenance": "derived"})
         with self.assertRaisesRegex(CompileError, "multiple IO9 board records"):
             compile_model(model)
@@ -2230,6 +2434,36 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual([board["part"] for board in entry["io_boards"]],
                          ["030-1244-001", "030-1252-001"])
 
+
+class ReferenceModelTests(unittest.TestCase):
+    def test_origin350_reference_keeps_unknown_ioc4_clock_absent(self):
+        model = load_checked_system_model(
+            MACHINES / "origin350.yaml", model_schema=schema(MACHINES))
+        ioc4 = next(component for component in model["components"]
+                    if component.get("hardware_kind") == "ioc4")
+        self.assertNotIn("ioc4", ioc4)
+
+    def test_ioc4_clock_block_is_typed_and_ioc4_only(self):
+        from jsonschema import Draft202012Validator
+
+        model = _resolved("origin350")
+        ioc4 = next(component for component in model["components"]
+                    if component.get("hardware_kind") == "ioc4")
+        validator = Draft202012Validator(schema(MACHINES))
+        self.assertEqual(list(validator.iter_errors(model)), [])
+
+        # The schema checks shape and positivity. IO9 compilation selects
+        # the supported QOM clock values separately.
+        ioc4["ioc4"] = {"clock_hz": 1}
+        self.assertEqual(list(validator.iter_errors(model)), [])
+        ioc4["ioc4"]["clock_hz"] = 0
+        self.assertNotEqual(list(validator.iter_errors(model)), [])
+
+        model = _resolved("origin300")
+        validator = Draft202012Validator(schema(MACHINES))
+        model["components"][0]["ioc4"] = {"clock_hz": 1}
+        self.assertNotEqual(list(validator.iter_errors(model)), [])
+
 class ManifestTests(unittest.TestCase):
     def test_manifest_format(self):
         manifest_text = render_manifest(
@@ -2246,6 +2480,24 @@ class CatalogueJsonTests(unittest.TestCase):
     checked against independently expected values rather than only a
     captured golden -- the packet's own worked examples.
     """
+
+    def test_legacy_empty_pci_functions_keep_authored_presence(self):
+        legacy = _emit_io_board({
+            "id": "fixture-baseio", "module_index": 0,
+            "board_kind": "BASEIO", "other_identities": [],
+            "part": None, "revision": None, "serial": None,
+            "ioc3_serial": None,
+            "pci_functions": [],
+        })
+        self.assertEqual(legacy["pci-functions"], [])
+
+        io9 = _emit_io_board({
+            "id": "fixture-io9", "module_index": 0,
+            "board_kind": "IO9", "other_identities": [], "pci": [],
+            "part": None, "revision": None, "serial": None,
+            "ioc3_serial": None,
+        })
+        self.assertNotIn("pci-functions", io9)
 
     def test_document_shape(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))

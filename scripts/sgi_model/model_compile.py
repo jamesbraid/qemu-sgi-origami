@@ -1703,6 +1703,8 @@ def _one_wire_identities(model: dict, components: dict[str, dict],
 _HUB_PCI_KINDS = {"isp1040": "ISP1040", "ioc3": "IOC3"}
 _BEDROCK_IO_BOARD_KINDS = {"ip34": "FUEL", "io8": "IO8"}
 _BEDROCK_PCI_KINDS = {"isp12160": "ISP12160", "ioc3": "IOC3", "lucent-ohci": "LUCENT_OHCI"}
+_IO9_PCI_REVISIONS = {"ioc4": 0x53, "bcm5701": 0x00}
+_IO9_INTX_PINS = {"inta", "intb", "intc", "intd"}
 
 
 def _ioc3_has_ethernet(components: dict[str, dict], ioc3_id: str) -> bool:
@@ -2242,11 +2244,86 @@ def _compile_pic_io_records(model: dict, graph: dict,
                     and bus["kind"] == "pci" and component is not None
                     and component["id"] != board["id"]
                     and _is_within(components, component, board["id"])):
-                functions.append(connection)
+                kind = component.get("hardware_kind")
+                if kind not in _IO9_PCI_REVISIONS:
+                    raise CompileError(
+                        f"IO9 PCI component '{component['id']}' has "
+                        f"unsupported hardware kind '{kind}'")
+                device = _integer(
+                    connection, "pci_device", component["id"], 5)
+                if not 1 <= device <= 4:
+                    raise CompileError(
+                        f"IO9 PCI device for '{component['id']}' must be "
+                        "between 1 and 4")
+                function = connection.get("pci_function", 0)
+                if (type(function) is not int or not 0 <= function <= 7):
+                    raise CompileError(
+                        f"IO9 PCI function for '{component['id']}' must be "
+                        "between 0 and 7")
+                pin = connection.get("intx_pin")
+                if pin not in _IO9_INTX_PINS:
+                    raise CompileError(
+                        f"IO9 PCI component '{component['id']}' has "
+                        "missing or unsupported INTx pin")
+                pic_input = connection.get("pic_input")
+                if type(pic_input) is not int or not 0 <= pic_input <= 7:
+                    raise CompileError(
+                        f"IO9 PCI component '{component['id']}' has "
+                        "missing or out-of-range PIC input")
+                selected = model.get("machine", {}).get("emulation", {}).get(
+                    "pci_function_revisions", {}).get(component["id"])
+                revision = (selected["revision"] if selected is not None
+                            else _integer(component.get("identity", {}),
+                                          "pci_revision", component["id"], 8))
+                if revision != _IO9_PCI_REVISIONS[kind]:
+                    raise CompileError(
+                        f"IO9 PCI part '{component['id']}' has unsupported "
+                        f"{kind} revision {revision}")
+                entry = {
+                    "kind": kind, "revision": revision,
+                    "pci_device": device, "pci_function": function,
+                    "intx_pin": pin, "pic_input": pic_input,
+                }
+                if kind == "ioc4":
+                    facts = component.get("ioc4")
+                    clock_hz = (facts.get("clock_hz")
+                                if isinstance(facts, dict) else None)
+                    if type(clock_hz) is not int or clock_hz not in (
+                            33333333, 66666667):
+                        raise CompileError(
+                            f"IO9 IOC4 '{component['id']}' has missing or "
+                            "unsupported clock_hz")
+                    entry["clock_hz"] = clock_hz
+                elif "ioc4" in component:
+                    raise CompileError(
+                        f"IO9 non-IOC4 PCI part '{component['id']}' has "
+                        "IOC4-only clock input")
+                functions.append((device, function, entry, connection))
         if not functions:
             raise CompileError(
                 f"IO9 board '{board['id']}' has no authored PCI functions")
-        function_buses = {item["bus"] for item in functions}
+        functions.sort(key=lambda item: (item[0], item[1]))
+        seen_devfns = set()
+        seen_pic_inputs = set()
+        for device, function, entry, _connection in functions:
+            devfn = (device, function)
+            if devfn in seen_devfns:
+                raise CompileError(
+                    f"IO9 board '{board['id']}' has duplicate PCI devfn "
+                    f"{devfn}")
+            seen_devfns.add(devfn)
+            if entry["pic_input"] in seen_pic_inputs:
+                raise CompileError(
+                    f"IO9 board '{board['id']}': multiple PCI functions "
+                    f"route to PIC input {entry['pic_input']}")
+            seen_pic_inputs.add(entry["pic_input"])
+        pci_functions = [
+            entry for _device, _function, entry, _connection in functions
+        ]
+        function_buses = {
+            connection["bus"]
+            for _device, _function, _entry, connection in functions
+        }
         if len(function_buses) != 1:
             raise CompileError(
                 f"IO9 board '{board['id']}' functions must resolve through "
@@ -2293,7 +2370,7 @@ def _compile_pic_io_records(model: dict, graph: dict,
             "board_kind": "IO9", "populated": bool(functions),
             "other_identities": [], "part": identity["part"],
             "revision": None, "serial": None, "ioc3_serial": None,
-            "pci": [],
+            "pci": pci_functions,
             "pci_host_index": host_index[host_id], "pci_head": head,
         }
         io9_boards.append(record)

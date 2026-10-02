@@ -4,11 +4,12 @@
  * trusts the compiler and golden data at machine launch. Parse the tracked
  * file with qobject_from_json() and qobject_input_visitor_new(), as
  * sgi-machines.c parses its embedded copy and hw/uefi/var-service-json.c
- * does. Reading the file avoids target/mips linkage and keeps this test
- * host-native, as direct sn-model.c linkage did before catalogue compilation.
+ * does. Link the host-only runtime projector to test population remapping;
+ * it has no target MIPS dependencies.
  */
 
 #include "qemu/osdep.h"
+#include "qapi/clone-visitor.h"
 #include "qapi/error.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "qapi/qapi-types-sgi-machines.h"
@@ -28,6 +29,9 @@
  * that bound, so the literal adds no independent catalogue fact.
  */
 #define SN_ARCHITECTURAL_MEMORY_BANKS 8
+
+/* The catalogue population-view cache keeps pointers into its source model. */
+static SGIModelTopology *cached_projection_fixture;
 
 struct AsicShape {
     unsigned int cpu_interfaces;
@@ -585,7 +589,11 @@ static void test_optional_pci_board_references_parse(void)
         "\"xio-slots\":[],\"io-boards\":[{\"id\":\"io9\","
         "\"module-index\":0,\"preset\":\"io9\","
         "\"carrier\":\"machine-placed\",\"pci-host-index\":0,"
-        "\"pci-head\":1,\"populated\":false}],"
+        "\"pci-head\":1,\"populated\":false,"
+        "\"pci-functions\":[{\"kind\":\"ioc4\",\"revision\":83,"
+        "\"pci-device\":1,\"pci-function\":0,"
+        "\"intx-pin\":\"inta\",\"pic-input\":0,"
+        "\"clock-hz\":33333333}]}],"
         "\"controllers\":[],\"console\":0,\"junk-uart\":-1,"
         "\"node-populations\":[]}";
     SGIModelTopology *legacy = parse_topology(legacy_json);
@@ -611,9 +619,163 @@ static void test_optional_pci_board_references_parse(void)
     g_assert_cmpuint(io9_board->pci_host_index, ==, 0);
     g_assert_true(io9_board->has_pci_head);
     g_assert_cmpuint(io9_board->pci_head, ==, 1);
+    g_assert_nonnull(io9_board->pci_functions);
+    g_assert_cmpint(io9_board->pci_functions->value->kind, ==,
+                    SGI_MODEL_PCI_FUNCTION_KIND_IOC4);
+    g_assert_true(io9_board->pci_functions->value->has_pci_device);
+    g_assert_cmpuint(io9_board->pci_functions->value->pci_device, ==, 1);
+    g_assert_true(io9_board->pci_functions->value->has_pci_function);
+    g_assert_cmpuint(io9_board->pci_functions->value->pci_function, ==, 0);
+    g_assert_true(io9_board->pci_functions->value->has_intx_pin);
+    g_assert_cmpint(io9_board->pci_functions->value->intx_pin, ==,
+                    SGI_MODEL_PCI_INTX_PIN_INTA);
+    g_assert_true(io9_board->pci_functions->value->has_pic_input);
+    g_assert_cmpuint(io9_board->pci_functions->value->pic_input, ==, 0);
+    g_assert_true(io9_board->pci_functions->value->has_clock_hz);
+    g_assert_cmpuint(io9_board->pci_functions->value->clock_hz, ==,
+                     33333333);
 
     qapi_free_SGIModelTopology(legacy);
     qapi_free_SGIModelTopology(io9);
+}
+
+static void append_pci_host(SGIModelTopology *t, const char *id,
+                            uint32_t attachment)
+{
+    SGIModelPciHostBridgeList **tail = &t->pci_host_bridges;
+    SGIModelPciHostBridgeList *entry = g_new0(SGIModelPciHostBridgeList, 1);
+
+    while (*tail) {
+        tail = &(*tail)->next;
+    }
+    entry->value = g_new0(SGIModelPciHostBridge, 1);
+    entry->value->id = g_strdup(id);
+    entry->value->kind = SGI_MODEL_PCI_HOST_KIND_PIC;
+    entry->value->xio_attachment_index = attachment;
+    *tail = entry;
+}
+
+static void append_io9_board(SGIModelTopology *t, const char *id,
+                             uint32_t host)
+{
+    SGIModelIoBoardList **tail = &t->io_boards;
+    SGIModelIoBoardList *entry = g_new0(SGIModelIoBoardList, 1);
+
+    while (*tail) {
+        tail = &(*tail)->next;
+    }
+    entry->value = g_new0(SGIModelIoBoard, 1);
+    entry->value->id = g_strdup(id);
+    entry->value->module_index = 0;
+    entry->value->preset = SGI_MODEL_IO_BOARD_PRESET_IO9;
+    entry->value->carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED;
+    entry->value->populated = true;
+    entry->value->has_pci_host_index = true;
+    entry->value->pci_host_index = host;
+    entry->value->has_pci_head = true;
+    entry->value->pci_head = 1;
+    *tail = entry;
+}
+
+static void test_io9_hosts_and_boards_follow_projected_attachments(void)
+{
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+    SGIModelTopology *t = NULL;
+    const SGIModelNodePopulation *row;
+    const SGIModelTopology *view;
+    const SGIModelPciHostBridgeList *host;
+    const SGIModelXioAttachmentList *attachment;
+    const SGIModelPciHostBridgeList *source_host;
+    const SGIModelIoBoardList *board;
+    const SGIModelIoBoardList *source_board;
+    Error *err = NULL;
+    size_t count;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->name, "origin2000-rack")) {
+            t = QAPI_CLONE(SGIModelTopology, entry->value);
+            break;
+        }
+    }
+    g_assert_nonnull(t);
+    row = t->node_populations->value;
+    g_assert_cmpuint(QAPI_LIST_LENGTH(row->nodes), ==, 1);
+    g_assert_cmpuint(row->nodes->value, ==, 0);
+
+    /*
+     * Attachment 1 belongs to node 2 and disappears in the one-node view.
+     * The surviving hosts deliberately refer to attachments 2 then 0, so
+     * their references expose both renumbering and preservation of order.
+     */
+    t->has_pci_host_bridges = true;
+    append_pci_host(t, "removed-host", 1);
+    append_pci_host(t, "host-attachment-2", 2);
+    append_pci_host(t, "host-attachment-0", 0);
+    append_io9_board(t, "removed-io9", 0);
+    append_io9_board(t, "remapped-io9-0", 1);
+    append_io9_board(t, "remapped-io9-1", 2);
+
+    view = sgi_model_population_view(t, row, &err);
+    g_assert_null(err);
+    g_assert_nonnull(view);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(view->xio_attachments), ==, 2);
+    attachment = view->xio_attachments;
+    g_assert_cmpuint(attachment->value->widget, ==, 9);
+    g_assert_cmpuint(attachment->next->value->widget, ==, 8);
+
+    host = view->pci_host_bridges;
+    g_assert_nonnull(host);
+    g_assert_cmpstr(host->value->id, ==, "host-attachment-2");
+    g_assert_cmpuint(host->value->xio_attachment_index, ==, 1);
+    source_host = t->pci_host_bridges->next;
+    g_assert_nonnull(source_host);
+    g_assert_true(host->value != source_host->value);
+    host = host->next;
+    g_assert_nonnull(host);
+    g_assert_cmpstr(host->value->id, ==, "host-attachment-0");
+    g_assert_cmpuint(host->value->xio_attachment_index, ==, 0);
+    source_host = source_host->next;
+    g_assert_nonnull(source_host);
+    g_assert_true(host->value == source_host->value);
+    g_assert_null(host->next);
+
+    board = view->io_boards;
+    count = 0;
+    for (; board; board = board->next) {
+        const SGIModelIoBoard *candidate = board->value;
+
+        if (g_str_equal(candidate->id, "removed-io9")) {
+            g_assert_not_reached();
+        }
+        if (g_str_equal(candidate->id, "remapped-io9-0")) {
+            g_assert_cmpuint(candidate->pci_host_index, ==, 0);
+            for (source_board = t->io_boards; source_board;
+                 source_board = source_board->next) {
+                if (g_str_equal(source_board->value->id, candidate->id)) {
+                    break;
+                }
+            }
+            g_assert_nonnull(source_board);
+            g_assert_true(candidate != source_board->value);
+            count++;
+        } else if (g_str_equal(candidate->id, "remapped-io9-1")) {
+            g_assert_cmpuint(candidate->pci_host_index, ==, 1);
+            for (source_board = t->io_boards; source_board;
+                 source_board = source_board->next) {
+                if (g_str_equal(source_board->value->id, candidate->id)) {
+                    break;
+                }
+            }
+            g_assert_nonnull(source_board);
+            g_assert_true(candidate != source_board->value);
+            count++;
+        }
+    }
+    g_assert_cmpuint(count, ==, 2);
+    /* Cached views share unchanged records with the source for process life. */
+    g_assert_null(cached_projection_fixture);
+    cached_projection_fixture = t;
 }
 
 static void test_every_topology_is_well_formed(void)
@@ -1333,6 +1495,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sn-model/optional-pci-board-references-parse",
                     test_optional_pci_board_references_parse);
+    g_test_add_func("/sn-model/io9-host-projection-remaps-references",
+                    test_io9_hosts_and_boards_follow_projected_attachments);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
     g_test_add_data_func("/sn-model/origin300-direct-v12-attachment",

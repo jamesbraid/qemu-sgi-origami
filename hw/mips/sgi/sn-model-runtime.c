@@ -263,9 +263,15 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
     size_t crossbar_total = QAPI_LIST_LENGTH(t->crossbars);
     size_t cable_total = QAPI_LIST_LENGTH(t->cables);
     size_t slot_total = QAPI_LIST_LENGTH(t->xio_slots);
+    size_t attachment_total = QAPI_LIST_LENGTH(t->xio_attachments);
+    size_t pci_host_total = QAPI_LIST_LENGTH(t->pci_host_bridges);
     const SGIModelXioAttachmentList *attachment;
+    const SGIModelPciHostBridgeList *pci_host;
+    const SGIModelIoBoardList *io_board;
     const SGIModelPopulationSlotList *usable;
     const uint32List *cable;
+    g_autofree bool *pci_host_attachment =
+        g_new0(bool, attachment_total ? attachment_total : 1);
     size_t i;
 
     for (cable = row->cables; cable; cable = cable->next) {
@@ -308,11 +314,28 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
             }
         }
     }
+    for (pci_host = t->pci_host_bridges; pci_host;
+         pci_host = pci_host->next) {
+        uint32_t index = pci_host->value->xio_attachment_index;
+
+        if (index >= attachment_total) {
+            error_setg(errp, "topology '%s' gives PCI host '%s' an XIO "
+                       "attachment index out of range", t->name,
+                       pci_host->value->id);
+            return false;
+        }
+        if (pci_host_attachment[index]) {
+            error_setg(errp, "topology '%s' assigns XIO attachment %u to "
+                       "more than one PCI host", t->name, index);
+            return false;
+        }
+        pci_host_attachment[index] = true;
+    }
     for (attachment = t->xio_attachments, i = 0; attachment;
          attachment = attachment->next, i++) {
         const SGIModelXioAttachment *a = attachment->value;
 
-        if (host[i]) {
+        if (host[i] || pci_host_attachment[i]) {
             continue;
         }
         if (!sgi_model_kept(node_map, node_total, a->node_index) ||
@@ -345,6 +368,14 @@ static bool sgi_model_check_row(const SGIModelTopology *t,
             return false;
         }
     }
+    for (io_board = t->io_boards; io_board; io_board = io_board->next) {
+        if (io_board->value->has_pci_host_index &&
+            io_board->value->pci_host_index >= pci_host_total) {
+            error_setg(errp, "topology '%s' gives I/O board '%s' a PCI host "
+                       "index out of range", t->name, io_board->value->id);
+            return false;
+        }
+    }
     if (!sgi_model_kept(node_map, node_total, t->console)) {
         error_setg(errp, "topology '%s' leaves out its console node in a "
                    "node-population row", t->name);
@@ -366,12 +397,20 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     size_t node_total = QAPI_LIST_LENGTH(t->nodes);
     size_t router_total = QAPI_LIST_LENGTH(t->routers);
     size_t crossbar_total = QAPI_LIST_LENGTH(t->crossbars);
+    size_t attachment_total = QAPI_LIST_LENGTH(t->xio_attachments);
+    size_t pci_host_total = QAPI_LIST_LENGTH(t->pci_host_bridges);
     g_autofree int *node_map = g_new(int, node_total ? node_total : 1);
     g_autofree int *router_map = g_new(int, router_total ? router_total : 1);
     g_autofree int *crossbar_map =
         g_new(int, crossbar_total ? crossbar_total : 1);
+    g_autofree int *attachment_map =
+        g_new(int, attachment_total ? attachment_total : 1);
+    g_autofree int *pci_host_map =
+        g_new(int, pci_host_total ? pci_host_total : 1);
     g_autofree bool *host = NULL;
     const SGIModelXioAttachmentList *attachment;
+    const SGIModelPciHostBridgeList *pci_host;
+    const SGIModelIoBoardList *io_board;
     const SGIModelPopulationSlotList *usable;
     const SGIModelModuleList *module;
     const SGIModelRouterList *router;
@@ -413,6 +452,12 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     for (i = 0; i < crossbar_total; i++) {
         crossbar_map[i] = -1;
     }
+    for (i = 0; i < attachment_total; i++) {
+        attachment_map[i] = -1;
+    }
+    for (i = 0; i < pci_host_total; i++) {
+        pci_host_map[i] = -1;
+    }
     for (attachment = t->xio_attachments, i = 0; attachment;
          attachment = attachment->next, i++) {
         const SGIModelXioAttachment *a = attachment->value;
@@ -437,7 +482,7 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->product = t->product;
     view->generation = t->generation;
     view->description = t->description;
-    view->io_boards = t->io_boards;
+    view->has_pci_host_bridges = t->has_pci_host_bridges;
     view->controllers = t->controllers;
     view->has_io_peers = t->has_io_peers;
     view->io_peers = t->io_peers;
@@ -534,7 +579,54 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
             if (copy->crossbar_index >= 0) {
                 copy->crossbar_index = crossbar_map[copy->crossbar_index];
             }
+            attachment_map[i] = QAPI_LIST_LENGTH(view->xio_attachments);
             QAPI_LIST_APPEND(tail, copy);
+        }
+    }
+    {
+        SGIModelPciHostBridgeList **tail = &view->pci_host_bridges;
+
+        for (pci_host = t->pci_host_bridges, i = 0; pci_host;
+             pci_host = pci_host->next, i++) {
+            int new_attachment = attachment_map[
+                pci_host->value->xio_attachment_index];
+            SGIModelPciHostBridge *copy;
+
+            if (new_attachment < 0) {
+                continue;
+            }
+            pci_host_map[i] = QAPI_LIST_LENGTH(view->pci_host_bridges);
+            if (new_attachment == pci_host->value->xio_attachment_index) {
+                QAPI_LIST_APPEND(tail, pci_host->value);
+            } else {
+                copy = g_memdup2(pci_host->value, sizeof(*copy));
+                copy->xio_attachment_index = new_attachment;
+                QAPI_LIST_APPEND(tail, copy);
+            }
+        }
+    }
+    {
+        SGIModelIoBoardList **tail = &view->io_boards;
+
+        for (io_board = t->io_boards; io_board; io_board = io_board->next) {
+            SGIModelIoBoard *copy;
+
+            if (!io_board->value->has_pci_host_index) {
+                QAPI_LIST_APPEND(tail, io_board->value);
+                continue;
+            }
+            if (pci_host_map[io_board->value->pci_host_index] < 0) {
+                continue;
+            }
+            if (pci_host_map[io_board->value->pci_host_index] ==
+                io_board->value->pci_host_index) {
+                QAPI_LIST_APPEND(tail, io_board->value);
+            } else {
+                copy = g_memdup2(io_board->value, sizeof(*copy));
+                copy->pci_host_index =
+                    pci_host_map[io_board->value->pci_host_index];
+                QAPI_LIST_APPEND(tail, copy);
+            }
         }
     }
     {

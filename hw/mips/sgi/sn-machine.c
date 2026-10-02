@@ -4946,6 +4946,10 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
         const SGIModelIoBoard *board = boards[i];
         SGIMachineIoConfig *resolved = &s->io_config[i];
         const SGIModelPciFunctionList *entry;
+        const unsigned int required =
+            (1U << SGI_MODEL_PCI_FUNCTION_KIND_ISP12160) |
+            (1U << SGI_MODEL_PCI_FUNCTION_KIND_IOC3) |
+            (1U << SGI_MODEL_PCI_FUNCTION_KIND_LUCENT_OHCI);
         unsigned int found = 0;
         uint64_t value;
 
@@ -5001,7 +5005,7 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
             found |= 1U << function->kind;
             resolved->pci_revision[function->kind] = function->revision;
         }
-        if (found != (1U << SGI_MODEL_PCI_FUNCTION_KIND__MAX) - 1) {
+        if (found != required) {
             error_setg(errp, "topology '%s' board '%s' has incomplete PCI "
                        "function configuration", t->name, board->id);
             return false;

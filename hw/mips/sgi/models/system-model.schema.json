@@ -869,6 +869,8 @@
           },
           "pci_device": { "type": "integer", "minimum": 0, "maximum": 31 },
           "pci_function": { "type": "integer", "minimum": 0, "maximum": 7 },
+          "intx_pin": { "enum": ["inta", "intb", "intc", "intd"] },
+          "pic_input": { "type": "integer", "minimum": 0, "maximum": 7 },
           "cpu_interrupt_inputs": {
             "type": "object",
             "required": ["bank0", "bank1", "rt"],
@@ -1711,6 +1713,15 @@
         },
         {
           "if": {
+            "not": {
+              "properties": { "hardware_kind": { "const": "ioc4" } },
+              "required": ["hardware_kind"]
+            }
+          },
+          "then": { "not": { "required": ["ioc4"] } }
+        },
+        {
+          "if": {
             "not": { "properties": { "kind": { "const": "memory" } } }
           },
           "then": { "not": { "required": ["memory"] } }
@@ -1722,6 +1733,14 @@
         "kind": { "$ref": "#/$defs/component-kind" },
         "board_record": {"type": "object", "required": ["role", "barcode", "part", "revision", "name", "serial"], "additionalProperties": false, "properties": {"role": {"type": "string", "minLength": 1}, "barcode": {"type": "string", "minLength": 1}, "part": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "serial": {"$ref": "#/$defs/address"}}},
         "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
+        "ioc4": {
+          "type": "object",
+          "required": ["clock_hz"],
+          "additionalProperties": false,
+          "properties": {
+            "clock_hz": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+          }
+        },
         "node_asic": { "$ref": "#/$defs/node-asic-facts" },
         "router_asic": { "$ref": "#/$defs/router-asic-facts" },
         "crossbar": { "$ref": "#/$defs/crossbar-facts" },
