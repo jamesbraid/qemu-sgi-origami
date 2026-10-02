@@ -517,8 +517,8 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
  * the model has none of, but the read or read-exclusive it issues for a
  * block it does not hold is a request the rest of the system sees (R10000
  * User's Manual version 2.0, Table 1-1 and the processor block read
- * protocol). The helper passes it on; a user-mode build has no system to
- * see it, and the prefetch stays a no-op there as on every other processor.
+ * protocol). The helper passes it on; machines without coherent bus
+ * handlers return immediately, and user-mode has no system to see it.
  */
 static void gen_prefetch_r10k(DisasContext *ctx, int hint, TCGv addr)
 {

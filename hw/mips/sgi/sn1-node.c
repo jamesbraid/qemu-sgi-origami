@@ -285,9 +285,9 @@ static void sn1_node_set_requester_ids(SN1NodeState *node)
     for (unsigned int i = 0; i < node->nr_cpus; i++) {
         unsigned int slot = sn1_cpu_slot(node->model_node, i);
 
-        if (node->cpu[i] && node->cpu[i]->env.r10k) {
-            node->cpu[i]->env.r10k->requester_id =
-                sn1_node_number(node) << 3 | (slot & 1) | (slot & 2) << 1;
+        if (node->cpu[i]) {
+            r10k_cpu_set_requester_id(node->cpu[i],
+                sn1_node_number(node) << 3 | (slot & 1) | (slot & 2) << 1);
         }
     }
 }
@@ -1275,17 +1275,16 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 
 
 /*
- * A processor's secondary-cache instruction or prefetch, dispatched to the
- * node's system-request region (R10K_SYSTEM_REQUEST_* in target/mips/r10k.h)
- * and passed to the memory unit of the node whose memory it names. An index
- * instruction names a set rather than a line, so it goes to this node and
- * its one cabled peer, all an Origin 300 pair has; a line homed on any
+ * A processor's secondary-cache instruction, dispatched from its bus
+ * interface and passed to the memory unit of the node whose memory it names. An
+ * index instruction names a set rather than a line, so it goes to this node
+ * and its one cabled peer, all an Origin 300 pair has; a line homed on any
  * other node would be missed. It runs outside any I/O access, so it takes
  * the lock itself, and only once a memory unit is watching anything.
  */
-static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
-                                           uint64_t *value, unsigned size,
-                                           MemTxAttrs attrs)
+static bool sn1_node_bus_request(void *opaque, uint16_t requester_id,
+                                 R10KSystemRequest request,
+                                 hwaddr paddr, unsigned int set_bits)
 {
     static const SGIBedrockMDProcessorRequest md_request[] = {
         [R10K_REQUEST_INDEX_WRITEBACK_INVALIDATE] =
@@ -1298,23 +1297,16 @@ static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
     };
     SN1NodeState *node = opaque;
     SN1NodeState *target[2] = { NULL, NULL };
-    uint64_t paddr = extract64(offset, 0, R10K_SYSTEM_REQUEST_PADDR_BITS);
-    unsigned int request = extract64(offset, R10K_SYSTEM_REQUEST_KIND_SHIFT,
-                                     4);
-    unsigned int set_bits = extract64(offset,
-                                      R10K_SYSTEM_REQUEST_SET_BITS_SHIFT, 6);
     uint64_t index_mask = ((UINT64_C(1) << set_bits) - 1) * 128;
     uint64_t address = paddr & (SGI_BEDROCK_MD_MEMORY_SIZE - 1);
     bool found = false;
 
-    *value = 0;
     if (request >= ARRAY_SIZE(md_request)) {
-        return MEMTX_OK;
+        return false;
     }
     /*
      * A cache instruction names the line at its address, on that line's
-     * home node, so a later read of the line's word watches its page. A
-     * prefetch names nothing: copy loops issue them by the thousand.
+     * home node, so a later read of the line's word watches its page.
      */
     if (request != R10K_REQUEST_PREFETCH_LOAD &&
         request != R10K_REQUEST_PREFETCH_STORE) {
@@ -1342,20 +1334,12 @@ static MemTxResult sn1_node_system_request(void *opaque, hwaddr offset,
             continue;
         }
         BQL_LOCK_GUARD();
-        found |= sgi_bedrock_md_processor_request(md, attrs.requester_id,
+        found |= sgi_bedrock_md_processor_request(md, requester_id,
                                                   md_request[request],
                                                   address, index_mask);
     }
-    *value = found;
-    return MEMTX_OK;
+    return found;
 }
-
-static const MemoryRegionOps sn1_node_system_request_ops = {
-    .read_with_attrs = sn1_node_system_request,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 8, .max_access_size = 8 },
-    .impl = { .min_access_size = 8, .max_access_size = 8 },
-};
 
 /*
  * Whether the processor a directory pointer names is fitted: the node that
@@ -1409,19 +1393,6 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
                               SGI_SN1_NODE_MAX_CPUS, NULL, NULL);
     }
 
-    memory_region_init_io(&node->system_requests, OBJECT(node),
-                          &sn1_node_system_request_ops, node,
-                          "sn1.system-requests", R10K_SYSTEM_REQUEST_SIZE);
-    /*
-     * Processors dispatch requests here from their own threads without
-     * the BQL. The reentrancy guard is one unlocked flag shared by every
-     * region the node owns, so it would take a request in flight for
-     * reentry: another processor's read of the board ID then fails as a
-     * bus error, and a second concurrent request is dropped. Nothing here
-     * dispatches back into the node, and the handler takes the BQL itself
-     * before touching the memory unit's state.
-     */
-    node->system_requests.disable_reentrancy_guard = true;
     for (i = 0; i < node->nr_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         g_autofree char *alias_name =
@@ -1485,9 +1456,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             node->cpu_uncached_ready[i] = true;
         }
         qdev_realize(cpu_dev, NULL, &error_fatal);
-        if (cpu->env.r10k) {
-            cpu->env.r10k->system_requests = &node->system_requests;
-        }
+        r10k_cpu_set_bus_handler(cpu, sn1_node_bus_request, node);
         cpu_mips_irq_init_cpu(cpu);
         cpu_mips_clock_init(cpu);
         node->cpu[i] = cpu;

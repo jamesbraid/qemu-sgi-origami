@@ -95,8 +95,6 @@ typedef struct SN1NodeState {
 
     Clock *cpuclk;
     MIPSCPU *cpu[SGI_SN1_NODE_MAX_CPUS];
-    /* Where the processors send cache instructions and prefetches. */
-    MemoryRegion system_requests;
     MemoryRegion cpu_sysmem[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion sysmem_alias[SGI_SN1_NODE_MAX_CPUS];
     /*

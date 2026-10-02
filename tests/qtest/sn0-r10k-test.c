@@ -975,6 +975,97 @@ static void test_indirect_and_unmapped_chaining(void)
     qtest_quit(qts);
 }
 
+#define PREF_IMAGE_SIZE     0x1000
+#define PREF_DONE_OFF       0x20
+#define PREF_FAULT_OFF      0x28
+#define PREF_DONE_MAGIC     0x50524546 /* "PREF" */
+
+static void pref_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(PREF_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = PREF_IMAGE_SIZE };
+    ssize_t written;
+
+    /* Fault handlers at standard vectors */
+    img.pos = VEC_TLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, PREF_FAULT_OFF);
+    img.pos = VEC_XTLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, PREF_FAULT_OFF);
+    img.pos = VEC_CACHE_ERROR;
+    emit_report_and_spin(&img, FAULT_MAGIC, PREF_FAULT_OFF);
+    img.pos = VEC_GENERAL;
+    emit_report_and_spin(&img, FAULT_MAGIC, PREF_FAULT_OFF);
+
+    img.pos = 0;
+    /* Clear ERL and enable CU1 for PREFX (COP1X) */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_lui(&img, R_T1, 0x2000); /* Status.CU1 (bit 29) */
+    emit(&img, 0x25u | (R_T0 << 21) | (R_T1 << 16) | (R_T0 << 11)); /* or */
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_addiu(&img, R_T1, R_ZERO, 0x100);
+
+    /* Test PREF and PREFX with all 32 hints and both offset directions. */
+    for (int hint = 0; hint < 32; hint++) {
+        emit(&img, OPC_PREF | (R_T0 << 21) | (hint << 16) | 0x0040);
+        emit(&img, OPC_PREF | (R_T0 << 21) | (hint << 16) | (uint16_t)-64);
+        uint32_t prefx = (0x13u << 26) | (R_T0 << 21) | (R_T1 << 16) |
+                         (hint << 11) | 0x0fu;
+        emit(&img, prefx);
+    }
+
+    emit_lui(&img, R_T2, (uint16_t)(PREF_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(PREF_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T0, PREF_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, PREF_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, PREF_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_prefetch_hints(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-pref-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    pref_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + PREF_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + PREF_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)PREF_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + PREF_DONE_OFF), ==,
+                    (uint64_t)PREF_DONE_MAGIC);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -991,6 +1082,8 @@ int main(int argc, char **argv)
     g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
     qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
                    test_indirect_and_unmapped_chaining);
+    qtest_add_func("/sn0/tcg/prefetch-hints",
+                   test_r10k_prefetch_hints);
 
     return g_test_run();
 }
