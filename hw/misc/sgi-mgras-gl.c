@@ -2908,7 +2908,7 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
 
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
-                                    SGIMgrasGLPixels *px)
+                                    bool dma_only, SGIMgrasGLPixels *px)
 {
     const uint32_t *ge = s->ge_param;
     const uint32_t *box = &ge[MGRAS_GE_PIXEL_BOX];
@@ -2992,10 +2992,15 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         px->bpp = px->bpp ? px->bpp : 8;
         break;
     }
-    if (px->bpp > 4 || DIV_ROUND_UP(px->w * px->bpp, 4) != row_words) {
+    uint64_t expected_words = DIV_ROUND_UP(px->w * px->bpp, 4);
+
+    if (!dma_only && px->format == MGRAS_GL_PIXELS_RGBA8) {
+        expected_words *= px->h;
+    }
+    if (px->bpp > 4 || expected_words != row_words) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %" PRIu64 " words "
-                      "a row for %u pixels is not modelled\n", row_words,
-                      px->w);
+                      "for %u by %u pixels is not modelled\n", row_words,
+                      px->w, px->h);
         return false;
     }
     if (format == MGRAS_GL_PIXELS_INDEX && !mgras_gl(s)->cur.index_bits) {
@@ -3053,7 +3058,8 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
         };
         return;
     }
-    if (!mgras_gl_pixels_program(s, (uint64_t)payload[0] + payload[1], px)) {
+    if (!mgras_gl_pixels_program(s, (uint64_t)payload[0] + payload[1],
+                                 !!(payload[7] & MGRAS_GL_PIXELS_BY_DMA), px)) {
         px->format = MGRAS_GL_PIXELS_FORMATS;
         px->bpp = 1;
     }
