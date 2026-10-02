@@ -3092,6 +3092,7 @@ static QTestState *expansion_lifecycle_start(const char *prom,
         "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING
         ",controller-brick-serial.0=1=EXP-LIFECYCLE "
         "-device sgi-l1-uart,id=serial-expansion,controller=/machine/module1/l1 "
+        "-device sgi-bridge-dma-test,bus=expansion0-u0-head-e.0,addr=1 "
         "-cpu R14000 -smp 2 -m 512M -S -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
         "-drive if=pflash,file=%s,format=raw,readonly=off "
@@ -3156,13 +3157,18 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
     g_autofree char *source_log = g_build_filename(dir, "source.txt", NULL);
     g_autofree char *target_log = g_build_filename(dir, "target.txt", NULL);
     g_autofree char *source_options = g_strdup_printf(
-        "-trace enable=sgi_l1_bic_startup_operation -d guest_errors -D %s",
+        "-trace enable=sgi_l1_bic_startup_operation "
+        "-trace enable=sgi_xbridge_irq_packet -d guest_errors -D %s",
         source_log);
     g_autofree char *target_options = g_strdup_printf(
         "-incoming defer -trace enable=sgi_l1_bic_startup_operation "
+        "-trace enable=sgi_xbridge_irq_packet "
         "-d guest_errors -D %s", target_log);
     const uint64_t expansion = UINT64_C(0xe3a000000);
     const uint64_t local = UINT64_C(0x1001a000000);
+    const uint64_t head = SPACE_IO + (UINT64_C(7) << 33) +
+                          (UINT64_C(0xe) << 24);
+    const uint64_t pending = SPACE_IO + 0x1800098;
     QTestState *from;
     QTestState *qts;
 
@@ -3182,23 +3188,48 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
     expansion_lifecycle_command(from, "brick slot 3");
     g_assert_cmpuint(qom_get_uint(from, "/machine/module1/l1", "bay"), ==, 2);
     g_assert_cmphex(qtest_readw(from, UINT64_C(0xe35000000)), ==, 0x42);
+    /* Retain one asserted PCI input across power-down and migration. */
+    expansion_card_write(from, head + 0x24,
+        (expansion_card_read(from, head + 0x24, 4) & ~15U) | 0xe, 4);
+    expansion_card_write(from, head + 0x21010, CARD_MMIO + 0x200000, 4);
+    expansion_card_write(from, head + 0x21004, PCI_COMMAND_MEMORY_MASTER, 4);
+    expansion_card_write(from, head + 0x20c, 0x81012, 4);
+    expansion_card_write(from, head + 0x34, (0xa << 16) | 0x8000, 4);
+    expansion_card_write(from, head + 0x3c, HUB_INT_MODIFY_OFFSET, 4);
+    expansion_card_write(from, head + 0x13c,
+                         (INT_HOST_PACKET_IO_NASID0 << 8) | 16, 4);
+    expansion_card_write(from, head + 0x10c, 1U << 1, 4);
+    expansion_card_write(from, head + 0x11c, 1U << 1, 4);
+    expansion_card_write(from, head + 0x400000 + DMA_REG_INTERRUPT, 1, 4);
+    g_assert_cmphex(expansion_card_read(from, pending, 8), ==, 1U << 16);
+    g_assert_cmpuint(expansion_lifecycle_log_count(source_log,
+        "sgi_xbridge_irq_packet"), ==, 1);
     expansion_lifecycle_command(from, "pwr d");
     expansion_serial_expect(from, 1, 1, 21, "EXP-LIFECYCLE");
 
     if (migrate) {
-        unsigned startup_count, refused_count;
+        unsigned startup_count, refused_count, irq_count;
 
         qts = expansion_lifecycle_start(prom, target_storage, target_compute,
                                         target_options);
         startup_count = expansion_lifecycle_log_count(target_log,
                                             "sgi_l1_bic_startup_operation");
         g_assert_cmpuint(startup_count, >=, 2);
+        irq_count = expansion_lifecycle_log_count(target_log,
+                                                 "sgi_xbridge_irq_packet");
+        g_assert_cmpuint(irq_count, ==, 0);
         qtest_qmp_assert_success(qts,
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
         sgi_migrate_stopped(from, uri);
         sgi_wait_migration_status(qts, "completed", 30);
         g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
             "sgi_l1_bic_startup_operation"), ==, startup_count);
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_xbridge_irq_packet"), ==, irq_count);
+        g_assert_cmphex(expansion_card_read(qts, pending, 8), ==, 1U << 16);
+        expansion_lifecycle_command(qts, "pwr d");
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_xbridge_irq_packet"), ==, irq_count);
         refused_count = expansion_lifecycle_log_count(target_log,
                                                      "main power off");
         expansion_serial_expect(qts, 1, 1, 21, "EXP-LIFECYCLE");
@@ -3214,6 +3245,12 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
             "main power off"), >=, refused_count + 4);
         g_assert_cmphex(qtest_readw(qts, local + 0x20), ==, 'Q');
         expansion_lifecycle_command(qts, "pwr u");
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_xbridge_irq_packet"), ==, irq_count + 1);
+        expansion_lifecycle_command(qts, "pwr u");
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_xbridge_irq_packet"), ==, irq_count + 1);
+        g_assert_cmphex(expansion_card_read(qts, pending, 8), ==, 1U << 16);
         g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
             "sgi_l1_bic_startup_operation"), ==, startup_count);
         g_assert_cmphex((expansion_vector(qts, EXPANSION_LB_REVISION,
