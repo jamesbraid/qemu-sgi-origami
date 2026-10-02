@@ -1870,10 +1870,12 @@ static void chip_unrealize(DeviceState *dev)
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
     unsigned i, n;
 
+    qdev_unrealize(DEVICE(&s->xbow));
     for (n = 0; n < SGI_XBRIDGE_EXTERNAL_PORTS; n++) {
         qemu_free_irq(s->warm_reset_sink[n]);
     }
     for (i = 0; i < 2; i++) {
+        qdev_unrealize(DEVICE(&s->head[i]));
         for (n = 0; n < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; n++) {
             qemu_free_irq(s->head_intx_sink[i][n]);
         }

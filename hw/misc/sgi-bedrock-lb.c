@@ -683,13 +683,22 @@ static void lb_realize(DeviceState *dev, Error **errp)
     }
 }
 
-static void lb_finalize(Object *obj)
+static void lb_unrealize(DeviceState *dev)
 {
-    SGIBedrockLBState *s = SGI_BEDROCK_LB(obj);
+    SGIBedrockLBState *s = SGI_BEDROCK_LB(dev);
 
+    if (s->microlan_timer) {
+        timer_del(s->microlan_timer);
+    }
     if (s->hub_as_initialized) {
         address_space_destroy(&s->hub_as);
+        s->hub_as_initialized = false;
     }
+}
+
+static void lb_finalize(Object *obj)
+{
+    lb_unrealize(DEVICE(obj));
 }
 
 static const Property lb_properties[] = {
@@ -722,6 +731,7 @@ static void lb_class_init(ObjectClass *klass, const void *data)
 
     dc->desc = "SGI Bedrock local block";
     dc->realize = lb_realize;
+    dc->unrealize = lb_unrealize;
     dc->vmsd = &vmstate_lb;
     dc->user_creatable = true;
     device_class_set_props(dc, lb_properties);

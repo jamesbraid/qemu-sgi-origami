@@ -3122,6 +3122,24 @@ static void test_uart_old_stream(void)
     g_test_trap_assert_stderr("*synthetic UART requires migration version 7*");
 }
 
+static void test_teardown(void)
+{
+    QTestState *qts = management_start("");
+    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    uint64_t result;
+
+    qtest_writeq(qts, MANAGEMENT + 232, 1);
+    do {
+        result = qtest_readq(qts, MANAGEMENT + 232);
+        if (result) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    g_assert_cmphex(result, ==, 0xff);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3295,6 +3313,7 @@ int main(int argc, char **argv)
                    test_intx_unconnected);
     qtest_add_func("/sgi/pci-expansion-ni/intx-migration-mismatch",
                    test_intx_migration_mismatch);
+    qtest_add_func("/sgi/pci-expansion-ni/teardown", test_teardown);
     qtest_add_func("/sgi/pci-expansion-ni/pio", test_pio);
     qtest_add_func("/sgi/pci-expansion-ni/dma", test_dma);
     qtest_add_func("/sgi/pci-expansion-ni/live-number", test_live_number);
