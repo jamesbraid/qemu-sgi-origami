@@ -137,3 +137,4 @@ config SGI_PIC
     bool
     default y if SGI_DEVICES
     select PCI
+    select SGI_XIO_PORT

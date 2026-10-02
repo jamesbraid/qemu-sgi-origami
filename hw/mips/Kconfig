@@ -185,6 +185,7 @@ config SGI_TEST_FIXTURES
     select SGI_COMMAND_PORT
     select SGI_HUB if SGI_SN0
     select SGI_PCI_EXPANSION
+    select SGI_PIC
     select SGI_PI_GFX
     select SGI_ROUTER if SGI_SN0
     select SGI_XBOW
