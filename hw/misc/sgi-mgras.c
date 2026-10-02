@@ -1524,8 +1524,8 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
     if (!b->implemented) {
         missing = g_string_new(NULL);
         if (b->tram_count) {
-            g_string_append(missing, "texture beyond a one-level RGBA "
-                            "nearest draw (TE1 and TRAM)");
+            g_string_append(missing, "texture beyond the subset its "
+                            "datasheet lists (TE1 and TRAM)");
         }
         if (!s->unimplemented_board) {
             error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
