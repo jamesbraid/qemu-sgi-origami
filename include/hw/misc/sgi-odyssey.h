@@ -350,7 +350,8 @@ struct SGIOdysseyState {
      * the vertices it still holds (gl_vertex_x/y, SGI_ODYSSEY_GL_HELD_VERTICES)
      * and how many it has had since BEGIN. Each piece is drawn as its last
      * vertex arrives (odyssey_gl_vertex()); END closes a loop or polygon.
-     * line_stipple holds the three 0x0c48 operands.
+     * line_stipple holds the three 0x0c48 operands. Float GL uses word 0's
+     * low 16 bits and word 2's low 8 bits; integer 2D uses word 1's 32 bits.
      *
      * An open POLYGON keeps its edges as crossing marks instead of its
      * vertices: poly_marks has one byte per framebuffer pixel, toggled where

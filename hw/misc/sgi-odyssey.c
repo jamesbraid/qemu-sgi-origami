@@ -1424,9 +1424,12 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the 32-bit operand is set: ESTABLISHED against all 798 traced stippled
  * spans, which then form one screen-aligned checkerboard. The 16-bit operand,
  * the third operand's fields and whether the board repeats at 16 or 32 bits
- * are unknown; a third operand other than 0x30f is reported as unmodeled.
+ * are unknown. Float GL lines use a separate reviewed software encoding:
+ * bit 3 enables a 16-bit pattern from word 0, repeated word 2 low byte + 1
+ * times per bit. The two paths keep their own pattern and phase rules.
  */
 #define ODSY_REG_LINE_STIPPLE 0x0c48    /* 3 operands */
+#define ODSY_MODE_GL_LINE_STIPPLE (1u << 3)
 #define ODSY_LINE_STIPPLE_PATTERN 1     /* the 32-bit rotated row */
 #define ODSY_LINE_STIPPLE_CONTROL 2
 #define ODSY_LINE_STIPPLE_CONTROL_32 0x30f
@@ -3999,12 +4002,13 @@ static uint32_t odyssey_front_face(uint32_t pattern_mode)
  * the stencil test, bit 17, blending, bit 19, index logic op, bit 20,
  * colour logic op, bit 8, GL_CULL_FACE, bits 10:9, the face it culls, and
  * bit 23, front face (fed inverted; see the ODSY_MODE_FRONT_FACE_CW
- * comment). The shared rasterizer fills a flat triangle from its
- * provoking vertex, the last one for triangles and strips as GL specifies.
+ * comment), and bit 3, float GL line stipple. The shared rasterizer fills a
+ * flat triangle from its provoking vertex, the last one for triangles and
+ * strips as GL specifies.
  * Nothing in the stream says which vertex the board takes; the library
  * never reorders or repeats colours to steer it, so GL's own rule is
  * INFERRED. Called on every 0x0404, including the X server's pattern-mode
- * writes, which touch only the 2D interpreter's own state otherwise.
+ * writes, which also update the separate integer 2D interpreter.
  *
  * This model has no stencil planes, so the shared rasterizer's stencil
  * pipeline stays permanently unset and the enable below never gates a
@@ -4031,6 +4035,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                                                  ODSY_MODE_CULL_MODE_SHIFT) &
                                                 ODSY_MODE_CULL_MODE_MASK);
     uint32_t front_face = odyssey_front_face(s->pattern_mode);
+    uint32_t line_stipple = SGI_GL_LINE_STIPPLE;
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
@@ -4061,8 +4066,21 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &offset_fill, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_CULL_FACE ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cull_face, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_GL_LINE_STIPPLE ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &line_stipple, 1);
     odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
     odyssey_gl_feed(s, SGI_GL_OP_FRONT_FACE, &front_face, 1);
+}
+
+static void odyssey_gl_apply_line_stipple(SGIOdysseyState *s)
+{
+    /* Word 1 remains the integer 2D path's 32-bit rotated pattern. */
+    uint32_t args[] = {
+        (s->line_stipple[2] & 0xff) + 1,
+        s->line_stipple[0] & 0xffff,
+    };
+
+    odyssey_gl_feed(s, SGI_GL_OP_LINE_STIPPLE, args, ARRAY_SIZE(args));
 }
 
 /*
@@ -5274,6 +5292,14 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
     uint32_t pattern = s->line_stipple[ODSY_LINE_STIPPLE_PATTERN];
     double dx = (double)x2 - x1, dy = (double)y2 - y1;
     int64_t lo, hi, i;
+
+    if (stippled && s->line_stipple[ODSY_LINE_STIPPLE_CONTROL] !=
+        ODSY_LINE_STIPPLE_CONTROL_32 && !s->line_stipple_reported) {
+        s->line_stipple_reported = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: integer line stipple control "
+                      "0x%x is not modeled; drawn as a 32-pixel stipple\n",
+                      s->line_stipple[ODSY_LINE_STIPPLE_CONTROL]);
+    }
 
     if (dx == 0 && dy == 0) {
         return;
@@ -7219,11 +7245,14 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_REG_LINE_STIPPLE:
         memcpy(s->line_stipple, s->cmd_operand, sizeof(s->line_stipple));
+        odyssey_gl_apply_line_stipple(s);
         if (s->line_stipple[ODSY_LINE_STIPPLE_CONTROL] !=
-            ODSY_LINE_STIPPLE_CONTROL_32 && !s->line_stipple_reported) {
+            ODSY_LINE_STIPPLE_CONTROL_32 &&
+            (s->line_stipple[ODSY_LINE_STIPPLE_CONTROL] & ~0xffu) &&
+            !s->line_stipple_reported) {
             s->line_stipple_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: line stipple control 0x%x "
-                          "is not modeled; drawn as a 32-pixel stipple\n",
+                          "has unclassified high bits\n",
                           s->line_stipple[ODSY_LINE_STIPPLE_CONTROL]);
         }
         break;
@@ -8130,7 +8159,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->gl_vertex_x, 0, sizeof(s->gl_vertex_x));
     memset(s->gl_vertex_y, 0, sizeof(s->gl_vertex_y));
     s->gl_vertex_count = 0;
-    memset(s->line_stipple, 0, sizeof(s->line_stipple));
+    s->line_stipple[0] = s->line_stipple[1] = 0xffff;
+    s->line_stipple[2] = 0;
     /* No polygon is open; reset_hold clears the marks themselves. */
     s->poly_row_lo = SGI_ODYSSEY_HEIGHT;
     s->poly_row_hi = 0;
@@ -8159,6 +8189,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
         SGIGLSink sink = odyssey_gl_sink(s);
 
         assert(sgi_gl_enable_polygon_modes(&s->gl_ctx, &sink));
+        assert(sgi_gl_enable_line_stipple(&s->gl_ctx, &sink));
     }
     s->gl_in_prim = false;
     /*
@@ -8885,13 +8916,23 @@ static int odyssey_post_load(void *opaque, int version_id)
             s->gl_texture_matrix[i * 5] = ODSY_F32_ONE;
         }
     }
+    if (version_id < 14) {
+        s->line_stipple[0] = s->line_stipple[1] = 0xffff;
+        s->line_stipple[2] = 0;
+    }
     if (version_id < 31) {
         s->tex_lod[0] = s->tex_lod[1] = 0;
         s->tex_lod[2] = 0x3100;
         s->tex_lod[3] = 0x0f00;
     }
     odyssey_clip_update(s);
+    {
+        SGIGLSink sink = odyssey_gl_sink(s);
+
+        assert(sgi_gl_enable_line_stipple(&s->gl_ctx, &sink));
+    }
     odyssey_gl_apply_mode(s);
+    odyssey_gl_apply_line_stipple(s);
     /*
      * The shared context's scissor box and clip-plane enables are transient
      * render state, not migrated; reset already gave gl_clip_box its
