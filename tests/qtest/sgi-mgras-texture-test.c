@@ -385,31 +385,35 @@ static void tex_mipmap_word(QTestState *t, uint32_t block)
 }
 
 /*
- * A load whose six GE words at 0xe3d carry a border offset other than the
- * two traced unbordered ones is logged once and stores nothing, so the
- * draw is white and untextured; the traced values 0xffffffff and 0 draw
- * the level, as does a first block that cancels the offset. Each draw
- * names the TXMIPMAP word its load did.
+ * The fifth of the load's GE words at 0xe3d is the level's TXBORDER word,
+ * not a sign of a border: the traced one-level value, the first block
+ * less one, and the words perfly's unbordered mipmapped levels carried
+ * (TXMIPMAP 0xc with TXBORDER 0x10, 0x111 with 0x13, 0x14 with 0x15)
+ * all draw the level, each through the TXMIPMAP word its load named. A
+ * bordered image, two texels wider and taller than its level, does not
+ * lie inside the level: it is logged and stores nothing, so its draw is
+ * white and untextured.
  */
 static void test_gl_texture_border_is_logged_untextured(void)
 {
     static const struct {
         uint32_t block;
         uint32_t border;
-        bool bordered;
     } cases[] = {
-        { 0, 0xffffffff, false },
-        { 0, 0, false },
-        { 3, 2, false },
-        { 0, 1, true },
-        { 3, 7, true },
+        { 0, 0xffffffff },
+        { 0, 0 },
+        { 3, 2 },
+        { 0xc, 0x10 },
+        { 0x111, 0x13 },
+        { 0x14, 0x15 },
     };
+    static const uint32_t bordered[6] = { 0, 0, 6, 4, 4 << 16 | 6, 0 };
     g_autofree char *tmpfs = NULL;
     g_autofree char *log = NULL;
     g_autofree char *args = NULL;
     g_autofree char *contents = NULL;
     GError *err = NULL;
-    uint8_t texels[32];
+    uint8_t texels[32], image[96];
     QTestState *t;
     int logged = 0;
 
@@ -422,7 +426,6 @@ static void test_gl_texture_border_is_logged_untextured(void)
     for (int i = 0; i < ARRAY_SIZE(cases); i++) {
         const uint32_t words[6] = { 4, 0, 0, cases[i].block,
                                     cases[i].border, 0 };
-        uint32_t want = texels[0] << 16 | texels[1] << 8 | texels[2];
 
         gl_word(t, GL_CONTEXT_OPENER);
         gl_viewport(t, 0, 0, 128, 128);
@@ -432,20 +435,27 @@ static void test_gl_texture_border_is_logged_untextured(void)
         tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
         tex_mipmap_word(t, cases[i].block);
         tex_quad(t);
-        if (cases[i].bordered) {
-            want = TEX_WHITE;
-        }
-        g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, want);
-        logged += cases[i].bordered;
+        g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
+                        texels[0] << 16 | texels[1] << 8 | texels[2]);
     }
+
+    memset(image, 0x5a, sizeof(image));
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, image, 6, 4,
+                bordered, true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
     g_assert_no_error(err);
     for (const char *p = contents;
-         (p = strstr(p, "texture load with a border")); p++) {
-        logged--;
+         (p = strstr(p, "is not inside TL_SPEC")); p++) {
+        logged++;
     }
-    g_assert_cmpint(logged, ==, 0);
+    g_assert_cmpint(logged, ==, 1);
     qtest_quit(t);
     unlink(log);
     g_rmdir(tmpfs);
