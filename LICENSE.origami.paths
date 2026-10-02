@@ -479,6 +479,11 @@ tests/functional/mips64/lib_sgi_roms.py
 tests/functional/mips64/lib_sn_reset.py
 tests/functional/mips64/lib_translation_health.py
 tests/functional/mips64/mgras-reference/README
+tests/functional/mips64/mgras-reference/esi-lit3d.json
+tests/functional/mips64/mgras-reference/esi-pixels.json
+tests/functional/mips64/mgras-reference/esi-t-lit3d.json
+tests/functional/mips64/mgras-reference/esi-t-pixels.json
+tests/functional/mips64/mgras-reference/esi-t-texture.json
 tests/functional/mips64/mgras-reference/essi-doublebuffer.json
 tests/functional/mips64/mgras-reference/essi-lit3d.json
 tests/functional/mips64/mgras-reference/essi-pixels.json
@@ -590,6 +595,8 @@ tests/functional/mips64/test_lib_translation_health.py
 tests/functional/mips64/test_linux_kernel.py
 tests/functional/mips64/test_linux_multiuser.py
 tests/functional/mips64/test_mgras_desktop.py
+tests/functional/mips64/test_mgras_matrix_esi.py
+tests/functional/mips64/test_mgras_matrix_esi_t.py
 tests/functional/mips64/test_mgras_matrix_essi.py
 tests/functional/mips64/test_mgras_matrix_si.py
 tests/functional/mips64/test_mgras_matrix_si_t.py

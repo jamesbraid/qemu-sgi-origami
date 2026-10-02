@@ -146,6 +146,8 @@ test_mips64_timeouts = {
   # serial command (lib_mgras_boot.board_timeout adds them: SI 2690,
   # SI+T 2850, SSI and ESSI 2830). The sum is a bound, not a measurement:
   # no board has been booted on four nodes with these programs yet.
+  'mgras_matrix_esi' : 2700,
+  'mgras_matrix_esi_t' : 2860,
   'mgras_matrix_si' : 2700,
   'mgras_matrix_si_t' : 2860,
   'mgras_matrix_ssi' : 2840,
@@ -302,6 +304,8 @@ tests_mips64_system_thorough = [
   'irix_origin300_installed_boot',
   'irix_fuel_installed_boot',
   'mgras_desktop',
+  'mgras_matrix_esi',
+  'mgras_matrix_esi_t',
   'mgras_matrix_si',
   'mgras_matrix_si_t',
   'mgras_matrix_ssi',
