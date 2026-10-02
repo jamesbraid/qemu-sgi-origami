@@ -168,10 +168,11 @@ typedef struct SN1NodeState {
     bool cable_notifier_added;
     SN1FabricEndpoint endpoint;
     SN1FabricProcessorView ni_processor[SGI_SN1_NODE_MAX_CPUS][SN1_NODE_SPACES];
-    MemoryRegion ni_target[4];
-    MemoryRegion ni_target_part[4][2];
+    MemoryRegion ni_target[5];
+    MemoryRegion ni_target_part[5][2];
     AddressSpace ni_ram_as;
     AddressSpace ni_hub_as;
+    AddressSpace ni_uart_as;
     AddressSpace ni_board_id_as;
     AddressSpace ni_boot_as;
     bool ni_boot_initialized;
