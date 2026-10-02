@@ -366,11 +366,16 @@ typedef struct SGIMgrasGLPixels {
  * first texel starts at, its log2 width and height and the kept format in
  * TL_MODE's layout and depth fields. Host-only, rebuilt for each draw.
  */
+/* Bounded software storage for the observed 2x2x{1,2} client uploads. */
+#define SGI_MGRAS_VOLUME_TEX_BYTES 4096u
+
 typedef struct SGIMgrasTexView {
     const uint8_t *tram;
+    const uint8_t *volume_data;
     uint64_t bit;
     uint32_t log2w, log2h;
     uint32_t mode;
+    uint32_t depth;
 } SGIMgrasTexView;
 
 /*
@@ -402,7 +407,14 @@ typedef struct SGIMgrasTexture {
      */
     uint32_t load;
     uint32_t load_base, load_block, load_spec, load_mode;
-    uint32_t load_x, load_y, load_size, load_comps, load_csize, load_abgr;
+    uint32_t load_x, load_y, load_size, load_depth, load_volume;
+    uint32_t load_comps, load_csize, load_abgr;
+    uint32_t load_packet[8];
+    uint64_t load_dma_bytes;
+    uint32_t volume_base, volume_mode, volume_level;
+    uint32_t volume_width, volume_height, volume_depth, volume_bytes;
+    /* Software slice bytes; physical TRAM placement is not established. */
+    uint8_t volume_data[SGI_MGRAS_VOLUME_TEX_BYTES];
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.

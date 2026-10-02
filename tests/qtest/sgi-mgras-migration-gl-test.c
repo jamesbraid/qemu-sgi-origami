@@ -163,12 +163,135 @@ static void test_gl_pixels_migration(void)
 #define TEX_MIGRATION_ARGS MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
     "-global sgi-mgras.x-unimplemented-board=on"
 
+#define TEX_TEXMODE2_VOLUME 0x800000
+#define TEX_TXSIZE_2X2      0x1111
+
 /*
  * A stored level, the registers and a load waiting for its transfer
  * cross a migration: the destination draws the stored RGBA4 level into
  * a cleared window, then takes the transfer as the level's replacement
  * at the 8-bit depth the waiting load's TL_MODE named.
  */
+static void tex_migration_load_captured_volume(QTestState *t,
+                                               const uint8_t *image,
+                                               uint32_t depth)
+{
+    uint32_t bytes = 2 * 2 * depth * 4;
+    uint32_t box[6] = { 0, 0, 1, 1, 2 << 16 | 2, depth };
+    uint32_t flags = depth == 1 ? 0x98 : 0x198;
+
+    g_assert_cmpuint(depth, >=, 1);
+    g_assert_cmpuint(depth, <=, 2);
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, 0x120);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_pixels_program(t, GL_PIX_4UB, bytes / 4, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 4);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0);
+    gl_word(t, depth);
+    gl_word(t, 0x511a);
+    gl_word(t, flags);
+    gl_pixels_dma_on(t, 0, image, bytes, 8, 2 * depth, 8, 0xa7);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_migration_volume_quad_z(QTestState *t, float z)
+{
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 },
+        { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+
+    gl_color4f(t, 1, 1, 1, 1);
+    gl_word(t, GL_BEGIN_QUADS);
+    for (int i = 0; i < 4; i++) {
+        gl_texcoord4f(t, v[i][2], v[i][3], z, 1);
+        gl_vertex2f(t, v[i][0], v[i][1]);
+    }
+    gl_word(t, GL_END_OF(GL_BEGIN_QUADS));
+    gl_word(t, 0x0000e910);
+    for (int i = 0; i < 4; i++) {
+        gl_word(t, i == 0);
+    }
+    gl_one(t, TEX_T_OFFSET, 0);
+    gl_word(t, TEX_OFF);
+}
+
+static void tex_migration_check_volume(QTestState *t,
+                                       const uint32_t expected[2][4])
+{
+    for (int z = 0; z < 2; z++) {
+        tex_bind(t, TEX_TEXMODE1_ON,
+                 TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+        tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2 | (1u << 19));
+        tex_migration_volume_quad_z(t, z ? 0.75f : 0.25f);
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x,
+                                                20 + 8 * y), ==,
+                                expected[z][2 * y + x]);
+            }
+        }
+    }
+}
+
+static void test_gl_volume_texture_migration(void)
+{
+    static const uint8_t slices[32] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+        0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+    };
+    static const uint32_t expected[2][4] = {
+        { 0xff0000, 0x00ff00, 0x0000ff, 0xffff00 },
+        { 0x00ffff, 0xff00ff, 0xffffff, 0x000000 },
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-volume-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = tex_start(TEX_MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    tex_migration_load_captured_volume(from, slices, 2);
+    tex_migration_check_volume(from, expected);
+    sgi_migrate_stopped(from, uri);
+
+    gl_clear_color(to, 0, 0, 0, 0);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    tex_migration_check_volume(to, expected);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_gl_texture_migration(void)
 {
     static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
@@ -791,6 +914,8 @@ int main(int argc, char **argv)
                    test_gl_texture_migration_rejects_load_past_tram);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
                    test_gl_texture_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-volume-texture-migration",
+                   test_gl_volume_texture_migration);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-missing-mip-level-migration",
                    test_gl_texture_missing_mip_level_migration);

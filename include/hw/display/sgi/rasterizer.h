@@ -173,6 +173,9 @@ typedef struct SGIGLTexLevel {
     uint32_t border;
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
+    bool (*read_volume_texel)(void *opaque, uint32_t level,
+                              uint32_t x, uint32_t y, uint32_t z,
+                              uint32_t *rgba);
     void *opaque;
     uint32_t depth;
 } SGIGLTexLevel;
@@ -202,6 +205,8 @@ typedef struct SGIGLTexImage {
     uint32_t wrap_s, wrap_t;
     float border_color[4];
     bool (*read_texel)(void *opaque, uint32_t x, uint32_t y, uint32_t *rgba);
+    bool (*read_volume_texel)(void *opaque, uint32_t x, uint32_t y,
+                              uint32_t z, uint32_t *rgba);
     void *opaque;
     /*
      * NULL preserves the level-zero interface; otherwise image fields above

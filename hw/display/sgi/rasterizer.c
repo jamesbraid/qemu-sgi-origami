@@ -773,7 +773,9 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     for (unsigned k = 0; k < 4; k++) {
         border_finite &= isfinite(im->border_color[k]);
     }
-    if (depth != 1 || (im->volume && mipmap) ||
+    if ((!im->volume && depth != 1) ||
+        (im->volume && (depth > INT32_MAX || !is_power_of_2(depth))) ||
+        (im->volume && mipmap) ||
         p->count > SGI_GL_TEX_LEVELS_MAX || (p->count && !p->levels) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         p->min_lod > p->max_lod || !border_finite ||
@@ -829,10 +831,20 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         const SGIGLTexLevel *l = sgi_soft_texture_level(p, id);
         uint32_t shift = id - p->base_level;
 
-        if (!l || !l->read_texel || (l->depth && l->depth != 1) ||
-            l->width != MAX(1, base->width >> shift) ||
-            l->height != MAX(1, base->height >> shift) ||
-            l->internal_format != base->internal_format) {
+        uint32_t level_depth = im->volume ?
+                               MAX(1, base->depth >> shift) : 1;
+        bool level_readable = l &&
+            (im->volume ?
+             (level_depth == 1 ||
+              (l->read_volume_texel && l->depth == level_depth &&
+               base->depth == level_depth)) : !!l->read_texel);
+        bool level_dimensions_fit = l &&
+            (!l->depth || l->depth == level_depth) &&
+            l->width == MAX(1, base->width >> shift) &&
+            l->height == MAX(1, base->height >> shift) &&
+            l->internal_format == base->internal_format;
+
+        if (!level_readable || !level_dimensions_fit) {
             goto incomplete;
         }
     }
@@ -899,9 +911,14 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
             return false;
         }
     }
-    if (!im || !im->read_texel || !im->width || !im->height ||
+    if (!im || (im->volume ?
+                (im->depth > 1 && !im->read_volume_texel) :
+                !im->read_texel) || !im->width || !im->height ||
         im->width > INT32_MAX || im->height > INT32_MAX ||
-        !is_power_of_2(im->width) || !is_power_of_2(im->height)) {
+        !is_power_of_2(im->width) || !is_power_of_2(im->height) ||
+        (im->volume && (!im->depth || im->depth > INT32_MAX ||
+                        !is_power_of_2(im->depth) ||
+                        (im->depth > 1 && !im->read_volume_texel)))) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: incomplete texture image, "
                       "texturing disabled for draw\n");
         return true;
@@ -961,7 +978,7 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     const SGIGLTexImage *im = r->texture;
     uint32_t width = level ? level->width : im->width;
     uint32_t height = level ? level->height : im->height;
-    uint32_t depth = level ? level->depth : im->depth;
+    uint32_t depth = level && level->depth ? level->depth : im->depth;
     uint32_t format = level ? level->base_format : im->base_format;
     uint32_t rgba;
 
@@ -981,8 +998,13 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         }
     } else {
         bool read = level ?
-            level->read_texel(level->opaque, level->level, x, y, &rgba) :
-            im->read_texel(im->opaque, x, y, &rgba);
+            (im->volume && level->read_volume_texel ?
+             level->read_volume_texel(level->opaque, level->level, x, y, z,
+                                      &rgba) :
+             level->read_texel(level->opaque, level->level, x, y, &rgba)) :
+            (im->volume && im->read_volume_texel ?
+             im->read_volume_texel(im->opaque, x, y, z, &rgba) :
+             im->read_texel(im->opaque, x, y, &rgba));
 
         if (!read) {
             sgi_soft_texture_report(r, 1, "image-read failure, "
