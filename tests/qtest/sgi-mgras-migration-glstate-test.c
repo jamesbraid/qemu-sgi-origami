@@ -701,6 +701,45 @@ static void test_gl_clip_plane_migration(void)
 }
 
 /* Slot A has a point size of 3 and line smoothing on; slot B neither. */
+static void gl_clip_query_record(QTestState *qts, uint32_t first,
+                                 uint32_t second)
+{
+    gl_word(qts, 0x00007c08);
+    gl_word(qts, 2);
+    gl_word(qts, 6);
+    gl_word(qts, GL_INLINE_BLOCK | 24);
+    gl_word(qts, 0x113);
+    gl_word(qts, first);
+    gl_word(qts, 0x2b6);
+    gl_word(qts, 0x114);
+    gl_word(qts, second);
+    gl_word(qts, 0x2b6);
+}
+
+static void gl_clip_query_setup(QTestState *from)
+{
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_clip_query_record(from, 0xfffe8001, 0x8000ffff);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_clip_query_record(from, 0x76543210, 0x89abcdef);
+}
+
+static void gl_clip_query_check(QTestState *to)
+{
+    g_assert_cmphex(gl_query(to, 0x28c, 1), ==, 0x76543210);
+    g_assert_cmphex(gl_query(to, 0x28e, 1), ==, 0x89abcdef);
+    gl_enter_slot(to, GL_SLOT_A);
+    g_assert_cmphex(gl_query(to, 0x28c, 1), ==, 0xfffe8001);
+    g_assert_cmphex(gl_query(to, 0x28e, 1), ==, 0x8000ffff);
+}
+
+static void test_gl_clip_query_migration(void)
+{
+    gl_migrate(gl_clip_query_setup, gl_clip_query_check);
+}
+
 static void gl_line_point_setup(QTestState *from)
 {
     for (int slot = 0; slot < 2; slot++) {
@@ -771,6 +810,8 @@ int main(int argc, char **argv)
                    test_gl_polygon_offset_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-migration",
                    test_gl_clip_plane_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-clip-query-migration",
+                   test_gl_clip_query_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-line-point-migration",
                    test_gl_line_point_migration);
     qtest_add_func("sn0/origin2000/mgras/"

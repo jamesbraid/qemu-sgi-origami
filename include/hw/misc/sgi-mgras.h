@@ -428,6 +428,7 @@ typedef struct SGIMgrasGLContext {
      * 0x3bd queries read them (hw/misc/sgi-mgras-gl.c).
      */
     uint32_t readback[4];
+    uint32_t clip_query[2];
     /* A pixel draw under way in this context. */
     SGIMgrasGLPixels pixels;
     /* Texture state, used on a board with TRAM. */

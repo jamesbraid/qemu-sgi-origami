@@ -3609,6 +3609,39 @@ static void test_gl_pixels_dma_no_rows_is_empty(void)
     g_assert_null(strstr(log, "runs past"));
 }
 
+static void test_gl_pixels_preserve_clip_query_registers_per_context(void)
+{
+    const GLRecord first[] = {
+        { 0x113, 0x8000ffff }, { 0x114, 0xffff8001 },
+    };
+    const GLRecord second[] = {
+        { 0x113, 0x7fff0001 }, { 0x114, 0x1234fedc },
+    };
+
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, 0x28c, 1), ==, 0);
+    g_assert_cmphex(gl_query(qts, 0x28e, 1), ==, 0);
+    gl_rss_triples(qts, first, ARRAY_SIZE(first));
+    g_assert_cmphex(gl_query(qts, 0x28c, 1), ==, first[0].value);
+    g_assert_cmphex(gl_query(qts, 0x28e, 1), ==, first[1].value);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    g_assert_cmphex(gl_query(qts, 0x28c, 1), ==, 0);
+    g_assert_cmphex(gl_query(qts, 0x28e, 1), ==, 0);
+    gl_rss_triples(qts, second, ARRAY_SIZE(second));
+    g_assert_cmphex(gl_query(qts, 0x28c, 1), ==, second[0].value);
+    g_assert_cmphex(gl_query(qts, 0x28e, 1), ==, second[1].value);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    g_assert_cmphex(gl_query(qts, 0x28c, 1), ==, first[0].value);
+    g_assert_cmphex(gl_query(qts, 0x28e, 1), ==, first[1].value);
+    g_assert_cmphex(gl_query(qts, 0x28f, 1), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void gl_pixels_captured_rgba_setup(QTestState *qts, bool two_rows)
 {
     static const uint32_t unpack_one_row[6] = {
@@ -3798,6 +3831,8 @@ int main(int argc, char **argv)
                    test_gl_eviction_buffer_at_host_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
                    test_gl_eviction_chunks_need_not_be_adjacent);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-clip-query-registers",
+                   test_gl_pixels_preserve_clip_query_registers_per_context);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-oversized-row",
                    test_gl_pixels_dma_oversized_row_is_refused);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-no-rows",
