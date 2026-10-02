@@ -4683,6 +4683,32 @@ static bool sgi_machine_resolve_uint(SGIMachineState *s,
     return true;
 }
 
+/* Refuse authored board identities outside the builder's supported set. */
+static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
+                                            Error **errp)
+{
+    const SGIModelNodeList *entry;
+
+    for (entry = t->nodes; entry; entry = entry->next) {
+        const SGIModelNode *node = entry->value;
+
+        if (!node->has_board_kind) {
+            continue;
+        }
+        if (node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK) {
+            error_setg(errp, "topology '%s' node '%s' has board-kind on a "
+                       "non-Bedrock node", t->name, node->id);
+            return false;
+        }
+        if (node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+            error_setg(errp, "topology '%s' node '%s' selects unsupported "
+                       "board kind 'ip53'", t->name, node->id);
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Resolve once, before assembly, without changing the shared catalogue. */
 static bool sgi_machine_resolve_config(SGIMachineState *s,
                                      const SGIModelTopology *t, Error **errp)
@@ -4942,7 +4968,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!sgi_machine_resolve_config(s, t, errp) ||
+    if (!sgi_machine_validate_board_kinds(t, errp) ||
+        !sgi_machine_resolve_config(s, t, errp) ||
         !sgi_storage_check(s->storage, MACHINE_GET_CLASS(s)->name,
                            SGI_MACHINE_GET_CLASS(s)->product, t, errp)) {
         return false;
