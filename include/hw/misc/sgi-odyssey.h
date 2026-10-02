@@ -252,6 +252,8 @@ struct SGIOdysseyState {
     uint32_t obj_offset[SGI_ODYSSEY_OBJECTS];
     uint32_t obj_rows[SGI_ODYSSEY_OBJECTS];
     bool obj_full_reported;
+    /* A destination base beyond the active profile's board memory. */
+    bool board_oob_reported;
 
     /*
      * The texture state words as last pushed (hw/misc/sgi-odyssey.c,

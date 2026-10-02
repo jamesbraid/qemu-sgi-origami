@@ -6474,6 +6474,35 @@ static uint32_t odyssey_signed_to_float(uint32_t word, unsigned format)
 }
 
 /*
+ * True when base lies within the board memory the active profile reports
+ * (the "memory-size" property, in megabytes), false and reported, once per
+ * reset, otherwise. A destination select's base is a board address in
+ * 16-byte units, not bytes (established above, for the off-screen
+ * board-memory objects), so the reported capacity is converted into that
+ * same unit before the comparison. A profile's reported size is a
+ * register-answered capacity, not the model's own storage
+ * (ODSY_OBJ_POOL_BYTES): a guest that addresses past it is a guest bug
+ * against the board it was told it has, kept observable rather than
+ * silently accepted or crashed on.
+ */
+static bool odyssey_board_address_valid(SGIOdysseyState *s, uint32_t base)
+{
+    uint64_t limit = (uint64_t)s->memory_size * MiB / 16;
+
+    if (base < limit) {
+        return true;
+    }
+    if (!s->board_oob_reported) {
+        s->board_oob_reported = true;
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: destination base 0x%x "
+                      "is beyond the %u MiB this board reports\n",
+                      base, s->memory_size);
+    }
+    trace_sgi_odyssey_board_oob(base, s->memory_size);
+    return false;
+}
+
+/*
  * Dispatch a fully gathered register-select word or tagged GL opcode.
  * Flush and glyph pixel-mode setup/teardown registers, and any other
  * register-select word whose side effect this model does not need, are
@@ -6562,6 +6591,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->dest_buffer_word = s->cmd_operand[ODSY_DEST_SELECT_VALUE_INDEX];
         s->dest_base = s->cmd_operand[ODSY_DEST_SELECT_BASE_INDEX];
         if (!s->dest_base || s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
+            break;
+        }
+        if (!odyssey_board_address_valid(s, s->dest_base)) {
             break;
         }
         if ((s->dest_buffer_word >> ODSY_DEST_FORMAT_SHIFT) ==
@@ -7939,6 +7971,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->obj_offset, 0, sizeof(s->obj_offset));
     memset(s->obj_rows, 0, sizeof(s->obj_rows));
     s->obj_full_reported = false;
+    s->board_oob_reported = false;
     s->tex_mode = 0;
     memset(s->tex_sampler, 0, sizeof(s->tex_sampler));
     memset(s->tex_env, 0, sizeof(s->tex_env));
