@@ -1746,10 +1746,8 @@ static void tex_flat(uint8_t *texels, unsigned n, uint32_t rgba)
  * each in turn; lambda 3 is past the last level and gives the last, and
  * lambda -2 magnifies and gives the base level, never a level below it.
  * A minimum LOD of 1 in TXLOD bits 25:16 makes the lambda 0 draw return
- * level 1. A chain with no level 1 loaded reads TRAM where level 1 would
- * lie, in the block level 0 was loaded to: on a fresh board those bits
- * are 0, so the lambda 1 draw is black, as the board would read what its
- * TRAM held.
+ * level 1. A chain with no level 1 loaded is incomplete even when level 0
+ * and a later level share its TRAM block, so the draw disables texturing.
  */
 static void test_gl_texture_mip_level_select(void)
 {
@@ -1794,7 +1792,7 @@ static void test_gl_texture_mip_level_select(void)
         t = tex_start(TEX_ARGS);
         tex_lambda_quad(quad, 2);
         tex_scene(t, &sc);
-        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, 0);
+        g_assert_cmphex(gl_window_pixel(t, 24, 24), ==, TEX_WHITE);
     }
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);

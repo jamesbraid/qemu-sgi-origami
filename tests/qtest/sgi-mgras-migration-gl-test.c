@@ -175,6 +175,47 @@ static void test_gl_texture_migration(void)
     g_rmdir(tmpfs);
 }
 
+/* A level that was never uploaded stays absent after a migration. */
+static void test_gl_texture_missing_mip_level_migration(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 4, 4 << 16 | 4, 0 };
+    static const uint32_t pairs[4] = {
+        TEX_TXSIZE, 0x2222, TEX_TXLOD, (64 << 16) | 1,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t level0[64];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-missing-mip-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = tex_start(TEX_MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    memset(level0, 0xff, sizeof(level0));
+    tex_load_fmt(from, true, TEX_TL_MODE_RGBA8, 0x220, level0, 4, 4, 4, 4,
+                 box, true, 0, 0);
+    tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x80020);
+    tex_records(from, pairs, ARRAY_SIZE(pairs) / 2);
+    tex_quad(from);
+    g_assert_cmphex(gl_window_pixel(from, 24, 24), ==, 0xffffff);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_word(to, TEX_ON);
+    tex_quad(to);
+    g_assert_cmphex(gl_window_pixel(to, 24, 24), ==, 0xffffff);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 /*
  * Rewrite the waiting load's base and TXMIPMAP word in a migration stream
  * carrying one load of a 4-by-2 level of TL_MODE mode at base 0 and word
@@ -666,6 +707,9 @@ int main(int argc, char **argv)
                    test_gl_texture_migration_rejects_load_past_tram);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
                    test_gl_texture_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-missing-mip-level-migration",
+                   test_gl_texture_missing_mip_level_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-deep-slots-migrate",
                    test_gl_deep_slots_migrate);
     qtest_add_func("sn0/origin2000/mgras/gl-eviction-migration",
