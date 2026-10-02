@@ -134,6 +134,8 @@ def _node(raw: dict) -> dict:
     }
     if "bedrock" in raw:
         node["bedrock"] = _kebab_keys(raw["bedrock"])
+    if raw.get("board_kind") == "ip53":
+        node["board-kind"] = "ip53"
     return node
 
 

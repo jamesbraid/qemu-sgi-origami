@@ -325,6 +325,67 @@ class BedrockConfigurationTests(unittest.TestCase):
                 self.assertEqual(offering["hardware-inputs"], [])
 
 
+class BoardSelectionTests(unittest.TestCase):
+    def model_with_bedrock_board(self, hardware_kind=None):
+        model = _resolved("origin300")
+        board = {
+            "id": "selected-board",
+            "name": "Selected board",
+            "kind": "board",
+            "provenance": "derived",
+        }
+        if hardware_kind is not None:
+            board["hardware_kind"] = hardware_kind
+        model["components"].append(board)
+        bedrock = next(item for item in model["components"]
+                       if item["id"] == "bedrock")
+        bedrock["parent"] = board["id"]
+        return model
+
+    def test_nearest_board_identity_selects_ip53_without_changing_asic(self):
+        model = self.model_with_bedrock_board("ip53")
+
+        compiled = compile_model(model)["nodes"][0]
+        exported = json.loads(render_catalogue_json([model]))[
+            "topologies"][0]["nodes"][0]
+
+        self.assertEqual(compiled["board_kind"], "ip53")
+        self.assertEqual(compiled["asic_kind"], "BEDROCK")
+        self.assertEqual(exported["board-kind"], "ip53")
+        self.assertEqual(exported["asic-kind"], "bedrock")
+
+    def test_explicit_bedrock_board_requires_supported_identity(self):
+        cases = ((None, "no hardware_kind"),
+                 ("octane", "unsupported hardware_kind 'octane'"))
+        for hardware_kind, message in cases:
+            with self.subTest(hardware_kind=hardware_kind):
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(self.model_with_bedrock_board(hardware_kind))
+
+    def test_ip45_is_compiled_but_omitted_from_exports(self):
+        model = self.model_with_bedrock_board("ip45")
+        compiled = compile_model(model)["nodes"][0]
+        exported = json.loads(render_catalogue_json([model]))[
+            "topologies"][0]["nodes"][0]
+
+        self.assertEqual(compiled["board_kind"], "ip45")
+        self.assertNotIn("board-kind", exported)
+
+    def test_flat_origin300_and_fuel_exports_omit_board_kind(self):
+        for name in ("origin300", "fuel"):
+            with self.subTest(configuration=name):
+                model = _resolved(name)
+                entry = compile_model(model)
+                topology = json.loads(render_catalogue_json([model]))[
+                    "topologies"][0]
+
+                if name == "origin300":
+                    self.assertNotIn("board_kind", entry["nodes"][0])
+                else:
+                    self.assertEqual(entry["nodes"][0]["board_kind"], "ip34")
+                self.assertNotIn("board-kind", topology["nodes"][0])
+
+
 class RecordShapeTests(unittest.TestCase):
     """Compile shape per record type, read off real resolved fixtures."""
 

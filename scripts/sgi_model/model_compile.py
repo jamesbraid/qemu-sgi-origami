@@ -1349,6 +1349,26 @@ def _bedrock_io_configuration(model: dict, board: dict) -> dict:
     return configured
 
 
+_BEDROCK_BOARD_KINDS = {"ip45", "ip34", "ip53"}
+
+
+def _bedrock_board_kind(components: dict[str, dict], node: dict) -> str | None:
+    """Return the authored board identity enclosing this Bedrock node."""
+    board = _board_ancestor(components, node)
+    if board is None:
+        return None
+    hardware_kind = board.get("hardware_kind")
+    if hardware_kind is None:
+        raise CompileError(
+            f"Bedrock node '{node['id']}' has board ancestor '{board['id']}' "
+            "with no hardware_kind")
+    if hardware_kind not in _BEDROCK_BOARD_KINDS:
+        raise CompileError(
+            f"Bedrock node '{node['id']}' has board ancestor '{board['id']}' "
+            f"with unsupported hardware_kind '{hardware_kind}'")
+    return hardware_kind
+
+
 def _compile_node(model: dict, components: dict[str, dict], entry: dict,
                    position: int, node_count: int) -> dict:
     node = entry["component"]
@@ -1362,6 +1382,8 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     # product leaves it unauthored, so "not bedrock" is "hub", the same
     # dispatch the pre-unification pair used.
     asic_kind = "bedrock" if node.get("hardware_kind") == "bedrock" else "hub"
+    board_kind = (_bedrock_board_kind(components, node)
+                  if asic_kind == "bedrock" else None)
 
     cpus = _node_cpus(model, components, node, asic_kind, entry["board_id"])
     if not cpus:
@@ -1379,7 +1401,7 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
     banks = _node_bank_mib(model, position, node_count)
     configuration = ({"bedrock": _bedrock_configuration(model, node, banks)}
                      if asic_kind == "bedrock" else {})
-    return {
+    compiled = {
         "id": node["id"],
         "module_index": entry["module_index"],
         "slot": entry["slot"],
@@ -1397,6 +1419,9 @@ def _compile_node(model: dict, components: dict[str, dict], entry: dict,
         "flash": _flash(model, components, asic_kind, entry["board_id"]),
         "slave_role": position != 0,
     }
+    if board_kind is not None:
+        compiled["board_kind"] = board_kind
+    return compiled
 
 
 def _compile_io_peer(model: dict, components: dict[str, dict], entry: dict,

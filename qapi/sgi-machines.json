@@ -339,6 +339,17 @@
 { 'enum': 'SGIModelMacSource', 'data': ['none', 'module-l1'] }
 
 ##
+# @SGIModelBoardKind:
+#
+# An authored board identity enclosing a Bedrock node.
+#
+# @ip45: IP45 board identity.
+# @ip34: IP34 board identity.
+# @ip53: IP53 board identity; the current SN1 builder refuses it.
+##
+{ 'enum': 'SGIModelBoardKind', 'data': ['ip45', 'ip34', 'ip53'] }
+
+##
 # @SGIModelNode:
 #
 # One node board: a node ASIC, its populated processor slots, its
@@ -356,6 +367,10 @@
 #     midplane drives 3 and 2 for slots 1 and 2)
 #
 # @asic-kind: which node ASIC this board is built around
+#
+# @board-kind: authored enclosing board identity for a Bedrock node;
+#     current catalogue output carries only @ip53 for early builder
+#     refusal
 #
 # @identity: Hub/Bedrock fitted-part identity, absent for HEART
 #
@@ -391,6 +406,7 @@
             'slot': 'uint32',
             '*hub-slot-bits': 'uint8',
             'asic-kind': 'SGIModelAsicKind',
+            '*board-kind': 'SGIModelBoardKind',
             '*identity': 'SGIModelAsicIdentity',
             '*heart': 'SGIModelHeartIdentity',
             '*bedrock': 'SGIModelBedrockConfig',

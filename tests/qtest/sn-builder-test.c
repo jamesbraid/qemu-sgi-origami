@@ -972,6 +972,37 @@ static void test_claimed_spare_widget_survives_link_reset(const void *data)
     qtest_quit(qts);
 }
 
+static void test_board_selection_refusals(const void *data)
+{
+    /* Existing CPU identities only let the fixtures reach selector checks. */
+    const char *ip53[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-bedrock-test,construction-fault=ip53",
+        "-m", "128M", "-smp", "2", "-cpu", "R14000",
+        "-bios", "/dev/null", "-display", "none", NULL
+    };
+    const char *non_bedrock[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-console-test,construction-fault="
+        "board-selector-on-non-bedrock",
+        "-m", "128M", "-smp", "4", "-cpu", "R10000",
+        "-bios", "/dev/null", "-display", "none", NULL
+    };
+    const char *direct_ip53[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-bedrock-nasid-test,construction-fault=ip53",
+        "-smp", "2", "-cpu", "R14000", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(ip53, "topology 'sn-builder-bedrock-test' node 'n0' "
+                        "selects unsupported board kind 'ip53'");
+    assert_qemu_rejects(non_bedrock,
+                        "topology 'sn-builder-console-test' node 'node0-hub' "
+                        "has board-kind on a non-Bedrock node");
+    assert_qemu_rejects(direct_ip53,
+                        "sgi-sn1-node cannot realize board kind 'ip53'");
+}
+
 static void test_unsupported_smp_population_rejected(const void *data)
 {
     const char *args[] = {
@@ -4429,6 +4460,8 @@ int main(int argc, char **argv)
                         NULL, test_spare_widget_present_only_when_claimed);
     qtest_add_data_func("sn/builder/claimed-spare-widget-survives-link-reset",
                         NULL, test_claimed_spare_widget_survives_link_reset);
+    qtest_add_data_func("sn/builder/board-selection-refusals", NULL,
+                        test_board_selection_refusals);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

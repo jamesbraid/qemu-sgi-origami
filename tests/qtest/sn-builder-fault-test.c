@@ -477,6 +477,9 @@ static void console_test_set_construction_fault(Object *obj,
     if (!strcmp(value, "node-without-xio-attachment")) {
         /* Node 1 loses its own attachment; node 0's now answers for both. */
         console_test_xio[1].node_index = 0;
+    } else if (!strcmp(value, "board-selector-on-non-bedrock")) {
+        console_test_nodes[0].has_board_kind = true;
+        console_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP34;
     } else {
         error_setg(errp, "unknown sn-builder-console-test construction "
                   "fault '%s'", value);
@@ -512,9 +515,7 @@ static void console_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "construction-fault", NULL,
                                   console_test_set_construction_fault);
     object_class_property_set_description(oc, "construction-fault",
-        "Break the fixture's descriptor in a way that only reaches "
-        "sgi_machine_index_xio_attachments, not tests/unit/test-sn-"
-        "model.c's static checks, then build through the real builder. "
+        "Introduce a test-only descriptor fault and run the real builder. "
         "Implies activate.");
 }
 
@@ -809,6 +810,20 @@ static void bedrock_test_set_activate(Object *obj, bool value, Error **errp)
     bedrock_test_activate_requested = value;
 }
 
+static void bedrock_test_set_construction_fault(Object *obj,
+                                                 const char *value,
+                                                 Error **errp)
+{
+    if (strcmp(value, "ip53")) {
+        error_setg(errp, "unknown sn-builder-bedrock-test construction "
+                   "fault '%s'", value);
+        return;
+    }
+    bedrock_test_nodes[0].has_board_kind = true;
+    bedrock_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    bedrock_test_activate_requested = true;
+}
+
 static void bedrock_test_machine_init(MachineState *machine)
 {
     if (!bedrock_test_activate_requested) {
@@ -835,6 +850,10 @@ static void bedrock_test_class_init(ObjectClass *oc, const void *data)
         "default so qom-test and test-hmp's blind run over every "
         "registered machine type leaves this inert; the qtest that wants "
         "a real machine turns it on.");
+    object_class_property_add_str(oc, "construction-fault", NULL,
+                                  bedrock_test_set_construction_fault);
+    object_class_property_set_description(oc, "construction-fault",
+        "Select IP53 in a test-only descriptor and run the real builder.");
 }
 
 static const TypeInfo bedrock_test_type = {
@@ -872,6 +891,20 @@ static void bedrock_nasid_test_set_activate(Object *obj, bool value,
                                             Error **errp)
 {
     bedrock_nasid_test_activate_requested = value;
+}
+
+static void bedrock_nasid_test_set_construction_fault(Object *obj,
+                                                       const char *value,
+                                                       Error **errp)
+{
+    if (strcmp(value, "ip53")) {
+        error_setg(errp, "unknown sn-builder-bedrock-nasid-test construction "
+                   "fault '%s'", value);
+        return;
+    }
+    bedrock_test_nodes[0].has_board_kind = true;
+    bedrock_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP53;
+    bedrock_nasid_test_activate_requested = true;
 }
 
 static void bedrock_nasid_test_machine_init(MachineState *machine)
@@ -963,6 +996,11 @@ static void bedrock_nasid_test_class_init(ObjectClass *oc, const void *data)
         "Off by default so qom-test and test-hmp's blind run over every "
         "registered machine type leaves this inert; the qtest that wants "
         "a real machine turns it on.");
+    object_class_property_add_str(oc, "construction-fault", NULL,
+                                  bedrock_nasid_test_set_construction_fault);
+    object_class_property_set_description(oc, "construction-fault",
+        "Select IP53 for node 0 and realize the node without the machine "
+        "builder.");
 }
 
 static const TypeInfo bedrock_nasid_test_type = {

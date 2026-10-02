@@ -2078,6 +2078,11 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
     SN1NodeState *node = SN1_NODE(dev);
     MachineState *machine = MACHINE(qdev_get_machine());
 
+    if (node->model_node && node->model_node->has_board_kind &&
+        node->model_node->board_kind == SGI_MODEL_BOARD_KIND_IP53) {
+        error_setg(errp, "sgi-sn1-node cannot realize board kind 'ip53'");
+        return;
+    }
     if (!sn1_node_validate_r14000_processors(node, machine, errp)) {
         return;
     }
