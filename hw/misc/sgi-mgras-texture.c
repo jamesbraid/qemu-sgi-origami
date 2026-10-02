@@ -53,32 +53,33 @@
  *   and 8 bits and a big-endian halfword at 12, the bottom row (t = 0)
  *   first; established for RGBA unsigned bytes, inferred for the rest.
  *   The transfer must be exactly the rectangle's width times height times
- *   the format's bytes a texel. Texels of a level no transfer has reached
- *   hold whatever TRAM held there, 0 after a reset (the model's choice;
- *   the board's TRAM contents at reset are unknown).
+ *   the image's bytes a texel, which the unpack block below sizes
+ *   (components times bytes a component), not the kept format. Texels of
+ *   a level no transfer has reached hold whatever TRAM held there, 0
+ *   after a reset (the model's choice; the board's TRAM contents at
+ *   reset are unknown).
  *   The pixel program's unpack block is read for the image's shape: its
  *   routine word gives the components (0x4064 four, 0x40f2 three, 0x417e
  *   two, 0x420c one) and its scale word the bytes a component (1/255 one,
  *   1/65535 two), established as words beside matching byte counts in
- *   perfly's, atlantis's, buttonfly's and blast's loads, the meanings
- *   inferred. An image of the kept layout's components, or of three into
- *   RGBA (alpha 1, as OpenGL 1.2.1 3.6.4 converts an RGB group), is
- *   taken; two-byte components are read big-endian and reduced to the
- *   kept depth (see "Depth"). Anything else is logged and nothing is
- *   stored. The rest of the program is not read, approximated: only the
- *   four- and three-unsigned-byte ones were traced, so others are taken
- *   as the identity, as routine 0x511a is at the default pixel transfer
- *   state, as the image path takes 0x49d0. TL_MODE is state that
- *   persists across loads, since the client skips it when reloading the
- *   image it loaded last. An unpaired 0x9c00, which the client's
- *   untraced wide-level branch sends, and a 0x511a transfer outside a
- *   bracket are logged and not rejected. An inline image or a transfer
- *   of another byte count is logged and nothing is stored. The HQ
- *   pixel-format word's GL_ABGR_EXT bit (0xe8d for bytes, 0xe8e for
- *   two-byte components) on an image of four components kept as RGBA
- *   reverses each texel's components; the same word reorders the image
- *   path's draw (inferred to apply here too). On two components it was
- *   never traced and is logged, nothing stored.
+ *   ivview's, buttonfly's and blast's loads, the meanings inferred. An
+ *   image of the kept layout's components, or of three into RGBA (alpha
+ *   1, as OpenGL 1.2.1 3.6.4 converts an RGB group), is taken; two-byte
+ *   components are read big-endian and reduced to the kept depth (see
+ *   "Depth"). Anything else is logged and nothing is stored. The rest of the
+ *   program is not read, approximated: only the four- and
+ *   three-unsigned-byte ones were traced, so others are taken as the
+ *   identity, as routine 0x511a is at the default pixel transfer state, as
+ *   the image path takes 0x49d0. TL_MODE is state that persists across
+ *   loads, since the client skips it when reloading the image it loaded
+ *   last. An unpaired 0x9c00, which the client's untraced wide-level branch
+ *   sends, and a 0x511a transfer outside a bracket are logged and not
+ *   rejected. An inline image or a transfer of another byte count is logged
+ *   and nothing is stored. The HQ pixel-format word's GL_ABGR_EXT bit (0xe8d
+ *   for bytes, 0xe8e for two-byte components) on an image of four components
+ *   kept as RGBA reverses each texel's components; the same word reorders
+ *   the image path's draw (inferred to apply here too). On two components it
+ *   was never traced and is logged, nothing stored.
  *
  * - Storage. A level's texels go into TRAM (see "TRAM" below) at the
  *   block the context's 0xeb04 base and the load's TXMIPMAP word name, in
@@ -280,7 +281,7 @@
  * model does not take, whose kick moves nothing and is logged. The
  * OpenGL client's fast pixel path also sends 0x9d10 before its kick
  * (from its disassembly); it was not traced, and the load routine and the
- * whole-TRAM shape are what the model keys on to keep it out. That a
+ * 64-by-8,192 shape are what the model keys on to keep it out. That a
  * transfer neither reads nor writes the colour planes is inferred: each
  * names texture memory and no raster box.
  *
@@ -303,7 +304,7 @@
 #define MGRAS_TEX_GE_DMA         0x00009d10
 /* 0x9d10's fourth word: the GE routine its transfer feeds. */
 #define MGRAS_TEX_GE_DMA_ROUTINE 3
-/* TL_SPEC's whole-TRAM shape: level 0, 64 wide, 8,192 tall. */
+/* TL_SPEC's 64-by-8,192 shape: level 0, 64 wide, 8,192 tall. */
 #define MGRAS_TEX_SPEC_WHOLE     0xd60
 #define MGRAS_TRAM_ROW_WORDS     64
 #define MGRAS_TRAM_BLOCK_ROWS    64
@@ -882,7 +883,7 @@ static uint32_t mgras_tram_words(const uint32_t *payload)
 
 /*
  * 0x9d10: word count in three 9-bit parts and the GE routine. For the
- * load routine under TL_SPEC's whole-TRAM shape it is the client's TRAM
+ * load routine under TL_SPEC's 64-by-8,192 shape it is the client's TRAM
  * restore, whose rows the load's rectangle at 0xe34 names: x 0, the first
  * row, 64 wide and the rows tall. Anything else is a transfer to the GE
  * the model does not take.
@@ -1328,8 +1329,9 @@ bool sgi_mgras_texture_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
     /*
      * ivview's levels came as one row and perfly's strips a row of the
      * strip at a time; rows are taken end to end, and the whole
-     * rectangle's bytes must arrive: width times height times the kept
-     * format's bytes a texel, which also refuses row padding.
+     * rectangle's bytes must arrive: width times height times the image's
+     * bytes a texel (the unpack block's components times bytes a
+     * component), which also refuses row padding.
      */
     if ((uint64_t)rows * bpr != host) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
