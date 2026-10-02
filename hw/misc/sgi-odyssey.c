@@ -1276,15 +1276,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_GL_TEXCOORD_TAG 0xc380c800
 #define ODSY_GL_TEX_RECT 0x8f80b968     /* 14 operands */
 
-/*
- * The fog register block, six operands (docs/analysis/odyssey-gl-geometry-
- * program.md: the GL library's glFogfv and its fog validation write it;
- * INFERRED meaning). It is re-pushed under glDepthRange because fog from
- * depth depends on the range. Fog is not modeled; the words are consumed
- * without report, as the note directs for a register that carries no
- * vertex-program state.
- */
+/* Six retained words: colour, scale, bias and cubic coefficients. */
 #define ODSY_REG_FOG 0x181a
+#define ODSY_MODE_FOG (1u << 22)
 
 /*
  * The board-side geometry transform (docs/analysis/odyssey-gl-triangle-
@@ -3843,6 +3837,35 @@ static void odyssey_gl_store_depth(void *opaque, int x, int y, uint32_t depth)
     }
 }
 
+static double odyssey_f32(uint32_t bits);
+
+/* Experimental policy; the board's scale sign and clamps are unmeasured. */
+static float odyssey_gl_fog_factor(void *opaque, float window_z, float eye_z)
+{
+    SGIOdysseyState *s = opaque;
+    const uint32_t *w = s->gl_fog;
+    double scale = (w[2] & 0xffffff) ?
+                   fabs(odyssey_f32(((w[2] & 0xffffff) << 5) +
+                                   (96u << 23))) : 0;
+    double t = ldexp(scale * window_z +
+                     sextract32(w[3], 0, 12) / 256.0,
+                     (w[3] >> 12) & 7);
+    double p[4] = {
+        sextract32(w[4] >> 12, 0, 12) / 256.0,
+        sextract32(w[4], 0, 12) / 256.0,
+        sextract32(w[5] >> 12, 0, 12) / 256.0,
+        sextract32(w[5], 0, 12) / 256.0,
+    };
+    double u, f;
+
+    (void)eye_z;
+    t = t >= 1 ? 1 : t > 0 ? t : 0;
+    u = 1 - t;
+    f = p[0] * u * u * u + 3 * p[1] * u * u * t +
+        3 * p[2] * u * t * t + p[3] * t * t * t;
+    return f >= 1 ? 1 : f > 0 ? f : 0;
+}
+
 static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
 {
     return (SGIRasterTarget) {
@@ -3852,6 +3875,7 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
         .load_rgba = odyssey_gl_index_mode(s) ? NULL : odyssey_gl_load_rgba,
         .load_depth = odyssey_gl_load_depth,
         .store_depth = odyssey_gl_store_depth,
+        .fog_factor = odyssey_gl_fog_factor,
         .opaque = s,
     };
 }
@@ -4074,6 +4098,11 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
         state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
                             ODSY_WRITE_COLOUR_MASK;
     }
+    state.fog_color[0] = ((s->gl_fog[0] >> 12) & 0xfff) / 4096.0f;
+    state.fog_color[1] = (s->gl_fog[0] & 0xfff) / 4096.0f;
+    state.fog_color[2] = ((s->gl_fog[1] >> 12) & 0xfff) / 4096.0f;
+    state.fog_color[3] = (s->gl_fog[1] & 0xfff) / 4096.0f;
+    state.fog_index = (s->gl_fog[0] >> 12) & 0xfff;
     draw.state = &state;
     result = sgi_soft_draw(&rules, &t, &draw);
     sgi_scanout_invalidate_all(&s->scanout);
@@ -4250,6 +4279,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                                                 ODSY_MODE_CULL_MODE_MASK);
     uint32_t front_face = odyssey_front_face(s->pattern_mode);
     uint32_t line_stipple = SGI_GL_LINE_STIPPLE;
+    uint32_t fog = SGI_GL_FOG;
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
@@ -4268,6 +4298,8 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &stencil_test, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_BLEND ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &blend, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_FOG ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &fog, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_INDEX_LOGIC_OP ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &index_logic_op, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_COLOR_LOGIC_OP ?
@@ -7361,7 +7393,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         odyssey_gl_apply_clip_box(s);
         break;
     case ODSY_REG_FOG:
-        /* Fog: consumed, not modeled (see ODSY_REG_FOG). */
+        memcpy(s->gl_fog, s->cmd_operand, sizeof(s->gl_fog));
         break;
     case ODSY_REG_TEX_MODE:
         s->tex_mode = s->cmd_operand[0];
@@ -8542,6 +8574,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      */
     s->gl_clip_box[0] = ODSY_CLIP_BOX_FIELD_MASK & (SGI_ODYSSEY_WIDTH - 1);
     s->gl_clip_box[1] = ODSY_CLIP_BOX_FIELD_MASK & (SGI_ODYSSEY_HEIGHT - 1);
+    memset(s->gl_fog, 0, sizeof(s->gl_fog));
     odyssey_gl_apply_clip_box(s);
     {
         uint32_t scissor_test = SGI_GL_SCISSOR_TEST;
@@ -9220,6 +9253,7 @@ static int odyssey_pre_load(void *opaque)
     odyssey_back_material_reset(opaque);
     /* Before version 29 the records were not sent: load their defaults. */
     odyssey_query_records_reset(opaque);
+    memset(s->gl_fog, 0, sizeof(s->gl_fog));
     s->gl_begin_open = false;
     s->gl_integer_prim = false;
     s->gl_open_r = s->gl_open_c = 0;
@@ -9308,7 +9342,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 32,
+    .version_id = 33,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -9486,6 +9520,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_V(query_current_valid, SGIOdysseyState, 29),
         /* The 0x81d clip box, window-relative min/max pairs (v30). */
         VMSTATE_UINT32_ARRAY_V(gl_clip_box, SGIOdysseyState, 2, 30),
+        VMSTATE_UINT32_ARRAY_V(gl_fog, SGIOdysseyState, 6, 33),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
