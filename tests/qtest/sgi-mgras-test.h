@@ -406,12 +406,12 @@ static inline void mgras_tag_wid(QTestState *qts, uint32_t x0, uint32_t y0,
 /*
  * PP1SELECT (0x071c08) picks which PP1 the XMAP registers reach. The IRIX
  * 6.5.30 kernel writes ((re << 1) | pp) << 1 there before its per-PP1
- * sequences (MgrasSyncREPP, mgras_update_pp1ccv), so 0 and 2 name the two PP1s
- * of RE 0 and 4 and 6 those of RE 1, and it writes 1 before configuring every
- * PP1 at once (MgrasInitXMAP, MgrasSyncPPRDRAMs) and again after each per-PP1
- * loop. A two-RE board has four PP1s, each with its own XMAP register file;
- * 0x071f00 and 0x071f80 are the exception, kept by no PP1
- * (test_pp1_select_leaves_sync_registers_shared).
+ * sequences (the RE-to-PP sync routine, the PP1 update routine), so 0 and 2
+ * name the two PP1s of RE 0 and 4 and 6 those of RE 1, and it writes 1 before
+ * configuring every PP1 at once (the XMAP initialization routine, the PP RDRAM
+ * sync routine) and again after each per-PP1 loop. A two-RE board has four
+ * PP1s, each with its own XMAP register file; 0x071f00 and 0x071f80 are the
+ * exception, kept by no PP1 (test_pp1_select_leaves_sync_registers_shared).
  */
 #define REG_PP1_SELECT          REG_REPP_STATUS_1
 #define PP1_SELECT(re, pp)      ((((re) << 1) | (pp)) << 1)
@@ -1085,7 +1085,7 @@ static inline uint32_t gl_attribute_query(QTestState *qts, uint32_t index)
 }
 
 /*
- * __Mgr_ReturnMode's 0xa20c query: an index, then a1 and a2, answered at
+ * The state-query routine's 0xa20c query: an index, then a1 and a2, answered at
  * 0x028004 once flag bit 17 is set. The indices are the ones the
  * hq3_revB_HQ4.u symbol table gives, which the library loads for a board
  * reporting GE revision 2 with one GE: GL_MODELVIEW_MATRIX 0x3a + i and
@@ -1219,15 +1219,15 @@ static inline void gl_texcoord_context_check(QTestState *s)
 }
 
 /*
- * glBitmap, as the IRIX 6.5.30 IP27GR532 client's __glMgrim_Bitmap forms
+ * glBitmap, as the IRIX 6.5.30 IP27GR532 client's bitmap routine forms
  * it for a small image: 0x9420, a flags word, the width and height, xorig,
  * yorig, xmove and ymove as floats and the image's length in words; then
  * an inline data block of the image's bytes in memory order, its offset
  * in the first word in bits 23:22 when the image is not word aligned, and
  * a zero word when the number of words sent is odd. The flags word is
  * ((8 - ceil(width / 8) % 8) % 8) << 14 | 0xf, 0x1800f for gr_osview's
- * 16-pixel images. __glMgrUpdateRasterPos sends 0xd608 with xmove and
- * ymove for an empty image.
+ * 16-pixel images. The raster-position update routine sends 0xd608 with xmove
+ * and ymove for an empty image.
  */
 #define GL_BITMAP_HDR         0x00009420
 #define GL_INLINE_BLOCK       0x80000000
@@ -1264,11 +1264,11 @@ static inline void gl_bitmap_image(QTestState *qts, const uint32_t *words,
 
 /*
  * The colour-index client's words (the IRIX 6.5.30 IP27GR532
- * libGLcore.so): __glMgrInitCI sends 0x0a04 with the visual's index bits,
- * 8 in gr_osview's context setup, and __glMgrInitRGB 0x0900. glIndexs is
- * 0x19000202 with the short in bits 31:16, glIndexi 0x18000204, glIndexf
- * 0x00000204, glIndexMask 0x3d04 and glClearIndex 0xbd04 with the index
- * as a float.
+ * libGLcore.so): the colour-index initializer sends 0x0a04 with the visual's
+ * index bits, 8 in gr_osview's context setup, and the RGB initializer 0x0900.
+ * glIndexs is 0x19000202 with the short in bits 31:16, glIndexi 0x18000204,
+ * glIndexf 0x00000204, glIndexMask 0x3d04 and glClearIndex 0xbd04 with the
+ * index as a float.
  */
 #define GL_INIT_CI_HDR        0x00000a04
 #define GL_INIT_RGB           0x00000900
@@ -1561,7 +1561,10 @@ static inline QTestState *tex_start(const char *args)
     return t;
 }
 
-/* Raster register records, n (register, value) pairs, as __glMgrasWrite. */
+/*
+ * Raster register records, n (register, value) pairs, as the client's
+ * register-write routine.
+ */
 static inline void tex_records(QTestState *t, const uint32_t *pairs, uint32_t n)
 {
     uint32_t words = (n * 3 + 1) & ~1u;
@@ -1785,8 +1788,8 @@ static inline void mgras_public_rect(QTestState *s, unsigned x, unsigned y,
 
 /*
  * The context image's clip words, as the IRIX 6.5.30 kernel's
- * MgrasValidateClip writes them (mgras.o listing 0x61d8-0x67b4): word 3 is
- * (mode << 4) | enables, and enable bit i selects rectangle i, whose
+ * clip validation routine writes them (mgras.o listing 0x61d8-0x67b4): word
+ * 3 is (mode << 4) | enables, and enable bit i selects rectangle i, whose
  * columns and rows are words 11 and 12, 9 and 10, 7 and 8 or 5 and 6,
  * each first << 16 | last counted from the bottom-left of the screen. A
  * window with one to four visible rectangles gets mode 1; five or more,
@@ -1855,9 +1858,9 @@ static inline void gl_migrate(void (*setup)(QTestState *),
 
 /*
  * glDepthRange is 0x4808 and near and far as floats, which the client does not
- * clamp (__glMgrim_DepthRange, 0xd960590); GL_DEPTH_RANGE is queried at 0xc21
- * and 0xc22 and read as floats. OpenGL 1.2.1 (2.10.1) starts the range at [0,
- * 1] and clamps each value to [0, 1].
+ * clamp (the depth-range routine, 0xd960590); GL_DEPTH_RANGE is queried at
+ * 0xc21 and 0xc22 and read as floats. OpenGL 1.2.1 (2.10.1) starts the range at
+ * [0, 1] and clamps each value to [0, 1].
  */
 #define GL_DEPTH_RANGE_HDR    0x00004808
 #define GL_Q_DEPTH_RANGE      0xc21
@@ -1996,8 +1999,8 @@ static inline uint32_t gl_lit_triangle(QTestState *qts, bool back)
 }
 
 /*
- * Polygon culling as the client sends it (__glMgrim_CullFace 0xd95f260,
- * __glMgrim_FrontFace 0xd9544b0, __glMgrim_Enable and __glMgrim_Disable
+ * Polygon culling as the client sends it (the cull-face routine 0xd95f260,
+ * the front-face routine 0xd9544b0, the enable routine and the disable routine
  * for GL_CULL_FACE): 0x7404 and the face, 0x5604 and the direction,
  * 0x7200 and 0x7300 alone.
  */
@@ -2030,7 +2033,7 @@ static inline void gl_fill_window(QTestState *qts, float r, float g, float b)
 }
 
 /*
- * glScissor (__glMgrim_Scissor 0xd97c260): 0x3910 and x, width - 1, y,
+ * glScissor (the scissor routine 0xd97c260): 0x3910 and x, width - 1, y,
  * height - 1; glEnable and glDisable of GL_SCISSOR_TEST: 0x6e04 and 1 or
  * 0. GL_SCISSOR_BOX is queried at 0xc24 to 0xc27 as x, y and the last
  * column and row, and GL_SCISSOR_TEST at 0xc28.
@@ -2051,7 +2054,7 @@ static inline void gl_scissor(QTestState *qts, int32_t x, int32_t y, int32_t w,
 }
 
 /*
- * glAlphaFunc (__glMgrim_AlphaFunc 0xd95ea40): 0x3e08, the function less
+ * glAlphaFunc (the alpha-function routine 0xd95ea40): 0x3e08, the function less
  * GL_NEVER and the reference as a 12-bit fraction; glEnable and glDisable
  * of GL_ALPHA_TEST: 0x6404 and 1 or 0. GL_ALPHA_TEST is bit 6 of query
  * 0x288, and GL_ALPHA_TEST_FUNC and _REF bits 2:0 and 14:3 of 0x2cc.
@@ -2529,7 +2532,9 @@ static inline void gl_eram_kick(QTestState *qts, uint32_t offset, uint32_t bpr,
     gl_word(qts, kick);
 }
 
-/* MgrasEramRead's form: the kick, then 0xfc08 with address and count. */
+/*
+ * The ERAM read routine's form: the kick, then 0xfc08 with address and count.
+ */
 static inline void gl_eram_read(QTestState *qts, uint32_t addr)
 {
     gl_eram_kick(qts, 0, GL_EVICT_WORDS * 4, GL_ERAM_READ_KICK);

@@ -935,7 +935,7 @@ static void test_dma_image_transfer_lands_in_bank_zero(void)
  * 0x020010 bit 16 alone, then replays the paired 0xb1 write -- the same
  * host bytes, reusing the read's page-list mapping -- to confirm the
  * round trip reproduces the weave beside itself, the same doubling
- * mgrasCopyPixels..OC's first kick pair does in the capture.
+ * the pixel-copy routine's OC variant's first kick pair does in the capture.
  */
 #define DMA_READ_NODE      0u
 #define DMA_READ_WIDGET    9u
@@ -1312,8 +1312,8 @@ static void test_direct_pio_pixel_pairs(void)
  * kernel installs the pool's page list in DMA-map slot 4 (a captured run). The
  * pool words below are laid out the way the board read them at the execute in
  * a captured run (its sgi_mgras_dma_chunk records): each range begins with the
- * header the client's func_d970cf0 writes, 0x00080c08 and the next range's
- * offset and size, or 0x00083904 and 0 on a list's last range, then the
+ * header the client's range-header routine writes, 0x00080c08 and the next
+ * range's offset and size, or 0x00083904 and 0 on a list's last range, then the
  * port words the list stores, packets whole. The page list is the
  * kernel's (three zero header words, then big-endian page frame
  * numbers), and the pages are neither adjacent nor in address order, as
@@ -1694,11 +1694,11 @@ static void test_gl_list_continues_at_offset_zero(void)
 /*
  * A list that calls a list. The client ends a range at a glCallList with
  * the six-word header 0x00083708, the next range, 0x00080c08 and the
- * called list's first range (func_d970cf0, __glMgrDLResolveCalls). The
- * probe's triangles 0-77 are in the calling range at 0x0000, 78-155 in a
- * one-range list at 0x2000 that it calls, and 156-255 in the calling
- * list's next two ranges at 0x1000 and 0x3000. Run in glCallList's order
- * the words draw the probe's window, twice over from one execute each.
+ * called list's first range (the range-header routine, the display-list
+ * call-resolve routine). The probe's triangles 0-77 are in the calling range at
+ * 0x0000, 78-155 in a one-range list at 0x2000 that it calls, and 156-255 in
+ * the calling list's next two ranges at 0x1000 and 0x3000. Run in glCallList's
+ * order the words draw the probe's window, twice over from one execute each.
  */
 static void test_gl_list_calls_a_list(void)
 {
@@ -1749,9 +1749,9 @@ static void gl_list_leaf_and_return(QTestState *t)
 }
 
 /*
- * The model follows 64 nested calls, as many as __glMgrDLExecuteDMA lets
- * a list by DMA reach, and refuses a 65th whole. Called from the second
- * range the chain is 64 calls deep and draws; from the first it is 65
+ * The model follows 64 nested calls, as many as the display-list DMA execute
+ * routine lets a list by DMA reach, and refuses a 65th whole. Called from the
+ * second range the chain is 64 calls deep and draws; from the first it is 65
  * and draws nothing.
  */
 static void test_gl_list_calls_nest_64_deep(void)
@@ -2812,7 +2812,9 @@ static void test_gl_pixels_follow_the_context(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
-/* MgrasEramWrite's form for the image at offset 0: two chunks, the end. */
+/*
+ * The ERAM write routine's form for the image at offset 0: two chunks, the end.
+ */
 static void gl_eram_write(QTestState *qts, uint32_t addr)
 {
     for (uint32_t i = 0; i < 2; i++) {
@@ -3046,7 +3048,7 @@ static void test_gl_eviction_buffer_on_another_node(void)
 
 /*
  * The X server's host read through the raster engine's data port
- * (mgrasReadPixels in the IRIX 6.5.30 impactsr.so): raster registers by
+ * (the pixel-read routine in the IRIX 6.5.30 impactsr.so): raster registers by
  * 8-byte direct commands on the main port, an IR_ALIAS execute, then each
  * 8-byte unit read as 0x02d1c0 and 0x02c1c4. The box is in hardware rows,
  * counted up from the bottom of the screen.
