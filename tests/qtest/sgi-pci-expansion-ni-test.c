@@ -2707,6 +2707,112 @@ static void test_power_migration_mismatch(const void *data)
     g_rmdir(dir);
 }
 
+/* Corrupt the assembly section while preserving compatible child devices. */
+static void test_assembly_immutable_mismatch(gconstpointer opaque)
+{
+    static const char *const fields[] = {
+        "power_selected", "power_selected", "power_owner_identity",
+        "power_owner_identity", "storage_size", "storage_part_size",
+        "storage_window_size", "storage_stride",
+    };
+    static const uint64_t geometry[] = {
+        16 * 1024 * 1024, 8 * 1024 * 1024,
+        128 * 1024 * 1024, 32 * 1024 * 1024,
+    };
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    static const char name[] = "sgi-origin300-pci-expansion-module";
+    uint8_t header[1 + sizeof(name) - 1 + 8];
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree char *file = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *target_image = NULL;
+    g_autofree char *stream = NULL;
+    const char *options = kind == 1 ? "" : kind == 3 ?
+        POWER_OPTIONS " -global sgi-pci-expansion-ni-fixture.identity1=103" :
+        POWER_OPTIONS;
+    g_autofree char *incoming = g_strconcat(options,
+        " -incoming defer -trace enable=vmstate_load_field_error", NULL);
+    gsize length, found = 0, payload = 0, power;
+    QTestState *from, *to;
+
+    if (!g_test_subprocess()) {
+        g_autofree char *expected = g_strdup_printf(
+            "*vmstate_load_field_error field \"%s\" load failed, ret = -22*",
+            fields[kind]);
+
+        g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr(expected);
+        return;
+    }
+    dir = g_dir_make_tmp("ni-immutable-mismatch-XXXXXX", &error);
+    g_assert_no_error(error);
+    file = g_build_filename(dir, "migration.bin", NULL);
+    uri = g_strdup_printf("file:%s", file);
+    if (kind >= 4) {
+        image = storage_image();
+        target_image = storage_image();
+        from = storage_start(image, "");
+        to = storage_start(target_image, incoming);
+    } else {
+        from = management_start(options);
+        to = management_start(incoming);
+    }
+    sgi_migrate_stopped(from, uri);
+    g_assert_true(g_file_get_contents(file, &stream, &length, &error));
+    g_assert_no_error(error);
+    header[0] = sizeof(name) - 1;
+    memcpy(header + 1, name, sizeof(name) - 1);
+    stl_be_p(header + sizeof(name), 0);
+    stl_be_p(header + sizeof(name) + 4, 8);
+    for (gsize i = 0; i + sizeof(header) + 54 < length; i++) {
+        if (!memcmp(stream + i, header, sizeof(header))) {
+            payload = i + sizeof(header);
+            found++;
+        }
+    }
+    g_assert_cmpuint(found, ==, 1);
+    /* Version 8: pending selection/count, UART selection/count, absence. */
+    g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
+    g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 0);
+    g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 0);
+    g_assert_cmpuint(ldl_be_p(stream + payload + 6), ==, 2);
+    g_assert_cmpuint((uint8_t)stream[payload + 10], ==, 0);
+    g_assert_cmpuint((uint8_t)stream[payload + 11], ==, kind >= 4);
+    power = payload + 52 + ldl_be_p(stream + payload + 44) +
+            ldl_be_p(stream + payload + 48);
+    g_assert_cmpuint(power + 10, <, length);
+    if (kind < 2) {
+        g_assert_cmpuint((uint8_t)stream[power], ==, kind == 0);
+        stream[power] = kind == 1;
+    } else if (kind < 4) {
+        g_assert_cmpuint(ldq_be_p(stream + power + 2), ==,
+                         kind == 2 ? 102 : 103);
+        stq_be_p(stream + power + 2, kind == 2 ? 103 : 102);
+    } else {
+        gsize offset = payload + 12 + (kind - 4) * 8;
+
+        g_assert_cmpuint(ldq_be_p(stream + offset), ==, geometry[kind - 4]);
+        stq_be_p(stream + offset, geometry[kind - 4] + 1);
+    }
+    g_assert_true(g_file_set_contents(file, stream, length, &error));
+    g_assert_no_error(error);
+    qtest_set_expected_status(to, EXIT_FAILURE);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(file);
+    if (image) {
+        g_unlink(image);
+        g_unlink(target_image);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void adapter_work_write(QTestState *qts, unsigned offset, uint16_t value)
 {
     qtest_writeq(qts, MANAGEMENT + 0x600 + offset * 8, value);
@@ -3263,6 +3369,24 @@ int main(int argc, char **argv)
                    test_power_initial_off);
     qtest_add_func("/sgi/pci-expansion-ni/power-migration",
                    test_power_migration);
+    {
+        static const char *const cases[] = {
+            "power-selected-field-mismatch", "power-unselected-field-mismatch",
+            "power-owner-mismatch", "power-owner-reverse-mismatch",
+            "storage/migration-size-mismatch",
+            "storage/migration-part-size-mismatch",
+            "storage/migration-window-size-mismatch",
+            "storage/migration-stride-mismatch",
+        };
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+            g_autofree char *path = g_strdup_printf(
+                "/sgi/pci-expansion-ni/%s", cases[i]);
+
+            qtest_add_data_func(path, GUINT_TO_POINTER(i),
+                                test_assembly_immutable_mismatch);
+        }
+    }
     qtest_add_data_func("/sgi/pci-expansion-ni/power-migration-mismatch",
                         NULL, test_power_migration_mismatch);
     qtest_add_data_func("/sgi/pci-expansion-ni/"
