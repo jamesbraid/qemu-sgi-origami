@@ -3517,6 +3517,167 @@ static void test_gl_readpixels_bracket_opaque(void)
     g_assert_null(strstr(log, "ERAM"));
 }
 
+static void gl_read_dma_map(QTestState *qts)
+{
+    static const uint8_t list[32] = { 0 };
+    static const uint8_t entry[8] = { 0, 0, 0, 0, 0, 0, 0, 0x30 };
+
+    qtest_memwrite(qts, 0x6000, list, sizeof(list));
+    qtest_memwrite(qts, 0x6018, entry, sizeof(entry));
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400), 0x6018);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484b04 << 32) | (9u << 16));
+}
+
+static void gl_read_dma_descriptor(QTestState *qts, uint32_t pitch,
+                                   uint32_t rows, uint32_t bpr)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080404 << 32) | pitch);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | rows);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | bpr);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0xb9);
+}
+
+static void gl_read_dma_class_a_signature(QTestState *qts)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x000a0204 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0304 << 32) | 0x00020002);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0404 << 32) | 0x00c00080);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x000a0604 << 32) | 0xa);
+}
+
+static void test_gl_readpixels_dma_bounded_rgba(void)
+{
+    static const uint32_t row0[] = { 0x010203ff, 0x040506ff };
+    static const uint32_t row1[] = { 0x111213ff, 0x141516ff };
+    static const uint8_t poison[32] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t want[16] = {
+        0x01, 0x02, 0x03, 0xff, 0x04, 0x05, 0x06, 0xff,
+        0x11, 0x12, 0x13, 0xff, 0x14, 0x15, 0x16, 0xff,
+    };
+    static const uint8_t unbracketed[16] = {
+        0x00, 0x13, 0x12, 0x11, 0x00, 0x16, 0x15, 0x14,
+        0x00, 0x03, 0x02, 0x01, 0x00, 0x06, 0x05, 0x04,
+    };
+    uint8_t got[32];
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 1, 1, row0, ARRAY_SIZE(row0));
+    gl_draw_rgba_row(qts, 1, 2, row1, ARRAY_SIZE(row1));
+    gl_read_dma_map(qts);
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 1, 1, 2, 2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature(qts);
+    gl_read_dma_descriptor(qts, 16, 1, 16);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, GL_READ_CLOSE);
+
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, sizeof(want), want, sizeof(want));
+    g_assert_cmpmem(got + 24, 8, poison + 24, 8);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 1, 1, 2, 2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature(qts);
+    gl_read_dma_descriptor(qts, 8, 1, 16);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, GL_READ_CLOSE);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+
+    gl_read_registers(qts, 257, 642, 641, 2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_dma_descriptor(qts, 8, 2, 8);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got + 8, sizeof(unbracketed), unbracketed,
+                    sizeof(unbracketed));
+}
+
+static void test_gl_readpixels_dma_bracket_migration(void)
+{
+    static const uint32_t row0[] = { 0x212223ff, 0x313233ff };
+    static const uint32_t row1[] = { 0x414243ff, 0x515253ff };
+    static const uint8_t want[16] = {
+        0x21, 0x22, 0x23, 0xff, 0x31, 0x32, 0x33, 0xff,
+        0x41, 0x42, 0x43, 0xff, 0x51, 0x52, 0x53, 0xff,
+    };
+    static const uint8_t poison[32] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t got[32];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-readpixels-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qts;
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init_ext("QTEST_QEMU_BINARY_DST", dest_cmdline, NULL, true);
+
+    qtest_system_reset(from);
+    g_assert_cmphex(qtest_readl(from, REG_HQ_STATUS), ==, 0x13);
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_draw_rgba_row(from, 1, 1, row0, ARRAY_SIZE(row0));
+    gl_draw_rgba_row(from, 1, 2, row1, ARRAY_SIZE(row1));
+    gl_read_dma_map(from);
+    qtest_memwrite(from, 0x30000, poison, sizeof(poison));
+    gl_word(from, GL_READ_OPEN);
+    gl_read_registers(from, 1, 1, 2, 2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature(from);
+    gl_read_dma_descriptor(from, 16, 1, 16);
+    gl_word(from, 0x0000da00);
+    gl_word(from, GL_READ_CLOSE);
+    qtest_memread(from, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, sizeof(want), want, sizeof(want));
+    g_assert_cmpmem(got + 24, 8, poison + 24, 8);
+
+    qtest_memwrite(from, 0x30000, poison, sizeof(poison));
+    gl_word(from, GL_READ_OPEN);
+    gl_read_registers(from, 1, 1, 2, 2, 2, GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature(from);
+
+    sgi_migrate_stopped(from, uri);
+
+    gl_read_dma_descriptor(to, 16, 1, 16);
+    gl_word(to, 0x0000da00);
+    gl_word(to, GL_READ_CLOSE);
+    qtest_memread(to, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, sizeof(want), want, sizeof(want));
+    g_assert_cmpmem(got + 24, 8, poison + 24, 8);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    g_rmdir(tmpfs);
+}
+
 /*
  * glCopyPixels' slow path is a read followed by the client's ordinary
  * glDrawPixels at the raster position: read the source box through the
@@ -3893,8 +4054,12 @@ int main(int argc, char **argv)
                    test_gl_readpixels_other_mode_reads_zero);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
                    test_gl_readpixels_bracket_opaque);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bounded-rgba",
+                   test_gl_readpixels_dma_bounded_rgba);
     qtest_add_func("sn0/origin2000/mgras/gl-copypixels-slow-path",
                    test_gl_copypixels_slow_path);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bracket-migration",
+                   test_gl_readpixels_dma_bracket_migration);
 
     ret = g_test_run();
     qtest_quit(qts);

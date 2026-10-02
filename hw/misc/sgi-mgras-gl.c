@@ -1216,6 +1216,8 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         s->gl_context[i].gl = &s->gl[i];
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
+        s->gl_context[i].client_read_bracket = 0;
+        s->gl_context[i].client_read_kicked = 0;
         memset(s->gl_context[i].readback, 0,
                sizeof(s->gl_context[i].readback));
         memset(s->gl_context[i].clip_query, 0,
@@ -1257,6 +1259,8 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
     s->gl_saved[i] = 0;
     s->gl_is_saved[i] = false;
     memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
+    s->gl_context[i].client_read_bracket = 0;
+    s->gl_context[i].client_read_kicked = 0;
     memset(s->gl_context[i].readback, 0, sizeof(s->gl_context[i].readback));
     memset(s->gl_context[i].clip_query, 0,
            sizeof(s->gl_context[i].clip_query));
@@ -1522,6 +1526,43 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
     }
     sgi_mgras_cmd_parser_load(s, &s->gl_context[s->gl_current].parser);
     mgras_gl_bind(s);
+}
+
+bool sgi_mgras_gl_client_read_active(SGIMgrasState *s)
+{
+    return s->gl_current < SGI_MGRAS_GL_CONTEXTS &&
+           s->gl_context[s->gl_current].client_read_bracket;
+}
+
+bool sgi_mgras_gl_client_read_done(SGIMgrasState *s)
+{
+    if (s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
+        !s->gl_context[s->gl_current].client_read_kicked) {
+        return false;
+    }
+    s->gl_context[s->gl_current].client_read_kicked = 0;
+    return true;
+}
+
+bool sgi_mgras_gl_client_read_window(SGIMgrasState *s, uint32_t *origin_x,
+                                     uint32_t *origin_y, uint32_t *x0,
+                                     uint32_t *y0, uint32_t *x1,
+                                     uint32_t *y1)
+{
+    uint32_t origin;
+
+    if (!s->gl_current || s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
+        !s->gl_selected[s->gl_current]) {
+        return false;
+    }
+    origin = s->context[MGRAS_GL_IMAGE_ORIGIN];
+    *origin_x = origin & 0xffff;
+    *origin_y = origin >> 16;
+    *x0 = s->context[11] >> 16;
+    *x1 = s->context[11] & 0xffff;
+    *y0 = s->context[12] >> 16;
+    *y1 = s->context[12] & 0xffff;
+    return *x0 <= *x1 && *y0 <= *y1;
 }
 
 /*
@@ -2191,6 +2232,44 @@ const VMStateDescription vmstate_sgi_mgras_gl_readback = {
     }
 };
 
+static const VMStateDescription vmstate_sgi_mgras_gl_context_client_read = {
+    .name = TYPE_SGI_MGRAS "/gl-context-client-read",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(client_read_bracket, SGIMgrasGLContext),
+        VMSTATE_UINT32(client_read_kicked, SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_gl_client_read_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (s->gl_context[i].client_read_bracket ||
+            s->gl_context[i].client_read_kicked) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_gl_client_read = {
+    .name = TYPE_SGI_MGRAS "/gl-client-read",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_client_read_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 1,
+                             vmstate_sgi_mgras_gl_context_client_read,
+                             SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_mgras_gl_context_clip_query = {
     .name = TYPE_SGI_MGRAS "/gl-context-clip-query",
     .version_id = 1,
@@ -2424,6 +2503,8 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
         if (!sgi_gl_context_valid(&s->gl[i], NULL) ||
             !sgi_mgras_cmd_parser_valid(p->cls, p->reg, p->words_remaining,
                                         p->payload_count) ||
+            s->gl_context[i].client_read_bracket > 1 ||
+            s->gl_context[i].client_read_kicked > 1 ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
             return false;
@@ -2683,6 +2764,8 @@ static void mgras_gl_context_start(SGIMgrasState *s)
     SGIGLContext *gl = mgras_gl(s);
 
     sgi_gl_reset(gl, gl->hw_id);
+    s->gl_context[s->gl_current].client_read_bracket = 0;
+    s->gl_context[s->gl_current].client_read_kicked = 0;
     sgi_mgras_texture_reset(&s->gl_context[s->gl_current].tex);
     mgras_gl_bind(s);
 }
@@ -4215,9 +4298,13 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_LOAD_RASTER_INFO:
     case MGRAS_GL_SAVE_TEXMODE:
     case MGRAS_GL_RESTORE_TEXMODE:
-    case MGRAS_GL_READ_OPEN:
-    case MGRAS_GL_READ_CLOSE:
     case MGRAS_GL_READ_SETUP:
+        return;
+    case MGRAS_GL_READ_OPEN:
+        s->gl_context[s->gl_current].client_read_bracket = 1;
+        return;
+    case MGRAS_GL_READ_CLOSE:
+        s->gl_context[s->gl_current].client_read_bracket = 0;
         return;
     case MGRAS_GL_RSS_PAIRS:
         /* Its records follow in an inline block; see mgras_gl_records(). */
@@ -4232,6 +4319,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         return;
     case MGRAS_GL_READ_DMA_DONE:
         if (sgi_mgras_texture_tram_read_done(s)) {
+            return;
+        }
+        if (sgi_mgras_gl_client_read_done(s)) {
             return;
         }
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: the OpenGL client's DMA read "
