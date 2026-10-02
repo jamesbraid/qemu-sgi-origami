@@ -4227,6 +4227,7 @@ static void test_command_fifo_gl_id_compare(void)
 #define ODSY_REG_GL_MODE 0x00010404
 #define ODSY_GL_MODE_SMOOTH 0x02002200
 #define ODSY_GL_MODE_FLAT 0x02003200
+#define ODSY_MODE_GL_LINE_STIPPLE (1u << 3)
 
 static void probe_window(QTestState *qts)
 {
@@ -5147,6 +5148,74 @@ static void test_command_fifo_gl_line_point_size(void)
     g_assert_cmpuint(odsy_count_yellow(qts, 316, 323, 316, 323), ==, 16);
 
     qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_line_stipple(void)
+{
+    static const uint32_t line[6] = {
+        0xbf000000, 0, 0xbf000000,
+        0x3f000000, 0, 0xbf000000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    user_cmd_push(qts, ODSY_CMD_LINE_STIPPLE);
+    user_cmd_push(qts, 0x00f3);
+    user_cmd_push(qts, 0x00f3);
+    user_cmd_push(qts, 1); /* Repeat each pattern bit twice. */
+    set_reg(qts, ODSY_REG_GL_MODE,
+            ODSY_GL_MODE_FLAT | ODSY_MODE_GL_LINE_STIPPLE);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, line);
+    g_assert_cmpuint(odsy_count_yellow(qts, 290, 290, 319, 321), ==, 1);
+    g_assert_cmpuint(odsy_count_yellow(qts, 294, 294, 319, 321), ==, 0);
+    g_assert_cmpuint(odsy_count_yellow(qts, 300, 300, 319, 321), ==, 1);
+    g_assert_cmpuint(odsy_count_yellow(qts, 310, 310, 319, 321), ==, 0);
+    g_assert_cmpuint(odsy_count_yellow(qts, 322, 322, 319, 321), ==, 1);
+
+    /* Clearing bit 3 makes the same float GL line solid. */
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, line);
+    g_assert_cmpuint(odsy_count_yellow(qts, 294, 294, 319, 321), ==, 1);
+    g_assert_cmpuint(odsy_count_yellow(qts, 310, 310, 319, 321), ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_line_stipple_migration(void)
+{
+    static const uint32_t line[6] = {
+        0xbf000000, 0, 0xbf000000,
+        0x3f000000, 0, 0xbf000000,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-gl-line-stipple-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    user_cmd_push(from, ODSY_CMD_LINE_STIPPLE);
+    user_cmd_push(from, 0x00f3);
+    user_cmd_push(from, 0x00f3);
+    user_cmd_push(from, 1);
+    set_reg(from, ODSY_REG_GL_MODE,
+            ODSY_GL_MODE_FLAT | ODSY_MODE_GL_LINE_STIPPLE);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    probe_window(to);
+    push_line_3f(to, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, line);
+    g_assert_cmpuint(odsy_count_yellow(to, 290, 290, 319, 321), ==, 1);
+    g_assert_cmpuint(odsy_count_yellow(to, 294, 294, 319, 321), ==, 0);
+    g_assert_cmpuint(odsy_count_yellow(to, 300, 300, 319, 321), ==, 1);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 /*
@@ -10599,6 +10668,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_polygon_mode);
     qtest_add_func("sn1/odyssey/command-fifo-gl-line-point-size",
                    test_command_fifo_gl_line_point_size);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-line-stipple",
+                   test_command_fifo_gl_line_stipple);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-line-stipple-migration",
+                   test_command_fifo_gl_line_stipple_migration);
     qtest_add_func("sn1/odyssey/command-fifo-gl-polygon-offset",
                    test_command_fifo_gl_polygon_offset);
     qtest_add_func("sn1/odyssey/command-fifo-gl-clip-box",
