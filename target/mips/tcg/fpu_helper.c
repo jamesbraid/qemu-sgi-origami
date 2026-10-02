@@ -199,19 +199,14 @@ static inline int ieee_to_mips_xcpt(int ieee_xcpt)
     return mips_xcpt;
 }
 
-void update_fcr31(CPUMIPSState *env, uintptr_t pc)
+void update_fcr31_slow(CPUMIPSState *env, int ieee_exception_flags,
+                       uintptr_t pc)
 {
-    int ieee_exception_flags = get_float_exception_flags(
-                                   &env->active_fpu.fp_status);
-    int mips_exception_flags = 0;
-
-    if (ieee_exception_flags) {
-        mips_exception_flags = ieee_to_mips_xcpt(ieee_exception_flags);
-    }
+    int mips_exception_flags = ieee_to_mips_xcpt(ieee_exception_flags);
 
     SET_FP_CAUSE(env->active_fpu.fcr31, mips_exception_flags);
 
-    if (mips_exception_flags)  {
+    if (mips_exception_flags) {
         set_float_exception_flags(0, &env->active_fpu.fp_status);
 
         if (GET_FP_ENABLE(env->active_fpu.fcr31) & mips_exception_flags) {
@@ -219,6 +214,8 @@ void update_fcr31(CPUMIPSState *env, uintptr_t pc)
         } else {
             UPDATE_FP_FLAGS(env->active_fpu.fcr31, mips_exception_flags);
         }
+    } else {
+        set_float_exception_flags(0, &env->active_fpu.fp_status);
     }
 }
 

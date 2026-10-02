@@ -14,6 +14,7 @@
 #include "exec/memattrs.h"
 #include "hw/core/cpu.h"
 #include "cpu.h"
+#include "fpu/softfloat-helpers.h"
 
 void mips_tcg_init(void);
 void mips_translate_code(CPUState *cs, TranslationBlock *tb,
@@ -45,7 +46,19 @@ void do_raise_exception(CPUMIPSState *env,
  * for the shared FP helpers. Its arithmetic ABS/NEG helpers reuse
  * update_fcr31(), the shared FP result epilogue in fpu_helper.c.
  */
-void update_fcr31(CPUMIPSState *env, uintptr_t pc);
+void update_fcr31_slow(CPUMIPSState *env, int ieee_exception_flags,
+                       uintptr_t pc);
+
+static inline void update_fcr31(CPUMIPSState *env, uintptr_t pc)
+{
+    int ieee_flags = get_float_exception_flags(&env->active_fpu.fp_status);
+
+    if (unlikely(ieee_flags)) {
+        update_fcr31_slow(env, ieee_flags, pc);
+    } else if (unlikely(env->active_fpu.fcr31 & (0x3f << 12))) {
+        env->active_fpu.fcr31 &= ~(0x3f << 12);
+    }
+}
 void check_denormal_input_s(CPUMIPSState *env, uint32_t a, uint32_t b,
                             uintptr_t pc);
 void check_denormal_result_d(CPUMIPSState *env, uint64_t ret, uintptr_t pc);
