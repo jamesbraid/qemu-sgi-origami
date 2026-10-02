@@ -2403,7 +2403,7 @@ static void test_expansion_composed_adapters(void)
             uint64_t bar = base + (device == 1 ? 0x400000 : 0x600000);
             uint64_t offset = (device - 1) * 0x100;
             unsigned seed = 0x20 + head * 16 + device;
-            unsigned pin = (device - 1) * 4;
+            unsigned pin = device;
             unsigned number = 16 + head * 2 + device;
 
             g_test_message("composed head %u widget %x device %u", head,

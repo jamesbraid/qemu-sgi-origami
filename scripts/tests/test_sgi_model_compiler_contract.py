@@ -644,6 +644,19 @@ class RecordShapeTests(unittest.TestCase):
         self.assertEqual(descriptor["initial-latch"], 0)
         self.assertEqual(descriptor["intx-map"], list(range(8)) * 6)
 
+    def test_expansion_experiment_profiles_use_reviewed_intx_map(self):
+        expected = [1, 5, 1, 5, 2, 6, 2, 6] * 6
+        for name in (
+            "origin300-pci-expansion-experiment",
+            "origin300-pci-expansion-configuration-storage-experiment",
+            "origin300-pci-expansion-unconnected-uart-experiment",
+            "origin300-pci-expansion-pending-register-experiment",
+        ):
+            with self.subTest(profile=name):
+                model = _resolved(name)
+                descriptor = compile_model(model)["io_assemblies"][0]
+                self.assertEqual(descriptor["intx_map"], expected)
+
     def test_expansion_descriptor_rejects_duplicates_and_missing_version(self):
         model = self._expansion_descriptor_model()
         raw = model["machine"]["emulation"]["io_assemblies"]
