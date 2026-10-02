@@ -545,6 +545,110 @@ static void test_gl_texture_many_levels_in_one_context(void)
     qtest_quit(t);
 }
 
+/* The HQ pixel-format word, sent as 0x000c0004 before 0x8d20. */
+#define TEX_HQ_PIXEL_FORMAT   0x000c0004
+#define TEX_HQ_PIXEL_REST     0xe00
+/* GL_ABGR_EXT of one-byte and of two-byte components. */
+#define TEX_HQ_ABGR_8         0xe8d
+#define TEX_HQ_ABGR_16        0xe8e
+/* The unpack block's sixth word: 1/255 for bytes, 1/65535 for shorts. */
+#define TEX_UNPACK_SCALE_8    0x3b808081
+#define TEX_UNPACK_SCALE_16   0x37800080
+
+/*
+ * A 4-by-2 RGBA8 level 0 loaded from an image of bpt bytes a texel, the
+ * client's four-component program with unpack scale word scale and the
+ * HQ pixel-format word hq in effect for the transfer. The words are
+ * tex_load_program's; only the unpack block's scale and the HQ word
+ * differ, as atlantis (0xe8d, 1/255), buttonfly and blast (0xe8e and
+ * 0xe00, 1/65535) sent them on SI+T.
+ */
+static void tex_load_4x2_as(QTestState *t, uint32_t hq, uint32_t scale,
+                            const uint8_t *image, uint32_t bpt)
+{
+    static const uint32_t program[8] = {
+        0x1f44, 0, 0x3e65, 0xd91, 0x156a, 0x1b4, 0x352d, 0xdf3,
+    };
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
+    uint32_t bytes = 4 * 2 * bpt;
+    uint32_t unpack[6] = { bytes / 4, 0x4064, 0x464, 0xb, 0xc, scale };
+    float z[2] = { 0, 1 };
+    uint32_t zooms[2];
+
+    memcpy(zooms, z, sizeof(zooms));
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, TEX_SPEC_4X2);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_ge_load(t, GL_GE_CRAM, GL_GE_PROGRAM, program, 8);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_UNPACK, unpack, 6);
+    gl_ge_load(t, GL_GE_CRAM, GL_GE_ZOOM, zooms, 2);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_one(t, TEX_HQ_PIXEL_FORMAT, hq);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, bytes / 4);
+    for (int i = 1; i < 8; i++) {
+        gl_word(t, draw[i]);
+    }
+    gl_pixels_dma_on(t, 0, image, bytes, bytes, 1, bytes, 0xa7);
+    gl_one(t, TEX_HQ_PIXEL_FORMAT, TEX_HQ_PIXEL_REST);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+    tex_record(t, TEX_TXSIZE, 0);
+}
+
+/* Each texel of tex_texels() drawn as its own R, G and B. */
+static void tex_expect_texels(QTestState *t, const uint8_t texels[32])
+{
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+}
+
+/*
+ * GL_ABGR_EXT of unsigned bytes, as atlantis and mirrors load their
+ * textures: the HQ word 0xe8d, the four-byte program and four host bytes
+ * a texel in the order alpha, blue, green, red (EXT_abgr), the order the
+ * pixel path already draws for the same word (gl-pixels-dma-abgr). The
+ * level must hold the image's colours, not the reversed ones; a load
+ * the model refused left atlantis's 128-by-128 skin untextured.
+ */
+static void test_gl_texture_load_abgr_bytes(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[32];
+
+    tex_texels(texels);
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 4; k++) {
+            image[4 * i + k] = texels[4 * i + 3 - k];
+        }
+    }
+    tex_load_4x2_as(t, TEX_HQ_ABGR_8, TEX_UNPACK_SCALE_8, image, 4);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 /*
  * A level loaded as strips inside one bracket, as perfly's client loads
  * its 256-wide levels 64 texels at a time: each transfer carries its
@@ -2276,6 +2380,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-many-levels-in-one-context",
                    test_gl_texture_many_levels_in_one_context);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-abgr-bytes",
+                   test_gl_texture_load_abgr_bytes);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-level-from-strips",
                    test_gl_texture_level_from_strips);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-rgb-image-into-rgba",

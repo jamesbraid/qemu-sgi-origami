@@ -134,7 +134,7 @@
  * same key, which a refused load leaves drawable, as every refusal here
  * does; inferred, as no bordered load was traced), detail,
  * the texture colour table, one-dimensional and volume textures,
- * texture-select groups and GL_ABGR_EXT loads.
+ * texture-select groups and two-component GL_ABGR_EXT loads.
  *
  * The discriminating tests are gl-texture-load-draws-the-level,
  * gl-texture-size-from-tl-spec, gl-texture-tl-mode-persists,
@@ -378,6 +378,16 @@ enum {
 #define MGRAS_TEX_GE_Y           (0xe34 + 1)
 #define MGRAS_TEX_GE_SIZE        (0xe34 + 4)
 #define MGRAS_TEX_HQ_ABGR        0x80
+/* The HQ word's bits 3:2 are the image's components less one; 3 is four. */
+#define MGRAS_TEX_HQ_COMPS(hq)   (((hq) >> 2) & 3)
+/*
+ * The GE words the pixel program names its unpack block with: the block's
+ * address is the program's fourth word, and its routine word is the
+ * block's second, 0x4064 for an image of four components.
+ */
+#define MGRAS_TEX_GE_PROGRAM     0x13b
+#define MGRAS_TEX_GE_UNPACK_ROUTINE 1
+#define MGRAS_TEX_UNPACK_4       0x4064
 
 /*
  * The load's six GE words at 0xe3d: word 3 is the level's TXMIPMAP word,
@@ -443,6 +453,18 @@ static uint32_t mgras_tex_host_texel(uint32_t mode)
 static uint32_t mgras_tex_load_texel(const SGIMgrasTexture *t)
 {
     return t->load_host ? t->load_host : mgras_tex_host_texel(t->load_mode);
+}
+
+/* The unpack routine word of the GE's pixel program, if it names one. */
+static bool mgras_tex_unpack_word(SGIMgrasState *s, uint32_t *word)
+{
+    uint32_t params = s->ge_param[MGRAS_TEX_GE_PROGRAM + 3];
+
+    if (params >= SGI_MGRAS_GE_PARAM_WORDS - MGRAS_TEX_GE_UNPACK_ROUTINE) {
+        return false;
+    }
+    *word = s->ge_param[params + MGRAS_TEX_GE_UNPACK_ROUTINE];
+    return true;
 }
 
 /* Bits a component of a kept format: 4, 8 or 12. */
@@ -1098,7 +1120,9 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     uint32_t y = s->ge_param[MGRAS_TEX_GE_Y];
     uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
     uint32_t rw = size & 0xffff, rh = size >> 16;
-    uint32_t host;
+    uint32_t hq = s->dma_desc_30000[0];
+    uint32_t host, unpack;
+    bool abgr;
     uint64_t bit;
 
     if (!mgras_tex_present(s) ||
@@ -1127,13 +1151,24 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
      * that reorders or converts components would be taken as the
      * identity. The load is keyed on routine 0x511a and sized by the
      * rectangle the size word names. The one other thing checked is the HQ
-     * pixel format's GL_ABGR_EXT bit, which swaps components and is not
-     * modelled.
+     * pixel format's GL_ABGR_EXT bit.
+     *
+     * GL_ABGR_EXT is taken for an image of four components (HQ bits 3:2
+     * and the unpack routine word agree) kept as RGBA, and stored with the
+     * components reversed: the same word and program draw as alpha, blue,
+     * green, red through the pixel path. That the texture load reorders as
+     * the pixel path does is inferred, the word, program and kick being the
+     * same. An ABGR image of two components (luminance alpha) was never
+     * traced and is refused, logged.
      */
-    if (s->dma_desc_30000[0] & MGRAS_TEX_HQ_ABGR) {
+    abgr = hq & MGRAS_TEX_HQ_ABGR;
+    if (abgr && (MGRAS_TEX_HQ_COMPS(hq) != 3 ||
+                 !mgras_tex_unpack_word(s, &unpack) ||
+                 unpack != MGRAS_TEX_UNPACK_4 ||
+                 MGRAS_TEX_LAYOUT(mode) != MGRAS_TEX_LAYOUT_RGBA)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with HQ pixel "
-                      "format 0x%x (GL_ABGR_EXT) is not modelled; nothing "
-                      "stored\n", s->dma_desc_30000[0]);
+                      "format 0x%x (GL_ABGR_EXT) into TL_MODE 0x%x is not "
+                      "modelled; nothing stored\n", hq, mode);
         return true;
     }
     /*
@@ -1184,6 +1219,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     t->load_y = y;
     t->load_size = size;
     t->load_host = host;
+    t->load_abgr = abgr;
     return true;
 }
 
@@ -1249,12 +1285,14 @@ static void mgras_tex_commit(SGIMgrasState *s)
         uint64_t texel = ((uint64_t)(t->load_y + row) << log2w) + t->load_x;
 
         for (uint32_t i = 0; i < rw * comps; i++) {
-            uint32_t n = i / comps * src + i % comps;
+            /* An ABGR image's components come in reverse order. */
+            uint32_t k = t->load_abgr ? comps - 1 - i % comps : i % comps;
+            uint32_t n = i / comps * src + k;
             uint64_t bit = start + (texel + i / comps) * slot +
                            i % comps * depth;
             uint32_t v;
 
-            if (i % comps >= src) {
+            if (k >= src) {
                 /* An RGB image's alpha is 1 (OpenGL 1.2.1, 3.6.4). */
                 v = (1u << depth) - 1;
             } else if (depth == 4) {
@@ -1622,6 +1660,9 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
                               t->load_mode, &bit) ||
             !rw || !rh || rw > w || rh > h ||
             t->load_x > w - rw || t->load_y > h - rh ||
+            t->load_abgr > 1 ||
+            (t->load_abgr && (t->load_host ||
+              MGRAS_TEX_LAYOUT(t->load_mode) != MGRAS_TEX_LAYOUT_RGBA)) ||
             (t->load_host &&
              (t->load_host != 3 ||
               MGRAS_TEX_LAYOUT(t->load_mode) < MGRAS_TEX_LAYOUT_RGB ||
@@ -1634,8 +1675,8 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
@@ -1666,6 +1707,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(load_y, SGIMgrasTexture),
         VMSTATE_UINT32(load_size, SGIMgrasTexture),
         VMSTATE_UINT32(load_host, SGIMgrasTexture),
+        VMSTATE_UINT32(load_abgr, SGIMgrasTexture),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1691,7 +1733,7 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
                    t->bracket | t->load | t->load_base | t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
-                   t->load_size | t->load_host;
+                   t->load_size | t->load_host | t->load_abgr;
 
     for (int i = 0; i < SGI_MGRAS_TEX_TABLE; i++) {
         any |= t->txmipmap[i] | t->txborder[i] | t->tl_mipmap[i];
