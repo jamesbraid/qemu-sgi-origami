@@ -224,6 +224,11 @@ static const SGIMgrasBoard *mgras_find_board(const char *name)
     return NULL;
 }
 
+bool sgi_mgras_board_known(const char *name)
+{
+    return mgras_find_board(name) != NULL;
+}
+
 /* 0x071708: RA revision 6:4, CMAP revision 2:0, bit 7 set: no video option. */
 static uint8_t mgras_cmap_ra_byte(const SGIMgrasBoard *b)
 {

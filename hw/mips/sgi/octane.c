@@ -11,6 +11,7 @@
 #include "qemu/units.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
@@ -40,8 +41,14 @@
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
 #define OCTANE_SHORT_SPAN (16 * MiB)
+/*
+ * The four Crossbow ports the Octane gives graphics and expansion boards.
+ * Published inventories show IMPACT boards at 10, 11 and 12, and the
+ * stock IDE probes 9 to 12. Widget 11 stays the default.
+ */
+#define OCTANE_GRAPHICS_WIDGET_FIRST 9
+#define OCTANE_GRAPHICS_WIDGET_LAST 12
 #define OCTANE_GRAPHICS_WIDGET 11
-#define OCTANE_LONG_GRAPHICS (OCTANE_GRAPHICS_WIDGET * (1ULL << 36))
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SIZE (2 * MiB)
@@ -63,6 +70,7 @@ typedef struct OctaneMachineState {
     const SGIModelNode *node;
     char *topology_name;
     char *graphics_board;
+    uint8_t graphics_widget;
     MemoryRegion graphics_fabric;
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
@@ -82,12 +90,40 @@ static void octane_set_graphics_board(Object *obj, const char *value,
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
-    if (strcmp(value, "none") && strcmp(value, "si")) {
-        error_setg(errp, "octane graphics must be none or si");
+    if (strcmp(value, "none") && !sgi_mgras_board_known(value)) {
+        error_setg(errp, "octane graphics must be none or an MGRAS board: "
+                   "si, si-t, ssi, mxi, esi, esi-t, essi or emxi");
         return;
     }
     g_free(s->graphics_board);
     s->graphics_board = g_strdup(value);
+}
+
+static void octane_get_graphics_widget(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    uint8_t value = ((OctaneMachineState *)obj)->graphics_widget;
+
+    visit_type_uint8(v, name, &value, errp);
+}
+
+static void octane_set_graphics_widget(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    uint8_t value;
+
+    if (!visit_type_uint8(v, name, &value, errp)) {
+        return;
+    }
+    if (value < OCTANE_GRAPHICS_WIDGET_FIRST ||
+        value > OCTANE_GRAPHICS_WIDGET_LAST) {
+        error_setg(errp, "octane graphics widget must be %d to %d",
+                   OCTANE_GRAPHICS_WIDGET_FIRST, OCTANE_GRAPHICS_WIDGET_LAST);
+        return;
+    }
+    ((OctaneMachineState *)obj)->graphics_widget = value;
 }
 
 static char *octane_get_flash_profile(Object *obj, Error **errp)
@@ -397,7 +433,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     int loaded;
     uint8_t *flash_image = NULL;
     bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
-    bool graphics = !strcmp(s->graphics_board, "si");
+    bool graphics = strcmp(s->graphics_board, "none");
+    unsigned int widget = s->graphics_widget;
     uint16_t links = (1 << 8) | (1 << 15);
 
     s->model = octane_model(octane2 ? "octane2" : "octane",
@@ -617,20 +654,31 @@ static void octane_init_common(MachineState *machine, bool octane2)
                            SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
         object_property_add_child(OBJECT(machine), "mgras", OBJECT(mgras));
         mgras->id = g_strdup("mgras");
+        g_autofree char *slot = g_strdup_printf("%u", widget);
+
         qdev_prop_set_uint32(mgras, "module", 0);
-        qdev_prop_set_string(mgras, "slot",
-                             G_STRINGIFY(OCTANE_GRAPHICS_WIDGET));
-        qdev_prop_set_string(mgras, "board", "si");
+        qdev_prop_set_string(mgras, "slot", slot);
+        qdev_prop_set_string(mgras, "board", s->graphics_board);
+        /*
+         * The PROM names the board from its serial-number record. Barcode
+         * and ROM serial are fictitious, like the other IP30 identities.
+         */
+        qdev_prop_set_bit(mgras, "board-record", true);
+        qdev_prop_set_string(mgras, "board-record-barcode",
+                             octane2 ? "SIM3020005" : "SIM3010005");
+        qdev_prop_set_uint64(mgras, "board-record-serial",
+                             octane2 ? 0x7a3002000005ULL :
+                                       0x7a3001000005ULL);
         object_property_set_link(OBJECT(mgras), "fabric",
                                  OBJECT(&s->graphics_fabric), &error_fatal);
         sysbus_realize(SYS_BUS_DEVICE(mgras), &error_fatal);
         face = sysbus_mmio_get_region(SYS_BUS_DEVICE(mgras), 0);
-        if (!sgi_xbow_attach_endpoint(crossbow, OCTANE_GRAPHICS_WIDGET,
+        if (!sgi_xbow_attach_endpoint(crossbow, widget,
                                       face, face, &error_fatal)) {
             return;
         }
         object_unref(OBJECT(mgras));
-        links |= 1 << OCTANE_GRAPHICS_WIDGET;
+        links |= 1 << widget;
     }
     qdev_prop_set_uint16(xbow, "links-present", links);
     qdev_prop_set_uint16(xbow, "startup-links-alive", links);
@@ -649,16 +697,15 @@ static void octane_init_common(MachineState *machine, bool octane2)
         /* Packet ingress exists only after Crossbow realization. */
         memory_region_init_alias(&s->graphics_route, OBJECT(machine),
                                  "octane.graphics-fabric-route",
-                                 sgi_xbow_packet_ingress(crossbow,
-                                                        OCTANE_GRAPHICS_WIDGET),
+                                 sgi_xbow_packet_ingress(crossbow, widget),
                                  0, SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
         memory_region_add_subregion(&s->graphics_fabric, 0, &s->graphics_route);
         memory_region_init_alias(&s->graphics_long, OBJECT(machine),
                                  "octane.graphics-long",
                                  sgi_xbow_packet_ingress(crossbow, 8),
-                                 (uint64_t)OCTANE_GRAPHICS_WIDGET << 48,
+                                 (uint64_t)widget << 48,
                                  OCTANE_LONG_SPAN);
-        memory_region_add_subregion(physical, OCTANE_LONG_GRAPHICS,
+        memory_region_add_subregion(physical, widget * OCTANE_LONG_SPAN,
                                     &s->graphics_long);
     }
 
@@ -725,7 +772,15 @@ static void octane_instance_init_common(Object *obj, const char *product)
     object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
                             octane_set_graphics_board);
     object_property_set_description(obj, "graphics-board",
-                                    "Optional textureless SI board: none or si");
+                                    "Optional IMPACT (MGRAS) board: none, si, "
+                                    "si-t, ssi, mxi, esi, esi-t, essi or emxi");
+    s->graphics_widget = OCTANE_GRAPHICS_WIDGET;
+    object_property_add(obj, "graphics-widget", "uint8",
+                        octane_get_graphics_widget,
+                        octane_set_graphics_widget, NULL, NULL);
+    object_property_set_description(obj, "graphics-widget",
+                                    "Crossbow port of the graphics board, "
+                                    "9 to 12 (default 11)");
     s->flash_profile = g_strdup("raw");
     s->flash_select = UINT64_MAX;
     s->flash_strap = UINT64_MAX;

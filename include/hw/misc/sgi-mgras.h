@@ -458,6 +458,9 @@ void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
  * layer, hw/mips/sgi/xio-widget.h). Shared with hw/misc/sgi-mgras-raster.c
  * so host-memory DMA reads use the same routing as interrupt packets.
  */
+/* Whether `name` is a board the "board" property accepts. */
+bool sgi_mgras_board_known(const char *name);
+
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric);
 
