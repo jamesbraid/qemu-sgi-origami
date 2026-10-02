@@ -489,6 +489,54 @@ static void test_gl_texture_levels_by_block(void)
 }
 
 /*
+ * A level loaded as strips inside one bracket, as perfly's client loads
+ * its 256-wide levels 64 texels at a time: each transfer carries its
+ * strip's x and y at GE parameters 0xe34 and 0xe35 and its size in the
+ * size word, and lands there in the level. The two 2-by-2 strips of a
+ * 4-by-2 level, sent right one first, make the whole level; a strip that
+ * would run past the level's edge stores nothing and leaves it whole.
+ */
+static void test_gl_texture_level_from_strips(void)
+{
+    static const uint32_t past[6] = { 3, 0, 2, 2, 2 << 16 | 2, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], strip[2][16], other[16];
+
+    tex_texels(texels);
+    memset(other, 0x5a, sizeof(other));
+    for (int k = 0; k < 2; k++) {
+        for (int y = 0; y < 2; y++) {
+            memcpy(&strip[k][8 * y], &texels[4 * (4 * y + 2 * k)], 8);
+        }
+    }
+    gl_word(t, TEX_LOAD_OPEN);
+    for (int k = 1; k >= 0; k--) {
+        const uint32_t box[6] = { 2 * k, 0, 2, 2, 2 << 16 | 2, 0 };
+
+        tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, strip[k], 2, 2,
+                    box, false);
+    }
+    gl_word(t, TEX_LOAD_CLOSE);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, other, 2, 2, past,
+                true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 3, 1), ==, 0x730087);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
  * The SI has no TRAM: the same words draw the quad white, the records'
  * block and the transfer are consumed, and the fence after them parses.
  */
@@ -1658,6 +1706,8 @@ int main(int argc, char **argv)
                    test_gl_texture_unsupported_draws_untextured);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-levels-by-block",
                    test_gl_texture_levels_by_block);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-level-from-strips",
+                   test_gl_texture_level_from_strips);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-textureless-board-ignores",
                    test_gl_texture_textureless_board_ignores);
