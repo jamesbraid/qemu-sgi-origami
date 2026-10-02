@@ -7990,20 +7990,23 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     /*
      * The shared GL context to OpenGL's initial state (identity matrices,
      * white current colour, depth test off), unbound until the first GL
-     * command binds the drawable. sgi_gl_init() only memsets the struct, so it
+     * command binds the drawable. A guest reset can land mid-primitive, with
+     * an open polygon's vertex buffer still allocated; sgi_gl_reset() frees
+     * it before reinitializing, where sgi_gl_init() alone would leak it. It
      * is safe here even before realize allocates the colour plane. Its
      * viewport starts empty: nothing is drawn until the client's combined
      * matrix arrives (odyssey_gl_load_combined()).
      */
-    sgi_gl_init(&s->gl_ctx, ODSY_GL_CONTEXT_HW_ID);
+    sgi_gl_reset(&s->gl_ctx, ODSY_GL_CONTEXT_HW_ID);
     {
         /*
          * Opt into the shared context's per-face polygon modes (0x0415)
          * and line stipple: unset, it silently keeps every face at legacy
-         * FILL no matter what 0x0415 decodes to. The sink built here
-         * always carries the checked draw callback above, this call's one
-         * precondition, so it cannot fail; reset is also never reached
-         * mid-primitive, the other precondition.
+         * FILL no matter what 0x0415 decodes to. The sink built here always
+         * carries the checked draw callback above, this call's one
+         * precondition; sgi_gl_reset() above has already cleared in_begin,
+         * satisfying the other precondition even when reset lands
+         * mid-primitive.
          */
         SGIGLSink sink = odyssey_gl_sink(s);
 
@@ -8324,6 +8327,7 @@ static void odyssey_unrealize(DeviceState *dev)
     SGIOdysseyState *s = SGI_ODYSSEY(dev);
 
     oc->parent_unrealize(dev);
+    sgi_gl_cleanup(&s->gl_ctx);
     address_space_destroy(&s->fabric_as);
     sgi_scanout_cleanup(&s->scanout);
     g_free(s->did);
