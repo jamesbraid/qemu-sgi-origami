@@ -2682,14 +2682,16 @@ static void test_power_migration(void)
     }
 }
 
-static void test_power_migration_mismatch(void)
+static void test_power_migration_mismatch(const void *data)
 {
+    unsigned kind = GPOINTER_TO_UINT(data);
     GError *error = NULL;
     g_autofree char *dir = g_dir_make_tmp("ni-power-mismatch-XXXXXX", &error);
     g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
-    QTestState *from = management_start(POWER_OPTIONS);
-    QTestState *to = management_start(POWER_OPTIONS
+    QTestState *from = management_start(kind == 2 ? "" : POWER_OPTIONS);
+    QTestState *to = management_start(kind == 1 ? "-incoming defer" :
+        kind == 2 ? POWER_OPTIONS " -incoming defer" : POWER_OPTIONS
         " -global sgi-pci-expansion-ni-fixture.initial-power=off -incoming defer");
 
     g_assert_no_error(error);
@@ -3243,8 +3245,14 @@ int main(int argc, char **argv)
                    test_power_initial_off);
     qtest_add_func("/sgi/pci-expansion-ni/power-migration",
                    test_power_migration);
-    qtest_add_func("/sgi/pci-expansion-ni/power-migration-mismatch",
-                   test_power_migration_mismatch);
+    qtest_add_data_func("/sgi/pci-expansion-ni/power-migration-mismatch",
+                        NULL, test_power_migration_mismatch);
+    qtest_add_data_func("/sgi/pci-expansion-ni/"
+                        "power-migration-selected-to-absent",
+                        GUINT_TO_POINTER(1), test_power_migration_mismatch);
+    qtest_add_data_func("/sgi/pci-expansion-ni/"
+                        "power-migration-absent-to-selected",
+                        GUINT_TO_POINTER(2), test_power_migration_mismatch);
     for (unsigned placement = 0; placement < 12; placement++) {
         g_autofree char *name = g_strdup_printf(
             "/sgi/pci-expansion-ni/adapter-placement/head%u-device%u",
