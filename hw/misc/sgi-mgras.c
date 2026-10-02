@@ -5,11 +5,13 @@
 #include "qemu/timer.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-texture.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
@@ -108,6 +110,13 @@
  * Technical Report's feature list says only MXI does, while its Table 4.3
  * lists SI and SSI visuals at 1600x1200 from an IRIX 5.3 and 6.2 patch.
  * The model has no mode change, so every board keeps 1280x1024.
+ *
+ * The board record names the board the way published Octane and Origin
+ * inventories do: GM10 (SI, part 030-0938, seen on an SI+T), GM20 (SSI and
+ * MXI, 030-0957), MOT10 (ESI, 030-1241) and MOT20 (ESSI and EMXI,
+ * 030-1240). Each revision letter is one a capture shows. The stock IP30
+ * PROM takes the E-series mark from this name ("Name:MOT"), not from the GE
+ * revision IRIX reads.
  */
 static const SGIMgrasBoard mgras_boards[] = {
     {
@@ -118,6 +127,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM10", .record_part = "030-0938-003",
+        .record_revision = "U",
         .implemented = true,
     }, {
         .name = "si-t", .hinv_name = "SI with texture option",
@@ -127,6 +138,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM10", .record_part = "030-0938-003",
+        .record_revision = "U",
     }, {
         .name = "ssi", .hinv_name = "SSI",
         .width = 1280, .height = 1024,
@@ -135,6 +148,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM20", .record_part = "030-0957-003",
+        .record_revision = "N",
         .implemented = true,
     }, {
         .name = "mxi", .hinv_name = "MXI",
@@ -144,6 +159,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM20", .record_part = "030-0957-003",
+        .record_revision = "N",
     }, {
         /*
          * Approximated beyond identity: the model renders an E-series
@@ -160,6 +177,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT10", .record_part = "030-1241-002",
+        .record_revision = "J",
         .implemented = true,
     }, {
         .name = "esi-t", .hinv_name = "ESI with texture option",
@@ -169,6 +188,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT10", .record_part = "030-1241-002",
+        .record_revision = "J",
     }, {
         .name = "essi", .hinv_name = "ESSI",
         .width = 1280, .height = 1024,
@@ -177,6 +198,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT20", .record_part = "030-1240-003",
+        .record_revision = "G",
         .implemented = true,
     }, {
         .name = "emxi", .hinv_name = "EMXI",
@@ -186,6 +209,8 @@ static const SGIMgrasBoard mgras_boards[] = {
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT20", .record_part = "030-1240-003",
+        .record_revision = "G",
     },
 };
 
@@ -852,8 +877,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* Retrace status content is unsupported. */
     case SGI_MGRAS_RETRACE_STATUS_1: return 0;
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
-    /* Generic widget readiness is an immediate functional approximation. */
-    case 0x011098: return 0x2;
+    case SGI_MGRAS_NIC:
+        /*
+         * Without a fitted record, keep the older answer: slot done and
+         * the wire sampled low, an approximation from before the chip.
+         */
+        return s->board_record ? s->nic_control : SGI_MGRAS_NIC_DONE;
     /*
      * FIFO readiness is immediate. Exact thresholds remain unknown.
      * Bit 0 is the sync bit pixel reads wait on: the kernel and the
@@ -959,6 +988,23 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         mgras_error(s, addr, size, "unsupported read");
         return 0;
     }
+}
+
+/*
+ * One MicroLAN bit slot on the board's serial-number chip. The stock IP30
+ * PROM and IDE write the low-drive time in bits 19:10 and the sample
+ * offset in bits 9:2, wait for bit 1 and take the wire level from bit 0,
+ * as on the Bridge and HEART masters. The slot completes inside the write:
+ * real timing is unknown, and both readers poll the done bit first.
+ */
+static void mgras_nic_slot(SGIMgrasState *s, uint32_t value)
+{
+    uint32_t pulse = (value >> SGI_MGRAS_NIC_PULSE_SHIFT) & 0x3ff;
+    uint32_t sample = (value >> SGI_MGRAS_NIC_SAMPLE_SHIFT) & 0xff;
+    bool level = sgi_onewire_slot(s->nic_bus, pulse, sample);
+
+    s->nic_control = (value & SGI_MGRAS_NIC_WRITABLE) | SGI_MGRAS_NIC_DONE |
+                     (level ? SGI_MGRAS_NIC_LEVEL : 0);
 }
 
 static uint64_t mgras_read(void *opaque, hwaddr addr, unsigned size)
@@ -1170,8 +1216,11 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     case SGI_MGRAS_HQ_FLAGS_CLEAR: s->hq_flags &= ~(uint32_t)value; return;
     /* Store this unresolved scheduling argument without interpreting it. */
     case SGI_MGRAS_RETRACE_ACK: return;
-    /* The generic readiness argument has no modeled side effect. */
-    case 0x011098: return;
+    case SGI_MGRAS_NIC:
+        if (s->board_record) {
+            mgras_nic_slot(s, value);
+        }
+        return;
     /* The approximated status register accepts a clearing write. */
     case 0x020000: return;
     case 0x130500:
@@ -1416,6 +1465,8 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->public_glyph_armed = s->public_glyph_wide_valid = false;
     s->gl_re_count_word = s->gl_re_count_tokens = 0;
     sgi_mgras_texture_board_reset(s);
+    /* An idle master reads done; its reset value is unmeasured. */
+    s->nic_control = SGI_MGRAS_NIC_DONE;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1674,6 +1725,26 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     SGIMgrasState *s = SGI_MGRAS(board);
     DeviceState *dev = DEVICE(board);
 
+    /*
+     * The serial-number chip's bus is built here, not at instance init:
+     * moving the board under its module unparents it, which drops any
+     * bus it already had.
+     */
+    s->nic_bus = onewire_create_bus(dev, "nic");
+    if (s->board_record) {
+        SGIBoardRecord record = {
+            .barcode = s->board_record_barcode,
+            .part = s->board->record_part,
+            .revision = s->board->record_revision,
+            .name = s->board->record_name,
+        };
+
+        if (!sgi_board_record_attach(OBJECT(s), "nic-chip", s->nic_bus,
+                                     &record, s->board_record_serial,
+                                     "MGRAS", errp)) {
+            return false;
+        }
+    }
     sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
     mgras_update_timing(s, false);
     device_cold_reset(dev);
@@ -1891,6 +1962,22 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                TYPE_SGI_MGRAS "/gl-contexts", SGIMgrasState,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
+static bool mgras_nic_needed(void *opaque)
+{
+    return SGI_MGRAS(opaque)->board_record;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_nic = {
+    .name = TYPE_SGI_MGRAS "/nic",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_nic_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(nic_control, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 32, .minimum_version_id = 32,
     .pre_load = mgras_pre_load,
@@ -2089,6 +2176,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_mgras_timing,
         &vmstate_sgi_mgras_slots,
+        &vmstate_sgi_mgras_nic,
         &vmstate_sgi_mgras_gl_contexts,
         &vmstate_sgi_mgras_gl_readback,
         &vmstate_sgi_mgras_gl_block,
@@ -2111,6 +2199,16 @@ static const Property mgras_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),
+    /*
+     * Fit the board's serial-number record. Off by default, which keeps
+     * the older always-done answer at 0x011098 for machines that have not
+     * chosen a record. The default barcode and serial are fictitious.
+     */
+    DEFINE_PROP_BOOL("board-record", SGIMgrasState, board_record, false),
+    DEFINE_PROP_STRING("board-record-barcode", SGIMgrasState,
+                       board_record_barcode),
+    DEFINE_PROP_UINT64("board-record-serial", SGIMgrasState,
+                       board_record_serial, 0x7a3000000b01ULL),
 };
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)

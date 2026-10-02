@@ -2,6 +2,7 @@
 #ifndef HW_MISC_SGI_MGRAS_H
 #define HW_MISC_SGI_MGRAS_H
 
+#include "hw/1wire/onewire.h"
 #include "hw/core/resettable.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-widget.h"
@@ -195,6 +196,17 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_INT_DEST_LOWER_ALT SGI_XIO_WIDGET_INT_DEST_LOWER
 
 /* Interrupt sources remain separate, but their routing is approximate. */
+/*
+ * The MicroLAN master for the board's serial-number chip: a 32-bit word,
+ * low-drive time in bits 19:10, sample offset in bits 9:2, done in bit 1
+ * and the sampled wire level in bit 0.
+ */
+#define SGI_MGRAS_NIC 0x011098
+#define SGI_MGRAS_NIC_LEVEL (1u << 0)
+#define SGI_MGRAS_NIC_DONE (1u << 1)
+#define SGI_MGRAS_NIC_SAMPLE_SHIFT 2
+#define SGI_MGRAS_NIC_PULSE_SHIFT 10
+#define SGI_MGRAS_NIC_WRITABLE 0x000ffffcu
 #define SGI_MGRAS_HQ_VECTOR_DEST_UPPER 0x011060
 #define SGI_MGRAS_HQ_VECTOR_DEST_LOWER 0x011068
 #define SGI_MGRAS_HQ_VECTORS 0x011070
@@ -290,6 +302,10 @@ typedef struct SGIMgrasBoard {
     uint8_t cmap_revision;      /* 0x071708 bits 2:0 */
     uint8_t ra_revision;        /* 0x071708 bits 6:4 */
     bool video_option;          /* 0x071708 bit 7 clear */
+    /* The serial-number chip's board record: name, part and revision. */
+    const char *record_name;
+    const char *record_part;
+    const char *record_revision;
     /* The model renders everything IRIX drives on this board. */
     bool implemented;
 } SGIMgrasBoard;
@@ -459,6 +475,16 @@ struct SGIMgrasState {
     Object *pi;
     /* Host-only: the missing link has been logged once. */
     bool pi_unlinked_logged;
+    /*
+     * The board's serial-number chip behind the MicroLAN register at
+     * 0x011098. Without a fitted record the register keeps the older
+     * always-done answer.
+     */
+    OneWireBus *nic_bus;
+    bool board_record;
+    char *board_record_barcode;
+    uint64_t board_record_serial;
+    uint32_t nic_control;
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
     uint32_t widget_control;
