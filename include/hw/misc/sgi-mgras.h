@@ -391,6 +391,7 @@ typedef struct SGIMgrasTexture {
     uint32_t t_offset;          /* the 0x5f04 float's bits */
     uint32_t on;                /* 0x0b00 came after the last 0x0c00: 0/1 */
     uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
+    uint32_t loaded_levels;      /* levels with committed interior uploads */
     /*
      * A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads:
      * the level, the rectangle of it, x, y and h << 16 | w, the image's

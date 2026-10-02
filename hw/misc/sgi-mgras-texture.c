@@ -1423,6 +1423,7 @@ static void mgras_tex_commit(SGIMgrasState *s)
         goto done;
     }
     mgras_tram_mark(s, start, ((uint64_t)slot << log2w) << log2h);
+    t->loaded_levels |= 1u << level;
     trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
                                   1u << log2w, 1u << log2h, mode);
 done:
@@ -1610,7 +1611,8 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
 
     log2w = log2w > n ? log2w - n : 0;
     log2h = log2h > n ? log2h - n : 0;
-    if (!mgras_tram_place(t->base, t->txmipmap[n], log2w, log2h, mode,
+    if (!(t->loaded_levels & (1u << n)) ||
+        !mgras_tram_place(t->base, t->txmipmap[n], log2w, log2h, mode,
                           &view->bit) ||
         !mgras_tram_written(s, view->bit / MGRAS_TRAM_BLOCK_BITS)) {
         return false;
@@ -1759,6 +1761,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
     uint64_t bit;
 
     if (t->on > 1 || t->bracket > 1 || t->load > 1 ||
+        (t->loaded_levels & ~((1u << SGI_MGRAS_TEX_LEVELS) - 1)) ||
         t->txaddr >= SGI_MGRAS_TEX_TABLE || t->tl_addr >= SGI_MGRAS_TEX_TABLE ||
         t->staging) {
         return false;
@@ -1787,8 +1790,8 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 8,
-    .minimum_version_id = 8,
+    .version_id = 9,
+    .minimum_version_id = 9,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
@@ -1810,6 +1813,7 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(t_offset, SGIMgrasTexture),
         VMSTATE_UINT32(on, SGIMgrasTexture),
         VMSTATE_UINT32(bracket, SGIMgrasTexture),
+        VMSTATE_UINT32(loaded_levels, SGIMgrasTexture),
         VMSTATE_UINT32(load, SGIMgrasTexture),
         VMSTATE_UINT32(load_base, SGIMgrasTexture),
         VMSTATE_UINT32(load_block, SGIMgrasTexture),
@@ -1844,7 +1848,8 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
                    t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
-                   t->bracket | t->load | t->load_base | t->load_block |
+                   t->bracket | t->load | t->loaded_levels | t->load_base |
+                   t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
                    t->load_size | t->load_comps | t->load_csize |
                    t->load_abgr;
