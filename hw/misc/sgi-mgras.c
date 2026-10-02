@@ -741,7 +741,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
         addr != 0x071c88 && addr != 0x071308 && addr != SGI_MGRAS_I2C_STROBE &&
         addr != 0x071708 && addr != SGI_MGRAS_BOARD_INVENTORY &&
-        addr != SGI_MGRAS_DAC_LUT_DATA_2) {
+        addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG) {
         mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -867,7 +867,12 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
     case SGI_MGRAS_DAC_LUT_DATA: return s->dac_lut_data[0];
     case SGI_MGRAS_DAC_LUT_DATA_2: return mgras_dac_reg_read(s);
-    case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
+    /*
+     * SGI's IP30 IDE writes walking patterns here a byte at a time and
+     * fails the DAC unless each byte reads back whole.
+     */
+    case SGI_MGRAS_DAC_CONFIG:
+        return size == 1 ? (s->dac_config & 0xff) : s->dac_config;
     case SGI_MGRAS_DAC_LUT_INDEX_LOW: return s->dac_lut_index_low;
     case 0x008000: return 0;
     /* Keep unresolved status bits separate from modeled pending sources. */
