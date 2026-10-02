@@ -64,8 +64,7 @@ static void test_gl_native_texcoord_migration(void)
 static void test_gl_pixels_float_migration(void)
 {
     static const uint32_t program[] = {
-        0x1f44, 0, 0x1655, 0xd91, 0x3e65, 0x1d6, 0x156a, 0x1b4,
-        0x352d, 0xdf3,
+        0x1655, 0, 0x3e65, 0x1d6, 0x156a, 0x1b4, 0x352d, 0xdf3,
     };
     static const uint32_t unpack[] = {
         0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
