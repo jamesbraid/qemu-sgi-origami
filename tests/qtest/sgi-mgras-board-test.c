@@ -1421,6 +1421,115 @@ static void test_board_identity(gconstpointer data)
     qtest_quit(s);
 }
 
+/* One MicroLAN bit slot on the board's chip; returns the sampled level. */
+static bool board_nic_slot(QTestState *s, unsigned int pulse,
+                           unsigned int sample)
+{
+    uint32_t result;
+
+    qtest_writel(s, REG_BRINGUP_STEP, (pulse << 10) | (sample << 2));
+    result = qtest_readl(s, REG_BRINGUP_STEP);
+    g_assert_cmphex(result & 0x2, ==, 0x2);
+    g_assert_cmphex(result & 0x000ffffc, ==, (pulse << 10) | (sample << 2));
+    return result & 1;
+}
+
+static void board_nic_write_byte(QTestState *s, uint8_t value)
+{
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        board_nic_slot(s, value & (1u << bit) ? 6 : 80,
+                       value & (1u << bit) ? 13 : 30);
+    }
+}
+
+static uint8_t board_nic_read_byte(QTestState *s)
+{
+    uint8_t value = 0;
+
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        value |= board_nic_slot(s, 6, 13) << bit;
+    }
+    return value;
+}
+
+typedef struct MgrasBoardRecordExpect {
+    const char *board;
+    const char *name;
+    const char *part;
+    const char *revision;
+} MgrasBoardRecordExpect;
+
+/* The board names and parts published Octane and Origin inventories show. */
+static const MgrasBoardRecordExpect mgras_board_record_expect[] = {
+    { "si",    "GM10",  "030-0938-003", "U" },
+    { "si-t",  "GM10",  "030-0938-003", "U" },
+    { "ssi",   "GM20",  "030-0957-003", "N" },
+    { "mxi",   "GM20",  "030-0957-003", "N" },
+    { "esi",   "MOT10", "030-1241-002", "J" },
+    { "esi-t", "MOT10", "030-1241-002", "J" },
+    { "essi",  "MOT20", "030-1240-003", "G" },
+    { "emxi",  "MOT20", "030-1240-003", "G" },
+};
+
+/*
+ * With its record fitted, the chip behind 0x011098 answers a reset with
+ * presence, its ROM with the DS2505 family and the configured serial, and
+ * its memory with the variant's board name and part at the record's fixed
+ * offsets, which is where the PROM's "Name:" text comes from.
+ */
+static void test_board_record(gconstpointer data)
+{
+    const MgrasBoardRecordExpect *e = data;
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s"
+        " -global sgi-mgras.x-unimplemented-board=on"
+        " -global sgi-mgras.board-record=on"
+        " -global sgi-mgras.board-record-barcode=SIMTEST001"
+        " -global sgi-mgras.board-record-serial=0x123456789abc", e->board);
+    QTestState *s = qtest_init(args);
+    uint8_t rom[8], record[64];
+    char text[16];
+
+    g_assert_false(board_nic_slot(s, 500, 65));
+    board_nic_write_byte(s, 0x33);
+    for (unsigned int i = 0; i < sizeof(rom); i++) {
+        rom[i] = board_nic_read_byte(s);
+    }
+    g_assert_cmphex(rom[0], ==, 0x0b);
+    g_assert_cmphex(rom[1], ==, 0xbc);
+    g_assert_cmphex(rom[6], ==, 0x12);
+
+    g_assert_false(board_nic_slot(s, 500, 65));
+    board_nic_write_byte(s, 0xcc);
+    board_nic_write_byte(s, 0xf0);
+    board_nic_write_byte(s, 0);
+    board_nic_write_byte(s, 0);
+    for (unsigned int i = 0; i < sizeof(record); i++) {
+        record[i] = board_nic_read_byte(s);
+    }
+    g_assert_cmphex(record[0], ==, 0x01);
+    g_assert_cmpmem(record + 1, 10, "SIMTEST001", 10);
+    g_assert_cmpmem(record + 21, 9, e->part, 9);
+    g_assert_cmpmem(record + 35, 3, e->part + 9, 3);
+    g_assert_cmpuint(record[38], ==, e->revision[0]);
+    memset(text, ' ', sizeof(text));
+    memcpy(text, e->name, strlen(e->name));
+    g_assert_cmpmem(record + 48, 14, text, 14);
+
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
+/* Without a record the register keeps its older always-done answer. */
+static void test_board_record_absent(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(s, REG_BRINGUP_STEP, (500u << 10) | (65u << 2));
+    g_assert_cmphex(qtest_readl(s, REG_BRINGUP_STEP), ==, 0x2);
+    qtest_quit(s);
+}
+
 /*
  * Select an RE for direct access: a raster write to RSS register 0x112.
  * The caller enters a context first.
@@ -1812,6 +1921,15 @@ int main(int argc, char **argv)
                    test_board_ge_revision_until_query);
     qtest_add_func("sn0/origin2000/mgras/board-unknown-refused",
                    test_board_unknown_refused);
+    qtest_add_func("sn0/origin2000/mgras/board-record-absent",
+                   test_board_record_absent);
+    for (size_t i = 0; i < ARRAY_SIZE(mgras_board_record_expect); i++) {
+        const MgrasBoardRecordExpect *e = &mgras_board_record_expect[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/mgras/board-record/%s", e->board);
+
+        qtest_add_data_func(path, e, test_board_record);
+    }
     for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
         const MgrasBoardExpect *e = &mgras_board_expect[i];
         g_autofree char *path = g_strdup_printf(
