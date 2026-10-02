@@ -1088,6 +1088,35 @@ static void sgi_gl_hold(SGIGLContext *c, unsigned int n, const float *v)
     memcpy(c->held[n], v, sizeof(c->held[n]));
 }
 
+void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
+                           const uint32_t *bits, unsigned int components,
+                           float out[SGI_GL_VERTEX_FLOATS])
+{
+    memset(out, 0, SGI_GL_VERTEX_FLOATS * sizeof(float));
+    out[SGI_GL_V_POSITION + 3] = 1.0f;
+    memcpy(&out[SGI_GL_V_POSITION], bits, components * sizeof(uint32_t));
+    memcpy(&out[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
+    memcpy(&out[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
+    sgi_gl_texture_coord(c, &out[SGI_GL_V_TEXCOORD]);
+    memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
+    out[SGI_GL_V_INDEX] = c->cur_index;
+    /* Material and lighting belong to the instant this vertex arrived. */
+    if (sgi_gl_lit(c)) {
+        sgi_gl_light_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
+                            &out[SGI_GL_V_COLOR], &out[SGI_GL_V_BACK_COLOR]);
+    } else {
+        memcpy(&out[SGI_GL_V_BACK_COLOR], c->cur_color,
+               sizeof(c->cur_color));
+    }
+    if (c->polygon.enabled &&
+        (mode == SGI_GL_TRIANGLE_STRIP || mode == SGI_GL_TRIANGLE_FAN ||
+         mode == SGI_GL_QUAD_STRIP)) {
+        uint32_t edge = 1;
+
+        memcpy(&out[SGI_GL_V_EDGE], &edge, sizeof(edge));
+    }
+}
+
 /*
  * One vertex of the primitive open since glBegin (OpenGL 1.2.1, 2.6.1),
  * carrying the current attributes. The context holds at most three
@@ -1109,34 +1138,8 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
         qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex outside glBegin ignored\n");
         return;
     }
-    cur[SGI_GL_V_POSITION + 3] = 1.0f;
-    memcpy(&cur[SGI_GL_V_POSITION], pos, components * sizeof(float));
-    memcpy(&cur[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
-    memcpy(&cur[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
-    sgi_gl_texture_coord(c, &cur[SGI_GL_V_TEXCOORD]);
-    memcpy(&cur[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
-    cur[SGI_GL_V_INDEX] = c->cur_index;
-    /*
-     * Lit where it arrives, under the material and matrices current then:
-     * glMaterial may change between the vertices of a primitive, and the
-     * light, light model and modelview may not (2.13.2, 2.6.3).
-     */
-    if (sgi_gl_lit(c)) {
-        sgi_gl_light_vertex(c, &cur[SGI_GL_V_POSITION], c->cur_normal,
-                            &cur[SGI_GL_V_COLOR], &cur[SGI_GL_V_BACK_COLOR]);
-    } else {
-        memcpy(&cur[SGI_GL_V_BACK_COLOR], c->cur_color,
-               sizeof(c->cur_color));
-    }
-
-    if (c->polygon.enabled &&
-        (c->begin_mode == SGI_GL_TRIANGLE_STRIP ||
-         c->begin_mode == SGI_GL_TRIANGLE_FAN ||
-         c->begin_mode == SGI_GL_QUAD_STRIP)) {
-        uint32_t edge = 1;
-
-        memcpy(&cur[SGI_GL_V_EDGE], &edge, sizeof(edge));
-    }
+    sgi_gl_capture_vertex(c, c->begin_mode, (const uint32_t *)pos,
+                          components, cur);
     if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
         SGIGLPolygonAssembly *p = &c->polygon;
 
@@ -2941,6 +2944,17 @@ bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
     /* The oldest retained vertex of a resumed strip is not sent. */
     c->strip_prev = c->strip_swap = 0;
     return true;
+}
+
+void sgi_gl_discard_primitive(SGIGLContext *c)
+{
+    if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
+        sgi_gl_polygon_release(&c->polygon);
+    }
+    c->in_begin = false;
+    c->begin_mode = 0;
+    c->nheld = 0;
+    c->strip_odd = c->strip_prev = c->strip_swap = 0;
 }
 
 bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)

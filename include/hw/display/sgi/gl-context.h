@@ -1133,6 +1133,12 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
 bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
                              const float (*v)[SGI_GL_VERTEX_FLOATS],
                              unsigned int k, uint32_t count);
+/* Close an interrupted primitive without drawing a line-loop edge. */
+void sgi_gl_discard_primitive(SGIGLContext *c);
+/* Capture one vertex with current attributes and lighting, without drawing. */
+void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
+                           const uint32_t *bits, unsigned int components,
+                           float out[SGI_GL_VERTEX_FLOATS]);
 
 /*
  * Migration of one context: every field of SGIGLContext, described field
