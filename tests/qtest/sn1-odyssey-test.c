@@ -4821,6 +4821,88 @@ static void test_command_fifo_gl_depth_sign(void)
     qtest_quit(qts);
 }
 
+/* Native orthographic rows put the depth scale in block 16's fourth word. */
+static void test_command_fifo_gl_depth_scale(void)
+{
+    static const struct {
+        uint32_t row_z, row_w, block_sign;
+        float eye_z, clear_depth;
+    } cases[] = {
+        { 0x4e7fffc0, 0x4e7fffbf, 0xbf000000, -2.0f, 0.2f },
+        { 0x4d4a4555, 0x4d4a4554, 0xbe638e39, -2.0f, 0.1f },
+        { 0x4c358a1b, 0x4c358a15, 0xbdd79436, -5.0f, 0.1f },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        uint32_t matrix[16];
+        uint32_t triangle[ARRAY_SIZE(odsy_near_yellow)];
+        uint32_t zbits, clear_bits;
+        float clear_word = cases[i].clear_depth * (2 * 4294950912.0f);
+        QTestState *qts = board_start("");
+
+        memcpy(&zbits, &cases[i].eye_z, sizeof(zbits));
+        memcpy(&clear_bits, &clear_word, sizeof(clear_bits));
+        memcpy(matrix, odsy_captured_window_transform, sizeof(matrix));
+        matrix[10] = cases[i].row_z;
+        matrix[11] = cases[i].row_w;
+        memcpy(triangle, odsy_near_yellow, sizeof(triangle));
+        triangle[2] = triangle[5] = triangle[8] = zbits;
+
+        probe_window(qts);
+        push_window_transform(qts, matrix);
+        push_block_16(qts, cases[i].block_sign);
+        set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+        set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, 0, 0, ODSY_F_ONE, clear_bits);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+        push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, triangle);
+        g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+        push_depth_clear(qts, 0, 0, ODSY_F_ONE, ODSY_DEPTH_2S);
+        set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+        push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0, triangle);
+        g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
+                        ODSY_PLANE_YELLOW);
+        qtest_quit(qts);
+    }
+}
+
+/* Zero and non-finite block words keep the previous sign-only mapping. */
+static void test_command_fifo_gl_depth_scale_fallback(void)
+{
+    static const uint32_t malformed[] = { 0, 0x7fc00000, 0x7f800000 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(malformed) + 1; i++) {
+        QTestState *qts = board_start("");
+
+        for (unsigned pass = 0; pass < 2; pass++) {
+            if (pass) {
+                qtest_system_reset(qts);
+            }
+            window_origin(qts, 256, 256);
+            did_compare(qts, 0);
+            window_clip(qts,
+                        (const uint32_t[][4]) { { 256, 256, 383, 383 } }, 1);
+            push_window_transform(qts, odsy_captured_window_transform);
+            if (!pass && i < ARRAY_SIZE(malformed)) {
+                push_block_16(qts, malformed[i]);
+            }
+            set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+            set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+            set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+            push_depth_clear(qts, 0, 0, ODSY_F_ONE, ODSY_DEPTH_2S);
+            set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+            push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, 0,
+                             odsy_near_yellow);
+            g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==,
+                            ODSY_PLANE_YELLOW);
+        }
+        qtest_quit(qts);
+    }
+}
+
 /*
  * glClear(GL_DEPTH_BUFFER_BIT) alone: the colour write mask is 0, so the
  * colour operands are ignored; the test passes arbitrary non-zero ones to
@@ -11276,6 +11358,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_clip_plane);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-depth-scale",
+                   test_command_fifo_gl_depth_scale);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-depth-scale-fallback",
+                   test_command_fifo_gl_depth_scale_fallback);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
                    test_command_fifo_gl_colour_mask);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-only-clear",

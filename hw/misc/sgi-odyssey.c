@@ -5153,18 +5153,16 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, bool has_z)
  * no flip is needed. Clipping is then the window's own rectangles; where the
  * board clips geometry that leaves the window is unknown.
  *
- * Depth: for eye position e the board's depth is
- *     depth_board = sgn * (row2 . e) / (row3 . e),
- * sgn the sign of the fourth float behind index 16 (ODSY_GL_LOAD_4F), in
- * units where the client's [0, 1] is [0, 2S] (ODSY_GL_DEPTH_S). INFERRED:
- * the one rule that fits the identity (row 2 = S z + S, sign +1), the
- * glOrtho(-1, 1, -1, 1, -1, 1) (S z - S, sign -1) and the glFrustum(-1, 1,
- * -1, 1, 1, 3) (3S z + 3S over w = -z, sign -1) captures, each giving GL's
- * window depth. The shared pipeline's window depth is (z_c / w_c + 1) / 2,
- * so its z row is sgn * row2 / S - row3, which makes that depth_board / 2S.
+ * Depth: the retained block-16 fourth float scales the combined depth
+ * row. In native orthographic 1/5, 1/10 and 1/20 controls, dividing the
+ * signed row by that float gives the GL window depth. This is an
+ * experimental model policy, not a measured board contract. Malformed zero
+ * or non-finite words retain the previous sign-only fallback. The shared
+ * pipeline's window depth is (z_c / w_c + 1) / 2, so its z row is
+ * row2 / (block16[3] * S) - row3, with S = ODSY_GL_DEPTH_S.
  * A depth outside [0, 1] is then dropped by the shared rasterizer, which is
- * the near and far clip. The magnitude of the fourth float and the other
- * three have no observed role. A non-default glDepthRange changes the row in
+ * the near and far clip. The other three block-16 floats have no observed
+ * role. A non-default glDepthRange changes the row in
  * a way this rule does not fit (docs/analysis/odyssey-gl-shading-depth-
  * lighting.md, "Depth range"): it is drawn with the default [0, 1] range,
  * and the near and far clip planes the library adds for it are reported as
@@ -5178,7 +5176,7 @@ static void odyssey_gl_load_combined(SGIOdysseyState *s, const float m[16])
 {
     int32_t *vp = s->gl_ctx.cur.viewport;
     float p[16], sign_word;
-    double sgn;
+    double depth_scale;
     unsigned int col;
 
     memset(s->gl_ctx.cur.viewport, 0, sizeof(s->gl_ctx.cur.viewport));
@@ -5188,11 +5186,16 @@ static void odyssey_gl_load_combined(SGIOdysseyState *s, const float m[16])
     }
     memcpy(&sign_word, &s->gl_block16[ODSY_GL_BLOCK16_SIGN],
            sizeof(sign_word));
-    sgn = sign_word < 0 ? -1.0 : 1.0;
+    if (isfinite(sign_word) && sign_word != 0) {
+        depth_scale = sign_word;
+    } else {
+        depth_scale = sign_word < 0 ? -1.0 : 1.0;
+    }
     for (col = 0; col < 4; col++) {
         p[col * 4 + 0] = m[col * 4 + 0] / ODSY_GL_WINDOW_REACH;
         p[col * 4 + 1] = m[col * 4 + 1] / ODSY_GL_WINDOW_REACH;
-        p[col * 4 + 2] = sgn * m[col * 4 + 2] / ODSY_GL_DEPTH_S -
+        p[col * 4 + 2] = m[col * 4 + 2] /
+                         (depth_scale * ODSY_GL_DEPTH_S) -
                          m[col * 4 + 3];
         p[col * 4 + 3] = m[col * 4 + 3];
     }
