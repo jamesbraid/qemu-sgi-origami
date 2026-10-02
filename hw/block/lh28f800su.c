@@ -100,6 +100,9 @@ struct LH28F800SUState {
 
 static int flash_marker_sync_dir(LH28F800SUState *s)
 {
+#ifdef _WIN32
+    return -ENOTSUP;
+#else
     g_autofree char *dir = g_path_get_dirname(s->failure_marker);
     int fd = open(dir, O_RDONLY | O_DIRECTORY);
     int ret;
@@ -110,6 +113,7 @@ static int flash_marker_sync_dir(LH28F800SUState *s)
     ret = fsync(fd) < 0 ? -errno : 0;
     close(fd);
     return ret;
+#endif
 }
 
 static int flash_marker_create(LH28F800SUState *s)
@@ -638,6 +642,11 @@ static const VMStateDescription vmstate_flash = {
 /* Only the raw file path and QEMU's test fault filter are supported. */
 static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
 {
+#ifdef _WIN32
+    error_setg(errp, "persistent flash is unsupported on Windows: "
+               "the file backend cannot provide exclusive locking");
+    return false;
+#else
     GRAPH_RDLOCK_GUARD_MAINLOOP();
 
     if (!bs || strcmp(bdrv_get_format_name(bs), "raw")) {
@@ -655,7 +664,7 @@ static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
         if (!strcmp(driver, "file")) {
             const char *locking = qdict_get_try_str(bs->options, "locking");
             const char *filename = qdict_get_try_str(bs->options, "filename");
-            struct stat st;
+            GStatBuf st;
 
             if ((locking && !strcmp(locking, "off")) ||
                 ((!locking || !strcmp(locking, "auto")) &&
@@ -663,7 +672,8 @@ static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
                 error_setg(errp, "persistent flash requires file locking");
                 return false;
             }
-            if (!filename || lstat(filename, &st) < 0 || !S_ISREG(st.st_mode)) {
+            if (!filename || g_lstat(filename, &st) < 0 ||
+                !S_ISREG(st.st_mode)) {
                 error_setg(errp, "persistent flash requires a regular file "
                            "without a symlink");
                 return false;
@@ -690,6 +700,7 @@ static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
     }
     error_setg(errp, "persistent flash requires a raw file backend");
     return false;
+#endif
 }
 
 static void flash_realize(DeviceState *dev, Error **errp)
@@ -697,7 +708,7 @@ static void flash_realize(DeviceState *dev, Error **errp)
     LH28F800SUState *s = LH28F800SU(dev);
     int64_t size;
     int ret;
-    struct stat marker_stat;
+    GStatBuf marker_stat;
 
     if (s->blk && !s->failure_marker) {
         error_setg(errp, "persistent flash requires a failure-marker path");
@@ -721,7 +732,7 @@ static void flash_realize(DeviceState *dev, Error **errp)
             error_setg(errp, "persistent flash must be exactly 1 MiB");
             return;
         }
-        if (lstat(s->failure_marker, &marker_stat) == 0 || errno != ENOENT) {
+        if (g_lstat(s->failure_marker, &marker_stat) == 0 || errno != ENOENT) {
             error_setg(errp, "flash working image has an invalid marker");
             return;
         }
