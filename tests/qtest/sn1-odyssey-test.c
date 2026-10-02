@@ -8870,6 +8870,10 @@ static void test_texture_one_dimensional_mode(void)
     for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
         g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==, pixels[i]);
     }
+    texture_integer_quad(qts, 32, 32, 96, 96);
+    for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, 40 + 16 * i, 48), ==, pixels[i]);
+    }
     {
         const uint32_t matrix[16] = {
             ODSY_F_ONE, ODSY_F_ONE, 0, 0,
