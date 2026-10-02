@@ -27,13 +27,10 @@ screendump; each run saves its own candidate in the log directory so a
 reference can be taken from a run that was checked by eye. See
 reference_path() for where a file goes.
 
-Reference statistics have to come from an emulator run that was judged
-correct, which needs the IRIX disk and a build, so none are committed
-yet. Until a reference exists the structural check (the program drew,
-over a desktop that was already up) still runs, and the missing
-reference is logged. Setting QEMU_TEST_MGRAS_REQUIRE_REFERENCES=1 turns
-a missing reference into a failure, for the run that is meant to prove
-them all present.
+Reference statistics come from an emulator run that was judged correct
+by eye; mgras-reference/README says which frame each one describes.
+Every feature on every board has one, so a missing reference fails the
+test like a mismatch does.
 """
 
 import dataclasses

@@ -478,7 +478,7 @@ tests/functional/mips64/lib_screen.py
 tests/functional/mips64/lib_sgi_roms.py
 tests/functional/mips64/lib_sn_reset.py
 tests/functional/mips64/lib_translation_health.py
-tests/functional/mips64/mgras-reference/TODO
+tests/functional/mips64/mgras-reference/README
 tests/functional/mips64/mgras-reference/essi-doublebuffer.json
 tests/functional/mips64/mgras-reference/essi-lit3d.json
 tests/functional/mips64/mgras-reference/essi-pixels.json

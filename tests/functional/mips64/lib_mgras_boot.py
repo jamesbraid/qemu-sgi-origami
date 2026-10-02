@@ -51,7 +51,6 @@ MEMORY_MIB = 256
 SERIAL_TIMEOUT_SECONDS = 1320
 
 COMMAND_TIMEOUT_SECONDS = 60
-REQUIRE_REFERENCES_ENV = 'QEMU_TEST_MGRAS_REQUIRE_REFERENCES'
 
 # The disk every board boots: test_mgras_desktop's root-si.qcow2 with the
 # OpenGL links pointed at the MGRAS IP27 builds (without them no board gets
@@ -132,12 +131,8 @@ def _run_feature(test, vm, board, feature, desktop_frame):
                           f'match {ref_path}: {message} -- {shot}')
         else:
             result['reference'] = 'missing'
-            test.log.warning(
-                '%s: no reference %s yet; candidate statistics are in %s',
-                feature.name, ref_path, candidate)
-            if os.environ.get(REQUIRE_REFERENCES_ENV):
-                test.fail(f'{feature.name}: reference {ref_path} is '
-                          f'missing and {REQUIRE_REFERENCES_ENV} is set')
+            test.fail(f'{feature.name}: no reference {ref_path}; candidate '
+                      f'statistics are in {candidate}')
     finally:
         # One killall per name: IRIX killall with no name signals every
         # process. The ps line shows any target that survived.
