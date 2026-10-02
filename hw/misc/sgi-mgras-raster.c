@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SI MGRAS raster command implementation.
+ * MGRAS raster command implementation.
  * Direct records use payload32 | (selector << 34), with selector
  * 0x60001/0x70001 | (register << 6). FIFO words are 32-bit
  * headers in high-half-first order and retain payload state across

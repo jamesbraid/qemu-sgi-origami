@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: GL context, state and query
+ * MGRAS register-contract and protocol qtests: GL context, state and query
  * cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS

@@ -1,4 +1,4 @@
-# Per-board feature matrix for the SI/MGRAS family's IRIX desktop boots
+# Per-board feature matrix for the MGRAS family's IRIX desktop boots
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """

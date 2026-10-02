@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Bounded functional SI graphics endpoint. */
+/* Bounded functional MGRAS graphics endpoint. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"

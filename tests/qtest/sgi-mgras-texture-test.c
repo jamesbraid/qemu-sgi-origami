@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: texture cases.
+ * MGRAS register-contract and protocol qtests: texture cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS
  * contracts specify it.

@@ -1,4 +1,4 @@
-# One IRIX boot per SI/MGRAS board: desktop, hinv line, then each feature
+# One IRIX boot per MGRAS board: desktop, hinv line, then each feature
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """

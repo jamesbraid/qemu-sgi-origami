@@ -1,4 +1,4 @@
-# Tests for the SI/MGRAS per-board matrix helpers
+# Tests for the MGRAS per-board matrix helpers
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """

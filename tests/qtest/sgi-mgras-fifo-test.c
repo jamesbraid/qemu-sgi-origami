@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: command port, FIFO, 2D
+ * MGRAS register-contract and protocol qtests: command port, FIFO, 2D
  * raster, glyph, colour-map and scanout cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS

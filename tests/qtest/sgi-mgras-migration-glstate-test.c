@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: GL pipeline-state migration
+ * MGRAS register-contract and protocol qtests: GL pipeline-state migration
  * cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS
