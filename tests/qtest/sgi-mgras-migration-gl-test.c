@@ -61,6 +61,61 @@ static void test_gl_native_texcoord_migration(void)
  * The GE's parameters and a draw stopped between rows cross a migration
  * and the draw finishes on the destination.
  */
+static void test_gl_pixels_float_migration(void)
+{
+    static const uint32_t program[] = {
+        0x1f44, 0, 0x1655, 0xd91, 0x3e65, 0x1d6, 0x156a, 0x1b4,
+        0x352d, 0xdf3,
+    };
+    static const uint32_t unpack[] = {
+        0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
+    };
+    static const uint32_t values[] = {
+        0x3e808081, 0x3e808081, 0, 0x3f3fbfc0, 0x3e808081, 0,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-float-pixels-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    gl_enter_slot(from, GL_SLOT_A);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    gl_raster_pos2f(from, 0, 0);
+    gl_pixels_program(from, GL_PIX_3UB, 6, 0, 0, 1, 0, 1);
+    gl_ge_load(from, GL_GE_CRAM, GL_GE_PROGRAM, program,
+               ARRAY_SIZE(program));
+    gl_ge_load(from, GL_GE_ERAM, 0x1d6, unpack, ARRAY_SIZE(unpack));
+    gl_pixels_draw(from, 6);
+    gl_word(from, GL_INLINE_BLOCK | sizeof(values));
+    for (int i = 0; i < 4; i++) {
+        gl_word(from, values[i]);
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    for (int i = 4; i < ARRAY_SIZE(values); i++) {
+        gl_word(to, values[i]);
+    }
+    gl_pixels_fence(to);
+    g_assert_cmphex(gl_window_pixel(to, 0, 0), ==, 0x404000);
+    g_assert_cmphex(gl_window_pixel(to, 1, 0), ==, 0xbf4000);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_gl_pixels_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -728,6 +783,8 @@ int main(int argc, char **argv)
     qts = qtest_init(MACHINE_ARGS);
 
 
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-float-migration",
+                   test_gl_pixels_float_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-migration",
                    test_gl_pixels_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-migration-rejects-"
