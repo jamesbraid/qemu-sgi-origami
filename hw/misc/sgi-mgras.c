@@ -854,8 +854,17 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
     /* Generic widget readiness is an immediate functional approximation. */
     case 0x011098: return 0x2;
-    /* FIFO readiness is immediate. Exact thresholds remain unknown. */
-    case 0x020000: return 0x12;
+    /*
+     * FIFO readiness is immediate. Exact thresholds remain unknown.
+     * Bit 0 is the sync bit pixel reads wait on: the kernel and the
+     * OpenGL client write 0xf200 before a DMA read into an unaligned
+     * buffer, and the client 0x8f08 before a data-port read, then poll
+     * until bit 0 is set. No IRIX 6.5.30 kernel, client or X server
+     * routine waits for it to clear, and commands execute synchronously,
+     * so it is approximated as always set; when the board clears it is
+     * unknown.
+     */
+    case 0x020000: return 0x13;
     /* Commands execute synchronously, so modeled FIFO occupancy is zero. */
     case 0x020008: return 0;
     /* Bus and DMA activity are not modeled and report idle. */

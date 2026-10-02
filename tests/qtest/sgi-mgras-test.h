@@ -176,7 +176,7 @@ static inline uint64_t mgras_qom_get_uint(QTestState *qts, const char *property)
 static inline void mgras_reset(void)
 {
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x12);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 

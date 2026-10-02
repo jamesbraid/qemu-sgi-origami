@@ -669,14 +669,14 @@ static void test_hq_status_independent_of_sticky_error(void)
 {
     mgras_reset();
 
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x12);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
 
 
     qtest_writel(qts, MGRAS_REG(0x090000), 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 1);
 
 
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x12);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
 }
 
 
