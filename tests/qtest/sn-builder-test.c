@@ -2365,6 +2365,9 @@ static void test_expansion_composed_adapters(void)
         "-bios %s -nodefaults -display none -d guest_errors,unimp -D %s %s",
         STORAGE_BINDING, image, prom, log, cards->str);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    /* CPU memory follows the configured MD bank map, as on one chassis. */
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
+                 (UINT64_C(2) << 32) | 0x3300);
     for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
         uint64_t base = remote + ((uint64_t)widgets[head] << 24);
         uint64_t target = 0x8000 + head * 0x1000;
@@ -2493,6 +2496,177 @@ static void test_expansion_composed_adapters(void)
     }
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+static void assert_compute_memory_projection(QTestState *qts, unsigned cpu,
+                                             uint64_t address,
+                                             const char *kind)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'human-monitor-command','arguments':"
+        "{'command-line':'info mtree -f'}}");
+    const char *text = qdict_get_str(response, "return");
+    g_autofree char *root = g_strdup_printf(
+        "root: sn1.node0.cpu%u.memory", cpu);
+    const char *view = strstr(text, root);
+    const char *end;
+
+    g_assert_nonnull(view);
+    end = strstr(view, "\nFlatView #");
+    for (const char *line = strchr(view, '\n'); line && (!end || line < end);
+         line = strchr(line + 1, '\n')) {
+        uint64_t first, last;
+
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64, &first, &last) == 2 &&
+            address >= first && address <= last) {
+            const char *next = strchr(line + 1, '\n');
+            g_autofree char *range = g_strndup(line, next ? next - line :
+                                                         strlen(line));
+
+            g_test_message("CPU %u address 0x%" PRIx64 "%s", cpu, address,
+                           range);
+            g_autofree char *type = g_strdup_printf(", %s):", kind);
+
+            g_assert_nonnull(strstr(range, type));
+            return;
+        }
+    }
+    g_error("CPU %u address 0x%" PRIx64 " is absent from its flat view",
+            cpu, address);
+}
+
+static void assert_compute_direct_aliases(QTestState *qts, unsigned cpus,
+                                          bool enabled)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'human-monitor-command','arguments':"
+        "{'command-line':'info mtree -D'}}");
+    const char *text = qdict_get_str(response, "return");
+
+    for (unsigned cpu = 0; cpu < cpus; cpu++) {
+        for (unsigned memory = 0; memory < 2; memory++) {
+            g_autofree char *name = g_strdup_printf(
+                "sn1.node0.cpu%u.direct-%s @", cpu,
+                memory ? "boot" : "memory");
+            const char *alias = strstr(text, name);
+            const char *end;
+            g_autofree char *line = NULL;
+
+            g_assert_nonnull(alias);
+            end = strchr(alias, '\n');
+            line = g_strndup(alias, end ? end - alias : strlen(alias));
+            g_assert_cmpint(strstr(line, "[disabled]") == NULL, ==, enabled);
+        }
+    }
+}
+
+static void test_compute_memory_projection(gconstpointer opaque)
+{
+    unsigned selection = GPOINTER_TO_UINT(opaque);
+    bool expansion = selection & 1;
+    unsigned cpus = selection & 2 ? 4 : 2;
+    g_autofree char *image = expansion ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *drive = expansion ? g_strdup_printf(
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", image) :
+        g_strdup("");
+    QTestState *qts = qtest_initf(
+        "-M origin300%s -cpu R14000 -smp %u -m 512M -S %s -bios %s "
+        "-nodefaults -display none", expansion ? ",topology="
+        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING :
+        "", cpus, drive, prom);
+
+    if (expansion) {
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    }
+    for (unsigned remap = 0; remap < 2; remap++) {
+        unsigned nasid = remap ? 9 : 0;
+        uint64_t node = (uint64_t)nasid << NASID_TEST_NODE_ADDRESS_SHIFT;
+
+        if (remap) {
+            uint64_t revision = qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                           EXPANSION_LB_REVISION);
+
+            qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                (revision & ~(UINT64_C(0xff) << 32)) |
+                ((uint64_t)nasid << 32));
+        }
+        for (unsigned mapping = 0; mapping < 2; mapping++) {
+            /* Installed locational banks 2 and 3 have 256 MiB each. */
+            unsigned swap = mapping ? 0 : 2;
+            uint64_t first = node + ((uint64_t)(2 ^ swap) << 30);
+            uint64_t second = node + ((uint64_t)(3 ^ swap) << 30);
+            uint8_t bytes[8];
+            uint64_t values[] = { UINT64_C(0x1122334455667788),
+                                  UINT64_C(0x8877665544332211) };
+            uint64_t addresses[] = { first + 0x40000, second + 0x40000 };
+
+            qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
+                         ((uint64_t)swap << 32) | 0x3300);
+            for (unsigned bank = 0; bank < G_N_ELEMENTS(addresses); bank++) {
+                stq_be_p(bytes, values[bank]);
+                g_assert_true(qtest_memwrite_cpu(qts, 0, addresses[bank],
+                                                bytes, sizeof(bytes)));
+            }
+            for (unsigned cpu = 0; cpu < cpus; cpu++) {
+                for (unsigned bank = 0;
+                     bank < G_N_ELEMENTS(addresses); bank++) {
+                    assert_compute_memory_projection(qts, cpu,
+                                                      addresses[bank], "ram");
+                    g_assert_true(qtest_memread_cpu(qts, cpu, addresses[bank],
+                                                   bytes, sizeof(bytes)));
+                    g_assert_cmphex(ldq_be_p(bytes), ==, values[bank]);
+                    assert_compute_memory_projection(qts, cpu,
+                        addresses[bank] - 0x40000 + 0xffffff8, "ram");
+                }
+                /* The uncached attribute-2 window retains fetch-and-op I/O. */
+                assert_compute_memory_projection(qts, cpu,
+                    UINT64_C(0x30000000000) + node + 0x40000, "i/o");
+                assert_compute_memory_projection(qts, cpu,
+                    NASID_TEST_SPACE_HUB + node + 0x38000000, "rom");
+                assert_compute_memory_projection(qts, cpu, 0x1fc00000,
+                                                  "rom");
+            }
+        }
+    }
+    if (expansion) {
+        uint64_t revision = qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                       EXPANSION_LB_REVISION);
+        uint64_t peer = expansion_vector(qts, EXPANSION_LB_REVISION, false, 0);
+        const uint64_t named = UINT64_C(9) << NASID_TEST_NODE_ADDRESS_SHIFT;
+
+        assert_compute_direct_aliases(qts, cpus, true);
+        /* Duplicate numbers retain ordinary self-only claims, not aliases. */
+        expansion_vector(qts, EXPANSION_LB_REVISION, true,
+            (peer & ~(UINT64_C(0xff) << 32)) | (UINT64_C(9) << 32));
+        assert_compute_direct_aliases(qts, cpus, false);
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, peer);
+        assert_compute_direct_aliases(qts, cpus, true);
+        qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                     revision | (UINT64_C(0x80) << 32));
+        assert_compute_direct_aliases(qts, cpus, false);
+        for (unsigned cpu = 0; cpu < cpus; cpu++) {
+            assert_compute_memory_projection(qts, cpu,
+                                              named + 0x80040000, "i/o");
+        }
+        qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION, revision);
+        assert_compute_direct_aliases(qts, cpus, true);
+        expansion_vector(qts, EXPANSION_LB_REVISION, true,
+                         peer | (UINT64_C(0x80) << 32));
+        assert_compute_direct_aliases(qts, cpus, false);
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, peer);
+        assert_compute_direct_aliases(qts, cpus, true);
+        for (unsigned cpu = 0; cpu < cpus; cpu++) {
+            assert_compute_memory_projection(qts, cpu,
+                                              named + 0x80040000, "ram");
+        }
+    }
+    qtest_quit(qts);
+    if (image) {
+        g_assert_cmpint(unlink(image), ==, 0);
+    }
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
@@ -3440,6 +3614,18 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
+    qtest_add_data_func(
+        "sn/builder/expansion/compute-memory/ordinary-two-cpus",
+                        GUINT_TO_POINTER(0), test_compute_memory_projection);
+    qtest_add_data_func(
+        "sn/builder/expansion/compute-memory/selected-two-cpus",
+                        GUINT_TO_POINTER(1), test_compute_memory_projection);
+    qtest_add_data_func(
+        "sn/builder/expansion/compute-memory/ordinary-four-cpus",
+                        GUINT_TO_POINTER(2), test_compute_memory_projection);
+    qtest_add_data_func(
+        "sn/builder/expansion/compute-memory/selected-four-cpus",
+                        GUINT_TO_POINTER(3), test_compute_memory_projection);
     qtest_add_data_func("sn/builder/expansion/compute-uart/ordinary-two-cpus",
                         GUINT_TO_POINTER(0), test_compute_uart_with_expansion);
     qtest_add_data_func("sn/builder/expansion/compute-uart/selected-two-cpus",
