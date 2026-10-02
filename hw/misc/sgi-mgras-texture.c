@@ -726,9 +726,23 @@ bool sgi_mgras_texture_kernel_record(SGIMgrasState *s, uint32_t reg,
     }
 }
 
-/* Open a transfer. */
+static const char *const mgras_tram_names[MGRAS_TRAM_STATES] = {
+    [MGRAS_TRAM_IDLE] = "nothing",
+    [MGRAS_TRAM_SAVE_OPEN] = "a TRAM save",
+    [MGRAS_TRAM_SAVE_READ] = "a TRAM save's read",
+    [MGRAS_TRAM_RESTORE_OPEN] = "a TRAM restore",
+};
+
+/* Open a transfer; one still open is dropped, logged. */
 static void mgras_tram_open(SGIMgrasState *s, uint32_t state)
 {
+    if (s->tram_transfer != MGRAS_TRAM_IDLE &&
+        s->tram_transfer != MGRAS_TRAM_SAVE_READ) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s opened while %s was "
+                      "waiting for its kick; that one is dropped\n",
+                      mgras_tram_names[state],
+                      mgras_tram_names[s->tram_transfer]);
+    }
     s->tram_transfer = state;
 }
 
@@ -833,11 +847,10 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
     uint64_t words = (uint64_t)s->tram_rows * MGRAS_TRAM_ROW_WORDS;
     g_autofree uint8_t *buf = NULL;
 
-    if (!k || first + s->tram_rows > MGRAS_TRAM_ROWS) {
+    if (first + s->tram_rows > MGRAS_TRAM_ROWS) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: TRAM save of %u rows from "
-                      "block %u into %" PRIu64 " bytes does not fit TRAM; "
-                      "nothing moved\n", s->tram_rows, s->tram_read_block,
-                      bytes);
+                      "block %u runs past TRAM; nothing moved\n",
+                      s->tram_rows, s->tram_read_block);
         return;
     }
     buf = g_malloc(bytes);
@@ -893,12 +906,27 @@ bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
         return false;
     }
     if (state == MGRAS_TRAM_SAVE_READ) {
-        return false;
-    }
-    if (read != (state == MGRAS_TRAM_SAVE_OPEN)) {
+        /* Its 0xda00 never came; this kick is another transfer's. */
+        s->tram_transfer = MGRAS_TRAM_IDLE;
         return false;
     }
     s->tram_transfer = MGRAS_TRAM_IDLE;
+    /*
+     * An open transfer whose kick never came must not take another
+     * transfer's: a kick of the other direction, or a read whose bytes do
+     * not fill whole words of its rows, ends it, logged, and is taken as
+     * any other kick.
+     */
+    if (read != (state == MGRAS_TRAM_SAVE_OPEN) ||
+        (read && !mgras_tram_word_bytes(sgi_mgras_raster_dma_bytes(s),
+                                        s->tram_rows))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s was ended by a %s "
+                      "kick (0x%02x) of %" PRIu64 " bytes not its own; "
+                      "dropped, and the kick taken as any other\n",
+                      mgras_tram_names[state], read ? "read" : "write",
+                      kick_byte, sgi_mgras_raster_dma_bytes(s));
+        return false;
+    }
     switch (state) {
     case MGRAS_TRAM_SAVE_OPEN:
         mgras_tram_save(s, kick_byte);

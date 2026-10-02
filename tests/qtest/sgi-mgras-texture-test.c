@@ -2005,6 +2005,64 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     qtest_quit(t);
 }
 
+/*
+ * A save whose read kick never came does not take the next read that is
+ * not its own: after a lone 0xe50c, a raster read of three pixels of
+ * screen row 0, 12 bytes and so not whole words of 64-word rows, still
+ * returns the pixels.
+ */
+static void test_tram_open_save_ends_at_other_kick(void)
+{
+    static const uint8_t want[12] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0xf0, 0xe0, 0xd0,
+    };
+    uint8_t got[12];
+    QTestState *t = tex_start(TEX_ARGS);
+
+    memset(got, 0xee, sizeof(got));
+    qtest_memwrite(t, 0x7000, got, sizeof(got));
+    gl_eram_map(t);
+    qtest_writeq(t, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x0c006204));
+    qtest_writeq(t, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00f0e0d0));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (2u << 16) | 0u));
+
+    gl_word(t, TRAM_READ_HDR);
+    gl_word(t, TRAM_BLOCK_ROWS);
+    gl_word(t, TRAM_FORMAT_RGBA8);
+    gl_word(t, TRAM_READ_LAST_WORD);
+
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x00002200));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (2u << 16) | 1023u));
+    gl_word(t, 0x00080404);
+    gl_word(t, 12);
+    gl_word(t, 0x00080504);
+    gl_word(t, 0);
+    gl_word(t, 0x00080604);
+    gl_word(t, 0);
+    gl_word(t, 0x00080704);
+    gl_word(t, 1);
+    gl_word(t, 0x00080804);
+    gl_word(t, 12);
+    gl_word(t, 0x00080b04);
+    gl_word(t, GL_ERAM_READ_KICK);
+    qtest_memread(t, 0x7000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2048,6 +2106,8 @@ int main(int argc, char **argv)
                    test_tram_load_is_one_store);
     qtest_add_func("sn0/origin2000/mgras/tram-save-returns-the-block",
                    test_tram_save_returns_the_block);
+    qtest_add_func("sn0/origin2000/mgras/tram-open-save-ends-at-other-kick",
+                   test_tram_open_save_ends_at_other_kick);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-border-is-logged-untextured",
                    test_gl_texture_border_is_logged_untextured);
