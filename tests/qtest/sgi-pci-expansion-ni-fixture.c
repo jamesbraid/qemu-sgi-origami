@@ -250,6 +250,7 @@ struct NIFixtureState {
     bool connected;
     uint8_t intx_map;
     uint8_t isp_head;
+    uint8_t card_device;
     uint64_t compute_device_mask;
     uint64_t interrupt_count;
     uint64_t interrupt_address;
@@ -781,6 +782,7 @@ static const VMStateDescription vmstate_fixture = {
     .pre_save = fixture_pre_save,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(isp_head, NIFixtureState),
+        VMSTATE_UINT8_EQUAL(card_device, NIFixtureState),
         VMSTATE_SINGLE(management, NIFixtureState, 0,
                        vmstate_info_uint8_equal, bool),
         VMSTATE_STRUCT_ARRAY(owners, NIFixtureState, 2, 0,
@@ -826,6 +828,10 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     static const uint8_t ports[] = { 8, 9, 0xc, 0xd };
     unsigned i;
 
+    if (s->card_device < 1 || s->card_device > 2) {
+        error_setg(errp, "Card device must be 1 or 2");
+        return;
+    }
     if (s->isp_head != UINT8_MAX && s->isp_head >= SGI_ORIGIN300_PCI_HEADS) {
         error_setg(errp, "Invalid ISP1040 experiment head %u", s->isp_head);
         return;
@@ -1003,7 +1009,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
         if (!isp) {
             qdev_prop_set_uint32(card, "signature", 0xabc00000 + i);
         }
-        qdev_prop_set_uint32(card, "addr", PCI_DEVFN(1, 0));
+        qdev_prop_set_uint32(card, "addr", PCI_DEVFN(s->card_device, 0));
         if (s->intx_map && !isp) {
             qdev_prop_set_bit(card, "multifunction", true);
         }
@@ -1030,7 +1036,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
                     DeviceState *card;
                     g_autofree char *name = NULL;
 
-                    if (device == 1 && pin == 0) {
+                    if (device == s->card_device && pin == 0) {
                         continue;
                     }
                     card = qdev_new(TYPE_NI_CARD);
@@ -1162,6 +1168,7 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_UINT32("attached-issuer", NIFixtureState, attachment.issuer, 0),
     DEFINE_PROP_UINT32("attached-owner", NIFixtureState, attachment.owner, 1),
     DEFINE_PROP_UINT8("intx-map", NIFixtureState, intx_map, 0),
+    DEFINE_PROP_UINT8("card-device", NIFixtureState, card_device, 1),
     DEFINE_PROP_UINT8("isp-head", NIFixtureState, isp_head, UINT8_MAX),
     DEFINE_PROP_UINT8("compute-number", NIFixtureState, compute_number, 3),
     DEFINE_PROP_UINT8("bic-number", NIFixtureState, bic_number, 7),
