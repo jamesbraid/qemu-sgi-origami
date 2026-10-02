@@ -73,10 +73,10 @@
  *   shared block (placement inside it, meaning unknown), and the draw
  *   sends the same word for the level through the TXMIPMAP table:
  *   ivview's three levels loaded 0, 0x100 and 0 and drew 0, 0x100 and 0,
- *   and perfly's three textures loaded and drew 0, 4 and 0xc for level 0 (established
- *   as words; that the board reads the level from the block it was loaded
- *   to is inferred). The draw finds level n by TXMIPMAP entry n, the
- *   client writing the table from the first level, 0 in every trace. A
+ *   and perfly's three textures loaded and drew 0, 4 and 0xc for level 0
+ *   (established as words; that the board reads the level from the block it
+ *   was loaded to is inferred). The draw finds level n by TXMIPMAP entry n,
+ *   the client writing the table from the first level, 0 in every trace. A
  *   mipmapped texture puts several small levels in one block under one
  *   word, so the level number stays in the key. Where a level sits inside
  *   its block is unknown, and the model keeps no TRAM byte image: TRAM
