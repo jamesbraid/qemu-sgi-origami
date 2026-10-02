@@ -1525,10 +1525,183 @@ static void test_r10k_count_interrupt_delivery(void)
     qtest_quit(qts);
 }
 
+
+#define FPU_IMAGE_SIZE      0x1000
+#define FPU_DONE_OFF        0x80
+#define FPU_FAULT_OFF       0x88
+#define FPU_FCR31_PASS_OFF  0x90
+#define FPU_FCR31_DIV0_OFF  0x98
+#define FPU_DONE_MAGIC      0x4650554d /* "FPUM" */
+
+#define OPC_CFC1            0x44400000u
+#define OPC_CTC1            0x44c00000u
+#define OPC_MTC1            0x44800000u
+#define OPC_ADD_S           0x46000000u
+#define OPC_DIV_S           0x46000003u
+
+static void emit_cfc1(GuestImage *img, int rt, int fs)
+{
+    emit(img, OPC_CFC1 | (rt << 16) | (fs << 11));
+}
+
+static void emit_ctc1(GuestImage *img, int rt, int fs)
+{
+    emit(img, OPC_CTC1 | (rt << 16) | (fs << 11));
+}
+
+static void emit_mtc1(GuestImage *img, int rt, int fs)
+{
+    emit(img, OPC_MTC1 | (rt << 16) | (fs << 11));
+}
+
+static void emit_add_s(GuestImage *img, int fd, int fs, int ft)
+{
+    emit(img, OPC_ADD_S | (ft << 16) | (fs << 11) | (fd << 6));
+}
+
+static void emit_div_s(GuestImage *img, int fd, int fs, int ft)
+{
+    emit(img, OPC_DIV_S | (ft << 16) | (fs << 11) | (fd << 6));
+}
+
+static void fpu_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(FPU_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = FPU_IMAGE_SIZE };
+    ssize_t written;
+
+    img.pos = VEC_TLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, FPU_FAULT_OFF);
+    img.pos = VEC_XTLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, FPU_FAULT_OFF);
+    img.pos = VEC_CACHE_ERROR;
+    emit_report_and_spin(&img, FAULT_MAGIC, FPU_FAULT_OFF);
+    img.pos = VEC_GENERAL;
+    emit_report_and_spin(&img, FAULT_MAGIC, FPU_FAULT_OFF);
+
+    img.pos = 0;
+    /* Clear ERL and enable CU1 */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_lui(&img, R_T1, 0x2000); /* CU1 */
+    emit(&img, 0x25u | (R_T0 << 21) | (R_T1 << 16) | (R_T0 << 11)); /* or */
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    /* Reset FCR31 to 0 */
+    emit_ctc1(&img, R_ZERO, 31);
+
+    /* Load 1.0f (0x3f800000) and 2.0f (0x40000000) into FPRs */
+    emit_lui(&img, R_T0, 0x3f80);
+    emit_mtc1(&img, R_T0, 0); /* $f0 = 1.0f */
+    emit_lui(&img, R_T1, 0x4000);
+    emit_mtc1(&img, R_T1, 1); /* $f1 = 2.0f */
+
+    /* Loop 50 iterations of non-exceptional FP additions */
+    emit_addiu(&img, R_T2, R_ZERO, 50);
+    unsigned int loop_start = img.pos;
+    emit_add_s(&img, 2, 0, 1); /* $f2 = $f0 + $f1 */
+    emit_addiu(&img, R_T2, R_T2, -1);
+    emit_branch(&img, OPC_BNE, R_T2, R_ZERO, loop_start);
+    emit_nop(&img);
+
+    /* Read FCR31: should have 0 flags/causes */
+    emit_cfc1(&img, 16, 31); /* S0 */
+
+    /* Now perform 1.0f / 0.0f -> divide by zero */
+    emit_mtc1(&img, R_ZERO, 1); /* $f1 = 0.0f */
+    emit_div_s(&img, 2, 0, 1);  /* $f2 = 1.0f / 0.0f */
+    emit_cfc1(&img, 17, 31); /* S1 */
+
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_sd(&img, 16, R_T0, FPU_FCR31_PASS_OFF);
+    emit_sd(&img, 17, R_T0, FPU_FCR31_DIV0_OFF);
+
+    emit_lui(&img, R_T2, (uint16_t)(FPU_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(FPU_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T0, FPU_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, FPU_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, FPU_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_fpu_fast_path(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-fpu-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    fpu_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + FPU_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + FPU_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)FPU_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + FPU_DONE_OFF), ==,
+                    (uint64_t)FPU_DONE_MAGIC);
+    uint32_t fcr31_pass =
+        (uint32_t)qtest_readq(qts, STATE_PHYS + FPU_FCR31_PASS_OFF);
+    uint32_t fcr31_div0 =
+        (uint32_t)qtest_readq(qts, STATE_PHYS + FPU_FCR31_DIV0_OFF);
+
+    /* Common non-exceptional path: Cause (17:12) and Flag (6:2) are zero */
+    g_assert_cmphex(fcr31_pass & 0x0003f07cu, ==, 0);
+
+    /* Divide by zero sets Flag bit 5 (0x20) and Cause bit 15 (0x8000) */
+    g_assert_cmphex(fcr31_div0 & 0x8020u, ==, 0x8020u);
+
+    qtest_quit(qts);
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+
+    qtest_add_func("/sn0/nmi/entry-and-retrigger",
+                   test_nmi_entry_and_retrigger);
+    qtest_add_func("/sn0/nmi/reset-rearms", test_nmi_reset_rearms);
+    qtest_add_func("/r16000/nmi/entry-and-retrigger",
+                   test_r16000_nmi_entry_and_retrigger);
+    qtest_add_func("/r16000/nmi/cold-reset-control",
+                   test_r16000_nmi_reset_rearms);
+    qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
+    qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
+    g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
+    qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
+                   test_indirect_and_unmapped_chaining);
+    qtest_add_func("/sn0/tcg/prefetch-hints",
+                   test_r10k_prefetch_hints);
+    qtest_add_func("/sn0/tcg/tlb-interleaved",
+                   test_r10k_tlb_interleaved);
     qtest_add_func("/sn0/tcg/count-chaining",
                    test_r10k_count_chaining);
     qtest_add_func("/sn0/tcg/count-interrupt-delivery",
                    test_r10k_count_interrupt_delivery);
+    qtest_add_func("/sn0/tcg/fpu-fast-path",
+                   test_r10k_fpu_fast_path);
 
     return g_test_run();
 }
