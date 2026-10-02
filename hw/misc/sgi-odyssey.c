@@ -1246,8 +1246,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * for glTexParameter, glTexEnv or glEnable(GL_TEXTURE_2D) at once; the next
  * draw's validation pushes:
  *
- * - 0x0405 bit 4: 2D texturing on. Bits 2:0 are unrelated: the user
- *   clip-plane enable count (ODSY_TEX_MODE_CLIP_COUNT_MASK below).
+ * - 0x0405 bit 3/4: the observed 1D/2D texture mode. Bits 2:0 are
+ *   unrelated: the user clip-plane enable count (below).
  * - 0x1c16, seven operands: the sampler (log2 sizes, width, height, the
  *   component code, wrap modes and filters).
  * - 0x141b, five operands: the texture environment (replace, modulate,
@@ -1265,6 +1265,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * is unknown, so other templates remain reported and dropped.
  */
 #define ODSY_REG_TEX_MODE 0x0405        /* 1 operand */
+#define ODSY_TEX_MODE_1D (1u << 3)
 #define ODSY_TEX_MODE_2D (1u << 4)
 #define ODSY_REG_TEX_SAMPLER 0x1c16     /* 7 operands */
 #define ODSY_REG_TEX_ENV 0x141b         /* 5 operands */
@@ -4060,15 +4061,24 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
         SGI_GL_REPLACE, SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL,
     };
     uint32_t strq[4] = { s->tex_coord[0], s->tex_coord[1], 0, ODSY_F32_ONE };
+    bool one_d = (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D)) ==
+                 ODSY_TEX_MODE_1D;
     float matrix[16];
 
-    s->gl_ctx.cur.texture_2d = !!(s->tex_mode & ODSY_TEX_MODE_2D);
+    s->gl_ctx.cur.texture_2d = !!(s->tex_mode &
+                                  (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D));
     /* Excluded environments are rejected by the family before rasterization. */
     s->gl_ctx.cur.texture_env_mode = SGI_GL_REPLACE;
     if (s->tex_env[0] < ARRAY_SIZE(environments)) {
         s->gl_ctx.cur.texture_env_mode = environments[s->tex_env[0]];
     }
     odyssey_gl_transpose(s->gl_texture_matrix, matrix);
+    /* Input T may transform S, but transformed T cannot affect 1D sampling. */
+    if (one_d) {
+        for (unsigned i = 0; i < 4; i++) {
+            matrix[i * 4 + 1] = 0;
+        }
+    }
     sgi_gl_set_matrix(&s->gl_ctx, SGI_GL_TEXTURE, matrix);
     odyssey_gl_feed(s, SGI_GL_OP_TEXCOORD4F, strq, ARRAY_SIZE(strq));
 }

@@ -8842,6 +8842,53 @@ static void test_texture_chain_explicit_level(void)
     qtest_quit(qts);
 }
 
+static void test_texture_one_dimensional_mode(void)
+{
+    const uint32_t pixels[4] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    const uint32_t words[] = {
+        0x00010405, 0x8,
+        0x00011c16, 0x08000800, 4, 1, 1, 0x13000000, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010406, 0,
+    };
+    QTestState *qts = board_start("");
+
+    upload_begin(qts, 0x180000, 2, 0x080024d0, 4, 1);
+    upload_first_header(qts, 0x4b);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+    push_user_words(qts, pixels, ARRAY_SIZE(pixels));
+    upload_end(qts);
+    texture_adapter_window(qts);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    texture_adapter_point(qts, 10, 10, 0.125f, 0.25f);
+    texture_adapter_point(qts, 11, 10, 0.375f, 0.75f);
+    texture_adapter_point(qts, 12, 10, 0.625f, -3.0f);
+    texture_adapter_point(qts, 13, 10, 0.875f, 10.0f);
+    for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==, pixels[i]);
+    }
+    {
+        const uint32_t matrix[16] = {
+            ODSY_F_ONE, ODSY_F_ONE, 0, 0,
+            0, 0x42c80000, 0, 0,
+            0, 0, ODSY_F_ONE, 0,
+            0, 0, 0, ODSY_F_ONE,
+        };
+
+        user_cmd_push(qts, ODSY_GL_MATRIX_SELECT_TEXTURE);
+        user_cmd_push(qts, ODSY_GL_MATRIX_LOAD);
+        push_user_words(qts, matrix, ARRAY_SIZE(matrix));
+        texture_adapter_point(qts, 14, 10, 0.125f, 0.25f);
+        texture_adapter_point(qts, 15, 10, 0.125f, 0.75f);
+        g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, pixels[1]);
+        g_assert_cmphex(odsy_test_pixel(qts, 15, 10), ==, pixels[3]);
+    }
+    qtest_quit(qts);
+}
+
 static void test_texture_chain_height_one(void)
 {
     const uint32_t words[] = {
@@ -11412,6 +11459,8 @@ int main(int argc, char **argv)
                    test_texture_chain_explicit_level);
     qtest_add_func("sn1/odyssey/texture-adapter/integer-quads",
                    test_texture_chain_integer_quads);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-mode",
+                   test_texture_one_dimensional_mode);
     qtest_add_func("sn1/odyssey/texture-adapter/height-one",
                    test_texture_chain_height_one);
     qtest_add_func("sn1/odyssey/texture-adapter/construction",
