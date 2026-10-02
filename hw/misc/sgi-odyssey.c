@@ -1257,8 +1257,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  *
  * The model resolves reviewed 2D level chains through the shared rasterizer
  * once per synchronous draw. Unknown sampler words remain observable and
- * drop the draw. 0x8f80b968 requests on-board construction; its filter is
- * unknown, so it is reported once and dropped.
+ * drop the draw. 0x8f80b968 requests on-board construction; the reviewed
+ * template copies source (2x, 2y) to destination (x, y). The board's filter
+ * is unknown, so other templates remain reported and dropped.
  */
 #define ODSY_REG_TEX_MODE 0x0405        /* 1 operand */
 #define ODSY_TEX_MODE_2D (1u << 4)
@@ -6585,6 +6586,64 @@ static bool odyssey_board_address_valid(SGIOdysseyState *s, uint32_t base)
     return false;
 }
 
+/* The reviewed construction template; its (2x, 2y) taps are a model policy. */
+static bool odyssey_texture_build_level(SGIOdysseyState *s)
+{
+    const uint32_t *p = s->cmd_operand;
+    const uint32_t *entry = &s->tex_levels[60 * 3];
+    uint32_t ws = s->tex_sampler[1], hs = s->tex_sampler[2];
+    uint32_t wd, hd, source_base, source_units, dest_units;
+    uint64_t source_end;
+    int source, dest;
+
+    if (!ws || !hs || ws > INT32_MAX || hs > INT32_MAX ||
+        !is_power_of_2(ws) || !is_power_of_2(hs)) {
+        return false;
+    }
+    wd = MAX(1, ws / 2);
+    hd = MAX(1, hs / 2);
+    source_units = ((ws + 15) / 16 + 1) & ~1u;
+    dest_units = ((wd + 15) / 16 + 1) & ~1u;
+    if (s->gl_primitive != ODSY_GL_QUADS ||
+        !(s->tex_mode & ODSY_TEX_MODE_2D) || s->tex_level0 != 60 ||
+        entry[1] != (0x41100000 | source_units) || entry[2] ||
+        s->tex_sampler[0] != ((ctz32(ws) << 10) | (ctz32(hs) << 5)) ||
+        s->tex_sampler[3] || s->tex_sampler[4] != 0x13640000 ||
+        s->tex_sampler[5] || s->tex_sampler[6] ||
+        p[0] || p[1] || p[2] || p[3] || p[4] || p[5] || p[6] ||
+        p[7] != odyssey_f32_bits((float)wd) ||
+        p[8] != odyssey_f32_bits((float)hd) || p[9] || p[10] || p[11] ||
+        p[12] != odyssey_f32_bits(1.0f - 0.5f / wd) ||
+        p[13] != odyssey_f32_bits(1.0f - 0.5f / hd)) {
+        return false;
+    }
+    source_base = entry[0] & 0x1fffffffu;
+    if (!source_base || source_base == s->dest_base ||
+        s->obj_count > SGI_ODYSSEY_OBJECTS) {
+        return false;
+    }
+    source = odyssey_object_find(s, source_base);
+    dest = odyssey_image_object(s);
+    if (source < 0 || dest < 0 ||
+        s->obj_width[source] != source_units * 16 ||
+        s->obj_rows[source] < hs ||
+        s->obj_width[dest] != dest_units * 16 ||
+        umul64_overflow(hs - 1, s->obj_width[source], &source_end) ||
+        uadd64_overflow(source_end, s->obj_offset[source], &source_end) ||
+        uadd64_overflow(source_end, ws, &source_end) ||
+        source_end > s->obj_used || source_end > s->obj_mem.bytes_len / 4 ||
+        !odyssey_object_rows(s, dest, hd)) {
+        return false;
+    }
+    for (uint32_t y = 0; y < hd; y++) {
+        for (uint32_t x = 0; x < wd; x++) {
+            odyssey_object_store(s, dest, x, y,
+                                 odyssey_object_load(s, source, 2 * x, 2 * y));
+        }
+    }
+    return true;
+}
+
 /*
  * Dispatch a fully gathered register-select word or tagged GL opcode.
  * Flush and glyph pixel-mode setup/teardown registers, and any other
@@ -7050,11 +7109,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
         break;
     case ODSY_GL_TEX_RECT:
-        if (!s->tex_rect_reported) {
+        if (!odyssey_texture_build_level(s) && !s->tex_rect_reported) {
             s->tex_rect_reported = true;
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: textured rectangle into "
-                          "buffer 0x%x (the on-board mipmap build) is not "
-                          "modeled\n", s->dest_base);
+                          "buffer 0x%x has unsupported construction state "
+                          "or missing backing\n", s->dest_base);
         }
         break;
     case ODSY_REG_GL_BEGIN:
