@@ -1511,8 +1511,8 @@ static void mgras_reset_exit(Object *obj, ResetType type)
  * marked implemented is refused unless x-unimplemented-board asks for it
  * anyway; then it is presented with a LOG_UNIMP note naming what is
  * missing. MXI and EMXI stay refused with them: they need the same texture
- * boards' paths, and their client's TRAM read-back in two passes and its
- * pixel-texture passes are not modelled.
+ * boards' paths, and their client's pixel-texture passes, one per RE, are
+ * not modelled (sgi-mgras-texture.c has no pixel texture on any board).
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {

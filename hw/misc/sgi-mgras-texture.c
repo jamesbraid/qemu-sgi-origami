@@ -249,23 +249,30 @@
  * last TXMIPMAP entry 0 named, under the base then current, taking from
  * each word as many of its first bytes as the DMA has room for a
  * location (four on the kernel's read, three on the client's read of an
- * RGB texture); the kernel's restore writes them back to the block the
- * last TL_MIPMAP entry 0 named. The kernel's register pairs set the
- * transfer's table indices and rows outside any GL context: they come
- * with no GL context loaded on a restore and only from the kernel, so the
- * model keeps them apart from the client's texture state, inferred from
- * that order in the trace. The client's restore is not taken yet: its
- * 0x9d10 is logged and its kick goes where any other would. That a
+ * RGB texture); a restore writes them back to the block the last
+ * TL_MIPMAP entry 0 named. The kernel's register pairs set the transfer's
+ * table indices and rows outside any GL context: they come with no GL
+ * context loaded on a restore and only from the kernel, so the model
+ * keeps them apart from the client's texture state, inferred from that
+ * order in the trace. A 0x9d10 for routine 0x511a under TL_SPEC 0xd60 is
+ * the client's restore; any other 0x9d10 opens a transfer to the GE the
+ * model does not take, whose kick moves nothing and is logged. The
+ * OpenGL client's fast pixel path also sends 0x9d10 before its kick
+ * (from its disassembly); it was not traced, and the load routine and the
+ * whole-TRAM shape are what the model keys on to keep it out. That a
  * transfer neither reads nor writes the colour planes is inferred: each
  * names texture memory and no raster box.
  *
  * The discriminating tests are tram-load-is-one-store,
- * tram-save-returns-the-block and mxi-tram-save-restore, on MXI, EMXI and
- * SI+T.
+ * tram-save-returns-the-block, tram-client-restore-round-trip and
+ * mxi-tram-save-restore, on MXI, EMXI and SI+T.
  */
 #define MGRAS_TEX_TRAM_READ      0x0000e50c
 #define MGRAS_TEX_TRAM_RESTORE   0x0000e300
 #define MGRAS_TEX_TRAM_GE_COUNT  0x0000d80c
+#define MGRAS_TEX_GE_DMA         0x00009d10
+/* 0x9d10's fourth word: the GE routine its transfer feeds. */
+#define MGRAS_TEX_GE_DMA_ROUTINE 3
 /* TL_SPEC's whole-TRAM shape: level 0, 64 wide, 8,192 tall. */
 #define MGRAS_TEX_SPEC_WHOLE     0xd60
 #define MGRAS_TRAM_ROW_WORDS     64
@@ -280,6 +287,8 @@ enum {
     MGRAS_TRAM_SAVE_OPEN,       /* 0xe50c came, its read kick is next */
     MGRAS_TRAM_SAVE_READ,       /* the read was kicked; 0xda00 closes it */
     MGRAS_TRAM_RESTORE_OPEN,    /* 0xd80c came, its write kick is next */
+    MGRAS_TRAM_CLIENT_OPEN,     /* the client's restore, kicked next */
+    MGRAS_TRAM_GE_DMA_OPEN,     /* another 0x9d10, not modelled */
     MGRAS_TRAM_STATES,
 };
 
@@ -570,6 +579,7 @@ bool sgi_mgras_texture_header(uint32_t header)
     case MGRAS_TEX_TRAM_READ:
     case MGRAS_TEX_TRAM_RESTORE:
     case MGRAS_TEX_TRAM_GE_COUNT:
+    case MGRAS_TEX_GE_DMA:
         return true;
     default:
         return false;
@@ -731,6 +741,8 @@ static const char *const mgras_tram_names[MGRAS_TRAM_STATES] = {
     [MGRAS_TRAM_SAVE_OPEN] = "a TRAM save",
     [MGRAS_TRAM_SAVE_READ] = "a TRAM save's read",
     [MGRAS_TRAM_RESTORE_OPEN] = "a TRAM restore",
+    [MGRAS_TRAM_CLIENT_OPEN] = "the client's TRAM restore",
+    [MGRAS_TRAM_GE_DMA_OPEN] = "a 0x9d10 transfer",
 };
 
 /* Open a transfer; one still open is dropped, logged. */
@@ -746,11 +758,48 @@ static void mgras_tram_open(SGIMgrasState *s, uint32_t state)
     s->tram_transfer = state;
 }
 
-/* A GE word count in three 9-bit parts, as 0xd80c carries it. */
+/* A GE word count in three 9-bit parts, as 0xd80c and 0x9d10 carry it. */
 static uint32_t mgras_tram_words(const uint32_t *payload)
 {
     return (payload[0] & 0x1ff) << 18 | (payload[1] & 0x1ff) << 9 |
            (payload[2] & 0x1ff);
+}
+
+/*
+ * 0x9d10: word count in three 9-bit parts and the GE routine. For the
+ * load routine under TL_SPEC's whole-TRAM shape it is the client's TRAM
+ * restore, whose rows the load's rectangle at 0xe34 names: x 0, the first
+ * row, 64 wide and the rows tall. Anything else is a transfer to the GE
+ * the model does not take.
+ */
+static void mgras_tex_ge_dma(SGIMgrasState *s, const uint32_t *payload)
+{
+    SGIMgrasTexture *t = mgras_tex(s);
+    uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
+    uint32_t w = size & 0xffff, h = size >> 16;
+
+    if (payload[MGRAS_TEX_GE_DMA_ROUTINE] != MGRAS_TEX_ROUTINE_LOAD ||
+        t->tl_spec != MGRAS_TEX_SPEC_WHOLE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: 0x9d10 transfer to GE routine "
+                      "0x%x under TL_SPEC 0x%x is not modelled; its kick "
+                      "moves nothing\n", payload[MGRAS_TEX_GE_DMA_ROUTINE],
+                      t->tl_spec);
+        mgras_tram_open(s, MGRAS_TRAM_GE_DMA_OPEN);
+        return;
+    }
+    if (s->ge_param[MGRAS_TEX_GE_X] || w != MGRAS_TRAM_ROW_WORDS || !h ||
+        s->ge_param[MGRAS_TEX_GE_Y] > MGRAS_TRAM_ROWS - h) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: TRAM restore of %u by %u "
+                      "at %u, %u is not whole rows of TRAM; its kick moves "
+                      "nothing\n", w, h, s->ge_param[MGRAS_TEX_GE_X],
+                      s->ge_param[MGRAS_TEX_GE_Y]);
+        mgras_tram_open(s, MGRAS_TRAM_GE_DMA_OPEN);
+        return;
+    }
+    mgras_tram_open(s, MGRAS_TRAM_CLIENT_OPEN);
+    s->tram_words = mgras_tram_words(payload);
+    s->tram_first_row = s->ge_param[MGRAS_TEX_GE_Y];
+    s->tram_rows = h;
 }
 
 bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
@@ -807,6 +856,9 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_TEX_TRAM_GE_COUNT:
         mgras_tram_open(s, MGRAS_TRAM_RESTORE_OPEN);
         s->tram_words = mgras_tram_words(payload);
+        return true;
+    case MGRAS_TEX_GE_DMA:
+        mgras_tex_ge_dma(s, payload);
         return true;
     case MGRAS_TEX_TRAM_RESTORE:
         return true;
@@ -865,17 +917,21 @@ static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
 }
 
 /*
- * Write rows of TRAM from host memory: the kernel's restore, from its
- * block's first row through the descriptor's rows.
+ * Write rows of TRAM from host memory: the kernel's from its block's first
+ * row through the descriptor's rows, the client's from its rectangle's
+ * first row through the page-list form.
  */
-static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte)
+static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
+                               bool client)
 {
     uint64_t bytes = (uint64_t)s->tram_words * sizeof(uint32_t);
-    uint32_t rows = s->tram_kernel_rows;
-    uint64_t first = (uint64_t)s->tram_load_block * MGRAS_TRAM_BLOCK_ROWS;
+    uint32_t rows = client ? s->tram_rows : s->tram_kernel_rows;
+    uint64_t first = (uint64_t)s->tram_load_block * MGRAS_TRAM_BLOCK_ROWS +
+                     (client ? s->tram_first_row : 0);
     uint32_t k = mgras_tram_word_bytes(bytes, rows);
     uint64_t words = (uint64_t)rows * MGRAS_TRAM_ROW_WORDS;
     g_autofree uint8_t *buf = NULL;
+    bool ok;
 
     if (!k || first + rows > MGRAS_TRAM_ROWS) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: TRAM restore of %u rows "
@@ -886,7 +942,9 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
     buf = g_malloc(bytes);
-    if (!sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, false)) {
+    ok = client ? sgi_mgras_raster_dma_page_list_read(s, kick_byte, buf, bytes)
+                : sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, false);
+    if (!ok) {
         return;
     }
     for (uint64_t i = 0; i < words; i++) {
@@ -894,7 +952,8 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte)
                MGRAS_TRAM_WORD_BYTES, buf + i * k, k);
     }
     mgras_tram_mark(s, first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
-    trace_sgi_mgras_tram_transfer("restore", s->tram_load_block, rows, k);
+    trace_sgi_mgras_tram_transfer(client ? "client restore" : "restore",
+                                  s->tram_load_block, rows, k);
 }
 
 bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
@@ -932,8 +991,14 @@ bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
         mgras_tram_save(s, kick_byte);
         s->tram_transfer = MGRAS_TRAM_SAVE_READ;
         break;
+    case MGRAS_TRAM_RESTORE_OPEN:
+        mgras_tram_restore(s, kick_byte, false);
+        break;
+    case MGRAS_TRAM_CLIENT_OPEN:
+        mgras_tram_restore(s, kick_byte, true);
+        break;
     default:
-        mgras_tram_restore(s, kick_byte);
+        /* A 0x9d10 transfer the model does not take, logged at 0x9d10. */
         break;
     }
     return true;

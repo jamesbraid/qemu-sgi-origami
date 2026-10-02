@@ -31,5 +31,12 @@ uint64_t sgi_mgras_raster_dma_bytes(SGIMgrasState *s);
  */
 bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
                                uint8_t *buf, uint64_t bytes, bool to_host);
+/*
+ * Read bytes from host memory into buf through the HQ page-list form the
+ * OpenGL client's TRAM restore uses (sgi-mgras-raster.c). False, logged,
+ * when its words do not describe that many bytes.
+ */
+bool sgi_mgras_raster_dma_page_list_read(SGIMgrasState *s, uint32_t kick_byte,
+                                         uint8_t *buf, uint64_t bytes);
 
 #endif
