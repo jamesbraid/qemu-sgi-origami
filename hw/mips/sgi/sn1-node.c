@@ -1140,6 +1140,24 @@ static const MemoryRegionOps sn1_board_id_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+static void sn1_node_map_board_id(SN1NodeState *node, MemoryRegion *system)
+{
+    memory_region_init_io(&node->board_id, OBJECT(node), &sn1_board_id_ops,
+                          node, "sn1.board-id", 8);
+    /* Stateless response can be reached from this node's processor view. */
+    node->board_id.disable_reentrancy_guard = true;
+    memory_region_add_subregion(&node->hub_local_registers,
+                                SN1_BOARD_ID_OFFSET, &node->board_id);
+    /* The remote form reaches the same response above the Bedrock window. */
+    memory_region_init_alias(&node->board_id_remote, OBJECT(node),
+                             "sn1.board-id.remote", &node->board_id, 0, 8);
+    memory_region_add_subregion_overlap(
+        system,
+        sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                                SN1_BOARD_ID_OFFSET),
+        &node->board_id_remote, 1);
+}
+
 /*
  * The Hub-special register windows hold no processor-interface registers.
  * Below the L1 UART sits a block no public source names: the stock PROM
@@ -1279,20 +1297,7 @@ static void sn1_node_map_memory(SN1NodeState *node)
         system, sn1_node_address(node, SN1_HUB_LOCAL_REGISTERS_ADDRESS),
         &node->hub_local_registers);
 
-    memory_region_init_io(&node->board_id, OBJECT(node), &sn1_board_id_ops,
-                          node, "sn1.board-id", 8);
-    /* Stateless response can be reached from this node's processor view. */
-    node->board_id.disable_reentrancy_guard = true;
-    memory_region_add_subregion(&node->hub_local_registers,
-                                SN1_BOARD_ID_OFFSET, &node->board_id);
-    /* The remote form reaches the same response above the Bedrock window. */
-    memory_region_init_alias(&node->board_id_remote, OBJECT(node),
-                             "sn1.board-id.remote", &node->board_id, 0, 8);
-    memory_region_add_subregion_overlap(
-        system,
-        sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS +
-                                SN1_BOARD_ID_OFFSET),
-        &node->board_id_remote, 1);
+    sn1_node_map_board_id(node, system);
 }
 
 static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
@@ -1712,18 +1717,13 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
     return true;
 }
 
-static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
-                                    Error **errp)
+static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
+                               DeviceState **l1_uart_out,
+                               MemoryRegion **l1_uart_region,
+                               Error **errp)
 {
-    /* The builder numbers nodes in order, so nasid is this node's index. */
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
-    MemoryRegion *system = get_system_memory();
-    MemoryRegion *l1_uart;
     DeviceState *l1_uart_dev;
-    SysBusDevice *bedrock;
-    unsigned int cpu;
-    uint32_t slot_order;
-    uint32_t grant = 0;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
@@ -1759,7 +1759,26 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              OBJECT(node->l1), &error_abort);
     sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), &error_fatal);
     object_unref(OBJECT(l1_uart_dev));
-    l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
+    *l1_uart_region = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
+    *l1_uart_out = l1_uart_dev;
+    return true;
+}
+
+static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
+                                    Error **errp)
+{
+    MemoryRegion *system = get_system_memory();
+    MemoryRegion *l1_uart;
+    DeviceState *l1_uart_dev;
+    SysBusDevice *bedrock;
+    unsigned int cpu;
+    uint32_t slot_order;
+    uint32_t grant = 0;
+    size_t i;
+
+    if (!sn1_node_create_l1(node, machine, &l1_uart_dev, &l1_uart, errp)) {
+        return false;
+    }
 
     node->bedrock = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(node), "bedrock", OBJECT(node->bedrock));
