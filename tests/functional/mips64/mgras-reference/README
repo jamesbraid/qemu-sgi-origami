@@ -14,6 +14,9 @@ One per feature on each board, each from a frame checked by eye:
   ssi-lit3d.json    as si-lit3d
   ssi-pixels.json   as si-pixels
   ssi-doublebuffer.json  clock draws its face
+  esi-lit3d.json  esi-pixels.json   as the SI two
+  esi-t-lit3d.json  esi-t-pixels.json  esi-t-texture.json
+                    as the SI+T three
   essi-lit3d.json  essi-pixels.json  essi-doublebuffer.json
                     as the SSI three
 
