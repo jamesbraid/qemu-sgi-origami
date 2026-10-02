@@ -1066,6 +1066,196 @@ static void test_r10k_prefetch_hints(void)
     qtest_quit(qts);
 }
 
+#define TLB_IMAGE_SIZE      0x1000
+#define TLB_DONE_OFF        0x30
+#define TLB_FAULT_OFF       0x38
+#define TLB_PAGE0_OFF       0x40
+#define TLB_PAGE1_OFF       0x48
+#define TLB_PAGE2_OFF       0x50
+#define TLB_PAGE3_OFF       0x58
+#define TLB_DONE_MAGIC      0x544c424d /* "TLBM" */
+
+#define CP0_INDEX           0
+#define CP0_ENTRYLO0        2
+#define CP0_ENTRYLO1        3
+#define CP0_PAGEMASK        5
+#define CP0_ENTRYHI         10
+#define OPC_TLBWI           0x42000002u
+
+#define OPC_ORI             (0x0du << 26)
+
+static void emit_ori(GuestImage *img, int rt, int rs, uint16_t imm)
+{
+    emit(img, OPC_ORI | (rs << 21) | (rt << 16) | imm);
+}
+
+static void emit_fault_handler(GuestImage *img, uint16_t vec_id)
+{
+    emit_lui(img, R_T2, STATE_KSEG1_HI);
+    emit_addiu(img, R_T3, R_ZERO, vec_id);
+    emit_sd(img, R_T3, R_T2, TLB_FAULT_OFF);
+    emit_mfc0(img, R_T3, 13); /* CP0_CAUSE */
+    emit_sd(img, R_T3, R_T2, TLB_FAULT_OFF + 8);
+    emit_mfc0(img, R_T3, 8);  /* CP0_BADVADDR */
+    emit_sd(img, R_T3, R_T2, TLB_FAULT_OFF + 16);
+    emit_mfc0(img, R_T3, 14); /* CP0_EPC */
+    emit_sd(img, R_T3, R_T2, TLB_FAULT_OFF + 24);
+    emit(img, OPC_SYNC);
+    unsigned int spin = img->pos;
+    emit_branch(img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(img);
+}
+
+static void emit_tlb_write_entry(GuestImage *img, int index, uint32_t vpn2,
+                                 uint32_t pfn0, uint32_t pfn1)
+{
+    emit_lui(img, R_T0, (uint16_t)(vpn2 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(vpn2 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYHI);
+    emit_ehb(img);
+
+    uint32_t lo0 = (pfn0 << 6) | 0x17u;
+    emit_lui(img, R_T0, (uint16_t)(lo0 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(lo0 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYLO0);
+
+    uint32_t lo1 = (pfn1 << 6) | 0x17u;
+    emit_lui(img, R_T0, (uint16_t)(lo1 >> 16));
+    emit_ori(img, R_T0, R_T0, (uint16_t)(lo1 & 0xffff));
+    emit_mtc0(img, R_T0, CP0_ENTRYLO1);
+
+    emit_addiu(img, R_T0, R_ZERO, index);
+    emit_mtc0(img, R_T0, CP0_INDEX);
+    emit_ehb(img);
+
+    emit(img, OPC_TLBWI);
+    emit_ehb(img);
+}
+
+static void tlb_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(TLB_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = TLB_IMAGE_SIZE };
+    ssize_t written;
+
+    img.pos = VEC_TLB_REFILL;
+    emit_fault_handler(&img, 1);
+    img.pos = VEC_XTLB_REFILL;
+    emit_fault_handler(&img, 2);
+    img.pos = VEC_CACHE_ERROR;
+    emit_fault_handler(&img, 3);
+    img.pos = VEC_GENERAL;
+    emit_fault_handler(&img, 4);
+
+    img.pos = 0;
+    /* Clear ERL so low segment is TLB-mapped */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    emit_mtc0(&img, R_ZERO, CP0_PAGEMASK);
+    emit_ehb(&img);
+
+    /* Program 4 TLB entries with different VPNs (hash buckets 16, 1, 17, 2) */
+    emit_tlb_write_entry(&img, 0, 0x00020000, 0x200, 0x201);
+    emit_tlb_write_entry(&img, 1, 0x00040000, 0x202, 0x203);
+    emit_tlb_write_entry(&img, 2, 0x00060000, 0x204, 0x205);
+    emit_tlb_write_entry(&img, 3, 0x00080000, 0x206, 0x207);
+
+    /* A0 = 0x20000, A1 = 0x40000, A2 = 0x60000, A3 = 0x80000 */
+    emit_lui(&img, 4, 0x0002);
+    emit_lui(&img, 5, 0x0004);
+    emit_lui(&img, 6, 0x0006);
+    emit_lui(&img, 7, 0x0008);
+
+    /* Iteration counter in T1 = 50 */
+    emit_addiu(&img, R_T1, R_ZERO, 50);
+    emit_addiu(&img, R_T2, R_ZERO, 0x1234);
+
+    unsigned int loop_start = img.pos;
+    /* Interleaved writes across all 4 mapped pages */
+    emit_sd(&img, R_T2, 4, 0);
+    emit_sd(&img, R_T2, 5, 0);
+    emit_sd(&img, R_T2, 6, 0);
+    emit_sd(&img, R_T2, 7, 0);
+
+    /* Interleaved reads across all 4 mapped pages */
+    emit_ld(&img, 16, 4, 0); /* S0 */
+    emit_ld(&img, 17, 5, 0); /* S1 */
+    emit_ld(&img, 18, 6, 0); /* S2 */
+    emit_ld(&img, 19, 7, 0); /* S3 */
+
+    emit_addiu(&img, R_T2, R_T2, 1);
+    emit_addiu(&img, R_T1, R_T1, -1);
+    emit_branch(&img, OPC_BNE, R_T1, R_ZERO, loop_start);
+    emit_nop(&img);
+
+    /* Write final read values to STATE_PHYS */
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_sd(&img, 16, R_T0, TLB_PAGE0_OFF);
+    emit_sd(&img, 17, R_T0, TLB_PAGE1_OFF);
+    emit_sd(&img, 18, R_T0, TLB_PAGE2_OFF);
+    emit_sd(&img, 19, R_T0, TLB_PAGE3_OFF);
+
+    emit_lui(&img, R_T2, (uint16_t)(TLB_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(TLB_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T0, TLB_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, TLB_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, TLB_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_tlb_interleaved(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-tlb-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    tlb_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + TLB_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + TLB_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)TLB_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + TLB_DONE_OFF), ==,
+                    (uint64_t)TLB_DONE_MAGIC);
+    uint64_t expected = 0x1234 + 49;
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_PAGE0_OFF),
+                     ==, expected);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_PAGE1_OFF),
+                     ==, expected);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_PAGE2_OFF),
+                     ==, expected);
+    g_assert_cmpuint(qtest_readq(qts, STATE_PHYS + TLB_PAGE3_OFF),
+                     ==, expected);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1084,6 +1274,8 @@ int main(int argc, char **argv)
                    test_indirect_and_unmapped_chaining);
     qtest_add_func("/sn0/tcg/prefetch-hints",
                    test_r10k_prefetch_hints);
+    qtest_add_func("/sn0/tcg/tlb-interleaved",
+                   test_r10k_tlb_interleaved);
 
     return g_test_run();
 }

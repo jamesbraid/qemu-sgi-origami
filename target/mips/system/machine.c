@@ -75,6 +75,7 @@ static int cpu_post_load(void *opaque, int version_id)
         }
     }
     cpu_mips_r10k_perf_post_load(env);
+    mips_tlb_flush_caches(env);
 
     return 0;
 }
