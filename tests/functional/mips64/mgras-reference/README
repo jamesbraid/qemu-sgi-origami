@@ -19,6 +19,13 @@ One per feature on each board, each from a frame checked by eye:
                     as the SI+T three
   essi-lit3d.json  essi-pixels.json  essi-doublebuffer.json
                     as the SSI three
+  mxi-lit3d.json  emxi-lit3d.json  ivview draws the lit windmill
+  mxi-pixels.json  emxi-pixels.json  imgview shows brick.rgb
+  mxi-texture.json  emxi-texture.json
+                    perfly draws the textured CH-53 head-on, with its panel
+                    texture and the Performer logo; the rotor shows as thin
+                    lines at this angle
+  mxi-doublebuffer.json  emxi-doublebuffer.json  clock draws its face
 
 A missing file fails the test, as a mismatch does. When a model change
 alters a frame on purpose, check the new frame by eye before replacing
