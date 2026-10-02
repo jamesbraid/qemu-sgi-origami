@@ -193,21 +193,12 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
                                 hwaddr paddr, unsigned int set_bits)
 {
     R10KState *r10k = env->r10k;
-    MemTxAttrs attrs = { .requester_id = r10k->requester_id };
-    uint64_t found = 0;
 
-    if (!r10k->system_requests) {
+    if (!r10k || !r10k->bus_request) {
         return false;
     }
-    memory_region_dispatch_read(r10k->system_requests,
-                                extract64(paddr, 0,
-                                          R10K_SYSTEM_REQUEST_PADDR_BITS) |
-                                (uint64_t)request <<
-                                R10K_SYSTEM_REQUEST_KIND_SHIFT |
-                                (uint64_t)set_bits <<
-                                R10K_SYSTEM_REQUEST_SET_BITS_SHIFT,
-                                &found, MO_BEUQ, attrs);
-    return found;
+    return r10k->bus_request(r10k->bus_request_opaque, r10k->requester_id,
+                             request, paddr, set_bits);
 }
 
 /*
@@ -224,7 +215,10 @@ void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
     hwaddr paddr;
     int prot;
 
-    if (hint > 7 || hint == 2 || hint == 3 || !env->r10k->system_requests) {
+    if (!env->r10k || !env->r10k->bus_request) {
+        return;
+    }
+    if (hint > 7 || hint == 2 || hint == 3) {
         return;
     }
     if (get_physical_address(env, &paddr, &prot, addr, access,

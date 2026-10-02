@@ -218,8 +218,14 @@ typedef struct R10KState {
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
     /* Board links survive reset. */
-    MemoryRegion *system_requests;
+    R10KBusSystemRequestFn bus_request;
+    void *bus_request_opaque;
     uint16_t requester_id;
 } R10KState;
+
+void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
+                              R10KBusSystemRequestFn handler,
+                              void *opaque);
+void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id);
 
 #endif /* MIPS_R10K_H */

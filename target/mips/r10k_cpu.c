@@ -309,7 +309,7 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
     if (env->r10k) {
         R10KState *r10k = env->r10k;
 
-        memset(r10k, 0, offsetof(R10KState, system_requests));
+        memset(r10k, 0, offsetof(R10KState, bus_request));
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =
@@ -324,6 +324,23 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
 
     if (!strcmp(env->cpu_model->name, "R10000")) {
         env->CP0_PRid = cpu->r10k_profile->r10000_prid;
+    }
+}
+
+void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
+                              R10KBusSystemRequestFn handler,
+                              void *opaque)
+{
+    if (cpu->env.r10k) {
+        cpu->env.r10k->bus_request = handler;
+        cpu->env.r10k->bus_request_opaque = opaque;
+    }
+}
+
+void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id)
+{
+    if (cpu->env.r10k) {
+        cpu->env.r10k->requester_id = requester_id;
     }
 }
 
