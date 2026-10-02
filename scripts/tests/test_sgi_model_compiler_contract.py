@@ -52,6 +52,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model.model_compile import CompileError, compile_model, index_graph
 from sgi_model.model_emit import _io_board as _emit_io_board
+from sgi_model.model_emit import _offerings_for
+from sgi_model.model_emit import _resources_for
 from sgi_model.model_emit import render_catalogue_json as _render_catalogue_json, render_manifest
 from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.registry import PRODUCT_MODELS
@@ -483,6 +485,244 @@ class PicIo9DescriptorTests(unittest.TestCase):
             "intx-pin": "inta", "pic-input": 0,
             "clock-hz": 33333333,
         }])
+
+    def test_io9_clock_link_emits_a_ds1742_board_marker(self):
+        model = self.model_with_ds1742_link()
+
+        entry = compile_model(model)
+        board = next(item for item in entry["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertTrue(board["ds1742"])
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertTrue(exported_board["ds1742"])
+
+    def test_io9_without_clock_link_omits_the_ds1742_board_marker(self):
+        exported = json.loads(render_catalogue_json([
+            self.model_with_pic_io9()
+        ]))["topologies"][0]
+        board = next(item for item in exported["io-boards"]
+                     if item["id"] == "fixture-io9")
+
+        self.assertNotIn("ds1742", board)
+
+    def test_io9_clock_link_schema_is_narrow_and_optional(self):
+        from jsonschema import Draft202012Validator
+
+        model = self.model_with_ds1742_link()
+        self.assertEqual(
+            list(Draft202012Validator(schema(MACHINES)).iter_errors(model)), []
+        )
+        model["links"][0]["kind"] = "physical-byte-bus"
+        self.assertTrue(
+            list(Draft202012Validator(schema(MACHINES)).iter_errors(model))
+        )
+
+    def test_linked_io9_boards_are_one_board_keyed_ds1742_resource(self):
+        resources = _resources_for(
+            {"generation": "SN1", "io_boards": [
+                {"id": "io9-a-clock", "board_kind": "IO9", "ds1742": True,
+                 "pci_host_index": 0, "pci": []},
+                {"id": "io9-a", "board_kind": "IO9", "ds1742": True,
+                 "pci_host_index": 1, "pci": []},
+            ], "pci_host_bridges": [
+                {"xio_attachment_index": 0},
+                {"xio_attachment_index": 1},
+            ], "xio_attachments": [
+                {"node_index": 0}, {"node_index": 1},
+            ], "controllers": []},
+            {"requires_per_node_flash": False,
+             "has_managed_boot_flash": False},
+            {}, (), 2, (0, 1),
+        )
+
+        rtc_resources = [item for item in resources if item["kind"] == "ds1742"]
+        self.assertEqual(rtc_resources, [{
+            "kind": "ds1742", "scope": "board", "count": 2,
+            "board-ids": ["io9-a", "io9-a-clock"],
+            "argument": "-drive if=none,id=sgi-ds1742-data-BOARD",
+            "part": "ds1742", "size": 2048, "clock-reference": True,
+        }])
+
+    def test_ds1742_resources_follow_the_offerings_surviving_nodes(self):
+        topology = {
+            "generation": "SN1",
+            "io_boards": [
+                {"id": "removed-board", "board_kind": "IO9",
+                 "ds1742": True, "pci_host_index": 0, "pci": []},
+                {"id": "retained-board", "board_kind": "IO9",
+                 "ds1742": True, "pci_host_index": 1, "pci": []},
+            ],
+            "pci_host_bridges": [
+                {"xio_attachment_index": 0},
+                {"xio_attachment_index": 1},
+            ],
+            "xio_attachments": [
+                {"node_index": 0}, {"node_index": 1},
+            ],
+            "controllers": [],
+        }
+        resources = _resources_for(
+            topology,
+            {"requires_per_node_flash": False,
+             "has_managed_boot_flash": False},
+            {}, (), 1, (1,),
+        )
+
+        rtc_resources = [item for item in resources
+                         if item["kind"] == "ds1742"]
+        self.assertEqual(rtc_resources[0]["count"], 1)
+        self.assertEqual(rtc_resources[0]["board-ids"], ["retained-board"])
+
+    def test_ds1742_resource_owners_must_have_unique_stable_ids(self):
+        common = {
+            "generation": "SN1",
+            "pci_host_bridges": [
+                {"xio_attachment_index": 0},
+                {"xio_attachment_index": 1},
+            ],
+            "xio_attachments": [
+                {"node_index": 0}, {"node_index": 1},
+            ],
+            "controllers": [],
+        }
+        harness = {"requires_per_node_flash": False,
+                   "has_managed_boot_flash": False}
+        cases = (
+            ("duplicate IDs", ["io9-board", "io9-board"]),
+            ("invalid stable ID", ["IO9-board", "io9-later"]),
+        )
+        for name, board_ids in cases:
+            with self.subTest(name=name):
+                topology = {
+                    **common,
+                    "io_boards": [
+                        {"id": board_id, "board_kind": "IO9",
+                         "ds1742": True, "pci_host_index": index,
+                         "pci": []}
+                        for index, board_id in enumerate(board_ids)
+                    ],
+                }
+                with self.assertRaisesRegex(
+                        ValueError,
+                        "DS1742 resource owners must be unique stable board IDs"):
+                    _resources_for(topology, harness, {}, (), 2, (0, 1))
+
+    def test_offerings_filter_ds1742_owners_by_the_selected_node_row(self):
+        model = _resolved("origin300-two-chassis")
+        topology = compile_model(model)
+        topology["io_boards"] = [
+            {"id": "earlier-io9", "board_kind": "IO9", "ds1742": True,
+             "pci_host_index": 0, "pci": []},
+            {"id": "later-io9", "board_kind": "IO9", "ds1742": True,
+             "pci_host_index": 1, "pci": []},
+        ]
+        topology["pci_host_bridges"] = [
+            {"id": "earlier-pic", "kind": "PIC",
+             "xio_attachment_index": 0},
+            {"id": "later-pic", "kind": "PIC",
+             "xio_attachment_index": 1},
+        ]
+        topology["xio_attachments"] = [
+            {"node_index": 0}, {"node_index": 1},
+        ]
+        topology["node_populations"] = [{
+            "nodes": [1], "routers": [], "cables": [], "xio_slots": [],
+            "supported_cpu_populations": [[2]], "grade": "ESTABLISHED",
+        }]
+        product_models = {
+            product: _resolved(model_name)
+            for product, model_name in PRODUCT_MODELS.items()
+        }
+
+        offerings = _offerings_for(model, topology, product_models)
+
+        self.assertEqual(len(offerings), 1)
+        rtc_resources = [item for item in offerings[0]["resources"]
+                         if item["kind"] == "ds1742"]
+        self.assertEqual(rtc_resources[0]["count"], 1)
+        self.assertEqual(rtc_resources[0]["board-ids"], ["later-io9"])
+
+    def test_io9_clock_link_rejects_invalid_endpoints_and_duplicates(self):
+        cases = (
+            ("dangling", lambda model: model["links"][0].update(
+                target="missing-ioc4"), "dangling"),
+            ("unsupported link kind", lambda model: model["links"][0].update(
+                kind="physical-byte-bus"), "unsupported kind"),
+            ("wrong source", lambda model: model["links"][0].update(
+                source="fixture-bcm5701"), "must source a DS1742"),
+            ("wrong kind", lambda model: model["links"][0].update(
+                target="fixture-bcm5701"), "must target an IOC4"),
+            ("duplicate", lambda model: model["links"].append(
+                copy.deepcopy(model["links"][0])), "duplicate"),
+        )
+        for name, mutate, message in cases:
+            with self.subTest(name=name):
+                model = self.model_with_ds1742_link(with_bcm5701=True)
+                mutate(model)
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(model)
+
+        model = self.model_with_ds1742_link()
+        model["components"].append({
+            "id": "fixture-ioc4-extra", "name": "Extra IOC4",
+            "kind": "io-controller", "hardware_kind": "ioc4",
+            "parent": "fixture-io9", "provenance": "derived",
+        })
+        with self.assertRaisesRegex(CompileError, "requires its one IOC4"):
+            compile_model(model)
+
+    def test_io9_clock_link_rejects_cross_board_endpoints(self):
+        model = self.model_with_ds1742_link()
+        model["components"].extend([
+            {"id": "fixture-io9-second", "name": "Second IO9 fixture",
+             "kind": "board", "hardware_kind": "io9",
+             "parent": "bedrock", "provenance": "derived",
+             "identity": {"part": "synthetic-io9-part-2"}},
+            {"id": "fixture-ioc4-second", "name": "Second IOC4 fixture",
+             "kind": "io-controller", "hardware_kind": "ioc4",
+             "parent": "fixture-io9-second", "provenance": "derived",
+             "identity": {"pci_revision": 0x53},
+             "ioc4": {"clock_hz": 33333333}},
+        ])
+        model["buses"].append({"id": "fixture-pic-pci1",
+                               "name": "Second synthetic PCI bus",
+                               "kind": "pci", "master": "fixture-pic",
+                               "provenance": "derived"})
+        model["connections"].extend([
+            {"component": "fixture-pic", "bus": "fixture-pic-pci1",
+             "role": "bridge-downstream", "pci_head": 1,
+             "provenance": "derived"},
+            {"component": "fixture-ioc4-second", "bus": "fixture-pic-pci1",
+             "role": "endpoint", "pci_device": 1, "pci_function": 0,
+             "intx_pin": "inta", "pic_input": 1,
+             "provenance": "derived"},
+        ])
+        model["links"][0]["target"] = "fixture-ioc4-second"
+
+        with self.assertRaisesRegex(CompileError, "same IO9 board"):
+            compile_model(model)
+
+    def model_with_ds1742_link(self, *, with_bcm5701=False):
+        model = self.model_with_pic_io9()
+        model["components"].append({
+            "id": "fixture-ds1742", "name": "Synthetic DS1742",
+            "kind": "rtc", "hardware_kind": "ds1742",
+            "parent": "fixture-io9", "provenance": "derived",
+        })
+        if with_bcm5701:
+            model = self.io9_with_ioc4_and_bcm5701()
+            model["components"].append({
+                "id": "fixture-ds1742", "name": "Synthetic DS1742",
+                "kind": "rtc", "hardware_kind": "ds1742",
+                "parent": "fixture-io9", "provenance": "derived",
+            })
+        model["links"] = [{
+            "kind": "ioc4-clock", "source": "fixture-ds1742",
+            "target": "fixture-ioc4",
+        }]
+        return model
 
     def test_io9_functions_preserve_positions_routes_revisions_and_clock(self):
         model = self.model_with_pic_io9()

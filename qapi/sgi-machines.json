@@ -1049,6 +1049,8 @@
 #
 # @populated: whether this record has a fitted assembly
 #
+# @ds1742: this board has an explicitly linked IOC4 clock resource
+#
 # @pci-functions: fitted Bedrock assembly parts and their supported
 #     revisions
 #
@@ -1078,6 +1080,7 @@
             '*revision': 'uint8',
             '*serial': 'uint64',
             '*ioc3-serial': 'uint64',
+            '*ds1742': 'bool',
             '*system-timekeeper': 'SGIModelSystemTimekeeper',
             'populated': 'bool',
             '*pci-functions': ['SGIModelPciFunction'],
@@ -1542,10 +1545,10 @@
 ##
 # @SGIModelResource:
 #
-# One identity input a launcher may supply beyond the machine's
-# writable storage.
+# One identity input or DS1742 backend pair a launcher supplies beyond
+# the machine's generic writable storage.
 #
-# @kind: what this resource is (identity-eeprom, spd-eeprom)
+# @kind: what this resource is (identity-eeprom, spd-eeprom, ds1742)
 #
 # @scope: what it is supplied per (board, dimm)
 #
@@ -1553,8 +1556,16 @@
 #
 # @size: byte size of one instance, when documented
 #
-# @argument: the QEMU argument form this resource becomes, `N`
-#     standing for its instance index
+# @argument: the QEMU argument form this resource becomes.  `N` stands
+#     for an indexed instance; `BOARD` is an IO board's stable id.
+#     For `ds1742`, this describes the data backend; the paired clock
+#     reference backend is `sgi-ds1742-clock-BOARD`.
+#
+# @part: fitted part when a resource needs part-specific backing
+#
+# @board-ids: stable IO9 board ids owning DS1742 data and clock pairs
+#
+# @clock-reference: whether each backend needs a paired clock record
 #
 # Since: 11.2
 ##
@@ -1563,7 +1574,10 @@
             'scope': 'str',
             'count': 'uint32',
             '*size': 'uint64',
-            'argument': 'str' } }
+            'argument': 'str',
+            '*part': 'str',
+            '*board-ids': ['str'],
+            '*clock-reference': 'bool' } }
 
 ##
 # @SGIModelScsiAdapter:

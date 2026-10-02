@@ -899,6 +899,21 @@
       }
     },
 
+    "links": {
+      "type": "array",
+      "description": "Typed QEMU object links between components. An IOC4 clock link describes the MemoryRegion relationship only; it does not assert physical board wiring or address decode.",
+      "items": {
+        "type": "object",
+        "required": ["kind", "source", "target"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "const": "ioc4-clock" },
+          "source": { "$ref": "#/$defs/identifier" },
+          "target": { "$ref": "#/$defs/identifier" }
+        }
+      }
+    },
+
     "open_questions": {
       "type": "array",
       "description": "Things the sources do not settle. Recorded rather than resolved, because a model that guesses is worse than one that admits a gap — and once a generator consumes it, a guess becomes false machine behavior. Each names the candidates and what argues for them.",
