@@ -339,6 +339,8 @@ typedef struct SGIMgrasGLPixels {
     uint32_t skip;              /* bytes still to drop from this row's block */
     uint32_t carry;             /* bytes of a pixel split across words */
     uint32_t ncarry;
+    uint32_t components[4];
+    uint32_t ncomponent;
     uint32_t dma_only;          /* 0x8d20 marked the image as DMA: 0 or 1 */
     uint32_t apart;             /* a header came after its last word: 0/1 */
 } SGIMgrasGLPixels;

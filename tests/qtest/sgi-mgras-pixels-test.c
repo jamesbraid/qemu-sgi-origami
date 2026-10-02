@@ -2425,6 +2425,111 @@ static void gl_pixels_context(QTestState *qts, uint32_t index_bits)
  * bits 23:22 give, and counts that word (its length is the words sent).
  * An index keeps its low eight bits, the context's mask.
  */
+static void gl_pixels_float_program(QTestState *qts, bool rgba,
+                                    bool malformed)
+{
+    static const uint32_t rgb_program[] = {
+        0x1f44, 0, 0x1655, 0xd91, 0x3e65, 0x1d6, 0x156a, 0x1b4,
+        0x352d, 0xdf3,
+    };
+    static const uint32_t rgba_program[] = {
+        0x1f44, 0, 0x3e65, 0x1b4, 0x156a, 0xe43, 0x352d, 0xdf3,
+    };
+    uint32_t rgb_unpack[] = {
+        0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
+    };
+    static const uint32_t rgba_unpack[] = {
+        2, 0, 0x4064, 0x464, 0x44,
+    };
+    static const uint32_t rgba_transfer[] = { 4, 0, 0 };
+
+    if (malformed) {
+        rgb_unpack[1] ^= 1;
+    }
+    gl_ge_load(qts, GL_GE_CRAM, GL_GE_PROGRAM,
+               rgba ? rgba_program : rgb_program,
+               rgba ? ARRAY_SIZE(rgba_program) : ARRAY_SIZE(rgb_program));
+    if (rgba) {
+        gl_ge_load(qts, GL_GE_ERAM, 0x1b4, rgba_unpack,
+                   ARRAY_SIZE(rgba_unpack));
+        gl_ge_load(qts, GL_GE_ERAM, 0xe43, rgba_transfer,
+                   ARRAY_SIZE(rgba_transfer));
+    } else {
+        gl_ge_load(qts, GL_GE_ERAM, 0x1d6, rgb_unpack,
+                   ARRAY_SIZE(rgb_unpack));
+    }
+}
+
+static void test_gl_pixels_captured_float_rgb(void)
+{
+    static const uint32_t row0[] = {
+        0x3e808081, 0x3e808081, 0, 0x3f3fbfc0, 0x3e808081, 0,
+    };
+    static const uint32_t row1[] = {
+        0x3e808081, 0x3f3fbfc0, 0, 0x3f3fbfc0, 0x3f3fbfc0, 0,
+    };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_3UB, 6, 0, 0, 1, 1, 1);
+    gl_pixels_float_program(qts, false, false);
+    gl_alpha_func(qts, GL_GREATER, 2048);
+    gl_one(qts, GL_ALPHA_TEST_HDR, 1);
+    gl_pixels_draw(qts, 6);
+    gl_pixels_row(qts, 0, row0, ARRAY_SIZE(row0));
+    gl_pixels_row(qts, 0, row1, ARRAY_SIZE(row1));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0x404000);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0xbf4000);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 1), ==, 0x40bf00);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xbfbf00);
+    g_assert_cmphex(gl_window_pixel(qts, 2, 0), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_gl_pixels_captured_float_rgba(void)
+{
+    static const uint32_t row0[] = {
+        0x3e808081, 0x3e808081, 0, 0x3f800000,
+        0x3f3fbfc0, 0x3e808081, 0, 0x3f800000,
+    };
+    static const uint32_t row1[] = {
+        0x3e808081, 0x3f3fbfc0, 0, 0x3f800000,
+        0x3f3fbfc0, 0x3f3fbfc0, 0, 0x3f800000,
+    };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 0, 0, 1, 1, 1);
+    gl_pixels_float_program(qts, true, false);
+    gl_pixels_draw(qts, 16);
+    gl_pixels_row(qts, 0, row0, ARRAY_SIZE(row0));
+    gl_pixels_row(qts, 0, row1, ARRAY_SIZE(row1));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0x404000);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0xbf4000);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 1), ==, 0x40bf00);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xbfbf00);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_gl_pixels_float_malformed_unpack(void)
+{
+    static const uint32_t row[] = {
+        0x3e808081, 0x3e808081, 0, 0x3f3fbfc0, 0x3e808081, 0,
+    };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_3UB, 6, 0, 0, 1, 0, 1);
+    gl_pixels_float_program(qts, false, true);
+    gl_pixels_draw(qts, 6);
+    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0);
+}
+
 static void test_gl_pixels_inline_colour_index(void)
 {
     gl_pixels_context(qts, 8);
@@ -3953,6 +4058,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-pixels-colour-index-into-bank-one",
                    test_gl_pixels_colour_index_into_bank_one);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgb",
+                   test_gl_pixels_captured_float_rgb);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgba",
+                   test_gl_pixels_captured_float_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-float-malformed-unpack",
+                   test_gl_pixels_float_malformed_unpack);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
                    test_gl_pixels_inline_rgb);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-two-by-two",

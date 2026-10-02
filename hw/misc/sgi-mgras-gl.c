@@ -654,6 +654,8 @@ enum {
     MGRAS_GL_PIXELS_ABGR8,
     MGRAS_GL_PIXELS_RGBA8,
     MGRAS_GL_PIXELS_RGB8,
+    MGRAS_GL_PIXELS_FLOAT_RGB,
+    MGRAS_GL_PIXELS_FLOAT_RGBA,
     MGRAS_GL_PIXELS_INDEX,
     MGRAS_GL_PIXELS_FORMATS,
 };
@@ -2364,7 +2366,7 @@ static bool mgras_gl_pixels_needed(void *opaque)
 
 static const VMStateDescription vmstate_sgi_mgras_gl_context_pixels = {
     .name = TYPE_SGI_MGRAS "/gl-context-pixels",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(pixels.active, SGIMgrasGLContext),
@@ -2379,6 +2381,8 @@ static const VMStateDescription vmstate_sgi_mgras_gl_context_pixels = {
         VMSTATE_UINT32(pixels.skip, SGIMgrasGLContext),
         VMSTATE_UINT32(pixels.carry, SGIMgrasGLContext),
         VMSTATE_UINT32(pixels.ncarry, SGIMgrasGLContext),
+        VMSTATE_UINT32_V(pixels.ncomponent, SGIMgrasGLContext, 2),
+        VMSTATE_UINT32_ARRAY_V(pixels.components, SGIMgrasGLContext, 4, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2445,17 +2449,43 @@ const VMStateDescription vmstate_sgi_mgras_gl_pixel_flags = {
 /* Whether a migrated pixel draw is one mgras_gl_pixels_start() makes. */
 static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
 {
+    bool float_rgb = px->format == MGRAS_GL_PIXELS_FLOAT_RGB;
+    bool float_rgba = px->format == MGRAS_GL_PIXELS_FLOAT_RGBA;
+    uint32_t components = float_rgb ? 3 : 4;
+
     if (!px->active) {
         return true;
     }
-    return px->active == 1 && px->format <= MGRAS_GL_PIXELS_FORMATS &&
-           px->bpp >= 1 && px->bpp <= 4 && px->w >= 1 &&
-           px->w <= MGRAS_GL_PIXELS_MAX && px->h >= 1 &&
-           px->h <= MGRAS_GL_PIXELS_MAX && px->row < px->h &&
-           px->col <= px->w && px->ncarry < px->bpp && px->skip <= 3 &&
-           px->dma_only <= 1 && px->apart <= 1 &&
-           px->x >= -MGRAS_GL_PIXELS_FAR && px->x <= MGRAS_GL_PIXELS_FAR &&
-           px->y >= -MGRAS_GL_PIXELS_FAR && px->y <= MGRAS_GL_PIXELS_FAR;
+    if (px->active != 1 || px->format > MGRAS_GL_PIXELS_FORMATS ||
+        px->w < 1 || px->w > MGRAS_GL_PIXELS_MAX || px->h < 1 ||
+        px->h > MGRAS_GL_PIXELS_MAX || px->row >= px->h ||
+        px->col > px->w || px->skip > 3 || px->dma_only > 1 ||
+        px->apart > 1 || px->x < -MGRAS_GL_PIXELS_FAR ||
+        px->x > MGRAS_GL_PIXELS_FAR || px->y < -MGRAS_GL_PIXELS_FAR ||
+        px->y > MGRAS_GL_PIXELS_FAR) {
+        return false;
+    }
+    if (float_rgb || float_rgba) {
+        if (px->bpp != components * sizeof(uint32_t) ||
+            px->ncarry >= sizeof(uint32_t) ||
+            px->ncomponent >= components ||
+            (px->ncomponent && px->col >= px->w)) {
+            return false;
+        }
+        for (uint32_t i = 0; i < px->ncomponent; i++) {
+            union {
+                uint32_t bits;
+                float value;
+            } component = { .bits = px->components[i] };
+
+            if (!isfinite(component.value)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return px->bpp >= 1 && px->bpp <= 4 &&
+           px->ncarry < px->bpp && !px->ncomponent;
 }
 
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
@@ -3046,6 +3076,44 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
  * Which of mgras_gl_pixel_programs[] the GE holds at 0x13b, or
  * MGRAS_GL_PIXELS_FORMATS for none of them; *pairs is its length.
  */
+static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
+{
+    static const uint32_t rgb_routines[] = {
+        0x1f44, 0x1655, 0x3e65, 0x156a, 0x352d,
+    };
+    static const uint32_t rgba_routines[] = {
+        0x1f44, 0x3e65, 0x156a, 0x352d,
+    };
+    static const uint32_t rgb_unpack[] = {
+        0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
+    };
+    static const uint32_t rgba_unpack[] = {
+        2, 0, 0x4064, 0x464, 0x44,
+    };
+    bool rgb = true;
+    bool rgba = true;
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(rgb_routines); i++) {
+        rgb &= ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] == rgb_routines[i];
+    }
+    for (uint32_t i = 0; i < ARRAY_SIZE(rgba_routines); i++) {
+        rgba &= ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] == rgba_routines[i];
+    }
+    for (uint32_t i = 0; rgb && i < ARRAY_SIZE(rgb_unpack); i++) {
+        rgb &= ge[0x1d6 + i] == rgb_unpack[i];
+    }
+    for (uint32_t i = 0; rgba && i < ARRAY_SIZE(rgba_unpack); i++) {
+        rgba &= ge[0x1b4 + i] == rgba_unpack[i];
+    }
+    if (rgb) {
+        return MGRAS_GL_PIXELS_FLOAT_RGB;
+    }
+    if (rgba) {
+        return MGRAS_GL_PIXELS_FLOAT_RGBA;
+    }
+    return MGRAS_GL_PIXELS_FORMATS;
+}
+
 static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
 {
     uint32_t format;
@@ -3108,7 +3176,12 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         return false;
     }
     px->h = h;
-    format = mgras_gl_pixels_match(ge, &pairs);
+    format = mgras_gl_pixels_float_signature(ge);
+    if (format == MGRAS_GL_PIXELS_FORMATS) {
+        format = mgras_gl_pixels_match(ge, &pairs);
+    } else {
+        pairs = 0;
+    }
     if (format >= ARRAY_SIZE(mgras_gl_pixel_programs)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE pixel program of %u "
                       "routines from 0x%x, 0x%x is not modelled; its image "
@@ -3129,6 +3202,12 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     px->w = w;
     px->bpp = 0;
     switch (format) {
+    case MGRAS_GL_PIXELS_FLOAT_RGB:
+        px->bpp = 12;
+        break;
+    case MGRAS_GL_PIXELS_FLOAT_RGBA:
+        px->bpp = 16;
+        break;
     case MGRAS_GL_PIXELS_ABGR8:
         px->bpp = 4;
         if (!(hq & MGRAS_HQ_PIXEL_ABGR)) {
@@ -3164,13 +3243,22 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     }
     uint64_t expected_words = DIV_ROUND_UP(px->w * px->bpp, 4);
 
-    if (!dma_only && px->format == MGRAS_GL_PIXELS_RGBA8) {
+    if (!dma_only && (px->format == MGRAS_GL_PIXELS_RGBA8 ||
+                      px->format == MGRAS_GL_PIXELS_FLOAT_RGBA)) {
         expected_words *= px->h;
     }
-    if (px->bpp > 4 || expected_words != row_words) {
+    if ((px->bpp > 4 && px->format != MGRAS_GL_PIXELS_FLOAT_RGB &&
+         px->format != MGRAS_GL_PIXELS_FLOAT_RGBA) ||
+        expected_words != row_words) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %" PRIu64 " words "
                       "for %u by %u pixels is not modelled\n", row_words,
                       px->w, px->h);
+        return false;
+    }
+    if (dma_only && (format == MGRAS_GL_PIXELS_FLOAT_RGB ||
+                     format == MGRAS_GL_PIXELS_FLOAT_RGBA)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA float pixel input is not "
+                      "modelled\n");
         return false;
     }
     if (format == MGRAS_GL_PIXELS_INDEX && !mgras_gl(s)->cur.index_bits) {
@@ -3335,6 +3423,43 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
 }
 
 /* Take n image bytes of the current row; bytes past its last pixel drop. */
+static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
+                                            SGIMgrasGLPixels *px,
+                                            uint32_t bits)
+{
+    union {
+        uint32_t bits;
+        float value;
+    } component = { .bits = bits };
+    uint32_t count = px->format == MGRAS_GL_PIXELS_FLOAT_RGB ? 3 : 4;
+    float rgba[4] = { 0, 0, 0, 1 };
+
+    if (!isfinite(component.value)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: non-finite float pixel "
+                      "component; remaining image is dropped\n");
+        px->format = MGRAS_GL_PIXELS_FORMATS;
+        px->ncomponent = 0;
+        return false;
+    }
+    px->components[px->ncomponent++] = bits;
+    if (px->ncomponent < count) {
+        return true;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        component.bits = px->components[i];
+        rgba[i] = component.value;
+    }
+    float textured[4];
+
+    if (sgi_mgras_texture_pixel(s, rgba, textured)) {
+        memcpy(rgba, textured, sizeof(rgba));
+    }
+    mgras_gl_pixels_put(s, px->x + px->col, px->y + px->row, rgba, 0);
+    px->ncomponent = 0;
+    px->col++;
+    return true;
+}
+
 static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
                                   uint32_t n)
 {
@@ -3342,7 +3467,17 @@ static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
 
     for (uint32_t i = 0; i < n && px->col < px->w; i++) {
         px->carry = px->carry << 8 | bytes[i];
-        if (++px->ncarry == px->bpp) {
+        if (px->format == MGRAS_GL_PIXELS_FLOAT_RGB ||
+            px->format == MGRAS_GL_PIXELS_FLOAT_RGBA) {
+            if (++px->ncarry == sizeof(uint32_t)) {
+                uint32_t bits = px->carry;
+
+                px->carry = px->ncarry = 0;
+                if (!mgras_gl_pixels_float_component(s, px, bits)) {
+                    return;
+                }
+            }
+        } else if (++px->ncarry == px->bpp) {
             mgras_gl_pixels_pixel(s, px, px->carry);
             px->col++;
             px->carry = px->ncarry = 0;
@@ -3358,7 +3493,7 @@ static void mgras_gl_pixels_row_end(SGIMgrasState *s)
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel row %u ended after "
                       "%u of %u pixels\n", px->row, px->col, px->w);
     }
-    px->col = px->carry = px->ncarry = px->skip = 0;
+    px->col = px->carry = px->ncarry = px->ncomponent = px->skip = 0;
     if (++px->row == px->h) {
         memset(px, 0, sizeof(*px));
     }
