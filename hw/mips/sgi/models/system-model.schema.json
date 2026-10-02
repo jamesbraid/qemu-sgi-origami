@@ -648,7 +648,21 @@
             "firmware_bytes": { "type": "integer", "minimum": 1 },
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
             "smdk": { "$ref": "#/$defs/smdk-recipe" },
-            "console": { "enum": ["ioc3-serial-a", "l1-uart"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
+            "launch_recipe": { "enum": ["ip53-discovery"], "description": "Optional offering launch preparation. Emitted only when authored." },
+            "console_records": {
+              "type": "array", "minItems": 1,
+              "description": "Explicit IP53 console endpoints, filtered by selected node population.",
+              "items": { "type": "object", "additionalProperties": false,
+                "required": ["kind", "node_id", "argument"],
+                "properties": {
+                  "kind": { "enum": ["console", "second-port", "system-controller", "junk-uart"] },
+                  "node_id": { "$ref": "#/$defs/identifier" },
+                  "argument": { "type": "string", "pattern": "^-serial chardev:[a-z][a-z0-9_-]*$" },
+                  "launcher_name": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+                }
+              }
+            },
+            "console": { "enum": ["ioc3-serial-a", "l1-uart", "ip53-ioc4"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
             "ioc3_serial_ports": {
               "type": "array",
               "uniqueItems": true,

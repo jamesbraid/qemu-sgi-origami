@@ -52,6 +52,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from sgi_model.model_compile import CompileError, compile_model, index_graph
 from sgi_model.model_emit import _io_board as _emit_io_board
+from sgi_model.model_emit import _ip53_console_records
 from sgi_model.model_emit import _offerings_for
 from sgi_model.model_emit import _resources_for
 from sgi_model.model_emit import render_catalogue_json as _render_catalogue_json, render_manifest
@@ -79,6 +80,219 @@ def render_catalogue_json(models: list[dict]) -> str:
         for product, model_name in PRODUCT_MODELS.items()
     }
     return _render_catalogue_json(models, product_models=product_models)
+
+
+class IP53ConsoleOfferingTests(unittest.TestCase):
+    def harness(self, records):
+        return {
+            "console": "ip53-ioc4",
+            "launch_recipe": "ip53-discovery",
+            "console_records": records,
+        }
+
+    def test_console_records_follow_stable_owner_through_filter_and_reorder(self):
+        records = [
+            {"kind": "second-port", "node_id": "early-node",
+             "argument": "-serial chardev:ioc4_serial_1",
+             "launcher_name": "ioc4-serial-1"},
+            {"kind": "console", "node_id": "late-node",
+             "argument": "-serial chardev:ioc4_serial_0",
+             "launcher_name": "ioc4-serial-0"},
+        ]
+        topology = {"nodes": [{"id": "early-node"}, {"id": "late-node"}]}
+        selected = _ip53_console_records(topology, self.harness(records), (1,))
+        self.assertEqual(selected, [{
+            "kind": "console", "node": 1,
+            "argument": "-serial chardev:ioc4_serial_0",
+            "launcher-name": "ioc4-serial-0",
+        }])
+
+        reordered = {"nodes": [{"id": "late-node"}, {"id": "early-node"}]}
+        moved = _ip53_console_records(reordered, self.harness(records), (0,))
+        self.assertEqual(moved, [{
+            "kind": "console", "node": 0,
+            "argument": "-serial chardev:ioc4_serial_0",
+            "launcher-name": "ioc4-serial-0",
+        }])
+
+    def test_population_without_named_primary_is_rejected(self):
+        records = [
+            {"kind": "second-port", "node_id": "early-node",
+             "argument": "-serial chardev:ioc4_serial_1",
+             "launcher_name": "ioc4-serial-1"},
+            {"kind": "console", "node_id": "late-node",
+             "argument": "-serial chardev:ioc4_serial_0",
+             "launcher_name": "ioc4-serial-0"},
+        ]
+        topology = {"nodes": [{"id": "early-node"}, {"id": "late-node"}]}
+        with self.assertRaisesRegex(ValueError, "one named primary"):
+            _ip53_console_records(topology, self.harness(records), (0,))
+
+    def test_duplicate_console_names_and_bindings_are_rejected(self):
+        base = {"kind": "console", "node_id": "node-a",
+                "argument": "-serial chardev:ioc4_serial_0",
+                "launcher_name": "ioc4-serial-0"}
+        topology = {"nodes": [{"id": "node-a"}]}
+        duplicate_name = [base, {**base, "argument":
+                                 "-serial chardev:ioc4_serial_1"}]
+        duplicate_binding = [base, {**base, "kind": "second-port",
+                                    "launcher_name": "ioc4-serial-1"}]
+        for records in (duplicate_name, duplicate_binding):
+            with self.subTest(records=records):
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    _ip53_console_records(
+                        topology, self.harness(records), (0,))
+
+    def test_duplicate_names_are_checked_for_each_selected_population(self):
+        records = [
+            {"kind": "console", "node_id": "node-a",
+             "argument": "-serial chardev:ioc4_serial_0",
+             "launcher_name": "ioc4-serial-0"},
+            {"kind": "second-port", "node_id": "node-a",
+             "argument": "-serial chardev:ioc4_serial_1",
+             "launcher_name": "shared-name"},
+            {"kind": "second-port", "node_id": "node-b",
+             "argument": "-serial chardev:ioc4_serial_2",
+             "launcher_name": "shared-name"},
+        ]
+        topology = {"nodes": [{"id": "node-a"}, {"id": "node-b"}]}
+        selected = _ip53_console_records(
+            topology, self.harness(records), (0,))
+        self.assertEqual([record["launcher-name"] for record in selected],
+                         ["ioc4-serial-0", "shared-name"])
+        with self.assertRaisesRegex(ValueError, "duplicate name in this offering"):
+            _ip53_console_records(topology, self.harness(records), (0, 1))
+
+    def test_console_record_rejects_unknown_owner_and_arbitrary_argument(self):
+        records = [{"kind": "console", "node_id": "missing-node",
+                    "argument": "-serial chardev:ioc4_serial_0",
+                    "launcher_name": "ioc4-serial-0"}]
+        topology = {"nodes": [{"id": "node-a"}]}
+        with self.assertRaisesRegex(ValueError, "unknown node id"):
+            _ip53_console_records(topology, self.harness(records), (0,))
+        records[0]["node_id"] = "node-a"
+        records[0]["argument"] = "-device ioc4"
+        with self.assertRaisesRegex(ValueError, "serial chardev binding"):
+            _ip53_console_records(topology, self.harness(records), (0,))
+
+    def test_explicit_l1_primary_matches_policy_and_binding(self):
+        records = [{"kind": "console", "node_id": "node-a",
+                    "argument": "-serial chardev:l1", "launcher_name": "l1"}]
+        topology = {"nodes": [{"id": "node-a"}]}
+        self.assertEqual(_ip53_console_records(
+            topology, {"launch_recipe": "ip53-discovery", "console": "l1-uart",
+                     "console_records": records}, (0,)), [{
+                         "kind": "console", "node": 0,
+                         "argument": "-serial chardev:l1", "launcher-name": "l1",
+                     }])
+
+    def test_l1_policy_rejects_mismatched_primary_name_or_binding(self):
+        topology = {"nodes": [{"id": "node-a"}]}
+        for name, argument in (("l1", "-serial chardev:ioc4_serial_0"),
+                               ("ioc4-serial-0", "-serial chardev:l1")):
+            with self.subTest(name=name, argument=argument):
+                record = {"kind": "console", "node_id": "node-a",
+                          "argument": argument, "launcher_name": name}
+                with self.assertRaisesRegex(ValueError, "L1 record"):
+                    _ip53_console_records(
+                        topology, {"launch_recipe": "ip53-discovery",
+                                   "console": "l1-uart",
+                                   "console_records": [record]}, (0,))
+
+    def test_console_policy_must_match_primary_ioc4_binding(self):
+        records = [{"kind": "console", "node_id": "node-a",
+                    "argument": "-serial chardev:l1",
+                    "launcher_name": "l1"}]
+        topology = {"nodes": [{"id": "node-a"}]}
+        with self.assertRaisesRegex(ValueError, "policy must match"):
+            _ip53_console_records(topology, self.harness(records), (0,))
+
+    def test_primary_launcher_name_must_match_chardev_binding(self):
+        records = [{"kind": "console", "node_id": "node-a",
+                    "argument": "-serial chardev:ioc4_serial_1",
+                    "launcher_name": "ioc4-serial-0"}]
+        topology = {"nodes": [{"id": "node-a"}]}
+        with self.assertRaisesRegex(ValueError, "policy must match"):
+            _ip53_console_records(topology, self.harness(records), (0,))
+
+    def test_legacy_offerings_omit_new_optional_fields(self):
+        catalogue = json.loads(render_catalogue_json([_resolved("origin300")]))
+        offerings = [item for item in catalogue["offerings"]
+                     if item["product"] == "origin300"]
+        self.assertTrue(offerings)
+        model = _resolved("origin300")
+        topology = compile_model(model)
+        model["machine"]["harness"]["console"] = "l1-uart"
+        product_models = {product: _resolved(model_name)
+                          for product, model_name in PRODUCT_MODELS.items()}
+        projected = _offerings_for(model, topology, product_models)
+        self.assertEqual(projected[0]["console"],
+                         product_models["origin300"]["machine"]["harness"]["console"])
+        for offering in offerings:
+            self.assertNotIn("launch-recipe", offering)
+            self.assertTrue(all("launcher-name" not in console
+                                for console in offering["consoles"]))
+
+    def test_console_records_reject_invalid_roles_and_policy_scope(self):
+        topology = {"nodes": [{"id": "node-a"}]}
+        record = {"kind": "console", "node_id": "node-a",
+                  "argument": "-serial chardev:ioc4_serial_0",
+                  "launcher_name": "ioc4-serial-0"}
+        with self.assertRaisesRegex(ValueError, "unsupported role"):
+            _ip53_console_records(
+                topology, self.harness([{**record, "kind": "unlisted"}]),
+                (0,))
+        with self.assertRaisesRegex(ValueError, "L1 record"):
+            _ip53_console_records(
+                topology, {**self.harness([record]), "console": "l1-uart"},
+                (0,))
+
+    def test_ip53_recipe_and_ioc4_or_l1_policy_are_emitted_for_each_population(self):
+        model = _resolved("origin300-two-chassis")
+        topology = compile_model(model)
+        topology["node_populations"] = [
+            {"grade": "SUPPORTED", "nodes": [0],
+             "supported_cpu_populations": [[1]]},
+            {"grade": "SUPPORTED", "nodes": [0, 1],
+             "supported_cpu_populations": [[1, 1]]},
+        ]
+        product_models = {
+            product: _resolved(model_name)
+            for product, model_name in PRODUCT_MODELS.items()
+        }
+        selected_harness = model["machine"].setdefault("harness", {})
+        selected_harness.update(self.harness([
+            {"kind": "console", "node_id": topology["nodes"][0]["id"],
+             "argument": "-serial chardev:ioc4_serial_0",
+             "launcher_name": "ioc4-serial-0"},
+            {"kind": "second-port", "node_id": topology["nodes"][1]["id"],
+             "argument": "-serial chardev:ioc4_serial_1",
+             "launcher_name": "ioc4-serial-1"},
+        ]))
+
+        offerings = _offerings_for(model, topology, product_models)
+        by_nodes = {offering["nodes"]: offering for offering in offerings}
+        self.assertEqual(by_nodes[1]["launch-recipe"], "ip53-discovery")
+        self.assertEqual(by_nodes[1]["console"], "ip53-ioc4")
+        self.assertEqual([item["launcher-name"]
+                          for item in by_nodes[1]["consoles"]],
+                         ["ioc4-serial-0"])
+        self.assertEqual([item["launcher-name"]
+                          for item in by_nodes[2]["consoles"]],
+                         ["ioc4-serial-0", "ioc4-serial-1"])
+
+        selected_harness.update(self.harness([{
+            "kind": "console", "node_id": topology["nodes"][0]["id"],
+            "argument": "-serial chardev:l1", "launcher_name": "l1",
+        }]))
+        selected_harness["console"] = "l1-uart"
+        l1_offerings = _offerings_for(model, topology, product_models)
+        self.assertTrue(all(offering["console"] == "l1-uart" and
+                            offering["consoles"] == [{
+                                "kind": "console", "node": 0,
+                                "argument": "-serial chardev:l1",
+                                "launcher-name": "l1",
+                            }] for offering in l1_offerings))
 
 
 
