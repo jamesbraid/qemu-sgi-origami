@@ -862,7 +862,8 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         f"component '{cid}' is not an I/O assembly")
             if (section == "pci_function_revisions"
                     and component.get("hardware_kind") not in {
-                        "isp12160", "ioc3", "lucent-ohci"}):
+                        "isp12160", "ioc3", "lucent-ohci",
+                        "ioc4", "bcm5701"}):
                 raise ResolutionError(
                     f"component '{cid}' is not a supported PCI part")
             for field, value in entry.items():

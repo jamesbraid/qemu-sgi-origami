@@ -300,10 +300,22 @@ def _io_board(raw: dict) -> dict:
     for key in ("ioc3_subsystem_id", "mac_source"):
         if key in raw:
             board[key.replace("_", "-")] = _kebab_keys(raw[key])
-    if "pci_functions" in raw:
-        board["pci-functions"] = [{"kind": _enum(entry["kind"]),
-                                   "revision": entry["revision"]}
-                                  for entry in raw["pci_functions"]]
+    pci_functions = raw.get("pci_functions", [])
+    emit_pci_functions = "pci_functions" in raw
+    if raw.get("board_kind") == "IO9":
+        pci_functions = raw.get("pci", [])
+        emit_pci_functions = bool(pci_functions)
+    if emit_pci_functions:
+        functions = []
+        for entry in pci_functions:
+            function = {"kind": _enum(entry["kind"]),
+                        "revision": entry["revision"]}
+            for key in ("pci_device", "pci_function", "intx_pin",
+                        "pic_input", "clock_hz"):
+                if key in entry:
+                    function[key.replace("_", "-")] = entry[key]
+            functions.append(function)
+        board["pci-functions"] = functions
     return board
 
 

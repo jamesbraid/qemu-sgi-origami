@@ -306,11 +306,28 @@
 # @isp12160: QLogic ISP12160
 # @ioc3: SGI IOC3
 # @lucent-ohci: Lucent OHCI controller
+# @ioc4: SGI IOC4 controller
+# @bcm5701: Broadcom BCM5701 Ethernet controller
 #
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPciFunctionKind',
-  'data': ['isp12160', 'ioc3', 'lucent-ohci'] }
+  'data': ['isp12160', 'ioc3', 'lucent-ohci', 'ioc4', 'bcm5701'] }
+
+##
+# @SGIModelPciIntxPin:
+#
+# The logical PCI INTx pin named by a fitted function's route.
+#
+# @inta: PCI pin A, index 0
+# @intb: PCI pin B, index 1
+# @intc: PCI pin C, index 2
+# @intd: PCI pin D, index 3
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelPciIntxPin',
+  'data': ['inta', 'intb', 'intc', 'intd'] }
 
 ##
 # @SGIModelPciFunction:
@@ -320,11 +337,20 @@
 # @kind: selected PCI part
 # @revision: reported PCI revision, checked against the implemented
 #     part
+# @pci-device: authored PCI configuration device number, absent on
+#     legacy function records which do not carry placement
+# @pci-function: authored PCI function number
+# @intx-pin: authored logical interrupt pin
+# @pic-input: authored input on the selected PIC head
+# @clock-hz: explicit IOC4 input clock, absent for other PCI functions
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelPciFunction',
-  'data': { 'kind': 'SGIModelPciFunctionKind', 'revision': 'uint8' } }
+  'data': { 'kind': 'SGIModelPciFunctionKind', 'revision': 'uint8',
+            '*pci-device': 'uint8', '*pci-function': 'uint8',
+            '*intx-pin': 'SGIModelPciIntxPin', '*pic-input': 'uint8',
+            '*clock-hz': 'uint32' } }
 
 ##
 # @SGIModelMacSource:
