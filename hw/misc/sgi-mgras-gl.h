@@ -74,6 +74,11 @@ void sgi_mgras_gl_pixels_row(SGIMgrasState *s, const uint8_t *bytes,
 /* End the draw after a transfer that failed partway. */
 void sgi_mgras_gl_pixels_abort(SGIMgrasState *s);
 /*
+ * Whether the GE pixel program loaded is the three-unsigned-byte RGB one
+ * (GL_RGB, GL_UNSIGNED_BYTE at the initial pixel transfer state).
+ */
+bool sgi_mgras_gl_pixels_rgb8(SGIMgrasState *s);
+/*
  * Note a header in the loaded context for its waiting pixel draw: any
  * header but a zero word or an inline block ends the draw's claim on the
  * blocks that follow.
