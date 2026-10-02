@@ -681,6 +681,21 @@ static void test_hq_status_independent_of_sticky_error(void)
 
 
 /*
+ * The IRIX kernel's DMA read set-up writes 0xf200 and gives up on the read
+ * unless 0x020000 bit 0 comes up within two seconds; nothing is queued
+ * ahead of the request in the model, so the bit is already set.
+ */
+static void test_hq_status_re_sync_after_request(void)
+{
+    mgras_reset();
+
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0xf200);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x1, ==, 0x1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+}
+
+
+/*
  * A captured desktop session brackets each gamma-table load with writes to
  * these three registers at the widths it actually uses (byte, confirmed
  * against the capture); their role is otherwise unconfirmed, so the model
@@ -1730,6 +1745,8 @@ int main(int argc, char **argv)
                    test_hq_status_hiwater_poll_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-status-independent-of-error",
                    test_hq_status_independent_of_sticky_error);
+    qtest_add_func("sn0/origin2000/mgras/hq-status-re-sync-after-request",
+                   test_hq_status_re_sync_after_request);
     qtest_add_func("sn0/origin2000/mgras/dac-address-byte-port",
                    test_dac_address_byte_port);
     qtest_add_func("sn0/origin2000/mgras/dac-register-file-matches-ide-reset",
