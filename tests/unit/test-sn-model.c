@@ -726,7 +726,13 @@ static void test_existing_topologies_have_no_io_peers(void)
                         "origin300-pci-expansion-experiment") ||
             g_str_equal(
                 entry->value->name,
-                "origin300-pci-expansion-configuration-storage-experiment")) {
+                "origin300-pci-expansion-configuration-storage-experiment") ||
+            g_str_equal(
+                entry->value->name,
+                "origin300-pci-expansion-unconnected-uart-experiment") ||
+            g_str_equal(
+                entry->value->name,
+                "origin300-pci-expansion-pending-register-experiment")) {
             continue;
         }
         g_assert_false(entry->value->has_io_peers);
