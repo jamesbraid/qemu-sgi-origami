@@ -207,7 +207,7 @@ static void reset_link(QTestState *qts, unsigned widget)
                      ==, 0);
 }
 
-static void assert_si_unreachable(QTestState *qts)
+static void assert_mgras_unreachable(QTestState *qts)
 {
     uint32_t value;
 
@@ -255,13 +255,13 @@ static void test_link_reset_recovery(gconstpointer data)
     set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
     reset_link(qts, 11);
     assert_link_alive(qts, 11, false);
-    assert_si_unreachable(qts);
+    assert_mgras_unreachable(qts);
     qtest_clock_step(qts, 19);
     assert_link_alive(qts, 11, false);
-    assert_si_unreachable(qts);
+    assert_mgras_unreachable(qts);
     qtest_clock_step(qts, 1);
     assert_link_alive(qts, 11, false);
-    assert_si_unreachable(qts);
+    assert_mgras_unreachable(qts);
     g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                     ==, CORE_LINKS);
     qtest_system_reset(qts);
@@ -281,19 +281,19 @@ static void test_link_reset_absent(gconstpointer data)
         assert_link_masks(qts, CORE_LINKS);
         reset_link(qts, 11);
         assert_link_alive(qts, 11, false);
-        assert_si_unreachable(qts);
+        assert_mgras_unreachable(qts);
         qtest_clock_step(qts, 19);
         assert_link_alive(qts, 11, false);
-        assert_si_unreachable(qts);
+        assert_mgras_unreachable(qts);
         qtest_clock_step(qts, 1);
         assert_link_alive(qts, 11, false);
-        assert_si_unreachable(qts);
+        assert_mgras_unreachable(qts);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-present"),
                         ==, CORE_LINKS);
         g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                         ==, CORE_LINKS);
         qtest_system_reset(qts);
-        assert_si_unreachable(qts);
+        assert_mgras_unreachable(qts);
         qtest_quit(qts);
     }
 }
@@ -329,7 +329,7 @@ static void test_core_link_reset_recovery(gconstpointer data)
             if (graphics) {
                 assert_identity(qts);
             } else {
-                assert_si_unreachable(qts);
+                assert_mgras_unreachable(qts);
             }
             qtest_clock_step(qts, 19);
             assert_link_alive(qts, widgets[i], false);
@@ -340,7 +340,7 @@ static void test_core_link_reset_recovery(gconstpointer data)
             if (graphics) {
                 assert_identity(qts);
             } else {
-                assert_si_unreachable(qts);
+                assert_mgras_unreachable(qts);
             }
             g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
                             ==, links);
@@ -379,7 +379,7 @@ static void test_core_link_reset_recovery(gconstpointer data)
         if (graphics) {
             assert_identity(qts);
         } else {
-            assert_si_unreachable(qts);
+            assert_mgras_unreachable(qts);
         }
         qtest_quit(qts);
     }
@@ -430,8 +430,8 @@ static void test_migration(gconstpointer data)
 {
     bool octane2 = GPOINTER_TO_INT(data);
     g_autoptr(GError) error = NULL;
-    g_autofree char *directory = g_dir_make_tmp("octane-si-migration-XXXXXX",
-                                               &error);
+    g_autofree char *directory =
+        g_dir_make_tmp("octane-mgras-migration-XXXXXX", &error);
     g_autofree char *socket = g_build_filename(directory, "mig.sock", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     QTestState *from = start(octane2, ",graphics-board=si", "");
@@ -767,13 +767,13 @@ int main(int argc, char **argv)
     int fd, result;
 
     g_test_init(&argc, &argv, NULL);
-    fd = g_file_open_tmp("octane-si-prom-XXXXXX", &flash_path, NULL);
+    fd = g_file_open_tmp("octane-mgras-prom-XXXXXX", &flash_path, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, erased, sizeof(erased)), ==, sizeof(erased));
     close(fd);
     for (unsigned profile = 0; profile < 2; profile++) {
         for (unsigned i = 0; i < G_N_ELEMENTS(tests); i++) {
-            g_autofree char *path = g_strdup_printf("/%s/si/%s",
+            g_autofree char *path = g_strdup_printf("/%s/mgras/%s",
                 profile ? "octane2" : "octane", tests[i].name);
 
             qtest_add_data_func(path, GINT_TO_POINTER(profile), tests[i].test);

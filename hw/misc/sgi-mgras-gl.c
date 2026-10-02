@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SI MGRAS OpenGL command execution.
+ * MGRAS OpenGL command execution.
  *
  * On the board the HQ4 and GE11 run SGI programs that turn the OpenGL
  * client's command words into raster-engine work. Those programs are

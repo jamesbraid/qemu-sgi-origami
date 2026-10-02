@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: board identity, bring-up,
+ * MGRAS register-contract and protocol qtests: board identity, bring-up,
  * reset, interrupt and register-file cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS

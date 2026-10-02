@@ -140,7 +140,7 @@ test_mips64_timeouts = {
   # the desktop's, 2220 in sequence; 2400 leaves the rest for launch,
   # typing and shutdown.
   'mgras_desktop' : 2400,
-  # The per-board matrix: one IRIX 6.5.30 boot per SI/MGRAS board on four
+  # The per-board matrix: one IRIX 6.5.30 boot per MGRAS board on four
   # nodes, as test_mgras_desktop's sequence (1320 serial, 300 greeter,
   # 600 desktop) plus each feature program's settle and a minute per
   # serial command (lib_mgras_boot.board_timeout adds them: SI 2690,

@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: pixel transfer, DMA, page-
+ * MGRAS register-contract and protocol qtests: pixel transfer, DMA, page-
  * list, context eviction and data-port cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS

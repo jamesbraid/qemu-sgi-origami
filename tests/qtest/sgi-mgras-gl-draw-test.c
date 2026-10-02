@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: GL primitive, clip, depth
+ * MGRAS register-contract and protocol qtests: GL primitive, clip, depth
  * and lighting drawing cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS

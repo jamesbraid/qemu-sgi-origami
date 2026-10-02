@@ -1,5 +1,5 @@
 /*
- * SI Viz register-contract and protocol qtests: migration cases.
+ * MGRAS register-contract and protocol qtests: migration cases.
  *
  * Unsupported behavior remains an approximation unless the public MGRAS
  * contracts specify it.
