@@ -9,8 +9,8 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
-#include "block/block_int.h"
-#include "qobject/qdict.h"
+#include "block/block-common.h"
+#include "system/block-backend-global-state.h"
 #include "system/block-backend.h"
 #include "system/block-backend-io.h"
 #include "system/runstate.h"
@@ -92,42 +92,10 @@ struct LH28F800SUState {
     bool rp_high;
     bool initial_rp_high;
     BlockBackend *blk;
-    char *failure_marker;
     Notifier shutdown;
     bool shutdown_registered;
     bool storage_failed;
 };
-
-static int flash_marker_sync_dir(LH28F800SUState *s)
-{
-#ifdef _WIN32
-    return -ENOTSUP;
-#else
-    g_autofree char *dir = g_path_get_dirname(s->failure_marker);
-    int fd = open(dir, O_RDONLY | O_DIRECTORY);
-    int ret;
-
-    if (fd < 0) {
-        return -errno;
-    }
-    ret = fsync(fd) < 0 ? -errno : 0;
-    close(fd);
-    return ret;
-#endif
-}
-
-static int flash_marker_create(LH28F800SUState *s)
-{
-    int fd = open(s->failure_marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    int ret;
-
-    if (fd < 0) {
-        return -errno;
-    }
-    ret = fsync(fd) < 0 ? -errno : 0;
-    close(fd);
-    return ret < 0 ? ret : flash_marker_sync_dir(s);
-}
 
 static void flash_failed_run_shutdown(Notifier *notifier, void *data)
 {
@@ -151,16 +119,8 @@ static void flash_update_outputs(LH28F800SUState *s);
 
 static void flash_storage_error(LH28F800SUState *s, int ret)
 {
-    int marker_fd;
-
-    marker_fd = open(s->failure_marker, O_WRONLY | O_CREAT, 0600);
-    if (marker_fd >= 0) {
-        fsync(marker_fd);
-        close(marker_fd);
-        flash_marker_sync_dir(s);
-    }
-    error_report("lh28f800su: working image may be incomplete: %s; "
-                 "exclude it from normal reopen", strerror(-ret));
+    error_report("lh28f800su: persistent flash I/O failed: %s",
+                 strerror(-ret));
     s->storage_failed = true;
     flash_update_outputs(s);
     flash_preserve_run_failure();
@@ -178,18 +138,9 @@ static bool flash_store(LH28F800SUState *s, uint32_t offset,
     if (!s->blk) {
         return true;
     }
-    ret = flash_marker_create(s);
-    if (ret >= 0) {
-        ret = blk_pwrite(s->blk, offset, size, bytes, 0);
-    }
+    ret = blk_pwrite(s->blk, offset, size, bytes, 0);
     if (ret >= 0) {
         ret = blk_flush(s->blk);
-    }
-    if (ret >= 0 && unlink(s->failure_marker) < 0) {
-        ret = -errno;
-    }
-    if (ret >= 0) {
-        ret = flash_marker_sync_dir(s);
     }
     if (ret < 0) {
         flash_storage_error(s, ret);
@@ -639,87 +590,15 @@ static const VMStateDescription vmstate_flash = {
     },
 };
 
-/* Only the raw file path and QEMU's test fault filter are supported. */
-static bool flash_backend_valid(BlockDriverState *bs, Error **errp)
-{
-#ifdef _WIN32
-    error_setg(errp, "persistent flash is unsupported on Windows: "
-               "the file backend cannot provide exclusive locking");
-    return false;
-#else
-    GRAPH_RDLOCK_GUARD_MAINLOOP();
-
-    if (!bs || strcmp(bdrv_get_format_name(bs), "raw")) {
-        error_setg(errp, "persistent flash requires a raw file backend");
-        return false;
-    }
-    while (bs) {
-        const char *driver = bdrv_get_format_name(bs);
-
-        if ((bdrv_get_flags(bs) & BDRV_O_NO_FLUSH) || bs->force_share) {
-            error_setg(errp, "persistent flash requires flushing and "
-                       "exclusive file locking");
-            return false;
-        }
-        if (!strcmp(driver, "file")) {
-            const char *locking = qdict_get_try_str(bs->options, "locking");
-            const char *filename = qdict_get_try_str(bs->options, "filename");
-            GStatBuf st;
-
-            if ((locking && !strcmp(locking, "off")) ||
-                ((!locking || !strcmp(locking, "auto")) &&
-                 !qemu_has_ofd_lock())) {
-                error_setg(errp, "persistent flash requires file locking");
-                return false;
-            }
-            if (!filename || g_lstat(filename, &st) < 0 ||
-                !S_ISREG(st.st_mode)) {
-                error_setg(errp, "persistent flash requires a regular file "
-                           "without a symlink");
-                return false;
-            }
-            if (st.st_size != FLASH_SIZE) {
-                error_setg(errp, "persistent flash must be exactly 1 MiB");
-                return false;
-            }
-            return true;
-        }
-        if ((strcmp(driver, "raw") && strcmp(driver, "blkdebug")) ||
-            !bs->file || bs->backing ||
-            QLIST_NEXT(QLIST_FIRST(&bs->children), next)) {
-            error_setg(errp, "persistent flash requires a raw file backend");
-            return false;
-        }
-        if (!strcmp(driver, "raw") &&
-            bdrv_getlength(bs) != bdrv_getlength(bs->file->bs)) {
-            error_setg(errp, "persistent flash does not support "
-                       "raw subregions");
-            return false;
-        }
-        bs = bs->file->bs;
-    }
-    error_setg(errp, "persistent flash requires a raw file backend");
-    return false;
-#endif
-}
-
 static void flash_realize(DeviceState *dev, Error **errp)
 {
     LH28F800SUState *s = LH28F800SU(dev);
     int64_t size;
     int ret;
-    GStatBuf marker_stat;
 
-    if (s->blk && !s->failure_marker) {
-        error_setg(errp, "persistent flash requires a failure-marker path");
-        return;
-    }
     if (s->blk) {
-        if (!flash_backend_valid(blk_bs(s->blk), errp)) {
-            return;
-        }
-        if (!blk_supports_write_perm(s->blk)) {
-            error_setg(errp, "persistent flash requires a writable backend");
+        if (blk_get_flags(s->blk) & BDRV_O_NO_FLUSH) {
+            error_setg(errp, "persistent flash requires backend flushing");
             return;
         }
         ret = blk_set_perm(s->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
@@ -732,10 +611,6 @@ static void flash_realize(DeviceState *dev, Error **errp)
             error_setg(errp, "persistent flash must be exactly 1 MiB");
             return;
         }
-        if (g_lstat(s->failure_marker, &marker_stat) == 0 || errno != ENOENT) {
-            error_setg(errp, "flash working image has an invalid marker");
-            return;
-        }
     }
 
     if (!memory_region_init_rom_device(&s->mem, OBJECT(dev), &flash_ops, s,
@@ -745,12 +620,15 @@ static void flash_realize(DeviceState *dev, Error **errp)
     s->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, flash_finish, s);
     s->storage = memory_region_get_ram_ptr(&s->mem);
     memset(s->storage, 0xff, FLASH_SIZE);
-    if (s->blk && blk_pread(s->blk, 0, FLASH_SIZE, s->storage, 0) < 0) {
-        error_setg(errp, "cannot read persistent flash image");
-        timer_free(s->timer);
-        s->timer = NULL;
-        object_unparent(OBJECT(&s->mem));
-        return;
+    if (s->blk) {
+        ret = blk_pread(s->blk, 0, FLASH_SIZE, s->storage, 0);
+        if (ret < 0) {
+            error_setg_errno(errp, -ret, "cannot read persistent flash image");
+            timer_free(s->timer);
+            s->timer = NULL;
+            object_unparent(OBJECT(&s->mem));
+            return;
+        }
     }
     memory_region_set_dirty(&s->mem, 0, FLASH_SIZE);
     s->lock_mask = s->initial_lock_mask;
@@ -802,7 +680,6 @@ static const Property flash_properties[] = {
     DEFINE_PROP_UINT16("initial-lock-mask", LH28F800SUState,
                        initial_lock_mask, 0xffff),
     DEFINE_PROP_DRIVE("drive", LH28F800SUState, blk),
-    DEFINE_PROP_STRING("failure-marker", LH28F800SUState, failure_marker),
 };
 
 static void flash_class_init(ObjectClass *klass, const void *data)

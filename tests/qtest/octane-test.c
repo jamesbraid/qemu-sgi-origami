@@ -1599,17 +1599,17 @@ static QTestState *octane_start_sharp(const char *path, const char *marker,
                                       unsigned select, unsigned strap)
 {
     g_autofree char *image = g_shell_quote(path);
-    g_autofree char *failure = g_shell_quote(marker);
 
     QTestState *qts = qtest_initf(
         MEMTX_TEST_DEVICE "-M octane,flash-profile=sharp-lh28f800su,"
-        "flash-select=%u,flash-strap=%u,flash-drive=flash0,"
-        "flash-marker=%s -m 128M -cpu R10000 "
+        "flash-select=%u,flash-strap=%u,flash-drive=flash0 "
+        "-m 128M -cpu R10000 "
         "-drive if=none,id=flash0,file=%s,format=raw",
-        select, strap, failure, image);
+        select, strap, image);
 
     /* The explicit RP rise has a 400 ns recovery interval. */
     qtest_clock_step(qts, 401);
+    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
     return qts;
 }
 
@@ -1826,7 +1826,6 @@ static void test_sharp_flash_initial_rp(void)
 {
     g_autofree char *dir = g_dir_make_tmp("sharp-initial-rp-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
     g_autofree char *image = g_malloc(1 * MiB);
     QTestState *qts;
     uint16_t value;
@@ -1836,9 +1835,9 @@ static void test_sharp_flash_initial_rp(void)
     qts = qtest_initf(
         MEMTX_TEST_DEVICE
         "-M octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0,flash-marker=%s "
+        "flash-strap=0,flash-drive=flash0 "
         "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,format=raw",
-        marker, path);
+        path);
     /* Board power-up does not synthesize an RP transition at time zero. */
     g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xabab);
     sharp_assert_read_view(qts, true);
@@ -1870,7 +1869,6 @@ static void test_sharp_flash_execute(gconstpointer data)
     };
     g_autofree char *dir = g_dir_make_tmp("sharp-execute-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
     g_autofree char *image = g_malloc(1 * MiB);
     QTestState *qts;
 
@@ -1881,10 +1879,10 @@ static void test_sharp_flash_execute(gconstpointer data)
     g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
     qts = qtest_initf(
         MEMTX_TEST_DEVICE "-M %s,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0,flash-marker=%s "
+        "flash-strap=0,flash-drive=flash0 "
         "-m %uM -cpu %s -drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S %s", icount ? "octane2" : "octane",
-        marker, icount ? 256 : 128,
+        icount ? 256 : 128,
         icount ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
                  "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
                  "r12000-scache-block-words=32" : "R10000", path,
@@ -2046,10 +2044,10 @@ static void test_sharp_flash_cached_execute(gconstpointer data)
     g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
     qts = qtest_initf(
         MEMTX_TEST_DEVICE "-M %s,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0,flash-marker=%s "
+        "flash-strap=0,flash-drive=flash0 "
         "-m %uM -cpu %s -drive if=none,id=flash0,file=%s,format=raw "
         "-accel tcg,thread=single -S %s", icount ? "octane2" : "octane",
-        marker, icount ? 256 : 128,
+        icount ? 256 : 128,
         icount ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
                  "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
                  "r12000-scache-block-words=32" : "R10000", path,
@@ -2157,8 +2155,7 @@ static void sharp_flash_restore_attempt(void)
         "-M none -cpu R10000 "
         "-device lh28f800su-test-device,id=fixture -incoming defer "
         "-drive if=none,id=flash0,file=%s,format=raw "
-        "-global lh28f800su.drive=flash0 "
-        "-global lh28f800su.failure-marker=%s", path, marker);
+        "-global lh28f800su.drive=flash0 ", path);
     g_free(g_steal_pointer(&uri));
     uri = g_strdup_printf("exec:cat %s", state);
     qtest_set_expected_status(to, EXIT_FAILURE);
@@ -2192,11 +2189,10 @@ static void test_sharp_flash_storage_rejections(void)
     g_autofree char *dir = g_dir_make_tmp("octane-sharp-storage-XXXXXX",
                                          NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc0(1 * MiB);
-    g_autofree char *machine = g_strdup_printf(
+    g_autofree char *image = g_malloc(1 * MiB);
+    g_autofree char *machine = g_strdup(
         "octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0,flash-marker=%s", marker);
+        "flash-strap=0,flash-drive=flash0");
     g_autofree char *drive = g_strdup_printf(
         "if=none,id=flash0,file=%s,format=raw", path);
     const char *args[] = {
@@ -2204,28 +2200,18 @@ static void test_sharp_flash_storage_rejections(void)
         "R10000", "-drive", drive, "-display", "none", "-qmp", "stdio",
         NULL
     };
-    QTestState *first;
-
     memset(image, 0xff, 1 * MiB);
     g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    g_assert_true(g_file_set_contents(marker, "", 0, NULL));
-    assert_launch_rejected(args, "invalid marker");
-    g_assert_cmpint(g_unlink(marker), ==, 0);
     g_assert_cmpint(truncate(path, 1 * MiB - 512), ==, 0);
     assert_launch_rejected(args, "exactly 1 MiB");
     g_assert_cmpint(truncate(path, 1 * MiB), ==, 0);
 
-    first = octane_start_sharp(path, marker, 0, 0);
-    assert_launch_rejected(args, "Failed to get");
-    qtest_quit(first);
     {
         const char *options[] = {
-            "cache=unsafe", "file.cache.no-flush=on", "file.locking=off",
-            NULL
+            "cache=unsafe", NULL
         };
-        unsigned i;
 
-        for (i = 0; options[i]; i++) {
+        for (unsigned i = 0; options[i]; i++) {
             g_autofree char *unsafe = g_strdup_printf("%s,%s", drive,
                                                        options[i]);
             const char *bad[] = {
@@ -2234,40 +2220,9 @@ static void test_sharp_flash_storage_rejections(void)
                 "-qmp", "stdio", NULL
             };
 
-            assert_launch_rejected(bad, "persistent flash requires");
+            assert_launch_rejected(bad, "requires backend flushing");
         }
     }
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-static void test_sharp_flash_raw_subregion(gconstpointer data)
-{
-    bool offset = GPOINTER_TO_UINT(data);
-    g_autofree char *dir = g_dir_make_tmp("sharp-subregion-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(2 * MiB);
-    g_autofree char *stored = NULL;
-    g_autofree char *machine = g_strdup_printf(
-        "octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0,flash-marker=%s", marker);
-    g_autofree char *drive = g_strdup_printf(
-        "if=none,id=flash0,file=%s,format=raw,%s=1048576",
-        path, offset ? "offset" : "size");
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine, "-m", "128M", "-cpu",
-        "R10000", "-drive", drive, "-display", "none", "-qmp", "stdio",
-        NULL
-    };
-    gsize size;
-
-    memset(image, 0xab, 2 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 2 * MiB, NULL));
-    assert_launch_rejected(args, "persistent flash");
-    g_assert_true(g_file_get_contents(path, &stored, &size, NULL));
-    g_assert_cmpmem(stored, size, image, 2 * MiB);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -2277,76 +2232,32 @@ static void test_sharp_flash_backend_error(gconstpointer data)
     const char *event = data;
     g_autofree char *dir = NULL;
     g_autofree char *path = NULL;
-    g_autofree char *marker = NULL;
     g_autofree char *config = NULL;
     g_autofree char *image = NULL;
 
-    if ((!strncmp(event, "dirsync_", 8) ||
-         !strcmp(event, "marker_remove")) &&
-        !g_getenv("QTEST_SHARP_STORAGE_HELPER")) {
-        g_test_skip("storage syscall injection requires "
-                    "the Linux preload helper");
-        return;
-    }
     if (g_test_subprocess()) {
+        bool erase = !strcmp(event, "partial_erase");
+        bool final_flush = !strcmp(event, "final_flush");
         g_autofree char *drive = g_strdup_printf(
             "blkdebug:%s:%s", g_getenv("SHARP_DEBUG_CONFIG"),
             g_getenv("SHARP_WORKING_IMAGE"));
         g_autofree char *quoted_drive = g_shell_quote(drive);
-        g_autofree char *quoted_marker =
-            g_shell_quote(g_getenv("SHARP_FAILURE_MARKER"));
         g_autofree char *args = g_strdup_printf(
             MEMTX_TEST_DEVICE
             "-M octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-            "flash-strap=0,flash-drive=flash0,flash-marker=%s "
-            "-m 128M -cpu R10000 "
-            "-drive if=none,id=flash0,file=%s,format=raw%s",
-            quoted_marker, quoted_drive,
-            !strcmp(event, "partial_erase") ? ",file.max-transfer=512" : "");
-
+            "flash-strap=0,flash-drive=flash0 "
+            "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,"
+            "format=raw%s",
+            quoted_drive, erase ? ",file.max-transfer=512" : "");
         QTestState *qts;
-        bool erase = !strcmp(event, "partial_erase");
-        bool final_flush = !strcmp(event, "final_flush");
-        bool marker_create = !strcmp(event, "marker_create");
-        bool marker_remove = !strcmp(event, "marker_remove");
-        bool marker_lost = !strcmp(event, "dirsync_lost_marker");
         uint16_t old = erase ? 0 : 0xffff;
         QDict *status;
 
-        if (!strncmp(event, "dirsync_", 8) || marker_remove) {
-            const char *previous = g_getenv("LD_PRELOAD");
-            g_autofree char *preload = g_strdup_printf("%s%s%s",
-                previous ?: "", previous ? ":" : "",
-                g_getenv("QTEST_SHARP_STORAGE_HELPER"));
-            g_autofree char *helper = g_shell_quote(preload);
-            g_autofree char *binary = g_shell_quote(qtest_qemu_binary(NULL));
-            g_autofree char *directory = g_path_get_dirname(
-                g_getenv("SHARP_FAILURE_MARKER"));
-            g_autofree char *quoted_dir = g_shell_quote(directory);
-            g_autofree char *command = g_strdup_printf(
-                "env LD_PRELOAD=%s SHARP_SYNC_DIRECTORY=%s "
-                "SHARP_FAIL_DIR_SYNC=%u SHARP_FAIL_UNLINK=%u "
-                "SHARP_FAIL_MARKER_RESTORE=%u %s",
-                helper, quoted_dir,
-                marker_remove ? 0 :
-                !strcmp(event, "dirsync_create") ? 1 : 2,
-                marker_remove, marker_lost, binary);
-
-            g_setenv("SHARP_FAULT_QEMU", command, true);
-            qts = qtest_init_ext("SHARP_FAULT_QEMU", args, NULL, true);
-            g_unsetenv("SHARP_FAULT_QEMU");
-        } else {
-            qts = qtest_init(args);
-        }
-
+        qts = qtest_init(args);
         qtest_clock_step(qts, 401);
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
         qtest_writel(qts, BRIDGE_REG(0x020),
                      qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-        if (marker_create) {
-            g_assert_cmpint(g_mkdir(g_getenv("SHARP_FAILURE_MARKER"), 0700),
-                            ==, 0);
-        }
         if (final_flush) {
             qtest_qmp_assert_success(qts,
                 "{'execute':'x-qemu-io','arguments':{'device':'flash0',"
@@ -2382,87 +2293,33 @@ static void test_sharp_flash_backend_error(gconstpointer data)
 
     dir = g_dir_make_tmp("octane-sharp-error-XXXXXX", NULL);
     path = g_build_filename(dir, "working.raw", NULL);
-    marker = g_build_filename(dir, "working.invalid", NULL);
     config = g_build_filename(dir, "blkdebug.conf", NULL);
     image = g_malloc(1 * MiB);
     memset(image, !strcmp(event, "partial_erase") ? 0 : 0xff, 1 * MiB);
     g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
     {
+        const char *debug_event = !strcmp(event, "failed_unrealize") ?
+                                  "write_aio" :
+                                  !strcmp(event, "final_flush") ?
+                                  "flush_to_disk" :
+                                  !strcmp(event, "partial_erase") ?
+                                  "write_aio" : event;
         g_autofree char *rules = g_strdup_printf(
             "[inject-error]\nevent = \"%s\"\n"
             "errno = \"5\"\nonce = \"on\"\n",
-            (!strcmp(event, "partial_erase") ||
-             !strcmp(event, "failed_unrealize")) ? "write_aio" :
-            !strcmp(event, "final_flush") ? "flush_to_disk" :
-            (!strncmp(event, "marker_", 7) ||
-             !strncmp(event, "dirsync_", 8)) ? "none" : event);
-
+            debug_event);
         if (!strcmp(event, "partial_erase")) {
             char *partial = g_strconcat(rules, "sector = \"1\"\n", NULL);
-
             g_free(g_steal_pointer(&rules));
             rules = partial;
         }
-        g_assert_true(g_file_set_contents(config,
-            (!strncmp(event, "marker_", 7) ||
-             !strncmp(event, "dirsync_", 8)) ? "" : rules, -1, NULL));
+        g_assert_true(g_file_set_contents(config, rules, -1, NULL));
     }
     g_setenv("SHARP_WORKING_IMAGE", path, true);
-    g_setenv("SHARP_FAILURE_MARKER", marker, true);
     g_setenv("SHARP_DEBUG_CONFIG", config, true);
     g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_passed();
-    g_test_trap_assert_stderr("*working image may be incomplete*");
-    if (!strcmp(event, "dirsync_create")) {
-        g_test_trap_assert_stderr("*directory sync 1 failed*"
-                                 "directory sync 2 returned 0*");
-    } else if (!strcmp(event, "marker_remove")) {
-        g_test_trap_assert_stderr("*marker unlink failed*");
-    } else if (!strcmp(event, "dirsync_remove")) {
-        g_test_trap_assert_stderr("*directory sync 1 returned 0*"
-                                 "directory sync 2 failed*"
-                                 "directory sync 3 returned 0*");
-    }
-    if (!strcmp(event, "dirsync_lost_marker")) {
-        g_autofree char *contents = NULL;
-        gsize size;
-        GDir *files;
-        const char *name;
-        unsigned count = 0;
-
-        g_test_trap_assert_stderr("*directory sync 2 failed*"
-                                 "marker restoration open failed*"
-                                 "exclude it from normal reopen*");
-        g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-        g_assert_true(g_file_get_contents(path, &contents, &size, NULL));
-        g_assert_cmphex((uint8_t)contents[0x20], ==, 0x12);
-        g_assert_cmphex((uint8_t)contents[0x21], ==, 0x34);
-        files = g_dir_open(dir, 0, NULL);
-        g_assert_nonnull(files);
-        while ((name = g_dir_read_name(files))) {
-            g_assert_true(!strcmp(name, "working.raw") ||
-                          !strcmp(name, "blkdebug.conf"));
-            count++;
-        }
-        g_dir_close(files);
-        g_assert_cmpuint(count, ==, 2);
-    } else {
-        g_assert_true(g_file_test(marker, G_FILE_TEST_EXISTS));
-    }
-    if (!strcmp(event, "final_flush") || !strcmp(event, "failed_unrealize")) {
-        g_autofree char *machine = g_strdup_printf(
-            "octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-            "flash-strap=0,flash-drive=flash0,flash-marker=%s", marker);
-        g_autofree char *drive = g_strdup_printf(
-            "if=none,id=flash0,file=%s,format=raw", path);
-        const char *args[] = {
-            qtest_qemu_binary(NULL), "-M", machine, "-m", "128M", "-cpu",
-            "R10000", "-drive", drive, "-display", "none", "-qmp", "stdio",
-            NULL
-        };
-
-        assert_launch_rejected(args, "invalid marker");
-    }
+    g_test_trap_assert_stderr("*persistent flash I/O failed*");
     if (!strcmp(event, "partial_erase")) {
         g_autofree char *contents = NULL;
         gsize size;
@@ -2471,32 +2328,6 @@ static void test_sharp_flash_backend_error(gconstpointer data)
         g_assert_cmphex((uint8_t)contents[0x20], ==, 0xff);
         g_assert_cmphex((uint8_t)contents[512], ==, 0);
         g_assert_cmphex((uint8_t)contents[64 * KiB], ==, 0);
-    }
-    if (!strcmp(event, "marker_create") ||
-        !strcmp(event, "dirsync_create")) {
-        g_autofree char *contents = NULL;
-        gsize size;
-
-        g_assert_true(g_file_get_contents(path, &contents, &size, NULL));
-        g_assert_cmpmem(contents, size, image, 1 * MiB);
-        if (!strcmp(event, "marker_create")) {
-            g_assert_cmpint(g_rmdir(marker), ==, 0);
-        } else {
-            g_assert_cmpint(g_unlink(marker), ==, 0);
-        }
-    } else if (strcmp(event, "dirsync_lost_marker")) {
-        if (!strcmp(event, "marker_remove") ||
-            !strcmp(event, "dirsync_remove") ||
-            !strcmp(event, "flush_to_disk")) {
-            g_autofree char *contents = NULL;
-            gsize size;
-
-            g_assert_true(g_file_get_contents(path, &contents, &size, NULL));
-            g_assert_cmphex((uint8_t)contents[0x20], ==, 0x12);
-            g_assert_cmphex((uint8_t)contents[0x21], ==, 0x34);
-        }
-        g_assert_true(g_file_test(marker, G_FILE_TEST_IS_REGULAR));
-        g_assert_cmpint(g_unlink(marker), ==, 0);
     }
     g_assert_cmpint(g_unlink(config), ==, 0);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -4625,26 +4456,11 @@ int main(int argc, char **argv)
                    test_sharp_flash_restore_rejected);
     qtest_add_func("/octane/sharp-storage-rejections",
                    test_sharp_flash_storage_rejections);
-    qtest_add_data_func("/octane/sharp-raw-size-rejected", GUINT_TO_POINTER(0),
-                        test_sharp_flash_raw_subregion);
-    qtest_add_data_func("/octane/sharp-raw-offset-rejected",
-                        GUINT_TO_POINTER(1),
-                        test_sharp_flash_raw_subregion);
     qtest_add_data_func("/octane/sharp-failed-unrealize", "failed_unrealize",
                         test_sharp_flash_backend_error);
     qtest_add_data_func("/octane/sharp-backend-write-error", "write_aio",
                         test_sharp_flash_backend_error);
     qtest_add_data_func("/octane/sharp-backend-flush-error", "flush_to_disk",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-directory-create-sync-error",
-                        "dirsync_create", test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-directory-remove-sync-error",
-                        "dirsync_remove", test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-marker-restoration-lost",
-                        "dirsync_lost_marker", test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-marker-create-error", "marker_create",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-marker-remove-error", "marker_remove",
                         test_sharp_flash_backend_error);
     qtest_add_data_func("/octane/sharp-backend-partial-erase", "partial_erase",
                         test_sharp_flash_backend_error);
