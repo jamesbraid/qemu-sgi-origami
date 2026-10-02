@@ -1404,7 +1404,7 @@ static bool sn1_node_pointer_present(void *opaque, uint16_t pointer)
     return false;
 }
 
-static bool sn1_node_validate_processors(SN1NodeState *node,
+static bool sn1_node_validate_r14000_processors(SN1NodeState *node,
                                          MachineState *machine, Error **errp)
 {
     if (strcmp(machine->cpu_type, MIPS_CPU_TYPE_NAME("R14000"))) {
@@ -2078,7 +2078,7 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
     SN1NodeState *node = SN1_NODE(dev);
     MachineState *machine = MACHINE(qdev_get_machine());
 
-    if (!sn1_node_validate_processors(node, machine, errp)) {
+    if (!sn1_node_validate_r14000_processors(node, machine, errp)) {
         return;
     }
     sn1_node_map_memory(node);
