@@ -109,7 +109,11 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
      */
     g_assert_false(WIFSIGNALED(wait_status));
     if (!strstr(error_output->str, message)) {
-        g_test_message("QEMU rejection: %s", error_output->str);
+        g_autofree char *command = g_strjoinv(" ", (char **)args);
+
+        g_printerr("QEMU refusal mismatch\ncommand: %s\n"
+                   "expected stderr substring: %s\nactual stderr: %s\n",
+                   command, message, error_output->str);
     }
     g_assert_nonnull(strstr(error_output->str, message));
 }
@@ -1001,6 +1005,41 @@ static void test_board_selection_refusals(const void *data)
                         "has board-kind on a non-Bedrock node");
     assert_qemu_rejects(direct_ip53,
                         "sgi-sn1-node cannot realize board kind 'ip53'");
+}
+
+static void test_pic_io9_descriptor_refusals(const void *data)
+{
+    static const struct {
+        const char *fault;
+        const char *message;
+    } cases[] = {
+        { "pic-io9", "has unsupported PIC/IO9 descriptors" },
+        { "pic-host-only", "has unsupported PIC/IO9 descriptors" },
+        { "io9-with-xio-reference", "has inconsistent XIO and PCI references" },
+        { "io9-missing-pci-head", "has inconsistent XIO and PCI references" },
+        { "io9-bad-pci-host", "has out-of-range PCI host index 1" },
+        { "io9-bad-pci-head", "has out-of-range PCI head 2" },
+        { "io9-duplicate-host-head",
+          "assigns PCI host/head pair 0/0 to multiple IO9 boards" },
+        { "pic-duplicate-xio", "PCI hosts share XIO attachment index 2" },
+        { "pic-xio-out-of-range", "has out-of-range XIO attachment index 3" },
+        { "io9-empty-host-array", "has out-of-range PCI host index 0" },
+        { "legacy-without-attachment",
+          "has inconsistent XIO and PCI references" },
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "sn-builder-console-test,construction-fault=%s", cases[i].fault);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-m", "128M",
+            "-smp", "4", "-cpu", "R10000", "-bios", "/dev/null",
+            "-display", "none", NULL
+        };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
 }
 
 static void test_unsupported_smp_population_rejected(const void *data)
@@ -4462,6 +4501,8 @@ int main(int argc, char **argv)
                         NULL, test_claimed_spare_widget_survives_link_reset);
     qtest_add_data_func("sn/builder/board-selection-refusals", NULL,
                         test_board_selection_refusals);
+    qtest_add_data_func("sn/builder/pic-io9-descriptor-refusals", NULL,
+                        test_pic_io9_descriptor_refusals);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

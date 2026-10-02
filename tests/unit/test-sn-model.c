@@ -308,6 +308,7 @@ static void check_io_board_presets(const SGIModelTopology *t)
     for (entry = t->io_boards; entry; entry = entry->next) {
         SGIModelIoBoardPreset preset = entry->value->preset;
 
+        g_assert_true(entry->value->has_attachment);
         g_assert_true(preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IP30 ||
@@ -548,6 +549,71 @@ static SGIMachines *load_catalogue(void)
     visit_free(v);
     qobject_unref(qobj);
     return catalogue;
+}
+
+static SGIModelTopology *parse_topology(const char *json)
+{
+    QObject *qobj = qobject_from_json(json, &error_abort);
+    Visitor *v = qobject_input_visitor_new(qobj);
+    SGIModelTopology *topology = NULL;
+
+    visit_type_SGIModelTopology(v, NULL, &topology, &error_abort);
+    visit_free(v);
+    qobject_unref(qobj);
+    return topology;
+}
+
+static void test_optional_pci_board_references_parse(void)
+{
+    static const char legacy_json[] =
+        "{\"name\":\"fixture-legacy\",\"product\":\"synthetic\","
+        "\"generation\":\"sn1\",\"description\":\"fixture\","
+        "\"nodes\":[],\"modules\":[],\"routers\":[],"
+        "\"cables\":[],\"crossbars\":[],\"xio-attachments\":[],"
+        "\"xio-slots\":[],\"io-boards\":[{\"id\":\"baseio\","
+        "\"module-index\":0,\"preset\":\"ip29-io\","
+        "\"carrier\":\"onboard\",\"attachment\":0,"
+        "\"populated\":true}],\"controllers\":[],"
+        "\"console\":0,\"junk-uart\":-1,\"node-populations\":[]}";
+    static const char io9_json[] =
+        "{\"name\":\"fixture-io9\",\"product\":\"synthetic\","
+        "\"generation\":\"sn1\",\"description\":\"fixture\","
+        "\"nodes\":[],\"modules\":[],\"routers\":[],"
+        "\"cables\":[],\"crossbars\":[],"
+        "\"pci-host-bridges\":[{\"id\":\"pic\",\"kind\":\"pic\","
+        "\"xio-attachment-index\":0}],\"xio-attachments\":[],"
+        "\"xio-slots\":[],\"io-boards\":[{\"id\":\"io9\","
+        "\"module-index\":0,\"preset\":\"io9\","
+        "\"carrier\":\"machine-placed\",\"pci-host-index\":0,"
+        "\"pci-head\":1,\"populated\":false}],"
+        "\"controllers\":[],\"console\":0,\"junk-uart\":-1,"
+        "\"node-populations\":[]}";
+    SGIModelTopology *legacy = parse_topology(legacy_json);
+    SGIModelTopology *io9 = parse_topology(io9_json);
+    const SGIModelIoBoard *legacy_board = legacy->io_boards->value;
+    const SGIModelIoBoard *io9_board = io9->io_boards->value;
+    const SGIModelPciHostBridge *host;
+
+    g_assert_false(legacy->has_pci_host_bridges);
+    g_assert_true(legacy_board->has_attachment);
+    g_assert_cmpuint(legacy_board->attachment, ==, 0);
+    g_assert_false(legacy_board->has_pci_host_index);
+    g_assert_false(legacy_board->has_pci_head);
+
+    g_assert_true(io9->has_pci_host_bridges);
+    g_assert_nonnull(io9->pci_host_bridges);
+    host = io9->pci_host_bridges->value;
+    g_assert_cmpstr(host->id, ==, "pic");
+    g_assert_cmpint(host->kind, ==, SGI_MODEL_PCI_HOST_KIND_PIC);
+    g_assert_cmpuint(host->xio_attachment_index, ==, 0);
+    g_assert_false(io9_board->has_attachment);
+    g_assert_true(io9_board->has_pci_host_index);
+    g_assert_cmpuint(io9_board->pci_host_index, ==, 0);
+    g_assert_true(io9_board->has_pci_head);
+    g_assert_cmpuint(io9_board->pci_head, ==, 1);
+
+    qapi_free_SGIModelTopology(legacy);
+    qapi_free_SGIModelTopology(io9);
 }
 
 static void test_every_topology_is_well_formed(void)
@@ -1265,6 +1331,8 @@ static void test_storage_board_rules(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sn-model/optional-pci-board-references-parse",
+                    test_optional_pci_board_references_parse);
     g_test_add_func("/sn-model/every-topology-is-well-formed",
                     test_every_topology_is_well_formed);
     g_test_add_data_func("/sn-model/origin300-direct-v12-attachment",

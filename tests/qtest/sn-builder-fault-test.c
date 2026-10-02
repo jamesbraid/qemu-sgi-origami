@@ -90,6 +90,24 @@ static SGIModelXioAttachmentList *xio_attachment_list(
     return head;
 }
 
+static SGIModelPciHostBridgeList *pci_host_bridge_list(
+    SGIModelPciHostBridge *items, size_t count)
+{
+    SGIModelPciHostBridgeList *head = NULL;
+    SGIModelPciHostBridgeList **tail = &head;
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        SGIModelPciHostBridgeList *entry =
+            g_new0(SGIModelPciHostBridgeList, 1);
+
+        entry->value = &items[i];
+        *tail = entry;
+        tail = &entry->next;
+    }
+    return head;
+}
+
 static SGIModelIoBoardList *io_board_list(SGIModelIoBoard *items, size_t count)
 {
     SGIModelIoBoardList *head = NULL;
@@ -385,6 +403,7 @@ static SGIModelIoBoard console_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
+        .has_attachment = true,
         .has_revision = true,
         .revision = 4,
         .has_serial = true,
@@ -400,6 +419,7 @@ static SGIModelIoBoard console_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IP29_IO,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_ONBOARD,
         .attachment = 0,
+        .has_attachment = true,
         .has_revision = true,
         .revision = 4,
         .has_serial = true,
@@ -407,6 +427,40 @@ static SGIModelIoBoard console_test_io_boards[] = {
         .part = (char *)"030-1244-001",
         .has_ioc3_serial = true,
         .ioc3_serial = 0x5e7000000002,
+    },
+};
+
+/* Unpopulated synthetic IO9, used only to test descriptor preflight. */
+static SGIModelIoBoard console_test_io9_board = {
+    .id = (char *)"fixture-io9",
+    .module_index = 0,
+    .populated = false,
+    .preset = SGI_MODEL_IO_BOARD_PRESET_IO9,
+    .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+    .has_pci_host_index = true,
+    .pci_host_index = 0,
+    .has_pci_head = true,
+    .pci_head = 0,
+};
+
+static SGIModelIoBoard console_test_pic_io_boards[4];
+
+static SGIModelXioAttachment console_test_pic_xio[] = {
+    { .crossbar_index = -1, .widget = 8, .node_index = 0 },
+    { .crossbar_index = -1, .widget = 8, .node_index = 1 },
+    { .crossbar_index = -1, .widget = 9, .node_index = 0 },
+};
+
+static SGIModelPciHostBridge console_test_pic_hosts[2] = {
+    {
+        .id = (char *)"fixture-pic",
+        .kind = SGI_MODEL_PCI_HOST_KIND_PIC,
+        .xio_attachment_index = 2,
+    },
+    {
+        .id = (char *)"fixture-pic-second",
+        .kind = SGI_MODEL_PCI_HOST_KIND_PIC,
+        .xio_attachment_index = 2,
     },
 };
 
@@ -458,6 +512,24 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
     console_test_activate_requested = value;
 }
 
+static void console_test_install_pic_descriptor(bool include_io9,
+                                                size_t host_count)
+{
+    memcpy(console_test_pic_io_boards, console_test_io_boards,
+           sizeof(console_test_io_boards));
+    console_test_pic_io_boards[2] = console_test_io9_board;
+    console_test_pic_io_boards[3] = console_test_io9_board;
+    console_test_pic_io_boards[3].id = (char *)"fixture-io9-second";
+    console_test_topology.xio_attachments =
+        xio_attachment_list(console_test_pic_xio,
+                            ARRAY_SIZE(console_test_pic_xio));
+    console_test_topology.pci_host_bridges =
+        pci_host_bridge_list(console_test_pic_hosts, host_count);
+    console_test_topology.has_pci_host_bridges = true;
+    console_test_topology.io_boards = io_board_list(
+        console_test_pic_io_boards, 2 + (include_io9 ? 1 : 0));
+}
+
 /*
  * A descriptor fault sgi_machine_index_xio_attachments catches (the
  * function that splits the topology's xio-attachments into each node's own
@@ -480,6 +552,36 @@ static void console_test_set_construction_fault(Object *obj,
     } else if (!strcmp(value, "board-selector-on-non-bedrock")) {
         console_test_nodes[0].has_board_kind = true;
         console_test_nodes[0].board_kind = SGI_MODEL_BOARD_KIND_IP34;
+    } else if (!strcmp(value, "pic-io9")) {
+        console_test_install_pic_descriptor(true, 1);
+    } else if (!strcmp(value, "pic-host-only")) {
+        console_test_install_pic_descriptor(false, 1);
+    } else if (!strcmp(value, "io9-with-xio-reference")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_pic_io_boards[2].has_attachment = true;
+        console_test_pic_io_boards[2].attachment = 0;
+    } else if (!strcmp(value, "io9-missing-pci-head")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_pic_io_boards[2].has_pci_head = false;
+    } else if (!strcmp(value, "io9-bad-pci-host")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_pic_io_boards[2].pci_host_index = 1;
+    } else if (!strcmp(value, "io9-bad-pci-head")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_pic_io_boards[2].pci_head = 2;
+    } else if (!strcmp(value, "io9-duplicate-host-head")) {
+        console_test_install_pic_descriptor(true, 1);
+        console_test_topology.io_boards = io_board_list(
+            console_test_pic_io_boards, 4);
+    } else if (!strcmp(value, "pic-duplicate-xio")) {
+        console_test_install_pic_descriptor(false, 2);
+    } else if (!strcmp(value, "pic-xio-out-of-range")) {
+        console_test_install_pic_descriptor(false, 1);
+        console_test_pic_hosts[0].xio_attachment_index = 3;
+    } else if (!strcmp(value, "io9-empty-host-array")) {
+        console_test_install_pic_descriptor(true, 0);
+    } else if (!strcmp(value, "legacy-without-attachment")) {
+        console_test_io_boards[0].has_attachment = false;
     } else {
         error_setg(errp, "unknown sn-builder-console-test construction "
                   "fault '%s'", value);
@@ -747,6 +849,7 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 0,
+        .has_attachment = true,
         .has_revision = true,
         .revision = 2,
         .has_serial = true,
@@ -766,6 +869,7 @@ static SGIModelIoBoard bedrock_test_io_boards[] = {
         .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
         .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
         .attachment = 1,
+        .has_attachment = true,
         .has_revision = true,
         .revision = 2,
         .has_serial = true,

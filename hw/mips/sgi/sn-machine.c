@@ -124,6 +124,7 @@ SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelModule, module)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelRouter, router)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCable, cable)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCrossbar, crossbar)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelPciHostBridge, pci_host_bridge)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioAttachment, xio_attachment)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXioSlot, xio_slot)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
@@ -1054,6 +1055,9 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
     return sgi_model_product_topology(sgi_machines(), smc->product, name);
 }
 
+static bool sgi_machine_preflight_io_descriptors(
+    const SGIModelTopology *t, Error **errp);
+
 /*
  * The topology this machine builds: the chassis topology= names, with
  * the node-population row nodes= selects, or its largest by default. A
@@ -1065,11 +1069,12 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
     SGIMachineState *s = SGI_MACHINE(machine);
     const SGIModelTopology *chassis = sgi_machine_chassis(machine);
 
-    if (s->view) {
-        return s->view;
-    }
     if (!chassis) {
         error_setg(errp, "unknown topology");
+        return NULL;
+    }
+    if (!sgi_model_check_runtime_endpoints(chassis, errp) ||
+        !sgi_machine_preflight_io_descriptors(chassis, errp)) {
         return NULL;
     }
     s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
@@ -4705,6 +4710,99 @@ static bool sgi_machine_validate_board_kinds(const SGIModelTopology *t,
                        "board kind 'ip53'", t->name, node->id);
             return false;
         }
+    }
+    return true;
+}
+
+/* Validate optional XIO and PCI board references before config resolution. */
+static bool sgi_machine_preflight_io_descriptors(
+    const SGIModelTopology *t, Error **errp)
+{
+    g_autofree const SGIModelIoBoard **boards = NULL;
+    g_autofree const SGIModelPciHostBridge **hosts = NULL;
+    g_autofree bool *owned_attachments = NULL;
+    g_autofree bool *owned_heads = NULL;
+    size_t board_count, host_count, attachment_count, i;
+    bool has_io9 = false;
+
+    boards = sgi_model_io_board_array(t->io_boards, &board_count);
+    hosts = sgi_model_pci_host_bridge_array(t->pci_host_bridges, &host_count);
+    attachment_count = QAPI_LIST_LENGTH(t->xio_attachments);
+    owned_attachments = g_new0(bool, attachment_count ? attachment_count : 1);
+    owned_heads = g_new0(bool, host_count ? host_count * 2 : 1);
+
+    for (i = 0; i < host_count; i++) {
+        const SGIModelPciHostBridge *host = hosts[i];
+        unsigned int attachment = host->xio_attachment_index;
+
+        if (host->kind != SGI_MODEL_PCI_HOST_KIND_PIC) {
+            error_setg(errp, "topology '%s' PCI host '%s' has unsupported kind",
+                       t->name, host->id);
+            return false;
+        }
+        if (attachment >= attachment_count) {
+            error_setg(errp, "topology '%s' PCI host '%s' has out-of-range "
+                       "XIO attachment index %u", t->name, host->id,
+                       attachment);
+            return false;
+        }
+        if (owned_attachments[attachment]) {
+            error_setg(errp, "topology '%s' PCI hosts share XIO attachment "
+                       "index %u", t->name, attachment);
+            return false;
+        }
+        owned_attachments[attachment] = true;
+    }
+
+    for (i = 0; i < board_count; i++) {
+        const SGIModelIoBoard *board = boards[i];
+        bool io9 = board->preset == SGI_MODEL_IO_BOARD_PRESET_IO9;
+
+        if (io9) {
+            size_t host_index;
+            size_t key;
+
+            has_io9 = true;
+            if (board->has_attachment || !board->has_pci_host_index ||
+                !board->has_pci_head) {
+                error_setg(errp, "topology '%s' IO9 board '%s' has "
+                           "inconsistent XIO and PCI references",
+                           t->name, board->id);
+                return false;
+            }
+            host_index = board->pci_host_index;
+            if (host_index >= host_count) {
+                error_setg(errp, "topology '%s' IO9 board '%s' has "
+                           "out-of-range PCI host index %zu", t->name,
+                           board->id, host_index);
+                return false;
+            }
+            if (board->pci_head >= 2) {
+                error_setg(errp, "topology '%s' IO9 board '%s' has "
+                           "out-of-range PCI head %u", t->name,
+                           board->id, board->pci_head);
+                return false;
+            }
+            key = host_index * 2 + board->pci_head;
+            if (owned_heads[key]) {
+                error_setg(errp, "topology '%s' assigns PCI host/head pair "
+                           "%zu/%u to multiple IO9 boards", t->name,
+                           host_index, board->pci_head);
+                return false;
+            }
+            owned_heads[key] = true;
+        } else if (!board->has_attachment || board->has_pci_host_index ||
+                   board->has_pci_head) {
+            error_setg(errp, "topology '%s' board '%s' has inconsistent "
+                       "XIO and PCI references", t->name, board->id);
+            return false;
+        }
+    }
+
+    if (host_count || has_io9) {
+        error_setg(errp, "topology '%s' has unsupported PIC/IO9 descriptors",
+                   t->name);
+        return false;
     }
     return true;
 }

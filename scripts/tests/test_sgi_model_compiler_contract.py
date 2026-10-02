@@ -386,6 +386,251 @@ class BoardSelectionTests(unittest.TestCase):
                 self.assertNotIn("board-kind", topology["nodes"][0])
 
 
+class PicIo9DescriptorTests(unittest.TestCase):
+    """Synthetic graph coverage for PIC host and IO9 descriptor plumbing."""
+
+    def model_with_pic_io9(self, *, crossbar=False):
+        model = _resolved("origin300")
+        model["composition"]["product"] = "synthetic-pic-io9"
+        model["machine"]["name"] = "Synthetic PIC and IO9 fixture"
+        model["machine"]["model_role"] = "emulation-target"
+        model["components"].extend([
+            {"id": "fixture-pic", "name": "PIC fixture",
+             "kind": "pci-host-bridge", "hardware_kind": "pic",
+             "pci_host_bridge": {"heads": 2}, "provenance": "derived"},
+            {"id": "fixture-io9", "name": "IO9 fixture",
+             "kind": "board", "hardware_kind": "io9",
+             "parent": "bedrock", "provenance": "derived",
+             "identity": {"part": "synthetic-io9-part"}},
+            {"id": "fixture-ioc3", "name": "PCI function fixture",
+             "kind": "io-controller", "hardware_kind": "ioc3",
+             "parent": "fixture-io9", "provenance": "derived",
+             "identity": {"pci_revision": 1}},
+        ])
+        model["buses"].append({"id": "fixture-pic-pci0",
+                               "name": "Synthetic PCI bus",
+                               "kind": "pci", "master": "fixture-pic",
+                               "provenance": "derived"})
+        if crossbar:
+            model["buses"].append({"id": "fixture-pic-xio",
+                                   "name": "Synthetic PIC XIO bus",
+                                   "kind": "xio", "master": "xbridge-crossbar",
+                                   "provenance": "derived"})
+            upstream = {"component": "fixture-pic", "bus": "fixture-pic-xio",
+                        "role": "bridge-upstream", "widget": 13,
+                        "controlled_by": "bedrock", "provenance": "derived"}
+        else:
+            upstream = {"component": "fixture-pic", "bus": "xio",
+                        "role": "bridge-upstream", "provenance": "derived",
+                        "xio": {"enumerated_widget": 13,
+                                "discovery_widget": 13,
+                                "decoded_widgets": [13]}}
+        model["connections"].extend([
+            upstream,
+            {"component": "fixture-pic", "bus": "fixture-pic-pci0",
+             "role": "bridge-downstream", "pci_head": 0,
+             "provenance": "derived"},
+            {"component": "fixture-ioc3", "bus": "fixture-pic-pci0",
+             "role": "endpoint", "pci_device": 0, "pci_function": 0,
+             "provenance": "derived"},
+        ])
+        return model
+
+    def test_pic_has_one_xio_host_record_and_io9_has_pci_reference(self):
+        entry = compile_model(self.model_with_pic_io9())
+
+        host = entry["pci_host_bridges"][0]
+        board = next(board for board in entry["io_boards"]
+                     if board["id"] == "fixture-io9")
+        self.assertEqual(host, {
+            "id": "fixture-pic", "kind": "pic",
+            "xio_attachment_index": len(entry["xio_attachments"]) - 1,
+        })
+        self.assertEqual(board["pci_host_index"], 0)
+        self.assertEqual(board["pci_head"], 0)
+        self.assertTrue(board["populated"])
+        self.assertEqual(board["pci"], [])
+        self.assertNotIn("slot_index", board)
+        self.assertEqual(
+            entry["xio_attachments"][host["xio_attachment_index"]], {
+                "crossbar_index": -1, "widget": 13, "node_index": 0,
+                "decoded_widget_mask": 1 << 13, "discovery_widget": 13,
+            })
+        exported = json.loads(
+            render_catalogue_json([self.model_with_pic_io9()]))[
+            "topologies"][0]
+        self.assertEqual(exported["pci-host-bridges"], [{
+            "id": "fixture-pic", "kind": "pic",
+            "xio-attachment-index": host["xio_attachment_index"],
+        }])
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertEqual((exported_board["pci-host-index"],
+                          exported_board["pci-head"]), (0, 0))
+        self.assertNotIn("attachment", exported_board)
+        self.assertTrue(exported_board["populated"])
+        self.assertNotIn("pci", exported_board)
+
+    def test_pic_crossbar_route_is_preserved_as_authored(self):
+        entry = compile_model(self.model_with_pic_io9(crossbar=True))
+        host = entry["pci_host_bridges"][0]
+        attachment = entry["xio_attachments"][host["xio_attachment_index"]]
+        self.assertEqual(attachment["crossbar_index"], 0)
+        self.assertEqual(attachment["widget"], 13)
+        self.assertEqual(attachment["node_index"], 0)
+
+    def test_pic_downstream_bus_requires_authored_head(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["connections"]
+             if item.get("bus") == "fixture-pic-pci0"
+             and item.get("role") == "bridge-downstream").pop("pci_head")
+        with self.assertRaisesRegex(CompileError, "pci_head"):
+            compile_model(model)
+
+    def test_pic_last_declared_downstream_head_is_valid(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["connections"]
+             if item.get("bus") == "fixture-pic-pci0"
+             and item.get("role") == "bridge-downstream")["pci_head"] = 1
+        entry = compile_model(model)
+        board = next(item for item in entry["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertEqual(board["pci_head"], 1)
+
+    def test_pic_downstream_head_must_fit_capacity(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["connections"]
+             if item.get("bus") == "fixture-pic-pci0"
+             and item.get("role") == "bridge-downstream")["pci_head"] = 2
+        with self.assertRaisesRegex(CompileError, "head"):
+            compile_model(model)
+
+    def test_pic_declared_capacity_must_match_two_head_contract(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["components"]
+             if item["id"] == "fixture-pic")["pci_host_bridge"]["heads"] = 3
+        next(item for item in model["connections"]
+             if item.get("bus") == "fixture-pic-pci0"
+             and item.get("role") == "bridge-downstream")["pci_head"] = 2
+        with self.assertRaisesRegex(CompileError, "two-head capacity"):
+            compile_model(model)
+
+    def test_pci_head_requires_a_pci_downstream_bus(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["buses"]
+             if item["id"] == "fixture-pic-pci0")["kind"] = "xio"
+        with self.assertRaisesRegex(CompileError, "downstream PCI bus"):
+            compile_model(model)
+
+    def test_pci_head_requires_a_pic_host_even_without_io9(self):
+        model = self.model_with_pic_io9()
+        model["components"] = [
+            item for item in model["components"]
+            if item["id"] not in {"fixture-io9", "fixture-ioc3"}
+        ]
+        model["connections"] = [item for item in model["connections"]
+                                if item.get("component") != "fixture-ioc3"]
+        next(item for item in model["components"]
+             if item["id"] == "fixture-pic")["hardware_kind"] = (
+                 "unsupported-host")
+        with self.assertRaisesRegex(CompileError, "explicitly described PIC"):
+            compile_model(model)
+
+    def test_io9_requires_a_board_part_identity(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["components"]
+             if item["id"] == "fixture-io9")["identity"].pop("part")
+        with self.assertRaisesRegex(CompileError, "identity.part"):
+            compile_model(model)
+
+    def test_io9_requires_a_fitted_pci_endpoint(self):
+        model = self.model_with_pic_io9()
+        model["connections"] = [item for item in model["connections"]
+                                if not (item.get("component") == "fixture-ioc3"
+                                        and item.get("role") == "endpoint")]
+        with self.assertRaisesRegex(CompileError, "no authored PCI functions"):
+            compile_model(model)
+
+    def test_pci_head_is_only_valid_on_downstream_connections(self):
+        model = self.model_with_pic_io9()
+        connection = next(item for item in model["connections"]
+                          if item.get("bus") == "fixture-pic-pci0"
+                          and item.get("role") == "bridge-downstream")
+        connection["role"] = "endpoint"
+        with self.assertRaisesRegex(CompileError, "bridge-downstream"):
+            compile_model(model)
+
+        from jsonschema import Draft202012Validator
+        errors = list(Draft202012Validator(schema(MACHINES)).iter_errors(model))
+        self.assertTrue(errors)
+
+    def test_negative_pic_head_is_rejected(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["connections"]
+             if item.get("bus") == "fixture-pic-pci0"
+             and item.get("role") == "bridge-downstream")["pci_head"] = -1
+        with self.assertRaisesRegex(CompileError, "pci_head"):
+            compile_model(model)
+
+    def test_duplicate_pic_downstream_head_is_rejected(self):
+        model = self.model_with_pic_io9()
+        model["buses"].append({"id": "fixture-pic-pci1",
+                               "name": "Second synthetic PCI bus",
+                               "kind": "pci", "master": "fixture-pic",
+                               "provenance": "derived"})
+        model["connections"].append({
+            "component": "fixture-pic", "bus": "fixture-pic-pci1",
+            "role": "bridge-downstream", "pci_head": 0,
+            "provenance": "derived"})
+        with self.assertRaisesRegex(
+                CompileError, "head.*more than once|duplicate.*head"):
+            compile_model(model)
+
+    def test_io9_functions_must_resolve_through_one_downstream_bus(self):
+        model = self.model_with_pic_io9()
+        model["buses"].append({"id": "fixture-pic-pci1",
+                               "name": "Second synthetic PCI bus",
+                               "kind": "pci", "master": "fixture-pic",
+                               "provenance": "derived"})
+        model["connections"].extend([
+            {"component": "fixture-pic", "bus": "fixture-pic-pci1",
+             "role": "bridge-downstream", "pci_head": 1,
+             "provenance": "derived"},
+            {"component": "fixture-ioc3", "bus": "fixture-pic-pci1",
+             "role": "endpoint", "pci_device": 1, "pci_function": 0,
+             "provenance": "derived"},
+        ])
+        with self.assertRaisesRegex(
+                CompileError, "one downstream bus|same.*bus"):
+            compile_model(model)
+
+    def test_duplicate_io9_board_host_head_reference_is_rejected(self):
+        model = self.model_with_pic_io9()
+        model["components"].extend([
+            {"id": "fixture-io9-second", "name": "Second IO9 fixture",
+             "kind": "board", "hardware_kind": "io9", "parent": "bedrock",
+             "provenance": "derived"},
+            {"id": "fixture-ioc3-second", "name": "Second PCI function",
+             "kind": "io-controller", "hardware_kind": "ioc3",
+             "parent": "fixture-io9-second", "provenance": "derived",
+             "identity": {"pci_revision": 1}},
+        ])
+        model["connections"].append({
+            "component": "fixture-ioc3-second", "bus": "fixture-pic-pci0",
+            "role": "endpoint", "pci_device": 1, "pci_function": 0,
+            "provenance": "derived"})
+        with self.assertRaisesRegex(CompileError, "multiple IO9 board records"):
+            compile_model(model)
+
+    def test_io9_cannot_reference_unsupported_host_kind(self):
+        model = self.model_with_pic_io9()
+        next(item for item in model["components"]
+             if item["id"] == "fixture-pic")["hardware_kind"] = (
+                 "unsupported-host")
+        with self.assertRaisesRegex(CompileError, "explicitly described PIC"):
+            compile_model(model)
+
+
 class RecordShapeTests(unittest.TestCase):
     """Compile shape per record type, read off real resolved fixtures."""
 

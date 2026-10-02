@@ -387,7 +387,26 @@ def index_graph(model: dict) -> dict:
     slots, and fabric links -- every fact the record-level `_compile_*`
     functions below need, gathered once instead of per record.
     """
+    for connection in model["connections"]:
+        if ("pci_head" in connection
+                and connection.get("role") != "bridge-downstream"):
+            raise CompileError(
+                "pci_head is valid only on bridge-downstream connections")
     components = _components_by_id(model)
+    buses_by_id = {item["id"]: item for item in model["buses"]}
+    for connection in model["connections"]:
+        if "pci_head" not in connection:
+            continue
+        bus = buses_by_id.get(connection["bus"])
+        if bus is None or bus["kind"] != "pci":
+            raise CompileError(
+                "pci_head requires a bridge-downstream PCI bus")
+        host = components.get(connection["component"])
+        if (host is None or host.get("kind") != "pci-host-bridge"
+                or host.get("hardware_kind") != "pic"):
+            raise CompileError(
+                "pci_head requires a downstream bus owned by an explicitly "
+                "described PIC host")
     modules: dict[str, int] = {}
     nodes = _positioned(components, lambda item: item.get("kind") == "node-asic", modules)
     io_peers = _positioned(
@@ -404,9 +423,30 @@ def index_graph(model: dict) -> dict:
         if raw.get("kind") == "origin300-pci-expansion"
         and raw.get("peer") in peer_ids and raw.get("module") in components
     }
+    pic_host_ids = {cid for cid, item in components.items()
+                    if item.get("kind") == "pci-host-bridge"
+                    and item.get("hardware_kind") == "pic"}
+    io9_ids = {
+        cid for cid, item in components.items()
+        if item.get("kind") == "board" and item.get("hardware_kind") == "io9"
+    }
+    io9_buses = {connection["bus"] for connection in model["connections"]
+                 if connection.get("role") == "endpoint"
+                 and connection["component"] in components
+                 and any(
+                     _is_within(components,
+                                components[connection["component"]], board)
+                     for board in io9_ids)}
+    io9_host_ids = {
+        connection["component"] for connection in model["connections"]
+        if connection.get("role") == "bridge-downstream"
+        and connection["bus"] in io9_buses
+    }
+    descriptor_host_ids = pic_host_ids | io9_host_ids
     split_bridges = _split_bridge_parents(model, components)
     io_board_components = {cid: item for cid, item in components.items()
                             if cid not in split_bridges
+                            and cid not in descriptor_host_ids
                             and not (item.get("hardware_kind") == "xbridge"
                                      and any(_is_within(components, item, module)
                                              for module in assembly_modules))}
@@ -549,6 +589,10 @@ def index_graph(model: dict) -> dict:
             component = components.get(cid)
             if component is None:
                 raise CompileError(f"XIO attachment '{cid}' names no component")
+            if cid in descriptor_host_ids:
+                # PIC records carry their own typed host reference; their
+                # single upstream route is compiled with that record below.
+                continue
             if crossbar is None and component.get("kind") == "board":
                 # A Hub cabled to a passive adapter rather than a widget:
                 # the Crosstown board that replaces the XTalk jumper.
@@ -665,6 +709,8 @@ def index_graph(model: dict) -> dict:
         "components": components,
         "nodes": nodes, "io_peers": io_peers,
         "routers": routers, "crossbars": crossbars,
+        "pic_host_ids": pic_host_ids,
+        "descriptor_host_ids": descriptor_host_ids,
         "io_boards": io_boards, "xio_attachments": xio_attachments,
         "xio_slots": xio_slots, "links": links,
         "modules": [{"id": module_id, "index": index} for module_id, index in module_order],
@@ -2055,6 +2101,206 @@ def _compile_io_board(model: dict, components: dict[str, dict], entry: dict) -> 
     return io_board
 
 
+def _compile_pic_io_records(model: dict, graph: dict,
+                            modules_by_id: dict[str, int],
+                            first_attachment: int
+                            ) -> tuple[list[dict], list[dict], list[dict]]:
+    """Compile authored PIC hosts and IO9 boards without choosing
+    hardware facts."""
+    components = graph["components"]
+    pic_ids = sorted(graph["pic_host_ids"])
+    host_index = {cid: index for index, cid in enumerate(pic_ids)}
+    nodes = graph["nodes"]
+    node_index = {entry["id"]: index for index, entry in enumerate(nodes)}
+    node_index_by_board = {entry["board_id"]: index
+                           for index, entry in enumerate(nodes)}
+    crossbar_index = {item["id"]: index
+                      for index, item in enumerate(graph["crossbars"])}
+    buses = {item["id"]: item for item in model["buses"]}
+    downstream: dict[str, list[dict]] = {}
+
+    for connection in model["connections"]:
+        if connection.get("role") != "bridge-downstream":
+            continue
+        bus = buses.get(connection["bus"])
+        if bus is not None and bus["kind"] == "pci":
+            downstream.setdefault(bus["id"], []).append(connection)
+
+    host_records = []
+    host_attachments = []
+    for cid in pic_ids:
+        host = components[cid]
+        facts = host.get("pci_host_bridge")
+        if (not isinstance(facts, dict)
+                or not isinstance(facts.get("heads"), int)):
+            raise CompileError(
+                f"PIC host '{cid}' has no declared head capacity")
+        head_capacity = facts["heads"]
+        if head_capacity <= 0:
+            raise CompileError(f"PIC host '{cid}' has invalid head capacity")
+        if head_capacity != 2:
+            raise CompileError(
+                f"PIC host '{cid}' must declare its reviewed two-head capacity")
+
+        upstream = [connection for connection in model["connections"]
+                    if connection.get("component") == cid
+                    and connection.get("role") == "bridge-upstream"
+                    and buses.get(connection["bus"], {}).get("kind") == "xio"]
+        if len(upstream) != 1:
+            raise CompileError(
+                f"PIC host '{cid}' needs exactly one authored upstream "
+                "XIO connection")
+        connection = upstream[0]
+        bus = buses[connection["bus"]]
+        master = components.get(bus.get("master"))
+        if master is None:
+            raise CompileError(f"PIC host '{cid}' has no XIO bus master")
+        if master.get("kind") == "node-asic":
+            node = node_index.get(master["id"])
+            detail = connection.get("xio")
+            if node is None or not isinstance(detail, dict):
+                raise CompileError(
+                    f"PIC host '{cid}' direct XIO connection needs a node "
+                    "and XIO detail")
+            widget = _integer(detail, "enumerated_widget", cid, 8)
+            discovery = _integer(detail, "discovery_widget", cid, 8)
+            decoded = detail.get("decoded_widgets")
+            if not isinstance(decoded, list) or not decoded:
+                raise CompileError(
+                    f"PIC host '{cid}' XIO detail has no decoded_widgets")
+            mask = 0
+            for value in decoded:
+                _validate_integer(value, 8, f"PIC host '{cid}' decoded widget")
+                mask |= 1 << value
+            attachment = {
+                "crossbar_index": -1, "widget": widget, "node_index": node,
+                "decoded_widget_mask": mask, "discovery_widget": discovery,
+            }
+        elif master.get("kind") == "crossbar":
+            crossbar = crossbar_index.get(master["id"])
+            controller = connection.get("controlled_by")
+            node = node_index.get(
+                controller, node_index_by_board.get(controller))
+            if crossbar is None or node is None:
+                raise CompileError(
+                    f"PIC host '{cid}' crossbar XIO connection needs a "
+                    "known controller")
+            attachment = {
+                "crossbar_index": crossbar,
+                "widget": _integer(connection, "widget", cid, 8),
+                "node_index": node, "decoded_widget_mask": 0,
+                "discovery_widget": 0,
+            }
+        else:
+            raise CompileError(
+                f"PIC host '{cid}' XIO connection has an unsupported "
+                "upstream master")
+
+        attachment_index = first_attachment + len(host_attachments)
+        host_attachments.append(attachment)
+        host_records.append({
+            "id": cid, "kind": "pic",
+            "xio_attachment_index": attachment_index,
+        })
+
+        seen_heads: dict[int, str] = {}
+        for bus_id, connections in downstream.items():
+            owned = [item for item in connections if item["component"] == cid]
+            if not owned:
+                continue
+            if len(owned) != 1:
+                raise CompileError(
+                    f"PIC host '{cid}' has more than one downstream "
+                    f"connection for bus '{bus_id}'")
+            item = owned[0]
+            if "pci_head" not in item:
+                raise CompileError(
+                    f"PIC host '{cid}' downstream bus '{bus_id}' has no "
+                    "pci_head")
+            head = _integer(item, "pci_head", f"PIC host '{cid}'", 32)
+            if head >= head_capacity:
+                raise CompileError(
+                    f"PIC host '{cid}' pci_head {head} exceeds its declared "
+                    f"capacity {head_capacity}")
+            if head in seen_heads:
+                raise CompileError(
+                    f"PIC host '{cid}' downstream head {head} is assigned "
+                    "more than once")
+            seen_heads[head] = bus_id
+
+    io9_boards = []
+    seen_board_heads = set()
+    for board in sorted((item for item in components.values()
+                         if item.get("kind") == "board"
+                         and item.get("hardware_kind") == "io9"),
+                        key=lambda item: item["id"]):
+        functions = []
+        for connection in model["connections"]:
+            bus = buses.get(connection["bus"])
+            component = components.get(connection["component"])
+            if (connection.get("role") == "endpoint" and bus is not None
+                    and bus["kind"] == "pci" and component is not None
+                    and component["id"] != board["id"]
+                    and _is_within(components, component, board["id"])):
+                functions.append(connection)
+        if not functions:
+            raise CompileError(
+                f"IO9 board '{board['id']}' has no authored PCI functions")
+        function_buses = {item["bus"] for item in functions}
+        if len(function_buses) != 1:
+            raise CompileError(
+                f"IO9 board '{board['id']}' functions must resolve through "
+                "one downstream bus")
+        bus_id = next(iter(function_buses))
+        host_connections = downstream.get(bus_id, [])
+        if len(host_connections) != 1:
+            raise CompileError(
+                f"IO9 board '{board['id']}' bus '{bus_id}' needs one PCI host")
+        connection = host_connections[0]
+        host_id = connection["component"]
+        host = components.get(host_id)
+        if (host is None or host.get("kind") != "pci-host-bridge"
+                or host.get("hardware_kind") != "pic"):
+            raise CompileError(
+                f"IO9 board '{board['id']}' references unsupported PCI "
+                "host kind")
+        if host_id not in host_index:
+            raise CompileError(
+                f"IO9 board '{board['id']}' PCI host has no descriptor")
+        if "pci_head" not in connection:
+            raise CompileError(
+                f"IO9 board '{board['id']}' PCI host has no pci_head")
+        head = _integer(
+            connection, "pci_head", f"IO9 board '{board['id']}'", 32)
+        pair = (host_index[host_id], head)
+        if pair in seen_board_heads:
+            raise CompileError(
+                f"PIC host/head pair {pair} is assigned to multiple "
+                "IO9 board records")
+        seen_board_heads.add(pair)
+        module = _grouping_module(components, board)
+        if module["id"] not in modules_by_id:
+            raise CompileError(
+                f"IO9 board '{board['id']}' has no module record")
+        identity = board.get("identity")
+        if (not isinstance(identity, dict)
+                or not isinstance(identity.get("part"), str)
+                or not identity["part"]):
+            raise CompileError(
+                f"IO9 board '{board['id']}' has no identity.part")
+        record = {
+            "id": board["id"], "module_index": modules_by_id[module["id"]],
+            "board_kind": "IO9", "populated": bool(functions),
+            "other_identities": [], "part": identity["part"],
+            "revision": None, "serial": None, "ioc3_serial": None,
+            "pci": [],
+            "pci_host_index": host_index[host_id], "pci_head": head,
+        }
+        io9_boards.append(record)
+
+    return host_records, io9_boards, host_attachments
+
+
 def _compile_module(model: dict, module_id: str, module_index: int,
                      node_entries: list[dict], controllers: list[dict],
                      io_peer_entries: list[dict]) -> dict:
@@ -2474,6 +2720,19 @@ def compile_model(model: dict) -> dict:
                          for entry in graph["io_boards"]]
             xio_attachments = graph["xio_attachments"]
             xio_slots = graph["xio_slots"]
+        pci_host_bridges = []
+        has_io9 = any(item.get("kind") == "board"
+                      and item.get("hardware_kind") == "io9"
+                      for item in components.values())
+        if graph["pic_host_ids"] or has_io9:
+            if generation != "SN1":
+                raise CompileError(
+                    "PIC host descriptors are supported only for SN1")
+            pci_host_bridges, io9_boards, pic_attachments = (
+                _compile_pic_io_records(model, graph, modules_by_id,
+                                        len(xio_attachments)))
+            io_boards.extend(io9_boards)
+            xio_attachments.extend(pic_attachments)
     except CompileError:
         raise
     except ValueError as exc:
@@ -2519,6 +2778,8 @@ def compile_model(model: dict) -> dict:
         topology["ip27_firmware"] = _compile_ip27_firmware(model)
     if generation == "SN1":
         topology["ip35_firmware"] = _compile_ip35_firmware(model)
+    if pci_host_bridges:
+        topology["pci_host_bridges"] = pci_host_bridges
     return topology
 
 

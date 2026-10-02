@@ -932,6 +932,32 @@
   'data': ['onboard', 'xio-slot', 'machine-placed'] }
 
 ##
+# @SGIModelPciHostKind:
+#
+# Which PCI host bridge a topology-local host record describes.
+#
+# @pic: SGI PIC host bridge
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelPciHostKind', 'data': ['pic'] }
+
+##
+# @SGIModelPciHostBridge:
+#
+# One PCI host bridge and its upstream XIO attachment.
+#
+# @id: catalogue id of this host bridge
+# @kind: host bridge device model
+# @xio-attachment-index: index of the host bridge's XIO attachment
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelPciHostBridge',
+  'data': { 'id': 'str', 'kind': 'SGIModelPciHostKind',
+            'xio-attachment-index': 'uint32' } }
+
+##
 # @SGIModelSystemTimekeeperKind:
 #
 # @m48t35-compatible: experimental shared Timekeeper compatibility
@@ -976,7 +1002,10 @@
 #
 # @carrier: what physically carries it
 #
-# @attachment: index of this board's crosstalk attachment
+# @attachment: index of this board's crosstalk attachment, absent for
+#     boards carried by PCI
+# @pci-host-index: topology-local index of the PCI host bridge
+# @pci-head: PCI head number on that host bridge
 #
 # @label: the IRIX slot name of the XIO position this board occupies
 #     (io1, io5); absent for I/O that sits in no XIO slot, such as a
@@ -1014,7 +1043,9 @@
             'module-index': 'uint32',
             'preset': 'SGIModelIoBoardPreset',
             'carrier': 'SGIModelIoBoardCarrier',
-            'attachment': 'uint32',
+            '*attachment': 'uint32',
+            '*pci-host-index': 'uint32',
+            '*pci-head': 'uint32',
             '*label': 'str',
             '*part': 'str',
             '*other-identity-parts': ['str'],
@@ -1306,6 +1337,9 @@
 #
 # @crossbars: this topology's XIO crossbars
 #
+# @pci-host-bridges: PCI host bridges and their upstream XIO
+#     attachments
+#
 # @xio-attachments: which node hosts each XIO widget
 #
 # @xio-slots: physical XIO slot positions, whether
@@ -1349,6 +1383,7 @@
             'routers': ['SGIModelRouter'],
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],
+            '*pci-host-bridges': ['SGIModelPciHostBridge'],
             'xio-attachments': ['SGIModelXioAttachment'],
             'xio-slots': ['SGIModelXioSlot'],
             'io-boards': ['SGIModelIoBoard'],

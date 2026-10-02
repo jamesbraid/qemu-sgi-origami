@@ -280,10 +280,14 @@ def _io_board(raw: dict) -> dict:
         "module-index": raw["module_index"],
         "preset": _IO_BOARD_PRESET[raw["board_kind"]],
         "carrier": _IO_BOARD_CARRIER[raw["board_kind"]],
-        "attachment": raw["slot_index"],
         "populated": raw.get("populated", True),
         "other-identity-parts": raw["other_identities"],
     }
+    if "slot_index" in raw:
+        board["attachment"] = raw["slot_index"]
+    if "pci_host_index" in raw:
+        board["pci-host-index"] = raw["pci_host_index"]
+        board["pci-head"] = raw["pci_head"]
     if raw.get("label") is not None:
         board["label"] = raw["label"]
     for name, key in (("part", "part"), ("revision", "revision"),
@@ -341,6 +345,11 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
         "routers": [_router(router) for router in topology["routers"]],
         "cables": [_cable(link) for link in topology["links"]],
         "crossbars": [_crossbar(crossbar) for crossbar in topology["crossbars"]],
+        **({"pci-host-bridges": [
+            {"id": host["id"], "kind": _enum(host["kind"]),
+             "xio-attachment-index": host["xio_attachment_index"]}
+            for host in topology["pci_host_bridges"]
+        ]} if topology.get("pci_host_bridges") else {}),
         "xio-attachments": [
             _xio_attachment(attachment) for attachment in topology["xio_attachments"]],
         "xio-slots": [_xio_slot(slot) for slot in topology["xio_slots"]],
