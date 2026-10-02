@@ -284,10 +284,12 @@ static void test_migration(void)
  * version-19 section. The four PP1s differ, so a stream that carried only
  * one, or copied PP1 0 into the others, fails a read below.
  */
-static void test_pp1_xmap_migration(void)
+static void test_pp1_xmap_migration(gconstpointer data)
 {
+    const char *board = data;
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *source_cmdline = NULL;
     g_autofree char *dest_cmdline = NULL;
     GError *err = NULL;
     QTestState *from, *to;
@@ -296,9 +298,12 @@ static void test_pp1_xmap_migration(void)
     g_assert_no_error(err);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
-    from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
-                                   " -incoming %s", uri);
+    source_cmdline = g_strdup_printf(MIGRATION_ARGS
+                                     " -global sgi-mgras.board=%s", board);
+    from = qtest_init(source_cmdline);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS
+                                   " -global sgi-mgras.board=%s"
+                                   " -incoming %s", board, uri);
     to = qtest_init(dest_cmdline);
 
     mgras_give_pp1s_distinct_xmaps(from);
@@ -617,8 +622,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
                    test_public_fifo_glyph_narrow_migration);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
-    qtest_add_func("sn0/origin2000/mgras/pp1-xmap-migration",
-                   test_pp1_xmap_migration);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-xmap-migration",
+                        "ssi", test_pp1_xmap_migration);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-xmap-migration/essi",
+                        "essi", test_pp1_xmap_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
                    test_discarded_fifo_migration);
     qtest_add_func("sn0/origin2000/mgras/partial-fifo-fill-migration",
