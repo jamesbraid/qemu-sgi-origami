@@ -1563,6 +1563,44 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_WRITE_INDEX_MASK 0xfff
 
 /*
+ * Bit 8 of the 0x0404 mode register is GL_CULL_FACE, bits 10:9 the face it
+ * culls -- 01 GL_BACK, 10 GL_FRONT, 11 GL_FRONT_AND_BACK, with 00 never
+ * sent by a probe word -- and bit 23 glFrontFace's orientation, literally
+ * set for GL_CW and clear for GL_CCW
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md).
+ *
+ * Bit 23's literal sense is NOT the sense fed to the shared layer. The
+ * board's own established window transform (docs/datasheets/odyssey.md,
+ * "window transform") bakes y' = -(vh/2) y + (h - vy - vh/2 - 1/256) into
+ * the ordinary projection matrix odyssey_gl_load_combined() loads, rather
+ * than routing through sgi_gl_set_window_matrix()'s window_rows_down path.
+ * A single-axis mirror reverses 2D winding exactly once, and the shared
+ * header documents that path's own row-direction flip as leaving "facing
+ * ... judged as the client sees it" (include/hw/display/sgi/gl-context.h),
+ * i.e. window_rows_down carries its own compensation for the mirror it
+ * introduces. Odyssey's baked mirror has no such compensation unless this
+ * family supplies one, so the literal bit is inverted before it reaches the
+ * shared glFrontFace state: register GL_CW feeds SGI_GL_CCW, and register
+ * GL_CCW feeds SGI_GL_CW. This cancels the baked mirror's sign flip so the
+ * shared rasterizer's front/back test again matches the orientation a
+ * client submits.
+ *
+ * This inversion is this implementation's own derivation from the above
+ * citations, not a literal statement in the evidence review, and has not
+ * had independent review. It is consistent with the only empirical check
+ * available, the proposal's own test 6
+ * (docs/reviews/odyssey-fragment-state-proposal-20261001.md, not amended by
+ * the review): a CCW triangle with front LINE, back FILL draws an outline,
+ * and reversing the winding or setting bit 23 draws a fill. The underlying
+ * hardware contract for this bit's sense needs independent evidence review
+ * before being treated as settled.
+ */
+#define ODSY_MODE_CULL_FACE (1u << 8)
+#define ODSY_MODE_CULL_MODE_SHIFT 9
+#define ODSY_MODE_CULL_MODE_MASK 0x3
+#define ODSY_MODE_FRONT_FACE_CW (1u << 23)
+
+/*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
  * above root/EZsetup/demos/guest) and the text-field caret
  * (docs/analysis/odyssey-glyph-raster-format.md). BEGIN with primitive 0xa
@@ -3705,10 +3743,41 @@ static void odyssey_gl_feed(SGIOdysseyState *s, uint16_t op,
 }
 
 /*
+ * 0x404 bits 10:9 to the shared layer's cull-face enum: GL_BACK 01, GL_FRONT
+ * 10, GL_FRONT_AND_BACK 11. Returns UINT32_MAX for 00, which no probe word
+ * has sent; the shared layer's own glCullFace validation then rejects it,
+ * leaving the previous mode in place.
+ */
+static uint32_t odyssey_cull_face_mode(uint32_t code)
+{
+    switch (code) {
+    case 1:
+        return SGI_GL_BACK;
+    case 2:
+        return SGI_GL_FRONT;
+    case 3:
+        return SGI_GL_FRONT_AND_BACK;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+/*
+ * 0x404 bit 23 to the shared layer's glFrontFace sense, inverted -- see the
+ * ODSY_MODE_FRONT_FACE_CW comment for why.
+ */
+static uint32_t odyssey_front_face(uint32_t pattern_mode)
+{
+    return pattern_mode & ODSY_MODE_FRONT_FACE_CW ? SGI_GL_CCW : SGI_GL_CW;
+}
+
+/*
  * Hand the GL state register 0x0404 carries to the shared context: bit 12,
  * the shade model, bit 16, the depth test, bit 14, the alpha test, bit 15,
- * the stencil test, bit 17, blending, bit 19, index logic op, and bit 20,
- * colour logic op. The shared rasterizer fills a flat triangle from its
+ * the stencil test, bit 17, blending, bit 19, index logic op, bit 20,
+ * colour logic op, bit 8, GL_CULL_FACE, bits 10:9, the face it culls, and
+ * bit 23, front face (fed inverted; see the ODSY_MODE_FRONT_FACE_CW
+ * comment). The shared rasterizer fills a flat triangle from its
  * provoking vertex, the last one for triangles and strips as GL specifies.
  * Nothing in the stream says which vertex the board takes; the library
  * never reorders or repeats colours to steer it, so GL's own rule is
@@ -3732,6 +3801,11 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     uint32_t blend = SGI_GL_BLEND;
     uint32_t index_logic_op = SGI_GL_INDEX_LOGIC_OP;
     uint32_t color_logic_op = SGI_GL_COLOR_LOGIC_OP;
+    uint32_t cull_face = SGI_GL_CULL_FACE;
+    uint32_t cull_mode = odyssey_cull_face_mode((s->pattern_mode >>
+                                                 ODSY_MODE_CULL_MODE_SHIFT) &
+                                                ODSY_MODE_CULL_MODE_MASK);
+    uint32_t front_face = odyssey_front_face(s->pattern_mode);
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
     /*
@@ -3754,6 +3828,10 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &index_logic_op, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_COLOR_LOGIC_OP ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &color_logic_op, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_CULL_FACE ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cull_face, 1);
+    odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
+    odyssey_gl_feed(s, SGI_GL_OP_FRONT_FACE, &front_face, 1);
 }
 
 /*

@@ -4614,6 +4614,64 @@ static void test_command_fifo_gl_stencil_always_passes(void)
 }
 
 /*
+ * Cull face (docs/reviews/odyssey-fragment-state-evidence-20261001.md,
+ * proposal test 6): 0x404 bit 8 is GL_CULL_FACE, bits 10:9 the face it
+ * culls, 01 GL_BACK, 10 GL_FRONT. With GL_BACK on, the back-facing (CW)
+ * triangle is dropped and the front-facing (CCW) one survives; with
+ * GL_FRONT the surviving face swaps. The front/back determination this
+ * exercises is the same one the polygon-mode test below depends on: a
+ * wrong front-face sense here would swap which triangle each mode drops.
+ */
+#define ODSY_MODE_CULL_FACE (1u << 8)
+#define ODSY_MODE_CULL_BACK (1u << 9)
+#define ODSY_MODE_CULL_FRONT (2u << 9)
+
+/*
+ * odsy_near_yellow with its last two vertices swapped: same triangle, the
+ * opposite winding.
+ */
+static const uint32_t odsy_near_yellow_cw[9] = {
+    0xbf4ccccd, 0xbf4ccccd, 0xbf000000,
+    0xbe4ccccd, 0x3f19999a, 0xbf000000,
+    0x3ecccccd, 0xbf4ccccd, 0xbf000000,
+};
+
+static void test_command_fifo_gl_cull_face(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+
+    /* GL_BACK: the CCW (front-facing) triangle survives, filled yellow. */
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_MODE_CULL_FACE | ODSY_MODE_CULL_BACK);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    /* GL_BACK: the CW (back-facing) triangle is dropped, leaving the clear. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow_cw);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    /* GL_FRONT: the CCW triangle is now the one dropped. */
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_MODE_CULL_FACE | ODSY_MODE_CULL_FRONT);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    /* GL_FRONT: the CW triangle now survives. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow_cw);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    qtest_quit(qts);
+}
+
+/*
  * The record light.c selects: entries 0x5cb 0x5d8 0x5e5, one directional
  * light. The triangle is lit -- (1, 0.5, 0.25) where the normal faces the
  * light, 0.8 of it at the right corner, black edge-on -- the values the
@@ -9685,6 +9743,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_stencil_state);
     qtest_add_func("sn1/odyssey/command-fifo-gl-stencil-always-passes",
                    test_command_fifo_gl_stencil_always_passes);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-cull-face",
+                   test_command_fifo_gl_cull_face);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
