@@ -3361,6 +3361,61 @@ static void test_expansion_controller_startup(const void *data)
     g_unlink(prom);
 }
 
+/* The attached identity must name the same owner through concrete routing. */
+static void test_expansion_controller_locations(void)
+{
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    const uint64_t uart = NASID_TEST_HUB_LOCAL_REGISTERS + 0x80;
+    const uint32_t destinations[] = { 0x00041006, 0x4ffff006, 0x00042006 };
+    const uint32_t coordinates[] = { 0x41, 0x42, 0x42 };
+    const uint32_t types[] = { 0x34, 0x25, 0x25 };
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING
+        " -cpu R14000 -bios %s -nodefaults -display none "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", prom, image);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(destinations); i++) {
+        uint8_t request[8] = { 0x10 }, reply[32];
+        uint8_t expected[16] = { 0x30, 0, 0, 0, 0, 2 };
+
+        stl_be_p(request + 1, destinations[i]);
+        stw_be_p(request + 5, 3);
+        stl_be_p(expected + 7, coordinates[i]);
+        stl_be_p(expected + 12, types[i]);
+        sgi_l1_test_send(qts, uart, request, sizeof(request), false);
+        g_assert_cmpuint(sgi_l1_test_receive(qts, uart, reply, sizeof(reply)),
+                         ==, sizeof(expected));
+        g_test_message("destination 0x%08x: coordinates 0x%x, type 0x%x",
+                       destinations[i], ldl_be_p(reply + 7),
+                       ldl_be_p(reply + 12));
+        g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+    }
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x42);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x42);
+    qtest_quit(qts);
+    qts = qtest_initf("-M origin300 -cpu R14000 -bios %s "
+                      "-nodefaults -display none", prom);
+    {
+        uint8_t request[] = { 0x10, 0, 4, 0x10, 6, 0, 3, 0 };
+        uint8_t expected[] = { 0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x41,
+                               0, 0, 0, 0, 0x34 };
+        uint8_t reply[32];
+
+        sgi_l1_test_send(qts, uart, request, sizeof(request), false);
+        g_assert_cmpuint(sgi_l1_test_receive(qts, uart, reply, sizeof(reply)),
+                         ==, sizeof(expected));
+        g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
 static void test_expansion_management_mismatch(const void *data)
 {
     const char *option = data;
@@ -3586,6 +3641,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion/experimental-offering",
                         "origin300,topology=origin300-pci-expansion-experiment",
                         test_expansion_builder);
+    qtest_add_func("sn/builder/expansion/controller-locations",
+                   test_expansion_controller_locations);
     qtest_add_data_func("sn/builder/expansion/controller-startup",
                         NULL, test_expansion_controller_startup);
     qtest_add_data_func("sn/builder/expansion/physical-board-lookup",

@@ -51,6 +51,13 @@ layer:
         image. It supplies no factory contents or physical flash identification.
         Construction support does not establish stock PROM or IRIX acceptance.
       emulation:
+        initial_module_numbers:
+          - component: compute-module
+            number: 1
+            reason: Synthetic compute controller bay for distinct concrete L1 routing in this experiment.
+          - component: expansion-enclosure
+            number: 2
+            reason: Synthetic expansion controller bay for distinct concrete L1 routing in this experiment.
         bedrock_nodes:
           compute-bedrock:
             board_id_word: 32769

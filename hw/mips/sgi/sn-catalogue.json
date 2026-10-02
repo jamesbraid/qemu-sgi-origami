@@ -14702,7 +14702,7 @@
         {
           "controller-index": 0,
           "id": "compute-module",
-          "initial-module-number": 0,
+          "initial-module-number": 1,
           "nodes": [
             0
           ],
@@ -14711,7 +14711,7 @@
         {
           "controller-index": 1,
           "id": "expansion-enclosure",
-          "initial-module-number": 0,
+          "initial-module-number": 2,
           "io-peers": [
             0
           ],

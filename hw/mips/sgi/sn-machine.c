@@ -2856,6 +2856,10 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         object_property_add_child(module, "l1", OBJECT(l1));
         s->controllers[a->controller_index] = l1;
         qdev_prop_set_string(l1, "brick-type", a->controller_profile);
+        if (modules[a->module_index]->initial_module_number) {
+            qdev_prop_set_uint32(l1, "bay",
+                modules[a->module_index]->initial_module_number);
+        }
         object_property_add_child(module, "board-interface", OBJECT(interface));
         qdev_prop_set_uint64(interface, "identity", a->bic_identity);
         qdev_prop_set_bit(interface, "initial-latch-set", a->has_initial_latch);
