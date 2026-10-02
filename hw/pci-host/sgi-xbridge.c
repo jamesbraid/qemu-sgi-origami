@@ -275,6 +275,7 @@ static const MemoryRegionOps xbridge_source_dma_ops[2] = {
         .write_with_attrs = xbridge_source_dma_write,
         .endianness = DEVICE_LITTLE_ENDIAN,
         .valid = { .min_access_size = 1, .max_access_size = 8 },
+        .impl = { .min_access_size = 1, .max_access_size = 8 },
     }, {
         .read_with_attrs = xbridge_source_dma_read,
         .write_with_attrs = xbridge_source_dma_write,
