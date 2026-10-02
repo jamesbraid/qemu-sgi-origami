@@ -608,6 +608,7 @@ tests/qtest/libqos/pci-sgi-bridge.c
 tests/qtest/libqos/pci-sgi-bridge.h
 tests/qtest/libqos/sgi-bridge-machine.c
 tests/qtest/mips64-qtest-optional-skips.txt
+tests/qtest/octane-vpro-test.c
 tests/qtest/psitech-rad1-test.c
 tests/qtest/psitech-rad4-mode0-fixture.h
 tests/qtest/psitech-rad4-test.c

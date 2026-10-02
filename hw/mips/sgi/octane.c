@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
 /*
- * Octane (IP30) functional profile with optional textureless SI.
+ * Octane (IP30) functional profile with optional textureless SI or VPro.
  * Fitted populations come from the checked IP30 catalogue. Device models
  * retain their documented functional approximations; catalogue data does
  * not establish additional physical behavior.
@@ -28,6 +28,7 @@
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-mgras.h"
+#include "hw/misc/sgi-odyssey.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
@@ -82,8 +83,9 @@ static void octane_set_graphics_board(Object *obj, const char *value,
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
-    if (strcmp(value, "none") && strcmp(value, "si")) {
-        error_setg(errp, "octane graphics must be none or si");
+    if (strcmp(value, "none") && strcmp(value, "si") &&
+        strcmp(value, "vpro")) {
+        error_setg(errp, "octane graphics must be none, si or vpro");
         return;
     }
     g_free(s->graphics_board);
@@ -396,7 +398,9 @@ static void octane_init_common(MachineState *machine, bool octane2)
     int loaded;
     uint8_t *flash_image = NULL;
     bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
-    bool graphics = !strcmp(s->graphics_board, "si");
+    bool si = !strcmp(s->graphics_board, "si");
+    bool vpro = !strcmp(s->graphics_board, "vpro");
+    bool graphics = si || vpro;
     uint16_t links = (1 << 8) | (1 << 15);
 
     s->model = octane_model(octane2 ? "octane2" : "octane",
@@ -608,27 +612,35 @@ static void octane_init_common(MachineState *machine, bool octane2)
                           s->model->crossbars->value->widget_revision);
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
     if (graphics) {
-        DeviceState *mgras = qdev_new(TYPE_SGI_MGRAS);
+        /*
+         * Both boards take the graphics slot's widget 11: an Octane IRIX
+         * inventory lists its VPro (ODY32) under xtalk/11, where the SI
+         * board also sits.
+         */
+        const char *name = si ? "mgras" : "odyssey";
+        DeviceState *board = qdev_new(si ? TYPE_SGI_MGRAS : TYPE_SGI_ODYSSEY);
         MemoryRegion *face;
 
         memory_region_init(&s->graphics_fabric, OBJECT(machine),
                            "octane.graphics-fabric",
                            SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
-        object_property_add_child(OBJECT(machine), "mgras", OBJECT(mgras));
-        mgras->id = g_strdup("mgras");
-        qdev_prop_set_uint32(mgras, "module", 0);
-        qdev_prop_set_string(mgras, "slot",
+        object_property_add_child(OBJECT(machine), name, OBJECT(board));
+        board->id = g_strdup(name);
+        qdev_prop_set_uint32(board, "module", 0);
+        qdev_prop_set_string(board, "slot",
                              G_STRINGIFY(OCTANE_GRAPHICS_WIDGET));
-        qdev_prop_set_string(mgras, "board", "si");
-        object_property_set_link(OBJECT(mgras), "fabric",
+        if (si) {
+            qdev_prop_set_string(board, "board", "si");
+        }
+        object_property_set_link(OBJECT(board), "fabric",
                                  OBJECT(&s->graphics_fabric), &error_fatal);
-        sysbus_realize(SYS_BUS_DEVICE(mgras), &error_fatal);
-        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(mgras), 0);
+        sysbus_realize(SYS_BUS_DEVICE(board), &error_fatal);
+        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board), 0);
         if (!sgi_xbow_attach_endpoint(crossbow, OCTANE_GRAPHICS_WIDGET,
                                       face, face, &error_fatal)) {
             return;
         }
-        object_unref(OBJECT(mgras));
+        object_unref(OBJECT(board));
         links |= 1 << OCTANE_GRAPHICS_WIDGET;
     }
     qdev_prop_set_uint16(xbow, "links-present", links);
@@ -724,7 +736,8 @@ static void octane_instance_init_common(Object *obj, const char *product)
     object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
                             octane_set_graphics_board);
     object_property_set_description(obj, "graphics-board",
-                                    "Optional textureless SI board: none or si");
+                                    "Optional graphics board: none, si "
+                                    "(textureless SI) or vpro");
     s->flash_profile = g_strdup("raw");
     s->flash_select = UINT64_MAX;
     s->flash_strap = UINT64_MAX;

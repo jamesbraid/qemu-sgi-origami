@@ -570,6 +570,8 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['octane-test', 'octane-mgras-test', 'lh28f800su-test',
      'sgi-bridge-sharp-flash-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
+    ['octane-vpro-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \

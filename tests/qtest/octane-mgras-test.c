@@ -567,7 +567,7 @@ static void test_rejected_selection(gconstpointer data)
         "octane,graphics-board=v12", "-display", "none", "-qmp", "stdio", NULL,
     };
 
-    assert_launch_rejected(args, "graphics must be none or si");
+    assert_launch_rejected(args, "graphics must be none, si or vpro");
 }
 
 int main(int argc, char **argv)
