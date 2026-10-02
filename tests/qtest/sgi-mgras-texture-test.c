@@ -650,6 +650,118 @@ static void test_gl_texture_load_abgr_bytes(void)
 }
 
 /*
+ * An RGBA image of unsigned shorts, as blast loads every texture: the
+ * unpack block's scale word is 1/65535 rather than 1/255 and the
+ * transfer carries two big-endian bytes a component, eight a texel. Each
+ * short is the texel byte times 257, so any reduction to eight bits that
+ * OpenGL 1.2.1 allows (c * 255 / 65535, rounded or truncated, or the high
+ * byte) gives the byte back. The model sizes the transfer by the kept
+ * format's bytes, refused it ("DMA of 1 rows of 64 bytes for a texture
+ * level of 32 bytes") and drew white.
+ */
+static void test_gl_texture_load_unsigned_shorts(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[64];
+
+    tex_texels(texels);
+    for (int i = 0; i < 32; i++) {
+        stw_be_p(&image[2 * i], texels[i] * 0x101);
+    }
+    tex_load_4x2_as(t, TEX_HQ_PIXEL_REST, TEX_UNPACK_SCALE_16, image, 8);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * GL_ABGR_EXT of unsigned shorts, as buttonfly, distort and blast load
+ * their textures: HQ word 0xe8e (bits 1:0 the client's bytes an element,
+ * 2), scale 1/65535, eight host bytes a texel, alpha, blue, green, red.
+ */
+static void test_gl_texture_load_abgr_shorts(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[64];
+
+    tex_texels(texels);
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 4; k++) {
+            stw_be_p(&image[8 * i + 2 * k], texels[4 * i + 3 - k] * 0x101);
+        }
+    }
+    tex_load_4x2_as(t, TEX_HQ_ABGR_16, TEX_UNPACK_SCALE_16, image, 8);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * The reduction of a two-byte component to the kept eight bits is
+ * round(c * 255 / 65535) = (c + 128) / 257 (approximated: the board's own
+ * conversion is inferred). 0x0080 is the last value that rounds to 0 and
+ * 0x0081 the first that rounds to 1, which the high byte alone would
+ * not tell apart; 0x0182 rounds to 2 where truncating c * 255 / 65535
+ * gives 1.
+ */
+static void test_gl_texture_shorts_reduce_rounded(void)
+{
+    static const uint16_t value[4] = { 0x0080, 0x0081, 0x017f, 0x0182 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64];
+
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 4; k++) {
+            stw_be_p(&image[8 * i + 2 * k], k == 3 ? 0xffff : value[i % 4]);
+        }
+    }
+    tex_load_4x2_as(t, TEX_HQ_PIXEL_REST, TEX_UNPACK_SCALE_16, image, 8);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            uint32_t v = (value[x] + 128) / 257;
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            v << 16 | v << 8 | v);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * An RGB image of unsigned shorts (blast's GL_RGB textures: unpack
+ * routine 0x40f2, scale 1/65535, six bytes a texel) lands in an RGBA
+ * level with alpha 1, as the byte image does.
+ */
+static void test_gl_texture_load_rgb_shorts(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[48];
+
+    tex_texels(texels);
+    for (int i = 0; i < 8; i++) {
+        for (int k = 0; k < 3; k++) {
+            stw_be_p(&image[6 * i + 2 * k], texels[4 * i + k] * 0x101);
+        }
+    }
+    tex_load_program(t, GL_PIX_3UB, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2,
+                     image, 4, 2, 3, 6, box, true, 0, 0);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+
+/*
  * A level loaded as strips inside one bracket, as perfly's client loads
  * its 256-wide levels 64 texels at a time: each transfer carries its
  * strip's x and y at GE parameters 0xe34 and 0xe35 and its size in the
@@ -714,7 +826,7 @@ static void test_gl_texture_rgb_image_into_rgba(void)
         memcpy(&rgb[3 * i], &texels[4 * i], 3);
     }
     tex_load_program(t, GL_PIX_3UB, true, TEX_TL_MODE_RGBA4, TEX_SPEC_4X2,
-                     rgb, 4, 2, 3, box, true, 0, 0);
+                     rgb, 4, 2, 3, 3, box, true, 0, 0);
     gl_clear_color(t, 0, 0, 0, 1);
     gl_word(t, GL_CLEAR_COLOR_BUFFER);
     gl_blend(t, GL_SRC_ALPHA, GL_SRC_ALPHA + 1, GL_FUNC_ADD);
@@ -955,8 +1067,8 @@ static void tex_scene(QTestState *t, const TexScene *sc)
     gl_clear_color(t, 1, 1, 1, 1);
     gl_word(t, GL_CLEAR_COLOR_BUFFER);
     tex_load_fmt(t, true, 0x34000 | sc->layout << 1 | sc->depth << 5, spec,
-                 sc->texels, w, h, tex_bytes_a_texel(sc->layout, sc->depth),
-                 box, true, 0, 0);
+                 sc->texels, w, h, sc->layout + 1,
+                 tex_bytes_a_texel(sc->layout, sc->depth), box, true, 0, 0);
     for (uint32_t n = 1; n <= 3; n++) {
         uint32_t lw = MAX(1, w >> n), lh = MAX(1, h >> n);
         uint32_t lbox[6] = { 0, 0, lw, lh, lh << 16 | lw, 0 };
@@ -964,7 +1076,7 @@ static void tex_scene(QTestState *t, const TexScene *sc)
         if (sc->mip[n - 1]) {
             tex_load_fmt(t, true, 0x34000 | sc->layout << 1 | sc->depth << 5,
                          n | tex_log2(lh) << 8 | tex_log2(lw) << 4,
-                         sc->mip[n - 1], lw, lh,
+                         sc->mip[n - 1], lw, lh, sc->layout + 1,
                          tex_bytes_a_texel(sc->layout, sc->depth), lbox, true,
                          0, 0);
         }
@@ -2219,7 +2331,7 @@ static void test_tram_client_restore_round_trip(void)
             second[3 * i + k] = first[3 * i + k] ^ 0x5a;
         }
     }
-    tex_load_fmt(t, true, TEX_TL_MODE_RGB8, TEX_SPEC_4X2, first, 4, 2, 3,
+    tex_load_fmt(t, true, TEX_TL_MODE_RGB8, TEX_SPEC_4X2, first, 4, 2, 3, 3,
                  box, true, 0, 0);
     memset(buffer, TRAM_BUFFER_FILL, TRAM_RGB_BLOCK_BYTES);
     qtest_memwrite(t, TRAM_BUFFER, buffer, TRAM_RGB_BLOCK_BYTES);
@@ -2232,7 +2344,8 @@ static void test_tram_client_restore_round_trip(void)
     g_assert_true(tram_buffer_holds(buffer, TRAM_RGB_BLOCK_BYTES, first,
                                     sizeof(first)));
 
-    tex_load_fmt(t, false, 0, TEX_SPEC_4X2, second, 4, 2, 3, box, true, 0, 0);
+    tex_load_fmt(t, false, 0, TEX_SPEC_4X2, second, 4, 2, 3, 3, box, true, 0,
+                 0);
     tex_bind(t, TEX_TEXMODE1_RGB_ON, TEX_TEXMODE2_RGBA8);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
@@ -2382,6 +2495,14 @@ int main(int argc, char **argv)
                    test_gl_texture_many_levels_in_one_context);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-load-abgr-bytes",
                    test_gl_texture_load_abgr_bytes);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-unsigned-shorts",
+                   test_gl_texture_load_unsigned_shorts);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-abgr-shorts",
+                   test_gl_texture_load_abgr_shorts);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-shorts-reduce-rounded",
+                   test_gl_texture_shorts_reduce_rounded);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-rgb-shorts",
+                   test_gl_texture_load_rgb_shorts);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-level-from-strips",
                    test_gl_texture_level_from_strips);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-rgb-image-into-rgba",

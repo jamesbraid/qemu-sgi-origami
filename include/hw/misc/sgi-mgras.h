@@ -377,14 +377,13 @@ typedef struct SGIMgrasTexture {
     uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
     /*
      * A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads:
-     * the level, the rectangle of it, x, y and h << 16 | w, and the
-     * image's components a texel when they are not the kept layout's (3
-     * for an RGB image), else 0, and whether the image's components come
-     * in GL_ABGR_EXT order: 0 or 1.
+     * the level, the rectangle of it, x, y and h << 16 | w, the image's
+     * components a texel and bytes a component, and whether the image's
+     * components come in GL_ABGR_EXT order: 0 or 1.
      */
     uint32_t load;
     uint32_t load_base, load_block, load_spec, load_mode;
-    uint32_t load_x, load_y, load_size, load_host, load_abgr;
+    uint32_t load_x, load_y, load_size, load_comps, load_csize, load_abgr;
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.

@@ -2899,14 +2899,6 @@ static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
     return MGRAS_GL_PIXELS_FORMATS;
 }
 
-bool sgi_mgras_gl_pixels_rgb8(SGIMgrasState *s)
-{
-    uint32_t pairs;
-
-    return mgras_gl_pixels_match(s->ge_param, &pairs) ==
-           MGRAS_GL_PIXELS_RGB8;
-}
-
 /* The rectangle and form of the draw 0x8d20 starts, or false, logged. */
 static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
                                     SGIMgrasGLPixels *px)

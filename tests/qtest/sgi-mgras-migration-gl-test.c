@@ -178,7 +178,7 @@ static void test_gl_texture_migration(void)
 /*
  * Rewrite the waiting load's base and TXMIPMAP word in a migration stream
  * carrying one load of a 4-by-2 level of TL_MODE mode at base 0 and word
- * 0, the nine fields from load on.
+ * 0, the eleven fields from load on.
  */
 static void tex_patch_load_place(const char *path, uint32_t mode,
                                  uint32_t base, uint32_t word)
@@ -188,15 +188,19 @@ static void tex_patch_load_place(const char *path, uint32_t mode,
     int found = 0;
 
     g_assert_true(g_file_get_contents(path, &data, &len, NULL));
-    for (gsize i = 0; i + 36 <= len; i++) {
+    for (gsize i = 0; i + 44 <= len; i++) {
         const uint8_t *p = (const uint8_t *)data + i;
 
-        /* load, base, word, TL_SPEC, TL_MODE, x, y, size, host bytes */
+        /*
+         * load, base, word, TL_SPEC, TL_MODE, x, y, size, components,
+         * bytes a component, ABGR.
+         */
         if (ldl_be_p(p) == 1 && ldl_be_p(p + 4) == 0 &&
             ldl_be_p(p + 8) == 0 && ldl_be_p(p + 12) == TEX_SPEC_4X2 &&
             ldl_be_p(p + 16) == mode && ldl_be_p(p + 20) == 0 &&
             ldl_be_p(p + 24) == 0 && ldl_be_p(p + 28) == (2 << 16 | 4) &&
-            ldl_be_p(p + 32) == 0) {
+            ldl_be_p(p + 32) == 4 && ldl_be_p(p + 36) == 1 &&
+            ldl_be_p(p + 40) == 0) {
             stl_be_p(data + i + 4, base);
             stl_be_p(data + i + 8, word);
             found++;
