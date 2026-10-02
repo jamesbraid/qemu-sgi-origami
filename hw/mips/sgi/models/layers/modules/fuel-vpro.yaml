@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# One VPro graphics board in the Fuel's graphics slot.
+layer_version: 1
+layer:
+  kind: module
+  id: fuel-vpro
+  requires: {architecture: sn1}
+  data:
+    components:
+      - id: v12
+        name: VPro graphics board
+        kind: board
+        hardware_kind: odyssey
+        provenance: derived
+        identity:
+          widget_revision: 10
+          notes: >-
+            Revision 0xa is the QEMU Odyssey device's selected default. An
+            OpenBSD Fuel capture reports Odyssey revision 11 on a board
+            whose model is not stated; the device keeps its tested default.
+        datasheet_contracts: [docs/datasheets/odyssey.md]
+        sources: ["docs/datasheets/odyssey.md, Configuration identity", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+        notes: >-
+          The observed Fuel carries a V10 (ASTODYB 030-1725-001, 32 MiB).
+          The model fits the Odyssey device's default V12 memory
+          configuration; the V12 in a Fuel is inferred to use the same slot.
+          Board one-wire records and display output remain unverified.
+    connections:
+      - component: v12
+        bus: graphics-xio
+        role: endpoint
+        provenance: derived
+        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]
+        notes: >-
+          The board is the widget the system board's XBridge crossbar
+          reaches at port 13; the connector carries that observed position.
