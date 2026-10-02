@@ -79,18 +79,19 @@
  *   the client writing the table from the first level, 0 in every trace. A
  *   mipmapped texture puts several small levels in one block under one
  *   word, so the level number stays in the key. Where a level sits inside
- *   its block is unknown, and the model keeps no TRAM byte image: TRAM
- *   save and restore through the kernel's DMA paths are not modelled, and
- *   a load does not evict a level of another word that overlapped it in
- *   TRAM; the other stays until its own word is loaded again. A context
- *   keeps at most one TRAM's 4 MiB of texels and the board four TRAMs'.
+ *   its block is unknown, and the model keeps no TRAM byte image: the
+ *   kernel's TRAM save and restore move no bytes (see "TRAM save and
+ *   restore" below), and a load does not evict a level of another word
+ *   that overlapped it in TRAM; the other stays until its own word is
+ *   loaded again. A context keeps at most one TRAM's 4 MiB of texels and
+ *   the board four TRAMs'.
  *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
  *   keeps one store per context for both, approximated: each path
  *   holding the full texture is inferred, so a load, a base write and a
  *   draw reach the rows of both REs, and the capacity stays one TRAM's
  *   4 MiB, not 8. The software cannot tell the difference; only the
- *   diagnostics' per-RE TRAM tests could. Save and restore are not
- *   modelled there either.
+ *   diagnostics' per-RE TRAM tests could. One kernel save and one
+ *   restore of a block serve both paths, as on the board.
  *   A context opener discards that context's levels and texture state,
  *   approximated: whether the board's TRAM and TE1 survive a context
  *   switch or an opener is unknown, so a client that relied on texels
@@ -164,6 +165,57 @@
 #define MGRAS_TEX_BASE           0x0000eb04
 #define MGRAS_TEX_RECORDS        0x00007c08
 #define MGRAS_TEX_TABLE          0x0000ec10
+
+/*
+ * TRAM save and restore. The IRIX 6.5.30 IP27 kernel divides each TRAM
+ * path into 256 blocks of 16 KiB and gives each GL context a run of them;
+ * when a new context's run overlaps another's it saves the other's blocks
+ * one at a time, and restores them, again a block at a time, when that
+ * context runs next. Established from the disassembly of the texture
+ * I/O member of mgras.a (SHA-256 5cd14335...): the save, at file offset
+ * 0x1b1c, programs TXSIZE 0xd6d6 (a 64 by 8,192 shape), TXLOD 0,
+ * TXCLAMPSIZE 0x80000, TL_MODE, TEXMODE1 and TEXMODE2, then TXADDR 0 and
+ * the block in TXMIPMAP entry 0, and after a 0xd214 bracket sends 0xe50c
+ * with the block's row count, a format word and 0x400d (the header's 12
+ * bytes are those three words), kicks a read of the rows through DMA-map
+ * slot 2 with (2 << 1) | 0xb9, 0xbd, and ends with 0xda00 and 0xd300.
+ * The restore, at 0x15f0, programs TL_MODE, TL_WBUFFER, TEXRBUFFER,
+ * TEXMODE2, TEXMODE1, TL_ADDR 0, the block in TL_MIPMAP and TL_SPEC
+ * 0xd60 (the same 64 by 8,192 shape), the copy rectangle 64 wide and the
+ * block's rows tall, XFRMODE, XFRSIZE and XFRCOUNTERS, and then sends
+ * 0xe300, 0xd80c with the transfer's word count in three 9-bit parts,
+ * the DMA from slot 2 kicked (2 << 1) | 0xa1, 0xa5, the 0xe0400 fence,
+ * XFRMASKLOW and 0xd300. Neither reads the board's RE count or writes RE
+ * select 0x112, so on MXI and EMXI one save and one restore serve both
+ * TRAM paths. 0xd80c and 0xe300 come from no other routine in the kernel,
+ * the X server or the OpenGL client; 0xe50c also opens the client's own
+ * save of TRAM, which asks the kernel to send it.
+ *
+ * Approximated, as the GL path does for context eviction: the model keeps
+ * each context's levels in that context's store, where another context's
+ * loads never reach them, so it needs no TRAM bytes to keep a context's
+ * texels across a save and a restore. It moves none: a save's read writes
+ * nothing into the host buffer, where the board writes the block's texels
+ * in a layout nothing read settles, and a restore's write takes nothing.
+ * Inferred: that neither transfer touches the colour planes, since each
+ * names texture memory and no raster box; the model drew a write kick
+ * with nothing waiting for it as a raster image before. A guest that
+ * inspected the saved bytes would find what was there before the save.
+ * The discriminating test is mxi-tram-save-restore, on MXI, EMXI and
+ * SI+T.
+ */
+#define MGRAS_TEX_TRAM_READ      0x0000e50c
+#define MGRAS_TEX_TRAM_RESTORE   0x0000e300
+#define MGRAS_TEX_TRAM_GE_COUNT  0x0000d80c
+
+/* Where the kernel's TRAM save or restore of a block stands. */
+enum {
+    MGRAS_TRAM_IDLE,
+    MGRAS_TRAM_SAVE_OPEN,       /* 0xe50c came, its read kick is next */
+    MGRAS_TRAM_SAVE_READ,       /* the read was kicked; 0xda00 closes it */
+    MGRAS_TRAM_RESTORE_OPEN,    /* 0xd80c came, its write kick is next */
+    MGRAS_TRAM_STATES,
+};
 
 /* Texture registers. */
 #define MGRAS_TEX_TEXMODE1       0x111
@@ -367,6 +419,9 @@ bool sgi_mgras_texture_header(uint32_t header)
     case MGRAS_TEX_LOAD_CLOSE:
     case MGRAS_TEX_BASE:
     case MGRAS_TEX_RECORDS:
+    case MGRAS_TEX_TRAM_READ:
+    case MGRAS_TEX_TRAM_RESTORE:
+    case MGRAS_TEX_TRAM_GE_COUNT:
         return true;
     default:
         return false;
@@ -500,6 +555,14 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
         }
         t->bracket = 0;
         return true;
+    case MGRAS_TEX_TRAM_READ:
+        s->tram_transfer = MGRAS_TRAM_SAVE_OPEN;
+        return true;
+    case MGRAS_TEX_TRAM_GE_COUNT:
+        s->tram_transfer = MGRAS_TRAM_RESTORE_OPEN;
+        return true;
+    case MGRAS_TEX_TRAM_RESTORE:
+        return true;
     case MGRAS_TEX_RECORDS:
         /* The client rounds the record words up to an even count. */
         if (words != 2 || payload[1] != ((payload[0] * 3 + 1) & ~1u)) {
@@ -511,6 +574,32 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
     default:
         g_assert_not_reached();
     }
+}
+
+bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, bool read)
+{
+    uint32_t open = read ? MGRAS_TRAM_SAVE_OPEN : MGRAS_TRAM_RESTORE_OPEN;
+
+    if (s->tram_transfer != open) {
+        return false;
+    }
+    s->tram_transfer = read ? MGRAS_TRAM_SAVE_READ : MGRAS_TRAM_IDLE;
+    trace_sgi_mgras_tram_transfer(read ? "save" : "restore");
+    return true;
+}
+
+bool sgi_mgras_texture_tram_read_done(SGIMgrasState *s)
+{
+    if (s->tram_transfer != MGRAS_TRAM_SAVE_READ) {
+        return false;
+    }
+    s->tram_transfer = MGRAS_TRAM_IDLE;
+    return true;
+}
+
+bool sgi_mgras_texture_transfer_valid(const SGIMgrasState *s)
+{
+    return s->tram_transfer < MGRAS_TRAM_STATES;
 }
 
 bool sgi_mgras_texture_records(SGIMgrasState *s, uint32_t header)

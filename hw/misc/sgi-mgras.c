@@ -1406,6 +1406,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->public_glyph_row = 0;
     s->public_glyph_armed = s->public_glyph_wide_valid = false;
     s->gl_re_count_word = s->gl_re_count_tokens = 0;
+    s->tram_transfer = 0;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1501,8 +1502,8 @@ static void mgras_reset_exit(Object *obj, ResetType type)
  * marked implemented is refused unless x-unimplemented-board asks for it
  * anyway; then it is presented with a LOG_UNIMP note naming what is
  * missing. MXI and EMXI stay refused with them: they need the same texture
- * boards' paths, and their own save, restore and pixel-texture passes are
- * not modelled.
+ * boards' paths, and their client's TRAM read-back in two passes and its
+ * pixel-texture passes are not modelled.
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
@@ -1726,6 +1727,7 @@ static int mgras_post_load(void *opaque, int version_id)
         s->pio_x > s->width || s->pio_y > s->height ||
         !sgi_mgras_raster_pio_read_valid(s) ||
         !sgi_mgras_raster_pending_valid(s) ||
+        !sgi_mgras_texture_transfer_valid(s) ||
         !mgras_xmap_indices_valid(s) ||
         s->dac_lut_load_channel >= 3 ||
         !sgi_mgras_gl_post_load(s)) {
@@ -1876,7 +1878,7 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 30, .minimum_version_id = 30,
+    .name = TYPE_SGI_MGRAS, .version_id = 31, .minimum_version_id = 31,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2059,6 +2061,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(pio_read_low, SGIMgrasState, 27),
         VMSTATE_UINT32_V(gl_re_count_word, SGIMgrasState, 30),
         VMSTATE_UINT32_V(gl_re_count_tokens, SGIMgrasState, 30),
+        VMSTATE_UINT32_V(tram_transfer, SGIMgrasState, 31),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

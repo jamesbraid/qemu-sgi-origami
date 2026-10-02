@@ -4137,6 +4137,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         sgi_mgras_raster_pio_read_trigger(s);
         return;
     case MGRAS_GL_READ_DMA_DONE:
+        if (sgi_mgras_texture_tram_read_done(s)) {
+            return;
+        }
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: the OpenGL client's DMA read "
                       "(0xda00 after its kick) is not modelled; nothing "
                       "returned\n");
