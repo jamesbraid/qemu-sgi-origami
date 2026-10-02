@@ -454,8 +454,8 @@ static MemTxResult sn1_node_ni_destination_rw(SN1FabricEndpoint *endpoint,
         as = &SGI_BEDROCK(node->bedrock)->io.hub_as;
     } else {
         offset = address & (SN1_FABRIC_WINDOW_SIZE - 1);
-        if (offset >= memory_region_size(node->ram) ||
-            size > memory_region_size(node->ram) - offset) {
+        if (offset >= SGI_BEDROCK_MD_MEMORY_SIZE ||
+            size > SGI_BEDROCK_MD_MEMORY_SIZE - offset) {
             return MEMTX_DECODE_ERROR;
         }
         as = &node->ni_ram_as;
@@ -497,7 +497,9 @@ static void sn1_node_init_claims(SN1NodeState *node)
     node->endpoint.place_claims = sn1_node_place_endpoint_claims;
     node->endpoint.processor_rw = sn1_node_ni_processor_rw;
     node->endpoint.destination_rw = sn1_node_ni_destination_rw;
-    sn1_node_ni_target_as(node, 0, node->ram, &node->ni_ram_as, "sn1.ni-ram");
+    /* Incoming memory uses the same bank decoder and overlays as CPUs. */
+    sn1_node_ni_target_as(node, 0, &SGI_BEDROCK(node->bedrock)->md.memory_mr,
+                          &node->ni_ram_as, "sn1.ni-ram");
     address_space_init(&node->ni_hub_as,
                       &SGI_BEDROCK(node->bedrock)->hub_window, "sn1.ni-hub");
     sn1_node_ni_target_as(node, 4, sysbus_mmio_get_region(
