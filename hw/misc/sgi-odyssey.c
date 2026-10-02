@@ -5003,7 +5003,7 @@ static void odyssey_gl_light(SGIOdysseyState *s, const double obj[4],
 }
 
 /*
- * The colour a float vertex takes, handed to the shared context just before
+ * The colour a GL vertex takes, handed to the shared context just before
  * the vertex: in index mode the current index (glIndex, not glColor); under
  * a lit program the lit colour; otherwise the current glColor, restored if
  * an index or lit vertex replaced it.
@@ -6951,15 +6951,25 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         /* An RGBA colour sent in index mode: GL does not draw with it. */
         break;
     case ODSY_GL_VERTEX_2I:
-        /*
-         * A window-relative vertex: the window origin places it on the screen
-         * (always (0, 0) for the X server's own context).
-         */
         if (s->gl_begin_open) {
             s->gl_integer_prim = true;
         }
-        odyssey_gl_vertex(s, s->cmd_operand[0] + s->win_origin[0],
-                          s->cmd_operand[1] + s->win_origin[1]);
+        if (s->gl_begin_open && !s->image_active &&
+            (s->tex_mode & ODSY_TEX_MODE_2D)) {
+            if (!s->gl_in_prim) {
+                uint32_t mode = s->gl_primitive;
+
+                odyssey_gl_feed(s, SGI_GL_OP_BEGIN, &mode, 1);
+                s->gl_in_prim = true;
+            }
+            odyssey_gl_vertex_colour(s, false);
+            odyssey_texture_vertex(s);
+            odyssey_gl_feed(s, SGI_GL_OP_VERTEX2I, s->cmd_operand, 2);
+        } else {
+            /* The X path uses window-relative integer coordinates. */
+            odyssey_gl_vertex(s, s->cmd_operand[0] + s->win_origin[0],
+                              s->cmd_operand[1] + s->win_origin[1]);
+        }
         break;
     case ODSY_GL_COLOR_3F:
     case ODSY_GL_COLOR_3I:
@@ -7098,11 +7108,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_GL_VERTEX_2F:
     case ODSY_GL_VERTEX_3F:
         /*
-         * A float vertex marks the true-colour GL path. The greeter draws only
-         * with integer vertices (ODSY_GL_VERTEX_2I) and never reaches here, so
-         * its 2D path is untouched. Open the primitive on the shared context
-         * lazily, on the first float vertex, under the primitive the last
-         * glBegin named -- so glBegin itself never diverts a 2D primitive.
+         * A float vertex uses the shared GL path. Open the primitive lazily
+         * on its first vertex, as for a textured integer primitive above.
          */
         if (!s->gl_in_prim && !s->gl_restart_absorb) {
             uint32_t mode = s->gl_primitive;
@@ -7330,11 +7337,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         break;
     case ODSY_REG_GL_BEGIN:
         /*
-         * Record the primitive and, for an image, open the raster path. The GL
-         * geometry path is not entered here: it opens only when a float vertex
-         * actually arrives (ODSY_GL_VERTEX_2F above), so the greeter's integer
-         * QUADS and any other 2D primitive stay entirely on the fill/pattern/
-         * image interpreter and glEnd closes them through odyssey_gl_end().
+         * Record the primitive and, for an image, open the raster path. The
+         * shared GL path opens on a float or texture-enabled integer vertex;
+         * untextured integer primitives stay on the 2D interpreter.
          */
         s->gl_primitive = s->cmd_operand[0];
         s->gl_vertex_count = 0;
