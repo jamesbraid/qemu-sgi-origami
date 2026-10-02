@@ -119,6 +119,10 @@ static void test_gl_texture_migration(void)
 {
     static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
     static const uint32_t draw[8] = { 8, 0, 0, 1, 0, 1, 0x511a, 0x98 };
+    static const uint8_t white_pixels[16] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
@@ -147,6 +151,8 @@ static void test_gl_texture_migration(void)
     for (int i = 0; i < 8; i++) {
         gl_word(from, draw[i]);
     }
+    /* The destination's pixel draw must observe this context-local flag. */
+    tex_record(from, 0x18a, 0x3c040045);
 
     sgi_migrate_stopped(from, uri);
 
@@ -168,6 +174,28 @@ static void test_gl_texture_migration(void)
     tex_quad(to);
     g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x556677);
     g_assert_cmphex(tex_texel_pixel(to, 3, 1), ==, 0x730087);
+
+    /*
+     * No 0x18a write on the destination: white pixels give s=t=1, which
+     * repeat wrap maps to (0, 0), proving bit zero crossed with the level.
+     */
+    gl_word(to, TEX_ON);
+    gl_pixels_program(to, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
+    gl_raster_pos2f(to, 0, 0);
+    gl_word(to, GL_PIXELS_HDR);
+    gl_word(to, 2);
+    gl_word(to, 0);
+    gl_word(to, 0);
+    gl_word(to, 2);
+    gl_word(to, 0);
+    gl_word(to, 1);
+    gl_word(to, 0x4fc5);
+    gl_word(to, 0x98);
+    gl_pixels_dma_on(to, 0, white_pixels, sizeof(white_pixels), 8, 2, 8,
+                     0xa7);
+    tex_record(to, 0x18a, 0x3c040044);
+    gl_pixels_fence(to);
+    g_assert_cmphex(gl_window_pixel(to, 0, 0), ==, 0x556677);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);

@@ -198,6 +198,92 @@ static void test_gl_texture_load_draws_the_level(gconstpointer data)
     qtest_quit(t);
 }
 
+#define TEX_SPEC_2X2             0x110
+#define TEX_TXSIZE_2X2           0x1111
+#define TEX_TEXMODE2_VOLUME      0x800000
+#define TEX_MDDMA_PIXEL_ON       0x3c040045
+#define TEX_MDDMA_PIXEL_OFF      0x3c040044
+
+static void tex_volume_pixels(QTestState *t, bool enabled)
+{
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
+        0x40, 0xbf, 0xbf, 0xff, 0xbf, 0xbf, 0xff, 0xff,
+    };
+
+    tex_record(t, 0x18a, enabled ? TEX_MDDMA_PIXEL_ON : TEX_MDDMA_PIXEL_OFF);
+    gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
+    gl_raster_pos2f(t, 0, 0);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0x4fc5);
+    gl_word(t, 0x98);
+    gl_pixels_dma_on(t, 0, pixels, sizeof(pixels), 8, 2, 8, 0xa7);
+    tex_record(t, 0x18a, TEX_MDDMA_PIXEL_OFF);
+    gl_pixels_fence(t);
+}
+
+static void test_gl_texture_volume_pixel_rgba(void)
+{
+    static const uint32_t box[6] = { 0, 0, 2, 2, 2 << 16 | 2, 0 };
+    static const uint32_t input[4] = {
+        0x404000, 0xbf4040, 0x40bfbf, 0xbfbfff,
+    };
+    static const uint32_t texels[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    QTestState *t = texture_board_start("si-t");
+    const uint8_t image[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+
+    /*
+     * The upload box is 0,0 with a 2x2 size; DrawPixels below gets its
+     * own inclusive 0..1 destination box and starts at raster position 0,0.
+     * The primitive samples its 2x2 level at x=24/40 and y=20/28.
+     */
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_2X2, image, 2, 2,
+                box, true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    tex_record(t, 0x18a, TEX_MDDMA_PIXEL_OFF);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x, 20 + 8 * y), ==,
+                            texels[y * 2 + x]);
+        }
+    }
+
+    /*
+     * tex_quad closes its primitive draw with TEX_OFF. Re-enable the same
+     * volume level for pixel-texture sampling.
+     */
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    tex_volume_pixels(t, false);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, x, y), ==, input[y * 2 + x]);
+        }
+    }
+
+    tex_volume_pixels(t, true);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, x, y), ==, texels[y * 2 + x]);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 /*
  * The model keeps an RGBA4 level by truncating each 8-bit component to
  * its high four bits and draws it widened by replication, its own choice
@@ -2688,6 +2774,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
         "esi-t", test_gl_texture_load_draws_the_level);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
+                   test_gl_texture_volume_pixel_rgba);
     qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
                         "si-t", test_gl_texture_rgba4_truncates);
     qtest_add_data_func(
