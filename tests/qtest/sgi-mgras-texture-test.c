@@ -228,7 +228,88 @@ static void tex_volume_pixels(QTestState *t, bool enabled)
     gl_pixels_fence(t);
 }
 
-static void test_gl_texture_volume_pixel_rgba(void)
+static void tex_load_captured_volume(QTestState *t, const uint8_t *image,
+                                    uint32_t depth)
+{
+    uint32_t bytes = 2 * 2 * depth * 4;
+    uint32_t box[6] = { 0, 0, 1, 1, 2 << 16 | 2, depth };
+    uint32_t flags = depth == 1 ? 0x98 : 0x198;
+
+    g_assert_cmpuint(depth, >=, 1);
+    g_assert_cmpuint(depth, <=, 2);
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, 0x120);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_pixels_program(t, GL_PIX_4UB, bytes / 4, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 4);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0);
+    gl_word(t, depth);
+    gl_word(t, 0x511a);
+    gl_word(t, flags);
+    gl_pixels_dma_on(t, 0, image, bytes, 8, 2 * depth, 8, 0xa7);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_quad_volume_z(QTestState *t, float z)
+{
+    static const float v[4][4] = {
+        { 16, 16, 0, 0 }, { 48, 16, 1, 0 },
+        { 48, 32, 1, 1 }, { 16, 32, 0, 1 },
+    };
+    static const float white[4] = { 1, 1, 1, 1 };
+
+    gl_color4f(t, white[0], white[1], white[2], white[3]);
+    gl_word(t, GL_BEGIN_QUADS);
+    for (int i = 0; i < 4; i++) {
+        gl_texcoord4f(t, v[i][2], v[i][3], z, 1);
+        gl_vertex2f(t, v[i][0], v[i][1]);
+    }
+    gl_word(t, GL_END_OF(GL_BEGIN_QUADS));
+    gl_word(t, 0x0000e910);
+    for (int i = 0; i < 4; i++) {
+        gl_word(t, i == 0);
+    }
+    gl_one(t, TEX_T_OFFSET, 0);
+    gl_word(t, TEX_OFF);
+}
+
+static void tex_check_ordinary_4x2(QTestState *t)
+{
+    uint8_t ordinary[32];
+
+    tex_texels(ordinary);
+    tex_load(t, TEX_TL_MODE_RGBA8, ordinary);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &ordinary[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+}
+
+static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
 {
     static const uint32_t box[6] = { 0, 0, 2, 2, 2 << 16 | 2, 0 };
     static const uint32_t input[4] = {
@@ -237,7 +318,7 @@ static void test_gl_texture_volume_pixel_rgba(void)
     static const uint32_t texels[4] = {
         0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
     };
-    QTestState *t = texture_board_start("si-t");
+    QTestState *t = texture_board_start(data);
     const uint8_t image[16] = {
         0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
         0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
@@ -280,6 +361,51 @@ static void test_gl_texture_volume_pixel_rgba(void)
             g_assert_cmphex(gl_window_pixel(t, x, y), ==, texels[y * 2 + x]);
         }
     }
+    {
+        static const uint8_t synthetic_slices[32] = {
+            0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+            0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+        };
+        static const uint32_t slices[2][4] = {
+            { 0xff0000, 0x00ff00, 0x0000ff, 0xffff00 },
+            { 0x00ffff, 0xff00ff, 0xffffff, 0x000000 },
+        };
+
+        /* The 16-byte depth-one image is the captured DMA payload. */
+        tex_check_ordinary_4x2(t);
+        tex_load_captured_volume(t, image, 1);
+        tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+        tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+        tex_quad(t);
+        {
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x,
+                                                    20 + 8 * y), ==,
+                                    slices[0][y * 2 + x]);
+                }
+            }
+        }
+
+        /* Slice one is synthetic; the capture had no second-slice DMA data. */
+        tex_load_captured_volume(t, synthetic_slices, 2);
+        for (int z = 0; z < 2; z++) {
+            tex_bind(t, TEX_TEXMODE1_ON,
+                     TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+            tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2 | (1u << 19));
+            tex_quad_volume_z(t, z ? 0.75f : 0.25f);
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x,
+                                                    20 + 8 * y),
+                                    ==, slices[z][y * 2 + x]);
+                }
+            }
+        }
+    }
+    tex_check_ordinary_4x2(t);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
 }
@@ -2774,8 +2900,18 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
         "esi-t", test_gl_texture_load_draws_the_level);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
-                   test_gl_texture_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/si-t",
+        "si-t", test_gl_texture_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/esi-t",
+        "esi-t", test_gl_texture_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/mxi",
+        "mxi", test_gl_texture_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/emxi",
+        "emxi", test_gl_texture_volume_pixel_rgba);
     qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
                         "si-t", test_gl_texture_rgba4_truncates);
     qtest_add_data_func(
