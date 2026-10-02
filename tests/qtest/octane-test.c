@@ -10,6 +10,7 @@
 #include "sgi-migrate.h"
 #include "sgi-launch.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "qobject/qlist.h"
 
 #include <sys/socket.h>
@@ -57,6 +58,8 @@
 #define IOC3_PAR_ECP_FIFO (IOC3 + 0x20158)
 #define IOC3_PAR_ECP_CONFIG_B (IOC3 + 0x20159)
 #define IOC3_PAR_ECP_EXTENDED (IOC3 + 0x2015a)
+#define IOC3_KBC_KBD_RECEIVE (IOC3 + 0x0a0)
+#define IOC3_INT_KEYBOARD (1u << 22)
 #define RTC_INDEX (IOC3 + 0xa0000)
 #define RTC_DATA (IOC3 + 0xc0000)
 #define UART_A (IOC3 + 0x20178)
@@ -836,6 +839,39 @@ static void test_ioc3_parallel(gconstpointer data)
     g_assert_cmphex(qtest_readl(qts, IOC3_PAR_COUNT_A) & 0xffff, ==, 0x5a5a);
     qtest_writeb(qts, IOC3_PAR_ECP_DATA, 0x5a);
     g_assert_cmphex(qtest_readb(qts, IOC3_PAR_ECP_DATA), ==, 0x5a);
+    qtest_quit(qts);
+}
+
+static void test_ioc3_keyboard(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
+    QDict *resp;
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    g_assert_cmphex(qtest_readl(qts, IOC3_KBC_KBD_RECEIVE), ==, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    resp = qtest_qmp(qts,
+        "{ 'execute': 'input-send-event', 'arguments': "
+        "{ 'events': [ { 'type': 'key', 'data': "
+        "{ 'down': true, 'key': { 'type': 'qcode', 'data': 'a' } } } "
+        "] } }");
+    if (!qdict_haskey(resp, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(resp));
+
+        g_error("input-send-event failed: %s", text->str);
+    }
+    qobject_unref(resp);
+
+    g_assert_cmphex(qtest_readl(qts, IOC3_KBC_KBD_RECEIVE), ==,
+                    (1u << 31) | (0x1c << 16));
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_INT_KEYBOARD, ==,
+                    IOC3_INT_KEYBOARD);
+    qtest_writel(qts, IOC3 + 0x1c, IOC3_INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, IOC3 + 0x1c) & IOC3_INT_KEYBOARD, ==, 0);
     qtest_quit(qts);
 }
 
@@ -4395,6 +4431,10 @@ int main(int argc, char **argv)
                         test_ioc3_parallel);
     qtest_add_data_func("/octane2/ioc3-parallel", GINT_TO_POINTER(1),
                         test_ioc3_parallel);
+    qtest_add_data_func("/octane/ioc3-keyboard", GINT_TO_POINTER(0),
+                        test_ioc3_keyboard);
+    qtest_add_data_func("/octane2/ioc3-keyboard", GINT_TO_POINTER(1),
+                        test_ioc3_keyboard);
     qtest_add_data_func("/octane/ioc3-parallel-fifo", GINT_TO_POINTER(0),
                         test_ioc3_parallel_fifo);
     qtest_add_data_func("/octane2/ioc3-parallel-fifo", GINT_TO_POINTER(1),
