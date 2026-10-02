@@ -3215,9 +3215,18 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned b)
     }
 }
 
+static bool odyssey_copy_rect_to_object(SGIOdysseyState *s);
+
 static void odyssey_copy_rect(SGIOdysseyState *s)
 {
     unsigned buffers = odyssey_draw_buffers(s);
+
+    if (s->cmd_operand[0] == ODSY_DMA_SENTINEL_READ) {
+        if (!odyssey_copy_rect_to_object(s)) {
+            odyssey_cmd_unimplemented(s, ODSY_CMD_COPY_RECT_TRIGGER);
+        }
+        return;
+    }
 
     for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
         if (buffers & (1u << b)) {
@@ -3428,6 +3437,41 @@ static uint32_t odyssey_object_load(SGIOdysseyState *s, int i, uint32_t x,
     return ldl_be_p(s->obj_mem.bytes +
                     ((uint64_t)s->obj_offset[i] +
                      (uint64_t)y * s->obj_width[i] + x) * 4);
+}
+
+/* Copy the captured V6 read-drawable rectangle into its scratch object. */
+static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
+{
+    uint32_t w = s->copy_size & 0xffff;
+    uint32_t h = s->copy_size >> 16;
+    uint32_t dx = s->copy_dst & 0xffff;
+    uint32_t dy = s->copy_dst >> 16;
+    uint64_t sx = (s->copy_src & 0xffff) + (uint64_t)s->win_origin[0];
+    uint64_t sy = (s->copy_src >> 16) + (uint64_t)s->win_origin[1];
+    int obj = odyssey_object_find(s, s->cmd_operand[5]);
+
+    if (s->cmd_operand[0] != ODSY_DMA_SENTINEL_READ ||
+        s->cmd_operand[2] != 0x80200050 ||
+        s->cmd_operand[4] != 0x92233002 ||
+        s->cmd_operand[5] != s->dest_base ||
+        s->cmd_operand[7] != 0x3801210b || obj < 0 || !w || !h ||
+        (uint64_t)dx + w > s->obj_width[obj] ||
+        (uint64_t)sx + w > SGI_ODYSSEY_WIDTH ||
+        (uint64_t)sy + h > SGI_ODYSSEY_HEIGHT ||
+        !odyssey_object_rows(s, obj, dy + h)) {
+        return false;
+    }
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            unsigned shown = (s->displayed_buffer >>
+                              odyssey_main_id(s, sx + x, sy + y)) & 1;
+
+            odyssey_object_store(s, obj, dx + x, dy + y,
+                                 odyssey_buffer_load(s, shown, sx + x,
+                                                     sy + y));
+        }
+    }
+    return true;
 }
 
 /*
@@ -7846,6 +7890,7 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
         }
         break;
     case ODSY_CMD_COPY_RECT:
+        s->cmd_operand[s->cmd_operand_index] = word;
         switch (s->cmd_operand_index) {
         case ODSY_CMD_COPY_RECT_SRC_INDEX:
             s->copy_src = word;

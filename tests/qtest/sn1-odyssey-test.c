@@ -10541,6 +10541,57 @@ static void test_readback_gl_rgba8_object(void)
     qtest_quit(qts);
 }
 
+/* The V6 scratch read follows a drawable-to-object copy, then a DMA read. */
+static void test_readback_gl_rgba8_scratch_copy(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        0x16bc00, 0, 0x20, 0x10002, 0x80013042, 0, 8, 0xb3010000,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 8) };
+    const uint32_t colours[] = { 0x12345678, 0x90abcdef };
+    uint8_t expect[40];
+
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x16bc00);
+    user_cmd_push(qts, 0x20);
+    user_cmd_push(qts, 0x080024d0);
+    user_cmd_push(qts, 0);
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
+                            colours[0]);
+    odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 65, RB_ORIGIN_Y + 63,
+                            colours[1]);
+    readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+    readback_run(qts, hdr, pte, 1);
+    readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+
+    for (unsigned i = 0; i < ARRAY_SIZE(colours); i++) {
+        cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+        cmd_push(qts, RB_READ_SENTINEL);
+        cmd_push(qts, 0x003f0040 + i);
+        cmd_push(qts, 0x80200050);
+        cmd_push(qts, 0x00010001);
+        cmd_push(qts, 0x92233002);
+        cmd_push(qts, 0x16bc00);
+        cmd_push(qts, i);
+        cmd_push(qts, 0x3801210b);
+    }
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16bc00, 0, 0), ==,
+                    colours[0]);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16bc00, 1, 0), ==,
+                    colours[1]);
+    readback_run(qts, hdr, pte, 1);
+    stl_be_p(&expect[16], colours[0]);
+    stl_be_p(&expect[20], colours[1]);
+    readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+
+    hdr[1] = 511;
+    readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+    readback_run(qts, hdr, pte, 1);
+    readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    qtest_quit(qts);
+}
+
 /*
  * An X index read (format byte 0x41) takes the plane word as an index only
  * where scanout does: the pixel's drawable (main id 0 here, which takes
@@ -10965,6 +11016,8 @@ int main(int argc, char **argv)
                    test_readback_object_source);
     qtest_add_func("sn1/odyssey/readback/gl-rgba8-object",
                    test_readback_gl_rgba8_object);
+    qtest_add_func("sn1/odyssey/readback/gl-rgba8-scratch-copy",
+                   test_readback_gl_rgba8_scratch_copy);
     qtest_add_func("sn1/odyssey/readback/index-follows-display-mode",
                    test_readback_index_follows_display_mode);
     qtest_add_func("sn1/odyssey/readback/greeter-caret-cell",
