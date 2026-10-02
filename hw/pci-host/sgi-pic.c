@@ -5,8 +5,10 @@
  * Translated DMA, PCI-X errors, and the PIC's own PCI function are unsupported.
  */
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "hw/pci-host/sgi-pic.h"
+#include "hw/mips/sgi-xio-port.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
@@ -88,8 +90,13 @@ static const TypeInfo pic_fixture_info = {
 typedef struct SGIPICDMA {
     IOMMUMemoryRegion iommu;
     AddressSpace as;
+    MemoryRegion linked;
+    AddressSpace linked_as;
+    MemoryRegion linked_swap;
+    AddressSpace linked_swap_as;
     SGIPICHead *head;
     unsigned slot;
+    bool linked_initialized;
 } SGIPICDMA;
 
 typedef struct SGIPICTarget {
@@ -126,9 +133,106 @@ struct SGIPICState {
     MemoryRegion *target[16];
     SGIPICTarget endpoint[16];
     bool test_fixture;
+    bool linked;
+    bool peer_connected;
+    bool widget_as_initialized;
+    bool migration_linked;
+    uint64_t linked_packet_count;
+    uint64_t last_linked_result;
+    SGIXioPeer peer;
+    AddressSpace widget_as;
 };
 
 #define REG(s, off) ((s)->reg[(off) / 8])
+
+static MemTxResult pic_send_typed(SGIPICState *pic, hwaddr address,
+                                  void *buffer, size_t size, bool write,
+                                  const SGIXioSource *source)
+{
+    MemTxResult result = sgi_xio_peer_packet_rw(&pic->peer, address, buffer,
+                                                size, write, source);
+
+    pic->linked_packet_count++;
+    pic->last_linked_result = result;
+    return result;
+}
+
+static MemTxResult pic_linked_rw(void *opaque, hwaddr addr, void *buffer,
+                                 size_t size, bool write)
+{
+    SGIPICDMA *dma = opaque;
+    SGIPICHead *head = dma->head;
+    SGIPICState *pic = head->pic;
+    uint64_t direct = REG(head, 0x80);
+    SGIXioSource source = {
+        .widget_known = true,
+        .device_known = false,
+        .widget = REG(head, 0x20) & 0xf,
+    };
+    hwaddr packet = ((direct >> 20) & 0xf) * SGI_XIO_PACKET_SIZE + addr;
+
+    return pic_send_typed(pic, packet, buffer, size, write, &source);
+}
+
+static MemTxResult pic_linked_read(void *opaque, hwaddr addr, uint64_t *value,
+                                   unsigned size, MemTxAttrs attrs)
+{
+    uint8_t bytes[8] = { 0 };
+    MemTxResult result = pic_linked_rw(opaque, addr, bytes + 8 - size,
+                                       size, false);
+
+    *value = ldq_be_p(bytes);
+    return result;
+}
+
+static MemTxResult pic_linked_write(void *opaque, hwaddr addr, uint64_t value,
+                                    unsigned size, MemTxAttrs attrs)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    return pic_linked_rw(opaque, addr, bytes + 8 - size, size, true);
+}
+
+static MemTxResult pic_linked_swap_read(void *opaque, hwaddr addr,
+                                        uint64_t *value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    uint8_t byte;
+    MemTxResult result = pic_linked_rw(opaque, addr ^ 3, &byte, 1, false);
+
+    *value = byte;
+    return result;
+}
+
+static MemTxResult pic_linked_swap_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    uint8_t byte = value;
+
+    return pic_linked_rw(opaque, addr ^ 3, &byte, 1, true);
+}
+
+static const MemoryRegionOps pic_linked_ops = {
+    .read_with_attrs = pic_linked_read,
+    .write_with_attrs = pic_linked_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+static const MemoryRegionOps pic_linked_swap_ops = {
+    .read_with_attrs = pic_linked_swap_read,
+    .write_with_attrs = pic_linked_swap_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
 
 static MemTxResult pic_swap_read(void *opaque, hwaddr addr, uint64_t *value,
                                  unsigned size, MemTxAttrs attrs)
@@ -184,17 +288,23 @@ static IOMMUTLBEntry pic_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       " from slot %u\n", s->head, addr, dma->slot);
         return entry;
     }
-    if (!s->pic->target[widget] ||
-        destination >= memory_region_size(s->pic->target[widget])) {
+    if (!s->pic->linked &&
+        (!s->pic->target[widget] ||
+         destination >= memory_region_size(s->pic->target[widget]))) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u invalid DMA target %x address 0x%"
                       PRIx64 " from slot %u\n",
                       s->head, widget, destination, dma->slot);
         return entry;
     }
-    entry.target_as = REG(s, 0x200 + (dma->slot - 1) * 8) & (1U << 19) ?
-                      &s->pic->endpoint[widget].swap_as :
-                      &s->pic->endpoint[widget].as;
+    if (s->pic->linked) {
+        entry.target_as = REG(s, 0x200 + (dma->slot - 1) * 8) & (1U << 19) ?
+                          &dma->linked_swap_as : &dma->linked_as;
+    } else {
+        entry.target_as = REG(s, 0x200 + (dma->slot - 1) * 8) & (1U << 19) ?
+                          &s->pic->endpoint[widget].swap_as :
+                          &s->pic->endpoint[widget].as;
+    }
     entry.translated_addr = destination & ~entry.addr_mask;
     entry.perm = IOMMU_RW;
     return entry;
@@ -272,6 +382,7 @@ static bool pic_defined(hwaddr addr)
 {
     switch (addr) {
     case 0x00:
+    case 0x20:
     case 0x50:
     case 0x80:
     case 0xc8:
@@ -305,15 +416,28 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
                   "sgi-pic: head %u pin %u %s request destination 0x%"
                   PRIx64 " (packet payload is a compatibility choice)\n",
                   s->head, pin, set ? "set" : "clear", destination);
-    if (!s->pic->target[widget]) {
+    if (s->pic->linked) {
+        uint8_t packet[8];
+        SGIXioSource source = {
+            .widget_known = true,
+            .device_known = false,
+            .widget = REG(s, 0x20) & 0xf,
+        };
+
+        stq_be_p(packet, level | (set ? 0x10000 : 0));
+        result = pic_send_typed(s->pic,
+            ((hwaddr)widget << 48) | offset, packet, sizeof(packet), true,
+            &source);
+    } else if (!s->pic->target[widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u interrupt target %x is absent\n",
                       s->head, widget);
         return;
+    } else {
+        address_space_stq_be(&s->pic->endpoint[widget].as, offset,
+                             level | (set ? 0x10000 : 0),
+                             MEMTXATTRS_UNSPECIFIED, &result);
     }
-    address_space_stq_be(&s->pic->endpoint[widget].as, offset,
-                         level | (set ? 0x10000 : 0),
-                         MEMTXATTRS_UNSPECIFIED, &result);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u interrupt destination 0x%"
@@ -402,6 +526,13 @@ static void pic_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x50:
     case 0x100:
         pic_unsupported(s, addr, size, value, true);
+        return;
+    case 0x20:
+        if (value & ~0xfULL) {
+            pic_unsupported(s, addr, size, value, true);
+            value &= 0xf;
+        }
+        REG(s, addr) = value;
         return;
     case 0x108: {
         uint64_t newly_enabled = value & ~REG(s, 0x108);
@@ -569,6 +700,22 @@ static void pic_head_realize(DeviceState *dev, Error **errp)
                                  UINT64_MAX);
         address_space_init(&s->dma[i].as, MEMORY_REGION(&s->dma[i].iommu),
                            dma_name);
+        if (s->pic->linked) {
+            memory_region_init_io(&s->dma[i].linked, OBJECT(s),
+                                  &pic_linked_ops, &s->dma[i],
+                                  "pic.linked-dma", UINT64_MAX);
+            s->dma[i].linked.disable_reentrancy_guard = true;
+            address_space_init(&s->dma[i].linked_as, &s->dma[i].linked,
+                               "pic.linked-dma");
+            memory_region_init_io(&s->dma[i].linked_swap, OBJECT(s),
+                                  &pic_linked_swap_ops, &s->dma[i],
+                                  "pic.linked-dma-swap", UINT64_MAX);
+            s->dma[i].linked_swap.disable_reentrancy_guard = true;
+            address_space_init(&s->dma[i].linked_swap_as,
+                               &s->dma[i].linked_swap,
+                               "pic.linked-dma-swap");
+            s->dma[i].linked_initialized = true;
+        }
     }
     pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &pic_iommu_ops, s);
     memory_region_init_io(&s->face, OBJECT(s), &pic_ops, s,
@@ -581,6 +728,10 @@ static void pic_head_unrealize(DeviceState *dev)
     unsigned i;
 
     for (i = 0; i < G_N_ELEMENTS(s->dma); i++) {
+        if (s->dma[i].linked_initialized) {
+            address_space_destroy(&s->dma[i].linked_swap_as);
+            address_space_destroy(&s->dma[i].linked_as);
+        }
         address_space_destroy(&s->dma[i].as);
     }
     address_space_destroy(&s->denied_as);
@@ -645,6 +796,56 @@ static const MemoryRegionOps pic_range_ops = {
     .impl.max_access_size = 8,
 };
 
+static const char *pic_xio_describe(Object *port, unsigned int index)
+{
+    return "a PIC widget";
+}
+
+static MemoryRegion *pic_xio_face(Object *port, unsigned int index)
+{
+    SGIPICState *s = SGI_PIC(port);
+
+    return index == 0 ? &s->widget : NULL;
+}
+
+static bool pic_xio_connect(Object *port, unsigned int index,
+                            const SGIXioPeer *peer, Error **errp)
+{
+    SGIPICState *s = SGI_PIC(port);
+    SGIXioPortClass *pc;
+
+    if (index || DEVICE(s)->realized || !s->linked || s->peer_connected ||
+        !peer->port || !peer->packet_face) {
+        error_setg(errp, "PIC linked transport needs one typed peer before "
+                   "realization");
+        return false;
+    }
+    pc = SGI_XIO_PORT_GET_CLASS(peer->port);
+    if (!pc->packet_rw) {
+        error_setg(errp, "PIC linked transport peer has no typed receiver");
+        return false;
+    }
+    s->peer = *peer;
+    s->peer_connected = true;
+    return true;
+}
+
+static MemTxResult pic_xio_packet_rw(Object *port, unsigned int index,
+                                     hwaddr address, void *buffer,
+                                     size_t size, bool write,
+                                     const SGIXioSource *source)
+{
+    SGIPICState *s = SGI_PIC(port);
+
+    if (index || !s->linked || !s->widget_as_initialized) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return write ? address_space_write(&s->widget_as, address,
+                                       MEMTXATTRS_UNSPECIFIED, buffer, size) :
+                   address_space_read(&s->widget_as, address,
+                                      MEMTXATTRS_UNSPECIFIED, buffer, size);
+}
+
 MemoryRegion *sgi_pic_widget(SGIPICState *s)
 {
     return &s->widget;
@@ -662,6 +863,37 @@ DeviceState *sgi_pic_head_device(SGIPICState *s, unsigned head)
     return DEVICE(&s->head[head]);
 }
 
+static int pic_pre_save(void *opaque)
+{
+    SGIPICState *s = opaque;
+
+    s->migration_linked = s->linked;
+    return 0;
+}
+
+static int pic_post_load(void *opaque, int version_id)
+{
+    SGIPICState *s = opaque;
+
+    if (s->migration_linked != s->linked) {
+        error_report("PIC migration transport mode does not match destination");
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_pic = {
+    .name = TYPE_SGI_PIC,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = pic_pre_save,
+    .post_load = pic_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(migration_linked, SGIPICState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static void pic_realize(DeviceState *dev, Error **errp)
 {
     SGIPICState *s = SGI_PIC(dev);
@@ -672,11 +904,24 @@ static void pic_realize(DeviceState *dev, Error **errp)
                    "test-fixture=on is only for synthetic register tests");
         return;
     }
+    if (s->linked && !s->peer_connected) {
+        error_setg(errp, "PIC linked transport requires a typed peer before "
+                   "realization");
+        return;
+    }
+    if (s->linked) {
+        object_property_add_uint64_ptr(OBJECT(s),
+            "x-test-linked-packet-count", &s->linked_packet_count,
+            OBJ_PROP_FLAG_READ);
+        object_property_add_uint64_ptr(OBJECT(s),
+            "x-test-linked-last-result", &s->last_linked_result,
+            OBJ_PROP_FLAG_READ);
+    }
     for (i = 0; i < G_N_ELEMENTS(s->target); i++) {
         SGIPICTarget *endpoint = &s->endpoint[i];
         g_autofree char *name = g_strdup_printf("pic.target-%x", i);
 
-        if (!s->target[i]) {
+        if (s->linked || !s->target[i]) {
             continue;
         }
         address_space_init(&endpoint->as, s->target[i], name);
@@ -698,6 +943,10 @@ static void pic_realize(DeviceState *dev, Error **errp)
                                     i ? 0xc0000000 : 0x40000000,
                                     &s->pci_range[i]);
     }
+    if (s->linked) {
+        address_space_init(&s->widget_as, &s->widget, "pic.widget-inbound");
+        s->widget_as_initialized = true;
+    }
 }
 
 static void pic_unrealize(DeviceState *dev)
@@ -705,11 +954,19 @@ static void pic_unrealize(DeviceState *dev)
     SGIPICState *s = SGI_PIC(dev);
     unsigned i;
 
-    for (i = 0; i < G_N_ELEMENTS(s->target); i++) {
+    for (i = 0; !s->linked && i < G_N_ELEMENTS(s->target); i++) {
         if (s->target[i]) {
             address_space_destroy(&s->endpoint[i].as);
             address_space_destroy(&s->endpoint[i].swap_as);
         }
+    }
+    if (s->widget_as_initialized) {
+        address_space_destroy(&s->widget_as);
+        s->widget_as_initialized = false;
+    }
+    if (s->peer_connected) {
+        s->peer = (SGIXioPeer) { 0 };
+        s->peer_connected = false;
     }
 }
 
@@ -737,14 +994,22 @@ static void pic_init(Object *obj)
 static void pic_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    SGIXioPortClass *pc = SGI_XIO_PORT_CLASS(klass);
     static const Property properties[] = {
         DEFINE_PROP_BOOL("test-fixture", SGIPICState, test_fixture, false),
+        DEFINE_PROP_BOOL("linked-transport", SGIPICState, linked, false),
     };
 
     dc->realize = pic_realize;
     dc->unrealize = pic_unrealize;
+    dc->vmsd = &vmstate_pic;
     dc->user_creatable = true;
     device_class_set_props(dc, properties);
+    pc->describe = pic_xio_describe;
+    pc->cpu_face = pic_xio_face;
+    pc->packet_face = pic_xio_face;
+    pc->packet_rw = pic_xio_packet_rw;
+    pc->connect = pic_xio_connect;
 }
 
 static const TypeInfo pic_info = {
@@ -753,6 +1018,10 @@ static const TypeInfo pic_info = {
     .instance_size = sizeof(SGIPICState),
     .instance_init = pic_init,
     .class_init = pic_class_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_SGI_XIO_PORT },
+        { }
+    },
 };
 
 static void pic_register_types(void)

@@ -3,19 +3,28 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "sgi-migrate.h"
 #include "hw/pci/pci_regs.h"
+#include "system/memory.h"
 
 #define PIC "/machine/peripheral/pic"
+#define PIC_CHILD "/machine/peripheral/fabric/pic"
 #define BASE 0x100000000000ULL
 #define HEAD(n) (BASE + (n) * 0x800000ULL)
 #define TARGET 0x20000000ULL
+#define II_REGISTER (1ULL << 47)
+#define XIO_WIDGET(n) ((uint64_t)(n) << 48)
+#define II_NODE(n) ((uint64_t)(n) << 39)
+#define II_HUB_REMOTE 0x1800000ULL
+#define INGRESS_REGS 0x50000000ULL
+#define SERVING_REGS 0x51000000ULL
 #define CARD(n) (BASE + (n ? 0xc0000000ULL : 0x40000000ULL) + 0x01000000)
 
-static uint32_t pic_requests(QTestState *qts, unsigned head, unsigned pin,
-                             bool set)
+static uint32_t pic_requests_at(QTestState *qts, const char *base,
+                                unsigned head, unsigned pin, bool set)
 {
-    g_autofree char *path = g_strdup_printf(PIC "/head-%u", head);
+    g_autofree char *path = g_strdup_printf("%s/head-%u", base, head);
     g_autofree char *property = g_strdup_printf("x-test-%s-requests-%u",
                                                 set ? "set" : "clear", pin);
     QDict *reply = qtest_qmp(qts,
@@ -28,6 +37,42 @@ static uint32_t pic_requests(QTestState *qts, unsigned head, unsigned pin,
 
     qobject_unref(reply);
     return count;
+}
+
+static uint32_t pic_requests(QTestState *qts, unsigned head, unsigned pin,
+                             bool set)
+{
+    return pic_requests_at(qts, PIC, head, pin, set);
+}
+
+static uint64_t target_metric(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/fabric',"
+        "'property':%s}}", property);
+
+    if (!qdict_haskey(reply, "return")) {
+        g_autoptr(GString) text = qobject_to_json_pretty(QOBJECT(reply), true);
+
+        g_test_message("qom-get %s failed: %s", property, text->str);
+        g_assert_true(qdict_haskey(reply, "return"));
+    }
+    return qdict_get_int(reply, "return");
+}
+
+static uint64_t pic_metric(QTestState *qts, const char *property)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        PIC_CHILD, property);
+
+    if (!qdict_haskey(reply, "return")) {
+        g_autoptr(GString) text = qobject_to_json_pretty(QOBJECT(reply), true);
+
+        g_test_message("qom-get %s failed: %s", property, text->str);
+        g_assert_true(qdict_haskey(reply, "return"));
+    }
+    return qdict_get_int(reply, "return");
 }
 
 static QTestState *pic_start(bool cards, const char *extra)
@@ -48,6 +93,191 @@ static QTestState *pic_start(bool cards, const char *extra)
     return qts;
 }
 
+static QTestState *pic_linked_start(bool cards, const char *fixture_options,
+                                    const char *extra)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on%s %s "
+        "%s",
+        fixture_options ? fixture_options : "",
+        cards ?
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3500 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3501" : "",
+        extra ? extra : "");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+    return qts;
+}
+
+static QTestState *pic_bedrock_start(void)
+{
+    QTestState *qts = qtest_init(
+        "-M none -cpu R10000 -S -d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=memory,size=16777216 "
+        "-device sgi-bedrock-io,id=serving,node-number=1,"
+        "device-mask-reset=0x0000ffffffffffff,"
+        "dma-memory=/machine/peripheral/memory/memory.ram[0],"
+        "hub-registers=/machine/peripheral/memory/memory.ram[0] "
+        "-device sgi-bedrock-io,id=ingress,node-number=0,"
+        "dma-memory=/machine/peripheral/memory/memory.ram[0],"
+        "hub-registers=/machine/peripheral/memory/memory.ram[0] "
+        "-device sgi-xio-test-target,id=fabric,size=16777216,pic-peer=on,"
+        "target-port=ingress,target-peer=serving,pic-switched=on "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3500 "
+        "-device sgi-bridge-dma-test,bus=pic-head-1.0,addr=1,"
+        "vendor-id=0xfeed,device-id=0x3501");
+
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/memory", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 3, BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/ingress", 0,
+                          INGRESS_REGS);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/serving", 0,
+                          SERVING_REGS);
+    return qts;
+}
+
+static void pic_bedrock_configure(QTestState *qts, bool remote_register)
+{
+    uint64_t direct = 15ULL << 20;
+
+    if (remote_register) {
+        direct |= (II_REGISTER | II_NODE(1) | II_HUB_REMOTE) >> 31;
+    }
+    qtest_writel(qts, HEAD(0) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(0) + 0x21004, 6);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+    qtest_writeq(qts, HEAD(0) + 0x80, direct);
+    qtest_writel(qts, CARD(0), remote_register ? 0x81801000 : 0x80001000);
+    qtest_writel(qts, CARD(0) + 4, 8);
+    qtest_writel(qts, HEAD(1) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(1) + 0x21004, 6);
+    qtest_writeq(qts, HEAD(1) + 0x20, 15);
+    qtest_writeq(qts, HEAD(1) + 0x80,
+                 (14ULL << 20) | (remote_register ?
+                 ((II_REGISTER | II_NODE(1) | II_HUB_REMOTE) >> 31) : 0));
+    qtest_writel(qts, CARD(1), remote_register ? 0x81801000 : 0x80001000);
+    qtest_writel(qts, CARD(1) + 4, 8);
+}
+
+static void pic_bedrock_dma(QTestState *qts, uint32_t pattern)
+{
+    qtest_writel(qts, CARD(0) + 8, pattern);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+}
+
+static void test_linked_receiving_ii_denial(void)
+{
+    QTestState *qts = pic_bedrock_start();
+    uint8_t sentinel[8];
+    uint8_t bytes[8];
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    pic_bedrock_configure(qts, false);
+    qtest_writeq(qts, INGRESS_REGS + 0x118,
+                 qtest_readq(qts, INGRESS_REGS + 0x118) & ~(1ULL << 14));
+    pic_bedrock_dma(qts, 0x61);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    g_assert_cmphex(qtest_readl(qts, CARD(0) + 8), ==, 0x61);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     XIO_WIDGET(15) | 0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 14);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(pic_metric(qts, "x-test-linked-packet-count"), ==, 1);
+
+    qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX);
+    pic_bedrock_dma(qts, 0x71);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x71 + i);
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     XIO_WIDGET(15) | 0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 14);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
+static void test_linked_serving_ii_denial(void)
+{
+    QTestState *qts = pic_bedrock_start();
+    uint8_t sentinel[8];
+    uint8_t bytes[8];
+
+    memset(sentinel, 0xa5, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    pic_bedrock_configure(qts, true);
+
+    /*
+     * Refuse at ingress first, then prove ingress approval cannot bypass the
+     * serving node's own device mask for this same remote register address.
+     */
+    qtest_writeq(qts, INGRESS_REGS + 0x118,
+                 qtest_readq(qts, INGRESS_REGS + 0x118) & ~(1ULL << 14));
+    pic_bedrock_dma(qts, 0x61);
+    qtest_writeq(qts, INGRESS_REGS + 0x118, UINT64_MAX);
+    pic_bedrock_dma(qts, 0x71);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    g_assert_cmphex(qtest_readl(qts, CARD(0) + 8), ==, 0x71);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     XIO_WIDGET(15) | II_REGISTER | II_NODE(1) |
+                     II_HUB_REMOTE | 0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 14);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(pic_metric(qts, "x-test-linked-packet-count"), ==, 2);
+
+    qtest_writel(qts, CARD(1) + 8, 0x71);
+    qtest_writel(qts, CARD(1) + 0xc, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     XIO_WIDGET(14) | II_REGISTER | II_NODE(1) |
+                     II_HUB_REMOTE | 0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 15);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 3);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+
+    qtest_writeq(qts, SERVING_REGS + 0x120, UINT64_MAX);
+    pic_bedrock_dma(qts, 0x81);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x81 + i);
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 4);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_OK);
+    qtest_writel(qts, CARD(1) + 8, 0x91);
+    qtest_writel(qts, CARD(1) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x91 + i);
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     XIO_WIDGET(14) | II_REGISTER | II_NODE(1) |
+                     II_HUB_REMOTE | 0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 15);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 5);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static void test_heads_and_widths(void)
 {
     GError *error = NULL;
@@ -64,6 +294,10 @@ static void test_heads_and_widths(void)
 
     g_assert_cmphex(qtest_readq(qts, HEAD(0)), ==, 0x3d102024);
     g_assert_cmphex(qtest_readq(qts, HEAD(1)), ==, 0x3d112024);
+    qtest_writeq(qts, HEAD(0) + 0x20, 0x123456789abcdef3ULL);
+    qtest_writeq(qts, HEAD(1) + 0x20, 0xfedcba9876543217ULL);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 3);
+    g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x20), ==, 7);
     qtest_writeq(qts, HEAD(0) + 0x108, 1);
     qtest_writeq(qts, HEAD(1) + 0x108, 0x80);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x108), ==, 1);
@@ -164,6 +398,21 @@ static void test_unresolved_default_identity(void)
                               " synthetic register tests*");
 }
 
+static void test_unconnected_linked_transport(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-pic,id=pic,test-fixture=on,linked-transport=on");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*PIC linked transport requires a typed peer "
+                              "before realization*");
+}
+
 static void test_type1_configuration(void)
 {
     QTestState *qts = qtest_init("-M none -cpu R10000 -S "
@@ -250,6 +499,8 @@ static void test_pin_and_reset(void)
     qtest_writeq(qts, HEAD(0) + 0x130, 0x1234000000001000ULL);
     qtest_writeq(qts, HEAD(1) + 0x168, 0x5678000000002000ULL);
     qtest_writeq(qts, HEAD(0) + 0x80, 0x1234);
+    qtest_writeq(qts, HEAD(0) + 0x20, 0x123456789abcdef3ULL);
+    qtest_writeq(qts, HEAD(1) + 0x20, 7);
     qtest_writeq(qts, HEAD(0) + 0xc8, (2ULL << 16) | (3 << 11));
     qtest_writeq(qts, HEAD(0) + 0x18000, 0xfeedface);
     qtest_writeq(qts, HEAD(1) + 0x19000, 0xcafebabe);
@@ -296,9 +547,11 @@ static void test_pin_and_reset(void)
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x108), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x130), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x80), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0xc8), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x18000), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x108), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x20), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x100), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x80), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0xc8), ==, 0);
@@ -433,6 +686,283 @@ static void test_direct_dma(void)
                             "head 0 invalid DMA target f address 0x1000"
                             " from slot 1"));
     unlink(log_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_linked_dma(void)
+{
+    QTestState *qts = pic_linked_start(true, "", "");
+    uint8_t bytes[8];
+    uint64_t calls_before;
+    unsigned i;
+
+    for (i = 0; i < 2; i++) {
+        qtest_writel(qts, HEAD(i) + 0x21010, 0x01000000);
+        qtest_writel(qts, HEAD(i) + 0x21004, 6);
+        qtest_writeq(qts, HEAD(i) + 0x80, 1ULL << 20);
+        qtest_writeq(qts, HEAD(i) + 0x20,
+                     (i ? 0xfedcba9876543217ULL : 0x123456789abcdef3ULL));
+    }
+    qtest_writel(qts, CARD(0), 0x80001000);
+    qtest_writel(qts, CARD(0) + 4, 8);
+    qtest_writel(qts, CARD(0) + 8, 0x41);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x41 + i);
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     0x1000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 3);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_OK);
+
+    calls_before = target_metric(qts, "x-test-packet-calls");
+    qtest_writeq(qts, HEAD(1) + 0x200, 1ULL << 19);
+    qtest_writel(qts, CARD(1), 0x80002000);
+    qtest_writel(qts, CARD(1) + 4, 8);
+    qtest_writel(qts, CARD(1) + 8, 0x51);
+    qtest_writel(qts, CARD(1) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x2000, bytes, sizeof(bytes));
+    for (i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x51 + (i ^ 3));
+    }
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls") - calls_before,
+                     ==, 8);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     0x2004);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 7);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    memset(bytes, 0xa5, sizeof(bytes));
+    qtest_memwrite(qts, TARGET + 0x3000, bytes, sizeof(bytes));
+    qtest_writeq(qts, HEAD(0) + 0x80, (1ULL << 20) | 0x10000);
+    qtest_writel(qts, CARD(0), 0x80003000);
+    qtest_writel(qts, CARD(0) + 8, 0x71);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     0x800000003000ULL);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_DECODE_ERROR);
+    qtest_memread(qts, TARGET + 0x3000, bytes, sizeof(bytes));
+    for (i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0xa5);
+    }
+    qtest_writeq(qts, HEAD(0) + 0x20, 0xabcdef0123456785ULL);
+    qtest_writeq(qts, HEAD(0) + 0x80, 1ULL << 20);
+    qtest_writel(qts, CARD(0), 0x80004000);
+    qtest_writel(qts, CARD(0) + 8, 0x81);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x4000, bytes, sizeof(bytes));
+    for (i = 0; i < sizeof(bytes); i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x81 + i);
+    }
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x20), ==, 5);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 5);
+    qtest_quit(qts);
+}
+
+static void test_linked_partial_callback(void)
+{
+    QTestState *qts = pic_linked_start(true,
+        ",packet-failure=on,packet-partial=4", "");
+    uint8_t sentinel[8] = { 0xa5, 0xa5, 0xa5, 0xa5,
+                            0xa5, 0xa5, 0xa5, 0xa5 };
+    uint8_t bytes[8];
+    unsigned i;
+
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_writel(qts, HEAD(0) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(0) + 0x21004, 6);
+    qtest_writeq(qts, HEAD(0) + 0x80, 1ULL << 20);
+    qtest_writeq(qts, HEAD(0) + 0x20, 3);
+    qtest_writel(qts, CARD(0), 0x80001000);
+    qtest_writel(qts, CARD(0) + 4, 8);
+    qtest_writel(qts, CARD(0) + 8, 0x61);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    for (i = 0; i < 4; i++) {
+        g_assert_cmpuint(bytes[i], ==, 0x61 + i);
+    }
+    g_assert_cmpmem(bytes + 4, 4, sentinel + 4, 4);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 1);
+    g_assert_cmpuint(pic_metric(qts, "x-test-linked-last-result"), ==,
+                     MEMTX_ACCESS_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_linked_route_rejection(void)
+{
+    QTestState *qts = pic_linked_start(true, "", "");
+    uint8_t sentinel[8] = { 0xa5, 0xa5, 0xa5, 0xa5,
+                            0xa5, 0xa5, 0xa5, 0xa5 };
+    uint8_t bytes[8];
+
+    qtest_memwrite(qts, TARGET + 0x1000, sentinel, sizeof(sentinel));
+    qtest_writel(qts, HEAD(0) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(0) + 0x21004, 6);
+    qtest_writeq(qts, HEAD(0) + 0x80, 1ULL << 20);
+    qtest_writel(qts, CARD(0), 0x40000000);
+    qtest_writel(qts, CARD(0) + 4, 8);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x1000, bytes, sizeof(bytes));
+    g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+    g_assert_cmpuint(pic_metric(qts, "x-test-linked-packet-count"), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_linked_nested_dma(void)
+{
+    static const uint8_t expected_nested[4] = { 0xd1, 0xd2, 0xd3, 0xd4 };
+    QTestState *qts = pic_linked_start(true, ",nested-dma=on", "");
+    uint8_t outer[8];
+    uint8_t nested[4];
+    unsigned i;
+
+    qtest_writel(qts, HEAD(0) + 0x21010, 0x01000000);
+    qtest_writel(qts, HEAD(0) + 0x21004, 6);
+    qtest_writeq(qts, HEAD(0) + 0x80, 1ULL << 20);
+    qtest_writeq(qts, HEAD(0) + 0x20, 3);
+    qtest_writel(qts, CARD(0), 0x80001000);
+    qtest_writel(qts, CARD(0) + 4, 8);
+    qtest_writel(qts, CARD(0) + 8, 0x41);
+    qtest_writel(qts, CARD(0) + 0xc, 1);
+    qtest_memread(qts, TARGET + 0x1000, outer, sizeof(outer));
+    qtest_memread(qts, TARGET + 0x3000, nested, sizeof(nested));
+    for (i = 0; i < sizeof(outer); i++) {
+        g_assert_cmpuint(outer[i], ==, 0x41 + i);
+    }
+    g_assert_cmpmem(nested, sizeof(nested), expected_nested,
+                    sizeof(expected_nested));
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 2);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-address"), ==,
+                     0x3000);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 3);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    qtest_quit(qts);
+}
+
+static void test_linked_interrupts(void)
+{
+    QTestState *qts = pic_linked_start(false, "", "");
+    uint64_t destination = (0x1234ULL << 48) | (1ULL << 44) | 0x1000;
+    uint64_t other_destination = (0x5678ULL << 48) | (1ULL << 44) |
+                                 0x2000;
+
+    qtest_writeq(qts, HEAD(0) + 0x20, 3);
+    qtest_writeq(qts, HEAD(0) + 0x130, destination);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 1);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x100), ==, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, 0);
+    qtest_writeq(qts, HEAD(0) + 0x108, 1);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x1000), ==, 0x11234);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, 0, true), ==, 1);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 1, 0, true), ==, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 3);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-device-known"), ==,
+                     0);
+    qtest_writeq(qts, HEAD(0) + 0x110, 1);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, 0, true), ==, 2);
+    qtest_writeq(qts, HEAD(0) + 0x118, 1);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 0);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x1000), ==, 0x1234);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, 0, false), ==, 1);
+
+    qtest_writeq(qts, HEAD(1) + 0x20, 7);
+    qtest_writeq(qts, HEAD(1) + 0x168, other_destination);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-1", NULL, 7, 1);
+    g_assert_cmphex(qtest_readq(qts, HEAD(1) + 0x100), ==, 0x80);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 1, 7, true), ==, 0);
+    qtest_writeq(qts, HEAD(1) + 0x108, 0x80);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x2000), ==, 0x15678);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 1, 7, true), ==, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-widget"), ==, 7);
+    qtest_writeq(qts, HEAD(1) + 0x118, 0x80);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-1", NULL, 7, 0);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x2000), ==, 0x5678);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 1, 7, false), ==, 1);
+    qtest_quit(qts);
+}
+
+static void test_linked_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-linked-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_linked_start(false, "", "");
+    QTestState *to = pic_linked_start(false, "", "-incoming defer");
+    uint64_t destination = (0x1234ULL << 48) | (1ULL << 44) | 0x1000;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_writeq(from, HEAD(0) + 0x20, 3);
+    qtest_writeq(from, HEAD(0) + 0x130, destination);
+    qtest_writeq(from, HEAD(0) + 0x118, 1);
+    qtest_set_irq_in(from, PIC_CHILD "/head-0", NULL, 0, 1);
+    g_assert_cmphex(qtest_readq(from, HEAD(0) + 0x100), ==, 1);
+    g_assert_cmphex(qtest_readq(from, HEAD(0) + 0x108), ==, 0);
+    g_assert_cmpuint(target_metric(from, "x-test-packet-calls"), ==, 0);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x20), ==, 3);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x100), ==, 1);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x108), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x118), ==, 1);
+    g_assert_cmpuint(target_metric(to, "x-test-packet-calls"), ==, 0);
+    qtest_writeq(to, HEAD(0) + 0x108, 1);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, true), ==, 1);
+    g_assert_cmphex(qtest_readq(to, TARGET + 0x1000), ==, 0x11234);
+    g_assert_cmpuint(target_metric(to, "x-test-packet-widget"), ==, 3);
+    qtest_set_irq_in(to, PIC_CHILD "/head-0", NULL, 0, 0);
+    g_assert_cmphex(qtest_readq(to, TARGET + 0x1000), ==, 0x1234);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, 0, false), ==, 1);
+    qtest_writeq(to, HEAD(0) + 0x110, 1);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x100), ==, 0);
+    qtest_qmp_assert_success(to, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x20), ==, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_linked_migration_mismatch(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-mismatch-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = pic_linked_start(false, "", "");
+    QTestState *to = pic_linked_start(false, ",pic-linked=off",
+                                      "-incoming defer");
+    int64_t deadline;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
@@ -588,6 +1118,7 @@ static void test_pending_migration(void)
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     qtest_writeq(from, HEAD(0) + 0x130, 0x1234000000001000ULL);
+    qtest_writeq(from, HEAD(0) + 0x20, 0x123456789abcdef3ULL);
     qtest_writeq(from, HEAD(0) + 0x108, 1);
     qtest_writeq(from, HEAD(0) + 0x118, 1);
     qtest_set_irq_in(from, PIC "/head-0", NULL, 0, 1);
@@ -597,6 +1128,7 @@ static void test_pending_migration(void)
     sgi_migrate_stopped(from, uri);
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x100), ==, 1);
+    g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x20), ==, 3);
     g_assert_cmphex(qtest_readq(to, HEAD(0) + 0x108), ==, 1);
     qtest_writeq(to, TARGET + 0x1000, 0);
     qtest_writeq(to, HEAD(0) + 0x110, 1);
@@ -634,6 +1166,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/slot-bounds", test_slot_bounds);
     qtest_add_func("/sgi-pic/unresolved-default-identity",
                    test_unresolved_default_identity);
+    qtest_add_func("/sgi-pic/unconnected-linked-transport",
+                   test_unconnected_linked_transport);
     qtest_add_func("/sgi-pic/type1-configuration", test_type1_configuration);
     qtest_add_func("/sgi-pic/unsupported-registers",
                    test_unsupported_registers);
@@ -641,6 +1175,20 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/remaining-pin-edges",
                    test_remaining_pin_edges);
     qtest_add_func("/sgi-pic/direct-dma", test_direct_dma);
+    qtest_add_func("/sgi-pic/linked-dma", test_linked_dma);
+    qtest_add_func("/sgi-pic/linked-receiving-ii-denial",
+                   test_linked_receiving_ii_denial);
+    qtest_add_func("/sgi-pic/linked-serving-ii-denial",
+                   test_linked_serving_ii_denial);
+    qtest_add_func("/sgi-pic/linked-partial-callback",
+                   test_linked_partial_callback);
+    qtest_add_func("/sgi-pic/linked-route-rejection",
+                   test_linked_route_rejection);
+    qtest_add_func("/sgi-pic/linked-nested-dma", test_linked_nested_dma);
+    qtest_add_func("/sgi-pic/linked-interrupts", test_linked_interrupts);
+    qtest_add_func("/sgi-pic/linked-migration", test_linked_migration);
+    qtest_add_func("/sgi-pic/linked-migration-mismatch",
+                   test_linked_migration_mismatch);
     qtest_add_func("/sgi-pic/direct-dma-head-targets",
                    test_direct_dma_head_targets);
     qtest_add_func("/sgi-pic/direct-dma-end", test_direct_dma_end);
