@@ -336,6 +336,8 @@ struct SGIOdysseyState {
      * after migration, so they are not migrated themselves.
      */
     int32_t win_origin[2];
+    /* The bound reading drawable's 0x60b origin survives scratch selects. */
+    int32_t read_origin[2];
     uint32_t clip_words[2 * SGI_ODYSSEY_CLIP_RECTS];
     uint32_t did_compare;
     uint32_t clip_kept;

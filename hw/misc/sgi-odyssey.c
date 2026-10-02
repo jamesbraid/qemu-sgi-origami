@@ -761,6 +761,8 @@ static unsigned odyssey_cmd_arity(uint32_t word)
  */
 #define ODSY_SWAP_SYNC_A 0x00000608
 #define ODSY_SWAP_SYNC_B 0x00000609
+/* The bound reading drawable's packed y:x origin, distinct from 0x841. */
+#define ODSY_REG_READ_ORIGIN 0x0000060b
 #define ODSY_SWAP_SYNC_OPERANDS 1
 
 /*
@@ -3446,8 +3448,8 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
     uint32_t h = s->copy_size >> 16;
     uint32_t dx = s->copy_dst & 0xffff;
     uint32_t dy = s->copy_dst >> 16;
-    uint64_t sx = (s->copy_src & 0xffff) + (uint64_t)s->win_origin[0];
-    uint64_t sy = (s->copy_src >> 16) + (uint64_t)s->win_origin[1];
+    int64_t sx = (s->copy_src & 0xffff) + (int64_t)s->read_origin[0];
+    int64_t sy = (s->copy_src >> 16) + (int64_t)s->read_origin[1];
     int obj = odyssey_object_find(s, s->cmd_operand[5]);
 
     if (s->cmd_operand[0] != ODSY_DMA_SENTINEL_READ ||
@@ -3456,8 +3458,9 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
         s->cmd_operand[5] != s->dest_base ||
         s->cmd_operand[7] != 0x3801210b || obj < 0 || !w || !h ||
         (uint64_t)dx + w > s->obj_width[obj] ||
-        (uint64_t)sx + w > SGI_ODYSSEY_WIDTH ||
-        (uint64_t)sy + h > SGI_ODYSSEY_HEIGHT ||
+        sx < 0 || sy < 0 ||
+        sx + w > SGI_ODYSSEY_WIDTH ||
+        sy + h > SGI_ODYSSEY_HEIGHT ||
         !odyssey_object_rows(s, obj, dy + h)) {
         return false;
     }
@@ -7589,6 +7592,10 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->read_word = s->cmd_operand[0];
         trace_sgi_odyssey_buffer_word(tag, s->read_word);
         break;
+    case ODSY_REG_READ_ORIGIN:
+        s->read_origin[0] = sextract32(s->cmd_operand[0], 0, 16);
+        s->read_origin[1] = sextract32(s->cmd_operand[0], 16, 16);
+        break;
     case ODSY_REG_DRAW_MASK:
         /* The drawing mask: which colour buffers the next writes reach. */
         s->draw_mask = s->cmd_operand[0];
@@ -7702,6 +7709,10 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
      */
     if (word == ODSY_SWAP_SYNC_A || word == ODSY_SWAP_SYNC_B) {
         odyssey_cmd_start(s, word, ODSY_SWAP_SYNC_OPERANDS);
+        return;
+    }
+    if (word == ODSY_REG_READ_ORIGIN) {
+        odyssey_cmd_start(s, word, 1);
         return;
     }
     if (word == ODSY_GL_COLOR_3UB) {
@@ -8422,6 +8433,8 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     odyssey_query_records_reset(s);
     s->win_origin[0] = 0;
     s->win_origin[1] = 0;
+    s->read_origin[0] = 0;
+    s->read_origin[1] = 0;
     for (i = 0; i < SGI_ODYSSEY_CLIP_RECTS; i++) {
         s->clip_words[2 * i] = i ? ODSY_CLIP_RESET_EMPTY : 0;
         s->clip_words[2 * i + 1] = i ? 0 : ODSY_CLIP_RESET_FULL;
@@ -9259,6 +9272,9 @@ static int odyssey_post_load(void *opaque, int version_id)
         s->tex_lod[2] = 0x3100;
         s->tex_lod[3] = 0x0f00;
     }
+    if (version_id < 32) {
+        memcpy(s->read_origin, s->win_origin, sizeof(s->read_origin));
+    }
     odyssey_clip_update(s);
     {
         SGIGLSink sink = odyssey_gl_sink(s);
@@ -9292,7 +9308,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 31,
+    .version_id = 32,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -9387,6 +9403,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
                           ODSY_CMD_MAX_OPERANDS - ODSY_CMD_OLD_OPERANDS, 15,
                           vmstate_info_uint32, uint32_t),
         VMSTATE_INT32_ARRAY_V(win_origin, SGIOdysseyState, 2, 15),
+        VMSTATE_INT32_ARRAY_V(read_origin, SGIOdysseyState, 2, 32),
         VMSTATE_UINT32_ARRAY_V(clip_words, SGIOdysseyState,
                                2 * SGI_ODYSSEY_CLIP_RECTS, 15),
         VMSTATE_UINT32_V(did_compare, SGIOdysseyState, 15),

@@ -10552,11 +10552,13 @@ static void test_readback_gl_rgba8_scratch_copy(void)
     const uint32_t colours[] = { 0x12345678, 0x90abcdef };
     uint8_t expect[40];
 
+    cmd_push64(qts, 0x60b, (RB_ORIGIN_Y << 16) | RB_ORIGIN_X);
     user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
     user_cmd_push(qts, 0x16bc00);
     user_cmd_push(qts, 0x20);
     user_cmd_push(qts, 0x080024d0);
     user_cmd_push(qts, 0);
+    window_origin(qts, 0, 0);
     odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64, RB_ORIGIN_Y + 63,
                             colours[0]);
     odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 65, RB_ORIGIN_Y + 63,
