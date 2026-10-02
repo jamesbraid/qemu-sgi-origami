@@ -1020,8 +1020,7 @@ static void test_gl_swap_tmesh_sphere(void)
 
 /*
  * ivview's context dies four words short in slot 0x5420, and the next
- * ivview's new context in the same slot sets up and answers its queries
- * (run irix-20260930T204826-66052a).
+ * ivview's new context in the same slot sets up and answers its queries.
  */
 static void test_gl_new_context_slot_reuse(void)
 {
@@ -1041,7 +1040,7 @@ static void test_gl_texture_rgba4_quad(void)
 
 /*
  * The X server reads two pixels through the raster engine's data port, as
- * it did for oglsnoop (run irix-20260930T234501-dc3029), and each 8-byte
+ * it did for oglsnoop, and each 8-byte
  * unit comes back as the two pixels' words.
  */
 static void test_pio_read_oglsnoop(void)
@@ -1052,7 +1051,7 @@ static void test_pio_read_oglsnoop(void)
 /*
  * The kernel reads i3dm's top view's context out of ERAM address 0x9d19
  * and writes it back at 0x5420, the tool panel's, and the view's clear
- * then covers the whole view (run irix-20260930T234501-dc3029).
+ * then covers the whole view.
  */
 static void test_gl_eviction_i3dm(void)
 {
