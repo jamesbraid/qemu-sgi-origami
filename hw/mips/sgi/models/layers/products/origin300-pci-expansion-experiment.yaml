@@ -133,12 +133,12 @@ layer:
             initial_main_power: true
             power_command_issuer: compute-l1
             bic_identity: 49152
-            intx_map: [0, 1, 2, 3, 4, 5, 6, 7,
-                       0, 1, 2, 3, 4, 5, 6, 7,
-                       0, 1, 2, 3, 4, 5, 6, 7,
-                       0, 1, 2, 3, 4, 5, 6, 7,
-                       0, 1, 2, 3, 4, 5, 6, 7,
-                       0, 1, 2, 3, 4, 5, 6, 7]
+            intx_map: [1, 5, 1, 5, 2, 6, 2, 6,
+                       1, 5, 1, 5, 2, 6, 2, 6,
+                       1, 5, 1, 5, 2, 6, 2, 6,
+                       1, 5, 1, 5, 2, 6, 2, 6,
+                       1, 5, 1, 5, 2, 6, 2, 6,
+                       1, 5, 1, 5, 2, 6, 2, 6]
         l1_management:
           owners:
             - {controller: compute-l1, identity: 101}
