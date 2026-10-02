@@ -24,6 +24,9 @@
 #define COMPUTE_HUB (HUB + NODE(3))
 static const unsigned widget[] = { 0xe, 0xf, 8, 9, 0xc, 0xd };
 
+static unsigned card_device = 1;
+static unsigned isp_head = 4;
+
 static QTestState *management_start(const char *extra);
 static void power_set(QTestState *qts, bool on);
 
@@ -52,12 +55,13 @@ static uint64_t head(unsigned requester, unsigned index)
 static void configure_card(QTestState *qts, unsigned index)
 {
     uint64_t h = head(0, index);
+    uint64_t config = h + 0x20000 + card_device * 0x1000;
 
     qtest_writel(qts, h + 0x24,
                  (qtest_readl(qts, h + 0x24) & ~15U) | widget[index]);
-    qtest_writel(qts, h + 0x21010, 0x01200000);
-    qtest_writel(qts, h + 0x21004, 6);
-    qtest_writel(qts, h + 0x20c, 0x81012);
+    qtest_writel(qts, config + 0x10, 0x01200000);
+    qtest_writel(qts, config + 4, 6);
+    qtest_writel(qts, h + 0x204 + card_device * 8, 0x81012);
     qtest_writel(qts, h + 0x84, 0xa << 20);
 }
 
@@ -119,10 +123,15 @@ static void test_pio(void)
     qtest_quit(qts);
 }
 
+static uint64_t card_bar(unsigned index)
+{
+    return head(0, index) + (card_device == 1 ? 0x400000 : 0x600000);
+}
+
 static void dma(QTestState *qts, unsigned card, uint64_t address,
                 uint64_t payload, bool write, MemTxResult expected)
 {
-    uint64_t bar = head(0, card) + 0x400000;
+    uint64_t bar = card_bar(card);
 
     g_autofree char *path = g_strdup_printf(PATH "/card%u", card);
     QDict *reply;
@@ -787,7 +796,6 @@ static void test_intx_migration_mismatch(void)
     g_rmdir(dir);
 }
 
-#define ISP_HEAD 4
 #define ISP_RAM_WORD 0x3000
 #define ISP_MAILBOX(n) (0x70 + (n) * 2)
 #define ISP_COMPLETE 0x4000
@@ -797,30 +805,33 @@ static QTestState *isp_start(const char *extra)
 {
     g_autofree char *options = g_strdup_printf(
         "-global sgi-pci-expansion-ni-fixture.intx-map=1 "
-        "-global sgi-pci-expansion-ni-fixture.isp-head=4 %s", extra);
+        "-global sgi-pci-expansion-ni-fixture.isp-head=%u "
+        "-global sgi-pci-expansion-ni-fixture.card-device=%u %s",
+        isp_head, card_device, extra);
     QTestState *qts = strstr(extra, "power=on") ?
                       management_start(options) : start(options);
-    uint64_t h = head(0, ISP_HEAD);
+    uint64_t h = head(0, isp_head);
+    uint64_t config = h + 0x20000 + card_device * 0x1000;
 
-    g_assert_cmphex(qtest_readl(qts, h + 0x21000), ==, 0x10201077);
+    g_assert_cmphex(qtest_readl(qts, config), ==, 0x10201077);
     qtest_writel(qts, h + 0x24,
-                 (qtest_readl(qts, h + 0x24) & ~15U) | widget[ISP_HEAD]);
-    qtest_writel(qts, h + 0x21014, 0x01200000);
-    qtest_writel(qts, h + 0x21004, 6);
-    qtest_writel(qts, h + 0x20c, 0x1012);
+                 (qtest_readl(qts, h + 0x24) & ~15U) | widget[isp_head]);
+    qtest_writel(qts, config + 0x14, 0x01200000);
+    qtest_writel(qts, config + 4, 6);
+    qtest_writel(qts, h + 0x204 + card_device * 8, 0x1012);
     return qts;
 }
 
 static void isp_writew(QTestState *qts, unsigned offset, uint16_t value)
 {
-    qtest_writew(qts, head(0, ISP_HEAD) + 0x400000 + (offset ^ 2), value);
+    qtest_writew(qts, card_bar(isp_head) + (offset ^ 2), value);
     result(qts, 0, MEMTX_OK);
 }
 
 static uint16_t isp_readw(QTestState *qts, unsigned offset)
 {
     uint16_t value = qtest_readw(qts,
-        head(0, ISP_HEAD) + 0x400000 + (offset ^ 2));
+        card_bar(isp_head) + (offset ^ 2));
 
     result(qts, 0, MEMTX_OK);
     return value;
@@ -859,7 +870,7 @@ static void isp_block(QTestState *qts, uint16_t command, uint16_t address,
 static void test_isp_dma(void)
 {
     QTestState *qts = isp_start("");
-    uint64_t h = head(0, ISP_HEAD);
+    uint64_t h = head(0, isp_head);
     const uint8_t output[2][4] = {
         { 0xab, 0xcd, 0x12, 0x34 }, { 0x34, 0x12, 0xcd, 0xab },
     };
@@ -891,17 +902,53 @@ static void test_isp_dma(void)
         g_assert_cmpmem(bytes, sizeof(bytes), input[1], sizeof(bytes));
     }
     for (unsigned other = 0; other < 6; other++) {
-        if (other != ISP_HEAD) {
+        if (other != isp_head) {
             g_assert_cmphex(qtest_readq(qts, head(0, other) + 0x10000), ==, 0);
         }
     }
     qtest_quit(qts);
 }
 
+static void isp_interrupt(bool denied);
+
+static void test_adapter_placement(const void *opaque)
+{
+    unsigned placement = GPOINTER_TO_UINT(opaque);
+
+    isp_head = placement / 2;
+    card_device = placement % 2 + 1;
+    test_isp_dma();
+    isp_interrupt(false);
+    isp_head = 4;
+    card_device = 1;
+}
+
+static void test_dma_device2(void)
+{
+    /* Device numbers are synthetic positions, not physical slot labels. */
+    QTestState *qts;
+
+    card_device = 2;
+    qts = start(
+        "-global sgi-pci-expansion-ni-fixture.card-device=2");
+
+    for (unsigned i = 0; i < 6; i++) {
+        uint64_t payload = UINT64_C(0xdeadbeef01235000) + i;
+        uint64_t address = UINT64_C(0xa080000000000000) + NODE(3) + 0x8000;
+
+        configure_card(qts, i);
+        dma(qts, i, address, payload, true, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+        dma(qts, i, address, payload, false, MEMTX_OK);
+    }
+    qtest_quit(qts);
+    card_device = 1;
+}
+
 static void test_isp_dma_denied(void)
 {
     QTestState *qts = isp_start("");
-    uint64_t h = head(0, ISP_HEAD);
+    uint64_t h = head(0, isp_head);
     const uint8_t sentinel[] = { 0xa1, 0xb2, 0xc3, 0xd4 };
     const uint8_t output[] = { 0x57, 0x13 };
     uint8_t bytes[4];
@@ -920,7 +967,7 @@ static void test_isp_dma_denied(void)
     g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
     qtest_writeq(qts, h + 0x10000, NODE(3) | 0x8021 | (0xa << 8));
     qtest_writeq(qts, COMPUTE + 0x400118,
-                 ~(UINT64_C(1) << widget[ISP_HEAD]));
+                 ~(UINT64_C(1) << widget[isp_head]));
     isp_block(qts, 3, ISP_RAM_WORD, 0x40000000, 1, ISP_INTERFACE_ERROR);
     qtest_memread(qts, RAM + 0x8000, bytes, sizeof(bytes));
     g_assert_cmpmem(bytes, sizeof(bytes), sentinel, sizeof(sentinel));
@@ -941,42 +988,48 @@ static void isp_interrupt(bool denied)
     uint64_t count = denied ? 0 : 1;
 
     set_number(qts, 11);
-    configure_irq_pin(qts, ISP_HEAD, 1, 16);
+    configure_irq_pin(qts, isp_head, card_device, 16);
     isp_writew(qts, 0x08, 6);
     isp_word(qts, ISP_RAM_WORD, 0x1357);
     g_assert_cmphex(isp_readw(qts, 0x0a) & 4, ==, 4);
     g_assert_cmphex(isp_readw(qts, 0x0c) & 1, ==, 1);
-    intx_state(qts, ISP_HEAD, 2, pending);
+    intx_state(qts, isp_head, 1U << card_device, pending);
     g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count);
     if (!denied) {
         g_assert_cmphex(qtest_readq(qts, STATUS + 24), ==,
                         UINT64_C(0x858001800090));
         g_assert_cmphex(qtest_readq(qts, STATUS + 32), ==, 0x110);
         g_assert_cmphex(qtest_readq(qts, STATUS + 40), ==,
-                        0x100 | widget[ISP_HEAD]);
+                        0x100 | widget[isp_head]);
+    }
+    for (unsigned other = 0; other < 6; other++) {
+        if (other != isp_head) {
+            g_assert_cmphex(qtest_readl(qts, head(0, other) + 0x104) & 0xff,
+                            ==, 0);
+        }
     }
     isp_ack(qts);
     g_assert_cmphex(isp_readw(qts, 0x0a) & 4, ==, 0);
     g_assert_cmphex(isp_readw(qts, 0x0c), ==, 0);
-    intx_state(qts, ISP_HEAD, 0, 0);
+    intx_state(qts, isp_head, 0, 0);
     g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, count * 2);
     if (denied) {
         const uint8_t expected[] = { 0x57, 0x13 };
         uint8_t bytes[2];
 
         /* Known device-1 DMA passes; its unknown-device IRQ remains denied. */
-        qtest_writeq(qts, head(0, ISP_HEAD) + 0x10000,
+        qtest_writeq(qts, head(0, isp_head) + 0x10000,
                      NODE(11) | 0x8021 | (0xa << 8));
         isp_block(qts, 3, ISP_RAM_WORD, 0x40000000, 1, ISP_COMPLETE);
         qtest_memread(qts, RAM + 0x8000, bytes, sizeof(bytes));
         g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
-        intx_state(qts, ISP_HEAD, 0, 0);
+        intx_state(qts, isp_head, 0, 0);
         g_assert_cmphex(qtest_readq(qts, STATUS + 16), ==, 0);
     } else {
         g_assert_cmphex(qtest_readq(qts, STATUS + 32), ==, 0x10);
     }
     for (unsigned other = 0; other < 6; other++) {
-        if (other != ISP_HEAD) {
+        if (other != isp_head) {
             g_assert_cmphex(qtest_readl(qts, head(0, other) + 0x104) & 0xff,
                             ==, 0);
         }
@@ -2660,11 +2713,11 @@ static void adapter_work_write(QTestState *qts, unsigned offset, uint16_t value)
 static void test_power_adapter(void)
 {
     QTestState *qts = isp_start(POWER_OPTIONS);
-    uint64_t h = head(0, ISP_HEAD);
+    uint64_t h = head(0, isp_head);
     uint64_t sentinel = UINT64_C(0x0123456789abcdef);
 
     qtest_writeq(qts, h + 0x10000, NODE(3) | 0x8021 | (0xa << 8));
-    configure_irq_pin(qts, ISP_HEAD, 1, 16);
+    configure_irq_pin(qts, isp_head, card_device, 16);
     isp_writew(qts, 0x08, 6);
     isp_word(qts, ISP_RAM_WORD, 0x1357);
     isp_ack(qts);
@@ -3192,6 +3245,15 @@ int main(int argc, char **argv)
                    test_power_migration);
     qtest_add_func("/sgi/pci-expansion-ni/power-migration-mismatch",
                    test_power_migration_mismatch);
+    for (unsigned placement = 0; placement < 12; placement++) {
+        g_autofree char *name = g_strdup_printf(
+            "/sgi/pci-expansion-ni/adapter-placement/head%u-device%u",
+            placement / 2, placement % 2 + 1);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(placement),
+                            test_adapter_placement);
+    }
+    qtest_add_func("/sgi/pci-expansion-ni/dma-device2", test_dma_device2);
     qtest_add_func("/sgi/pci-expansion-ni/isp-dma", test_isp_dma);
     qtest_add_func("/sgi/pci-expansion-ni/isp-dma-denied", test_isp_dma_denied);
     qtest_add_func("/sgi/pci-expansion-ni/isp-interrupt", test_isp_interrupt);
