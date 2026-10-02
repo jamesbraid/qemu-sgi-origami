@@ -130,7 +130,9 @@ static void test_identity_and_aperture(void)
  * mgras_read_internal()/mgras_write()): the first halves of the
  * 64-bit-aligned widget-register slots ignore writes rather than raising
  * a guest error a real access hits. 0x000020 reads zero; 0x000000 reads
- * only the HQ revision in bits 31:28 (2 on the default SI board). Reading
+ * an identification word: the HQ revision in bits 31:28 (2 on the default
+ * SI board), then part 0xc003 and manufacturer 0x2aa, which the stock
+ * IP30 IDE's board probe requires there. Reading
  * REG_IDENTIFICATION back unchanged after writing both proves the write
  * side does not alias into the neighboring real register.
  */
@@ -140,7 +142,7 @@ static void test_widget_reserved_halves_raz_wi(void)
 
     mgras_reset();
 
-    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x20000000);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x2c003555);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
@@ -148,7 +150,7 @@ static void test_widget_reserved_halves_raz_wi(void)
     qtest_writel(qts, MGRAS_REG(0x000000), 0xffffffff);
     qtest_writel(qts, MGRAS_REG(0x000020), 0xffffffff);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x20000000);
+    g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000000)), ==, 0x2c003555);
     g_assert_cmphex(qtest_readl(qts, MGRAS_REG(0x000020)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_IDENTIFICATION), ==, identification);
 }
