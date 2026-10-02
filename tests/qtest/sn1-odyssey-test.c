@@ -973,6 +973,55 @@ static void test_backend_version_is_pinned(void)
 }
 
 /*
+ * A profile's board memory is a reported capacity (the "memory-size"
+ * property), not real model storage: every off-screen object is backed
+ * from one fixed, profile-independent pool (ODSY_OBJ_POOL_BYTES). A
+ * destination base at or beyond what a 32 MiB profile reports is a guest
+ * bug against the board it was told it has, kept observable rather than
+ * invented: the selection is dropped, logged once, and the board keeps
+ * answering normally afterwards.
+ */
+static void test_board_memory_bound_is_a_guest_error(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-oob-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -global sgi-odyssey.profile=v10"
+                            " -d guest_errors -D %s", quoted);
+    qts = board_start(extra);
+
+    /*
+     * A destination select's base is a board address in 16-byte units
+     * (docs/datasheets/odyssey.md's command-stream table), so this
+     * profile's 32 MiB is 0x200000 units: 0x200000 itself is the first
+     * out-of-range value.
+     */
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x200000);
+    cmd_push(qts, 16);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0);
+    g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "destination base 0x200000 is beyond the "
+                                 "32 MiB this board reports"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * A real one-wire bus behind the access register, not a status bit: the
  * stock firmware runs presence, selection and a memory read, and stops
  * clocking after one 32-byte page. Reading that page back is what proves
@@ -10020,6 +10069,8 @@ int main(int argc, char **argv)
                    test_reset_control_accepts_six_writes);
     qtest_add_func("sn1/odyssey/backend-version-is-pinned",
                    test_backend_version_is_pinned);
+    qtest_add_func("sn1/odyssey/board-memory-bound-is-a-guest-error",
+                   test_board_memory_bound_is_a_guest_error);
     qtest_add_func("sn1/odyssey/board-identity-part-answers",
                    test_board_identity_part_answers);
     qtest_add_func("sn1/odyssey/interrupt-registers",
