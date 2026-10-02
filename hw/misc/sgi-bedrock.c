@@ -1907,6 +1907,12 @@ static void bedrock_unrealize(DeviceState *dev)
     SGIBedrockState *s = SGI_BEDROCK(dev);
 
     sgi_bedrock_hold_reset(s);
+    qdev_unrealize(DEVICE(&s->io));
+    qdev_unrealize(DEVICE(&s->lb));
+    if (s->dma_as_initialized) {
+        address_space_destroy(&s->dma_as);
+        s->dma_as_initialized = false;
+    }
     for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
         if (!s->pi_io_ready[slot]) {
             continue;

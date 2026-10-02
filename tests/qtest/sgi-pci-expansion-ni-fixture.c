@@ -4,6 +4,8 @@
 #include "qemu/bswap.h"
 #include "system/block-backend-global-state.h"
 #include "qemu/module.h"
+#include "qemu/main-loop.h"
+#include "qemu/rcu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
@@ -220,6 +222,7 @@ struct NIFixtureState {
     bool initial_power;
     bool power_failure;
     uint32_t power_result;
+    uint64_t teardown_result;
     DeviceState *cards[6];
     DeviceState *board;
     bool power_reset_registered;
@@ -442,6 +445,63 @@ static SN1FabricEndpoint *fixture_endpoint(Object *obj)
     return &NI_FIXTURE(obj)->endpoint;
 }
 
+static uint64_t fixture_expansion_teardown(void)
+{
+    static const char *const children[] = { "bic", "u0", "u1", "u2" };
+    static const char *const ports[] = {
+        "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
+    };
+    static const uint8_t port[] = { 8, 9, 12, 13 };
+    DeviceState *assembly = qdev_new(TYPE_SGI_ORIGIN300_PCI_EXPANSION);
+    Object *held[ARRAY_SIZE(children)];
+    uint64_t result = 0;
+
+    object_property_add_child(qdev_get_machine(), "teardown-assembly",
+                              OBJECT(assembly));
+    qdev_prop_set_uint32(assembly, "placement", 42);
+    qdev_prop_set_uint8(assembly, "node-number", 7);
+    qdev_prop_set_uint8(assembly, "bedrock-revision", 2);
+    qdev_prop_set_uint8(assembly, "xbridge-revision", 2);
+    qdev_prop_set_string(assembly, "bus-prefix", "teardown-");
+    for (unsigned i = 0; i < ARRAY_SIZE(ports); i++) {
+        qdev_prop_set_uint8(assembly, ports[i], port[i]);
+    }
+    sysbus_realize(SYS_BUS_DEVICE(assembly), &error_abort);
+    for (unsigned i = 0; i < ARRAY_SIZE(children); i++) {
+        held[i] = object_resolve_path_component(OBJECT(assembly), children[i]);
+        object_ref(held[i]);
+    }
+    qdev_unrealize(assembly);
+    for (unsigned i = 0; i < ARRAY_SIZE(children); i++) {
+        if (!DEVICE(held[i])->realized) {
+            result |= UINT64_C(1) << i;
+        }
+    }
+    /* Address-space destruction queues FlatView owner releases. */
+    drain_call_rcu();
+    drain_call_rcu();
+    /* Parent, system bus and this handle each retain the child. */
+    for (unsigned i = 0; i < ARRAY_SIZE(children); i++) {
+        unsigned refs = qatomic_read(&held[i]->ref);
+
+        if (refs == 3) {
+            result |= UINT64_C(1) << (i + ARRAY_SIZE(children));
+        } else {
+            result |= (uint64_t)refs << (16 + i * 8);
+        }
+        object_unref(held[i]);
+    }
+    object_unref(OBJECT(assembly));
+    return result;
+}
+
+static void fixture_expansion_teardown_bh(void *opaque)
+{
+    NIFixtureState *s = opaque;
+
+    s->teardown_result = fixture_expansion_teardown();
+}
+
 /* Composer controls, not registers of a physical management transport. */
 static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -462,6 +522,9 @@ static uint64_t management_read(void *opaque, hwaddr offset, unsigned size)
             return card_read(NI_CARD(s->cards[head]), reg, size);
         }
         return 0;
+    }
+    if (offset == 232) {
+        return s->teardown_result;
     }
     if (offset == 160) {
         Object *uart = object_resolve_path_component(OBJECT(s->chassis),
@@ -565,7 +628,11 @@ static void management_write(void *opaque, hwaddr offset, uint64_t value,
 {
     NIFixtureState *s = opaque;
 
-    if (offset >= 0x600 && offset < 0xe00 && s->adapter_work_initialized) {
+    if (offset == 232) {
+        aio_bh_schedule_oneshot(qemu_get_aio_context(),
+                                 fixture_expansion_teardown_bh, s);
+    } else if (offset >= 0x600 && offset < 0xe00 &&
+               s->adapter_work_initialized) {
         uint8_t bytes[2];
 
         /* Native adapter work while processor accesses are refused. */

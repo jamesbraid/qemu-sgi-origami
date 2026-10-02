@@ -543,10 +543,35 @@ static void expansion_reset_hold(Object *obj, ResetType type)
     expansion_intx_clear(SGI_ORIGIN300_PCI_EXPANSION(obj));
 }
 
+static void expansion_destroy_address_spaces(SGIOrigin300PciExpansionState *s)
+{
+    if (s->uart_initialized) {
+        address_space_destroy(&s->uart_space);
+        s->uart_initialized = false;
+    }
+    for (unsigned view = 0; view < ARRAY_SIZE(s->view_target); view++) {
+        if (s->view_target[view].assembly) {
+            address_space_destroy(&s->view_target[view].target);
+            s->view_target[view].assembly = NULL;
+        }
+    }
+    if (s->ni_initialized) {
+        address_space_destroy(&s->bic_pio);
+        address_space_destroy(&s->bic_registers);
+        s->ni_initialized = false;
+    }
+}
+
 static void expansion_unrealize(DeviceState *dev)
 {
     SGIOrigin300PciExpansionState *s = SGI_ORIGIN300_PCI_EXPANSION(dev);
 
+    memory_region_transaction_begin();
+    for (unsigned view = 0; view < ARRAY_SIZE(s->view_target); view++) {
+        if (s->view_target[view].assembly) {
+            memory_region_set_enabled(&s->view[view], false);
+        }
+    }
     expansion_intx_clear(s);
     expansion_storage_cleanup(s);
     if (s->uart && DEVICE(s->uart)->realized) {
@@ -565,6 +590,16 @@ static void expansion_unrealize(DeviceState *dev)
                       SGI_ORIGIN300_PCI_HEADS * SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
         s->intx_inputs = NULL;
     }
+    expansion_destroy_address_spaces(s);
+    for (unsigned i = 0; i < ARRAY_SIZE(s->chip); i++) {
+        if (s->chip[i] && s->chip[i]->realized) {
+            qdev_unrealize(s->chip[i]);
+        }
+    }
+    if (s->bic && s->bic->realized) {
+        qdev_unrealize(s->bic);
+    }
+    memory_region_transaction_commit();
 }
 
 static int expansion_post_load(void *opaque, int version)
@@ -809,6 +844,7 @@ static void expansion_realize(DeviceState *dev, Error **errp)
                           "pci-expansion.no-ni-route", UINT64_MAX);
     s->bic = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(s), "bic", OBJECT(s->bic));
+    object_unref(OBJECT(s->bic));
     bic = SGI_BEDROCK(s->bic);
     for (i = 0; i < 2; i++) {
         if (s->pending_registers_selected &&
@@ -836,6 +872,7 @@ static void expansion_realize(DeviceState *dev, Error **errp)
 
         s->chip[i] = qdev_new(TYPE_SGI_XBRIDGE);
         object_property_add_child(OBJECT(s), name, OBJECT(s->chip[i]));
+        object_unref(OBJECT(s->chip[i]));
         if (s->ni_route && !sgi_xbridge_enable_packet_context(
                 SGI_XBRIDGE(s->chip[i]), errp)) {
             return;
@@ -1001,27 +1038,16 @@ static void expansion_finalize(Object *obj)
     unsigned i;
 
     expansion_storage_cleanup(s);
-    if (s->uart_initialized) {
-        address_space_destroy(&s->uart_space);
-    }
+    expansion_destroy_address_spaces(s);
     if (s->uart) {
         object_unref(OBJECT(s->uart));
     }
     g_free(s->storage_module_id);
     g_free(s->storage_controller_id);
-    for (unsigned view = 0; view < 12; view++) {
-        if (s->view_target[view].assembly) {
-            address_space_destroy(&s->view_target[view].target);
-        }
-    }
     if (s->power_owner) {
         object_unref(OBJECT(s->power_owner));
     }
 
-    if (s->ni_initialized) {
-        address_space_destroy(&s->bic_pio);
-        address_space_destroy(&s->bic_registers);
-    }
     if (s->board_interface) {
         object_unref(OBJECT(s->board_interface));
     }

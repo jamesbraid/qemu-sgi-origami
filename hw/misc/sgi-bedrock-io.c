@@ -1090,23 +1090,37 @@ static void ii_init(Object *obj)
     }
 }
 
-static void ii_finalize(Object *obj)
+static void ii_unrealize(DeviceState *dev)
 {
-    SGIBedrockIOState *s = SGI_BEDROCK_IO(obj);
+    SGIBedrockIOState *s = SGI_BEDROCK_IO(dev);
 
-    qemu_bh_delete(s->bte[0].signal_bh);
-    qemu_bh_delete(s->bte[1].signal_bh);
+    for (unsigned i = 0; i < ARRAY_SIZE(s->bte); i++) {
+        qemu_bh_cancel(s->bte[i].signal_bh);
+        s->bte[i].signal_pending = false;
+    }
     if (s->linked_dma_as_initialized) {
         address_space_destroy(&s->linked_dma_as);
+        s->linked_dma_as_initialized = false;
     }
     if (s->hub_as_initialized) {
         address_space_destroy(&s->hub_as);
+        s->hub_as_initialized = false;
     }
     for (unsigned i = 0; i < ARRAY_SIZE(s->widget_as); i++) {
         if (s->widget_as_initialized[i]) {
             address_space_destroy(&s->widget_as[i]);
+            s->widget_as_initialized[i] = false;
         }
     }
+}
+
+static void ii_finalize(Object *obj)
+{
+    SGIBedrockIOState *s = SGI_BEDROCK_IO(obj);
+
+    ii_unrealize(DEVICE(obj));
+    qemu_bh_delete(s->bte[0].signal_bh);
+    qemu_bh_delete(s->bte[1].signal_bh);
 }
 
 static const Property ii_properties[] = {
@@ -1256,6 +1270,7 @@ static void ii_class_init(ObjectClass *klass, const void *data)
     dc->vmsd = &vmstate_ii;
     dc->user_creatable = true;
     dc->realize = ii_realize;
+    dc->unrealize = ii_unrealize;
     rc->phases.enter = ii_reset_enter;
     device_class_set_props(dc, ii_properties);
     pc->describe = ii_xio_port_describe;
