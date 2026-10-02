@@ -48,6 +48,8 @@ void sgi_mgras_texture_abort(SGIMgrasState *s);
  */
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
+bool sgi_mgras_texture_pixel(SGIMgrasState *s, const float rgba[4],
+                             float out[4]);
 /*
  * Whether a DMA kick, a read when read, is the one an open TRAM save or
  * restore (or a 0x9d10 transfer the model does not take) was waiting for:

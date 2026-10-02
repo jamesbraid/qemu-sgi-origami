@@ -174,6 +174,7 @@ typedef struct SGIGLTexLevel {
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
     void *opaque;
+    uint32_t depth;
 } SGIGLTexLevel;
 
 typedef struct SGIGLTexPyramid {
@@ -207,6 +208,9 @@ typedef struct SGIGLTexImage {
      * are ignored. The sampler fields still apply to every selected level.
      */
     const SGIGLTexPyramid *pyramid;
+    uint32_t depth;
+    uint32_t wrap_r;
+    bool volume;
 } SGIGLTexImage;
 
 /*
@@ -302,6 +306,10 @@ typedef struct SGIRasterTarget {
  */
 SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *r, const SGIRasterTarget *t,
                    const SGIGLDraw *d);
+bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
+                                const SGIGLTexImage *texture,
+                                const float coord[4], const float color[4],
+                                float out[4]);
 /* Carry out a raster op on the target, under the head's rules. */
 void sgi_soft_raster(const SGIRasterRules *r, const SGIRasterTarget *t,
                      const SGIRasterOp *op);

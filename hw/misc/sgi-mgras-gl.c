@@ -3326,6 +3326,11 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
         rgba[2] = b[2] / 255.0f;
         break;
     }
+    float textured[4];
+
+    if (sgi_mgras_texture_pixel(s, rgba, textured)) {
+        memcpy(rgba, textured, sizeof(rgba));
+    }
     mgras_gl_pixels_put(s, px->x + px->col, px->y + px->row, rgba, v);
 }
 

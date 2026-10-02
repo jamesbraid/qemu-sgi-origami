@@ -768,15 +768,18 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     bool mipmap = sgi_soft_texture_mipmap(im->min_filter);
     bool border_finite = true;
     uint32_t last;
+    uint32_t depth = im->depth ? im->depth : 1;
 
     for (unsigned k = 0; k < 4; k++) {
         border_finite &= isfinite(im->border_color[k]);
     }
-    if (p->count > SGI_GL_TEX_LEVELS_MAX || (p->count && !p->levels) ||
+    if (depth != 1 || (im->volume && mipmap) ||
+        p->count > SGI_GL_TEX_LEVELS_MAX || (p->count && !p->levels) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         p->min_lod > p->max_lod || !border_finite ||
         !sgi_soft_texture_wrap(im->wrap_s) ||
         !sgi_soft_texture_wrap(im->wrap_t) ||
+        (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
         (im->min_filter != SGI_GL_NEAREST && im->min_filter != SGI_GL_LINEAR &&
          !mipmap) ||
         (im->mag_filter != SGI_GL_NEAREST && im->mag_filter != SGI_GL_LINEAR)) {
@@ -826,7 +829,7 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         const SGIGLTexLevel *l = sgi_soft_texture_level(p, id);
         uint32_t shift = id - p->base_level;
 
-        if (!l || !l->read_texel ||
+        if (!l || !l->read_texel || (l->depth && l->depth != 1) ||
             l->width != MAX(1, base->width >> shift) ||
             l->height != MAX(1, base->height >> shift) ||
             l->internal_format != base->internal_format) {
@@ -876,6 +879,8 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
             border_finite &= isfinite(im->border_color[k]);
         }
         if (im->border || !border_finite ||
+            (im->depth && im->depth != 1) ||
+            (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
             !sgi_soft_texture_format(im->base_format) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
             !sgi_soft_texture_wrap(im->wrap_t) ||
@@ -950,12 +955,13 @@ static void sgi_soft_texture_components(uint32_t format, double v[4])
 
 static bool sgi_soft_texture_tap(const SGISoftDraw *r,
                                   const SGIGLTexLevel *level,
-                                  int64_t x, int64_t y,
+                                  int64_t x, int64_t y, int64_t z,
                                  double out[4])
 {
     const SGIGLTexImage *im = r->texture;
     uint32_t width = level ? level->width : im->width;
     uint32_t height = level ? level->height : im->height;
+    uint32_t depth = level ? level->depth : im->depth;
     uint32_t format = level ? level->base_format : im->base_format;
     uint32_t rgba;
 
@@ -965,7 +971,11 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     if (im->wrap_t == SGI_GL_REPEAT) {
         y = (y % height + height) % height;
     }
-    if (x < 0 || y < 0 || x >= width || y >= height) {
+    if (im->volume && im->wrap_r == SGI_GL_REPEAT) {
+        z = (z % depth + depth) % depth;
+    }
+    if (x < 0 || y < 0 || x >= width || y >= height ||
+        (im->volume && (z < 0 || z >= depth))) {
         for (int k = 0; k < 4; k++) {
             out[k] = MIN(MAX(im->border_color[k], 0), 1);
         }
@@ -1008,17 +1018,23 @@ static double sgi_soft_texture_axis(double x, uint32_t n, uint32_t wrap)
 static bool sgi_soft_texture_sample(const SGISoftDraw *r,
                                      const SGIGLTexLevel *level,
                                      uint32_t filter, double s, double t,
+                                     double u,
                                      double texel[4])
 {
     const SGIGLTexImage *im = r->texture;
     uint32_t width = level ? level->width : im->width;
     uint32_t height = level ? level->height : im->height;
+    uint32_t depth = level ? level->depth : im->depth;
 
     memset(texel, 0, 4 * sizeof(*texel));
     s = sgi_soft_texture_axis(s, width, im->wrap_s);
     t = sgi_soft_texture_axis(t, height, im->wrap_t);
+    if (im->volume) {
+        u = sgi_soft_texture_axis(u, depth, im->wrap_r);
+    }
     if (filter == SGI_GL_NEAREST) {
         int64_t x = floor(width * s), y = floor(height * t);
+        int64_t z = im->volume ? floor(depth * u) : 0;
 
         if (s == 1 && im->wrap_s != SGI_GL_CLAMP_TO_BORDER) {
             x = width - 1;
@@ -1026,25 +1042,33 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
         if (t == 1 && im->wrap_t != SGI_GL_CLAMP_TO_BORDER) {
             y = height - 1;
         }
-        return sgi_soft_texture_tap(r, level, x, y, texel);
+        if (im->volume && u == 1 && im->wrap_r != SGI_GL_CLAMP_TO_BORDER) {
+            z = depth - 1;
+        }
+        return sgi_soft_texture_tap(r, level, x, y, z, texel);
     }
-    double u = width * s - 0.5, v = height * t - 0.5;
-    int64_t x = floor(u), y = floor(v);
-    double a = u - x, b = v - y;
+    double xcoord = width * s - 0.5, ycoord = height * t - 0.5;
+    double zcoord = depth * u - 0.5;
+    int64_t x = floor(xcoord), y = floor(ycoord), z = floor(zcoord);
+    double a = xcoord - x, b = ycoord - y, c = zcoord - z;
 
-    for (int j = 0; j < 2; j++) {
-        for (int i = 0; i < 2; i++) {
-            double weight = (i ? a : 1 - a) * (j ? b : 1 - b);
-            double tap[4];
+    for (int k = 0; k < (im->volume ? 2 : 1); k++) {
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 2; i++) {
+                double weight = (i ? a : 1 - a) * (j ? b : 1 - b) *
+                                (im->volume ? (k ? c : 1 - c) : 1);
+                double tap[4];
 
-            if (!weight) {
-                continue;
-            }
-            if (!sgi_soft_texture_tap(r, level, x + i, y + j, tap)) {
-                return false;
-            }
-            for (int k = 0; k < 4; k++) {
-                texel[k] += weight * tap[k];
+                if (!weight) {
+                    continue;
+                }
+                if (!sgi_soft_texture_tap(r, level, x + i, y + j,
+                                          z + k, tap)) {
+                    return false;
+                }
+                for (int channel = 0; channel < 4; channel++) {
+                    texel[channel] += weight * tap[channel];
+                }
             }
         }
     }
@@ -1149,7 +1173,7 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     const SGIGLDrawState *st = r->st;
     const SGIGLTexLevel *base = r->texture_base;
     uint32_t format = base ? base->base_format : im->base_format;
-    double texel[4], s, t, q = frag->texcoord[3];
+    double texel[4], s, t, u = 0, q = frag->texcoord[3];
 
     if (!(q > 0) || !isfinite(q)) {
         sgi_soft_texture_report(r, 2, "invalid projected coordinates, "
@@ -1158,7 +1182,10 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     }
     s = frag->texcoord[0] / q;
     t = frag->texcoord[1] / q;
-    if (!isfinite(s) || !isfinite(t)) {
+    if (im->volume) {
+        u = frag->texcoord[2] / q;
+    }
+    if (!isfinite(s) || !isfinite(t) || (im->volume && !isfinite(u))) {
         sgi_soft_texture_report(r, 2, "invalid projected coordinates, "
                                 "fragment dropped");
         return false;
@@ -1176,18 +1203,20 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
             return false;
         }
         level = sgi_soft_texture_level(im->pyramid, selected.first);
-        if (!sgi_soft_texture_sample(r, level, selected.filter, s, t, texel)) {
+        if (!sgi_soft_texture_sample(r, level, selected.filter, s, t, u,
+                                     texel)) {
             return false;
         }
         if (selected.alpha && selected.first != selected.second) {
             level = sgi_soft_texture_level(im->pyramid, selected.second);
             if (!sgi_soft_texture_sample(r, level, selected.filter,
-                                          s, t, other)) {
+                                          s, t, u, other)) {
                 return false;
             }
             sgi_soft_texture_mix(texel, other, selected.alpha);
         }
-    } else if (!sgi_soft_texture_sample(r, NULL, im->min_filter, s, t, texel)) {
+    } else if (!sgi_soft_texture_sample(r, NULL, im->min_filter, s, t, u,
+                                        texel)) {
         return false;
     }
     for (int k = 0; k < 4; k++) {
@@ -1231,6 +1260,37 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
  * equal to end divides by zero; the model takes f as 1 before the end and
  * 0 from it, the limit of the equation from either side.
  */
+bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
+                                const SGIGLTexImage *texture,
+                                const float coord[4], const float color[4],
+                                float out[4])
+{
+    unsigned reports = 0;
+    SGIRasterTarget target = { .texture = texture };
+    SGISoftDraw r = {
+        .t = &target,
+        .st = state,
+        .texture_reports = &reports,
+    };
+    SGISoftFrag frag = { 0 };
+
+    if (!state || !texture || !coord || !color || !out ||
+        !sgi_soft_texture_setup(&r) || !r.texture) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        frag.texcoord[k] = coord[k];
+        frag.rgba[k] = color[k];
+    }
+    if (!sgi_soft_texture(&r, &frag)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = frag.rgba[k];
+    }
+    return true;
+}
+
 static void sgi_soft_fog(const SGISoftDraw *r, SGISoftFrag *frag, double z)
 {
     const SGIGLDrawState *st = r->st;

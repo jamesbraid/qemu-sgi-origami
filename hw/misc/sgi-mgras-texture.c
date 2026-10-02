@@ -328,6 +328,7 @@ enum {
 #define MGRAS_TEX_TEXMODE2       0x180
 #define MGRAS_TEX_TXSIZE         0x181
 #define MGRAS_TEX_TXLOD          0x183
+#define MGRAS_TEX_MDDMA_CNTRL    0x18a
 #define MGRAS_TEX_TXENV_RG       0x142
 #define MGRAS_TEX_TXENV_B        0x143
 #define MGRAS_TEX_TXBCOLOR_RG    0x184
@@ -381,14 +382,16 @@ enum {
  * the blend between and within levels, 7 the magnification filter and 11
  * to 14 the wrap bits, below. Only one of 5 and 19 is not drawn.
  */
-#define MGRAS_TEXMODE2_UNDRAWN   0x01800610u
+#define MGRAS_TEXMODE2_UNDRAWN   0x01000610u
 #define MGRAS_TEXMODE2_MIP       0x00080020u
 #define MGRAS_TEXMODE2_MIP_BETWEEN 0x00000040u
 #define MGRAS_TEXMODE2_MAG_LINEAR 0x00000080u
 #define MGRAS_TEXMODE2_MIN_LINEAR 0x00000100u
 #define MGRAS_TEXMODE2_WRAP_S    0x00000800u
 #define MGRAS_TEXMODE2_WRAP_T    0x00001000u
+#define MGRAS_TEXMODE2_WRAP_R    0x00002000u
 #define MGRAS_TEXMODE2_CLAMP     0x00004000u
+#define MGRAS_TEXMODE2_VOLUME    0x00800000u
 
 /* TXLOD: bits 25:16 are 64 times the minimum LOD, 3:0 the last level. */
 #define MGRAS_TXLOD_MIN(v)       (((v) >> 16) & 0x3ff)
@@ -716,6 +719,9 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
         return;
     case MGRAS_TEX_TXSIZE:
         t->txsize = value;
+        return;
+    case MGRAS_TEX_MDDMA_CNTRL:
+        t->mddma_cntrl = value;
         return;
     case MGRAS_TEX_TXLOD:
         t->txlod = value;
@@ -1659,6 +1665,7 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
             .level = level,
             .width = 1u << e->log2w,
             .height = 1u << e->log2h,
+            .depth = 1,
             .base_format = format,
             .internal_format = format,
             .read_texel = mgras_tex_read_texel,
@@ -1679,6 +1686,8 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
 {
     SGIMgrasTexture *t = mgras_tex(s);
     uint32_t size = t->txsize & 0xff, format;
+    uint32_t depth_size = 1u << ((t->txsize >> 19) & 0xf);
+    bool volume = !!(t->texmode2 & MGRAS_TEXMODE2_VOLUME);
     uint32_t cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
     uint32_t layout = MGRAS_TEXMODE1_LAYOUT(t->texmode1);
     uint32_t depth = (t->texmode2 >> 2) & 3;
@@ -1698,12 +1707,17 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
      * environment code 3 from the client, whatever glTexEnv set; the
      * model reads the alpha class as its function for every code.
      */
-    if ((t->txsize & 0xffff) != (size << 8 | size) ||
+    /*
+     * The TRAM view maps only x/y; the captured volume upload has one
+     * slice and does not establish how deeper images map their z slices.
+     */
+    if ((t->txsize & 0xffff) != (size << 8 | size) || depth_size != 1 ||
         depth > MGRAS_TEX_DEPTH_12 ||
         (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||
         !mgras_tex_environment(s, cls) ||
         !mgras_tex_format(layout, cls, &format) ||
         (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
+        (volume && mip) ||
         (mip && mip != MGRAS_TEXMODE2_MIP) ||
         t->t_offset) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture state TEXMODE1 0x%x "
@@ -1742,6 +1756,9 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                       SGI_GL_LINEAR : SGI_GL_NEAREST,
         .wrap_s = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_S),
         .wrap_t = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_T),
+        .wrap_r = mgras_tex_wrap(t->texmode2, MGRAS_TEXMODE2_WRAP_R),
+        .depth = depth_size,
+        .volume = volume,
         /*
          * TXBCOLOR is R12 | G12 << 12 and B12 | A12 << 12. The sampler
          * reduces it to the texture's own format, which is the model's
@@ -1754,6 +1771,21 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         .pyramid = &t->pyramid,
     };
     return image;
+}
+
+bool sgi_mgras_texture_pixel(SGIMgrasState *s, const float rgba[4],
+                             float out[4])
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    SGIGLTexImage image;
+    const SGIGLTexImage *texture;
+
+    if (!(mgras_tex(s)->mddma_cntrl & 1)) {
+        return false;
+    }
+    texture = sgi_mgras_texture_image(s, &image);
+    return texture && sgi_gl_texture_apply_pixel(
+        &s->gl_context[s->gl_current].gl->cur, texture, rgba, white, out);
 }
 
 bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
@@ -1790,12 +1822,13 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 9,
-    .minimum_version_id = 9,
+    .version_id = 10,
+    .minimum_version_id = 10,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
         VMSTATE_UINT32(txsize, SGIMgrasTexture),
+        VMSTATE_UINT32(mddma_cntrl, SGIMgrasTexture),
         VMSTATE_UINT32(txlod, SGIMgrasTexture),
         VMSTATE_UINT32(txclampsize, SGIMgrasTexture),
         VMSTATE_UINT32_ARRAY(txenv, SGIMgrasTexture, 2),
@@ -1844,6 +1877,7 @@ static const VMStateDescription vmstate_sgi_mgras_gl_context_tex = {
 static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
 {
     uint32_t any = t->texmode1 | t->texmode2 | t->txsize | t->txlod |
+                   t->mddma_cntrl |
                    t->txclampsize | t->txenv[0] | t->txenv[1] |
                    t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
