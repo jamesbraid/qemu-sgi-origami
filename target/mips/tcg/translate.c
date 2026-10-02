@@ -4424,13 +4424,46 @@ static void gen_trap(DisasContext *ctx, uint32_t opc,
     }
 }
 
+static inline bool mips_is_unmapped_addr(target_ulong addr)
+{
+#if defined(TARGET_MIPS64)
+    if ((addr >> 62) == 0x2) {
+        return true;
+    }
+    if (addr >= (target_ulong)0xffffffff80000000ULL &&
+        addr < (target_ulong)0xffffffffc0000000ULL) {
+        return true;
+    }
+#else
+    if (addr >= 0x80000000 && addr < 0xc0000000) {
+        return true;
+    }
+#endif
+    return false;
+}
+
+static inline bool mips_use_goto_tb(DisasContext *ctx, target_ulong dest)
+{
+    if (tb_cflags(ctx->base.tb) & CF_NO_GOTO_TB) {
+        return false;
+    }
+    if (translator_is_same_page(&ctx->base, dest)) {
+        return true;
+    }
+    if (mips_is_unmapped_addr(ctx->base.pc_first) &&
+        mips_is_unmapped_addr(dest)) {
+        return true;
+    }
+    return false;
+}
+
 static void gen_goto_tb(DisasContext *ctx, unsigned tb_slot_idx,
                         target_ulong dest)
 {
     if (ctx->timer_count_written) {
         gen_save_pc(dest);
         tcg_gen_exit_tb(NULL, 0);
-    } else if (translator_use_goto_tb(&ctx->base, dest)) {
+    } else if (mips_use_goto_tb(ctx, dest)) {
         tcg_gen_goto_tb(tb_slot_idx);
         gen_save_pc(dest);
         tcg_gen_exit_tb(ctx->base.tb, tb_slot_idx);

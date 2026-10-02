@@ -37,6 +37,7 @@
 /* TLB management */
 void r4k_mips_tlb_flush_extra(CPUMIPSState *env, int first)
 {
+    env->tlb_last_match = -1;
     /* Discard entries from env->tlb[first] onwards.  */
     while (env->tlb->tlb_in_use > first) {
         r4k_invalidate_tlb(env, --env->tlb->tlb_in_use, 0);
@@ -59,6 +60,8 @@ void r4k_fill_tlb(CPUMIPSState *env, int idx)
     uint64_t mask = env->CP0_PageMask >> (TARGET_PAGE_BITS + 1);
     uint64_t lo0 = env->CP0_EntryLo0;
     uint64_t lo1 = env->CP0_EntryLo1;
+
+    env->tlb_last_match = -1;
 
 #if defined(TARGET_MIPS64)
     /*
@@ -619,10 +622,29 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
 
     MMID = mi ? MMID : (uint32_t) ASID;
 
+    r4k_tlb_t *tlb = NULL;
+    target_ulong mask = 0;
+
+    int last = env->tlb_last_match;
+    if (last >= 0 && last < env->tlb->tlb_in_use) {
+        tlb = &env->tlb->mmu.r4k.tlb[last];
+        mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
+        target_ulong tag = address & ~mask;
+        target_ulong VPN = tlb->VPN & ~mask;
+#if defined(TARGET_MIPS64)
+        tag &= env->SEGMask;
+#endif
+        tlb_mmid = mi ? tlb->MMID : (uint32_t) tlb->ASID;
+        if ((tlb->G == 1 || tlb_mmid == MMID) && VPN == tag && !tlb->EHINV) {
+            i = last;
+            goto match;
+        }
+    }
+
     for (i = 0; i < env->tlb->tlb_in_use; i++) {
-        r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
+        tlb = &env->tlb->mmu.r4k.tlb[i];
         /* 1k pages are not supported. */
-        target_ulong mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
+        mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
         target_ulong tag = address & ~mask;
         target_ulong VPN = tlb->VPN & ~mask;
 #if defined(TARGET_MIPS64)
@@ -632,6 +654,7 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
         /* Check ASID/MMID, virtual page number & size */
         tlb_mmid = mi ? tlb->MMID : (uint32_t) tlb->ASID;
         if ((tlb->G == 1 || tlb_mmid == MMID) && VPN == tag && !tlb->EHINV) {
+match:
             /* TLB match */
             int n = !!(address & mask & ~(mask >> 1));
             /* Check access rights */
@@ -681,6 +704,7 @@ static int r4k_map_address(CPUMIPSState *env, hwaddr *physical, int *prot,
                 if (!(n ? tlb->XI1 : tlb->XI0)) {
                     *prot |= PAGE_EXEC;
                 }
+                env->tlb_last_match = i;
                 return TLBRET_MATCH;
             }
             return TLBRET_DIRTY;
@@ -743,6 +767,7 @@ void cpu_mips_tlb_flush(CPUMIPSState *env)
     /* Flush qemu's TLB and discard all shadowed entries.  */
     tlb_flush(env_cpu(env));
     env->tlb->tlb_in_use = env->tlb->nb_tlb;
+    env->tlb_last_match = -1;
 }
 
 static void raise_mmu_exception(CPUMIPSState *env, target_ulong address,
@@ -1784,6 +1809,7 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
 {
     CPUState *cs = env_cpu(env);
+    env->tlb_last_match = -1;
     r4k_tlb_t *tlb;
     target_ulong addr;
     target_ulong end;

@@ -1429,6 +1429,7 @@ typedef struct CPUArchState {
     uint32_t CP0_TCStatus_rw_bitmask; /* Read/write bits in CP0_TCStatus */
     uint64_t insn_flags; /* Supported instruction set */
     MIPSCPUConfig cfg; /* Behaviours this processor selects */
+    int tlb_last_match;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

@@ -261,6 +261,7 @@ static void mips_cpu_reset_hold(Object *obj, ResetType type)
     mips_octeon_destroy_llm_state(&env->octeon_crypto);
     memset(env, 0, offsetof(CPUMIPSState, end_reset_fields));
     cpu->nmi_level = false;
+    env->tlb_last_match = -1;
 
     /* Reset registers to their default values */
     env->CP0_PRid = env->cpu_model->CP0_PRid;
