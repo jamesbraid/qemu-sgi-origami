@@ -1601,6 +1601,44 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_MODE_FRONT_FACE_CW (1u << 23)
 
 /*
+ * Bits 5, 6 and 7 of the same register are GL_POLYGON_OFFSET_POINT, _LINE
+ * and _FILL (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
+ * glEnable/glDisable set and clear them in the library's 0x0404 shadow.
+ * 0x0458 carries the constant term alone -- bits 24:0 a signed value in
+ * steps of 2^-24 of window depth, with no slope term -- so it is fed as a
+ * factor of 0 and this bias via SGI_GL_OP_POLYGON_OFFSET_EXT.
+ */
+#define ODSY_MODE_OFFSET_POINT (1u << 5)
+#define ODSY_MODE_OFFSET_LINE (1u << 6)
+#define ODSY_MODE_OFFSET_FILL (1u << 7)
+#define ODSY_REG_POLYGON_OFFSET 0x0458 /* 1 operand */
+#define ODSY_POLYGON_OFFSET_BITS 25
+#define ODSY_POLYGON_OFFSET_SCALE (1.0f / (1 << 24))
+
+/*
+ * 0x0415 packs glPolygonMode's two faces in one word
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): bits 3:2 the
+ * front face, bits 1:0 the back face, each GL_POINT 0, GL_LINE 1, GL_FILL 2;
+ * the board's reset value 0xa decodes to FILL for both. Fed as two separate
+ * SGI_GL_OP_POLYGON_MODE calls, one per face.
+ */
+#define ODSY_REG_POLYGON_MODE 0x0415 /* 1 operand */
+#define ODSY_POLYGON_MODE_FRONT_SHIFT 2
+#define ODSY_POLYGON_MODE_BACK_SHIFT 0
+#define ODSY_POLYGON_MODE_MASK 0x3
+
+/*
+ * 0x084a packs the line width and point size together
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): two operands,
+ * line width then point size, each a 24-bit unsigned field (bits 23:0) read
+ * as size = field / 128.0, the fixed-point convention this register file
+ * uses elsewhere.
+ */
+#define ODSY_REG_LINE_POINT_SIZE 0x084a /* 2 operands: line width, point size */
+#define ODSY_LINE_POINT_SIZE_MASK 0xffffff
+#define ODSY_LINE_POINT_SIZE_SCALE 128.0f
+
+/*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
  * above root/EZsetup/demos/guest) and the text-field caret
  * (docs/analysis/odyssey-glyph-raster-format.md). BEGIN with primitive 0xa
@@ -3635,8 +3673,13 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
     odyssey_gl_feed(s, SGI_GL_OP_TEXCOORD4F, strq, ARRAY_SIZE(strq));
 }
 
-/* The context emits one assembled primitive here; rasterize it into the plane. */
-static void odyssey_gl_draw(void *opaque, const SGIGLDraw *d)
+/*
+ * The context emits one assembled primitive here; rasterize it into the
+ * plane. Shared between the fire-and-forget and checked sink callbacks
+ * below; only the out-of-memory result differs in how it is reported back.
+ */
+static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
+                                              const SGIGLDraw *d)
 {
     SGIOdysseyState *s = opaque;
     SGIRasterTarget t = odyssey_gl_target(s);
@@ -3645,18 +3688,37 @@ static void odyssey_gl_draw(void *opaque, const SGIGLDraw *d)
     SGIGLDraw draw = *d;
     SGIGLTexImage image = { 0 };
     OdysseyTexture texture;
+    SGIGLDrawResult result;
 
     if (d->state->texture_2d &&
         !odyssey_texture_setup(s, &image, &texture, &t.texture)) {
-        return;
+        return SGI_GL_DRAW_OK;
     }
     if (!odyssey_gl_index_mode(s)) {
         state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
                             ODSY_WRITE_COLOUR_MASK;
     }
     draw.state = &state;
-    sgi_soft_draw(&rules, &t, &draw);
+    result = sgi_soft_draw(&rules, &t, &draw);
     sgi_scanout_invalidate_all(&s->scanout);
+    return result;
+}
+
+static void odyssey_gl_draw(void *opaque, const SGIGLDraw *d)
+{
+    odyssey_gl_draw_result(opaque, d);
+}
+
+/*
+ * The checked path the shared context requires once per-face polygon modes
+ * are activated (odyssey_reset_registers): it relays sgi_soft_draw()'s
+ * out-of-memory signal from GL_POLYGON's dynamic vertex assembly back to
+ * the shared context synchronously instead of dropping it.
+ */
+static SGIGLDrawResult odyssey_gl_draw_checked(void *opaque,
+                                               const SGIGLDraw *d)
+{
+    return odyssey_gl_draw_result(opaque, d);
 }
 
 /* glClear's raster op: not on the first-triangle path, wired for later. */
@@ -3674,6 +3736,7 @@ static SGIGLSink odyssey_gl_sink(SGIOdysseyState *s)
 {
     return (SGIGLSink) {
         .draw = odyssey_gl_draw,
+        .draw_checked = odyssey_gl_draw_checked,
         .raster = odyssey_gl_raster,
         .fence = NULL,
         .opaque = s,
@@ -3801,6 +3864,9 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     uint32_t blend = SGI_GL_BLEND;
     uint32_t index_logic_op = SGI_GL_INDEX_LOGIC_OP;
     uint32_t color_logic_op = SGI_GL_COLOR_LOGIC_OP;
+    uint32_t offset_point = SGI_GL_POLYGON_OFFSET_POINT;
+    uint32_t offset_line = SGI_GL_POLYGON_OFFSET_LINE;
+    uint32_t offset_fill = SGI_GL_POLYGON_OFFSET_FILL;
     uint32_t cull_face = SGI_GL_CULL_FACE;
     uint32_t cull_mode = odyssey_cull_face_mode((s->pattern_mode >>
                                                  ODSY_MODE_CULL_MODE_SHIFT) &
@@ -3828,6 +3894,12 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &index_logic_op, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_COLOR_LOGIC_OP ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &color_logic_op, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_OFFSET_POINT ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &offset_point, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_OFFSET_LINE ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &offset_line, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_OFFSET_FILL ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &offset_fill, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_CULL_FACE ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cull_face, 1);
     odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
@@ -3900,6 +3972,26 @@ static uint32_t odyssey_stencil_op(uint32_t code)
         return SGI_GL_DECR;
     case 5:
         return SGI_GL_INVERT;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+/*
+ * 0x0415's 2-bit face code to the shared layer's polygon-mode enum, GL_POINT
+ * 0 to GL_FILL 2. Returns UINT32_MAX for the one code the board leaves
+ * undefined, which the shared layer's own glPolygonMode validation then
+ * rejects, leaving the previous mode in place.
+ */
+static uint32_t odyssey_polygon_mode(uint32_t code)
+{
+    switch (code) {
+    case 0:
+        return SGI_GL_POINT;
+    case 1:
+        return SGI_GL_LINE;
+    case 2:
+        return SGI_GL_FILL;
     default:
         return UINT32_MAX;
     }
@@ -6619,6 +6711,44 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         odyssey_gl_feed(s, SGI_GL_OP_LOGIC_OP, &mode, 1);
         break;
     }
+    case ODSY_REG_LINE_POINT_SIZE: {
+        uint32_t args[2];
+
+        args[0] = odyssey_f32_bits((s->cmd_operand[0] &
+                                    ODSY_LINE_POINT_SIZE_MASK) /
+                                   ODSY_LINE_POINT_SIZE_SCALE);
+        odyssey_gl_feed(s, SGI_GL_OP_LINE_WIDTH, &args[0], 1);
+        args[1] = odyssey_f32_bits((s->cmd_operand[1] &
+                                    ODSY_LINE_POINT_SIZE_MASK) /
+                                   ODSY_LINE_POINT_SIZE_SCALE);
+        odyssey_gl_feed(s, SGI_GL_OP_POINT_SIZE, &args[1], 1);
+        break;
+    }
+    case ODSY_REG_POLYGON_MODE: {
+        uint32_t front[2], back[2];
+
+        front[0] = SGI_GL_FRONT;
+        front[1] = odyssey_polygon_mode((s->cmd_operand[0] >>
+                                         ODSY_POLYGON_MODE_FRONT_SHIFT) &
+                                        ODSY_POLYGON_MODE_MASK);
+        odyssey_gl_feed(s, SGI_GL_OP_POLYGON_MODE, front, 2);
+        back[0] = SGI_GL_BACK;
+        back[1] = odyssey_polygon_mode((s->cmd_operand[0] >>
+                                        ODSY_POLYGON_MODE_BACK_SHIFT) &
+                                       ODSY_POLYGON_MODE_MASK);
+        odyssey_gl_feed(s, SGI_GL_OP_POLYGON_MODE, back, 2);
+        break;
+    }
+    case ODSY_REG_POLYGON_OFFSET: {
+        uint32_t args[2];
+
+        args[0] = odyssey_f32_bits(0.0f);
+        args[1] = odyssey_f32_bits(sextract32(s->cmd_operand[0], 0,
+                                              ODSY_POLYGON_OFFSET_BITS) *
+                                   ODSY_POLYGON_OFFSET_SCALE);
+        odyssey_gl_feed(s, SGI_GL_OP_POLYGON_OFFSET_EXT, args, 2);
+        break;
+    }
     case ODSY_REG_FOG:
         /* Fog: consumed, not modeled (see ODSY_REG_FOG). */
         break;
@@ -7662,6 +7792,19 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
      * matrix arrives (odyssey_gl_load_combined()).
      */
     sgi_gl_init(&s->gl_ctx, ODSY_GL_CONTEXT_HW_ID);
+    {
+        /*
+         * Opt into the shared context's per-face polygon modes (0x0415)
+         * and line stipple: unset, it silently keeps every face at legacy
+         * FILL no matter what 0x0415 decodes to. The sink built here
+         * always carries the checked draw callback above, this call's one
+         * precondition, so it cannot fail; reset is also never reached
+         * mid-primitive, the other precondition.
+         */
+        SGIGLSink sink = odyssey_gl_sink(s);
+
+        assert(sgi_gl_enable_polygon_modes(&s->gl_ctx, &sink));
+    }
     s->gl_in_prim = false;
     s->gl_matrix_slot = SGI_GL_MODELVIEW;
     memset(s->gl_modelview, 0, sizeof(s->gl_modelview));

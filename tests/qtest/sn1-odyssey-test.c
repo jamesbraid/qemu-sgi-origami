@@ -4628,7 +4628,7 @@ static void test_command_fifo_gl_stencil_always_passes(void)
 
 /*
  * odsy_near_yellow with its last two vertices swapped: same triangle, the
- * opposite winding.
+ * opposite winding. Also reused by the polygon-mode test below.
  */
 static const uint32_t odsy_near_yellow_cw[9] = {
     0xbf4ccccd, 0xbf4ccccd, 0xbf000000,
@@ -4667,6 +4667,202 @@ static void test_command_fifo_gl_cull_face(void)
     push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
                      odsy_near_yellow_cw);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Polygon mode (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
+ * 0x0415 packs front-face mode in bits 3:2 and back-face mode in bits 1:0,
+ * POINT = 0, LINE = 1, FILL = 2. Front LINE, back FILL on a CCW (front-
+ * facing) triangle draws no interior; the same triangle wound the other
+ * way is now the back face and fills.
+ */
+#define ODSY_REG_POLYGON_MODE 0x00010415
+
+static void test_command_fifo_gl_polygon_mode(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+
+    /* Front LINE, back FILL: the CCW (front-facing) triangle stays open. */
+    set_reg(qts, ODSY_REG_POLYGON_MODE, 0x6);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    /* The same triangle, wound the other way, is now the back face: filled. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow_cw);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Line width and point size (docs/reviews/odyssey-fragment-state-evidence-
+ * 20261001.md): 0x084a packs the line width in operand 0 and the point
+ * size in operand 1, each trunc(size * 128) in bits 23:0. Counting how
+ * many pixels a horizontal line or a single point lights up, rather than
+ * asserting exact positions, is sensitive to whether the register reached
+ * the shared layer's line_width/point_size fields without depending on
+ * the rasterizer's own sub-pixel rounding convention.
+ */
+#define ODSY_REG_LINE_POINT_SIZE 0x0001084a
+
+static void set_line_point_size(QTestState *qts, uint32_t line_width,
+                                uint32_t point_size)
+{
+    user_cmd_push(qts, ODSY_REG_LINE_POINT_SIZE);
+    user_cmd_push(qts, line_width);
+    user_cmd_push(qts, point_size);
+}
+
+static void push_line_3f(QTestState *qts, uint32_t r, uint32_t g, uint32_t b,
+                         const uint32_t v[6])
+{
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, r);
+    user_cmd_push(qts, g);
+    user_cmd_push(qts, b);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_LINES);
+    user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+    user_cmd_push(qts, v[0]);
+    user_cmd_push(qts, v[1]);
+    user_cmd_push(qts, v[2]);
+    user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+    user_cmd_push(qts, v[3]);
+    user_cmd_push(qts, v[4]);
+    user_cmd_push(qts, v[5]);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+static void push_point_3f(QTestState *qts, uint32_t r, uint32_t g, uint32_t b,
+                          const uint32_t v[3])
+{
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    user_cmd_push(qts, r);
+    user_cmd_push(qts, g);
+    user_cmd_push(qts, b);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_POINTS);
+    user_cmd_push(qts, ODSY_GL_VERTEX_3F);
+    user_cmd_push(qts, v[0]);
+    user_cmd_push(qts, v[1]);
+    user_cmd_push(qts, v[2]);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+static unsigned odsy_count_yellow(QTestState *qts, uint32_t x0, uint32_t x1,
+                                  uint32_t y0, uint32_t y1)
+{
+    unsigned n = 0;
+    uint32_t x, y;
+
+    for (y = y0; y <= y1; y++) {
+        for (x = x0; x <= x1; x++) {
+            if (odsy_test_pixel(qts, x, y) == ODSY_PLANE_YELLOW) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+static void test_command_fifo_gl_line_point_size(void)
+{
+    /* A horizontal line and a point, both centred on local (64, 64). */
+    static const uint32_t horizontal_line[6] = {
+        0xbf000000, 0x00000000, 0xbf000000,
+        0x3f000000, 0x00000000, 0xbf000000,
+    };
+    static const uint32_t centre_point[3] = {
+        0x00000000, 0x00000000, 0xbf000000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+
+    /* Default width and size, 1.0 and 1.0: a single row, a single pixel. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, horizontal_line);
+    g_assert_cmpuint(odsy_count_yellow(qts, 320, 320, 314, 326), ==, 1);
+
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_point_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, centre_point);
+    g_assert_cmpuint(odsy_count_yellow(qts, 316, 323, 316, 323), ==, 1);
+
+    /* 0x180 = 3.0 line width: three rows. */
+    set_line_point_size(qts, 0x180, 0x80);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, horizontal_line);
+    g_assert_cmpuint(odsy_count_yellow(qts, 320, 320, 314, 326), ==, 3);
+
+    /* 0x200 = 4.0 point size: a 4 x 4 square. */
+    set_line_point_size(qts, 0x80, 0x200);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_point_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, centre_point);
+    g_assert_cmpuint(odsy_count_yellow(qts, 316, 323, 316, 323), ==, 16);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Polygon offset (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
+ * 0x0404 bit 7 is the fill-polygon GL_POLYGON_OFFSET_FILL enable, and 0x0458
+ * is a signed 25-bit bias in bits 24:0, scaled by 2^-24 into normalized
+ * window depth (EXT_polygon_offset). Two coplanar triangles under GL_LESS:
+ * without the offset the second one's equal depth ties and loses; with a
+ * negative bias large enough to be unambiguous, it wins.
+ */
+#define ODSY_MODE_OFFSET_FILL (1u << 7)
+#define ODSY_REG_POLYGON_OFFSET 0x00010458
+/* sextract32(word, 0, 25) / 2^24 == -0.25: large next to any rounding noise. */
+#define ODSY_OFFSET_BIAS_NEG_QUARTER 0x01c00000
+
+/* odsy_near_yellow's footprint, flattened to NDC z 0.0 (window depth 0.5). */
+static const uint32_t odsy_coplanar_tri[9] = {
+    0xbf4ccccd, 0xbf4ccccd, 0x00000000,
+    0x3ecccccd, 0xbf4ccccd, 0x00000000,
+    0xbe4ccccd, 0x3f19999a, 0x00000000,
+};
+
+static void test_command_fifo_gl_polygon_offset(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+
+    /* Same depth, offset disabled: the second (red) triangle ties, loses. */
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_coplanar_tri);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO,
+                     odsy_coplanar_tri);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    /* Same depth, offset enabled with a negative bias: the second wins. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_coplanar_tri);
+    set_reg(qts, ODSY_REG_GL_MODE,
+            ODSY_GL_MODE_DEPTH_FLAT | ODSY_MODE_OFFSET_FILL);
+    set_reg(qts, ODSY_REG_POLYGON_OFFSET, ODSY_OFFSET_BIAS_NEG_QUARTER);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO,
+                     odsy_coplanar_tri);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_RED);
 
     qtest_quit(qts);
 }
@@ -9745,6 +9941,12 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_stencil_always_passes);
     qtest_add_func("sn1/odyssey/command-fifo-gl-cull-face",
                    test_command_fifo_gl_cull_face);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-polygon-mode",
+                   test_command_fifo_gl_polygon_mode);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-line-point-size",
+                   test_command_fifo_gl_line_point_size);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-polygon-offset",
+                   test_command_fifo_gl_polygon_offset);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
