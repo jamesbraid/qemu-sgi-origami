@@ -1327,7 +1327,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         }
     }
     if (!object_property_set_link(OBJECT(&s->io), "hub-registers",
-                                  OBJECT(&s->io_registers), errp)) {
+                                  OBJECT(&s->io_registers_window), errp)) {
         return;
     }
     if (s->node_mr) {
@@ -1622,6 +1622,7 @@ static const Property bedrock_properties[] = {
 
 /* Where the zero-based hub window's two aliases meet: the I/O interface. */
 #define BEDROCK_HUB_WINDOW_SPLIT 0x400000
+#define BEDROCK_IO_REGISTERS_SPLIT 0x400000
 
 /*
  * Test-only: a register-contract qtest cannot be a processor of the node,
@@ -1718,6 +1719,28 @@ static void bedrock_init(Object *obj)
     memory_region_init_io(&s->io_registers, obj, &bedrock_io_registers_ops,
                           s, TYPE_SGI_BEDROCK "-io-registers",
                           BEDROCK_IO_REGISTERS_SIZE);
+    /*
+     * The embedded I/O interface receives zero-based offsets from full
+     * address interrupt packets. Keep this container as its AddressSpace
+     * root by exposing the register window through two aliases.
+     */
+    memory_region_init(&s->io_registers_window, obj,
+                       TYPE_SGI_BEDROCK "-io-registers-window",
+                       BEDROCK_IO_REGISTERS_SIZE);
+    memory_region_init_alias(&s->io_registers_part[0], obj,
+                             TYPE_SGI_BEDROCK "-io-registers-low",
+                             &s->io_registers, 0,
+                             BEDROCK_IO_REGISTERS_SPLIT);
+    memory_region_init_alias(&s->io_registers_part[1], obj,
+                             TYPE_SGI_BEDROCK "-io-registers-high",
+                             &s->io_registers, BEDROCK_IO_REGISTERS_SPLIT,
+                             BEDROCK_IO_REGISTERS_SIZE -
+                             BEDROCK_IO_REGISTERS_SPLIT);
+    memory_region_add_subregion(&s->io_registers_window, 0,
+                                &s->io_registers_part[0]);
+    memory_region_add_subregion(&s->io_registers_window,
+                                BEDROCK_IO_REGISTERS_SPLIT,
+                                &s->io_registers_part[1]);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->io_registers);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 1));

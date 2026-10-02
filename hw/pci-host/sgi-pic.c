@@ -16,6 +16,7 @@
 #include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
+#include "system/qtest.h"
 
 #define TYPE_SGI_PIC_HEAD "sgi-pic-head"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
@@ -30,6 +31,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
 #define PIC_ACCESS_LOG_LIMIT 32
 #define TYPE_SGI_PIC_IOMMU "sgi-pic-iommu"
 #define TYPE_SGI_PIC_FIXTURE "sgi-pic-fixture"
+#define TYPE_SGI_PIC_V1_TEST "sgi-pic-v1-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIPICFixture, SGI_PIC_FIXTURE)
 
 struct SGIPICFixture {
@@ -134,9 +136,11 @@ struct SGIPICState {
     SGIPICTarget endpoint[16];
     bool test_fixture;
     bool linked;
+    bool bedrock_interrupts;
     bool peer_connected;
     bool widget_as_initialized;
     bool migration_linked;
+    bool migration_bedrock_interrupts;
     uint64_t linked_packet_count;
     uint64_t last_linked_result;
     SGIXioPeer peer;
@@ -152,6 +156,43 @@ static MemTxResult pic_send_typed(SGIPICState *pic, hwaddr address,
     MemTxResult result = sgi_xio_peer_packet_rw(&pic->peer, address, buffer,
                                                 size, write, source);
 
+    pic->linked_packet_count++;
+    pic->last_linked_result = result;
+    return result;
+}
+
+static MemTxResult pic_send_interrupt(SGIPICState *pic, hwaddr address,
+                                      void *buffer, size_t size,
+                                      const SGIXioSource *source)
+{
+    SGIXioPortClass *pc;
+    MemTxResult result;
+
+    if (!source || !source->widget_known || source->widget > 15 ||
+        (source->device_known && source->device > 7) ||
+        !pic->peer.port) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: linked interrupt has no valid source or peer\n");
+        result = MEMTX_ACCESS_ERROR;
+        goto out;
+    }
+    pc = SGI_XIO_PORT_GET_CLASS(pic->peer.port);
+    if (!pc->packet_rw) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: linked interrupt peer has no packet receiver\n");
+        result = MEMTX_ACCESS_ERROR;
+        goto out;
+    }
+    if (address >= (UINT64_C(1) << 48) ||
+        size > (UINT64_C(1) << 48) - address) {
+        result = MEMTX_DECODE_ERROR;
+        goto out;
+    }
+
+    /* Interrupt destinations carry a full SN1 address, not a widget window. */
+    result = pc->packet_rw(pic->peer.port, pic->peer.index, address,
+                           buffer, size, true, source);
+out:
     pic->linked_packet_count++;
     pic->last_linked_result = result;
     return result;
@@ -403,8 +444,10 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
 {
     uint64_t destination = REG(s, 0x130 + pin * 8);
     uint16_t level = destination >> 48;
+    hwaddr address = destination & ((1ULL << 48) - 1);
     unsigned widget = (destination >> 44) & 15;
     hwaddr offset = destination & ((1ULL << 44) - 1);
+    bool bedrock = s->pic->linked && s->pic->bedrock_interrupts;
     MemTxResult result;
 
     if (set) {
@@ -412,10 +455,16 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
     } else {
         s->clear_requests[pin]++;
     }
+    if (bedrock && (level < 7 || level > 127)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u pin %u rejected Bedrock interrupt "
+                      "level 0x%x\n", s->head, pin, level);
+        return;
+    }
     qemu_log_mask(LOG_UNIMP,
                   "sgi-pic: head %u pin %u %s request destination 0x%"
-                  PRIx64 " (packet payload is a compatibility choice)\n",
-                  s->head, pin, set ? "set" : "clear", destination);
+                  PRIx64 "\n", s->head, pin, set ? "set" : "clear",
+                  destination);
     if (s->pic->linked) {
         uint8_t packet[8];
         SGIXioSource source = {
@@ -424,10 +473,11 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
             .widget = REG(s, 0x20) & 0xf,
         };
 
-        stq_be_p(packet, level | (set ? 0x10000 : 0));
-        result = pic_send_typed(s->pic,
-            ((hwaddr)widget << 48) | offset, packet, sizeof(packet), true,
-            &source);
+        stq_be_p(packet, bedrock ?
+                 level | (set ? 0x100 : 0) :
+                 level | (set ? 0x10000 : 0));
+        result = pic_send_interrupt(s->pic, address, packet, sizeof(packet),
+                                    &source);
     } else if (!s->pic->target[widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u interrupt target %x is absent\n",
@@ -435,7 +485,8 @@ static void pic_packet(SGIPICHead *s, unsigned pin, bool set)
         return;
     } else {
         address_space_stq_be(&s->pic->endpoint[widget].as, offset,
-                             level | (set ? 0x10000 : 0),
+                             level | (set ? (bedrock ?
+                                              0x100 : 0x10000) : 0),
                              MEMTXATTRS_UNSPECIFIED, &result);
     }
     if (result != MEMTX_OK) {
@@ -868,6 +919,7 @@ static int pic_pre_save(void *opaque)
     SGIPICState *s = opaque;
 
     s->migration_linked = s->linked;
+    s->migration_bedrock_interrupts = s->bedrock_interrupts;
     return 0;
 }
 
@@ -875,8 +927,16 @@ static int pic_post_load(void *opaque, int version_id)
 {
     SGIPICState *s = opaque;
 
+    if (version_id < 2) {
+        /* Version 1 predates the Bedrock interrupt packet mode. */
+        s->migration_bedrock_interrupts = false;
+    }
     if (s->migration_linked != s->linked) {
         error_report("PIC migration transport mode does not match destination");
+        return -EINVAL;
+    }
+    if (s->migration_bedrock_interrupts != s->bedrock_interrupts) {
+        error_report("PIC migration interrupt mode does not match destination");
         return -EINVAL;
     }
     return 0;
@@ -884,12 +944,13 @@ static int pic_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pic = {
     .name = TYPE_SGI_PIC,
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .pre_save = pic_pre_save,
     .post_load = pic_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(migration_linked, SGIPICState),
+        VMSTATE_BOOL_V(migration_bedrock_interrupts, SGIPICState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -902,6 +963,10 @@ static void pic_realize(DeviceState *dev, Error **errp)
     if (!s->test_fixture) {
         error_setg(errp, "PIC revision 3 PCI device 0 identity is unresolved; "
                    "test-fixture=on is only for synthetic register tests");
+        return;
+    }
+    if (s->migration_bedrock_interrupts && !qtest_enabled()) {
+        error_setg(errp, "PIC migration test state is available only in qtest");
         return;
     }
     if (s->linked && !s->peer_connected) {
@@ -998,6 +1063,10 @@ static void pic_class_init(ObjectClass *klass, const void *data)
     static const Property properties[] = {
         DEFINE_PROP_BOOL("test-fixture", SGIPICState, test_fixture, false),
         DEFINE_PROP_BOOL("linked-transport", SGIPICState, linked, false),
+        DEFINE_PROP_BOOL("bedrock-interrupts", SGIPICState,
+                         bedrock_interrupts, false),
+        DEFINE_PROP_BOOL("x-test-migration-bedrock-interrupts", SGIPICState,
+                         migration_bedrock_interrupts, false),
     };
 
     dc->realize = pic_realize;
@@ -1024,11 +1093,49 @@ static const TypeInfo pic_info = {
     },
 };
 
+/* Emit the pre-mode PIC VMState layout for a legacy migration test source. */
+static const VMStateDescription vmstate_pic_v1_test = {
+    .name = TYPE_SGI_PIC,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_save = pic_pre_save,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(migration_linked, SGIPICState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static void pic_v1_test_realize(DeviceState *dev, Error **errp)
+{
+    if (!qtest_enabled()) {
+        error_setg(errp, "legacy PIC migration fixture is available "
+                   "only in qtest");
+        return;
+    }
+    pic_realize(dev, errp);
+}
+
+static void pic_v1_test_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    dc->realize = pic_v1_test_realize;
+    dc->vmsd = &vmstate_pic_v1_test;
+    dc->user_creatable = true;
+}
+
+static const TypeInfo pic_v1_test_info = {
+    .name = TYPE_SGI_PIC_V1_TEST,
+    .parent = TYPE_SGI_PIC,
+    .class_init = pic_v1_test_class_init,
+};
+
 static void pic_register_types(void)
 {
     type_register_static(&pic_fixture_info);
     type_register_static(&pic_iommu_info);
     type_register_static(&pic_head_info);
     type_register_static(&pic_info);
+    type_register_static(&pic_v1_test_info);
 }
 type_init(pic_register_types)
