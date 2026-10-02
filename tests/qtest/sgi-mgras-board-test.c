@@ -382,9 +382,17 @@ static void test_xmap_revision_and_fifo_capacity(void)
 }
 #define PP1_SELECT_ALL          1
 
-static void test_pp1_select_routes_xmap_on_two_re_board(void)
+static QTestState *mgras_two_re_board_start(const char *board)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi");
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s", board);
+
+    return qtest_init(args);
+}
+
+static void test_pp1_select_routes_xmap_on_two_re_board(gconstpointer data)
+{
+    QTestState *s = mgras_two_re_board_start(data);
 
     mgras_select_xmap(s, PP1_SELECT_ALL, 0);
     qtest_writel(s, REG_XMAP_MAIN_MODE, 0x111);
@@ -457,9 +465,9 @@ static void test_pp1_select_absent_pp1_on_one_re_board(void)
  * them. Which PP1 drives which pixels is unknown, so a mode written to one
  * other PP1 alone does not change the screen.
  */
-static void test_pp1_scanout_follows_first_pp1(void)
+static void test_pp1_scanout_follows_first_pp1(gconstpointer data)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-mgras.board=ssi");
+    QTestState *s = mgras_two_re_board_start(data);
 
     /* Map 29 is the one reset's mode 0x7a4 names; 0x384 names map 28. */
     mgras_enter_context(s);
@@ -493,9 +501,9 @@ static void test_pp1_scanout_follows_first_pp1(void)
  * approximation: what hardware returns then is unknown. The four PP1s differ
  * first, so the answer shows which one gave it.
  */
-static void test_pp1_select_all_reads_first_pp1(void)
+static void test_pp1_select_all_reads_first_pp1(gconstpointer data)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+    QTestState *s = mgras_two_re_board_start(data);
 
     mgras_give_pp1s_distinct_xmaps(s);
     mgras_assert_pp1_xmap(s, PP1_SELECT_ALL, 0);
@@ -509,9 +517,9 @@ static void test_pp1_select_all_reads_first_pp1(void)
  * 2:1 name, or every PP1 when bit 0 is set. What hardware does with them
  * is unknown.
  */
-static void test_pp1_select_ignores_bits_7_to_3(void)
+static void test_pp1_select_ignores_bits_7_to_3(gconstpointer data)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+    QTestState *s = mgras_two_re_board_start(data);
 
     mgras_give_pp1s_distinct_xmaps(s);
     for (unsigned int n = 0; n < 4; n++) {
@@ -543,13 +551,13 @@ static void test_pp1_select_ignores_bits_7_to_3(void)
  * selection they read 1 and 0x101, and a write under any selection is
  * dropped.
  */
-static void test_pp1_select_leaves_sync_registers_shared(void)
+static void test_pp1_select_leaves_sync_registers_shared(gconstpointer data)
 {
     static const uint8_t selects[] = {
         PP1_SELECT(0, 0), PP1_SELECT(0, 1), PP1_SELECT(1, 0),
         PP1_SELECT(1, 1), PP1_SELECT_ALL,
     };
-    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+    QTestState *s = mgras_two_re_board_start(data);
 
     for (size_t i = 0; i < ARRAY_SIZE(selects); i++) {
         mgras_select_xmap(s, selects[i], 0);
@@ -1896,19 +1904,34 @@ int main(int argc, char **argv)
                    test_repp_status_byte_writes);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-reads-back",
                    test_xmap_buf_select_reads_back);
-    qtest_add_func("sn0/origin2000/mgras/pp1-select-routes-xmap-two-re",
-                   test_pp1_select_routes_xmap_on_two_re_board);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-routes-xmap-two-re",
+                        "ssi", test_pp1_select_routes_xmap_on_two_re_board);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-routes-xmap-two-re/essi",
+        "essi", test_pp1_select_routes_xmap_on_two_re_board);
     qtest_add_func("sn0/origin2000/mgras/pp1-select-absent-pp1-one-re",
                    test_pp1_select_absent_pp1_on_one_re_board);
-    qtest_add_func("sn0/origin2000/mgras/pp1-scanout-follows-first-pp1",
-                   test_pp1_scanout_follows_first_pp1);
-    qtest_add_func("sn0/origin2000/mgras/pp1-select-all-reads-first-pp1",
-                   test_pp1_select_all_reads_first_pp1);
-    qtest_add_func("sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3",
-                   test_pp1_select_ignores_bits_7_to_3);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "pp1-select-leaves-sync-registers-shared",
-                   test_pp1_select_leaves_sync_registers_shared);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-scanout-follows-first-pp1",
+                        "ssi", test_pp1_scanout_follows_first_pp1);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-scanout-follows-first-pp1/essi",
+        "essi", test_pp1_scanout_follows_first_pp1);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-all-reads-first-pp1",
+                        "ssi", test_pp1_select_all_reads_first_pp1);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-all-reads-first-pp1/essi",
+        "essi", test_pp1_select_all_reads_first_pp1);
+    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3",
+                        "ssi", test_pp1_select_ignores_bits_7_to_3);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3/essi",
+        "essi", test_pp1_select_ignores_bits_7_to_3);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-leaves-sync-registers-shared",
+        "ssi", test_pp1_select_leaves_sync_registers_shared);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-leaves-sync-registers-shared/essi",
+        "essi", test_pp1_select_leaves_sync_registers_shared);
     qtest_add_data_func(
         "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/ssi",
         "ssi", test_two_re_board_draws_one_set_of_planes);
@@ -1999,7 +2022,8 @@ int main(int argc, char **argv)
         qtest_add_data_func(screen, e, test_board_screen_fits_row_buffers);
         qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
         if (e->implemented && (!strcmp(e->board, "si") ||
-                               !strcmp(e->board, "ssi"))) {
+                               !strcmp(e->board, "ssi") ||
+                               !strcmp(e->board, "esi"))) {
             g_autofree char *rdram = g_strdup_printf(
                 "sn0/origin2000/mgras/rdram-data-same-for-each-re/%s",
                 e->board);
@@ -2009,6 +2033,7 @@ int main(int argc, char **argv)
         }
         if (e->implemented && (!strcmp(e->board, "si") ||
                                !strcmp(e->board, "ssi") ||
+                               !strcmp(e->board, "esi") ||
                                !strcmp(e->board, "essi"))) {
             g_autofree char *re4 = g_strdup_printf(
                 "sn0/origin2000/mgras/re4-status-reports-selected-re/%s",

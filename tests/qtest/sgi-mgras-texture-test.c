@@ -159,14 +159,23 @@ static void test_gl_native_texcoord_contexts(void)
     "-global sgi-mgras.x-unimplemented-board=on"
 #define TEX_WHITE             0xffffff
 
+static QTestState *texture_board_start(const char *board)
+{
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s "
+        "-global sgi-mgras.x-unimplemented-board=on", board);
+
+    return tex_start(args);
+}
+
 /*
  * An RGBA8 level loaded and drawn nearest with modulate by white: each
  * texel's centre pixel takes the texel's own bytes, the first row sent
  * at t = 0, the bottom, and the quad's edges keep to its pixels.
  */
-static void test_gl_texture_load_draws_the_level(void)
+static void test_gl_texture_load_draws_the_level(gconstpointer data)
 {
-    QTestState *t = tex_start(TEX_ARGS);
+    QTestState *t = texture_board_start(data);
     uint8_t texels[32];
 
     tex_texels(texels);
@@ -197,12 +206,12 @@ static void test_gl_texture_load_draws_the_level(void)
  * (0x0f, 0xc0). The traced texels, 0x10 + i, 0x40 + i and 0x80 + i,
  * come out 0x11, 0x44, 0x88 under all three.
  */
-static void test_gl_texture_rgba4_truncates(void)
+static void test_gl_texture_rgba4_truncates(gconstpointer data)
 {
     static const uint8_t comp[] = {
         0x0f, 0x18, 0x7f, 0xc0, 0xf8, 0x00, 0xff, 0x2a,
     };
-    QTestState *t = tex_start(TEX_ARGS);
+    QTestState *t = texture_board_start(data);
     uint8_t texels[32];
 
     for (int i = 0; i < 8; i++) {
@@ -2674,10 +2683,16 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_texture_matrix);
     qtest_add_func("sn0/origin2000/mgras/gl-integer-and-texture-forms",
                    test_gl_integer_and_texture_forms);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-load-draws-the-level",
-                   test_gl_texture_load_draws_the_level);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
-                   test_gl_texture_rgba4_truncates);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-load-draws-the-level",
+                        "si-t", test_gl_texture_load_draws_the_level);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
+        "esi-t", test_gl_texture_load_draws_the_level);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
+                        "si-t", test_gl_texture_rgba4_truncates);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-rgba4-truncates/esi-t",
+        "esi-t", test_gl_texture_rgba4_truncates);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-size-from-tl-spec",
                    test_gl_texture_size_from_tl_spec);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-tl-mode-persists",
@@ -2780,6 +2795,8 @@ int main(int argc, char **argv)
                         "emxi", test_mxi_tram_save_restore);
     qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore/si-t",
                         "si-t", test_mxi_tram_save_restore);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore/esi-t",
+                        "esi-t", test_mxi_tram_save_restore);
     qtest_add_func("sn0/origin2000/mgras/mxi-tram-save-shapes",
                    test_mxi_tram_save_shapes);
 
