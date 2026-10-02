@@ -55,6 +55,36 @@
 #define XBOW_PERF_B                 0x0068
 #define XBOW_NIC                    0x0070
 
+/*
+ * Revision 5 ("Crossbow 2.0") and later decode reset fences in the range
+ * earlier revisions leave entirely reserved: one mask for widget 0's core at
+ * XBOW_FENCE, then one per link at XBOW_LINK_FENCE_BASE and stride. Fence
+ * existence on this revision, and that an accepted warm reset leaves a
+ * programmed fence as it was rather than restoring it, are both measured on
+ * the owner's Octane2: the PROM's own fenced-reset sequence leaves bit 3
+ * clear at XBOW_FENCE and at the widget-11 link fence after the reset it
+ * gates (PROM Command Monitor reads, 2026-10-02). The same page names a
+ * second Crossbow 2.0 addition, a resource lock, acquired at XBOW_LOCK and
+ * released at XBOW_LOCK_CLEAR; that it exists on this revision and reads
+ * zero after power-on is also measured there. The specification does not
+ * spell out the lock's acquire/release behavior itself; this model follows
+ * what XBridge implements for the same two offsets
+ * (hw/misc/sgi-xbridge-xbow.c), marked inferred: XBOW_LOCK only stores a
+ * write while currently zero,
+ * XBOW_LOCK_CLEAR unconditionally clears it, and both offsets read the one
+ * stored value.
+ */
+#define XBOW_REV_FENCED              5
+#define XBOW_FENCE                   0x0078
+#define XBOW_FENCE_RESET             0xff
+#define XBOW_LINK_FENCE_BASE         0x0080
+#define XBOW_LINK_FENCE_STRIDE       8
+#define XBOW_LINK_FENCE_END          (XBOW_LINK_FENCE_BASE + \
+                                      SGI_XBOW_LINKS * XBOW_LINK_FENCE_STRIDE)
+#define XBOW_LOCK                    0x00c0
+#define XBOW_LOCK_CLEAR              0x00c8
+#define XBOW_LOCK_RESET              0
+
 #define XBOW_LINK_BASE              0x0100
 #define XBOW_LINK_STRIDE            0x0040
 #define XBOW_LINK_FLUSH             0x00
@@ -494,7 +524,18 @@ static bool sgi_xbow_decode_link_register(hwaddr slot, unsigned int *link,
     return true;
 }
 
-static bool sgi_xbow_accessible(hwaddr slot, bool is_write)
+/* A link fence's own slot, not its doubleword link register block. */
+static bool sgi_xbow_decode_link_fence(hwaddr slot, unsigned int *link)
+{
+    if (slot < XBOW_LINK_FENCE_BASE || slot >= XBOW_LINK_FENCE_END) {
+        return false;
+    }
+    *link = (slot - XBOW_LINK_FENCE_BASE) / XBOW_LINK_FENCE_STRIDE;
+    return true;
+}
+
+static bool sgi_xbow_accessible(const SGIXbowState *s, hwaddr slot,
+                                bool is_write)
 {
     unsigned int link;
     hwaddr reg;
@@ -517,8 +558,21 @@ static bool sgi_xbow_accessible(hwaddr slot, bool is_write)
     case XBOW_PERF_B:
     case XBOW_NIC:
         return true;
+    case XBOW_FENCE:
+    case XBOW_LOCK:
+    case XBOW_LOCK_CLEAR:
+        /*
+         * Crossbow 2.0 and later only (XBridge ASIC Specification rev 0.5,
+         * printed page 57); earlier revisions leave this reserved.
+         */
+        return s->revision >= XBOW_REV_FENCED;
     default:
         break;
+    }
+
+    if (s->revision >= XBOW_REV_FENCED &&
+        sgi_xbow_decode_link_fence(slot, &link)) {
+        return true;
     }
 
     if (!sgi_xbow_decode_link_register(slot, &link, &reg)) {
@@ -713,7 +767,7 @@ static MemTxResult sgi_xbow_read(void *opaque, hwaddr addr, uint64_t *data,
     sgi_xbow_link_reset_catch_up(s);
     *data = 0;
     if (!sgi_xbow_decode(addr, size, &slot) ||
-        !sgi_xbow_accessible(slot, false)) {
+        !sgi_xbow_accessible(s, slot, false)) {
         return sgi_xbow_refuse(s, addr, size, false);
     }
     switch (slot) {
@@ -769,7 +823,22 @@ static MemTxResult sgi_xbow_read(void *opaque, hwaddr addr, uint64_t *data,
     case XBOW_NIC:
         value = s->nic;
         break;
+    case XBOW_FENCE:
+        value = s->fence;
+        break;
+    case XBOW_LOCK:
+    case XBOW_LOCK_CLEAR:
+        /*
+         * Both offsets answer the one stored value; neither has a read
+         * side effect.
+         */
+        value = s->lock;
+        break;
     default:
+        if (sgi_xbow_decode_link_fence(slot, &link)) {
+            value = s->link_fence[link];
+            break;
+        }
         g_assert(sgi_xbow_decode_link_register(slot, &link, &reg));
         switch (reg) {
         case XBOW_LINK_FLUSH:
@@ -835,7 +904,7 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
     if (!sgi_xbow_decode(addr, size, &slot)) {
         return sgi_xbow_refuse(s, addr, size, true);
     }
-    if (!sgi_xbow_accessible(slot, true)) {
+    if (!sgi_xbow_accessible(s, slot, true)) {
         MemTxResult result = sgi_xbow_refuse(s, addr, size, true);
 
         if (s->complete_posted_error_address_writes &&
@@ -892,8 +961,26 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
     case XBOW_NIC:
         s->nic = value & XBOW_NIC_MASK;
         return MEMTX_OK;
+    case XBOW_FENCE:
+        s->fence = value & XBOW_FENCE_RESET;
+        return MEMTX_OK;
+    case XBOW_LOCK:
+        /* A test-and-set acquire: a write only takes while unlocked. */
+        if (!s->lock) {
+            s->lock = value & 0xff;
+        }
+        return MEMTX_OK;
+    case XBOW_LOCK_CLEAR:
+        /* An unconditional release; the written data is discarded. */
+        s->lock = XBOW_LOCK_RESET;
+        return MEMTX_OK;
     default:
         break;
+    }
+
+    if (sgi_xbow_decode_link_fence(slot, &link)) {
+        s->link_fence[link] = value & XBOW_FENCE_RESET;
+        return MEMTX_OK;
     }
 
     g_assert(sgi_xbow_decode_link_register(slot, &link, &reg));
@@ -1516,6 +1603,16 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
     s->perf_a = XBOW_PERF_RESET;
     s->perf_b = XBOW_PERF_RESET;
     s->nic = XBOW_NIC_RESET;
+    s->fence = XBOW_FENCE_RESET;
+    /*
+     * Whether the lock survives an accepted warm reset the way a fence does
+     * is not measured; XBridge clears its equivalent register with the rest
+     * of the core on every reset, warm included (hw/misc/sgi-xbridge-xbow.c,
+     * xbow_reset_core()), and nothing here saves and restores it the way
+     * sgi_xbow_warm_reset_in() does for the fences, so it follows that core
+     * state and resets here too (inferred).
+     */
+    s->lock = XBOW_LOCK_RESET;
     s->interrupt_asserted = false;
     s->link_reset_asserted = 0;
     s->link_reset_restore_alive = 0;
@@ -1534,6 +1631,7 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
         s->link_status[link] = 0;
         s->link_aux_status[link] = 0;
         s->link_event[link] = 0;
+        s->link_fence[link] = XBOW_FENCE_RESET;
     }
 }
 
@@ -1563,11 +1661,30 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
  * hubio.h, ILCSR_WARM_RESET). A widget that sends the other pattern, a
  * link reset, resets only its own port; no modelled widget sends one,
  * so the input carries a warm reset alone.
+ *
+ * Revision 5 ("Crossbow 2.0") and later gate this per destination with the
+ * reset fences at XBOW_FENCE and XBOW_LINK_FENCE_BASE (XBridge ASIC
+ * Specification rev 0.5, printed pages 81-82, with the register's existence
+ * on this revision established at printed page 57): bit n of a fence is
+ * whether a warm reset from port 8+n reaches that destination, the widget
+ * 0 core's own fence and each link's fence decided independently, so one
+ * destination rejecting a reset does not withhold it from another. This
+ * differs from the XBridge model's xbow_warm_reset(), which withholds the
+ * whole reset, every link included, when widget 0's fence alone rejects
+ * the source. An accepted warm reset here also leaves the fences as they
+ * were programmed, where the XBridge model resets them to all ones with
+ * the rest of its core; the specification page above is silent on which a
+ * Crossbow does, so this is a deliberate, reviewed difference rather than
+ * an observation. Earlier revisions carry the same fields fixed at their
+ * reset value, so a warm reset keeps reaching every destination, as it
+ * always did.
  */
 static void sgi_xbow_warm_reset_in(void *opaque, int line, int level)
 {
     SGIXbowState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint8_t fence = s->fence;
+    uint8_t link_fence[SGI_XBOW_LINKS];
     unsigned int link;
 
     if (!level || s->quiesced) {
@@ -1580,14 +1697,30 @@ static void sgi_xbow_warm_reset_in(void *opaque, int line, int level)
                       "ignored\n", sgi_xbow_widget(line));
         return;
     }
-    sgi_xbow_reset_enter(OBJECT(s), RESET_TYPE_COLD);
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        link_fence[link] = s->link_fence[link];
+    }
+    if (fence & BIT(line)) {
+        sgi_xbow_reset_enter(OBJECT(s), RESET_TYPE_COLD);
+        /*
+         * The reset above also returned the fences to their power-on
+         * value; put back what was programmed, since an accepted warm
+         * reset leaves them as they were (see the function comment).
+         */
+        s->fence = fence;
+        for (link = 0; link < SGI_XBOW_LINKS; link++) {
+            s->link_fence[link] = link_fence[link];
+        }
+        sgi_xbow_sync_routes(s);
+        sgi_xbow_update_interrupt(s);
+    }
     /* The core reset closes the window; this reset has just opened it. */
     s->warm_reset_quiet_until = now + SGI_XIO_LLP_RESET_QUIET_CYCLES *
                                       XBOW_CORE_CYCLE_NS;
-    sgi_xbow_sync_routes(s);
-    sgi_xbow_update_interrupt(s);
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
-        qemu_irq_pulse(s->link_reset[link]);
+        if (link_fence[link] & BIT(line)) {
+            qemu_irq_pulse(s->link_reset[link]);
+        }
     }
 }
 
@@ -1887,7 +2020,7 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 3,
     .pre_save = sgi_xbow_pre_save,
     .pre_load = sgi_xbow_pre_load,
@@ -1922,6 +2055,9 @@ static const VMStateDescription vmstate_sgi_xbow = {
         VMSTATE_INT64_ARRAY(link_reset_remaining, SGIXbowState,
                             SGI_XBOW_LINKS),
         VMSTATE_INT64_V(warm_reset_quiet_until, SGIXbowState, 4),
+        VMSTATE_UINT8_V(fence, SGIXbowState, 5),
+        VMSTATE_UINT8_ARRAY_V(link_fence, SGIXbowState, SGI_XBOW_LINKS, 5),
+        VMSTATE_UINT8_V(lock, SGIXbowState, 5),
         VMSTATE_END_OF_LIST()
     }
 };

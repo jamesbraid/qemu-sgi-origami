@@ -206,6 +206,65 @@ static void test_octane2_population(void)
     qtest_quit(qts);
 }
 
+/*
+ * Revision 5 ("Crossbow 2.0") decodes the reset fences and the resource
+ * lock the earlier revision leaves reserved (hw/misc/sgi-xbow.c). Existence
+ * and the reset-to-0xff/reset-to-0 values are measured on the owner's
+ * Octane2 (PROM Command Monitor reads, 2026-10-02); the fences' per-link
+ * semantics and the lock's acquire/release behavior get their own coverage
+ * in sn0-xbow-test.c against an isolated Crossbow.
+ */
+static void test_octane2_fences_and_lock(void)
+{
+    QTestState *qts = octane2_start_args("");
+    uint32_t value;
+    unsigned int link;
+
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0x7c, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xff);
+    for (link = 0; link < 8; link++) {
+        g_assert_cmpuint(memtx_readl(qts, XBOW + 0x84 + link * 8, &value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, 0xff);
+    }
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xc4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xcc, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+
+    /* A fence write keeps only the low 8 bits; the rest are discarded. */
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0x7c, 0xaa55ff00), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0x7c, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+
+    /* Clearing a link's own bit in its own fence and reading it back. */
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xbc, 0xf7), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xbc, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xf7);
+
+    /* A second acquire while locked is silently ignored. */
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xc4, 0x5a), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xc4, 0xa5), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xcc, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x5a);
+
+    /* The release offset clears it unconditionally, discarding its data. */
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xcc, 0xff), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xc4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+
+    /* A machine reset restores every fence to 0xff; the lock stays 0. */
+    qtest_system_reset(qts);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0x7c, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xff);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xbc, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xff);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xc4, &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_memory_populations(void)
 {
     struct OctaneMemoryCase {
@@ -1102,6 +1161,26 @@ static void test_widgets_and_memory(void)
     g_assert_cmphex(qtest_readq(qts, HIGH_RAM), ==, 0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(qts, ATTR0 + HIGH_RAM), ==,
                     0x0123456789abcdefULL);
+    qtest_quit(qts);
+}
+
+/*
+ * Revision 4's Crossbow leaves the fence and lock range entirely reserved
+ * (hw/misc/sgi-xbow.c); only revision 5 ("Crossbow 2.0") and later decode it.
+ */
+static void test_octane_fence_lock_errors(void)
+{
+    QTestState *qts = octane_start();
+    uint32_t value;
+
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0x7c, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xbc, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xc4, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(qts, XBOW + 0xcc, &value), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0x7c, 0), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xbc, 0), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xc4, 0), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_writel(qts, XBOW + 0xcc, 0), !=, MEMTX_OK);
     qtest_quit(qts);
 }
 
@@ -4459,11 +4538,15 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_func("/octane/xbow-fence-lock-errors",
+                   test_octane_fence_lock_errors);
     qtest_add_data_func("/octane/cpu-clock", GINT_TO_POINTER(0),
                         test_cpu_clock);
     qtest_add_data_func("/octane2/cpu-clock", GINT_TO_POINTER(1),
                         test_cpu_clock);
     qtest_add_func("/octane2/population", test_octane2_population);
+    qtest_add_func("/octane2/xbow-fences-and-lock",
+                   test_octane2_fences_and_lock);
     qtest_add_data_func("/octane/board-identities", GINT_TO_POINTER(0),
                         test_board_identities);
     qtest_add_data_func("/octane2/board-identities", GINT_TO_POINTER(1),
