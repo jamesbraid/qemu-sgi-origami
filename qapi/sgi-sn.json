@@ -440,8 +440,9 @@
 # @SGIModelIoPeer:
 #
 # An I/O-only network endpoint carried by a module.  It has no
-# processor, memory-bank or boot-flash population.  Its runtime
-# construction is not yet supported.
+# processor, memory-bank or boot-flash population.  Explicit
+# experimental assembly construction is supported.  Physical/reference
+# assembly construction remains unsupported.
 #
 # @id: catalogue id of this endpoint
 #
