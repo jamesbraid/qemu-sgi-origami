@@ -369,9 +369,13 @@ typedef struct SGIMgrasTexture {
     uint32_t t_offset;          /* the 0x5f04 float's bits */
     uint32_t on;                /* 0x0b00 came after the last 0x0c00: 0/1 */
     uint32_t bracket;           /* inside 0x9b00 ... 0x9c00: 0 or 1 */
-    /* A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads. */
+    /*
+     * A 0x511a transfer waiting for its DMA: 0 or 1, and what it loads:
+     * the level, and the rectangle of it, x, y and h << 16 | w.
+     */
     uint32_t load;
     uint32_t load_base, load_block, load_spec, load_mode;
+    uint32_t load_x, load_y, load_size;
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.
