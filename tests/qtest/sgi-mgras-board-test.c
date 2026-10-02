@@ -769,6 +769,21 @@ static void test_dac_lut_load(void)
  * A recorded IRIX desktop session programs the same registers, in the
  * same order, before each gamma-table load (0x0600 takes 0xec there).
  */
+/* The DAC mode byte reads back each walking pattern the IDE writes. */
+static void test_dac_mode_byte_readback(void)
+{
+    mgras_reset();
+
+    for (unsigned bit = 0; bit < 8; bit++) {
+        qtest_writeb(qts, REG_DAC_CONFIG, 1u << bit);
+        g_assert_cmphex(qtest_readb(qts, REG_DAC_CONFIG), ==, 1u << bit);
+        qtest_writeb(qts, REG_DAC_CONFIG, (uint8_t)~(1u << bit));
+        g_assert_cmphex(qtest_readb(qts, REG_DAC_CONFIG), ==,
+                        (uint8_t)~(1u << bit));
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_dac_register_file_matches_ide_reset(void)
 {
     static const struct {
@@ -1925,6 +1940,8 @@ int main(int argc, char **argv)
                    test_board_ge_revision_until_query);
     qtest_add_func("sn0/origin2000/mgras/board-unknown-refused",
                    test_board_unknown_refused);
+    qtest_add_func("sn0/origin2000/mgras/dac-mode-byte-readback",
+                   test_dac_mode_byte_readback);
     qtest_add_func("sn0/origin2000/mgras/board-record-absent",
                    test_board_record_absent);
     for (size_t i = 0; i < ARRAY_SIZE(mgras_board_record_expect); i++) {
