@@ -28,6 +28,168 @@
         2
       ],
       "disk-bus": "scsi.0",
+      "display-name": "Fuel with VPro",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "hardware-inputs": [
+        {
+          "option": "fuel-bedrock-revision",
+          "required": true
+        },
+        {
+          "option": "fuel-board-id-word",
+          "required": true
+        },
+        {
+          "option": "fuel-ioc3-subsystem-id",
+          "required": true
+        },
+        {
+          "option": "fuel-l1-revision",
+          "required": false
+        },
+        {
+          "option": "fuel-l1-type-code",
+          "required": true
+        },
+        {
+          "option": "fuel-mac-eeprom",
+          "required": false
+        }
+      ],
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom"
+      ],
+      "install-media": [],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "fuel",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "board-indices": [
+            0
+          ],
+          "clock-reference": true,
+          "count": 1,
+          "drive-indices": [
+            0
+          ],
+          "initial-ip27-fixture": false,
+          "kind": "nvram",
+          "part": "m48t35",
+          "scope": "board",
+          "size": 32768,
+          "system-timekeeper-kind": "m48t35-compatible",
+          "year-base": 1968
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 1,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 1,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": true,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg",
+          "launcher"
+        ],
+        "package-path": "assets/boot/smdk-fuel-6526",
+        "requires-boot-flash": true,
+        "requires-network-identity": true,
+        "tftp-mode": "requested"
+      },
+      "smp": 1,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [],
+      "synthesized-firmware-toggle": false,
+      "topology": "fuel-vpro"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "system-controller",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "fuel",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
       "display-name": "Fuel",
       "firmware": {
         "argument": "-bios",
@@ -9565,6 +9727,208 @@
   ],
   "schema": "sgi-sn-catalogue",
   "topologies": [
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "l1",
+          "kind": "l1",
+          "l1": {
+            "mac-eeprom-input": {
+              "option": "fuel-mac-eeprom",
+              "required": false
+            },
+            "reported-type-input": {
+              "option": "fuel-l1-type-code",
+              "required": true
+            },
+            "revision-input": {
+              "option": "fuel-l1-revision",
+              "required": false
+            }
+          },
+          "module-index": 0
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Fuel (IP34) with VPro",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "onboard",
+          "id": "ip34-system-board",
+          "ioc3-serial": 103835129348099,
+          "ioc3-subsystem-input": {
+            "option": "fuel-ioc3-subsystem-id",
+            "required": true
+          },
+          "mac-source": "module-l1",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "pci-functions": [
+            {
+              "kind": "isp12160",
+              "revision": 6
+            },
+            {
+              "kind": "ioc3",
+              "revision": 1
+            },
+            {
+              "kind": "lucent-ohci",
+              "revision": 16
+            }
+          ],
+          "populated": true,
+          "preset": "fuel",
+          "system-timekeeper": {
+            "initial-ip27-fixture": false,
+            "kind": "m48t35-compatible",
+            "year-base": 1968
+          }
+        },
+        {
+          "attachment": 2,
+          "carrier": "machine-placed",
+          "id": "vpro-v12",
+          "label": "graphics slot",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "",
+          "populated": true,
+          "preset": "odyssey",
+          "revision": 10,
+          "serial": 47413004298
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "implicit-module",
+          "initial-module-number": 0,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "fuel-vpro",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "established",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            256,
+            256,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "bedrock": {
+            "board-id-input": {
+              "option": "fuel-board-id-word",
+              "required": true
+            },
+            "board-id-mask": 61440,
+            "board-id-required-bits": 16384,
+            "initiator-region": 0,
+            "installed-bank-mask": 3,
+            "local-region": 0,
+            "revision-input": {
+              "option": "fuel-bedrock-revision",
+              "required": true
+            }
+          },
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3875
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "serial": 14345375975689,
+            "system-controller": false
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        }
+      ],
+      "product": "fuel",
+      "routers": [],
+      "xio-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 13
+        }
+      ],
+      "xio-slots": []
+    },
     {
       "cables": [],
       "console": 0,

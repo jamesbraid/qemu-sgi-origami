@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Revision G Fuel board with a VPro graphics board.
+layer_version: 1
+layer:
+  kind: product
+  id: fuel-vpro
+  requires: {assembly: ip34}
+  topology:
+    min_nodes: 1
+    max_nodes: 1
+    supported_cpu_populations: [[1]]
+    provenance: vendor-document
+    sources: ["007-4480-001 printed pages 30 to 32: one PIMM and minimum memory configuration"]
+  population:
+    nodes: 1
+    cpus_per_node: [1]
+    provenance: vendor-document
+    sources: ["007-4480-001 printed pages 30 to 32 and 60: 500 MHz R14000A option, two 256 MiB DIMMs in matched pair 1"]
+  cpu_selection:
+    default: {clock_mhz: 500, cache_mib: 2}
+    slots: [cpu0]
+  memory_kits_per_node: [fuel-512-test-map]
+  data:
+    machine:
+      name: Fuel with VPro
+      model_role: emulation-target
+      notes: >-
+        The serial Fuel with a VPro board in its graphics slot at widget 13,
+        the position a Fuel IRIX inventory and an OpenBSD capture both
+        report. Memory, processor and board inputs match the base Fuel
+        profile. The board model is the Odyssey device's V12 default; the
+        observed Fuel carried a V10. Display output on this composition is
+        unverified until a guest drives it.
+      emulation:
+        bedrock_nodes:
+          bedrock:
+            board_id_input: {option: fuel-board-id-word, required: true}
+            board_id_mask: 61440
+            board_id_required_bits: 16384
+            revision_input: {option: fuel-bedrock-revision, required: true}
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask: {mode: fitted-banks}
+            provenance: derived
+            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        l1_controllers:
+          l1:
+            reported_type_input: {option: fuel-l1-type-code, required: true}
+            revision_input: {option: fuel-l1-revision, required: false}
+            mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
+            provenance: derived
+            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        io_boards:
+          ip34-system-board:
+            ioc3_subsystem_input: {option: fuel-ioc3-subsystem-id, required: true}
+            mac_source: module-l1
+            provenance: derived
+            sources: [hw/mips/sgi/baseio.c]
+            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.
+        pci_function_revisions:
+          scsi:
+            revision: 6
+            provenance: derived
+            sources: [hw/scsi/qlogic-isp.c]
+            notes: Preserves the implemented ISP12160 class revision. The Fuel silicon revision is unverified.
+          ioc3:
+            revision: 1
+            provenance: derived
+            sources: [include/hw/misc/sgi-ioc3.h]
+            notes: Preserves the implemented IOC3 class revision. The Fuel silicon revision is unverified.
+        system_timekeepers:
+          ip34-system-board:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources: [docs/datasheets/ip34-system-timekeeper.md]
+            notes: Flat independent 32 KiB storage is a compatibility assumption. Physical part, capacity, decode and wiring are unknown.
+        machine_name: fuel
+        display_description: SGI Fuel (IP34) with VPro
+        profile: vpro
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib: [512]
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: "0x1686a8"
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+            - {name: CPU reset view, address: "0x000_001fc00000", payload_offset: "0x0", size: "0x1686a8"}
+            - {name: local Hub-special boot view, address: "0x100_18000000", payload_offset: "0x0", size: "0x1686a8"}
+            - {name: bounded high local Hub-special boot view, address: "0x100_1fc00000", payload_offset: "0x0", size: "0x1686a8"}
+            - {name: node-zero remote Hub-special boot view, address: "0x100_38000000", payload_offset: "0x0", size: "0x1686a8"}
+          second_selection: {address: "0x100_1a000000", size: "0x0080_0000"}
+          provenance: derived
+          sources: ["docs/machines/layers/products/origin300.yaml: existing bounded IP35 PROM compatibility carrier", "docs/decisions/D-0024-origin300-stock-prom-reset-carrier.md"]
+          notes: >-
+            This boot spike reuses the Origin 300 emulator's bounded views of
+            the operator-supplied IP35 PROM payload. The physical Fuel reset
+            decoder, flash part and selection priority are unknown. A stock
+            Fuel PROM fetch trace and independent board evidence must test
+            these addresses before this can become a hardware claim.
+        synthetic_identities:
+          - {component: bedrock, serial: "0x0d0c0b0a0909", reason: Stable synthetic Fuel node identity for this spike; not a recovered board serial.}
+          - {component: xbridge, serial: "0x0b0a090808", reason: Stable synthetic Fuel XBridge identity for this spike; not a recovered board serial.}
+          - {component: ioc3, serial: "0x5e7000000003", reason: Stable synthetic Fuel IOC3 identity for this spike; not a recovered board serial.}
+          - {component: vpro-v12, serial: "0x0b0a09080a", reason: Stable synthetic catalogue metadata for the uncaptured graphics board; the Odyssey device supplies its own guest-visible NIC.}
+        initially_operational_crossbow_links:
+          - component: xbridge-crossbar
+            widgets: [13, 14, 15]
+            reason: Both PCI bridge heads and the graphics board are present on the selected XBridge; startup health is emulator policy pending a Fuel reset test.

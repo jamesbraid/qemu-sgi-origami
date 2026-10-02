@@ -89,6 +89,7 @@ hw/mips/sgi/board-pci-expansion.c
 hw/mips/sgi/board-pci-shoehorn.c
 hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
+hw/mips/sgi/models/fuel-vpro.yaml
 hw/mips/sgi/models/layers/architectures/sn0.yaml
 hw/mips/sgi/models/layers/architectures/sn1.yaml
 hw/mips/sgi/models/layers/assemblies/ip27.yaml
@@ -98,6 +99,7 @@ hw/mips/sgi/models/layers/assemblies/ip45.yaml
 hw/mips/sgi/models/layers/assemblies/ip53-tezro.yaml
 hw/mips/sgi/models/layers/assemblies/ip53.yaml
 hw/mips/sgi/models/layers/modules/c-brick.yaml
+hw/mips/sgi/models/layers/modules/fuel-vpro.yaml
 hw/mips/sgi/models/layers/modules/i-brick.yaml
 hw/mips/sgi/models/layers/modules/ip27-node-board.yaml
 hw/mips/sgi/models/layers/modules/ir-graphics-module.yaml
@@ -121,6 +123,7 @@ hw/mips/sgi/models/layers/modules/origin350-module.yaml
 hw/mips/sgi/models/layers/modules/pci-carrier.yaml
 hw/mips/sgi/models/layers/modules/pci-shoehorn.yaml
 hw/mips/sgi/models/layers/modules/r-brick.yaml
+hw/mips/sgi/models/layers/products/fuel-vpro.yaml
 hw/mips/sgi/models/layers/products/onyx2-deskside.yaml
 hw/mips/sgi/models/layers/products/onyx2-rack.yaml
 hw/mips/sgi/models/layers/products/onyx350-base.yaml
@@ -692,6 +695,7 @@ tests/qtest/sn1-bedrock-xb-test.c
 tests/qtest/sn1-cpu-identity-test.c
 tests/qtest/sn1-cross-node-test.c
 tests/qtest/sn1-directory-state-test.c
+tests/qtest/sn1-fuel-vpro-test.c
 tests/qtest/sn1-io8-scsi-test.c
 tests/qtest/sn1-l1-test.c
 tests/qtest/sn1-odyssey-query-test.c

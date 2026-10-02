@@ -125,6 +125,21 @@ layer:
             those bytes.
         datasheet_contracts: [docs/datasheets/lucent-ohci.md]
         sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 120 to 152: board revision and 11c1:5802 at PCI device 5", "007-4480-001 printed page 130: two USB ports and USS-312", "docs/reviews/fuel-usb-variants-review-20260927.md"]
+      - id: graphics-connector
+        name: graphics board connector
+        kind: connector
+        parent: ip34-system-board
+        provenance: observed-hardware
+        connector:
+          interface: XIO
+          location: graphics slot
+          occupancy: opaque
+          notes: >-
+            The VPro graphics board's XIO position on the system board. A
+            Fuel IRIX inventory lists its board under xtalk/13 and OpenBSD
+            reports Odyssey at XXBow widget 13. The composition records
+            whether a board is fitted.
+        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146: ASTODYB board at /hw/module/001c01/Ibrick/xtalk/13", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541: Odyssey at xbow0 widget 13"]
       - id: l1
         name: L1 system controller
         kind: system-controller
@@ -147,6 +162,7 @@ layer:
       - {component: xbridge-crossbar, bus: crosstalk, role: bridge-upstream, widget: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-e, bus: crosstalk, role: bridge-upstream, widget: 14, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-f, bus: crosstalk, role: bridge-upstream, widget: 15, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
+      - {component: graphics-connector, bus: crosstalk, role: endpoint, widget: 13, provenance: observed-hardware, sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146", "boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-e, bus: pci-widget-14, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
       - {component: xbridge-bridge-f, bus: pci-widget-15, role: bridge-downstream, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5519 to 5541"]}
       - {component: scsi, bus: pci-widget-15, role: endpoint, pci_device: 1, pci_function: 0, provenance: observed-hardware, sources: ["boot-logs/miod-openbsd-sgi-story-all.html raw HTML lines 5530 to 5541"]}

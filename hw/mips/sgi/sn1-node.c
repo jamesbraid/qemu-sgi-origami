@@ -1720,6 +1720,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
     qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
+    qdev_prop_set_uint8(node->xbridge, "xio-port", node->xbridge_xio_port);
     /*
      * The first node's buses keep the names they have always had; a second
      * node's carry its index, since PCI devices on same-named buses collide
@@ -1771,9 +1772,11 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     /*
      * Origin 300 has a rear XIO cable connector (007-4365-002, page 8).
-     * Fuel's rear-panel diagram (007-4480-001, page 6) shows none. This
-     * shared model still decodes the XBridge's selected external port
-     * (SGI_XBRIDGE_XIO_PORT_DEFAULT) through Bedrock. Fuel's unused-port
+     * Fuel's rear-panel diagram (007-4480-001, page 6) shows none, but its
+     * graphics board answers at widget 13, which the machine selects as
+     * the external port when its topology fits one. Without a graphics
+     * board the shared model still decodes the default external port
+     * (SGI_XBRIDGE_XIO_PORT_DEFAULT) through Bedrock; Fuel's unused-port
      * wiring and register response are unknown.
      */
     {
@@ -2125,6 +2128,8 @@ static const Property sn1_node_properties[] = {
                       installed_bank_mask, 0),
     DEFINE_PROP_UINT8("io-board-widget", SN1NodeState, io_board_widget, 0),
     DEFINE_PROP_STRING("io-board-part", SN1NodeState, io_board_part),
+    DEFINE_PROP_UINT8("xbridge-xio-port", SN1NodeState, xbridge_xio_port,
+                      SGI_XBRIDGE_XIO_PORT_DEFAULT),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
