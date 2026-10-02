@@ -3878,6 +3878,34 @@ static void push_triangle(QTestState *qts, const uint32_t v[6])
 }
 
 /*
+ * A guest reset mid-primitive leaves the shared GL context's open polygon
+ * vertex buffer still allocated: push_triangle() above always closes with
+ * ODSY_CMD_GL_END first, but BEGIN alone (no END) leaves it open.
+ * sgi_gl_init() discards that pointer by overwriting the whole context with
+ * a zeroed one rather than freeing it first, so no guest-observable register
+ * shows the leak; an address-sanitizer build's LeakSanitizer is what catches
+ * it, at process exit. This test's own job is pinning that the reset still
+ * completes and leaves the device responsive with the primitive left open.
+ */
+static void test_reset_mid_primitive_does_not_hang(void)
+{
+    QTestState *qts = board_start("");
+
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_TRIANGLES);
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    user_cmd_push(qts, 0x42200000);
+    user_cmd_push(qts, 0x42200000);
+    /* No ODSY_CMD_GL_END: reset lands with the polygon still open. */
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(reg_read(qts, ODSY_CONTROL), ==, SLOT);
+
+    qtest_quit(qts);
+}
+
+/*
  * The projection arrives folded into slot 0x00. Under that ortho matrix
  * the probe's triangle lands at half size about the window centre --
  * (40, 88), (88, 84) and the apex (60, 40.5) -- so pixels the identity
@@ -10109,6 +10137,8 @@ int main(int argc, char **argv)
                    test_framebuffer_pixel_reaches_display_and_screendump);
     qtest_add_func("sn1/odyssey/reset-clears-the-framebuffer",
                    test_reset_clears_the_framebuffer);
+    qtest_add_func("sn1/odyssey/reset-mid-primitive-does-not-hang",
+                   test_reset_mid_primitive_does_not_hang);
     qtest_add_func("sn1/odyssey/framebuffer-pixel-accessor-bounds",
                    test_framebuffer_pixel_accessor_bounds);
     qtest_add_func("sn1/odyssey/scanout-wipe-repaint-reload",
