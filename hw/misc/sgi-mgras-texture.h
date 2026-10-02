@@ -48,6 +48,15 @@ void sgi_mgras_texture_abort(SGIMgrasState *s);
  */
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
+/*
+ * Whether a DMA kick is the TRAM save's read (read) or restore's write that
+ * the kernel opened, taken here: it moves nothing.
+ */
+bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, bool read);
+/* Whether a 0xda00 closes a TRAM save's read, taken here. */
+bool sgi_mgras_texture_tram_read_done(SGIMgrasState *s);
+/* Whether the TRAM save or restore under way is a state the model has. */
+bool sgi_mgras_texture_transfer_valid(const SGIMgrasState *s);
 /* Forget one context's texture state and free its levels. */
 void sgi_mgras_texture_reset(SGIMgrasTexture *t);
 /* Whether every context's levels together fit the board's TRAMs. */

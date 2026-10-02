@@ -687,6 +687,12 @@ struct SGIMgrasState {
     uint32_t eram_rows;
     uint32_t eram_bpr;
     uint32_t eram_next_addr;
+    /*
+     * The kernel's TRAM save or restore of one block between the word that
+     * opens it and its DMA kick (sgi-mgras-texture.c, "TRAM save and
+     * restore").
+     */
+    uint32_t tram_transfer;
     /* Host ownership and bounded diagnostics; never serialized. */
     bool gl_restore_in_progress;
     bool gl_cleanup_registered;

@@ -1733,6 +1733,113 @@ static void test_mxi_texbase_both_rows(gconstpointer data)
     qtest_quit(t);
 }
 
+/*
+ * The kernel's TRAM save and restore of one 16 KiB block, in the words the
+ * IRIX 6.5.30 IP27 kernel sends (sgi-mgras-texture.c, "TRAM save and
+ * restore"): a save reads 32 rows of 0x200 bytes back through DMA-map
+ * slot 2 after 0xe50c (rows, format, 0x400d) and closes with 0xda00 and
+ * 0xd300; a restore opens with 0xe300, gives the GE its word count with
+ * 0xd80c in three 9-bit parts, kicks slot 2 with 0xa5 and fences.
+ */
+#define TRAM_SAVE_RSS_HDR     0x0000d214
+#define TRAM_RESTORE_RSS      0x0000d300
+#define TRAM_READ_HDR         0x0000e50c
+#define TRAM_READ_LAST_WORD   0x0000400d
+#define TRAM_READ_DONE        0x0000da00
+#define TRAM_RESTORE_OPEN     0x0000e300
+#define TRAM_GE_COUNT_HDR     0x0000d80c
+#define TRAM_ROW_BYTES        0x200
+#define TRAM_BLOCK_ROWS       32
+#define TRAM_BUFFER           0x7000u
+#define TRAM_BUFFER_FILL      0x5a
+
+static void tram_save_block(QTestState *t)
+{
+    static const uint32_t save_rss[5] = {
+        0xffffffff, 0x01001000, 0x001fc0ff, 0, 0,
+    };
+
+    gl_word(t, TRAM_SAVE_RSS_HDR);
+    for (int i = 0; i < 5; i++) {
+        gl_word(t, save_rss[i]);
+    }
+    gl_word(t, TRAM_READ_HDR);
+    gl_word(t, TRAM_BLOCK_ROWS);
+    gl_word(t, 0x00400090);
+    gl_word(t, TRAM_READ_LAST_WORD);
+    gl_eram_kick(t, 0, TRAM_ROW_BYTES, GL_ERAM_READ_KICK);
+    gl_word(t, TRAM_READ_DONE);
+    gl_word(t, TRAM_RESTORE_RSS);
+}
+
+static void tram_restore_block(QTestState *t)
+{
+    uint32_t count = TRAM_ROW_BYTES / 4 * TRAM_BLOCK_ROWS;
+
+    gl_word(t, TRAM_RESTORE_OPEN);
+    gl_word(t, TRAM_GE_COUNT_HDR);
+    gl_word(t, (count >> 18) & 0x1ff);
+    gl_word(t, (count >> 9) & 0x1ff);
+    gl_word(t, count & 0x1ff);
+    gl_eram_kick(t, 0, TRAM_ROW_BYTES, GL_ERAM_WRITE_KICK);
+    gl_word(t, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(t, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    gl_word(t, TRAM_RESTORE_RSS);
+}
+
+/*
+ * Save and restore around a context switch on MXI and EMXI, and SI+T,
+ * which sends the same words. The model keeps each context's levels in
+ * its own store, so the context still draws its texels on both rows
+ * after the kernel has saved and restored the block they live in; and a
+ * TRAM transfer is not a raster image, so neither the save's read nor
+ * the restore's write may touch the planes, here under a raster box left
+ * over screen row 0 that would take a 0x200-byte row as 128 pixels. A
+ * model that drew the restored bytes there, as a write kick with nothing
+ * waiting for it once did, fails the plane check; one that read the
+ * planes into the save buffer fails the buffer check.
+ */
+static void test_mxi_tram_save_restore(gconstpointer data)
+{
+    QTestState *t = mxi_start(data);
+    uint8_t texels[32], buffer[TRAM_ROW_BYTES], want[TRAM_ROW_BYTES];
+    uint32_t before[4];
+
+    tex_texels(texels);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    mxi_two_row_quad(t);
+    mxi_expect_rows(t, texels, true);
+
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, 0));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (127u << 16) | 0));
+    for (int i = 0; i < 4; i++) {
+        before[i] = mgras_test_pixel(t, 32 * i + 3, 0);
+    }
+    memset(want, TRAM_BUFFER_FILL, sizeof(want));
+    qtest_memwrite(t, TRAM_BUFFER, want, sizeof(want));
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    gl_eram_map(t);
+    tram_save_block(t);
+    qtest_memread(t, TRAM_BUFFER, buffer, sizeof(buffer));
+    g_assert_cmpmem(buffer, sizeof(buffer), want, sizeof(want));
+    tram_restore_block(t);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(mgras_test_pixel(t, 32 * i + 3, 0), ==, before[i]);
+    }
+
+    gl_enter_slot(t, GL_SLOT_A);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    mxi_two_row_quad(t);
+    mxi_expect_rows(t, texels, true);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1823,6 +1930,12 @@ int main(int argc, char **argv)
                         "mxi", test_mxi_texbase_both_rows);
     qtest_add_data_func("sn0/origin2000/mgras/mxi-texbase-both-rows/emxi",
                         "emxi", test_mxi_texbase_both_rows);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore",
+                        "mxi", test_mxi_tram_save_restore);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore/emxi",
+                        "emxi", test_mxi_tram_save_restore);
+    qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore/si-t",
+                        "si-t", test_mxi_tram_save_restore);
 
     ret = g_test_run();
     qtest_quit(qts);

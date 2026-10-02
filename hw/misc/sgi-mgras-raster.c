@@ -12,6 +12,7 @@
 #include "qemu/units.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/misc/sgi-mgras-texture.h"
 #include "system/dma.h"
 #include "hw/display/sgi/pixel-dma.h"
 #include "trace.h"
@@ -2423,14 +2424,19 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
     uint32_t kick_byte = kick_word & 0xff;
     bool take;
 
+    /* A kernel TRAM save or restore moves nothing (sgi-mgras-texture.c). */
     if (kick_word & MGRAS_DMA_KICK_DIRECTION_READ) {
-        mgras_raster_dma_read(s, kick_byte);
+        if (!sgi_mgras_texture_tram_kick(s, true)) {
+            mgras_raster_dma_read(s, kick_byte);
+        }
         return;
     }
-    if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
-        sgi_mgras_gl_pixels_dma(s, s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
-                                s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR],
-                                &take)) {
+    if (sgi_mgras_texture_tram_kick(s, false)) {
+        /* Nothing to move; the fence below still says it is done. */
+    } else if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
+               sgi_mgras_gl_pixels_dma(
+                   s, s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
+                   s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR], &take)) {
         if (take) {
             mgras_raster_dma_ge_pixels(s, kick_byte);
         }

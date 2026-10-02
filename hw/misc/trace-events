@@ -42,6 +42,8 @@ sgi_mgras_gl_bind(uint32_t slot, uint32_t origin, uint32_t clip_mode, uint32_t r
 # A texture level stored from its load: the base block, TL_SPEC's level,
 # the size and TL_MODE.
 sgi_mgras_texture_level(uint32_t base, uint32_t block, uint32_t level, uint32_t width, uint32_t height, uint32_t mode) "base %u block 0x%x level %u %ux%u mode 0x%x"
+# A kernel TRAM save's read or restore's write, kicked and moving nothing.
+sgi_mgras_tram_transfer(const char *kind) "TRAM %s of one block"
 
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32
