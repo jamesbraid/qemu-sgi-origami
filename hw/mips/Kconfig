@@ -54,6 +54,7 @@ config SGI_OCTANE
     select QLOGIC_ISP_SCSI_PCI
     select SGI_RAD1_AUDIO
     select SGI_MGRAS
+    select SGI_ODYSSEY
     select SGI_BRIDGE
     select SGI_IOC3
     select SGI_XBOW
