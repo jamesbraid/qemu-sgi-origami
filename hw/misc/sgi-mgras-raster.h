@@ -22,5 +22,14 @@ uint64_t sgi_mgras_dma_map_slot_base(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_count(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_width(SGIMgrasState *s, unsigned int slot);
 uint32_t sgi_mgras_dma_map_slot_control(SGIMgrasState *s, unsigned int slot);
+/* The bytes the DMA descriptor's rows and bytes a row describe. */
+uint64_t sgi_mgras_raster_dma_bytes(SGIMgrasState *s);
+/*
+ * Move bytes, the descriptor's rows times its bytes a row, between buf
+ * and host memory through the slot the kick byte names: to host memory
+ * for a read kick. False, logged, when the descriptor or mapping cannot.
+ */
+bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
+                               uint8_t *buf, uint64_t bytes, bool to_host);
 
 #endif

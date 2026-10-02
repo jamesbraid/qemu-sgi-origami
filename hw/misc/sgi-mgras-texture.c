@@ -47,7 +47,8 @@
  *   first; established for RGBA unsigned bytes, inferred for the rest.
  *   The transfer must be exactly the rectangle's width times height times
  *   the format's bytes a texel. Texels of a level no transfer has reached
- *   are 0 (the model's choice; the board's TRAM would hold what it held).
+ *   hold whatever TRAM held there, 0 after a reset (the model's choice;
+ *   the board's TRAM contents at reset are unknown).
  *   The pixel program is read for one case: the three-unsigned-byte RGB
  *   program the image path draws GL_RGB with, which perfly's client
  *   loaded for the CH-53's RGB body texture kept as RGBA4 (its DMA rows
@@ -65,37 +66,34 @@
  *   not rejected. An inline image, GL_ABGR_EXT or a transfer of another
  *   byte count is logged and nothing is stored.
  *
- * - Storage. Approximated: a level is stored per GL context keyed by the
- *   base block the kernel's 0xeb04 names, the TXMIPMAP word the load
- *   names and TL_SPEC's level number, not at a TRAM byte address. The
- *   load's GE words at 0xe3d carry the level's TXMIPMAP word, the first
- *   block in 7:0 and bit 8, which perfly set on alternate levels of a
- *   shared block (placement inside it, meaning unknown), and the draw
- *   sends the same word for the level through the TXMIPMAP table:
- *   ivview's three levels loaded 0, 0x100 and 0 and drew 0, 0x100 and 0,
- *   and perfly's three textures loaded and drew 0, 4 and 0xc for level 0
- *   (established as words; that the board reads the level from the block it
- *   was loaded to is inferred). The draw finds level n by TXMIPMAP entry n,
- *   the client writing the table from the first level, 0 in every trace. A
- *   mipmapped texture puts several small levels in one block under one
- *   word, so the level number stays in the key. Where a level sits inside
- *   its block is unknown, and the model keeps no TRAM byte image: the
- *   kernel's TRAM save and restore move no bytes (see "TRAM save and
- *   restore" below), and a load does not evict a level of another word
- *   that overlapped it in TRAM; the other stays until its own word is
- *   loaded again. A context keeps at most one TRAM's 4 MiB of texels and
- *   the board four TRAMs'.
+ * - Storage. A level's texels go into TRAM (see "TRAM" below) at the
+ *   block the context's 0xeb04 base and the load's TXMIPMAP word name, in
+ *   the model's own layout. The load's GE words at 0xe3d carry the
+ *   level's TXMIPMAP word, the first block in 7:0 and bit 8, which every
+ *   traced load set on the odd levels of a mipmapped texture (ivview's
+ *   three levels loaded 0, 0x100 and 0, perfly's and ivview's longer
+ *   pyramids alternate it level by level), and the draw sends the same
+ *   word for the level through the TXMIPMAP table: perfly's three
+ *   textures loaded and drew 0, 4 and 0xc for level 0 (established as
+ *   words; that the board reads the level from the block it was loaded to
+ *   is inferred). The draw finds level n by TXMIPMAP entry n, the client
+ *   writing the table from the first level, 0 in every trace. Several
+ *   textures of a context, and the textures of every context, share the
+ *   one TRAM, so a load overwrites whatever another level or another
+ *   context kept where it lands; the kernel's TRAM save and restore are
+ *   what keeps a context's texels across another context's loads, and
+ *   the client's own save and restore what keeps a texture its own
+ *   manager evicted.
  *   MXI and EMXI have a TE1 and TRAM on each of two REs. The model
- *   keeps one store per context for both, approximated: each path
- *   holding the full texture is inferred, so a load, a base write and a
- *   draw reach the rows of both REs, and the capacity stays one TRAM's
- *   4 MiB, not 8. The software cannot tell the difference; only the
- *   diagnostics' per-RE TRAM tests could. One kernel save and one
- *   restore of a block serve both paths, as on the board.
- *   A context opener discards that context's levels and texture state,
- *   approximated: whether the board's TRAM and TE1 survive a context
- *   switch or an opener is unknown, so a client that relied on texels
- *   outliving its opener would lose them here.
+ *   keeps one TRAM for both, approximated: each path holding the full
+ *   texture is inferred, so a load, a base write and a draw reach the
+ *   rows of both REs, and the capacity stays one TRAM's 4 MiB, not 8.
+ *   The software cannot tell the difference; only the diagnostics'
+ *   per-RE TRAM tests could. One kernel save and one restore of a block
+ *   serve both paths, as on the board.
+ *   A context opener discards that context's texture registers and
+ *   tables, approximated: whether the board's TE1 state survives a
+ *   context switch or an opener is unknown. TRAM survives both.
  *
  * - Depth. Approximated, the model's choice: an 8-bit host component
  *   kept at 4 bits is truncated (v >> 4) and widened back to 8 bits by
@@ -110,10 +108,11 @@
  *   being 8-bit.
  *
  * - Bind and draw. 0x0b00 with TEXMODE1 bit 0 set turns texturing on,
- *   0x0c00 or bit 0 clear off. A draw is textured from level 0 under the
- *   context's base when TXSIZE's base size is that level's, the level's
- *   layout and depth are TEXMODE1 bits 4:3 and TEXMODE2 bits 3:2, the
- *   environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
+ *   0x0c00 or bit 0 clear off. A draw reads level 0 out of TRAM under the
+ *   context's base and TXMIPMAP entry 0, as TXSIZE's base size (its two
+ *   copies alike) in the layout and depth TEXMODE1 bits 4:3 and TEXMODE2
+ *   bits 3:2 name, when a load or a restore has written that block since
+ *   reset, the environment (TEXMODE1 bits 2:1, see mgras_tex_environment) is
  *   modulate, decal or blend, and nothing in TEXMODE2 asks for detail, a
  *   volume, a one-dimensional texture or the multi-buffer read: sampling
  *   by bits 5 to 8 and 19 (mgras_tex_pyramid), with the axes' wrap
@@ -154,6 +153,7 @@
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/misc/sgi-mgras-raster.h"
 #include "trace.h"
 
 /* Class-0 texture tokens. */
@@ -167,48 +167,114 @@
 #define MGRAS_TEX_TABLE          0x0000ec10
 
 /*
- * TRAM save and restore. The IRIX 6.5.30 IP27 kernel divides each TRAM
- * path into 256 blocks of 16 KiB and gives each GL context a run of them;
- * when a new context's run overlaps another's it saves the other's blocks
- * one at a time, and restores them, again a block at a time, when that
- * context runs next. Established from the disassembly of the texture
- * I/O member of mgras.a (SHA-256 5cd14335...): the save, at file offset
- * 0x1b1c, programs TXSIZE 0xd6d6 (a 64 by 8,192 shape), TXLOD 0,
- * TXCLAMPSIZE 0x80000, TL_MODE, TEXMODE1 and TEXMODE2, then TXADDR 0 and
- * the block in TXMIPMAP entry 0, and after a 0xd214 bracket sends 0xe50c
- * with the block's row count, a format word and 0x400d (the header's 12
- * bytes are those three words), kicks a read of the rows through DMA-map
- * slot 2 with (2 << 1) | 0xb9, 0xbd, and ends with 0xda00 and 0xd300.
- * The restore, at 0x15f0, programs TL_MODE, TL_WBUFFER, TEXRBUFFER,
- * TEXMODE2, TEXMODE1, TL_ADDR 0, the block in TL_MIPMAP and TL_SPEC
- * 0xd60 (the same 64 by 8,192 shape), the copy rectangle 64 wide and the
- * block's rows tall, XFRMODE, XFRSIZE and XFRCOUNTERS, and then sends
- * 0xe300, 0xd80c with the transfer's word count in three 9-bit parts,
- * the DMA from slot 2 kicked (2 << 1) | 0xa1, 0xa5, the 0xe0400 fence,
- * XFRMASKLOW and 0xd300. Neither reads the board's RE count or writes RE
- * select 0x112, so on MXI and EMXI one save and one restore serve both
- * TRAM paths. 0xd80c and 0xe300 come from no other routine in the kernel,
- * the X server or the OpenGL client; 0xe50c also opens the client's own
- * save of TRAM, which asks the kernel to send it.
+ * TRAM. The IRIX 6.5.30 IP27 kernel manages each TRAM path as 256 blocks
+ * of 16 KiB and gives each GL context a run of them, set on the board as
+ * the 0xeb04 base (the kernel driver's texture-space arithmetic in
+ * mgras.a, established). The client places each level at a block of its
+ * own run, sized by the kept format: in traced runs an RGBA4 level took
+ * two bytes a texel (perfly's 256 by 128 one four blocks and its 256 by
+ * 256 one eight) and RGB8 and RGBA8 levels four (ivview's 512 by 512 RGBA
+ * level 0 64 blocks, its 128 by 128 RGB level 0 four), with a block
+ * between a large level and the next for its border. The kernel's own
+ * save reads a block back as 64 rows of 64 locations at four bytes a
+ * location (0xe50c's row count 0x40 and a 16 KiB DMA, format word
+ * 0x400080), and the client's read of an RGB texture takes three bytes a
+ * location (format 0x400070, 12 KiB for 64 rows): established as the
+ * traced words of run irix-20261002T030031-a3ed43.
  *
- * Approximated, as the GL path does for context eviction: the model keeps
- * each context's levels in that context's store, where another context's
- * loads never reach them, so it needs no TRAM bytes to keep a context's
- * texels across a save and a restore. It moves none: a save's read writes
- * nothing into the host buffer, where the board writes the block's texels
- * in a layout nothing read settles, and a restore's write takes nothing.
- * Inferred: that neither transfer touches the colour planes, since each
- * names texture memory and no raster box; the model drew a write kick
- * with nothing waiting for it as a raster image before. A guest that
- * inspected the saved bytes would find what was there before the save.
- * The discriminating test is mxi-tram-save-restore, on MXI, EMXI and
+ * The model keeps the 4 MiB as those 32-bit words, 64 to a row and 64
+ * rows to a block. How the board lays texels into them is unknown, so the
+ * layout below is the model's own, approximated; what it guarantees is
+ * that the model's own saves and restores invert each other and that the
+ * texture a client loaded draws the same after them.
+ *
+ * - A texel of the kept format takes a slot of the next power of two at
+ *   or above its bits (components times 4, 8 or 12): eight 4-bit slots
+ *   to a word for one 4-bit component, two 16-bit ones for RGBA4 (the
+ *   traced two bytes), one word for RGB8 and RGBA8 (the traced four), two
+ *   words for 36- and 48-bit texels. Components are packed from the
+ *   slot's high end in order, so an RGB8 texel is the first three bytes
+ *   of its word, the bytes a three-byte read of the location returns.
+ * - A level wider than half a block starts at its first block's first
+ *   word and runs on through the next ones, its texels in rows from t =
+ *   0. A smaller one, which may share its block with the smaller levels
+ *   after it, sits so that it ends where twice its own size from the
+ *   block's end would put it: a level of n bits occupies [16 KiB - 2n,
+ *   16 KiB - n) of the block. Each level of a pyramid holds at most half
+ *   of the one before, so the levels sharing a block never overlap. Bit 8
+ *   of the TXMIPMAP word is not used (its meaning is unknown; that it
+ *   follows the level's parity is established only as what every traced
+ *   pyramid sent).
+ * - The block is the 8-bit base plus the word's 7:0; a level that would
+ *   run past TRAM's 256 blocks is refused and logged.
+ * - A draw reads from TRAM only where a load or a restore has written the
+ *   level's first block since reset; elsewhere it is untextured, logged,
+ *   as a draw with no level was before TRAM existed.
+ *
+ * A 36- or 48-bit texel's two words may be more than the client allots
+ * (the report's 48-bit texels); no traced program kept one.
+ *
+ * TRAM save and restore, established from the disassembly of the kernel's
+ * texture I/O member of mgras.a (SHA-256 5cd14335...) and from the traced
+ * words. When a new context's run overlaps another's, the kernel writes
+ * base 0 and saves each of the other's blocks: as 0x7f08 register pairs
+ * TXSIZE 0xd6d6 (a 64 by 8,192 shape), TXLOD 0, TXCLAMPSIZE 0x80000,
+ * TL_MODE, TEXMODE1, TEXMODE2, TXADDR 0 and TXMIPMAP = the block, then
+ * 0xd214, 0xe50c with the rows (0x40), a format word and 0x400d (the
+ * header's 12 bytes are those three words), and 0xf200 (a sync request,
+ * sgi-mgras-raster.c), it kicks a read of the rows through DMA-map slot
+ * 2 with (2 << 1) | 0xb9, 0xbd, and ends with 0xe0100, 0xa0704 0,
+ * 0xda00 and 0xd300. When the context runs again the kernel, with no GL
+ * context loaded and base 0, restores them: pairs TL_MODE, TL_WBUFFER,
+ * TEXRBUFFER, TEXMODE2, TEXMODE1, TL_ADDR 0, TL_MIPMAP = the block and
+ * TL_SPEC 0xd60 (the same shape), 0xd214, the copy rectangle 64 by 64,
+ * XFRMODE, XFRSIZE and XFRCOUNTERS, then 0xe300, 0xd80c with the
+ * transfer's word count in three 9-bit parts (0, 8, 0), the DMA from slot
+ * 2 kicked (2 << 1) | 0xa1, 0xa5, the 0xe0400 fence, XFRMASKLOW and
+ * 0xd300. Neither reads the board's RE count or writes RE select 0x112,
+ * so on MXI and EMXI one save and one restore serve both TRAM paths.
+ *
+ * The client's own texture manager, when a context's textures outgrow its
+ * run, reads a texture back through the kernel (the same 0xe50c, kicked
+ * 0xb9 on slot 0) with TXADDR 0 and TXMIPMAP = its first block as 0x7c08
+ * triples and 0xec10, in passes of at most 0x2000 rows, and later puts it
+ * back as a texture load: TL_MODE, TL_ADDR 0 and TL_MIPMAP = its first
+ * block, TL_SPEC 0xd60, the load's rectangle at GE parameters 0xe34 to
+ * 0xe38 (x 0, the first row, 64 wide and the rows), then 0x9d10 with the
+ * word count in three 9-bit parts and the load routine 0x511a, the HQ
+ * page-list words and a kick 0xa3 on slot 1, 32,640 and 28,800 bytes a
+ * transfer in that run (170 and 150 rows of 64 three-byte locations).
+ *
+ * The model moves those bytes. A save copies the rows from the block the
+ * last TXMIPMAP entry 0 named, under the base then current, taking from
+ * each word as many of its first bytes as the DMA has room for a
+ * location (four on the kernel's read, three on the client's read of an
+ * RGB texture); the kernel's restore writes them back to the block the
+ * last TL_MIPMAP entry 0 named. The kernel's register pairs set the
+ * transfer's table indices and rows outside any GL context: they come
+ * with no GL context loaded on a restore and only from the kernel, so the
+ * model keeps them apart from the client's texture state, inferred from
+ * that order in the trace. The client's restore is not taken yet: its
+ * 0x9d10 is logged and its kick goes where any other would. That a
+ * transfer neither reads nor writes the colour planes is inferred: each
+ * names texture memory and no raster box.
+ *
+ * The discriminating tests are tram-load-is-one-store,
+ * tram-save-returns-the-block and mxi-tram-save-restore, on MXI, EMXI and
  * SI+T.
  */
 #define MGRAS_TEX_TRAM_READ      0x0000e50c
 #define MGRAS_TEX_TRAM_RESTORE   0x0000e300
 #define MGRAS_TEX_TRAM_GE_COUNT  0x0000d80c
+/* TL_SPEC's whole-TRAM shape: level 0, 64 wide, 8,192 tall. */
+#define MGRAS_TEX_SPEC_WHOLE     0xd60
+#define MGRAS_TRAM_ROW_WORDS     64
+#define MGRAS_TRAM_BLOCK_ROWS    64
+#define MGRAS_TRAM_WORD_BYTES    4
+#define MGRAS_TRAM_BLOCK_BITS    ((uint64_t)SGI_MGRAS_TRAM_BLOCK_BYTES * 8)
+#define MGRAS_TRAM_ROWS          (SGI_MGRAS_TRAM_BLOCKS * MGRAS_TRAM_BLOCK_ROWS)
 
-/* Where the kernel's TRAM save or restore of a block stands. */
+/* Where a TRAM transfer stands between the word that opens it and its kick. */
 enum {
     MGRAS_TRAM_IDLE,
     MGRAS_TRAM_SAVE_OPEN,       /* 0xe50c came, its read kick is next */
@@ -234,6 +300,12 @@ enum {
 #define MGRAS_TEX_TL_WBUFFER     0x1a0
 #define MGRAS_TEX_TL_MODE        0x1a1
 #define MGRAS_TEX_TL_SPEC        0x1a2
+#define MGRAS_TEX_TL_ADDR        0x1a3
+#define MGRAS_TEX_TL_MIPMAP      0x1a4
+#define MGRAS_TEX_TL_S_SIZE      0x1a9
+#define MGRAS_TEX_TL_T_SIZE      0x1aa
+#define MGRAS_TEX_TL_S_LEFT      0x1ab
+#define MGRAS_TEX_TL_T_BOTTOM    0x1ac
 
 /*
  * Raster register records the pixel read-back applies in
@@ -325,10 +397,6 @@ enum {
 #define MGRAS_TEX_SPEC_LOG2W(s)  (((s) >> 4) & 0xf)
 #define MGRAS_TEX_SPEC_LOG2H(s)  (((s) >> 8) & 0xf)
 
-/* One TRAM path's 4 MiB, the most one context keeps; four for the board. */
-#define MGRAS_TEX_CONTEXT_BYTES  (4 * MiB)
-#define MGRAS_TEX_BOARD_BYTES    (4 * MGRAS_TEX_CONTEXT_BYTES)
-
 /* Parser payload slots a 0x7c08 block keeps its place in. */
 #define MGRAS_TEX_REC_COUNT      0
 #define MGRAS_TEX_REC_WORDS      1
@@ -362,22 +430,105 @@ static uint32_t mgras_tex_host_texel(uint32_t mode)
            (MGRAS_TEX_DEPTH(mode) == MGRAS_TEX_DEPTH_12 ? 2 : 1);
 }
 
-static uint64_t mgras_tex_level_bytes(uint32_t spec, uint32_t mode)
-{
-    return ((1ull << MGRAS_TEX_SPEC_LOG2W(spec)) <<
-            MGRAS_TEX_SPEC_LOG2H(spec)) * mgras_tex_host_texel(mode);
-}
-
 /* Host bytes a texel of the image the pending load carries. */
 static uint32_t mgras_tex_load_texel(const SGIMgrasTexture *t)
 {
     return t->load_host ? t->load_host : mgras_tex_host_texel(t->load_mode);
 }
 
-static void mgras_tex_level_free(SGIMgrasTexLevel *l)
+/* Bits a component of a kept format: 4, 8 or 12. */
+static uint32_t mgras_tex_depth_bits(uint32_t mode)
 {
-    g_free(l->texels);
-    memset(l, 0, sizeof(*l));
+    return 4 * (MGRAS_TEX_DEPTH(mode) + 1);
+}
+
+/*
+ * A texel's slot in TRAM: the next power of two at or above its bits
+ * (see "TRAM" above).
+ */
+static uint32_t mgras_tex_slot_bits(uint32_t mode)
+{
+    return pow2ceil(mgras_tex_components(mode) * mgras_tex_depth_bits(mode));
+}
+
+static bool mgras_tram_written(SGIMgrasState *s, uint32_t block)
+{
+    return s->tram_written[block / 32] & (1u << (block % 32));
+}
+
+/* Mark the blocks the bit range [bit, bit + bits) touches as written. */
+static void mgras_tram_mark(SGIMgrasState *s, uint64_t bit, uint64_t bits)
+{
+    uint64_t last = (bit + bits - 1) / MGRAS_TRAM_BLOCK_BITS;
+
+    for (uint64_t b = bit / MGRAS_TRAM_BLOCK_BITS; b <= last; b++) {
+        s->tram_written[b / 32] |= 1u << (b % 32);
+    }
+}
+
+/*
+ * Where a level of the kept format mode, 1 << log2w by 1 << log2h, starts
+ * in TRAM, in bits, under base and TXMIPMAP word: false, with nothing
+ * set, when it would run past TRAM's end.
+ */
+static bool mgras_tram_place(uint32_t base, uint32_t word, uint32_t log2w,
+                             uint32_t log2h, uint32_t mode, uint64_t *bit)
+{
+    uint64_t bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w) << log2h;
+    uint64_t block = (uint64_t)(base & 0xff) + (word & 0xff);
+    uint64_t start = block * MGRAS_TRAM_BLOCK_BITS;
+
+    if (bits <= MGRAS_TRAM_BLOCK_BITS / 2) {
+        start += MGRAS_TRAM_BLOCK_BITS - 2 * bits;
+    }
+    if (start + bits > (uint64_t)SGI_MGRAS_TRAM_BYTES * 8) {
+        return false;
+    }
+    *bit = start;
+    return true;
+}
+
+/*
+ * A component of depth 4, 8 or 12 bits at a bit offset in TRAM. Every
+ * slot, level start and component offset is a multiple of four bits, so
+ * a component lies within the byte or halfword it starts in.
+ */
+static uint32_t mgras_tram_get(const uint8_t *tram, uint64_t bit,
+                               uint32_t depth)
+{
+    const uint8_t *p = tram + bit / 8;
+    uint32_t shift = bit % 8;
+
+    switch (depth) {
+    case 4:
+        return (p[0] >> (4 - shift)) & 0xf;
+    case 8:
+        return p[0];
+    default:
+        return (lduw_be_p(p) >> (4 - shift)) & 0xfff;
+    }
+}
+
+static void mgras_tram_put(uint8_t *tram, uint64_t bit, uint32_t depth,
+                           uint32_t value)
+{
+    uint8_t *p = tram + bit / 8;
+    uint32_t shift = bit % 8;
+    uint32_t mask;
+
+    switch (depth) {
+    case 4:
+        mask = 0xf << (4 - shift);
+        p[0] = (p[0] & ~mask) | ((value << (4 - shift)) & mask);
+        return;
+    case 8:
+        p[0] = value;
+        return;
+    default:
+        mask = 0xfff << (4 - shift);
+        stw_be_p(p, (lduw_be_p(p) & ~mask) | ((value << (4 - shift)) & mask));
+        return;
+    }
 }
 
 static void mgras_tex_staging_free(SGIMgrasTexture *t)
@@ -389,9 +540,6 @@ static void mgras_tex_staging_free(SGIMgrasTexture *t)
 
 void sgi_mgras_texture_reset(SGIMgrasTexture *t)
 {
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        mgras_tex_level_free(&t->levels[i]);
-    }
     mgras_tex_staging_free(t);
     memset(t, 0, sizeof(*t));
 }
@@ -472,6 +620,9 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
     case MGRAS_TEX_TL_SPEC:
         t->tl_spec = value;
         return;
+    case MGRAS_TEX_TL_ADDR:
+        t->tl_addr = value % SGI_MGRAS_TEX_TABLE;
+        return;
     case MGRAS_TEX_RSS_BLOCKXYSTARTI:
     case MGRAS_TEX_RSS_BLOCKXYENDI:
     case MGRAS_TEX_RSS_XFRSIZE:
@@ -486,26 +637,106 @@ static void mgras_tex_register(SGIMgrasState *s, uint32_t reg, uint32_t value)
     }
 }
 
+/* The absolute block a TXMIPMAP or TL_MIPMAP word names under base. */
+static uint32_t mgras_tram_block(uint32_t base, uint32_t word)
+{
+    return (base & 0xff) + (word & 0xff);
+}
+
 /*
  * The 0xec10 table writes (shadow index, shadow table, register, value)
- * into TXMIPMAP and TXBORDER; the GL path keeps the detail-scale table's
- * defaults, and the load-side tables are logged.
+ * into TXMIPMAP, TXBORDER and TL_MIPMAP; the GL path keeps the
+ * detail-scale table's defaults, and TL_BORDER is logged. Entry 0 of
+ * TXMIPMAP and TL_MIPMAP is also the block a TRAM save or restore moves
+ * (see "TRAM" above).
  */
 static bool mgras_tex_table(SGIMgrasState *s, const uint32_t *payload)
 {
     SGIMgrasTexture *t = mgras_tex(s);
     uint32_t reg = payload[2];
 
-    if (reg != MGRAS_TEX_TXMIPMAP && reg != MGRAS_TEX_TXBORDER) {
-        return false;
-    }
-    if (reg == MGRAS_TEX_TXMIPMAP) {
+    switch (reg) {
+    case MGRAS_TEX_TXMIPMAP:
         t->txmipmap[t->txaddr] = payload[3];
-    } else {
+        if (!t->txaddr) {
+            s->tram_read_block = mgras_tram_block(t->base, payload[3]);
+        }
+        break;
+    case MGRAS_TEX_TXBORDER:
         t->txborder[t->txaddr] = payload[3];
+        break;
+    case MGRAS_TEX_TL_MIPMAP:
+        t->tl_mipmap[t->tl_addr] = payload[3];
+        if (!t->tl_addr) {
+            s->tram_load_block = mgras_tram_block(t->base, payload[3]);
+        }
+        t->tl_addr = (t->tl_addr + 1) % SGI_MGRAS_TEX_TABLE;
+        return true;
+    default:
+        return false;
     }
     t->txaddr = (t->txaddr + 1) % SGI_MGRAS_TEX_TABLE;
     return true;
+}
+
+bool sgi_mgras_texture_kernel_record(SGIMgrasState *s, uint32_t reg,
+                                     uint32_t value)
+{
+    SGIMgrasTexture *t = mgras_tex(s);
+
+    if (!mgras_tex_present(s)) {
+        return false;
+    }
+    switch (reg) {
+    case MGRAS_TEX_TXADDR:
+        s->tram_kernel_txaddr = value % SGI_MGRAS_TEX_TABLE;
+        return true;
+    case MGRAS_TEX_TXMIPMAP:
+        if (!s->tram_kernel_txaddr) {
+            s->tram_read_block = mgras_tram_block(t->base, value);
+        }
+        return true;
+    case MGRAS_TEX_TL_ADDR:
+        s->tram_kernel_tladdr = value % SGI_MGRAS_TEX_TABLE;
+        return true;
+    case MGRAS_TEX_TL_MIPMAP:
+        if (!s->tram_kernel_tladdr) {
+            s->tram_load_block = mgras_tram_block(t->base, value);
+        }
+        return true;
+    case MGRAS_TEX_TL_T_SIZE:
+        s->tram_kernel_rows = value;
+        return true;
+    case MGRAS_TEX_TEXMODE1:
+    case MGRAS_TEX_TEXMODE2:
+    case MGRAS_TEX_TXSIZE:
+    case MGRAS_TEX_TXLOD:
+    case MGRAS_TEX_TEXRBUFFER:
+    case MGRAS_TEX_TXCLAMPSIZE:
+    case MGRAS_TEX_TL_WBUFFER:
+    case MGRAS_TEX_TL_MODE:
+    case MGRAS_TEX_TL_SPEC:
+    case MGRAS_TEX_TL_S_SIZE:
+    case MGRAS_TEX_TL_S_LEFT:
+    case MGRAS_TEX_TL_T_BOTTOM:
+        /* The transfer's shape, which the model takes from its DMA. */
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Open a transfer. */
+static void mgras_tram_open(SGIMgrasState *s, uint32_t state)
+{
+    s->tram_transfer = state;
+}
+
+/* A GE word count in three 9-bit parts, as 0xd80c carries it. */
+static uint32_t mgras_tram_words(const uint32_t *payload)
+{
+    return (payload[0] & 0x1ff) << 18 | (payload[1] & 0x1ff) << 9 |
+           (payload[2] & 0x1ff);
 }
 
 bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
@@ -556,10 +787,12 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
         t->bracket = 0;
         return true;
     case MGRAS_TEX_TRAM_READ:
-        s->tram_transfer = MGRAS_TRAM_SAVE_OPEN;
+        mgras_tram_open(s, MGRAS_TRAM_SAVE_OPEN);
+        s->tram_rows = payload[0];
         return true;
     case MGRAS_TEX_TRAM_GE_COUNT:
-        s->tram_transfer = MGRAS_TRAM_RESTORE_OPEN;
+        mgras_tram_open(s, MGRAS_TRAM_RESTORE_OPEN);
+        s->tram_words = mgras_tram_words(payload);
         return true;
     case MGRAS_TEX_TRAM_RESTORE:
         return true;
@@ -576,15 +809,105 @@ bool sgi_mgras_texture_execute(SGIMgrasState *s, uint32_t header,
     }
 }
 
-bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, bool read)
+/*
+ * The bytes a word of TRAM gives a transfer of `bytes` over `rows` rows of
+ * 64 words: 1 to 4, or 0 when the two do not fit (see "TRAM" above).
+ */
+static uint32_t mgras_tram_word_bytes(uint64_t bytes, uint32_t rows)
 {
-    uint32_t open = read ? MGRAS_TRAM_SAVE_OPEN : MGRAS_TRAM_RESTORE_OPEN;
+    uint64_t words = (uint64_t)rows * MGRAS_TRAM_ROW_WORDS;
 
-    if (s->tram_transfer != open) {
+    if (!words || bytes % words || bytes / words < 1 ||
+        bytes / words > MGRAS_TRAM_WORD_BYTES) {
+        return 0;
+    }
+    return bytes / words;
+}
+
+/* Read rows of TRAM from first_row back to host memory. */
+static void mgras_tram_save(SGIMgrasState *s, uint32_t kick_byte)
+{
+    uint64_t first = (uint64_t)s->tram_read_block * MGRAS_TRAM_BLOCK_ROWS;
+    uint64_t bytes = sgi_mgras_raster_dma_bytes(s);
+    uint32_t k = mgras_tram_word_bytes(bytes, s->tram_rows);
+    uint64_t words = (uint64_t)s->tram_rows * MGRAS_TRAM_ROW_WORDS;
+    g_autofree uint8_t *buf = NULL;
+
+    if (!k || first + s->tram_rows > MGRAS_TRAM_ROWS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: TRAM save of %u rows from "
+                      "block %u into %" PRIu64 " bytes does not fit TRAM; "
+                      "nothing moved\n", s->tram_rows, s->tram_read_block,
+                      bytes);
+        return;
+    }
+    buf = g_malloc(bytes);
+    for (uint64_t i = 0; i < words; i++) {
+        memcpy(buf + i * k, s->tram + (first * MGRAS_TRAM_ROW_WORDS + i) *
+               MGRAS_TRAM_WORD_BYTES, k);
+    }
+    if (sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, true)) {
+        trace_sgi_mgras_tram_transfer("save", s->tram_read_block, s->tram_rows,
+                                      k);
+    }
+}
+
+/*
+ * Write rows of TRAM from host memory: the kernel's restore, from its
+ * block's first row through the descriptor's rows.
+ */
+static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte)
+{
+    uint64_t bytes = (uint64_t)s->tram_words * sizeof(uint32_t);
+    uint32_t rows = s->tram_kernel_rows;
+    uint64_t first = (uint64_t)s->tram_load_block * MGRAS_TRAM_BLOCK_ROWS;
+    uint32_t k = mgras_tram_word_bytes(bytes, rows);
+    uint64_t words = (uint64_t)rows * MGRAS_TRAM_ROW_WORDS;
+    g_autofree uint8_t *buf = NULL;
+
+    if (!k || first + rows > MGRAS_TRAM_ROWS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: TRAM restore of %u rows "
+                      "from block %u row %" PRIu64 " out of %" PRIu64 " bytes "
+                      "does not fit TRAM; nothing moved\n", rows,
+                      s->tram_load_block,
+                      first % MGRAS_TRAM_BLOCK_ROWS, bytes);
+        return;
+    }
+    buf = g_malloc(bytes);
+    if (!sgi_mgras_raster_dma_copy(s, kick_byte, buf, bytes, false)) {
+        return;
+    }
+    for (uint64_t i = 0; i < words; i++) {
+        memcpy(s->tram + (first * MGRAS_TRAM_ROW_WORDS + i) *
+               MGRAS_TRAM_WORD_BYTES, buf + i * k, k);
+    }
+    mgras_tram_mark(s, first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
+    trace_sgi_mgras_tram_transfer("restore", s->tram_load_block, rows, k);
+}
+
+bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
+                                 bool read)
+{
+    uint32_t state = s->tram_transfer;
+
+    if (state == MGRAS_TRAM_IDLE) {
         return false;
     }
-    s->tram_transfer = read ? MGRAS_TRAM_SAVE_READ : MGRAS_TRAM_IDLE;
-    trace_sgi_mgras_tram_transfer(read ? "save" : "restore");
+    if (state == MGRAS_TRAM_SAVE_READ) {
+        return false;
+    }
+    if (read != (state == MGRAS_TRAM_SAVE_OPEN)) {
+        return false;
+    }
+    s->tram_transfer = MGRAS_TRAM_IDLE;
+    switch (state) {
+    case MGRAS_TRAM_SAVE_OPEN:
+        mgras_tram_save(s, kick_byte);
+        s->tram_transfer = MGRAS_TRAM_SAVE_READ;
+        break;
+    default:
+        mgras_tram_restore(s, kick_byte);
+        break;
+    }
     return true;
 }
 
@@ -599,7 +922,25 @@ bool sgi_mgras_texture_tram_read_done(SGIMgrasState *s)
 
 bool sgi_mgras_texture_transfer_valid(const SGIMgrasState *s)
 {
-    return s->tram_transfer < MGRAS_TRAM_STATES;
+    return s->tram_transfer < MGRAS_TRAM_STATES &&
+           s->tram_read_block < 2 * SGI_MGRAS_TRAM_BLOCKS &&
+           s->tram_load_block < 2 * SGI_MGRAS_TRAM_BLOCKS &&
+           s->tram_first_row < MGRAS_TRAM_ROWS &&
+           s->tram_kernel_txaddr < SGI_MGRAS_TEX_TABLE &&
+           s->tram_kernel_tladdr < SGI_MGRAS_TEX_TABLE;
+}
+
+void sgi_mgras_texture_board_reset(SGIMgrasState *s)
+{
+    if (s->tram) {
+        memset(s->tram, 0, SGI_MGRAS_TRAM_BYTES);
+    }
+    memset(s->tram_written, 0, sizeof(s->tram_written));
+    s->tram_transfer = MGRAS_TRAM_IDLE;
+    s->tram_rows = s->tram_words = s->tram_first_row = 0;
+    s->tram_read_block = s->tram_load_block = 0;
+    s->tram_kernel_txaddr = s->tram_kernel_tladdr = 0;
+    s->tram_kernel_rows = 0;
 }
 
 bool sgi_mgras_texture_records(SGIMgrasState *s, uint32_t header)
@@ -665,6 +1006,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
     uint32_t rw = size & 0xffff, rh = size >> 16;
     uint32_t host;
+    uint64_t bit;
 
     if (!mgras_tex_present(s) ||
         payload[MGRAS_TEX_ROUTINE_WORD] != MGRAS_TEX_ROUTINE_LOAD) {
@@ -731,9 +1073,13 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       MGRAS_TEX_DEPTH(mode));
         return true;
     }
-    if (mgras_tex_level_bytes(spec, mode) > MGRAS_TEX_CONTEXT_BYTES) {
+    if (!mgras_tram_place(t->base, s->ge_param[MGRAS_TEX_GE_BLOCK],
+                          MGRAS_TEX_SPEC_LOG2W(spec),
+                          MGRAS_TEX_SPEC_LOG2H(spec), mode, &bit)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: texture level of %u by "
-                      "%u is larger than TRAM; nothing stored\n", w, h);
+                      "%u at base %u, TXMIPMAP word 0x%x runs past TRAM's "
+                      "end; nothing stored\n", w, h, t->base,
+                      s->ge_param[MGRAS_TEX_GE_BLOCK]);
         return true;
     }
     t->load = 1;
@@ -779,24 +1125,10 @@ bool sgi_mgras_texture_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
     return true;
 }
 
-static uint64_t mgras_tex_bytes_kept(const SGIMgrasTexture *t,
-                                     const SGIMgrasTexLevel *except)
-{
-    uint64_t sum = 0;
-
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        if (&t->levels[i] != except) {
-            sum += t->levels[i].bytes;
-        }
-    }
-    return sum;
-}
-
 /*
- * Keep the gathered host image as the load's rectangle of its level: into
- * the level kept under the same key when its size and format are the
- * load's, so the strips of one level add up, and otherwise into a new
- * level whose other texels are 0.
+ * Put the gathered host image into TRAM as the load's rectangle of its
+ * level, converted to the kept format (see "Depth" above), at the place
+ * the level's base, TXMIPMAP word and size give it.
  */
 static void mgras_tex_commit(SGIMgrasState *s)
 {
@@ -804,85 +1136,49 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t level = MGRAS_TEX_SPEC_LEVEL(t->load_spec);
     uint32_t log2w = MGRAS_TEX_SPEC_LOG2W(t->load_spec);
     uint32_t log2h = MGRAS_TEX_SPEC_LOG2H(t->load_spec);
-    uint32_t bytes = mgras_tex_level_bytes(t->load_spec, t->load_mode);
-    uint32_t texel = mgras_tex_host_texel(t->load_mode);
-    uint32_t comps = mgras_tex_components(t->load_mode);
+    uint32_t mode = t->load_mode;
+    uint32_t comps = mgras_tex_components(mode);
+    uint32_t depth = mgras_tex_depth_bits(mode);
+    uint32_t slot = mgras_tex_slot_bits(mode);
     /* The image's components a texel, and bytes a component. */
     uint32_t src = t->load_host ? t->load_host : comps;
-    uint32_t size = texel / comps;
+    uint32_t size = mgras_tex_host_texel(mode) / comps;
     uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
-    uint64_t board = 0;
-    SGIMgrasTexLevel *l = NULL, *free = NULL;
     const uint8_t *in = t->staging;
+    uint64_t start;
 
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        SGIMgrasTexLevel *e = &t->levels[i];
-
-        if (e->used && e->base == t->load_base &&
-            e->block == t->load_block && e->level == level) {
-            l = e;
-        } else if (!e->used && !free) {
-            free = e;
-        }
-    }
-    if (!l || l->log2w != log2w || l->log2h != log2h ||
-        l->mode != t->load_mode) {
-        l = l ? l : free;
-        for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-            board += mgras_tex_bytes_kept(&s->gl_context[i].tex, l);
-        }
-        if (!l ||
-            mgras_tex_bytes_kept(t, l) + bytes > MGRAS_TEX_CONTEXT_BYTES ||
-            board + bytes > MGRAS_TEX_BOARD_BYTES) {
-            qemu_log_mask(LOG_UNIMP, "sgi-mgras: no room for texture level "
-                          "%u of base %u; nothing stored\n", level,
-                          t->load_base);
-            goto done;
-        }
-        mgras_tex_level_free(l);
-        *l = (SGIMgrasTexLevel) {
-            .used = 1,
-            .base = t->load_base,
-            .block = t->load_block,
-            .level = level,
-            .log2w = log2w,
-            .log2h = log2h,
-            .mode = t->load_mode,
-            .bytes = bytes,
-            .texels = g_malloc0(bytes),
-        };
+    if (!mgras_tram_place(t->load_base, t->load_block, log2w, log2h, mode,
+                          &start)) {
+        /* load_start placed it; only a migrated load can get here. */
+        goto done;
     }
     for (uint32_t row = 0; row < rh; row++, in += rw * src * size) {
-        uint8_t *out = l->texels +
-                       (((t->load_y + row) << log2w) + t->load_x) * texel;
+        uint64_t texel = ((uint64_t)(t->load_y + row) << log2w) + t->load_x;
 
         for (uint32_t i = 0; i < rw * comps; i++) {
             uint32_t n = i / comps * src + i % comps;
+            uint64_t bit = start + (texel + i / comps) * slot +
+                           i % comps * depth;
+            uint32_t v;
 
             if (i % comps >= src) {
                 /* An RGB image's alpha is 1 (OpenGL 1.2.1, 3.6.4). */
-                out[i] = MGRAS_TEX_DEPTH(t->load_mode) == MGRAS_TEX_DEPTH_4 ?
-                         0xf : 0xff;
-                continue;
-            }
-            switch (MGRAS_TEX_DEPTH(t->load_mode)) {
-            case MGRAS_TEX_DEPTH_4:
+                v = (1u << depth) - 1;
+            } else if (depth == 4) {
                 /* Truncation to 4 bits, the model's choice, as above. */
-                out[i] = in[n] >> 4;
-                break;
-            case MGRAS_TEX_DEPTH_8:
-                out[i] = in[n];
-                break;
-            default:
-                /* The top 12 bits of the halfword, kept right-aligned. */
-                stw_be_p(&out[2 * i], lduw_be_p(&in[2 * n]) >> 4);
-                break;
+                v = in[n] >> 4;
+            } else if (depth == 8) {
+                v = in[n];
+            } else {
+                /* The top 12 bits of the halfword. */
+                v = lduw_be_p(&in[2 * n]) >> 4;
             }
+            mgras_tram_put(s->tram, bit, depth, v);
         }
     }
+    mgras_tram_mark(s, start, ((uint64_t)slot << log2w) << log2h);
     trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
-                                  1u << l->log2w, 1u << l->log2h,
-                                  t->load_mode);
+                                  1u << log2w, 1u << log2h, mode);
 done:
     mgras_tex_staging_free(t);
     t->load = 0;
@@ -924,18 +1220,22 @@ void sgi_mgras_texture_abort(SGIMgrasState *s)
 static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
                                  uint32_t y, uint32_t *rgba)
 {
-    const SGIMgrasTexLevel *l = opaque;
+    const SGIMgrasTexView *l = opaque;
     uint32_t comps = mgras_tex_components(l->mode);
-    uint32_t i = ((y << l->log2w) + x) * comps;
+    uint32_t depth = mgras_tex_depth_bits(l->mode);
+    uint64_t bit = l->bit + (((uint64_t)y << l->log2w) + x) *
+                   mgras_tex_slot_bits(l->mode);
     uint32_t c[4];
 
     for (uint32_t k = 0; k < comps; k++) {
-        switch (MGRAS_TEX_DEPTH(l->mode)) {
-        case MGRAS_TEX_DEPTH_4:
-            c[k] = l->texels[i + k] * 0x11;
+        uint32_t v = mgras_tram_get(l->tram, bit + k * depth, depth);
+
+        switch (depth) {
+        case 4:
+            c[k] = v * 0x11;
             break;
-        case MGRAS_TEX_DEPTH_8:
-            c[k] = l->texels[i + k];
+        case 8:
+            c[k] = v;
             break;
         default:
             /*
@@ -943,7 +1243,7 @@ static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
              * rounded to the nearest of 255 (approximated): precision
              * beyond the 8-bit store is lost before filtering.
              */
-            c[k] = (lduw_be_p(&l->texels[2 * (i + k)]) * 255 + 2047) / 4095;
+            c[k] = (v * 255 + 2047) / 4095;
             break;
         }
     }
@@ -1050,23 +1350,30 @@ static bool mgras_tex_environment(SGIMgrasState *s, uint32_t cls)
     return true;
 }
 
-static SGIMgrasTexLevel *mgras_tex_find(SGIMgrasTexture *t, uint32_t base,
-                                        uint32_t block, uint32_t level)
+/*
+ * Level n of the draw, of the kept format mode, out of TRAM: TXMIPMAP
+ * entry n under the context's base, the base size halved n times. False
+ * when it would run past TRAM or no load or restore has written its first
+ * block since reset.
+ */
+static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
+                                 SGIMgrasTexView *view)
 {
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        if (t->levels[i].used && t->levels[i].base == base &&
-            t->levels[i].block == block && t->levels[i].level == level) {
-            return &t->levels[i];
-        }
-    }
-    return NULL;
-}
+    SGIMgrasTexture *t = mgras_tex(s);
+    uint32_t log2w = t->txsize & 0xf, log2h = (t->txsize >> 4) & 0xf;
 
-/* Level n of the draw: TXMIPMAP entry n under the context's base. */
-static SGIMgrasTexLevel *mgras_tex_draw_level(SGIMgrasTexture *t,
-                                              uint32_t level)
-{
-    return mgras_tex_find(t, t->base, t->txmipmap[level], level);
+    log2w = log2w > n ? log2w - n : 0;
+    log2h = log2h > n ? log2h - n : 0;
+    if (!mgras_tram_place(t->base, t->txmipmap[n], log2w, log2h, mode,
+                          &view->bit) ||
+        !mgras_tram_written(s, view->bit / MGRAS_TRAM_BLOCK_BITS)) {
+        return false;
+    }
+    view->tram = s->tram;
+    view->log2w = log2w;
+    view->log2h = log2h;
+    view->mode = mode;
+    return true;
 }
 
 /*
@@ -1087,16 +1394,17 @@ static SGIMgrasTexLevel *mgras_tex_draw_level(SGIMgrasTexture *t,
  * Levels whose kept format differs from level 0's are left out, which
  * leaves a hole.
  */
-static void mgras_tex_pyramid(SGIMgrasTexture *t, const SGIMgrasTexLevel *l0,
+static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
                               uint32_t format, bool mip)
 {
+    SGIMgrasTexture *t = mgras_tex(s);
     uint32_t n = 0, last = mip ? MGRAS_TXLOD_LAST(t->txlod) : 0;
     double min_lod = mip ? MIN(MGRAS_TXLOD_MIN(t->txlod) / 64.0, last) : 0;
 
-    for (uint32_t level = 0; level < SGI_MGRAS_TEX_LEVELS; level++) {
-        SGIMgrasTexLevel *e = mgras_tex_draw_level(t, level);
+    for (uint32_t level = 0; level <= last; level++) {
+        SGIMgrasTexView *e = &t->views[n];
 
-        if (!e || e->mode != l0->mode) {
+        if (!mgras_tex_draw_level(s, level, mode, e)) {
             continue;
         }
         t->sampler_levels[n++] = (SGIGLTexLevel) {
@@ -1122,8 +1430,12 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image)
 {
     SGIMgrasTexture *t = mgras_tex(s);
-    SGIMgrasTexLevel *l;
-    uint32_t size, format, cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
+    uint32_t size = t->txsize & 0xff, format;
+    uint32_t cls = MGRAS_TEXMODE1_CLASS(t->texmode1);
+    uint32_t layout = MGRAS_TEXMODE1_LAYOUT(t->texmode1);
+    uint32_t depth = (t->texmode2 >> 2) & 3;
+    /* The kept format the draw names, in TL_MODE's fields. */
+    uint32_t mode = layout << 1 | depth << 5;
     uint32_t mip = t->texmode2 & MGRAS_TEXMODE2_MIP;
     uint32_t min_filter;
 
@@ -1131,37 +1443,34 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
         return NULL;
     }
-    l = mgras_tex_draw_level(t, 0);
-    if (!l) {
+    /*
+     * TXSIZE's two copies of the base size must agree, as every traced
+     * two-dimensional draw sent them. The class is the draw's (TEXMODE1
+     * 11:9) and must suit the layout. Class 1, alpha, comes with
+     * environment code 3 from the client, whatever glTexEnv set; the
+     * model reads the alpha class as its function for every code.
+     */
+    if ((t->txsize & 0xffff) != (size << 8 | size) ||
+        depth > MGRAS_TEX_DEPTH_12 ||
+        (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||
+        !mgras_tex_environment(s, cls) ||
+        !mgras_tex_format(layout, cls, &format) ||
+        (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
+        (mip && mip != MGRAS_TEXMODE2_MIP) ||
+        t->t_offset) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture state TEXMODE1 0x%x "
+                      "TEXMODE2 0x%x TXSIZE 0x%x offset 0x%x is not "
+                      "modelled; drawn untextured\n", t->texmode1,
+                      t->texmode2, t->txsize, t->t_offset);
+        return NULL;
+    }
+    if (!mgras_tex_draw_level(s, 0, mode, &t->views[0])) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: textured draw with no level 0 "
                       "loaded under base %u at TXMIPMAP 0x%x\n", t->base,
                       t->txmipmap[0]);
         return NULL;
     }
-    size = l->log2h << 4 | l->log2w;
-    /*
-     * The class is the draw's (TEXMODE1 11:9) and must suit the level's
-     * layout. Class 1, alpha, comes with environment code 3 from the
-     * client, whatever glTexEnv set; the model reads the alpha class as
-     * its function for every code.
-     */
-    if ((t->txsize & 0xffff) != (size << 8 | size) ||
-        (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||
-        !mgras_tex_environment(s, cls) ||
-        MGRAS_TEXMODE1_LAYOUT(t->texmode1) != MGRAS_TEX_LAYOUT(l->mode) ||
-        !mgras_tex_format(MGRAS_TEX_LAYOUT(l->mode), cls, &format) ||
-        (t->texmode2 & MGRAS_TEXMODE2_UNDRAWN) ||
-        (mip && mip != MGRAS_TEXMODE2_MIP) ||
-        ((t->texmode2 >> 2) & 3) != MGRAS_TEX_DEPTH(l->mode) ||
-        t->t_offset) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture state TEXMODE1 0x%x "
-                      "TEXMODE2 0x%x TXSIZE 0x%x offset 0x%x with a %u by %u "
-                      "level kept as 0x%x is not modelled; drawn "
-                      "untextured\n", t->texmode1, t->texmode2, t->txsize,
-                      t->t_offset, 1u << l->log2w, 1u << l->log2h, l->mode);
-        return NULL;
-    }
-    mgras_tex_pyramid(t, l, format, mip);
+    mgras_tex_pyramid(s, mode, format, mip);
     if (mip) {
         min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
             (t->texmode2 & MGRAS_TEXMODE2_MIP_BETWEEN ?
@@ -1199,20 +1508,13 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     return image;
 }
 
-bool sgi_mgras_texture_board_valid(const SGIMgrasState *s)
-{
-    uint64_t board = 0;
-
-    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-        board += mgras_tex_bytes_kept(&s->gl_context[i].tex, NULL);
-    }
-    return board <= MGRAS_TEX_BOARD_BYTES;
-}
-
 bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 {
+    uint64_t bit;
+
     if (t->on > 1 || t->bracket > 1 || t->load > 1 ||
-        t->txaddr >= SGI_MGRAS_TEX_TABLE || t->staging) {
+        t->txaddr >= SGI_MGRAS_TEX_TABLE || t->tl_addr >= SGI_MGRAS_TEX_TABLE ||
+        t->staging) {
         return false;
     }
     if (t->load) {
@@ -1221,8 +1523,10 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
 
         if (MGRAS_TEX_DEPTH(t->load_mode) > MGRAS_TEX_DEPTH_12 ||
-            mgras_tex_level_bytes(t->load_spec, t->load_mode) >
-            MGRAS_TEX_CONTEXT_BYTES ||
+            !mgras_tram_place(t->load_base, t->load_block,
+                              MGRAS_TEX_SPEC_LOG2W(t->load_spec),
+                              MGRAS_TEX_SPEC_LOG2H(t->load_spec),
+                              t->load_mode, &bit) ||
             !rw || !rh || rw > w || rh > h ||
             t->load_x > w - rw || t->load_y > h - rh ||
             (t->load_host &&
@@ -1232,65 +1536,13 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
             return false;
         }
     }
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        const SGIMgrasTexLevel *l = &t->levels[i];
-        uint32_t spec = l->log2h << 8 | l->log2w << 4;
-
-        if (!l->used) {
-            if (l->bytes || l->texels) {
-                return false;
-            }
-            continue;
-        }
-        for (int j = 0; j < i; j++) {
-            const SGIMgrasTexLevel *o = &t->levels[j];
-
-            if (o->used && l->used && o->base == l->base &&
-                o->block == l->block && o->level == l->level) {
-                return false;
-            }
-        }
-        if (l->used != 1 || l->level > 0xf || l->log2w > 0xf ||
-            l->log2h > 0xf || !l->texels ||
-            MGRAS_TEX_DEPTH(l->mode) > MGRAS_TEX_DEPTH_12 ||
-            l->bytes != mgras_tex_level_bytes(spec, l->mode)) {
-            return false;
-        }
-    }
-    return mgras_tex_bytes_kept(t, NULL) <= MGRAS_TEX_CONTEXT_BYTES;
+    return true;
 }
-
-/* A level's texels are allocated only up to a context's TRAM. */
-static bool mgras_tex_level_bytes_ok(void *opaque, int version_id)
-{
-    SGIMgrasTexLevel *l = opaque;
-
-    return l->bytes <= MGRAS_TEX_CONTEXT_BYTES;
-}
-
-static const VMStateDescription vmstate_sgi_mgras_tex_level = {
-    .name = TYPE_SGI_MGRAS "/texture-level",
-    .version_id = 2,
-    .minimum_version_id = 2,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(used, SGIMgrasTexLevel),
-        VMSTATE_UINT32(base, SGIMgrasTexLevel),
-        VMSTATE_UINT32(block, SGIMgrasTexLevel),
-        VMSTATE_UINT32(level, SGIMgrasTexLevel),
-        VMSTATE_UINT32(log2w, SGIMgrasTexLevel),
-        VMSTATE_UINT32(log2h, SGIMgrasTexLevel),
-        VMSTATE_UINT32(mode, SGIMgrasTexLevel),
-        VMSTATE_UINT32(bytes, SGIMgrasTexLevel),
-        VMSTATE_VBUFFER_ALLOC_UINT32(texels, SGIMgrasTexLevel, 1,
-                                     mgras_tex_level_bytes_ok, bytes),
-        VMSTATE_END_OF_LIST()
-    }
-};
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
@@ -1306,6 +1558,8 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(tl_spec, SGIMgrasTexture),
         VMSTATE_UINT32(tl_wbuffer, SGIMgrasTexture),
         VMSTATE_UINT32(texrbuffer, SGIMgrasTexture),
+        VMSTATE_UINT32(tl_addr, SGIMgrasTexture),
+        VMSTATE_UINT32_ARRAY(tl_mipmap, SGIMgrasTexture, SGI_MGRAS_TEX_TABLE),
         VMSTATE_UINT32(base, SGIMgrasTexture),
         VMSTATE_UINT32(t_offset, SGIMgrasTexture),
         VMSTATE_UINT32(on, SGIMgrasTexture),
@@ -1319,8 +1573,6 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(load_y, SGIMgrasTexture),
         VMSTATE_UINT32(load_size, SGIMgrasTexture),
         VMSTATE_UINT32(load_host, SGIMgrasTexture),
-        VMSTATE_STRUCT_ARRAY(levels, SGIMgrasTexture, SGI_MGRAS_TEX_LEVELS, 1,
-                             vmstate_sgi_mgras_tex_level, SGIMgrasTexLevel),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1343,16 +1595,13 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->txclampsize | t->txenv[0] | t->txenv[1] |
                    t->txbcolor[0] | t->txbcolor[1] |
                    t->txaddr | t->tl_mode | t->tl_spec | t->tl_wbuffer |
-                   t->texrbuffer | t->base | t->t_offset | t->on |
+                   t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
                    t->bracket | t->load | t->load_base | t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
                    t->load_size | t->load_host;
 
     for (int i = 0; i < SGI_MGRAS_TEX_TABLE; i++) {
-        any |= t->txmipmap[i] | t->txborder[i];
-    }
-    for (int i = 0; i < SGI_MGRAS_TEX_LEVELS; i++) {
-        any |= t->levels[i].used;
+        any |= t->txmipmap[i] | t->txborder[i] | t->tl_mipmap[i];
     }
     return !any;
 }
@@ -1370,7 +1619,7 @@ static bool mgras_tex_needed(void *opaque)
     return false;
 }
 
-/* The stream allocates every level it carries; free what is here first. */
+/* A transfer's staging buffer is host-only; drop any held here first. */
 static int mgras_tex_pre_load(void *opaque)
 {
     SGIMgrasState *s = opaque;
@@ -1391,6 +1640,33 @@ const VMStateDescription vmstate_sgi_mgras_texture = {
         VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
                              1, vmstate_sgi_mgras_gl_context_tex,
                              SGIMgrasGLContext),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/* TRAM's bytes, sent once a load or a restore has written a block. */
+static bool mgras_tram_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    for (int i = 0; i < ARRAY_SIZE(s->tram_written); i++) {
+        if (s->tram_written[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const VMStateDescription vmstate_sgi_mgras_tram = {
+    .name = TYPE_SGI_MGRAS "/tram",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_tram_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(tram_written, SGIMgrasState,
+                             SGI_MGRAS_TRAM_BLOCKS / 32),
+        VMSTATE_BUFFER_POINTER_UNSAFE(tram, SGIMgrasState, 0,
+                                      SGI_MGRAS_TRAM_BYTES),
         VMSTATE_END_OF_LIST()
     }
 };

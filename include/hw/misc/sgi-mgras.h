@@ -328,28 +328,32 @@ typedef struct SGIMgrasGLPixels {
 } SGIMgrasGLPixels;
 
 /*
- * The texture levels one GL context keeps, and the TXADDR-indexed tables
+ * The levels a draw reads and the TXADDR-indexed tables
  * (hw/misc/sgi-mgras-texture.c).
  */
 #define SGI_MGRAS_TEX_LEVELS 16
 #define SGI_MGRAS_TEX_TABLE 32
 
 /*
- * One loaded texture level, keyed by the base block, the TXMIPMAP word the
- * load named and TL_SPEC's level number, in the model's own layout: the
- * kept format's components in order, a byte each holding the 4- or 8-bit
- * value.
+ * TRAM: one raster path's 4 MiB in 256 blocks of 16 KiB, each 64 rows of
+ * 64 32-bit words (hw/misc/sgi-mgras-texture.c, "TRAM").
  */
-typedef struct SGIMgrasTexLevel {
-    uint32_t used;              /* 0 or 1 */
-    uint32_t base;
-    uint32_t block;             /* the load's TXMIPMAP word */
-    uint32_t level;
+#define SGI_MGRAS_TRAM_BLOCKS 256
+#define SGI_MGRAS_TRAM_BLOCK_BYTES (16 * 1024)
+#define SGI_MGRAS_TRAM_BYTES \
+    (SGI_MGRAS_TRAM_BLOCKS * SGI_MGRAS_TRAM_BLOCK_BYTES)
+
+/*
+ * One level of a draw as the sampler reads it out of TRAM: the bit its
+ * first texel starts at, its log2 width and height and the kept format in
+ * TL_MODE's layout and depth fields. Host-only, rebuilt for each draw.
+ */
+typedef struct SGIMgrasTexView {
+    const uint8_t *tram;
+    uint64_t bit;
     uint32_t log2w, log2h;
-    uint32_t mode;              /* TL_MODE when it was loaded */
-    uint32_t bytes;
-    uint8_t *texels;
-} SGIMgrasTexLevel;
+    uint32_t mode;
+} SGIMgrasTexView;
 
 /*
  * One GL context's SI+T texture state: the TE1 registers the client
@@ -365,6 +369,8 @@ typedef struct SGIMgrasTexture {
     uint32_t txborder[SGI_MGRAS_TEX_TABLE];
     uint32_t tl_mode, tl_spec;
     uint32_t tl_wbuffer, texrbuffer;
+    uint32_t tl_addr;
+    uint32_t tl_mipmap[SGI_MGRAS_TEX_TABLE];
     uint32_t base;
     uint32_t t_offset;          /* the 0x5f04 float's bits */
     uint32_t on;                /* 0x0b00 came after the last 0x0c00: 0/1 */
@@ -387,7 +393,7 @@ typedef struct SGIMgrasTexture {
     /* Host-only: the sampler's view of the levels, rebuilt for each draw. */
     SGIGLTexPyramid pyramid;
     SGIGLTexLevel sampler_levels[SGI_MGRAS_TEX_LEVELS];
-    SGIMgrasTexLevel levels[SGI_MGRAS_TEX_LEVELS];
+    SGIMgrasTexView views[SGI_MGRAS_TEX_LEVELS];
 } SGIMgrasTexture;
 
 /*
@@ -688,11 +694,21 @@ struct SGIMgrasState {
     uint32_t eram_bpr;
     uint32_t eram_next_addr;
     /*
-     * The kernel's TRAM save or restore of one block between the word that
-     * opens it and its DMA kick (sgi-mgras-texture.c, "TRAM save and
-     * restore").
+     * TRAM and its save and restore (sgi-mgras-texture.c, "TRAM" and "TRAM
+     * save and restore"): the bytes, allocated on every board and used on
+     * one with texture; which blocks a load or restore has written since
+     * reset; the transfer between the word that opens it and its DMA kick;
+     * its TRAM rows or GE words and, for the client's restore, its first
+     * row; the absolute blocks the last TXMIPMAP and TL_MIPMAP entry 0
+     * named; and the kernel's own table indices and row count, which its
+     * register pairs carry outside any GL context.
      */
+    uint8_t *tram;
+    uint32_t tram_written[SGI_MGRAS_TRAM_BLOCKS / 32];
     uint32_t tram_transfer;
+    uint32_t tram_rows, tram_words, tram_first_row;
+    uint32_t tram_read_block, tram_load_block;
+    uint32_t tram_kernel_txaddr, tram_kernel_tladdr, tram_kernel_rows;
     /* Host ownership and bounded diagnostics; never serialized. */
     bool gl_restore_in_progress;
     bool gl_cleanup_registered;

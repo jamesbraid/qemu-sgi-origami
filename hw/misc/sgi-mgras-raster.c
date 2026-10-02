@@ -2434,20 +2434,75 @@ static void mgras_raster_dma_ge_pixels(SGIMgrasState *s, uint32_t kick_byte)
     }
 }
 
+uint64_t sgi_mgras_raster_dma_bytes(SGIMgrasState *s)
+{
+    return (uint64_t)s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS] *
+           s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+}
+
+bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
+                               uint8_t *buf, uint64_t bytes, bool to_host)
+{
+    uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    int ret = 0;
+
+    if ((uint64_t)rows * bpr != bytes || !rows) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
+                      "bytes for a transfer of %" PRIu64 " bytes; nothing "
+                      "moved\n", rows, bpr, bytes);
+        return false;
+    }
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    if (offset + (uint64_t)(rows - 1) * pitch + bpr >
+        sgi_dma_page_list_bytes(&pl)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
+                      "bytes at 0x%" PRIx64 " runs past its %u mapped pages; "
+                      "nothing moved\n", rows, bpr, offset, pl.npages);
+        return false;
+    }
+    for (uint32_t r = 0; r < rows && !ret; r++) {
+        uint64_t pos = offset + (uint64_t)r * pitch;
+        SGIDMAMap map = { 0 };
+
+        ret = sgi_dma_map(&bus, &map, &pl, pos, bpr,
+                          to_host ? DMA_DIRECTION_FROM_DEVICE :
+                                    DMA_DIRECTION_TO_DEVICE,
+                          trace && !to_host, s->trace_sequence - 1);
+        if (!ret && !sgi_dma_map_copy(&map, pos, buf + (uint64_t)r * bpr,
+                                      bpr, to_host)) {
+            ret = SGI_FAIL_BOUNDS;
+        }
+        sgi_dma_unmap(&map);
+    }
+    return !ret;
+}
+
 static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 {
     uint32_t kick_byte = kick_word & 0xff;
     bool take;
 
-    /* A kernel TRAM save or restore moves nothing (sgi-mgras-texture.c). */
+    /* A TRAM save or restore moves TRAM's bytes (sgi-mgras-texture.c). */
     if (kick_word & MGRAS_DMA_KICK_DIRECTION_READ) {
-        if (!sgi_mgras_texture_tram_kick(s, true)) {
+        if (!sgi_mgras_texture_tram_kick(s, kick_byte, true)) {
             mgras_raster_dma_read(s, kick_byte);
         }
         return;
     }
-    if (sgi_mgras_texture_tram_kick(s, false)) {
-        /* Nothing to move; the fence below still says it is done. */
+    if (sgi_mgras_texture_tram_kick(s, kick_byte, false)) {
+        /* Done; the fence below says so. */
     } else if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
                sgi_mgras_gl_pixels_dma(
                    s, s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],

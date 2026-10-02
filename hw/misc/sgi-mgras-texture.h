@@ -49,21 +49,31 @@ void sgi_mgras_texture_abort(SGIMgrasState *s);
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
 /*
- * Whether a DMA kick is the TRAM save's read (read) or restore's write that
- * the kernel opened, taken here: it moves nothing.
+ * Whether a DMA kick, a read when read, is the one an open TRAM save or
+ * restore was waiting for: if so it was taken here and has moved its
+ * bytes.
  */
-bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, bool read);
+bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
+                                 bool read);
 /* Whether a 0xda00 closes a TRAM save's read, taken here. */
 bool sgi_mgras_texture_tram_read_done(SGIMgrasState *s);
-/* Whether the TRAM save or restore under way is a state the model has. */
+/* Whether the board's TRAM transfer state is in range. */
 bool sgi_mgras_texture_transfer_valid(const SGIMgrasState *s);
-/* Forget one context's texture state and free its levels. */
+/*
+ * A 0x7f08 register pair the kernel's TRAM save or restore sends, taken
+ * outside any GL context's texture state; false for any other register.
+ */
+bool sgi_mgras_texture_kernel_record(SGIMgrasState *s, uint32_t reg,
+                                     uint32_t value);
+/* Clear TRAM and its transfer state, as a board reset does. */
+void sgi_mgras_texture_board_reset(SGIMgrasState *s);
+/* Forget one context's texture state. */
 void sgi_mgras_texture_reset(SGIMgrasTexture *t);
-/* Whether every context's levels together fit the board's TRAMs. */
-bool sgi_mgras_texture_board_valid(const SGIMgrasState *s);
 /* Whether migrated texture state is in range. */
 bool sgi_mgras_texture_valid(const SGIMgrasTexture *t);
 /* Every context's texture state, once any has some. */
 extern const VMStateDescription vmstate_sgi_mgras_texture;
+/* TRAM's bytes, once a block has been written. */
+extern const VMStateDescription vmstate_sgi_mgras_tram;
 
 #endif
