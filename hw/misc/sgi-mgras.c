@@ -1529,6 +1529,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->scratch_command = 0;
     memset(s->dma_map_regs, 0, sizeof(s->dma_map_regs));
     s->dma_map_reg = s->dma_map_words_remaining = 0;
+    s->dma_map_forward_words = 0;
     memset(s->dma_desc_20000, 0, sizeof(s->dma_desc_20000));
     memset(s->dma_desc_28000, 0, sizeof(s->dma_desc_28000));
     memset(s->dma_desc_30000, 0, sizeof(s->dma_desc_30000));
@@ -1826,6 +1827,7 @@ static int mgras_post_load(void *opaque, int version_id)
                                     s->cmd_token_words_remaining,
                                     s->cmd_token_payload_count) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
+        s->dma_map_forward_words > SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS ||
         s->pio_x > s->width || s->pio_y > s->height ||
         !sgi_mgras_raster_pio_read_valid(s) ||
         !sgi_mgras_raster_pending_valid(s) ||
@@ -1991,6 +1993,22 @@ static const VMStateDescription vmstate_sgi_mgras_nic = {
     .needed = mgras_nic_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(nic_control, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool mgras_dma_map_forward_needed(void *opaque)
+{
+    return SGI_MGRAS(opaque)->dma_map_forward_words != 0;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
+    .name = TYPE_SGI_MGRAS "/dma-map-forward",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_dma_map_forward_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(dma_map_forward_words, SGIMgrasState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -2194,6 +2212,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_timing,
         &vmstate_sgi_mgras_slots,
         &vmstate_sgi_mgras_nic,
+        &vmstate_sgi_mgras_dma_map_forward,
         &vmstate_sgi_mgras_gl_contexts,
         &vmstate_sgi_mgras_gl_readback,
         &vmstate_sgi_mgras_gl_block,

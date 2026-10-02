@@ -1585,6 +1585,28 @@ static void test_board_re4_status_reports_selected_re(gconstpointer data)
     qtest_quit(s);
 }
 
+/*
+ * The IDE's raster-register writer: RSS register 0x112 through the mapping
+ * port with class 0x59 (the main port's 0x19 and token bit 22), then its
+ * data word, selects the RE just as the main port's write does.
+ */
+static void test_board_mapping_port_raster_write(gconstpointer data)
+{
+    const MgrasBoardExpect *e = data;
+    QTestState *s = mgras_board_init(e);
+
+    mgras_enter_context(s);
+    for (uint32_t re = 0; re < e->re; re++) {
+        qtest_writel(s, MGRAS_REG(0x130400),
+                     (((0x112 | 0x1800) & 0x1fff) << 8) | 0x00400004);
+        qtest_writel(s, MGRAS_REG(0x130400), re);
+        g_assert_cmphex(qtest_readl(s, REG_DIRECT_COPY_READY) & 0xf, ==,
+                        re << 2 | (e->re - 1));
+    }
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    qtest_quit(s);
+}
+
 /* Selecting an RE leaves the revision in bits 7:4 and the ready bit 8. */
 static void test_board_re4_status_keeps_revision_bits(void)
 {
@@ -1980,9 +2002,14 @@ int main(int argc, char **argv)
             g_autofree char *re4 = g_strdup_printf(
                 "sn0/origin2000/mgras/re4-status-reports-selected-re/%s",
                 e->board);
+            g_autofree char *mapping = g_strdup_printf(
+                "sn0/origin2000/mgras/mapping-port-raster-write/%s",
+                e->board);
 
             qtest_add_data_func(re4, e,
                                 test_board_re4_status_reports_selected_re);
+            qtest_add_data_func(mapping, e,
+                                test_board_mapping_port_raster_write);
         }
         if (!e->implemented) {
             g_autofree char *refused = g_strdup_printf(

@@ -526,6 +526,11 @@ struct SGIMgrasState {
     uint32_t dma_map_reg;
     uint32_t dma_map_words_remaining;
     /*
+     * Payload words of a raster-register token the mapping port is still
+     * handing to the main command parser.
+     */
+    uint32_t dma_map_forward_words;
+    /*
      * Host-memory DMA image-transfer descriptor banks, main-port FIFO
      * classes 0x0008/0x000a/0x000c, stored as plain registers indexed by
      * the header's register number. 0x20000 uses registers 0, 4-8 and 11

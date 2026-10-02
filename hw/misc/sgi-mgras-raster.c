@@ -526,6 +526,17 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
  * though their meaning is unresolved.
  */
 #define MGRAS_DMA_MAP_CLASS 0x0048
+/*
+ * SGI's IP30 IDE writes raster registers through this port: classes
+ * 0x58-0x5f, the main port's raster classes 0x18-0x1f with token bit 22
+ * set, each header followed by its data words. Inferred from the IDE's
+ * register writer, which names the same 0x02c000 + reg * 4 registers the
+ * main port's classes reach. What bit 22 selects is unknown; the model
+ * hands such a token to the main parser with the bit cleared.
+ */
+#define MGRAS_DMA_MAP_RASTER_MASK 0xfff8
+#define MGRAS_DMA_MAP_RASTER_CLASSES 0x0058
+#define MGRAS_DMA_MAP_RASTER_BIT (1u << 22)
 #define MGRAS_DMA_MAP_CLOSE_CLASS 0x000e
 #define MGRAS_DMA_MAP_CLOSE_REG 0x01
 #define MGRAS_DMA_MAP_SLOT_BASE_HI 0x20
@@ -538,6 +549,11 @@ static void mgras_dma_map_token(SGIMgrasState *s, uint32_t token)
 {
     uint32_t cmd_class, reg, payload_bytes;
 
+    if (s->dma_map_forward_words > 0) {
+        s->dma_map_forward_words--;
+        mgras_command_fifo_token(s, token);
+        return;
+    }
     if (s->dma_map_words_remaining > 0) {
         if (s->dma_map_reg < SGI_MGRAS_DMA_MAP_REGS) {
             s->dma_map_regs[s->dma_map_reg] = token;
@@ -561,6 +577,14 @@ static void mgras_dma_map_token(SGIMgrasState *s, uint32_t token)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA-mapping command-FIFO "
                       "header, class 0x%04x reg 0x%02x has unaligned "
                       "payload %u bytes\n", cmd_class, reg, payload_bytes);
+        return;
+    }
+
+    if ((cmd_class & MGRAS_DMA_MAP_RASTER_MASK) ==
+        MGRAS_DMA_MAP_RASTER_CLASSES && s->cmd_token_words_remaining == 0 &&
+        payload_bytes / 4 <= SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+        s->dma_map_forward_words = payload_bytes / 4;
+        mgras_command_fifo_token(s, token & ~MGRAS_DMA_MAP_RASTER_BIT);
         return;
     }
 
