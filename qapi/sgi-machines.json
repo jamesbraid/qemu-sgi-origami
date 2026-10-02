@@ -1453,6 +1453,8 @@
 #
 # @argument: the QEMU argument form this line becomes
 #
+# @launcher-name: stable launch-tool endpoint name, when exposed by name
+#
 # @line: the zero-based -serial position the machine reads this line
 #     from, given for Origin 300 and Fuel offerings, where a further
 #     chassis's L1 leads its own block of five lines and so is not at
@@ -1464,7 +1466,20 @@
   'data': { 'kind': 'str',
             'node': 'uint32',
             'argument': 'str',
-            '*line': 'uint32' } }
+            '*line': 'uint32',
+            '*launcher-name': 'str' } }
+
+##
+# @SGIModelLaunchRecipe:
+#
+# Product launch preparation selected by one compiled offering.
+#
+# @ip53-discovery: explicitly authored IP53 discovery-launch inputs
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelLaunchRecipe',
+  'data': [ 'ip53-discovery' ] }
 
 ##
 # @SGIModelInitInputKind:
@@ -1777,6 +1792,8 @@
 #
 # @console: which of @consoles is the primary console
 #
+# @launch-recipe: selected board-specific launch preparation, if any
+#
 # @prom-dialogue: which PROM console dialogue this product speaks
 #
 # @disk-bus: default disk bus a launcher attaches a boot disk to
@@ -1828,6 +1845,7 @@
             'consoles': ['SGIModelConsole'],
             'networks': ['SGIModelNetworkOffering'],
             'console': 'str',
+            '*launch-recipe': 'SGIModelLaunchRecipe',
             'prom-dialogue': 'str',
             'disk-bus': 'str',
             'netboot-adapter': 'str',

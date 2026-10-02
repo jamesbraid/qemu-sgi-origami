@@ -529,6 +529,110 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
     return consoles
 
 
+def _ip53_console_records(topology: dict, harness: dict,
+                          population_nodes: tuple[int, ...]) -> list[dict]:
+    """Project authored IP53 endpoints into one offering's node population.
+
+    Input records bind to stable topology node IDs.  The output keeps the
+    existing SGIModelConsole meaning: ``node`` is the owner's index in the
+    full topology node array, not a launcher endpoint identity.
+    """
+    if harness.get("launch_recipe") != "ip53-discovery":
+        raise ValueError("console_records require launch_recipe ip53-discovery")
+    console_policy = harness.get("console")
+    if console_policy not in ("l1-uart", "ip53-ioc4"):
+        raise ValueError(
+            "ip53-discovery requires an explicit L1 or IOC4 console policy"
+        )
+    records = harness.get("console_records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("ip53-discovery requires authored console_records")
+
+    topology_nodes = topology["nodes"]
+    node_indices = {node["id"]: index
+                    for index, node in enumerate(topology_nodes)}
+    if len(node_indices) != len(topology_nodes):
+        raise ValueError("IP53 console topology node IDs must be unique")
+    if (len(set(population_nodes)) != len(population_nodes) or
+            any(index < 0 or index >= len(topology_nodes)
+                for index in population_nodes)):
+        raise ValueError("IP53 console population has invalid node indices")
+    selected_nodes = set(population_nodes)
+
+    allowed_kinds = {
+        "console", "second-port", "system-controller", "junk-uart",
+    }
+    launcher_names: set[str] = set()
+    bindings: set[str] = set()
+    projected = []
+    for record in records:
+        if (not isinstance(record, dict) or
+                not isinstance(record.get("kind"), str) or
+                record["kind"] not in allowed_kinds):
+            raise ValueError("IP53 console record has an unsupported role")
+        node_id = record.get("node_id")
+        if not isinstance(node_id, str) or node_id not in node_indices:
+            raise ValueError(
+                f"IP53 console record names unknown node id {node_id!r}"
+            )
+        argument = record.get("argument")
+        match = (re.fullmatch(r"-serial chardev:([a-z][a-z0-9_-]*)",
+                              argument)
+                 if isinstance(argument, str) else None)
+        if match is None:
+            raise ValueError(
+                "IP53 console argument must be a serial chardev binding"
+            )
+        launcher_name = record.get("launcher_name")
+        if launcher_name is not None:
+            if (not isinstance(launcher_name, str) or
+                    not re.fullmatch(r"[a-z][a-z0-9-]*", launcher_name)):
+                raise ValueError("IP53 console launcher name is invalid")
+
+        node_index = node_indices[node_id]
+        if node_index not in selected_nodes:
+            continue
+        if argument in bindings:
+            raise ValueError(
+                "IP53 console records contain a duplicate binding in this offering"
+            )
+        bindings.add(argument)
+        if launcher_name is not None:
+            if launcher_name in launcher_names:
+                raise ValueError(
+                    "IP53 console records contain a duplicate name in this offering"
+                )
+            launcher_names.add(launcher_name)
+        projected_record = {
+            "kind": record["kind"], "node": node_index,
+            "argument": argument,
+        }
+        if launcher_name is not None:
+            projected_record["launcher-name"] = launcher_name
+        projected.append(projected_record)
+
+    primary = [record for record in projected if record["kind"] == "console"]
+    if len(primary) != 1 or "launcher-name" not in primary[0]:
+        raise ValueError(
+            "each ip53-discovery offering requires one named primary console"
+        )
+    primary_binding = primary[0]["argument"]
+    primary_name = primary[0]["launcher-name"]
+    if console_policy == "l1-uart":
+        if primary_name != "l1" or primary_binding != "-serial chardev:l1":
+            raise ValueError(
+                "l1-uart console policy must match its named L1 record"
+            )
+    else:
+        endpoint = re.fullmatch(r"ioc4-serial-([0-3])", primary_name)
+        if (endpoint is None or
+                primary_binding != f"-serial chardev:ioc4_serial_{endpoint[1]}"):
+            raise ValueError(
+                "ip53-ioc4 console policy must match its named primary IOC4 record"
+            )
+    return projected
+
+
 def _networks_for(topology: dict) -> list[dict]:
     """One `ioc3-ethernet` entry per IOC3 that fits an Ethernet MAC. Most
     IOC3s carry onboard Ethernet, but a BaseIO-G MediaIO daughtercard's
@@ -807,6 +911,17 @@ def _offerings_for(model: dict, topology: dict,
     machine_name = model["machine"]["emulation"]["machine_name"]
     product = _product_facts(machine_name, product_models)
     harness = product["harness"]
+    # Launch preparation and endpoint records describe this selected model's
+    # authored runtime inputs. Product facts remain the source for defaults.
+    model_harness = model["machine"].get("harness", {})
+    launch_harness = dict(harness)
+    for field in ("launch_recipe", "console_records"):
+        if field in model_harness:
+            launch_harness[field] = model_harness[field]
+    if model_harness.get("launch_recipe") == "ip53-discovery":
+        if "console" not in model_harness:
+            raise ValueError("ip53-discovery requires an explicit console policy")
+        launch_harness["console"] = model_harness["console"]
     population = model["composition"]["population"]
     dimms_per_node = tuple(population["dimms_per_node"])
     node = topology["nodes"][0]
@@ -818,7 +933,21 @@ def _offerings_for(model: dict, topology: dict,
             f"{default_memory}; the catalogue's offerings need one default"
         )
     scsi_adapters = _scsi_adapters_for(topology)
-    consoles = _consoles_for(topology, harness)
+    launch_recipe = launch_harness.get("launch_recipe")
+    if launch_recipe not in (None, "ip53-discovery"):
+        raise ValueError(f"unsupported offering launch recipe {launch_recipe!r}")
+    if launch_recipe is None and (
+            "console_records" in launch_harness or
+            model_harness.get("console") == "ip53-ioc4" or
+            harness["console"] == "ip53-ioc4"):
+        raise ValueError(
+            "IP53 console policy and records require ip53-discovery"
+        )
+    if launch_recipe == "ip53-discovery" and launch_harness["console"] not in (
+            "l1-uart", "ip53-ioc4"):
+        raise ValueError(
+            "ip53-discovery requires an explicit L1 or IOC4 console policy"
+        )
     networks = _networks_for(topology)
     identity_inputs = harness.get("identity_inputs", ())
     recipe = model["machine"].get("harness", {}).get(
@@ -835,6 +964,11 @@ def _offerings_for(model: dict, topology: dict,
         storage = _storage_for(topology, harness, product,
                                list(row["nodes"]))
         init_inputs = _init_inputs_for(topology, storage)
+        consoles = (
+            _ip53_console_records(topology, launch_harness, tuple(row["nodes"]))
+            if launch_recipe == "ip53-discovery"
+            else _consoles_for(topology, harness)
+        )
         for cpu_population in row["supported_cpu_populations"]:
             offerings.append({
                 "product": machine_name,
@@ -861,7 +995,9 @@ def _offerings_for(model: dict, topology: dict,
                 "scsi-adapters": scsi_adapters,
                 "consoles": consoles,
                 "networks": networks,
-                "console": harness["console"],
+                "console": launch_harness["console"],
+                **({"launch-recipe": launch_recipe}
+                   if launch_recipe is not None else {}),
                 "prom-dialogue": harness["prom_dialogue"],
                 "disk-bus": harness["disk_bus"],
                 "netboot-adapter": harness["netboot_adapter"],
