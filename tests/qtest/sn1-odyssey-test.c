@@ -37,6 +37,7 @@
 #define ODSY_INT_DEST_UPPER 0x0034
 #define ODSY_INT_DEST_LOWER 0x003c
 #define ODSY_ERROR_COMMAND 0x0044
+#define ODSY_RESET_CONTROL 0x1004
 #define ODSY_INTR_FLAGS 0x1014
 #define ODSY_INTR_CLEAR 0x101c
 #define ODSY_INTR_ENABLE_SET 0x1034
@@ -312,6 +313,7 @@
 #define ODSY_I2C_OPT_CMD 0x233a00
 #define ODSY_I2C_OPT_STATUS 0x233a08
 #define ODSY_I2C_OPT_SELECTOR 0x39d00001u
+#define ODSY_BACKEND_VERSION 0x23380c
 
 /*
  * Bits 13:10 of the status word: the engine-state field the kernel driver's
@@ -834,6 +836,140 @@ static void test_memory_configuration_follows_properties(void)
                       " -global sgi-odyssey.cas-latency=2");
     g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==, 0x71000000);
     qtest_quit(qts);
+}
+
+/*
+ * "profile" is a named preset for the generation/capacity pairs the family
+ * evidence record supports (docs/reviews/odyssey-family-behaviour-evidence-
+ * 20261001.md): v12 and v10 share the second-generation revision nibble
+ * 0xa, v8 and v6 the first generation's 0x1; v12 and v8 report 128 MB,
+ * v10 and v6 32 MB. Only the v12 pair -- a measured live board
+ * (odyssey-octane2-v12-registers-20260926.md) -- is independently grounded
+ * hardware evidence; the other three are the same bit-field rules applied
+ * to generation and capacity values the evidence record establishes
+ * separately, not a second measured board, so this still checks them for
+ * a regression, not as a hardware-accuracy claim.
+ */
+static void test_profile_selects_identity_and_memory(void)
+{
+    static const struct {
+        const char *profile;
+        uint32_t identity;
+        uint32_t memory_config;
+    } cases[] = {
+        { "v12", IDENTITY_DEFAULT, 0xa1000000 },
+        { "v10", IDENTITY_DEFAULT, 0x21000000 },
+        { "v8",  0x1c013047,       0xa1000000 },
+        { "v6",  0x1c013047,       0x21000000 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *extra =
+            g_strdup_printf(" -global sgi-odyssey.profile=%s",
+                            cases[i].profile);
+        QTestState *qts = board_start(extra);
+
+        g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, cases[i].identity);
+        g_assert_cmphex(reg_read(qts, ODSY_MEMORY_CONFIG), ==,
+                         cases[i].memory_config);
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * Bits 29 (two memory banks) and 28 (cas latency 2) of the memory
+ * configuration word, decomposed from the V12 profile's measured
+ * 0xa1000000 (odyssey-octane2-v12-registers-20260926.md): two banks (bit
+ * 29 set), latency 3 rather than 2 (bit 28 clear). Bits 27:24 carry the
+ * constant "copy field" (ODSY_CONFIG_COPY_FIELD), that same board's only
+ * established value for it.
+ */
+static void test_v12_profile_memory_word_bits(void)
+{
+    QTestState *qts = board_start(" -global sgi-odyssey.profile=v12");
+    uint32_t config = reg_read(qts, ODSY_MEMORY_CONFIG);
+
+    g_assert_cmphex(config, ==, 0xa1000000);
+    g_assert_cmphex(config & (1u << 29), ==, (1u << 29));
+    g_assert_cmphex(config & (1u << 28), ==, 0);
+    g_assert_cmphex((config >> 24) & 0xf, ==, 0x1);
+    qtest_quit(qts);
+}
+
+/*
+ * The driver's six-write memory-reset sequence (docs/datasheets/odyssey.md,
+ * "0x1004"). Each write is accepted and logged by name under -d unimp,
+ * rather than falling through to the generic "not modeled" message, and
+ * the board keeps answering identity afterwards: the model does not reset
+ * anything real, it only stops pretending the register does not exist.
+ */
+static void test_reset_control_accepts_six_writes(void)
+{
+    static const uint32_t sequence[] = { 1, 0, 1, 0, 1, 0 };
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-reset-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    for (size_t i = 0; i < ARRAY_SIZE(sequence); i++) {
+        reg_write(qts, ODSY_RESET_CONTROL, sequence[i]);
+    }
+    g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_null(strstr(log, "0x1004 is not modeled"));
+    g_assert_nonnull(strstr(log, "reset control register accepted"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
+ * gfxinfo's displayed back-end version at 0x23380c: established as read,
+ * pinned at 0 for every profile as a documented approximation rather than
+ * left to the generic unimplemented fallback (see the model's
+ * ODSY_BACKEND_VERSION comment). A write is a guest error, the same as
+ * every other read-only register in this block.
+ */
+static void test_backend_version_is_pinned(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-backend-version-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d guest_errors -D %s", quoted);
+    qts = board_start(extra);
+
+    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
+    qtest_writel(qts, WIDGET + ODSY_BACKEND_VERSION, 1);
+    g_assert_cmphex(qtest_readl(qts, WIDGET + ODSY_BACKEND_VERSION), ==, 0);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "read-only register at 0x23380c"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 /*
@@ -9876,6 +10012,14 @@ int main(int argc, char **argv)
                    test_widget_control_reads_back);
     qtest_add_func("sn1/odyssey/memory-configuration-follows-properties",
                    test_memory_configuration_follows_properties);
+    qtest_add_func("sn1/odyssey/profile-selects-identity-and-memory",
+                   test_profile_selects_identity_and_memory);
+    qtest_add_func("sn1/odyssey/v12-profile-memory-word-bits",
+                   test_v12_profile_memory_word_bits);
+    qtest_add_func("sn1/odyssey/reset-control-accepts-six-writes",
+                   test_reset_control_accepts_six_writes);
+    qtest_add_func("sn1/odyssey/backend-version-is-pinned",
+                   test_backend_version_is_pinned);
     qtest_add_func("sn1/odyssey/board-identity-part-answers",
                    test_board_identity_part_answers);
     qtest_add_func("sn1/odyssey/interrupt-registers",

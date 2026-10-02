@@ -99,6 +99,7 @@ struct SGIOdysseyState {
     uint32_t memory_size;       /* megabytes */
     uint32_t memory_banks;
     uint32_t cas_latency;
+    char *profile;
     uint64_t nic_serial;
     char *nic_record;
 
