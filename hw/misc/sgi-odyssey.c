@@ -213,6 +213,14 @@
 #define ODSY_INT_DEST_VECTOR_SHIFT 24
 
 /*
+ * The driver's six-write memory-reset sequence (docs/datasheets/odyssey.md,
+ * "0x1004"), the first before any identity read: established as driver
+ * behaviour from the shipped kernel, its effect on hardware is unknown. The
+ * model accepts and logs each write rather than modeling a reset.
+ */
+#define ODSY_RESET_CONTROL 0x1004
+
+/*
  * The flag interrupt's registers, as the shipped IRIX 6.5.30 kernel uses them
  * (docs/reviews/odyssey-datasheet-fold-8eaf559842.md, claim 9):
  *
@@ -551,6 +559,16 @@
 #define ODSY_I2C_MAIN_STATUS_READ 0x233c08
 #define ODSY_I2C_OPT_CMD_READ 0x233a00
 #define ODSY_I2C_OPT_STATUS_READ 0x233a08
+
+/*
+ * gfxinfo's displayed back-end version, bits 2:0: established as read, the
+ * driver effect otherwise unknown. The model answers 0 for every profile;
+ * a measured 128 MB second-generation board is believed to answer 1
+ * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md). Pinned
+ * explicitly as an approximation rather than left to the unimplemented
+ * fallback.
+ */
+#define ODSY_BACKEND_VERSION 0x23380c
 
 /*
  * Status bits this model computes at read time: DONE set whenever the last
@@ -1973,6 +1991,8 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
     case ODSY_HOST_WRITE_ADDR_LOWER:
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
+    case ODSY_RESET_CONTROL:
+    case ODSY_BACKEND_VERSION:
         return addr;
     default:
         return -1;
@@ -2205,6 +2225,10 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     case ODSY_I2C_OPT_STATUS_READ:
         value = odyssey_i2c_status(s->i2c_opt_cmd);
         break;
+    case ODSY_BACKEND_VERSION:
+        /* Pinned at 0 for every profile; see the define's comment. */
+        value = 0;
+        break;
     case ODSY_ROUTE_DEST_UPPER:
     case ODSY_ROUTE_DEST_LOWER:
     case ODSY_ROUTE_VECTORS:
@@ -2212,6 +2236,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     case ODSY_HOST_WRITE_ADDR_LOWER:
     case ODSY_CTX_SHADOW_ADDR_UPPER:
     case ODSY_CTX_SHADOW_ADDR_LOWER:
+    case ODSY_RESET_CONTROL:
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: read of the write-only "
                       "register at 0x%" HWADDR_PRIx "\n", addr);
         break;
@@ -7571,6 +7596,12 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
                       " to the interrupt flags ignored; its effect is "
                       "unknown\n", value);
         break;
+    case ODSY_RESET_CONTROL:
+        /* The driver's six-write reset sequence; see the define's comment. */
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: write of 0x%" PRIx64
+                      " to the reset control register accepted; its effect "
+                      "is unknown\n", value);
+        break;
     case ODSY_FLCTL_CONFIG:
         s->flctl_config = value;
         break;
@@ -7674,6 +7705,7 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
     case ODSY_I2C_MAIN_STATUS_READ:
     case ODSY_I2C_OPT_CMD_READ:
     case ODSY_I2C_OPT_STATUS_READ:
+    case ODSY_BACKEND_VERSION:
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: write of 0x%" PRIx64
                       " to the read-only register at 0x%" HWADDR_PRIx "\n",
                       value, addr);
@@ -8060,10 +8092,52 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->dma_seq = 0;
 }
 
+/*
+ * The generation/capacity pairs the family evidence supports
+ * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md): v12 is the
+ * measured 128 MB board odyssey_properties' defaults already describe; v10
+ * is the same second-generation part cut down to 32 MB; v8 and v6 are the
+ * first generation (revision nibble 1) at 128 MB and 32 MB. No profile
+ * offers 64 MB, size code 3, or a revision nibble other than 0x1 and 0xa:
+ * the evidence record does not establish them.
+ */
+static const struct {
+    const char *name;
+    uint32_t revision;
+    uint32_t memory_size;
+} odyssey_profiles[] = {
+    { "v12", 0xa, 128 },
+    { "v10", 0xa, 32 },
+    { "v8",  0x1, 128 },
+    { "v6",  0x1, 32 },
+};
+
+static bool odyssey_resolve_profile(SGIOdysseyState *s, Error **errp)
+{
+    size_t i;
+
+    if (!s->profile) {
+        return true;
+    }
+    for (i = 0; i < ARRAY_SIZE(odyssey_profiles); i++) {
+        if (!strcmp(s->profile, odyssey_profiles[i].name)) {
+            s->revision = odyssey_profiles[i].revision;
+            s->memory_size = odyssey_profiles[i].memory_size;
+            return true;
+        }
+    }
+    error_setg(errp, "sgi-odyssey profile must be v12, v10, v8 or v6, not %s",
+               s->profile);
+    return false;
+}
+
 static bool odyssey_build_widget(SGIXioBoardState *board, Error **errp)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(board);
 
+    if (!odyssey_resolve_profile(s, errp)) {
+        return false;
+    }
     if (s->revision > 0xf) {
         error_setg(errp, "sgi-odyssey revision must fit in four bits, not %u",
                    s->revision);
@@ -8430,6 +8504,13 @@ static void odyssey_instance_init(Object *obj)
  * (odyssey-octane2-v12-registers-20260926.md). The one-wire record
  * defaults to the public owner record of the 128 MB board; the serial is
  * synthetic and says so.
+ *
+ * "profile" is a named preset for the generation/capacity pairs the family
+ * evidence supports
+ * (docs/reviews/odyssey-family-behaviour-evidence-20261001.md): v12
+ * (default, the measured board above), v10, v8 and v6. Selecting one
+ * overrides "revision" and "memory-size"; left unset, both keep their own
+ * defaults/overrides unchanged.
  */
 static const Property odyssey_properties[] = {
     DEFINE_PROP_LINK("pi", SGIOdysseyState, pi, TYPE_SGI_PI_GFX, Object *),
@@ -8437,6 +8518,7 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_UINT32("memory-size", SGIOdysseyState, memory_size, 128),
     DEFINE_PROP_UINT32("memory-banks", SGIOdysseyState, memory_banks, 2),
     DEFINE_PROP_UINT32("cas-latency", SGIOdysseyState, cas_latency, 3),
+    DEFINE_PROP_STRING("profile", SGIOdysseyState, profile),
     DEFINE_PROP_UINT64("nic-serial", SGIOdysseyState, nic_serial,
                        0x5d0000000001ULL),
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),
