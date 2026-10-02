@@ -2499,6 +2499,85 @@ static void test_expansion_composed_adapters(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_expansion_dma_memory_decode(void)
+{
+    const uint64_t base = SPACE_IO + (UINT64_C(1) << 33) + (0xeULL << 24);
+    const uint64_t bar = base + 0x400000;
+    const uint64_t target = 0x40008000;
+    const uint64_t copy = 0x40008200;
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[8], expected[8];
+    int fd = g_file_open_tmp("expansion-md-dma-XXXXXX", &log, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "-cpu R14000 -smp 2 -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none -d guest_errors -D %s "
+        "-device sgi-bridge-dma-test,bus=expansion0-u0-head-e.0,addr=1",
+        STORAGE_BINDING, image, prom, log);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    /* Software bank 1 uses dense backing at 256 MiB, not physical 1 GiB. */
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
+                 (UINT64_C(2) << 32) | 0x3300);
+    expansion_card_write(qts, base + 0x24,
+                         (expansion_card_read(qts, base + 0x24, 4) & ~15U) |
+                         0xe, 4);
+    expansion_card_write(qts, base + 0x21010, CARD_MMIO + 0x200000, 4);
+    expansion_card_write(qts, base + 0x21004, PCI_COMMAND_MEMORY_MASTER, 4);
+    expansion_card_write(qts, base + 0x20c, 0x81012, 4);
+    expansion_card_write(qts, base + 0x10000, target | 0x21 | (0xa << 8), 8);
+    memset(bytes, 0xcc, sizeof(bytes));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, target, bytes, sizeof(bytes)));
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x40000000, 4);
+    expansion_card_write(qts, bar + DMA_REG_LENGTH, sizeof(bytes), 4);
+    expansion_card_write(qts, bar + DMA_REG_SEED, 0x51, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        expected[i] = 0x51 + i;
+    }
+    g_assert_true(qtest_memread_cpu(qts, 1, target, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    /* Exercise incoming reads as well as writes through the relocated bank. */
+    expansion_card_write(qts, bar + DMA_REG_SOURCE, 0x40000000, 4);
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x40000200, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, copy, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    /* The first byte beyond this bank is a hole, not dense backing. */
+    expansion_card_write(qts, base + 0x10000,
+                         UINT64_C(0x50000000) | 0x21 | (0xa << 8), 8);
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x40000000, 4);
+    expansion_card_write(qts, bar + DMA_REG_SEED, 0x81, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    /* A disabled installed bank also refuses a formerly valid address. */
+    expansion_card_write(qts, base + 0x10000, target | 0x21 | (0xa << 8), 8);
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
+                 (UINT64_C(2) << 32) | 0x300);
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
+                 (UINT64_C(2) << 32) | 0x3300);
+    g_assert_true(qtest_memread_cpu(qts, 1, target, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(contents, "refused NI packet at 0x50000000"));
+    g_assert_nonnull(strstr(contents, "refused NI packet at 0x40008000"));
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
 static void assert_compute_memory_projection(QTestState *qts, unsigned cpu,
                                              uint64_t address,
                                              const char *kind)
@@ -3876,6 +3955,8 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(2), test_compute_uart_with_expansion);
     qtest_add_data_func("sn/builder/expansion/compute-uart/selected-four-cpus",
                         GUINT_TO_POINTER(3), test_compute_uart_with_expansion);
+    qtest_add_func("sn/builder/expansion/dma-memory-decode",
+                   test_expansion_dma_memory_decode);
     qtest_add_func("sn/builder/expansion/composed-adapters",
                    test_expansion_composed_adapters);
     qtest_add_func("sn/builder/expansion/six-head-pio",
