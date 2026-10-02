@@ -37,9 +37,9 @@
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
 /*
  * 0x000e0100 is the client's DMA-read fence marker, which
- * __glMgrWaitForDMARead sends before it polls 0x020200 & 0x1eff for zero. The
- * client also pads pooled display lists with it. What the board does with it
- * is unknown. It has no payload, the model's DMA is always idle by the time
+ * the DMA read-wait routine sends before it polls 0x020200 & 0x1eff for zero.
+ * The client also pads pooled display lists with it. What the board does with
+ * it is unknown. It has no payload, the model's DMA is always idle by the time
  * the client polls, and the word would otherwise be logged once per padding
  * word.
  */
@@ -106,8 +106,8 @@
 #define MGRAS_RSS_IR_ALIAS 0x045
 
 /*
- * XYWIN carries a per-window screen origin: mgrasLineSS writes it before
- * RE_POINT/RE_LINE, but mgrasPolyFillRectSolid never writes it before
+ * XYWIN carries a per-window screen origin: the line routine writes it before
+ * RE_POINT/RE_LINE, but the solid rectangle-fill routine never writes it before
  * BLOCKXYSTARTI/BLOCKXYENDI (both confirmed by the sites each function's
  * code touches). OpenBSD's impact(4) driver
  * (sys/arch/sgi/dev/impactreg.h) names this register IMPACTSR_CMD_XYWIN
@@ -125,7 +125,7 @@
  * The raster clip rectangle. The X server draws a primitive once for each
  * box of its window's clip list: before each pass it loads the box into
  * 0x147 and 0x148 and 0x11 into 0x14f, and after the last it loads 0 into
- * 0x14f (mgrasPolyPoint in the IRIX 6.5.30 impactsr.so). From its
+ * 0x14f (the point routine in the IRIX 6.5.30 impactsr.so). From its
  * arithmetic on the X box (x1, y1) to (x2, y2), end exclusive:
  *
  *   0x147 = x1 << 16 | (x2 - 1)
@@ -156,9 +156,9 @@
  * Register 0x05f, IMPACTSR_CMD_ALPHA in OpenBSD's impactreg.h. No public
  * driver writes it, and its function is unknown.
  * The DDX writes it 33 times per pass with value 0 immediately before
- * the PIO draw-pixel row loop (mgrasDrawPixels..C, 0x577e68-0x577ee8)
- * in every observed capture. No read, branch or paint result has been
- * tied to it, so the name alone does not make it an alpha or colour
+ * the PIO draw-pixel row loop (the pixel-draw routine's C variant,
+ * 0x577e68-0x577ee8) in every observed capture. No read, branch or paint result
+ * has been tied to it, so the name alone does not make it an alpha or colour
  * register here. Latched silently by the generic mgras_raster_rss_write()
  * store like every other unmodelled register.
  */
@@ -1217,11 +1217,11 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * both fields lands each of those clusters inside a distinct,
  * non-overlapping icon-sized box. Gating on x != 0 is an inference from
  * that split, not a confirmed hardware or driver condition: the client's code
- * for mgrasLineSS finds two distinct sites that write XYWIN ahead of
+ * for the line routine finds two distinct sites that write XYWIN ahead of
  * RE_POINT/RE_LINE, one that structurally always stores x == 0 and one
  * that can store a genuine nonzero x, but which guest-side condition
  * chooses between them was not traced to a confirmed branch predicate.
- * mgrasPolyFillRectSolid never writes XYWIN at all, which is why
+ * The solid rectangle-fill routine never writes XYWIN at all, which is why
  * BLOCKXYSTARTI/BLOCKXYENDI fills need no such adjustment.
  *
  * The y field is packed top-down (0 at the bottom, s->height - 1
@@ -1585,7 +1585,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 
 /*
  * Host reads through the raster engine's data port. The IRIX 6.5.30 X
- * server's mgrasReadPixels (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
+ * server's pixel-read routine (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
  * reads a box this way; a captured run caught it 214 times
  * while oglsnoop showed the pixel under the pointer, two pixels each
  * time (the first at seq 4088838). Established from that
@@ -1880,9 +1880,9 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  *
  * An entry is a whole 4 KiB frame number of the node physical address
  * space, node included, not a frame within the list's own node. The IRIX
- * 6.5.30 kernel's mgrasFillTxTbl (unix.IP27, SHA-256 cbdb02ea5d33...)
- * stores each entry as a 64-bit doubleword from vtopv, then the next
- * three entries as that value plus 1, 2 and 3, one per 4 KiB of the
+ * 6.5.30 kernel's texture-table fill routine (unix.IP27, SHA-256
+ * cbdb02ea5d33...) stores each entry as a 64-bit doubleword from vtopv, then
+ * the next three entries as that value plus 1, 2 and 3, one per 4 KiB of the
  * kernel's 16 KiB page (established from the client's code). On SN0 the
  * node number is physical address bits 39:32 (NASID_SHFT 32 in Linux's
  * asm/sn/sn0/addrs.h), so a frame on node n has n in entry bits 27:20.
@@ -2337,7 +2337,7 @@ static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
 /*
  * A transfer to the GE, carrying the image of the loaded context's pixel
  * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
- * it with (slot << 1) | 0xa1 (__glMgr_WriteDMAHQSetup, 0xd9c2b10 in the
+ * it with (slot << 1) | 0xa1 (the DMA setup routine, 0xd9c2b10 in the
  * IRIX 6.5.30 IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
  * of ipaste, imgview and i3dm (a captured run), where the
  * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
@@ -2452,10 +2452,11 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 
 /*
  * Display-list execute, 0x00080c08 with two words: a byte offset into the pool
- * and a size. The IRIX 6.5.30 GL client sends it from __glMgrDLExecuteDMA with
- * nothing after it, just after the kernel installs the pool's page list in
- * DMA-map slot 4. That the board reads the list from slot 4's pages is
- * inferred from that install being the only one before the execute.
+ * and a size. The IRIX 6.5.30 GL client sends it from the display-list DMA
+ * execute routine with nothing after it, just after the kernel installs the
+ * pool's page list in DMA-map slot 4. That the board reads the list from slot
+ * 4's pages is inferred from that install being the only one before the
+ * execute.
  *
  * The board reads the words from host memory itself. The shared command
  * fetch resolves them from the page list and hands them to the same
@@ -2473,7 +2474,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * which covers the first of the list's 14 pool pages, and nothing else
  * reached the board before glFlush. So the rest of the list can only be
  * reached from the pool. Each range there begins with a header the
- * client's func_d970cf0 (libGLcore.so IP27GR532, SHA-256 626d6d94...,
+ * client's range-header routine (libGLcore.so IP27GR532, SHA-256 626d6d94...,
  * 0xd970cf0) writes from the range's type, and the same run's fetch
  * records (sgi_mgras_dma_chunk, seq 7576884 and 7576887) show the board
  * reading exactly these words at the execute:
@@ -2484,15 +2485,15 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  *   0x00080c08, callee offset, size  called list's first range, then next
  *
  * Established from the client's code: the three forms, their 2, 3 and 6
- * header words (the table at .rodata 0xdac9588), that __glMgrDLToPool
- * writes the next range's pool offset and size into a range's words 1
- * and 2, and that __glMgrDLResolveCalls writes the called list's first
- * range into words 4 and 5 of a calling range. A descriptor flag would
- * make a next or call token 0x00080e08 and the last range's second word
- * 1; the two routines that build the descriptors, func_d970850 and
- * __glMgrDLToPool, leave that flag clear in every path, and no capture
- * has either form, so the model treats both as unimplemented and draws
- * nothing for the list. Established from the
+ * header words (the table at .rodata 0xdac9588), that the display-list pool
+ * routine writes the next range's pool offset and size into a range's words 1
+ * and 2, and that the display-list call-resolve routine writes the called
+ * list's first range into words 4 and 5 of a calling range. A descriptor flag
+ * would make a next or call token 0x00080e08 and the last range's second word
+ * 1; the two routines that build the descriptors, the first descriptor-building
+ * routine and the display-list pool routine, leave that flag clear in every
+ * path, and no capture has either form, so the model treats both as
+ * unimplemented and draws nothing for the list. Established from the
  * fetch records: 14 ranges of one list read as 13 next headers and one
  * last header, and the words after each header drew the reference image.
  * Inferred: that the board reads the size as 32-bit words, and that it
@@ -2502,9 +2503,9 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
  * values in word 0; the board had already read the list by then.
  *
  * The model follows calls on a stack of MGRAS_LIST_MAX_CALLS returns.
- * __glMgrDLExecuteDMA sends a list by DMA only while its nesting and the
- * current call depth come to less than 64 (established), so the client
- * never nests deeper; the board's own depth is unknown. A call past it
+ * The display-list DMA execute routine sends a list by DMA only while its
+ * nesting and the current call depth come to less than 64 (established), so the
+ * client never nests deeper; the board's own depth is unknown. A call past it
  * fails the execute whole. The discriminating tests are
  * gl-list-draws-the-probe-list, gl-list-follows-the-chain,
  * gl-list-big-matches-the-reference, gl-list-continues-at-offset-zero
@@ -2545,7 +2546,7 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 /* The deepest call chain the model follows; see above. */
 #define MGRAS_LIST_MAX_CALLS 64
 
-/* A range's header tokens, as func_d970cf0 writes them. */
+/* A range's header tokens, as the range-header routine writes them. */
 #define MGRAS_LIST_HDR_LAST 0x00083904u
 #define MGRAS_LIST_HDR_NEXT 0x00080c08u
 #define MGRAS_LIST_HDR_CALL 0x00083708u
@@ -2671,9 +2672,9 @@ static bool mgras_raster_list_next(void *opaque, const SGICommandFetch *f,
      * Every range carries a header, so a range of no words is not one.
      * Unknown: whether the client ever ends a list with a call, a calling
      * range whose next range is (0, 0). The listing's three header forms
-     * always name a next range, __glMgrDLToPool was not read far enough to
-     * rule the case out, and no capture has a list that calls a list. The
-     * model refuses such a list here, on the return from the called list.
+     * always name a next range, the display-list pool routine was not read far
+     * enough to rule the case out, and no capture has a list that calls a list.
+     * The model refuses such a list here, on the return from the called list.
      */
     if (!next.size) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list names a "
@@ -2810,9 +2811,9 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
 
     /*
      * Established as software expectation: the
-     * IRIX 6.5.30 client's __Mgr_ReturnMode clears flag 17, writes the query,
-     * then polls flag 17 with no bound and reads 0x028004 once it is set.
-     * Approximated: the model has the answer as soon as the arguments
+     * IRIX 6.5.30 client's state-query routine clears flag 17, writes the
+     * query, then polls flag 17 with no bound and reads 0x028004 once it is
+     * set. Approximated: the model has the answer as soon as the arguments
      * arrive, and it replaces the GE revision 0x028004 held since reset.
      * sgi_mgras_gl_query_answer() answers the indices it decodes from the
      * loaded context's GL state and every other index with zero; which
@@ -2851,14 +2852,14 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     }
 
     /*
-     * Established: MgrasSchedSwapBuf
+     * Established: the swap-scheduling routine
      * enables source 10, writes 0x3700 and sleeps until its handler sees
      * source 10. Inferred there: the board raises it once the work queued
      * ahead of the word has drained, so the flip follows the rendering.
      * Approximated: the model executes each command as it arrives, so
      * nothing is queued ahead and it raises the source when the word is
      * consumed. The XMAP
-     * buffer selection itself is the kernel's MgrasSchedSwapTask, not
+     * buffer selection itself is the kernel's swap task, not
      * this word. The discriminating tests are
      * swap-command-raises-interrupt-10 and swap-command-needs-enable.
      */

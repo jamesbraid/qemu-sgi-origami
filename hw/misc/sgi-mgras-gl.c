@@ -85,11 +85,11 @@
 #define MGRAS_GL_DRAW_BUFFER     0x0000490c
 #define MGRAS_GL_DEPTH_TEST      0x00006604
 /*
- * glScissor: __glMgrim_Scissor (0xd97c260 in the IRIX 6.5.30 IP27GR532
+ * glScissor: the scissor routine (0xd97c260 in the IRIX 6.5.30 IP27GR532
  * libGLcore.so, SHA-256 626d6d94...) rejects a negative width or height
  * and writes 0x3910 and x, width - 1, y, height - 1 (0xd97c2a0-0xd97c2d8).
  * glEnable and glDisable of GL_SCISSOR_TEST write 0x6e04 and 1 or 0
- * (__glMgrim_Enable 0xd97e110 for capability 0xc11, __glMgrim_Disable
+ * (the enable routine 0xd97e110 for capability 0xc11, the disable routine
  * 0xd97fec4). Established from the listing. That the board discards
  * fragments outside the box as OpenGL 1.2.1, 4.1.2 says is inferred; the
  * discriminating test is gl-scissor-bounds-draws-and-clears.
@@ -97,14 +97,14 @@
 #define MGRAS_GL_SCISSOR         0x00003910
 #define MGRAS_GL_SCISSOR_TEST    0x00006e04
 /*
- * glAlphaFunc: __glMgrim_AlphaFunc (0xd95ea40) accepts a function from
+ * glAlphaFunc: the alpha-function routine (0xd95ea40) accepts a function from
  * GL_NEVER to GL_ALWAYS and writes 0x3e08, the function minus GL_NEVER,
  * and the reference clamped to [0, 1], times 4095.0, plus 0.5 and
  * truncated (the float at file offset 0x1d9414 is 4095.0 and the double
  * at 0x1d96a0 0.5), as a 16-bit signed value (0xd95eaa4-0xd95eae4): the
  * reference as a 12-bit fraction. glEnable and glDisable of
- * GL_ALPHA_TEST write 0x6404 and 1 or 0 (__glMgrim_Enable 0xd97dea4 for
- * capability 0xbc0; __glMgrim_Disable 0xd97fcb4). Established from the
+ * GL_ALPHA_TEST write 0x6404 and 1 or 0 (the enable routine 0xd97dea4 for
+ * capability 0xbc0; the disable routine 0xd97fcb4). Established from the
  * listing; that the board tests fragments as OpenGL 1.2.1, 4.1.4 says is
  * inferred. The discriminating test is gl-alpha-test-discards.
  */
@@ -115,18 +115,18 @@
  * The stencil test, from the IRIX 6.5.30 IP27GR532 libGLcore.so's
  * emitters, established from the listing:
  *
- * - glStencilFunc (__glMgrim_StencilFunc 0xd95eec0): 0x410c, the function
- *   less GL_NEVER, the reference clamped to [0, 255] and the mask as the
- *   application passed it.
- * - glStencilOp (__glMgrim_StencilOp 0xd95ef80): 0x420c and the three
+ * - glStencilFunc (the stencil-function routine 0xd95eec0): 0x410c, the
+ *   function less GL_NEVER, the reference clamped to [0, 255] and the mask as
+ *   the application passed it.
+ * - glStencilOp (the stencil-operation routine 0xd95ef80): 0x420c and the three
  *   operations as small numbers, GL_KEEP 0, GL_ZERO 1, GL_REPLACE 2,
  *   GL_INCR 3, GL_DECR 4 and GL_INVERT 5 (0xd95f074-0xd95f1b4); the
- *   glGet decoding maps them back the same way (__glMgrDoGet
+ *   glGet decoding maps them back the same way (the glGet routine
  *   0xd993294-0xd9932e4).
  * - glStencilMask (0xd95e880): 0x3a04 and the mask.
  * - glClearStencil (0xd980c40): 0xbe04 and the value masked to the
  *   visual's stencil bits.
- * - glClear with GL_STENCIL_BUFFER_BIT (__glMgrim_Clear 0xd9e3670): 0x4c00
+ * - glClear with GL_STENCIL_BUFFER_BIT (the clear routine 0xd9e3670): 0x4c00
  *   alone, only when the visual has a stencil buffer.
  * - glEnable and glDisable of GL_STENCIL_TEST (0xd97e58c for capability
  *   0xb90, 0xd980354): 0x6f04 and 1 or 0.
@@ -152,8 +152,8 @@
 #define MGRAS_GL_DEPTH_MASK_24   0x00ffffffu
 
 /*
- * Blending, established from the listing: glBlendFunc (__glMgrim_BlendFunc
- * 0xd95ebd0) validates both factors and writes 0x3f08 and the two
+ * Blending, established from the listing: glBlendFunc (the blend-function
+ * routine 0xd95ebd0) validates both factors and writes 0x3f08 and the two
  * enumerants unchanged (0xd95ecf8-0xd95ed08); glBlendEquationEXT
  * (0xd95eb20) accepts GL_LOGIC_OP, GL_FUNC_ADD, GL_MIN, GL_MAX,
  * GL_FUNC_SUBTRACT and GL_FUNC_REVERSE_SUBTRACT and writes 0x6004 and the
@@ -172,10 +172,10 @@
 #define MGRAS_GL_BLEND           0x00006504
 /*
  * The logical operation, established from the listing: glLogicOp
- * (__glMgrim_LogicOp 0xd95ee20) accepts GL_CLEAR to GL_SET and writes
+ * (the logic-operation routine 0xd95ee20) accepts GL_CLEAR to GL_SET and writes
  * 0x4004 and the operation less GL_CLEAR. glEnable of GL_COLOR_LOGIC_OP
  * writes 0x6b04 and 1 when the context byte at 0xc94 is set
- * (__glMgrim_Enable 0xd97e4e8-0xd97e50c, capability 0xbf2), and of
+ * (the enable routine 0xd97e4e8-0xd97e50c, capability 0xbf2), and of
  * GL_INDEX_LOGIC_OP when it is clear (0xd97e814-0xd97e83c, capability
  * 0xbf1), so one token enables the operation for the context's own
  * colour form, the byte marking an RGBA context (inferred from which
@@ -188,7 +188,7 @@
 #define MGRAS_GL_LOGIC_OP        0x00004004
 #define MGRAS_GL_LOGIC_OP_ENABLE 0x00006b04
 /*
- * glColorMask: __glMgrim_ColorMask (0xd95e8e0) writes 0x3b04 and one word
+ * glColorMask: the colour-mask routine (0xd95e8e0) writes 0x3b04 and one word
  * with bit 0 set for red, 1 green, 2 blue and 3 alpha (0xd95e900-
  * 0xd95e940), the bits the GL_COLOR_WRITEMASK query decodes. Established
  * from the listing; that the board keeps a masked channel's stored bits
@@ -197,7 +197,7 @@
  */
 #define MGRAS_GL_COLOR_MASK      0x00003b04
 /*
- * Fog, established from the listing: glFogfv (__glMgrim_Fogfv 0xd9614c0;
+ * Fog, established from the listing: glFogfv (the fog routine 0xd9614c0;
  * glFogf and glFogi call it) writes, by parameter, GL_FOG_COLOR as 0xb410
  * and the four floats as the application passed them, GL_FOG_START as
  * 0xb504, GL_FOG_END as 0xb604 and GL_FOG_DENSITY as 0xb704 and a float,
@@ -242,12 +242,12 @@
 #define MGRAS_GL_OFFSET_CORE     0x3f8ccccdu
 /*
  * Client clip planes, established from the listing: glClipPlane
- * (__glMgrim_ClipPlane 0xd97c310) accepts a plane below the context's
+ * (the clip-plane routine 0xd97c310) accepts a plane below the context's
  * count and writes 0xa514, the plane's enumerant and its four
  * coefficients converted from double to float, untransformed
  * (0xd97c364-0xd97c3a0). glEnable and glDisable of GL_CLIP_PLANEi write
- * 0xa604 and 0xa704 and the enumerant (__glMgrim_Enable 0xd97de34,
- * __glMgrim_Disable 0xd97fbfc). Every context setup sends all six planes
+ * 0xa604 and 0xa704 and the enumerant (the enable routine 0xd97de34,
+ * the disable routine 0xd97fbfc). Every context setup sends all six planes
  * as zeros through two unnamed routines and perfly disables all six each
  * frame. The client does not transform the plane, so the board does, by
  * the inverse of the modelview current when it arrives (OpenGL 1.2.1,
@@ -297,7 +297,7 @@
  * same for u then v; glClearAccum (0xd980a40) 0xbb10 and the four clamped
  * components. Established from the listing. The client evaluates and
  * accumulates on the host: glClear's accumulation bit calls a routine
- * through the context (__glMgrim_Clear 0xd9e3638) and writes no port
+ * through the context (the clear routine 0xd9e3638) and writes no port
  * token, so the board has no accumulation buffer for these words to
  * reach (inferred). What the GE does with the grids is unknown; the model
  * draws nothing for them, logged.
@@ -322,14 +322,14 @@ static const uint16_t mgras_gl_stencil_ops[] = {
     SGI_GL_KEEP, 0, SGI_GL_REPLACE, SGI_GL_INCR, SGI_GL_DECR, SGI_GL_INVERT,
 };
 /*
- * glDepthRange: __glMgrim_DepthRange (0xd960590 in the IRIX 6.5.30
+ * glDepthRange: the depth-range routine (0xd960590 in the IRIX 6.5.30
  * IP27GR532 libGLcore.so, SHA-256 626d6d94...) writes 0x4808 and near and
  * far converted to single floats, unclamped, outside glBegin/glEnd.
  */
 #define MGRAS_GL_DEPTH_RANGE     0x00004808
 /*
- * glEnable and glDisable of GL_DITHER: __glMgrim_Enable writes 0x6704 and
- * 3 (0xd97d534, 0xd97e51c) and __glMgrim_Disable 0x6704 and 0 (0xd97f160
+ * glEnable and glDisable of GL_DITHER: the enable routine writes 0x6704 and
+ * 3 (0xd97d534, 0xd97e51c) and the disable routine 0x6704 and 0 (0xd97f160
  * for pname 0xbd0, 0xd98028c), so a nonzero word enables (established).
  * Every context setup sends it with 3.
  */
@@ -338,21 +338,22 @@ static const uint16_t mgras_gl_stencil_ops[] = {
  * Polygon culling, from the IRIX 6.5.30 IP27GR532 libGLcore.so (SHA-256
  * 626d6d94...), established from the listing:
  *
- * - glCullFace: __glMgrim_CullFace (0xd95f260) accepts a mode from
+ * - glCullFace: the cull-face routine (0xd95f260) accepts a mode from
  *   0x404 to 0x408 and writes 0x7404 and the mode unchanged (0xd95f2a8,
- *   0xd95f2ac); __glMgrlc_CullFace (0xd958c00) compiles the same pair
- *   into a display list.
- * - glFrontFace: __glMgrim_FrontFace (0xd9544b0) accepts 0x900 (GL_CW)
+ *   0xd95f2ac); the display-list compiler's cull-face routine (0xd958c00)
+ *   compiles the same pair into a display list.
+ * - glFrontFace: the front-face routine (0xd9544b0) accepts 0x900 (GL_CW)
  *   or 0x901 (GL_CCW) and writes 0x5604 and the direction unchanged
- *   (0xd95450c, 0xd954510); __glMgrlc_FrontFace (0xd956450) compiles it.
- * - glEnable(GL_CULL_FACE): __glMgrim_Enable, for capability 0xb44,
+ *   (0xd95450c, 0xd954510); the display-list compiler's front-face routine
+ *   (0xd956450) compiles it.
+ * - glEnable(GL_CULL_FACE): the enable routine, for capability 0xb44,
  *   writes 0x7200 alone and sets bit 0x1000 of the context word at
  *   +0x700 (0xd97e300-0xd97e324). glDisable writes 0x7300 alone and
- *   clears the bit, only while it is set (__glMgrim_Disable,
+ *   clears the bit, only while it is set (the disable routine,
  *   0xd980360-0xd980394).
- * - __glMgr_RestoreGE11CullState (0xd9e39a0) writes 0x7200 or 0x7300
+ * - the GE11 cull-state restore routine (0xd9e39a0) writes 0x7200 or 0x7300
  *   from that bit, and the host-culling glDrawArrays path
- *   (__glMgrim_HostCullDrawArraysEXT, 0xd9e3bc0) writes 0x7300 before
+ *   (the host-culled draw-arrays routine, 0xd9e3bc0) writes 0x7300 before
  *   drawing, so a client that culls on the host turns the board's
  *   culling off first and restores it after.
  *
@@ -369,12 +370,12 @@ static const uint16_t mgras_gl_stencil_ops[] = {
 #define MGRAS_GL_FRONT_FACE      0x00005604
 /*
  * The context setup's texture-only defaults, consumed without a log line
- * while they carry the default: 0xec10 from mgrTM_Init (0xd999454 in the
- * IRIX 6.5.30 IP27GR532 libGLcore.so), 32 per context setup, loading the
- * detail-texture function table glDetailTexFuncSGIS sets. Its words are
- * two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u table, the
- * raster register 0x194 and one table value; the setup's values are 0x1f
- * three times and then 0x1d down to 1.
+ * while they carry the default: 0xec10 from the texture-memory initialization
+ * routine (0xd999454 in the IRIX 6.5.30 IP27GR532 libGLcore.so), 32 per context
+ * setup, loading the detail-texture function table glDetailTexFuncSGIS sets.
+ * Its words are two HQ-table words, 0xc52 and 0xc78 from the hq3_revB_HQ4.u
+ * table, the raster register 0x194 and one table value; the setup's values are
+ * 0x1f three times and then 0x1d down to 1.
  * The SI has no texture memory and the model draws no texture, so the
  * table changes nothing it draws. The test is on each packet's values,
  * not on the setup's sequence, so an application's glDetailTexFuncSGIS
@@ -489,13 +490,13 @@ enum {
 /*
  * Colour-index mode, from the IRIX 6.5.30 IP27GR532 libGLcore.so's own
  * code (SHA-256 626d6d94...). The context setup calls
- * __glMgrInitCI (0xd94e830) for each colour buffer when the visual is a
- * colour-index one and another initializer otherwise; __glMgrInitCI
- * writes 0x0a04 and a word of the visual's configuration, from which it
- * also forms the index mask (1 << n) - 1, and __glMgrInitRGB (0xd973620)
- * writes 0x0900 and nothing more. So 0x0a04's word is the number of
- * bits a colour index holds, 8 in gr_osview's context setup and in
- * glxinfo's, and 0x0900 marks an RGBA context. That the
+ * the colour-index initializer (0xd94e830) for each colour buffer when the
+ * visual is a colour-index one and another initializer otherwise; the
+ * colour-index initializer writes 0x0a04 and a word of the visual's
+ * configuration, from which it also forms the index mask (1 << n) - 1, and the
+ * RGB initializer (0xd973620) writes 0x0900 and nothing more. So 0x0a04's word
+ * is the number of bits a colour index holds, 8 in gr_osview's context setup
+ * and in glxinfo's, and 0x0900 marks an RGBA context. That the
  * board switches its colour handling on them is inferred.
  */
 #define MGRAS_GL_INIT_CI         0x00000a04
@@ -503,9 +504,9 @@ enum {
 /*
  * glIndexs, glIndexi and glIndexf: headers 0x19000202, 0x18000204 and
  * 0x00000204, the colour register 0x02 under the attribute classes for a
- * short, an integer and a float (__glMgrim_Indexs 0xdac7f90,
- * __glMgrim_Indexi 0xdac7f5c, __glMgrim_Indexf 0xdac7f30). glIndexs
- * sends the short's 16 bits in bits 31:16 of its one word and zeros in
+ * short, an integer and a float (the short-index routine 0xdac7f90,
+ * the integer-index routine 0xdac7f5c, the float-index routine 0xdac7f30).
+ * glIndexs sends the short's 16 bits in bits 31:16 of its one word and zeros in
  * 15:0 (andi 0xffff, dsll 16); gr_osview's words 0x20000 and 0x30000 are
  * indices 2 and 3. The short is read signed, as the class's short type
  * reads for a vertex (inferred from the attribute table); glIndexs's
@@ -515,8 +516,8 @@ enum {
 #define MGRAS_GL_INDEXI          0x18000204
 #define MGRAS_GL_INDEXF          0x00000204
 /*
- * glIndexMask (__glMgrim_IndexMask 0xd95e9d0): 0x3d04 and the mask ANDed
- * with the context's index mask. glClearIndex (__glMgrim_ClearIndex
+ * glIndexMask (the index-mask routine 0xd95e9d0): 0x3d04 and the mask ANDed
+ * with the context's index mask. glClearIndex (the clear-index routine
  * 0xd980ba0): 0xbd04 and a float, trunc(c * 16.0) ANDed with (index mask
  * << 4) | 0xf and scaled by 0.0625, the constants the lit4 words at file
  * offsets 0x1d940c and 0x1d9410 hold: the index with four fraction bits.
@@ -525,14 +526,14 @@ enum {
 #define MGRAS_GL_CLEAR_INDEX     0x0000bd04
 
 /*
- * glBitmap (__glMgrim_Bitmap 0xd9c1b70, and __glMgrRenderBitmap 0xd9c1e70
- * for a display list). In render mode, with glPixelStore's unpack state at
- * its defaults but an alignment of one, and an image of at most 512
+ * glBitmap (the bitmap routine 0xd9c1b70, and the bitmap render routine
+ * 0xd9c1e70 for a display list). In render mode, with glPixelStore's unpack
+ * state at its defaults but an alignment of one, and an image of at most 512
  * words, the client writes 0x9420 and eight words: a flags word, the width
  * and height as integers, xorig, yorig, xmove and ymove as floats, and the
  * image's length in words, ceil(ceil(width / 8) * height / 4). An inline
  * data block follows, 0x80000000 | length * 4, whose words
- * __glMgr_PushPixels (0xdac61a0) copies from the application's image in
+ * the pixel push routine (0xdac61a0) copies from the application's image in
  * memory order; a 64-bit store is two stream words, high first. When
  * the image is not word aligned the client sets bits 23:22 of the block
  * header to the image's byte offset in its first word and sends one word
@@ -564,23 +565,23 @@ enum {
 #define MGRAS_GL_BITMAP_WORDS    8
 #define MGRAS_GL_BITMAP_LSB_FIRST 0x00020000
 /*
- * __glMgrUpdateRasterPos (0xd9c9040) writes 0xd608 and two floats; the
- * client's glBitmap calls it with xmove and ymove for an empty image, so
+ * The raster-position update routine (0xd9c9040) writes 0xd608 and two floats;
+ * the client's glBitmap calls it with xmove and ymove for an empty image, so
  * it moves a valid raster position by them (inferred, 3.7).
  */
 #define MGRAS_GL_MOVE_RASTER     0x0000d608
 /*
- * __glMgrim_RasterPos2i (0xdac81e8) writes 0x58003808 and the two
+ * The raster-position routine (0xdac81e8) writes 0x58003808 and the two
  * integers; OpenGL takes them as glRasterPos4f(x, y, 0, 1) (2.12).
  */
 #define MGRAS_GL_RASTER_POS2I    0x58003808
 /*
  * The words each pixel transfer brackets its GE program with:
- * __glMgrSaveRSS (0xd9c8da0) writes 0xd214 and five words and
- * __glMgrRestoreRSS 0xd300, __glMgrSaveTexmode (0xd9a17c0) 0xe910 and
- * four words and __glMgrRestoreTexmode 0xea00, and
- * __glMgrLoadRasterPosInfo (0xd9c9030) 0xd700 alone. The model draws the
- * image without raster registers or texturing, so it consumes them;
+ * The RSS save routine (0xd9c8da0) writes 0xd214 and five words and
+ * the RSS restore routine 0xd300, the texture-mode save routine (0xd9a17c0)
+ * 0xe910 and four words and the texture-mode restore routine 0xea00, and
+ * the raster-position load routine (0xd9c9030) 0xd700 alone. The model draws
+ * the image without raster registers or texturing, so it consumes them;
  * that they change nothing a later draw sees is inferred from their
  * names and pairing.
  */
@@ -592,7 +593,7 @@ enum {
 /*
  * glReadPixels and glCopyPixels, as the IRIX 6.5.30 client sends them (the
  * pixel read-back and copy contract; no capture has the board's side).
- * __glMgrim_ReadPixels brackets a whole read with 0x9600 and 0x9700,
+ * The pixel-read routine brackets a whole read with 0x9600 and 0x9700,
  * neither with a payload, and the data-port read ends its register setup
  * with 0xdb04 and a word and starts with 0x8f08 and two zeros. The DMA
  * read's 0xda00 follows its kick. The client batches raster registers into
@@ -673,9 +674,9 @@ enum {
 
 /*
  * The window the current context draws into, from the 63-word image the
- * IRIX kernel's MgrasCtxsw writes at each context switch. In the image of
- * the probe's GL context, whose window's top-left pixel is at screen (256,
- * 256) and which is 128 pixels square (a captured run,
+ * IRIX kernel's context-switch routine writes at each context switch. In the
+ * image of the probe's GL context, whose window's top-left pixel is at screen
+ * (256, 256) and which is 128 pixels square (a captured run,
  * seq 3959112), word 2 is 0x02800100, the window's lower-left corner as
  * (y << 16) | x with y counted up from the bottom of the screen (640 =
  * 1024 - 256 - 128), the packing OpenBSD's impact(4) gives XYWIN. Words 11
@@ -687,7 +688,7 @@ enum {
  * inferred from the matching values; the model reads them from the image
  * and keeps them out of the 2D register file.
  *
- * The kernel's MgrasValidateClip (IRIX 6.5.30 mgras.a member mgras.o,
+ * The kernel's clip validation routine (IRIX 6.5.30 mgras.a member mgras.o,
  * SHA-256 6a65e70d3cdc..., listing 0x61d8-0x67b4) writes words 2 to 15
  * from the window and its visible rectangles, bottom-up and inclusive,
  * each as first << 16 | last. Established from that listing:
@@ -702,7 +703,7 @@ enum {
  *   rectangles. One with none, but a nonzero width, gets mode 1 and its
  *   own rectangle clamped to the screen.
  * - One with five or more gets mode 1 and no enable bits: 0x10.
- * - The kernel's null clip (MgrasSetNullClip, a window of no size and no
+ * - The kernel's null clip (the null-clip routine, a window of no size and no
  *   rectangles) gets mode 2 with rectangles 0 and 1 both the whole
  *   screen, 0x23, and word 2 then puts the origin at row 1024. Every
  *   image of perfly's context 0x84c6 in a captured run
@@ -755,18 +756,18 @@ static const uint8_t mgras_gl_clip_words[MGRAS_GL_CLIP_RECTS][2] = {
  * shared context, which transforms positions and spot directions by the
  * modelview when they arrive, and answers from it.
  *
- * The enables, from __glMgrim_Enable (0xd97d970) and __glMgrim_Disable
+ * The enables, from the enable routine (0xd97d970) and the disable routine
  * (0xd97f710), established from the listing:
  *
  * - glEnable(GL_LIGHTING) sets bit 0x40 of the context's flags word and
- *   calls __glMgrEnableLighting (0xd9543a0), which writes 0x0d00 alone
+ *   calls the lighting enable routine (0xd9543a0), which writes 0x0d00 alone
  *   while that bit is set; the probe's lighting-only case captured
  *   0x0d00 and nothing else. glDisable(GL_LIGHTING) writes 0x0e00 through
- *   __glMgrDisableLighting (0xd9543d0), and __glMgrSetSoftHardwareState
- *   (0xd9dfbfc) writes it as a header too. The other 0x0e00 words in the
- *   listing are payloads of 0x000c0004 descriptor headers.
+ *   the lighting disable routine (0xd9543d0), and the soft hardware-state
+ *   routine (0xd9dfbfc) writes it as a header too. The other 0x0e00 words in
+ *   the listing are payloads of 0x000c0004 descriptor headers.
  * - glEnable(GL_LIGHTi) writes 0x7104 and i, the capability less
- *   GL_LIGHT0 (0xd97de60, __glMgrEnableLightSource 0xd97d950), and
+ *   GL_LIGHT0 (0xd97de60, the light-source enable routine 0xd97d950), and
  *   glDisable 0xa004 and i (0xd97fc28, 0xd97f6f0).
  * - glEnable(GL_NORMALIZE) writes 0xa304 and 1 (0xd97e1cc, the 1 held in
  *   $a3 from 0xd97d980), glDisable 0xa304 and 0 (0xd97ff54).
@@ -1069,8 +1070,8 @@ static void mgras_gl_color_bytes(uint32_t bytes[4], uint32_t word)
  * of a new context. The IRIX 6.5.30 kernel's context allocator
  * (0xc0000000003f38c8 in unix.IP27) zeroes the new context, sets image word
  * 0 to -1 and ORs 0xc0000000 into word 1. After writing the image
- * MgrasCtxsw clears bit 27 of word 1 for every context and bits 31, 30,
- * 29 and 26 for every context but the default, whose image keeps bit 31
+ * the context-switch routine clears bit 27 of word 1 for every context and bits
+ * 31, 30, 29 and 26 for every context but the default, whose image keeps bit 31
  * (established from the client's code). In a captured run each of the 36
  * openers the clients sent follows exactly one image with both bits in its
  * slot since that slot's previous opener, and the default context's images
@@ -1292,10 +1293,10 @@ static unsigned int mgras_gl_lookup(SGIMgrasState *s, uint32_t slot)
  * external RAM (ERAM) at the address its context image carries in word 0,
  * and moves contexts between ERAM and a host buffer when it needs room.
  * Established from mgras.o in the IRIX 6.5.30 IP27 mgras.a (SHA-256
- * 6a65e70d3cdc...): MgrasEramRead (.text 0xf18) builds a DMA read
+ * 6a65e70d3cdc...): the ERAM read routine (.text 0xf18) builds a DMA read
  * descriptor, kicks it and then writes 0xfc08 with the ERAM address and a
- * word count, then 0x0100; MgrasEramWrite (.text 0x11f0) sends the image
- * back in chunks of at most 0x384 words, each 0xfd04 with the count, the
+ * word count, then 0x0100; the ERAM write routine (.text 0x11f0) sends the
+ * image back in chunks of at most 0x384 words, each 0xfd04 with the count, the
  * descriptor and its kick, then 0xfb08 with the ERAM address and count,
  * and ends with 0xfa00.
  *
@@ -1521,8 +1522,8 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
 
 /*
  * The answer to the client's 0xa104 query for one current attribute.
- * __Mgr_GetCurrentAttrState reads indices 4 to 7 as GL_CURRENT_COLOR's four
- * floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
+ * The current-attribute query routine reads indices 4 to 7 as
+ * GL_CURRENT_COLOR's four floats, 8 to 10 as GL_CURRENT_NORMAL's, 11 to 14 as
  * GL_CURRENT_TEXTURE_COORDS' and 15 as GL_EDGE_FLAG, true when the answer has
  * any of bits 0x01c00000. The model answers with the loaded context's colour,
  * normal, texture coordinates and edge flag; that the board answers with its
@@ -1596,15 +1597,15 @@ typedef enum MgrasGLQueryPacking {
 
 /*
  * The client adds this double, read at $gp - 0x39e8 in
- * __glMgrDoGet, to the x and y words of GL_CURRENT_RASTER_POSITION
+ * the glGet routine, to the x and y words of GL_CURRENT_RASTER_POSITION
  * before returning them.
  */
 #define MGRAS_GL_RASTER_BIAS     49151.5
 
 /*
- * The 0xa20c state queries the model answers. __Mgr_ReturnMode sends an
+ * The 0xa20c state queries the model answers. The state-query routine sends an
  * index, a1 and a2 and reads one word back at 0x028004. No index is a
- * literal: __glMgrDoGet takes each from a table the library loads from
+ * literal: the glGet routine takes each from a table the library loads from
  * the HQ microcode file's symbol table, so the index is an address the
  * board's program gives for that piece of GL state. The notes list each
  * glGet caller's index and what it does with the word, established from
@@ -1668,8 +1669,8 @@ typedef enum MgrasGLQueryPacking {
  *
  * What a1 and a2 select is unknown; the model answers by index alone.
  * Every other index answers zero, logged, which is right for the
- * glFinish and MgrasFinish fences and glGetError, which discard or fall
- * back from a zero, and wrong for the other state a client reads back.
+ * glFinish and the finish-fence routine fences and glGetError, which discard or
+ * fall back from a zero, and wrong for the other state a client reads back.
  * The discriminating tests are hq-query-answers-the-matrices,
  * hq-query-answers-viewport-shade-and-clear-colour and
  * hq-query-answers-the-raster-position.
@@ -1768,7 +1769,7 @@ static bool mgras_gl_client_form_query(SGIMgrasState *s, uint32_t index,
 }
 
 /*
- * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. __glMgrDoGet
+ * GL_MODELVIEW_STACK_DEPTH and GL_PROJECTION_STACK_DEPTH. The glGet routine
  * queries index 0x83 (table offset 0x1f4, a1 0) and 0x922 (0x1f8, a1 1)
  * and returns ((answer - base) >> 4) + 1, the base the symbol-table word
  * at offset 0x1e4 for the modelview stack and 0x1e8 for the projection
@@ -2422,9 +2423,9 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
  * bits keeps its low eight, logged at its setup.
  *
  * Bank 1 takes indices as bank 0 does. The client sets up each colour
- * buffer of a colour-index visual with 0x0a04 (__glMgrInitCI, which
- * func_d9502f0 calls a second time for the back buffer of a
- * double-buffered visual), so it expects its back buffer to hold
+ * buffer of a colour-index visual with 0x0a04 (the colour-index initializer,
+ * which the per-buffer setup routine calls a second time for the back buffer of
+ * a double-buffered visual), so it expects its back buffer to hold
  * indices; bz's double-buffered context sends 0x0a04 twice. How the board
  * stores an index in either bank is not published. The discriminating
  * tests are gl-colour-index-draws-into-bank-one and
@@ -2684,18 +2685,18 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
 /*
  * Pixel image transfers: glDrawPixels, and IRIS GL's lrectwrite and
  * rectwrite, which the IRIX 6.5.30 IGLOO libgl.so sends the same way.
- * The client (__glMgrSendPixels, 0xd9665c0 in IP27GR532 libGLcore.so,
+ * The client (the pixel send routine, 0xd9665c0 in IP27GR532 libGLcore.so,
  * SHA-256 626d6d94...) does not send the image's format to the board.
  * It builds a program for the GE out of routines, loads each routine's
  * parameters into GE memory with 0x80 and 0xcd packets, sends 0x8d20 and
  * eight words, and then the image: either inline, one block a row
- * (0xd9670bc-0xd96716c, through __glMgr_PushPixels), or through one
- * host-memory DMA transfer (__glMgr_WriteDMAHQSetup, kick byte
+ * (0xd9670bc-0xd96716c, through the pixel push routine), or through one
+ * host-memory DMA transfer (the DMA setup routine, kick byte
  * (slot << 1) | 0xa1). The GE runs the program over the pixels and draws
  * them.
  *
- * The loads. __glMgrInitPixelStateCRAM (0xd9bf030) and
- * __glMgrInitPixelStateERAM (0xd9bf260) collect two lists of words and
+ * The loads. The CRAM pixel-state initializer (0xd9bf030) and
+ * the ERAM pixel-state initializer (0xd9bf260) collect two lists of words and
  * send them as one packet, header 0x8000 or 0xcd00 with the byte length
  * 0x20 + 4 * (a + b) in bits 7:0, or, from 0x100 bytes up, that header
  * with no length and an inline block giving it. The payload is seven
@@ -2716,7 +2717,7 @@ static void mgras_gl_bitmap(SGIMgrasState *s, const uint32_t *payload)
  *
  * The program. The client puts it at 0x13b as (routine, parameters)
  * pairs ending with routine 0x352d, and puts the destination rectangle at
- * 0xe34 (__glMgrInitHostToRSS, 0xd9641b0): x0, y0, x1, y1, then
+ * 0xe34 (the host-to-RSS initializer, 0xd9641b0): x0, y0, x1, y1, then
  * height << 16 | width, then 1. The rectangle is the image's own, its
  * tiles' offsets from the raster position: mandel's 293 rows all come at
  * 0, 0 to 99, 0 while its glRasterPos2i moves up the window, and ipaste's
@@ -3676,7 +3677,7 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
         }
         return;
     case MGRAS_GL_VIEWPORT:
-        /* The client has already clamped the size (__glMgrim_Viewport). */
+        /* The client has already clamped the size (the viewport routine). */
         mgras_gl_command(s, SGI_GL_OP_VIEWPORT, payload, 4);
         return;
     case MGRAS_GL_CLEAR_COLOR:
