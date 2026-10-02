@@ -8106,6 +8106,73 @@ static void texture_adapter_current_point(QTestState *qts, int x, int y)
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+static void texture_chain_upload_solid(QTestState *qts, uint32_t base,
+                                       uint32_t width, uint32_t height,
+                                       uint32_t pixel)
+{
+    uint32_t remaining = width * height;
+
+    upload_begin(qts, base, 2, 0x080024d0, width, height);
+    upload_first_header(qts, 0x4b);
+    while (remaining) {
+        uint32_t count = MIN(remaining, 16);
+
+        user_cmd_push(qts, ODSY_IMAGE_BURST(count, ODSY_IMAGE_FMT_RGB));
+        for (uint32_t i = 0; i < count; i++) {
+            user_cmd_push(qts, pixel);
+        }
+        remaining -= count;
+    }
+    upload_end(qts);
+}
+
+static void test_texture_chain_explicit_level(void)
+{
+    QTestState *qts = board_start("");
+    const uint32_t words[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000420, 2, 2, 1, 0x13000040, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0x0100, 0x0f00,
+    };
+
+    texture_chain_upload_solid(qts, 0x180000, 2, 2, 0xff0000ff);
+    texture_chain_upload_solid(qts, 0x181000, 1, 1, 0x0000ffff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 0), ==,
+                    0x0000ffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0);
+    texture_adapter_window(qts);
+    odsy_test_pixel_write(qts, 10, 10, 0x12345678);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x0000ffff);
+
+    /* A zero upper LOD excludes the stale second entry. */
+    const uint32_t cap[] = { 0x00011013, 0, 0, 0, 0 };
+    push_user_words(qts, cap, ARRAY_SIZE(cap));
+    texture_adapter_point(qts, 11, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xff0000ff);
+
+    /* Missing storage disables texturing; unknown state drops the draw. */
+    const uint32_t full[] = { 0x00011013, 0, 0, 0x0100, 0x0100 };
+    const uint32_t absent[] = { 0x00010e81, 0, 0x41100000, 0 };
+    const uint32_t unknown[] = { 0x00010e80, 0x180000, 0x45100002, 0 };
+    push_user_words(qts, full, ARRAY_SIZE(full));
+    push_user_words(qts, absent, ARRAY_SIZE(absent));
+    texture_adapter_point(qts, 12, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, ODSY_PLANE_YELLOW);
+    odsy_test_pixel_write(qts, 13, 10, 0x12345678);
+    push_user_words(qts, unknown, ARRAY_SIZE(unknown));
+    texture_adapter_point(qts, 13, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
 /* Read the selected raw attribute-4 entry through the kernel FIFO. */
 static void texture_coordinate_replay(QTestState *qts, uint64_t page)
 {
@@ -8582,9 +8649,7 @@ static void test_texture_adapter_state_restore(void)
 static void test_texture_adapter_unsupported_missing(void)
 {
     const uint32_t excluded[] = {
-        0x13000002, 0x13000020, 0x13000040, 0x13000042,
-        0x13000060, 0x13000062, 0x13000080, 0x13000082,
-        0x130000a0, 0x130000a2, 0x13002000, 0x13000c00,
+        0x13002000, 0x13000c00,
         0x13040000, 0x03000000, 0x12000000,
     };
     QTestState *qts = board_start("");
@@ -10498,6 +10563,8 @@ int main(int argc, char **argv)
                    test_dma_texture_object);
     qtest_add_func("sn1/odyssey/texture-adapter/nearest",
                    test_texture_adapter_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
+                   test_texture_chain_explicit_level);
     qtest_add_func("sn1/odyssey/texture-adapter/binding-filters-matrix",
                    test_texture_adapter_binding_filters_matrix);
     qtest_add_func("sn1/odyssey/texture-adapter/components-environment",
