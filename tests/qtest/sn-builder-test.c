@@ -2993,6 +2993,187 @@ static void expansion_serial_expect(QTestState *qts, unsigned issuer,
         SERIAL_UART_BASE + (issuer ^ 1) * 0x1000 + 0x28), ==, 0x60);
 }
 
+static void expansion_lifecycle_command(QTestState *qts, const char *text)
+{
+    uint8_t reply[256];
+
+    expansion_serial_send(qts, 1, 0x0ffff003, 0, 16, text);
+    g_assert_cmpuint(sgi_l1_test_receive(qts, SERIAL_UART_BASE + 0x1000,
+                                        reply, sizeof(reply)), >=, 6);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+}
+
+static QTestState *expansion_lifecycle_start(const char *prom,
+                                             const char *storage,
+                                             const char *compute,
+                                             const char *extra)
+{
+    QTestState *qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-pending-register-experiment," STORAGE_BINDING
+        ",controller-brick-serial.0=1=EXP-LIFECYCLE "
+        "-device sgi-l1-uart,id=serial-expansion,controller=/machine/module1/l1 "
+        "-cpu R14000 -smp 2 -m 512M -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-drive if=pflash,file=%s,format=raw,readonly=off "
+        "-nodefaults -display none %s", prom, storage, compute, extra);
+
+    qtest_sysbus_mmio_map(qts, "/machine/node0/l1-uart", 0,
+                          SERIAL_UART_BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/serial-expansion", 0,
+                          SERIAL_UART_BASE + 0x1000);
+    return qts;
+}
+
+static void expansion_lifecycle_seed(const char *path)
+{
+    const uint8_t erased[] = { 0xff, 0xff };
+    int fd = open(path, O_WRONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, erased, sizeof(erased), 0x800400),
+                    ==, sizeof(erased));
+    g_assert_cmpint(close(fd), ==, 0);
+}
+
+static void expansion_lifecycle_program(QTestState *qts, uint64_t base,
+                                         uint16_t value)
+{
+    qtest_writeq(qts, base + 0x2aa8, 0xaa);
+    qtest_writeq(qts, base + 0x1550, 0x55);
+    qtest_writeq(qts, base + 0x2aa8, 0xa0);
+    qtest_writeq(qts, base + 0x1000, value);
+    g_assert_cmphex(qtest_readw(qts, base + 0x400), ==, value);
+}
+
+static unsigned expansion_lifecycle_log_count(const char *path,
+                                              const char *message)
+{
+    g_autofree char *contents = NULL;
+    const char *cursor;
+    unsigned count = 0;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    cursor = contents;
+    while ((cursor = strstr(cursor, message))) {
+        count++;
+        cursor += strlen(message);
+    }
+    return count;
+}
+
+static void test_expansion_composed_lifecycle(gconstpointer opaque)
+{
+    bool migrate = GPOINTER_TO_UINT(opaque);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *storage = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *compute = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *target_storage = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *target_compute = expansion_storage_image(16 * 1024 * 1024);
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("expansion-lifecycle-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *source_log = g_build_filename(dir, "source.txt", NULL);
+    g_autofree char *target_log = g_build_filename(dir, "target.txt", NULL);
+    g_autofree char *source_options = g_strdup_printf(
+        "-trace enable=sgi_l1_bic_startup_operation -d guest_errors -D %s",
+        source_log);
+    g_autofree char *target_options = g_strdup_printf(
+        "-incoming defer -trace enable=sgi_l1_bic_startup_operation "
+        "-d guest_errors -D %s", target_log);
+    const uint64_t expansion = UINT64_C(0xe3a000000);
+    const uint64_t local = UINT64_C(0x1001a000000);
+    QTestState *from;
+    QTestState *qts;
+
+    expansion_lifecycle_seed(storage);
+    expansion_lifecycle_seed(compute);
+    from = expansion_lifecycle_start(prom, storage, compute, source_options);
+    qts = from;
+
+    g_assert_no_error(error);
+    expansion_vector(from, EXPANSION_LB_REVISION, true, UINT64_C(7) << 32);
+    expansion_lifecycle_program(from, expansion, 0x3456);
+    expansion_lifecycle_program(from, local, 0x789a);
+    qtest_writeq(from, expansion + 0x2a8, 0x98);
+    qtest_writeq(from, local + 0x2a8, 0x98);
+    g_assert_cmphex(qtest_readw(from, expansion + 0x20), ==, 'Q');
+    g_assert_cmphex(qtest_readw(from, local + 0x20), ==, 'Q');
+    expansion_lifecycle_command(from, "brick slot 3");
+    g_assert_cmpuint(qom_get_uint(from, "/machine/module1/l1", "bay"), ==, 2);
+    g_assert_cmphex(qtest_readw(from, UINT64_C(0xe35000000)), ==, 0x42);
+    expansion_lifecycle_command(from, "pwr d");
+    expansion_serial_expect(from, 1, 1, 21, "EXP-LIFECYCLE");
+
+    if (migrate) {
+        unsigned startup_count, refused_count;
+
+        qts = expansion_lifecycle_start(prom, target_storage, target_compute,
+                                        target_options);
+        startup_count = expansion_lifecycle_log_count(target_log,
+                                            "sgi_l1_bic_startup_operation");
+        g_assert_cmpuint(startup_count, >=, 2);
+        qtest_qmp_assert_success(qts,
+            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+        sgi_migrate_stopped(from, uri);
+        sgi_wait_migration_status(qts, "completed", 30);
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_l1_bic_startup_operation"), ==, startup_count);
+        refused_count = expansion_lifecycle_log_count(target_log,
+                                                     "main power off");
+        expansion_serial_expect(qts, 1, 1, 21, "EXP-LIFECYCLE");
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module1/l1", "bay"),
+                         ==, 2);
+        /* Off access cannot reset the retained query state. */
+        g_assert_cmphex(qtest_readw(qts, expansion + 0x20), ==, 0);
+        qtest_writeq(qts, expansion + 0x2aa8, 0xf0);
+        g_assert_cmphex(qtest_readw(qts, UINT64_C(0xe35000000)), ==, 0);
+        g_assert_cmphex(qtest_readl(qts, SPACE_IO + (UINT64_C(7) << 33) +
+                                    UINT64_C(0x08000004)), ==, 0);
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "main power off"), >=, refused_count + 4);
+        g_assert_cmphex(qtest_readw(qts, local + 0x20), ==, 'Q');
+        expansion_lifecycle_command(qts, "pwr u");
+        g_assert_cmpuint(expansion_lifecycle_log_count(target_log,
+            "sgi_l1_bic_startup_operation"), ==, startup_count);
+        g_assert_cmphex((expansion_vector(qts, EXPANSION_LB_REVISION,
+                                          false, 0) >> 32) & 0xff, ==, 7);
+        g_assert_cmphex(qtest_readw(qts, UINT64_C(0xe35000000)), ==, 0x42);
+        g_assert_cmphex(qtest_readw(qts, expansion + 0x20), ==, 'Q');
+        qtest_writeq(qts, expansion + 0x2aa8, 0xf0);
+        g_assert_cmphex(qtest_readw(qts, expansion + 0x400), ==, 0x3456);
+        g_assert_cmphex(qtest_readw(qts, local + 0x20), ==, 'Q');
+        /* Controller reboot applies pending settings while flash stays off. */
+        expansion_lifecycle_command(qts, "pwr d");
+        expansion_lifecycle_command(qts, "reboot_l1");
+        g_assert_cmphex(qtest_readw(qts, expansion + 0x400), ==, 0);
+        expansion_lifecycle_command(qts, "pwr u");
+        g_assert_cmphex(qtest_readw(qts, UINT64_C(0xe35000000)), ==, 0x43);
+        g_assert_cmphex(qtest_readw(qts, expansion + 0x400), ==, 0x3456);
+    }
+    qtest_system_reset(qts);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x235000000)), ==, 0x43);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x23a000400)), ==, 0x3456);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x23a000020)), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, local + 0x400), ==, 0x789a);
+    g_assert_cmphex(qtest_readw(qts, local + 0x20), ==, 0);
+    qtest_quit(qts);
+    if (migrate) {
+        qtest_quit(from);
+    }
+    g_unlink(socket);
+    g_unlink(source_log);
+    g_unlink(target_log);
+    g_rmdir(dir);
+    g_unlink(prom);
+    g_unlink(storage);
+    g_unlink(compute);
+    g_unlink(target_storage);
+    g_unlink(target_compute);
+}
+
 static void test_expansion_controller_serial(const void *data)
 {
     static const struct {
@@ -3641,6 +3822,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/expansion/experimental-offering",
                         "origin300,topology=origin300-pci-expansion-experiment",
                         test_expansion_builder);
+    qtest_add_data_func("sn/builder/expansion/composed-lifecycle/reset",
+                        NULL, test_expansion_composed_lifecycle);
+    qtest_add_data_func("sn/builder/expansion/composed-lifecycle/migration",
+                        GUINT_TO_POINTER(1), test_expansion_composed_lifecycle);
     qtest_add_func("sn/builder/expansion/controller-locations",
                    test_expansion_controller_locations);
     qtest_add_data_func("sn/builder/expansion/controller-startup",
