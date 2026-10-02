@@ -3573,6 +3573,92 @@ static void test_gl_pixels_dma_no_rows_is_empty(void)
     g_assert_null(strstr(log, "runs past"));
 }
 
+static void gl_pixels_captured_rgba_setup(QTestState *qts, bool two_rows)
+{
+    static const uint32_t unpack_one_row[6] = {
+        0xc, 0x4064, 0x464, 0, 8, 0x3b808081,
+    };
+    static const uint32_t unpack_two_rows[6] = {
+        0x14, 0x4064, 0x464, 0, 0x10, 0x3b808081,
+    };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, two_rows ? 0x14 : 0xc,
+                      0, 0, 1, two_rows ? 1 : 0, 1);
+    gl_ge_load(qts, GL_GE_ERAM, GL_GE_UNPACK,
+               two_rows ? unpack_two_rows : unpack_one_row,
+               ARRAY_SIZE(unpack_one_row));
+}
+
+static void test_gl_pixels_ordinary_rgba_two_by_two(void)
+{
+    static const uint32_t row0[2] = { 0x404000ff, 0xbf4000ff };
+    static const uint32_t row1[2] = { 0x40bf00ff, 0xbfbf00ff };
+
+    gl_pixels_captured_rgba_setup(qts, true);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, row0, ARRAY_SIZE(row0));
+    gl_pixels_row(qts, 0, row1, ARRAY_SIZE(row1));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0x404000);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0xbf4000);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 1), ==, 0x40bf00);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0xbfbf00);
+}
+
+static void test_gl_pixels_ordinary_rgba_single_row(void)
+{
+    static const uint32_t row[2] = { 0x404000ff, 0xbf4000ff };
+
+    gl_pixels_captured_rgba_setup(qts, false);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0x404000);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0xbf4000);
+}
+
+static void test_gl_pixels_ordinary_rgba_two_rows_short_count(void)
+{
+    static const uint32_t row0[2] = { 0x404000ff, 0xbf4000ff };
+    static const uint32_t row1[2] = { 0x40bf00ff, 0xbfbf00ff };
+
+    gl_pixels_captured_rgba_setup(qts, true);
+    gl_pixels_draw(qts, 2);
+    gl_pixels_row(qts, 0, row0, ARRAY_SIZE(row0));
+    gl_pixels_row(qts, 0, row1, ARRAY_SIZE(row1));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 1), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+}
+
+static void test_gl_pixels_rgb_count_stays_per_row(void)
+{
+    static const uint32_t row0[2] = { 0x11223344, 0x55660000 };
+    static const uint32_t row1[2] = { 0x778899aa, 0xbbcc0000 };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_3UB, 6, 0, 0, 1, 1, 1);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_row(qts, 0, row0, ARRAY_SIZE(row0));
+    gl_pixels_row(qts, 0, row1, ARRAY_SIZE(row1));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 0), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 1), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 1, 1), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -3639,6 +3725,14 @@ int main(int argc, char **argv)
                    test_gl_pixels_colour_index_into_bank_one);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
                    test_gl_pixels_inline_rgb);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-two-by-two",
+                   test_gl_pixels_ordinary_rgba_two_by_two);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-single-row",
+                   test_gl_pixels_ordinary_rgba_single_row);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-short-count",
+                   test_gl_pixels_ordinary_rgba_two_rows_short_count);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-rgb-count-stays-per-row",
+                   test_gl_pixels_rgb_count_stays_per_row);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-abgr",
                    test_gl_pixels_dma_abgr);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rgba-and-rgb",
