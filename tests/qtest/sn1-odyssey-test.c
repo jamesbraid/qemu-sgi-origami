@@ -4534,6 +4534,86 @@ static unsigned count_substr(const char *hay, const char *needle)
 }
 
 /*
+ * Stencil (docs/reviews/odyssey-fragment-state-evidence-20261001.md): 0x0404
+ * bit 15 is GL_STENCIL_TEST, and 0x041f carries the function in bits 27:25
+ * (GL_NEVER = 0 through GL_ALWAYS = 7), the reference in bits 7:0, the value
+ * mask in bits 15:8, and three 3-bit ops -- fail 24:22, depth-fail 21:19,
+ * depth-pass 18:16 -- KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4, INVERT 5.
+ *
+ * This model has no stencil planes, so OpenGL's own rule makes the test
+ * always pass no matter what is decoded here: there is no stencil buffer a
+ * qtest could inspect to tell a modeled function or op from an unmodeled one
+ * apart. A register-level test can and does confirm two things instead: a
+ * clean library-shaped word (ALWAYS, REPLACE/REPLACE/REPLACE) decodes with
+ * no complaint, and the two op codes the board never defines, 6 and 7, are
+ * reported rather than silently treated as one of the five real ones.
+ */
+#define ODSY_MODE_STENCIL_TEST (1u << 15)
+#define ODSY_REG_STENCIL_FUNC 0x0001041f
+
+static char *stencil_func_log(uint32_t word)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-stencil-XXXXXX.log", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, word);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    return log;
+}
+
+static void test_command_fifo_gl_stencil_state(void)
+{
+    /* func ALWAYS, ops REPLACE/REPLACE/REPLACE, value mask 0xff, ref 0. */
+    g_autofree char *clean = stencil_func_log(0x0e92ff00);
+    /* The same word, but the fail op is 6, which the board never defines. */
+    g_autofree char *bad = stencil_func_log(0x0f92ff00);
+
+    g_assert_cmpuint(count_substr(clean, "stencil op word"), ==, 0);
+    g_assert_cmpuint(count_substr(bad,
+                      "stencil op word 0xf92ff00 is not modeled"), ==, 1);
+}
+
+/*
+ * With no stencil planes, enabling the test changes nothing: a function
+ * that would reject every fragment on real hardware still lets this
+ * triangle through, matching OpenGL's own rule for a stencil-less
+ * framebuffer. This pins that contract; it does not discriminate a modeled
+ * stencil test from an unmodeled one, since neither can block the draw.
+ */
+static void test_command_fifo_gl_stencil_always_passes(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_depth_clear(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_STENCIL_TEST);
+    /* func NEVER, ops KEEP/KEEP/KEEP, value mask 0xff, ref 0. */
+    set_reg(qts, ODSY_REG_STENCIL_FUNC, 0x0000ff00);
+    push_triangle_3f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_GREEN);
+
+    qtest_quit(qts);
+}
+
+/*
  * The record light.c selects: entries 0x5cb 0x5d8 0x5e5, one directional
  * light. The triangle is lit -- (1, 0.5, 0.25) where the normal faces the
  * light, 0.8 of it at the right corner, black edge-on -- the values the
@@ -6298,6 +6378,72 @@ static void test_command_fifo_gl_colour_index(void)
     g_assert_cmphex(odsy_test_pixel(qts, 317, 333), ==, ODSY_PLANE_RED);
 
     qtest_quit(qts);
+}
+
+/*
+ * Index write mask (docs/reviews/odyssey-fragment-state-evidence-
+ * 20261001.md): 0x0452 bits 11:0, alongside the colour and depth write
+ * masks the same register already carries. No retained capture shows what
+ * a real colour-index drawable sends there, and the board's own reset
+ * value leaves the bits at 0, not GL's own all-ones "fully open" mask, so
+ * odyssey_gl_store_colour() decodes the field and reports whenever it
+ * reads as anything but all-ones rather than guess at a masking rule no
+ * evidence supports. Two known indices drawn under a non-all-ones mask
+ * both still land unmasked, confirming the gap is reported, not silently
+ * applied as a real mask would be.
+ */
+#define ODSY_WRITE_INDEX_MASK 0xfff
+
+static char *index_write_mask_log(uint32_t mask, uint32_t a, uint32_t b)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-odyssey-index-mask-XXXXXX.log", &log_path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf(" -d unimp -D %s", quoted);
+    qts = board_start(extra);
+
+    probe_window(qts);
+    user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW | mask);
+
+    user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+    user_cmd_push(qts, a);
+    push_bare_triangle(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, a);
+
+    /* A second draw under the same mask: the index is still unmasked. */
+    user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+    user_cmd_push(qts, b);
+    push_bare_triangle(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 317, 334), ==, b);
+
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+    return log;
+}
+
+static void test_command_fifo_gl_colour_index_write_mask(void)
+{
+    g_autofree char *unmasked =
+        index_write_mask_log(ODSY_WRITE_INDEX_MASK, 10, 3);
+    g_autofree char *partial = index_write_mask_log(0x0f0, 10, 3);
+
+    g_assert_cmpuint(count_substr(unmasked, "index write mask"), ==, 0);
+    g_assert_cmpuint(count_substr(partial,
+                      "index write mask 0x0f0 is decoded but not applied"),
+                      ==, 1);
 }
 
 static void push_integer_quad(QTestState *qts, uint32_t x0, uint32_t y0,
@@ -9515,6 +9661,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_float_colour_integer_vertices);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-index",
                    test_command_fifo_gl_colour_index);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-colour-index-write-mask",
+                   test_command_fifo_gl_colour_index_write_mask);
     qtest_add_func("sn1/odyssey/command-fifo-gl-program-window-unknown",
                    test_command_fifo_gl_program_window_unknown);
     qtest_add_func("sn1/odyssey/command-fifo-gl-program-window-known",
@@ -9533,6 +9681,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_alpha_test);
     qtest_add_func("sn1/odyssey/command-fifo-gl-blend",
                    test_command_fifo_gl_blend);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-stencil-state",
+                   test_command_fifo_gl_stencil_state);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-stencil-always-passes",
+                   test_command_fifo_gl_stencil_always_passes);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
