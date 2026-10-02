@@ -32,6 +32,11 @@ sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *
 
 # sgi-odyssey.c
 sgi_odyssey_mmio(uint64_t offset, unsigned size, uint64_t value, bool write) "offset 0x%" PRIx64 " size %u value 0x%" PRIx64 " write=%d"
+sgi_odyssey_dma_chunk(uint64_t seq, uint64_t addr, uint32_t len) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u"
+sgi_odyssey_dma_read(uint64_t seq, uint32_t source, int64_t x, int64_t y, uint32_t w, uint32_t h, uint32_t bytes) "seq %" PRIu64 " source 0x%" PRIx32 " at %" PRId64 ",%" PRId64 " %ux%u wrote %u bytes"
+sgi_odyssey_swap_latch(uint32_t arm, uint32_t displayed) "arm 0x%" PRIx32 " displayed 0x%" PRIx32
+sgi_odyssey_draw_mask(uint32_t mask) "mask 0x%" PRIx32
+sgi_odyssey_buffer_word(uint32_t reg, uint32_t word) "reg 0x%" PRIx32 " word 0x%" PRIx32
 
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32

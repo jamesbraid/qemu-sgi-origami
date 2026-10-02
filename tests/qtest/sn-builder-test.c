@@ -1145,7 +1145,8 @@ static void test_origin300_vbrick_projects_v12(const void *data)
     g_assert_cmphex(qtest_readl(qts, port + 0x800000 +
                                 0x100 + 0x10 + 4) & (1U << 31), ==,
                     1U << 31);
-    g_assert_cmphex(qtest_readl(qts, port + 4), ==, 0x1c013047);
+    /* The Odyssey device's default identity: revision 0xa, part 0xc013. */
+    g_assert_cmphex(qtest_readl(qts, port + 4), ==, 0xac013047);
     g_assert_cmphex(qtest_readl(qts, UINT64_C(0x20000000000) + 0x5c), ==,
                     2);
     qtest_writel(qts, port + 0x800000 + 0x5c, 0x1f);

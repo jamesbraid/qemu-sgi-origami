@@ -39,6 +39,7 @@ system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
               if_true: files('sgi-sn0-module-management.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB_TEST', if_true: files('sgi-hub-test.c'))
+system_ss.add(when: 'CONFIG_SGI_DMA_WORD_TEST', if_true: files('sgi-dma-word-test.c'))
 system_ss.add(when: 'CONFIG_SGI_PI_GFX_TEST',
               if_true: files('sgi-pi-gfx-test-head.c'))
 system_ss.add(when: 'CONFIG_SGI_BOARD_RECORD',

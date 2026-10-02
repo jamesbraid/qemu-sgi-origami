@@ -219,6 +219,7 @@ hw/misc/sgi-board-record.c
 hw/misc/sgi-bridge-dma-test.c
 hw/misc/sgi-command-port-test.c
 hw/misc/sgi-command-port.c
+hw/misc/sgi-dma-word-test.c
 hw/misc/sgi-elsc.c
 hw/misc/sgi-hub-test.c
 hw/misc/sgi-hub.c
@@ -293,6 +294,7 @@ include/hw/misc/sgi-bedrock.h
 include/hw/misc/sgi-bic-board-interface.h
 include/hw/misc/sgi-board-record.h
 include/hw/misc/sgi-command-port.h
+include/hw/misc/sgi-dma-word-test.h
 include/hw/misc/sgi-elsc.h
 include/hw/misc/sgi-hub.h
 include/hw/misc/sgi-ioc3.h
@@ -692,6 +694,7 @@ tests/qtest/sn1-cross-node-test.c
 tests/qtest/sn1-directory-state-test.c
 tests/qtest/sn1-io8-scsi-test.c
 tests/qtest/sn1-l1-test.c
+tests/qtest/sn1-odyssey-query-test.c
 tests/qtest/sn1-odyssey-test.c
 tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c
