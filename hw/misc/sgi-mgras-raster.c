@@ -101,6 +101,10 @@
 #define MGRAS_DESC_20000_REG_ROWS 7
 #define MGRAS_DESC_20000_REG_BPR 8
 #define MGRAS_DESC_20000_REG_KICK 11
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0 2
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1 3
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2 4
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3 6
 /* X.Org's pg_list0 to pg_list3, and the word after pg_widtha. */
 #define MGRAS_DESC_20000_REG_PAGE_LIST 0
 #define MGRAS_DESC_20000_REG_LAST_BYTES 9
@@ -2146,14 +2150,16 @@ static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
  * 0x00RRGGBB value, and byte 0 always reads back zero because the draw
  * path never stores it.
  */
-static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d)
+static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
+                                     bool reverse_y)
 {
     uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
 
     for (int32_t row = 0; row < d->h; row++) {
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
-        const uint32_t *stored = &s->front[(d->y + row) * s->width + d->x];
+        int32_t y = d->y + (reverse_y ? -row : row);
+        const uint32_t *stored = &s->front[y * s->width + d->x];
 
         for (int32_t col = 0; col < d->w; col++) {
             uint8_t *p = bytes + col * d->guest_bpp;
@@ -2174,6 +2180,29 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d)
     return 0;
 }
 
+static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
+                                            uint32_t width,
+                                            uint32_t height)
+{
+    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    for (uint32_t pixel = 0; pixel < width * height; pixel++) {
+        uint32_t y = d->y - pixel / width;
+        uint32_t color = s->front[y * s->width + d->x + pixel % width];
+        uint8_t *p = bytes + pixel * d->guest_bpp;
+
+        p[0] = color >> 16;
+        p[1] = color >> 8;
+        p[2] = color;
+        p[3] = 0xff;
+    }
+    if (!sgi_dma_map_copy(&d->map, d->offset, bytes, bpr, true)) {
+        return SGI_FAIL_BOUNDS;
+    }
+    return 0;
+}
+
 /*
  * One pixel transfer through the shared DMA code: its guest rows resolved
  * under the lock, the pixels moved on host memory, then the map released,
@@ -2184,7 +2213,9 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d)
  */
 static void mgras_raster_dma_transfer(SGIMgrasState *s, unsigned int slot,
                                       SGIPixelDMA *d, uint8_t op,
-                                      uint32_t mask)
+                                      uint32_t mask, bool reverse_y,
+                                      uint32_t client_width,
+                                      uint32_t client_height)
 {
     MgrasDmaBus ctx;
     SGIDMABus bus;
@@ -2205,7 +2236,9 @@ static void mgras_raster_dma_transfer(SGIMgrasState *s, unsigned int slot,
     if (!ret) {
         ret = d->dir == SGI_DMA_TO_PLANE ?
               mgras_raster_dma_run_draw(s, d, op, mask) :
-              mgras_raster_dma_run_read(s, d);
+              client_width ? mgras_raster_dma_run_client_read(
+                  s, d, client_width, client_height) :
+              mgras_raster_dma_run_read(s, d, reverse_y);
     }
     sgi_dma_pixels_finish(d, ret, &mgras_raster_dma_ops, &ctx);
 }
@@ -2257,7 +2290,7 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         .offset = mgras_raster_dma_src_offset(s),
     };
     mgras_raster_dma_transfer(s, slot, &d, s->rss[MGRAS_RSS_PP1FILLMODE] >> 26,
-                              s->rss[MGRAS_RSS_COLORMASKLSBSA]);
+                              s->rss[MGRAS_RSS_COLORMASKLSBSA], false, 0, 0);
 }
 
 /*
@@ -2331,7 +2364,7 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
         .guest_bpp = bpp,
         .offset = mgras_raster_dma_src_offset(s),
     };
-    mgras_raster_dma_transfer(s, slot, &d, 0, 0);
+    mgras_raster_dma_transfer(s, slot, &d, 0, 0, false, 0, 0);
     return true;
 }
 
@@ -2340,6 +2373,88 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
  * kernel's context read-outs and write-backs share (sgi-mgras-gl.c,
  * "Context eviction"). False, logged, when the mapping cannot give one.
  */
+static bool mgras_raster_dma_client_read(SGIMgrasState *s,
+                                         unsigned int slot)
+{
+    uint32_t xy0, xy1, x0, y0, x1, y1, origin_x, origin_y;
+    uint32_t window_x0, window_y0, window_x1, window_y1;
+    uint32_t width, height, pixels, pitch, rows, bpr, mode;
+    uint64_t source_x0, source_y0, source_x1, source_y1;
+    SGIPixelDMA d;
+
+    if (!sgi_mgras_gl_client_read_active(s) ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0] != 8 ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1] !=
+            0x00020002 ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2] !=
+            0x00c00080 ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3] != 0xa) {
+        return false;
+    }
+
+    s->gl_context[s->gl_current].client_read_kicked = 1;
+    xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
+    x0 = xy0 >> 16;
+    y0 = xy0 & 0xffff;
+    x1 = xy1 >> 16;
+    y1 = xy1 & 0xffff;
+    pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
+
+    if (x0 > x1 || y0 > y1 ||
+        !sgi_mgras_gl_client_read_window(s, &origin_x, &origin_y,
+                                         &window_x0, &window_y0,
+                                         &window_x1, &window_y1)) {
+        goto rejected;
+    }
+    width = x1 - x0 + 1;
+    height = y1 - y0 + 1;
+    if (((height << 16) | width) !=
+            s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1] ||
+        s->rss[MGRAS_RSS_XFRSIZE] != ((height << 16) | width) ||
+        s->rss[MGRAS_RSS_XFRCOUNTERS] != ((height << 16) | width) ||
+        (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
+            MGRAS_XFRMODE_GL_FORMAT_RGBA ||
+        (mode & MGRAS_XFRMODE_GL_ALIGN_MASK) || rows != 1) {
+        goto rejected;
+    }
+    source_x0 = (uint64_t)origin_x + x0;
+    source_y0 = (uint64_t)origin_y + y0;
+    source_x1 = (uint64_t)origin_x + x1;
+    source_y1 = (uint64_t)origin_y + y1;
+    if (source_x0 < window_x0 || source_x1 > window_x1 ||
+        source_y0 < window_y0 || source_y1 > window_y1 ||
+        source_x1 >= s->width || source_y1 >= s->height) {
+        goto rejected;
+    }
+    pixels = width * height;
+    if (pixels > UINT32_MAX / 4 || bpr != pixels * 4 || pitch != bpr) {
+        goto rejected;
+    }
+
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_FROM_PLANE,
+        .x = source_x0,
+        .y = s->height - 1 - source_y0,
+        .w = pixels,
+        .h = 1,
+        .pitch = pitch,
+        .guest_bpp = 4,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, 0, 0, false, width, height);
+    return true;
+
+rejected:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: captured OpenGL client DMA read "
+                  "has unsupported bounds, mode or descriptor; no bytes "
+                  "returned\n");
+    return true;
+}
+
 static bool mgras_raster_dma_host(SGIMgrasState *s, unsigned int slot,
                                   uint64_t *host)
 {
@@ -2368,8 +2483,13 @@ static void mgras_raster_dma_read(SGIMgrasState *s, uint32_t kick_byte)
     unsigned int slot;
     uint64_t host;
 
-    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
-        mgras_raster_dma_read_image(s, slot) ||
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
+        return;
+    }
+    if (mgras_raster_dma_client_read(s, slot)) {
+        return;
+    }
+    if (mgras_raster_dma_read_image(s, slot) ||
         !mgras_raster_dma_host(s, slot, &host)) {
         return;
     }

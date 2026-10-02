@@ -2215,6 +2215,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_dma_map_forward,
         &vmstate_sgi_mgras_gl_contexts,
         &vmstate_sgi_mgras_gl_readback,
+        &vmstate_sgi_mgras_gl_client_read,
         &vmstate_sgi_mgras_gl_clip_query,
         &vmstate_sgi_mgras_gl_block,
         &vmstate_sgi_mgras_gl_pixels,

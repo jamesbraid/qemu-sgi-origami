@@ -20,6 +20,12 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
                                    uint32_t nargs);
 /* Select the GL state a completed context image names. */
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
+bool sgi_mgras_gl_client_read_active(SGIMgrasState *s);
+bool sgi_mgras_gl_client_read_window(SGIMgrasState *s, uint32_t *origin_x,
+                                     uint32_t *origin_y, uint32_t *x0,
+                                     uint32_t *y0, uint32_t *x1,
+                                     uint32_t *y1);
+bool sgi_mgras_gl_client_read_done(SGIMgrasState *s);
 /* The GE ports, through which the kernel copies GE external RAM. */
 #define SGI_MGRAS_GE_PORTS      0x058000
 #define SGI_MGRAS_GE_PORTS_END  0x058400
@@ -27,6 +33,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 extern const VMStateDescription vmstate_sgi_mgras_gl_context_parser;
 /* Each context's light or material readback, once one has been asked. */
 extern const VMStateDescription vmstate_sgi_mgras_gl_readback;
+extern const VMStateDescription vmstate_sgi_mgras_gl_client_read;
 extern const VMStateDescription vmstate_sgi_mgras_gl_clip_query;
 
 /*
