@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/bitops.h"
+#include "qemu/timer.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -20,6 +21,7 @@
 #include "qemu/bswap.h"
 #include "qapi/error.h"
 #include "hw/core/irq.h"
+#include "trace.h"
 
 #define TYPE_XBRIDGE_IOMMU "sgi-xbridge-iommu"
 
@@ -71,12 +73,20 @@ static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
 
     dest.address = deposit64(dest.address, 38, 10, host >> 8);
     if (!s->target[dest.widget]) {
+        trace_sgi_xbridge_irq_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                    REG(s, 0x20) & 15, pin, set, host,
+                                    dest.widget, dest.address, host & 0xff,
+                                    false, MEMTX_DECODE_ERROR);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: interrupt target %x is absent\n",
                       dest.widget);
         return;
     }
     result = xbridge_send_interrupt(s, dest, host & 0xff, set, true);
+    trace_sgi_xbridge_irq_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                REG(s, 0x20) & 15, pin, set, host,
+                                dest.widget, dest.address, host & 0xff, true,
+                                result);
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: interrupt destination refused write\n");
@@ -105,6 +115,9 @@ static void xbridge_pci_irq(void *opaque, int line, int level)
                       "sgi-xbridge: unsupported PCI interrupt source\n");
         return;
     }
+    trace_sgi_xbridge_pci_irq(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                             REG(s, 0x20) & 15, line / PCI_NUM_PINS,
+                             line % PCI_NUM_PINS, level);
     s->pci_levels = (s->pci_levels & ~(1U << line)) | (level ? 1U << line : 0);
     if (level && !qemu_irq_is_connected(s->pci_irq[line])) {
         qemu_log_mask(LOG_UNIMP,
@@ -121,6 +134,11 @@ static void xbridge_set_pin(void *opaque, int pin, int level)
 
     s->pins = (s->pins & ~bit) | (level ? bit : 0);
     REG(s, 0x100) = (REG(s, 0x100) & ~0xffU) | s->pins;
+    if (old != !!level) {
+        trace_sgi_xbridge_irq_pin(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                 REG(s, 0x20) & 15, pin, old, !!level,
+                                 REG(s, 0x100), REG(s, 0x108), REG(s, 0x118));
+    }
     if (old == !!level || !(REG(s, 0x108) & bit)) {
         return;
     }
@@ -215,6 +233,9 @@ static MemTxResult xbridge_source_dma_read(void *opaque, hwaddr address,
     }
     result = s->packet_sender(s->packet_opaque, s, address, bytes, size,
                               false, &source);
+    trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                source.widget, source.device, address,
+                                size, false, result);
     *value = path->swap ? ldn_be_p(bytes, size) : ldn_le_p(bytes, size);
     return result;
 }
@@ -232,6 +253,7 @@ static MemTxResult xbridge_source_dma_write(void *opaque, hwaddr address,
         .device = path->slot,
     };
     uint8_t bytes[8];
+    MemTxResult result;
 
     if (path->swap) {
         address ^= 4 - size;
@@ -239,8 +261,12 @@ static MemTxResult xbridge_source_dma_write(void *opaque, hwaddr address,
     } else {
         stn_le_p(bytes, size, value);
     }
-    return s->packet_sender(s->packet_opaque, s, address, bytes, size,
-                            true, &source);
+    result = s->packet_sender(s->packet_opaque, s, address, bytes, size,
+                              true, &source);
+    trace_sgi_xbridge_dma_packet(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                source.widget, source.device, address,
+                                size, true, result);
+    return result;
 }
 
 static const MemoryRegionOps xbridge_source_dma_ops[2] = {
@@ -268,7 +294,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         .addr_mask = 0xfff,
         .perm = IOMMU_NONE,
     };
-    unsigned widget;
+    int widget = -1;
     uint64_t destination;
     bool swap;
     bool rev2 = (REG(s, 0) >> 28) == 2;
@@ -277,7 +303,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         entry.target_as = &s->flush_as;
         entry.translated_addr = addr & 0xf000;
         entry.perm = IOMMU_RW;
-        return entry;
+        goto out;
     }
     if ((addr >= 0x40000000 && addr <= 0x407fffff) ||
         (rev2 &&
@@ -294,7 +320,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-xbridge: invalid page DMA at 0x%"
                           HWADDR_PRIx " (entry %u)\n", addr, index);
-            return entry;
+            goto out;
         }
         ate = s->ate[index];
         widget = (ate >> 8) & 15;
@@ -320,12 +346,12 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       LOG_UNIMP : LOG_GUEST_ERROR,
                       "sgi-xbridge: unsupported DMA address 0x%"
                       HWADDR_PRIx "\n", addr);
-        return entry;
+        goto out;
     }
     if (!s->target[widget]) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
-        return entry;
+        goto out;
     }
     entry.target_as = swap || !xbridge_slot_needs_correction(s, dma->slot) ?
                       &s->endpoint[widget].as :
@@ -339,6 +365,12 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         entry.translated_addr |= (hwaddr)widget << 48;
     }
     entry.perm = IOMMU_RW;
+
+out:
+    trace_sgi_xbridge_dma_translate(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                   REG(s, 0x20) & 15, dma->slot, addr,
+                                   widget, entry.translated_addr,
+                                   entry.addr_mask, entry.perm, flag);
     return entry;
 }
 
