@@ -195,7 +195,6 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_INT_DEST_UPPER_ALT SGI_XIO_WIDGET_INT_DEST_UPPER
 #define SGI_MGRAS_INT_DEST_LOWER_ALT SGI_XIO_WIDGET_INT_DEST_LOWER
 
-/* Interrupt sources remain separate, but their routing is approximate. */
 /*
  * The MicroLAN master for the board's serial-number chip: a 32-bit word,
  * low-drive time in bits 19:10, sample offset in bits 9:2, done in bit 1
@@ -207,6 +206,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_NIC_SAMPLE_SHIFT 2
 #define SGI_MGRAS_NIC_PULSE_SHIFT 10
 #define SGI_MGRAS_NIC_WRITABLE 0x000ffffcu
+/* Interrupt sources remain separate, but their routing is approximate. */
 #define SGI_MGRAS_HQ_VECTOR_DEST_UPPER 0x011060
 #define SGI_MGRAS_HQ_VECTOR_DEST_LOWER 0x011068
 #define SGI_MGRAS_HQ_VECTORS 0x011070
@@ -458,11 +458,11 @@ void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
  * layer, hw/mips/sgi/xio-widget.h). Shared with hw/misc/sgi-mgras-raster.c
  * so host-memory DMA reads use the same routing as interrupt packets.
  */
-/* Whether `name` is a board the "board" property accepts. */
-bool sgi_mgras_board_known(const char *name);
-
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric);
+
+/* Whether `name` is a board the "board" property accepts. */
+bool sgi_mgras_board_known(const char *name);
 
 struct SGIMgrasState {
     SGIXioBoardState parent_obj;
