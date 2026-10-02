@@ -59,6 +59,20 @@
 #define MGRAS_HQ_OP_ATTR_QUERY 0xa1
 #define MGRAS_HQ_OP_HISTOGRAM_QUERY 0x8b
 #define MGRAS_HQ_OP_SWAP 0x37
+/*
+ * 0xf200, a sync request with no payload. The IRIX 6.5.30 kernel's DMA
+ * read set-up, which both its own TRAM save and the OpenGL client's TRAM
+ * read go through, writes it to the command FIFO and then polls 0x020000
+ * bit 0 for up to two seconds; if the bit stays clear it gives up without
+ * kicking the read, and the client's read fails with EFAULT. X.Org's impact driver
+ * (ImpactSRWaitDMAOver) also waits for bit 0 after its DMA, sending no
+ * token. Inferred from the pair: bit 0 says the raster engine has taken
+ * everything sent before the request. Approximated: the model runs each
+ * command as it arrives, so the word needs no action and bit 0 reads set
+ * always, as bit 1 does. The discriminating test is
+ * hq-status-re-sync-after-request.
+ */
+#define MGRAS_HQ_OP_RE_SYNC 0xf2
 #define MGRAS_HQ_FLAG_QUERY 0x00020000
 
 
@@ -402,7 +416,8 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ &&
         (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP ||
          reg == MGRAS_HQ_OP_ATTR_QUERY ||
-         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY)) {
+         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY ||
+         reg == MGRAS_HQ_OP_RE_SYNC)) {
         s->cmd_token_class = MGRAS_CMD_HDR_CLASS_HQ;
         s->cmd_token_reg = reg;
         s->cmd_token_payload_count = 0;
@@ -2872,6 +2887,12 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_SWAP) {
         sgi_mgras_raise_pending(s, SGI_MGRAS_PENDING_SWAP);
+        return;
+    }
+
+    /* Nothing is queued ahead of a sync request (MGRAS_HQ_OP_RE_SYNC). */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        reg == MGRAS_HQ_OP_RE_SYNC) {
         return;
     }
 
