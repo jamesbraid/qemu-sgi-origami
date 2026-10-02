@@ -17,7 +17,7 @@ import hashlib
 import json
 import re
 
-from .model_compile import compile_model
+from .model_compile import CompileError, compile_model
 
 
 def render_manifest(source_models: dict[str, dict], outputs: dict[str, str]) -> str:
@@ -314,7 +314,8 @@ def _io_board(raw: dict) -> dict:
             function = {"kind": _enum(entry["kind"]),
                         "revision": entry["revision"]}
             for key in ("pci_device", "pci_function", "intx_pin",
-                        "pic_input", "clock_hz"):
+                        "pic_input", "clock_hz",
+                        "serial_dma_experimental"):
                 if key in entry:
                     function[key.replace("_", "-")] = entry[key]
             functions.append(function)
@@ -362,7 +363,9 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
         "crossbars": [_crossbar(crossbar) for crossbar in topology["crossbars"]],
         **({"pci-host-bridges": [
             {"id": host["id"], "kind": _enum(host["kind"]),
-             "xio-attachment-index": host["xio_attachment_index"]}
+             "xio-attachment-index": host["xio_attachment_index"],
+             **({"compatibility-profile": host["compatibility_profile"]}
+                if "compatibility_profile" in host else {})}
             for host in topology["pci_host_bridges"]
         ]} if topology.get("pci_host_bridges") else {}),
         "xio-attachments": [
@@ -889,6 +892,10 @@ def render_catalogue_json(models: list[dict], *,
     offerings = []
     for model in models:
         topology = compile_model(model)
+        if any("compatibility_profile" in host
+               for host in topology.get("pci_host_bridges", [])):
+            raise CompileError(
+                "qtest-only PIC profile cannot be exported as a product")
         machine_name = model["machine"]["emulation"]["machine_name"]
         topologies.append(_render_topology(topology, machine_name))
         offerings.extend(_offerings_for(model, topology, product_models))

@@ -441,6 +441,81 @@ class PicIo9DescriptorTests(unittest.TestCase):
         ])
         return model
 
+    def test_pic_profile_is_compiled_on_its_host_record(self):
+        model = self.model_with_pic_io9()
+        model["machine"]["emulation"]["pic_profiles"] = {
+            "fixture-pic": "pic-rev3-bedrock",
+        }
+
+        entry = compile_model(model)
+
+        self.assertEqual(entry["pci_host_bridges"], [{
+            "id": "fixture-pic", "kind": "pic",
+            "xio_attachment_index": len(entry["xio_attachments"]) - 1,
+            "compatibility_profile": "pic-rev3-bedrock",
+        }])
+
+    def test_qtest_pic_profile_cannot_be_exported_as_a_product(self):
+        model = self.model_with_pic_io9()
+        model["machine"]["emulation"]["pic_profiles"] = {
+            "fixture-pic": "pic-rev3-bedrock",
+        }
+
+        with self.assertRaisesRegex(CompileError, "qtest-only PIC profile"):
+            render_catalogue_json([model])
+
+    def test_pic_profile_cannot_disappear_without_an_emitted_host(self):
+        model = self.model_with_pic_io9()
+        model["machine"]["emulation"]["pic_profiles"] = {
+            "fixture-pic": "pic-rev3-bedrock",
+        }
+
+        with mock.patch("sgi_model.model_compile._compile_pic_io_records",
+                        return_value=([], [], [])):
+            with self.assertRaisesRegex(
+                    CompileError, "has no emitted PIC host descriptor"):
+                compile_model(model)
+
+    def test_io9_supports_isp12160_and_explicit_ioc4_serial_dma(self):
+        from jsonschema import Draft202012Validator
+
+        for enabled in (False, True):
+            with self.subTest(serial_dma_experimental=enabled):
+                model = self.io9_with_isp12160()
+                ioc4 = next(item for item in model["components"]
+                            if item["id"] == "fixture-ioc4")
+                ioc4["ioc4"]["serial_dma_experimental"] = enabled
+
+                errors = list(Draft202012Validator(schema(MACHINES)).iter_errors(model))
+                self.assertEqual(errors, [])
+                entry = compile_model(model)
+                board = next(item for item in entry["io_boards"]
+                             if item["id"] == "fixture-io9")
+                functions = {item["kind"]: item for item in board["pci"]}
+                self.assertEqual(functions["isp12160"]["revision"], 0x06)
+                self.assertEqual(
+                    functions["ioc4"]["serial_dma_experimental"], enabled)
+                self.assertNotIn("serial_dma_experimental",
+                                 functions["bcm5701"])
+
+    def test_io9_isp12160_requires_its_supported_revision(self):
+        model = self.io9_with_isp12160()
+        isp = next(item for item in model["components"]
+                   if item["id"] == "fixture-isp12160")
+        isp["identity"].pop("pci_revision")
+
+        with self.assertRaisesRegex(CompileError, "pci_revision"):
+            compile_model(model)
+
+    def test_io9_isp12160_rejects_a_duplicate_pic_route(self):
+        model = self.io9_with_isp12160()
+        route = next(item for item in model["connections"]
+                     if item["component"] == "fixture-isp12160")
+        route["pic_input"] = 3
+
+        with self.assertRaisesRegex(CompileError, "multiple PCI functions route"):
+            compile_model(model)
+
     def test_pic_has_one_xio_host_record_and_io9_has_pci_reference(self):
         entry = compile_model(self.model_with_pic_io9())
 
@@ -473,6 +548,9 @@ class PicIo9DescriptorTests(unittest.TestCase):
             "id": "fixture-pic", "kind": "pic",
             "xio-attachment-index": host["xio_attachment_index"],
         }])
+        from sgi_model.model_emit import _render_topology
+        self.assertEqual(_render_topology(entry, "fixture-machine")
+                         ["pci-host-bridges"][0], exported["pci-host-bridges"][0])
         exported_board = next(item for item in exported["io-boards"]
                               if item["id"] == "fixture-io9")
         self.assertEqual((exported_board["pci-host-index"],
@@ -910,6 +988,22 @@ class PicIo9DescriptorTests(unittest.TestCase):
              "intx_pin": "intd", "pic_input": 7,
              "provenance": "derived"},
         ])
+        return model
+
+    def io9_with_isp12160(self):
+        model = self.io9_with_ioc4_and_bcm5701()
+        model["components"].append({
+            "id": "fixture-isp12160", "name": "Synthetic ISP12160 fixture",
+            "kind": "storage-hba", "hardware_kind": "isp12160",
+            "parent": "fixture-io9", "provenance": "derived",
+            "identity": {"pci_revision": 0x06},
+        })
+        model["connections"].append({
+            "component": "fixture-isp12160", "bus": "fixture-pic-pci0",
+            "role": "endpoint", "pci_device": 2, "pci_function": 1,
+            "intx_pin": "intb", "pic_input": 1,
+            "provenance": "derived",
+        })
         return model
 
     def test_pic_crossbar_route_is_preserved_as_authored(self):

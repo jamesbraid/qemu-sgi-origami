@@ -895,6 +895,20 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             raise ResolutionError(
                 "sMDK discovery prerequisites must be unique diagnostic names")
     components = {c["id"]: c for c in model.get("components", [])}
+    pic_profiles = emulation.get("pic_profiles", {})
+    if not isinstance(pic_profiles, dict):
+        raise ResolutionError("pic_profiles must be a component map")
+    for cid, profile in pic_profiles.items():
+        component = components.get(cid)
+        if component is None:
+            raise ResolutionError(
+                f"pic_profiles names unknown component '{cid}'")
+        if (component.get("kind") != "pci-host-bridge"
+                or component.get("hardware_kind") != "pic"):
+            raise ResolutionError(f"component '{cid}' is not a PIC host")
+        if profile != "pic-rev3-bedrock":
+            raise ResolutionError(
+                f"pic_profiles has unsupported profile '{profile}' for '{cid}'")
     allowed = {
         "bedrock_nodes": {"board_id_word", "board_id_mask",
                           "board_id_required_bits", "local_region",

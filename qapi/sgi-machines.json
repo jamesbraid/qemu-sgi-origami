@@ -343,6 +343,7 @@
 # @intx-pin: authored logical interrupt pin
 # @pic-input: authored input on the selected PIC head
 # @clock-hz: explicit IOC4 input clock, absent for other PCI functions
+# @serial-dma-experimental: opt-in IOC4 serial DMA test behavior
 #
 # Since: 11.2
 ##
@@ -350,7 +351,8 @@
   'data': { 'kind': 'SGIModelPciFunctionKind', 'revision': 'uint8',
             '*pci-device': 'uint8', '*pci-function': 'uint8',
             '*intx-pin': 'SGIModelPciIntxPin', '*pic-input': 'uint8',
-            '*clock-hz': 'uint32' } }
+            '*clock-hz': 'uint32',
+            '*serial-dma-experimental': 'bool' } }
 
 ##
 # @SGIModelMacSource:
@@ -969,6 +971,19 @@
 { 'enum': 'SGIModelPciHostKind', 'data': ['pic'] }
 
 ##
+# @SGIModelPicCompatibilityProfile:
+#
+# A narrowly scoped compatibility profile for qtest PIC fixtures.
+#
+# @pic-rev3-bedrock: tested PIC revision 3 profile for a Bedrock
+#     host fixture
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelPicCompatibilityProfile',
+  'data': ['pic-rev3-bedrock'] }
+
+##
 # @SGIModelPciHostBridge:
 #
 # One PCI host bridge and its upstream XIO attachment.
@@ -976,12 +991,14 @@
 # @id: catalogue id of this host bridge
 # @kind: host bridge device model
 # @xio-attachment-index: index of the host bridge's XIO attachment
+# @compatibility-profile: optional tested compatibility profile
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelPciHostBridge',
   'data': { 'id': 'str', 'kind': 'SGIModelPciHostKind',
-            'xio-attachment-index': 'uint32' } }
+            'xio-attachment-index': 'uint32',
+            '*compatibility-profile': 'SGIModelPicCompatibilityProfile' } }
 
 ##
 # @SGIModelSystemTimekeeperKind:

@@ -1896,6 +1896,92 @@ class SystemModelResolutionTests(unittest.TestCase):
         )
         self.assertEqual(board_identity["identity"]["part"], "030-1244-001")
 
+    def _model_with_pic_profile(self, owner="fixture-pic",
+                                 profile="pic-rev3-bedrock"):
+        model = self.real_model("origin300")
+        model["components"].append({
+            "id": "fixture-pic", "name": "Synthetic PIC",
+            "kind": "pci-host-bridge", "hardware_kind": "pic",
+            "pci_host_bridge": {"heads": 2}, "provenance": "derived",
+        })
+        model["machine"]["emulation"]["pic_profiles"] = {owner: profile}
+        return model
+
+    def test_pic_profile_map_accepts_one_explicit_pic_owner(self):
+        model = self._model_with_pic_profile()
+
+        resolved = self.reload_model(model)
+
+        self.assertEqual(resolved["machine"]["emulation"]["pic_profiles"], {
+            "fixture-pic": "pic-rev3-bedrock",
+        })
+
+    def test_pic_profile_map_rejects_unknown_and_non_pic_owners(self):
+        for owner, message in (
+                ("missing-pic", "pic_profiles names unknown component"),
+                ("bedrock", "is not a PIC host")):
+            with self.subTest(owner=owner):
+                model = self._model_with_pic_profile(owner=owner)
+                with self.assertRaisesRegex(
+                        self.resolver.ResolutionError, message):
+                    self.reload_model(model)
+
+    def test_pic_profile_map_rejects_unsupported_profile_values(self):
+        model = self._model_with_pic_profile(profile="pic-rev4-bedrock")
+
+        with self.assertRaisesRegex(
+                self.resolver.ResolutionError, "pic_profiles"):
+            self.reload_model(model)
+
+    def test_pic_profiles_follow_module_prefixes_and_omitted_owners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            module = root / "module.yaml"
+            module.write_text(yaml.safe_dump({
+                "layer_version": 1,
+                "layer": {
+                    "kind": "module", "id": "pic-module",
+                    "requires": {"assembly": "ip29"},
+                    "data": {"components": [
+                        {"id": "board", "kind": "board"},
+                        {"id": "pic", "kind": "pci-host-bridge",
+                         "hardware_kind": "pic", "parent": "board",
+                         "optional": {"node": 1},
+                         "pci_host_bridge": {"heads": 1}},
+                    ]},
+                },
+            }))
+            resolved = {
+                "machine": {"emulation": {"pic_profiles": {
+                    "first-pic": "pic-rev3-bedrock",
+                    "second-pic": "pic-rev3-bedrock",
+                    "missing-pic": "pic-rev3-bedrock",
+                }}},
+                "components": [{"id": "system", "kind": "chassis"}],
+                "buses": [], "connections": [], "interrupts": [],
+                "open_questions": [],
+            }
+            self.resolver._merge_module_instances(
+                root / "system.yaml", {"module_instances": [
+                    {"model": "module.yaml", "prefix": "first-",
+                     "parent": "system"},
+                    {"model": "module.yaml", "prefix": "second-",
+                     "parent": "system"},
+                ]}, resolved,
+                {"product": {"kind": "product", "id": "fixture"},
+                 "assembly": {"kind": "assembly", "id": "ip29"}},
+            )
+
+        self.assertEqual(resolved["machine"]["emulation"]["pic_profiles"], {
+            "second-pic": "pic-rev3-bedrock",
+            "missing-pic": "pic-rev3-bedrock",
+        })
+        with self.assertRaisesRegex(
+                self.resolver.ResolutionError,
+                "pic_profiles names unknown component 'missing-pic'"):
+            self.resolver.model_composition.validate_initialization_policy(
+                resolved)
+
     def test_optional_component_must_target_a_supported_profile_node(self):
         model = self.real_model("origin200")
         model["components"].append({
