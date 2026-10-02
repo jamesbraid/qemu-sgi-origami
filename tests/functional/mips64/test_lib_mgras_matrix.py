@@ -35,9 +35,13 @@ class MatrixTables(unittest.TestCase):
         self.assertEqual(names['ssi'], ['lit3d', 'pixels', 'doublebuffer'])
         self.assertEqual(names['essi'], ['lit3d', 'pixels', 'doublebuffer'])
 
-    def test_refused_boards_absent(self):
-        self.assertNotIn('mxi', m.BOARDS)
-        self.assertNotIn('emxi', m.BOARDS)
+    def test_mxi_boards_run_every_feature(self):
+        every = ['lit3d', 'texture', 'pixels', 'doublebuffer']
+        for key in ('mxi', 'emxi'):
+            names = [f.name for f in m.features_for(m.BOARDS[key])]
+            self.assertEqual(sorted(names), sorted(every))
+            self.assertIn('x-unimplemented-board=on',
+                          m.device_args(m.BOARDS[key])[1])
 
     def test_device_args(self):
         self.assertEqual(m.device_args(m.BOARDS['si']),

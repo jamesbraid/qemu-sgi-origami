@@ -595,11 +595,13 @@ tests/functional/mips64/test_lib_translation_health.py
 tests/functional/mips64/test_linux_kernel.py
 tests/functional/mips64/test_linux_multiuser.py
 tests/functional/mips64/test_mgras_desktop.py
+tests/functional/mips64/test_mgras_matrix_emxi.py
 tests/functional/mips64/test_mgras_matrix_esi.py
 tests/functional/mips64/test_mgras_matrix_esi_t.py
 tests/functional/mips64/test_mgras_matrix_essi.py
 tests/functional/mips64/test_mgras_matrix_si.py
 tests/functional/mips64/test_mgras_matrix_si_t.py
+tests/functional/mips64/test_mgras_matrix_mxi.py
 tests/functional/mips64/test_mgras_matrix_ssi.py
 tests/functional/mips64/test_onyx2_deskside_prom.py
 tests/functional/mips64/test_onyx2_rack_prom.py

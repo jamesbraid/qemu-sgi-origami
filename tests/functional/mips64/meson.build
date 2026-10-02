@@ -144,14 +144,16 @@ test_mips64_timeouts = {
   # nodes, as test_mgras_desktop's sequence (1320 serial, 300 greeter,
   # 600 desktop) plus each feature program's settle and a minute per
   # serial command (lib_mgras_boot.board_timeout adds them: SI 2690,
-  # SI+T 2850, SSI and ESSI 2830). The sum is a bound, not a measurement:
-  # no board has been booted on four nodes with these programs yet.
+  # SI+T 2850, SSI and ESSI 2830, MXI and EMXI 3010). The sum is a bound,
+  # not a measurement: no board has been booted on four nodes with these programs yet.
   'mgras_matrix_esi' : 2700,
   'mgras_matrix_esi_t' : 2860,
   'mgras_matrix_si' : 2700,
   'mgras_matrix_si_t' : 2860,
   'mgras_matrix_ssi' : 2840,
   'mgras_matrix_essi' : 2840,
+  'mgras_matrix_mxi' : 3020,
+  'mgras_matrix_emxi' : 3020,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
   # PROM, then the eg (Alteon Tigon) adapter brought up and a
   # byte-checked 1 MiB TCP transfer, bulk TCP and UDP throughput runs
@@ -310,6 +312,8 @@ tests_mips64_system_thorough = [
   'mgras_matrix_si_t',
   'mgras_matrix_ssi',
   'mgras_matrix_essi',
+  'mgras_matrix_mxi',
+  'mgras_matrix_emxi',
   'irix_eg',
   'irix_eg_arp',
   'irix_tg_arp',
