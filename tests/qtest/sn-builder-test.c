@@ -2310,6 +2310,192 @@ static void test_expansion_six_head_pio(void)
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
+static void expansion_card_write(QTestState *qts, uint64_t address,
+                                  uint64_t value, unsigned size)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, address, bytes + 8 - size, size));
+}
+
+static uint64_t expansion_card_read(QTestState *qts, uint64_t address,
+                                   unsigned size)
+{
+    uint8_t bytes[8] = { 0 };
+
+    g_assert_true(qtest_memread_cpu(qts, 1, address, bytes + 8 - size, size));
+    return ldq_be_p(bytes);
+}
+
+static void test_expansion_composed_adapters(void)
+{
+    static const unsigned widgets[] = { 0xe, 0xf, 8, 9, 0xc, 0xd };
+    const uint64_t remote = SPACE_IO + (UINT64_C(1) << 33);
+    const uint64_t pending = SPACE_IO + 0x1800098;
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *prom = expansion_prom();
+    g_autoptr(GString) cards = g_string_new(NULL);
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("expansion-adapter-errors-XXXXXX", &log, &error);
+    QTestState *qts;
+    uint8_t bytes[8];
+    uint8_t expected[6][2][8];
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    memset(expected, 0xcc, sizeof(expected));
+    /* Device numbers are synthetic positions, not physical slot labels. */
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        for (unsigned device = 1; device <= 2; device++) {
+            g_string_append_printf(cards,
+                " -device sgi-bridge-dma-test,bus=expansion0-u%u-head-%c.0,"
+                "addr=%u,device-id=%u", head / 2, head % 2 ? 'f' : 'e',
+                device, 0xc000 + head * 2 + device);
+        }
+    }
+    qts = qtest_initf(
+        "-M origin300,topology="
+        "origin300-pci-expansion-unconnected-uart-experiment,%s "
+        "-cpu R14000 -smp 2 -m 512M -S "
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off "
+        "-bios %s -nodefaults -display none -d guest_errors,unimp -D %s %s",
+        STORAGE_BINDING, image, prom, log, cards->str);
+    expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+        uint64_t target = 0x8000 + head * 0x1000;
+
+        expansion_card_write(qts, base + 0x24,
+            (expansion_card_read(qts, base + 0x24, 4) & ~15U) |
+            widgets[head], 4);
+        expansion_card_write(qts, base + 0x10000,
+                             target | 0x21 | (0xa << 8), 8);
+        for (unsigned device = 1; device <= 2; device++) {
+            uint64_t config = base + 0x20000 + device * 0x1000;
+            uint64_t bar = base + (device == 1 ? 0x400000 : 0x600000);
+            unsigned identity = 0xc000 + head * 2 + device;
+
+            g_assert_cmphex(expansion_card_read(qts, config, 4) >> 16,
+                            ==, identity);
+            expansion_card_write(qts, config + PCI_BAR0,
+                                 CARD_MMIO + device * 0x200000, 4);
+            expansion_card_write(qts, config + PCI_COMMAND,
+                                 PCI_COMMAND_MEMORY_MASTER, 4);
+            expansion_card_write(qts, base + 0x204 + device * 8,
+                                 0x81000 | (0x10 + device * 2), 4);
+            expansion_card_write(qts, bar + 0x24, identity, 4);
+            qtest_memwrite(qts, target + (device - 1) * 0x100,
+                           expected[head][device - 1], sizeof(bytes));
+        }
+    }
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        uint64_t base = remote + ((uint64_t)widgets[head] << 24);
+        uint64_t target = 0x8000 + head * 0x1000;
+
+        for (unsigned device = 1; device <= 2; device++) {
+            uint64_t bar = base + (device == 1 ? 0x400000 : 0x600000);
+            uint64_t offset = (device - 1) * 0x100;
+            unsigned seed = 0x20 + head * 16 + device;
+            unsigned pin = (device - 1) * 4;
+            unsigned number = 16 + head * 2 + device;
+
+            g_test_message("composed head %u widget %x device %u", head,
+                           widgets[head], device);
+            expansion_card_write(qts, bar + DMA_REG_ADDRESS,
+                                 0x40000000 + offset, 4);
+            expansion_card_write(qts, bar + DMA_REG_LENGTH, sizeof(bytes), 4);
+            expansion_card_write(qts, bar + DMA_REG_SEED, seed, 4);
+            expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+            for (unsigned i = 0; i < sizeof(bytes); i++) {
+                expected[head][device - 1][i] = seed + i;
+            }
+            for (unsigned other = 0; other < G_N_ELEMENTS(widgets); other++) {
+                for (unsigned slot = 0; slot < 2; slot++) {
+                    qtest_memread(qts, 0x8000 + other * 0x1000 + slot * 0x100,
+                                  bytes, sizeof(bytes));
+                    g_assert_cmpmem(bytes, sizeof(bytes), expected[other][slot],
+                                    sizeof(bytes));
+                }
+            }
+            /* A read then write must use this head's same translation. */
+            expansion_card_write(qts, bar + DMA_REG_SOURCE,
+                                 0x40000000 + offset, 4);
+            expansion_card_write(qts, bar + DMA_REG_ADDRESS,
+                                 0x40000200 + offset, 4);
+            expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+            qtest_memread(qts, target + 0x200 + offset, bytes, sizeof(bytes));
+            g_assert_cmpmem(bytes, sizeof(bytes), expected[head][device - 1],
+                            sizeof(bytes));
+            /* A RAM-less BIC destination cannot fall back to compute RAM. */
+            expansion_card_write(qts, base + 0x10000,
+                (UINT64_C(1) << 33) | target | 0x21 | (0xa << 8), 8);
+            expansion_card_write(qts, bar + DMA_REG_SEED, seed + 1, 4);
+            expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+            qtest_memread(qts, target + 0x200 + offset, bytes, sizeof(bytes));
+            g_assert_cmpmem(bytes, sizeof(bytes), expected[head][device - 1],
+                            sizeof(bytes));
+            expansion_card_write(qts, base + 0x10000,
+                                 target | 0x21 | (0xa << 8), 8);
+
+            expansion_card_write(qts, base + 0x34, (0xa << 16) | 0x8000, 4);
+            expansion_card_write(qts, base + 0x3c, HUB_INT_MODIFY_OFFSET, 4);
+            expansion_card_write(qts, base + 0x134 + pin * 8,
+                                 (INT_HOST_PACKET_IO_NASID0 << 8) | number, 4);
+            expansion_card_write(qts, base + 0x10c, 1U << pin, 4);
+            expansion_card_write(qts, base + 0x11c, 1U << pin, 4);
+            g_assert_cmphex(expansion_card_read(qts, pending, 8), ==, 0);
+            expansion_card_write(qts, bar + DMA_REG_INTERRUPT, 1, 4);
+            g_test_message("IRQ raw=%" PRIx64 " held=%" PRIx64
+                           " pending=%" PRIx64,
+                expansion_card_read(qts, base + 0x104, 4),
+                expansion_card_read(qts, bar + DMA_REG_INTERRUPT, 4),
+                expansion_card_read(qts, pending, 8));
+            g_assert_cmphex(expansion_card_read(qts, pending, 8), ==,
+                            UINT64_C(1) << number);
+            for (unsigned other = 0; other < G_N_ELEMENTS(widgets); other++) {
+                uint64_t owner = remote + ((uint64_t)widgets[other] << 24);
+
+                g_assert_cmphex(expansion_card_read(qts, owner + 0x104, 4) &
+                                0xff, ==, other == head ? 1U << pin : 0);
+                g_assert_cmphex(expansion_card_read(qts, owner + 0x12004, 4),
+                                ==, (0x8000 + other * 0x1000) | 0xa21);
+                for (unsigned slot = 1; slot <= 2; slot++) {
+                    uint64_t card = owner +
+                        (slot == 1 ? 0x400000 : 0x600000);
+
+                    g_assert_cmphex(expansion_card_read(qts, card + 0x24, 4),
+                                    ==, 0xc000 + other * 2 + slot);
+                }
+            }
+            expansion_card_write(qts, bar + DMA_REG_INTERRUPT, 0, 4);
+            g_assert_cmphex(expansion_card_read(qts, pending, 8), ==, 0);
+            g_assert_cmphex(expansion_card_read(qts, base + 0x104, 4) & 0xff,
+                            ==, 0);
+        }
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &error));
+    g_assert_no_error(error);
+    for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
+        for (unsigned device = 1; device <= 2; device++) {
+            uint64_t address = (UINT64_C(1) << 33) | (0x8200 + head * 0x1000 +
+                                                       (device - 1) * 0x100);
+            g_autofree char *refusal = g_strdup_printf(
+                "sn1: NI packet at 0x%" PRIx64 " has no destination for node 1 "
+                "(source widget %u)", address, widgets[head]);
+
+            g_assert_nonnull(strstr(contents, refusal));
+        }
+    }
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_pending_registers(gconstpointer opaque)
 {
     unsigned cpus = GPOINTER_TO_UINT(opaque);
@@ -3159,6 +3345,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
+    qtest_add_func("sn/builder/expansion/composed-adapters",
+                   test_expansion_composed_adapters);
     qtest_add_func("sn/builder/expansion/six-head-pio",
                    test_expansion_six_head_pio);
     qtest_add_data_func("sn/builder/expansion/pending-registers/two-cpus",
