@@ -486,6 +486,7 @@ tests/functional/mips64/mgras-reference/si-lit3d.json
 tests/functional/mips64/mgras-reference/si-pixels.json
 tests/functional/mips64/mgras-reference/si-t-lit3d.json
 tests/functional/mips64/mgras-reference/si-t-pixels.json
+tests/functional/mips64/mgras-reference/si-t-texture.json
 tests/functional/mips64/mgras-reference/ssi-doublebuffer.json
 tests/functional/mips64/mgras-reference/ssi-lit3d.json
 tests/functional/mips64/mgras-reference/ssi-pixels.json
