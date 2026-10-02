@@ -838,6 +838,20 @@ def _merge_module_instances(
             bus_bindings=bus_bindings,
             adopt_roots=adopt_roots,
         )
+        profiles = resolved.get("machine", {}).get("emulation", {}).get(
+            "pic_profiles", {})
+        if isinstance(profiles, dict):
+            surviving = {item.get("id") for item in graph["components"]}
+            omitted_pic_ids = {
+                prefix + component["id"]
+                for component in contract.get("components", [])
+                if (isinstance(component, dict)
+                    and component.get("kind") == "pci-host-bridge"
+                    and component.get("hardware_kind") == "pic"
+                    and prefix + component.get("id", "") not in surviving)
+            }
+            for cid in omitted_pic_ids:
+                profiles.pop(cid, None)
         node_count = sum(component.get("kind") == "node-asic"
                          for component in graph["components"])
         instance_nodes += node_count

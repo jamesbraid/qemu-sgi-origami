@@ -194,6 +194,12 @@
                 "$ref": "#/$defs/pci-function-revision"
               }
             },
+            "pic_profiles": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": { "$ref": "#/$defs/identifier" },
+              "additionalProperties": { "const": "pic-rev3-bedrock" }
+            },
             "system_timekeepers": {
               "type": "object",
               "minProperties": 1,
@@ -1753,7 +1759,8 @@
           "required": ["clock_hz"],
           "additionalProperties": false,
           "properties": {
-            "clock_hz": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+            "clock_hz": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+            "serial_dma_experimental": { "type": "boolean" }
           }
         },
         "node_asic": { "$ref": "#/$defs/node-asic-facts" },

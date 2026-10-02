@@ -1705,7 +1705,9 @@ def _one_wire_identities(model: dict, components: dict[str, dict],
 _HUB_PCI_KINDS = {"isp1040": "ISP1040", "ioc3": "IOC3"}
 _BEDROCK_IO_BOARD_KINDS = {"ip34": "FUEL", "io8": "IO8"}
 _BEDROCK_PCI_KINDS = {"isp12160": "ISP12160", "ioc3": "IOC3", "lucent-ohci": "LUCENT_OHCI"}
-_IO9_PCI_REVISIONS = {"ioc4": 0x53, "bcm5701": 0x00}
+_IO9_PCI_REVISIONS = {
+    "isp12160": 0x06, "ioc4": 0x53, "bcm5701": 0x00,
+}
 _IO9_INTX_PINS = {"inta", "intb", "intc", "intd"}
 
 
@@ -2206,6 +2208,10 @@ def _compile_pic_io_records(model: dict, graph: dict,
         host_records.append({
             "id": cid, "kind": "pic",
             "xio_attachment_index": attachment_index,
+            **({"compatibility_profile": model["machine"]["emulation"]
+               ["pic_profiles"][cid]}
+               if cid in model["machine"].get("emulation", {}).get(
+                   "pic_profiles", {}) else {}),
         })
 
         seen_heads: dict[int, str] = {}
@@ -2297,6 +2303,13 @@ def _compile_pic_io_records(model: dict, graph: dict,
                             f"IO9 IOC4 '{component['id']}' has missing or "
                             "unsupported clock_hz")
                     entry["clock_hz"] = clock_hz
+                    experimental = facts.get("serial_dma_experimental", None)
+                    if experimental is not None:
+                        if type(experimental) is not bool:
+                            raise CompileError(
+                                f"IO9 IOC4 '{component['id']}' "
+                                "serial_dma_experimental must be boolean")
+                        entry["serial_dma_experimental"] = experimental
                 elif "ioc4" in component:
                     raise CompileError(
                         f"IO9 non-IOC4 PCI part '{component['id']}' has "
@@ -2816,6 +2829,14 @@ def compile_model(model: dict) -> dict:
                                         len(xio_attachments), ds1742_boards))
             io_boards.extend(io9_boards)
             xio_attachments.extend(pic_attachments)
+        profile_owners = set(model.get("machine", {}).get(
+            "emulation", {}).get("pic_profiles", {}))
+        emitted_hosts = {host["id"] for host in pci_host_bridges}
+        missing_hosts = sorted(profile_owners - emitted_hosts)
+        if missing_hosts:
+            raise CompileError(
+                f"PIC profile owner '{missing_hosts[0]}' has no emitted "
+                "PIC host descriptor")
     except CompileError:
         raise
     except ValueError as exc:
