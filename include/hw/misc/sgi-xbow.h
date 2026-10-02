@@ -140,6 +140,28 @@ struct SGIXbowState {
     uint8_t link_reset_restore_alive;
     bool interrupt_asserted;
 
+    /*
+     * Reset fences (revision 5, "Crossbow 2.0", and later only): one mask
+     * per destination -- widget 0's core, then each of the eight links --
+     * naming which of the eight ports a warm reset may reach there. Bit n
+     * answers for port 8+n, a fence's own port included. A machine reset
+     * always sets every fence back to 0xff; an accepted warm reset leaves
+     * them as programmed. Earlier revisions carry these fields but never
+     * expose or change them, so they stay at the reset value and a warm
+     * reset keeps reaching every destination, as it always did.
+     */
+    uint8_t fence;
+    uint8_t link_fence[SGI_XBOW_LINKS];
+
+    /*
+     * The resource lock (revision 5, "Crossbow 2.0", and later only):
+     * acquired by a write to XBOW_LOCK that only takes while the stored
+     * value is zero, released by an unconditional write to XBOW_LOCK_CLEAR,
+     * both offsets reading the one stored value. Reset to zero. Earlier
+     * revisions carry the field but never expose it.
+     */
+    uint8_t lock;
+
     uint32_t status;
     uint32_t err_upper;
     uint32_t err_lower;

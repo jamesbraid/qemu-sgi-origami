@@ -126,6 +126,22 @@
 
 #define LINK_RESET_NS           20
 
+/*
+ * Revision 5 ("Crossbow 2.0") and later decode a reset fence per
+ * destination and a resource lock in the range earlier revisions leave
+ * entirely reserved.
+ */
+#define FENCE           0x0078
+#define FENCE_RESET     0xff
+#define LINK_FENCE(w)   (0x0080 + ((w) - 8) * 8)
+#define LOCK            0x00c0
+#define LOCK_CLEAR      0x00c8
+/* Bit n of a fence answers for port 8+n, a widget's own port included. */
+#define FENCE_BIT(w)    (1u << ((w) - 8))
+
+/* 1024 core cycles at 100 MHz: the reset-loop guard (sgi-xio-port.h). */
+#define WARM_RESET_QUIET_NS     (1024 * 10)
+
 static uint32_t reg_read_from(QTestState *qts, unsigned int port,
                               unsigned int offset)
 {
@@ -1219,6 +1235,298 @@ static void test_startup_health_is_not_attachment(void)
     qtest_quit(qts);
 }
 
+/*
+ * Earlier revisions leave the fence and lock range entirely reserved: an
+ * access anywhere in it is the same reserved-address error as the rest of
+ * the block between the registers and the first link.
+ */
+static void test_fence_and_lock_reserved_before_revision_5(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=4");
+
+    (void)reg_read(qts, FENCE);
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    (void)reg_read(qts, STATUS_CLEAR);
+
+    (void)reg_read(qts, LINK_FENCE(WIDGET_LAST));
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    (void)reg_read(qts, STATUS_CLEAR);
+
+    (void)reg_read(qts, LOCK);
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    (void)reg_read(qts, STATUS_CLEAR);
+
+    (void)reg_read(qts, LOCK_CLEAR);
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_fence_and_lock_reset_values(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+    unsigned int widget;
+
+    g_assert_cmphex(reg_read(qts, FENCE), ==, FENCE_RESET);
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        g_assert_cmphex(reg_read(qts, LINK_FENCE(widget)), ==, FENCE_RESET);
+    }
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0);
+    g_assert_cmphex(reg_read(qts, LOCK_CLEAR), ==, 0);
+
+    /* Only the low byte of a fence is kept. */
+    reg_write(qts, FENCE, 0xfffffe7f);
+    g_assert_cmphex(reg_read(qts, FENCE), ==, 0x7f);
+    reg_write(qts, LINK_FENCE(WIDGET_HUB_A), 0x1234ff3c);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_HUB_A)), ==, 0x3c);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_IO)), ==, FENCE_RESET);
+    qtest_quit(qts);
+}
+
+/*
+ * Each destination's fence is decided on its own: the core can refuse a
+ * warm reset that a particular link still admits. Every link but one is
+ * made to refuse this source too, so only the one meant to show admission
+ * pulses.
+ */
+static void test_fence_independence_link_outlives_core_rejection(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+    unsigned int widget;
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    reg_write(qts, CONTROL, 0xffffffff);
+    reg_write(qts, FENCE, FENCE_RESET & ~FENCE_BIT(WIDGET_IO));
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        if (widget == WIDGET_HUB_B) {
+            continue;
+        }
+        reg_write(qts, LINK_FENCE(widget), FENCE_RESET & ~FENCE_BIT(WIDGET_IO));
+    }
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+
+    /* The core refused the source: nothing it owns was touched. */
+    g_assert_cmphex(reg_read(qts, CONTROL), ==, CONTROL_WRITABLE);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, WIDGET_HUB_B - 8), ==, 1);
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        if (widget == WIDGET_HUB_B) {
+            continue;
+        }
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, widget - 8), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The converse: the core admits a reset that one link's own fence refuses.
+ * The core resets and every other admitting link pulses, the source's own
+ * included; the one link that refused does not.
+ */
+static void test_fence_converse_core_outlives_link_rejection(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+    unsigned int widget;
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    reg_write(qts, CONTROL, 0xffffffff);
+    /* Widget 0's fence and every link but Hub B's admit the IO source. */
+    reg_write(qts, LINK_FENCE(WIDGET_HUB_B),
+              FENCE_RESET & ~FENCE_BIT(WIDGET_IO));
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+
+    /* Admitted: the core reset. */
+    g_assert_cmphex(reg_read(qts, CONTROL), ==, 0);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, WIDGET_HUB_B - 8), ==, 0);
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        if (widget == WIDGET_HUB_B) {
+            continue;
+        }
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, widget - 8), ==, 1);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The PROM's own fenced-reset sequence (owner's Octane2, PROM Command
+ * Monitor reads, 2026-10-02): widget 11, the graphics port, clears its own
+ * source bit in widget 0's fence and in every other live link's fence,
+ * leaving its own link fence's own bit admitting, so a warm reset it
+ * raises resets neither the core nor any other link and comes back down
+ * its own link alone -- a board-local reset. Widget 0's fence and link
+ * F's fence were each read back as 0xf7; link F stands in here for "every
+ * other live link", since it is the one other link this model's own
+ * measurement reached. Widget 11's own link fence was never itself read on
+ * the real hardware, so that it is left admitting is the reading this test
+ * exercises, not a second measured value.
+ */
+static void test_fence_prom_board_local_reset_sequence(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+    unsigned int widget;
+
+    reg_write(qts, FENCE, FENCE_RESET & ~FENCE_BIT(WIDGET_EMPTY));
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        if (widget == WIDGET_EMPTY) {
+            continue;
+        }
+        reg_write(qts, LINK_FENCE(widget),
+                  FENCE_RESET & ~FENCE_BIT(WIDGET_EMPTY));
+    }
+    g_assert_cmphex(reg_read(qts, FENCE), ==, 0xf7);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_LAST)), ==, 0xf7);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_EMPTY)), ==, FENCE_RESET);
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    reg_write(qts, CONTROL, 0xffffffff);
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_EMPTY - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_EMPTY - 8, 0);
+
+    /* The core and every other link were fenced out; widget 11 was not. */
+    g_assert_cmphex(reg_read(qts, CONTROL), ==, CONTROL_WRITABLE);
+    g_assert_cmpuint(qtest_get_irq_raise_count(qts, WIDGET_EMPTY - 8), ==, 1);
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        if (widget == WIDGET_EMPTY) {
+            continue;
+        }
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, widget - 8), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * An accepted warm reset leaves fences as they were programmed; only a
+ * true machine reset puts them back at 0xff.
+ */
+static void test_fence_persists_across_warm_reset(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    reg_write(qts, FENCE, 0x7f);
+    reg_write(qts, LINK_FENCE(WIDGET_HUB_A), 0x3c);
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+
+    /* The admitted reset touched the core; the fences were left alone. */
+    g_assert_cmphex(reg_read(qts, FENCE), ==, 0x7f);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_HUB_A)), ==, 0x3c);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, FENCE), ==, FENCE_RESET);
+    g_assert_cmphex(reg_read(qts, LINK_FENCE(WIDGET_HUB_A)), ==, FENCE_RESET);
+    qtest_quit(qts);
+}
+
+/*
+ * Earlier revisions carry the same fields fixed at their reset value, so a
+ * warm reset still reaches the core and every link, as it always did.
+ */
+static void test_warm_reset_revision_4_unaffected_by_fence(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=4");
+    unsigned int widget;
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    reg_write(qts, CONTROL, 0xffffffff);
+
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+
+    g_assert_cmphex(reg_read(qts, CONTROL), ==, 0);
+    for (widget = WIDGET_IO; widget <= WIDGET_LAST; widget++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(qts, widget - 8), ==, 1);
+    }
+
+    (void)reg_read(qts, FENCE);
+    g_assert_cmphex(reg_read(qts, STATUS), ==, STATUS_ACCESS_ERROR);
+    qtest_quit(qts);
+}
+
+/*
+ * The lock is a hardware test-and-set semaphore (inferred from XBridge,
+ * hw/misc/sgi-xbridge-xbow.c): a write to LOCK only takes while it reads
+ * zero, a write to LOCK_CLEAR always clears it and discards its data, and
+ * both offsets answer the one stored byte.
+ */
+static void test_lock_test_and_set(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0);
+    g_assert_cmphex(reg_read(qts, LOCK_CLEAR), ==, 0);
+
+    /* A write while unlocked takes, and only the low byte is kept. */
+    reg_write(qts, LOCK, 0x1234);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0x34);
+    g_assert_cmphex(reg_read(qts, LOCK_CLEAR), ==, 0x34);
+
+    /* A write while locked is refused: the acquire does not overwrite. */
+    reg_write(qts, LOCK, 0x99);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0x34);
+
+    /* The clearing alias releases unconditionally; its data is discarded. */
+    reg_write(qts, LOCK_CLEAR, 0xaa);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0);
+    g_assert_cmphex(reg_read(qts, LOCK_CLEAR), ==, 0);
+
+    reg_write(qts, LOCK, 0x55);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0x55);
+    qtest_quit(qts);
+}
+
+static void test_lock_clears_on_machine_reset(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+
+    reg_write(qts, LOCK, 0x77);
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * Whether the lock survives an accepted warm reset is not measured; this
+ * model follows XBridge's own reset code, which clears its equivalent
+ * register with the rest of the core on every reset, warm included
+ * (hw/misc/sgi-xbridge-xbow.c, xbow_reset_core()). A warm reset the core
+ * fences out leaves the lock alone, since nothing resets the core then.
+ */
+static void test_lock_clears_with_core_reset_only(void)
+{
+    QTestState *qts = xbow_start("-global sgi-xbow.revision=5");
+
+    qtest_irq_intercept_out_named(qts, XBOW, "link-reset");
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+
+    /* Fenced out: the lock, like the rest of the core, is untouched. */
+    reg_write(qts, FENCE, FENCE_RESET & ~FENCE_BIT(WIDGET_IO));
+    reg_write(qts, LOCK, 0x66);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0x66);
+
+    /* Wait out the reset-loop guard, then admit the next one. */
+    qtest_clock_step(qts, WARM_RESET_QUIET_NS);
+    reg_write(qts, FENCE, FENCE_RESET);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 1);
+    qtest_set_irq_in(qts, XBOW, "warm-reset", WIDGET_IO - 8, 0);
+    g_assert_cmphex(reg_read(qts, LOCK), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1275,6 +1583,25 @@ int main(int argc, char **argv)
                    test_reset_restores_startup_health);
     qtest_add_func("/sn0/xbow/migration-keeps-runtime-state",
                    test_migration_keeps_runtime_state);
+    qtest_add_func("/sn0/xbow/fence-and-lock-reserved-before-revision-5",
+                   test_fence_and_lock_reserved_before_revision_5);
+    qtest_add_func("/sn0/xbow/fence-and-lock-reset-values",
+                   test_fence_and_lock_reset_values);
+    qtest_add_func("/sn0/xbow/fence-independence-link-outlives-core-rejection",
+                   test_fence_independence_link_outlives_core_rejection);
+    qtest_add_func("/sn0/xbow/fence-converse-core-outlives-link-rejection",
+                   test_fence_converse_core_outlives_link_rejection);
+    qtest_add_func("/sn0/xbow/fence-prom-board-local-reset-sequence",
+                   test_fence_prom_board_local_reset_sequence);
+    qtest_add_func("/sn0/xbow/fence-persists-across-warm-reset",
+                   test_fence_persists_across_warm_reset);
+    qtest_add_func("/sn0/xbow/warm-reset-revision-4-unaffected-by-fence",
+                   test_warm_reset_revision_4_unaffected_by_fence);
+    qtest_add_func("/sn0/xbow/lock-test-and-set", test_lock_test_and_set);
+    qtest_add_func("/sn0/xbow/lock-clears-on-machine-reset",
+                   test_lock_clears_on_machine_reset);
+    qtest_add_func("/sn0/xbow/lock-clears-with-core-reset-only",
+                   test_lock_clears_with_core_reset_only);
 
     return g_test_run();
 }
