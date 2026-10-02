@@ -1596,6 +1596,74 @@ static void test_mgras_in_a_gigachannel_cabinet(const void *data)
 }
 
 /*
+ * Odyssey is an ordinary XIO board too. Named-slot placement resolves
+ * "fabric" itself inside the parent realize (sgi_xio_board_place_by_name()),
+ * so an Odyssey realize that checked "fabric" before calling its parent
+ * could never be placed this way; io5 is the same widget 14 MGRAS answers
+ * at above, a topology fact that does not depend on which board claims it.
+ */
+#define ODSY_WIDGET_ID 0xac013047
+
+static void test_odyssey_fitted_at_a_named_slot(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-odyssey,slot=io5");
+    g_autofree char *head = qom_child_type(qts, "/machine/module0", "io5");
+    uint8_t bytes[4];
+
+    g_assert_cmpstr(head, ==, "sgi-odyssey");
+    g_assert_true(qtest_memread_cpu(qts, 0, IO_SPACE +
+                                    14 * XIO_WIDGET_SIZE + WIDGET_ID_DATA,
+                                    bytes, sizeof(bytes)));
+    g_assert_cmphex((uint32_t)ldl_be_p(bytes), ==, ODSY_WIDGET_ID);
+    qtest_quit(qts);
+}
+
+/*
+ * sgi-odyssey realizes onto the plain system bus like every sgi-xio-board
+ * (sgi_xio_board_reparent(), hw/mips/sgi/xio-board.c), which has no hotplug
+ * handler; tests/qtest/sn0-origin2000-kona-test.c's own
+ * test_onewire_other_identity_parts_empty() documents that QMP device_add
+ * cannot substitute for a command-line "-device" here, for exactly that
+ * reason. A board whose realize fails takes the whole process down as a
+ * fatal command-line error (sgi-board-test.c's test_slot_taken_twice() is
+ * the same pattern for a plain test board), so there is no way to keep the
+ * process alive afterward to show a later memory transaction is unaffected.
+ * This test is therefore narrower than the dangling-AddressSpace failure
+ * mode itself: it pins that the specific guest-reachable failure (an
+ * out-of-range "nic-serial") still fails with its own documented message
+ * and plain exit, rather than the wrong signal a broken unwind -- say, a
+ * bad address_space_destroy() call -- would produce instead.
+ *
+ * Placed by name, like test_odyssey_fitted_at_a_named_slot() above: io5's
+ * slot link hands the board its "fabric" during oc->parent_realize(), so
+ * this needs no standalone MemoryRegion of its own (and, unlike the
+ * module+slot form, must not set "fabric" itself -- the board rejects a
+ * pre-supplied link once it resolves one from the slot). "nic-serial" is
+ * read after "fabric" already has its address space (address_space_init()
+ * runs unconditionally once the parent board has claimed the slot), so this
+ * exercises the exact ordering finding 2 describes: odyssey_attach_nic()
+ * rejects the value, and the fix this test accompanies destroys that
+ * address space before returning instead of leaving it registered.
+ */
+static void test_odyssey_bad_nic_serial_does_not_leak_fabric(void)
+{
+    QTestState *s;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(
+            "*the sgi-odyssey one-wire serial*does not fit in 48 bits*");
+        return;
+    }
+    s = qtest_init(
+        "-M origin2000 -display none -device sgi-odyssey,slot=io5,"
+        "nic-serial=0x1000000000000 -S");
+    qtest_quit(s);
+}
+
+/*
  * The builder builds a Bedrock topology of more than one node. This drives
  * it over sn-builder-fault-test.c's own synthetic two-node fixture: two
  * Bedrock nodes, each with its own populated IO-8 board at its own
@@ -4074,6 +4142,11 @@ int main(int argc, char **argv)
                         NULL, test_no_mgras_without_a_catalogue_record);
     qtest_add_data_func("sn/builder/mgras-in-a-gigachannel-cabinet", NULL,
                         test_mgras_in_a_gigachannel_cabinet);
+    qtest_add_data_func("sn/builder/odyssey-fitted-at-a-named-slot", NULL,
+                        test_odyssey_fitted_at_a_named_slot);
+    qtest_add_func(
+        "sn/builder/odyssey-bad-nic-serial-does-not-leak-fabric",
+        test_odyssey_bad_nic_serial_does_not_leak_fabric);
 
     return g_test_run();
 }
