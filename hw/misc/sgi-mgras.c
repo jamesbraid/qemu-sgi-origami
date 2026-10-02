@@ -761,13 +761,18 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x000020:
         return 0;
     /*
-     * Bits 31:28 are the HQ revision the IRIX kernel reads with a 32-bit
-     * load. How they relate to the widget
-     * identification word at 0x000004 is unknown; a 64-bit read keeps
-     * the low word at zero as before.
+     * A 32-bit load here returns a widget identification word. The IRIX
+     * kernel takes the HQ revision from bits 31:28; the stock IP30 IDE's
+     * board probe accepts the board only when bits 27:12 are the part
+     * and bits 11:1 the manufacturer, and calls a revision below 2 a
+     * prototype. Bit 0 follows 0x000004 (approximated). Why the revision
+     * differs from 0x000004's is unknown, and a 64-bit read keeps the low
+     * word at zero as before.
      */
     case 0x000000: {
-        uint32_t v = (uint32_t)(s->board->hq_revision & 0xf) << 28;
+        uint32_t v = (uint32_t)(s->board->hq_revision & 0xf) << 28 |
+                     (s->part & 0xffff) << 12 |
+                     (s->manufacturer & 0x7ff) << 1 | 1;
 
         return size == 8 ? (uint64_t)v << 32 : v;
     }
