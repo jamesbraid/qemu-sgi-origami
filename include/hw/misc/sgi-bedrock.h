@@ -56,6 +56,9 @@ struct SGIBedrockState {
      */
     MemoryRegion l1_uart_registers;
     MemoryRegion io_registers;
+    /* Zero-based view for register packets sent to the I/O interface. */
+    MemoryRegion io_registers_window;
+    MemoryRegion io_registers_part[2];
     SGIBedrockPIState pi[2];
     SGIBedrockIOState io;
     SGIBedrockMDState md;

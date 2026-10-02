@@ -35,6 +35,7 @@ struct SGIXioTestTargetState {
     Object *target_port;
     SGIBedrockIOState *target_peer;
     uint32_t target_index;
+    uint64_t packet_window_base;
     uint8_t source_widget;
     uint8_t source_device;
     MemoryRegion source_window;
@@ -50,13 +51,16 @@ struct SGIXioTestTargetState {
     SGIXioLink pic_link;
     bool pic_peer;
     bool pic_linked;
+    bool pic_bedrock_interrupts;
     bool pic_switched;
+    bool pic_test_irq_route;
     bool packet_failure;
     bool nested_dma;
     bool nested_active;
     uint64_t packet_partial;
     uint32_t packet_result;
     uint64_t packet_calls;
+    uint64_t packet_size;
     hwaddr packet_address;
     SGIXioSource packet_source;
     uint64_t packet_widget;
@@ -75,6 +79,7 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
         return MEMTX_DECODE_ERROR;
     }
     s->packet_calls++;
+    s->packet_size = size;
     s->packet_address = address;
     s->packet_source = *source;
     s->packet_widget = source->widget;
@@ -91,31 +96,62 @@ static MemTxResult target_packet_rw(Object *port, unsigned int index,
         }
     }
     if (s->target_port) {
-        if (s->pic_switched) {
-            address &= SGI_XIO_PACKET_SIZE - 1;
-        }
-        result = sgi_xio_port_packet_rw(s->target_port, s->target_index,
-                                        address, buffer, size, write, source);
-    } else if (address >= s->size || size > s->size - address) {
-        result = MEMTX_DECODE_ERROR;
-    } else if (write && s->packet_failure) {
-        size_t partial = MIN(size, s->packet_partial);
+        if (s->pic_bedrock_interrupts && (address & (UINT64_C(1) << 47))) {
+            SGIXioPortClass *pc = SGI_XIO_PORT_GET_CLASS(s->target_port);
 
-        if (partial) {
-            result = address_space_write(&s->ram_as, address,
-                MEMTXATTRS_UNSPECIFIED, buffer, partial);
-            if (result != MEMTX_OK) {
-                s->packet_result_value = result;
-                return result;
+            /* Drop the XIO carrier and retain Bedrock's lower-48 address. */
+            address &= (UINT64_C(1) << 48) - 1;
+            if (!pc->packet_rw) {
+                result = MEMTX_ACCESS_ERROR;
+            } else {
+                result = pc->packet_rw(s->target_port, s->target_index,
+                                       address, buffer, size, write, source);
             }
+        } else {
+            if (s->pic_switched) {
+                address &= SGI_XIO_PACKET_SIZE - 1;
+            }
+            result = sgi_xio_port_packet_rw(s->target_port, s->target_index,
+                                            address, buffer, size, write,
+                                            source);
         }
-        result = s->packet_result;
     } else {
-        result = write ? address_space_write(&s->ram_as, address,
-                    MEMTXATTRS_UNSPECIFIED, buffer, size) :
-                         address_space_read(&s->ram_as, address,
-                    MEMTXATTRS_UNSPECIFIED, buffer, size);
+        hwaddr offset;
+
+        if (address < s->size) {
+            offset = address;
+        } else if (s->packet_window_base &&
+                   address >= s->packet_window_base &&
+                   address - s->packet_window_base < s->size) {
+            offset = address - s->packet_window_base;
+        } else {
+            result = MEMTX_DECODE_ERROR;
+            goto out;
+        }
+        if (size > s->size - offset) {
+            result = MEMTX_DECODE_ERROR;
+            goto out;
+        }
+        if (write && s->packet_failure) {
+            size_t partial = MIN(size, s->packet_partial);
+
+            if (partial) {
+                result = address_space_write(&s->ram_as, offset,
+                    MEMTXATTRS_UNSPECIFIED, buffer, partial);
+                if (result != MEMTX_OK) {
+                    s->packet_result_value = result;
+                    return result;
+                }
+            }
+            result = s->packet_result;
+        } else {
+            result = write ? address_space_write(&s->ram_as, offset,
+                        MEMTXATTRS_UNSPECIFIED, buffer, size) :
+                             address_space_read(&s->ram_as, offset,
+                        MEMTXATTRS_UNSPECIFIED, buffer, size);
+        }
     }
+out:
     s->packet_result_value = result;
     return result;
 }
@@ -306,6 +342,21 @@ static void target_realize(DeviceState *dev, Error **errp)
     g_autofree char *name = g_strdup_printf("%s.ram",
         object_get_canonical_path_component(OBJECT(dev)));
 
+    if (s->pic_test_irq_route && !s->pic_peer) {
+        error_setg(errp, "PIC test IRQ route requires PIC peer mode");
+        return;
+    }
+    if (!s->size || s->size > 16 * MiB) {
+        error_setg(errp, "XIO test RAM size must be 1 byte to 16 MiB");
+        return;
+    }
+    if (s->packet_window_base &&
+        (s->target_port || s->packet_window_base < s->size ||
+         s->packet_window_base >= SGI_XIO_PACKET_SIZE ||
+         s->size > SGI_XIO_PACKET_SIZE - s->packet_window_base)) {
+        error_setg(errp, "invalid XIO test packet window base");
+        return;
+    }
     if (s->target_peer || s->destination_callback) {
         SGIBedrockIOState *ii = (SGIBedrockIOState *)object_dynamic_cast(
             s->target_port, TYPE_SGI_BEDROCK_IO);
@@ -319,10 +370,6 @@ static void target_realize(DeviceState *dev, Error **errp)
         } else {
             sgi_bedrock_io_set_claimant(ii, source_claimant, s);
         }
-    }
-    if (!s->size || s->size > 16 * MiB) {
-        error_setg(errp, "XIO test RAM size must be 1 byte to 16 MiB");
-        return;
     }
     if (!s->memory_kind) {
         s->memory_kind = g_strdup("ram");
@@ -370,6 +417,8 @@ static void target_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->alias);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-calls",
                                    &s->packet_calls, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-size",
+                                   &s->packet_size, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-address",
                                    &s->packet_address, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-packet-widget",
@@ -403,6 +452,8 @@ static void target_realize(DeviceState *dev, Error **errp)
         object_property_add_child(OBJECT(s), "pic", OBJECT(s->pic));
         qdev_prop_set_bit(s->pic, "test-fixture", true);
         qdev_prop_set_bit(s->pic, "linked-transport", s->pic_linked);
+        qdev_prop_set_bit(s->pic, "bedrock-interrupts",
+                          s->pic_bedrock_interrupts);
         if (s->pic_linked) {
             sgi_xio_link_init(&s->pic_link, OBJECT(s), "pic-peer",
                               OBJECT(s->pic), 0, OBJECT(s), 0);
@@ -418,6 +469,12 @@ static void target_realize(DeviceState *dev, Error **errp)
         if (!sysbus_realize(SYS_BUS_DEVICE(s->pic), &local_err)) {
             error_propagate(errp, local_err);
             return;
+        }
+        if (s->pic_test_irq_route) {
+            DeviceState *head = sgi_pic_head_device(SGI_PIC(s->pic), 0);
+
+            qdev_connect_gpio_out_named(head, "pci-intx", 4,
+                                        qdev_get_gpio_in(head, 0));
         }
         memory_region_init_alias(&s->pic_widget_alias, OBJECT(s),
                                  "pic-widget", sgi_pic_widget(SGI_PIC(s->pic)),
@@ -435,8 +492,12 @@ static const Property target_properties[] = {
                       destination_callback, false),
     DEFINE_PROP_BOOL("pic-peer", SGIXioTestTargetState, pic_peer, false),
     DEFINE_PROP_BOOL("pic-linked", SGIXioTestTargetState, pic_linked, true),
+    DEFINE_PROP_BOOL("pic-bedrock-interrupts", SGIXioTestTargetState,
+                     pic_bedrock_interrupts, false),
     DEFINE_PROP_BOOL("pic-switched", SGIXioTestTargetState, pic_switched,
                      false),
+    DEFINE_PROP_BOOL("pic-test-irq-route", SGIXioTestTargetState,
+                     pic_test_irq_route, false),
     DEFINE_PROP_BOOL("packet-failure", SGIXioTestTargetState,
                      packet_failure, false),
     DEFINE_PROP_BOOL("nested-dma", SGIXioTestTargetState, nested_dma, false),
@@ -445,6 +506,8 @@ static const Property target_properties[] = {
     DEFINE_PROP_UINT32("packet-result", SGIXioTestTargetState,
                        packet_result, MEMTX_ACCESS_ERROR),
     DEFINE_PROP_SIZE("size", SGIXioTestTargetState, size, 64 * KiB),
+    DEFINE_PROP_UINT64("packet-window-base", SGIXioTestTargetState,
+                       packet_window_base, 0),
     DEFINE_PROP_LINK("target-port", SGIXioTestTargetState, target_port,
                      TYPE_SGI_XIO_PORT, Object *),
     DEFINE_PROP_LINK("target-peer", SGIXioTestTargetState, target_peer,
