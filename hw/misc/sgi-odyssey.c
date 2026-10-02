@@ -8196,19 +8196,28 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
     SGIOdysseyState *s = SGI_ODYSSEY(dev);
     Error *local_err = NULL;
 
+    /*
+     * Named-slot placement (sgi_xio_board_place_by_name()) resolves fabric
+     * itself during the parent realize below and refuses a property already
+     * set, so the check and the address space it guards must wait until the
+     * parent has placed the board. A build_widget failure returns through
+     * local_err before either runs, leaving nothing here to unwind.
+     */
+    oc->parent_realize(dev, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
     if (!s->fabric) {
         error_setg(errp, "sgi-odyssey needs the fabric its interrupt "
                   "packets travel");
         return;
     }
     address_space_init(&s->fabric_as, s->fabric, "sgi-odyssey.fabric");
-
-    oc->parent_realize(dev, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
+    if (!odyssey_attach_nic(s, errp)) {
+        address_space_destroy(&s->fabric_as);
         return;
     }
-    odyssey_attach_nic(s, errp);
 
     /*
      * Fixed-size and not property-dependent, so realize-time allocation
