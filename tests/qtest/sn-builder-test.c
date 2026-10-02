@@ -2496,6 +2496,101 @@ static void test_expansion_composed_adapters(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+static void test_compute_uart_with_expansion(gconstpointer opaque)
+{
+    unsigned selection = GPOINTER_TO_UINT(opaque);
+    bool expansion = selection & 1;
+    unsigned cpus = selection & 2 ? 4 : 2;
+    const uint64_t local = NASID_TEST_HUB_LOCAL_REGISTERS + 0x80;
+    const uint64_t named = NASID_TEST_SPACE_HUB + 0x30000080;
+    static const struct {
+        unsigned offset;
+        uint8_t value;
+    } setup[] = {
+        { 0x18, 0x83 }, { 0x00, 13 }, { 0x08, 0 }, { 0x18, 3 },
+        { 0x08, 0 }, { 0x10, 7 }, { 0x20, 0x22 }, { 0x38, 0x5a },
+    };
+    static const struct {
+        unsigned offset;
+        uint8_t value;
+    } state[] = {
+        { 0x08, 0 }, { 0x10, 1 }, { 0x18, 3 }, { 0x20, 0x22 },
+        { 0x28, 0x60 }, { 0x30, 0x10 }, { 0x38, 0x5a },
+    };
+    g_autofree char *image = expansion ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *machine = expansion ? g_strdup_printf(
+        "origin300,topology="
+        "origin300-pci-expansion-pending-register-experiment,%s",
+        STORAGE_BINDING) : g_strdup("origin300");
+    g_autofree char *drive = expansion ? g_strdup_printf(
+        "-drive if=none,id=cfg,file=%s,format=raw,readonly=off", image) :
+        g_strdup("");
+    QTestState *qts = qtest_initf(
+        "-M %s -cpu R14000 -smp %u -m 512M -S %s -bios %s "
+        "-nodefaults -display none", machine, cpus, drive, prom);
+    uint8_t bytes[8];
+
+    if (expansion) {
+        expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(setup); i++) {
+        stq_be_p(bytes, UINT64_C(0x1234567800000000) | setup[i].value);
+        g_assert_true(qtest_memwrite_cpu(qts, 0, local + setup[i].offset,
+                                        bytes, sizeof(bytes)));
+    }
+    for (unsigned number = 0; number < 2; number++) {
+        unsigned nasid = number ? 9 : 0;
+        uint64_t views[] = {
+            local, named + ((uint64_t)nasid << NASID_TEST_NODE_ADDRESS_SHIFT),
+        };
+
+        if (number) {
+            uint64_t revision = qtest_readq(qts, EXPANSION_LB_LOCAL +
+                                           EXPANSION_LB_REVISION);
+
+            qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION,
+                (revision & ~(UINT64_C(0xff) << 32)) |
+                ((uint64_t)nasid << 32));
+        }
+        for (unsigned cpu = 0; cpu < cpus; cpu++) {
+            for (unsigned view = 0; view < G_N_ELEMENTS(views); view++) {
+                for (unsigned i = 0; i < G_N_ELEMENTS(state); i++) {
+                    g_test_message("compute UART nasid %u CPU %u view %u "
+                                   "register 0x%x", nasid, cpu, view,
+                                   state[i].offset);
+                    g_assert_true(qtest_memread_cpu(qts, cpu,
+                        views[view] + state[i].offset, bytes, sizeof(bytes)));
+                    g_assert_cmphex(ldq_be_p(bytes), ==, state[i].value);
+                }
+            }
+        }
+    }
+    /* Named writes and reader-local reads reach the same owned latch. */
+    stq_be_p(bytes, 0xa5);
+    g_assert_true(qtest_memwrite_cpu(qts, cpus - 1,
+        named + (UINT64_C(9) << NASID_TEST_NODE_ADDRESS_SHIFT) + 0x38,
+        bytes, sizeof(bytes)));
+    for (unsigned cpu = 0; cpu < cpus; cpu++) {
+        g_assert_true(qtest_memread_cpu(qts, cpu, local + 0x38,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0xa5);
+    }
+    /* An incomplete frame exercises transmit readiness without a reply. */
+    stq_be_p(bytes, 0x7e);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, local, bytes, sizeof(bytes)));
+    g_assert_true(qtest_memread_cpu(qts, cpus - 1,
+        named + (UINT64_C(9) << NASID_TEST_NODE_ADDRESS_SHIFT) + 0x28,
+        bytes, sizeof(bytes)));
+    g_assert_cmphex(ldq_be_p(bytes), ==, 0x60);
+    qtest_quit(qts);
+    if (image) {
+        g_assert_cmpint(unlink(image), ==, 0);
+    }
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 static void test_expansion_pending_registers(gconstpointer opaque)
 {
     unsigned cpus = GPOINTER_TO_UINT(opaque);
@@ -3345,6 +3440,14 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_compute_remote_boot);
     qtest_add_func("sn/builder/expansion/processor-absence",
                    test_expansion_processor_absence);
+    qtest_add_data_func("sn/builder/expansion/compute-uart/ordinary-two-cpus",
+                        GUINT_TO_POINTER(0), test_compute_uart_with_expansion);
+    qtest_add_data_func("sn/builder/expansion/compute-uart/selected-two-cpus",
+                        GUINT_TO_POINTER(1), test_compute_uart_with_expansion);
+    qtest_add_data_func("sn/builder/expansion/compute-uart/ordinary-four-cpus",
+                        GUINT_TO_POINTER(2), test_compute_uart_with_expansion);
+    qtest_add_data_func("sn/builder/expansion/compute-uart/selected-four-cpus",
+                        GUINT_TO_POINTER(3), test_compute_uart_with_expansion);
     qtest_add_func("sn/builder/expansion/composed-adapters",
                    test_expansion_composed_adapters);
     qtest_add_func("sn/builder/expansion/six-head-pio",

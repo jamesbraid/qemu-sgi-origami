@@ -380,6 +380,14 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
                node->ni_boot_initialized) {
         as = &node->ni_boot_as;
         offset = local - SN1_HUB_REMOTE_BOOT;
+    } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                        SN1_HUB_REGISTER_HEAD_SIZE &&
+               local < SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                       SN1_HUB_REGISTER_UART_END &&
+               size <= SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                       SN1_HUB_REGISTER_UART_END - local) {
+        as = &node->ni_uart_as;
+        offset = local - SN1_HUB_REMOTE_REGISTERS_ADDRESS;
     } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS &&
                local - SN1_HUB_REMOTE_REGISTERS_ADDRESS < SGI_BEDROCK_SIZE &&
                size <= SGI_BEDROCK_SIZE -
@@ -480,6 +488,8 @@ static void sn1_node_init_claims(SN1NodeState *node)
     sn1_node_ni_target_as(node, 0, node->ram, &node->ni_ram_as, "sn1.ni-ram");
     address_space_init(&node->ni_hub_as,
                       &SGI_BEDROCK(node->bedrock)->hub_window, "sn1.ni-hub");
+    sn1_node_ni_target_as(node, 4, sysbus_mmio_get_region(
+        SYS_BUS_DEVICE(node->bedrock), 3), &node->ni_uart_as, "sn1.ni-uart");
     sn1_node_ni_target_as(node, 2, &node->board_id, &node->ni_board_id_as,
                           "sn1.ni-board-id");
     sn1_node_ni_target_as(node, 1, sysbus_mmio_get_region(
@@ -1967,6 +1977,7 @@ static void sn1_node_unrealize(DeviceState *dev)
     }
     address_space_destroy(&node->ni_pio_as);
     address_space_destroy(&node->ni_board_id_as);
+    address_space_destroy(&node->ni_uart_as);
     address_space_destroy(&node->ni_hub_as);
     address_space_destroy(&node->ni_ram_as);
     sn_promdata_poll_free(&node->promdata_poll);
