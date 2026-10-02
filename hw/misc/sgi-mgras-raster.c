@@ -64,13 +64,14 @@
  * read set-up, which both its own TRAM save and the OpenGL client's TRAM
  * read go through, writes it to the command FIFO and then polls 0x020000
  * bit 0 for up to two seconds; if the bit stays clear it gives up without
- * kicking the read, and the client's read fails with EFAULT. X.Org's impact driver
- * (ImpactSRWaitDMAOver) also waits for bit 0 after its DMA, sending no
- * token. Inferred from the pair: bit 0 says the raster engine has taken
- * everything sent before the request. Approximated: the model runs each
- * command as it arrives, so the word needs no action and bit 0 reads set
- * always, as bit 1 does. The discriminating test is
- * hq-status-re-sync-after-request.
+ * kicking the read, and the client's read fails with EFAULT. X.Org's
+ * impact driver (ImpactSRWaitDMAOver) also waits for bit 0 after its DMA,
+ * sending no token. Inferred from the pair: bit 0 says the raster engine
+ * has taken everything sent before the request. Approximated: the model
+ * runs each command as it arrives, so the word needs no action and bit 0
+ * reads set always, as bit 1 does. hq-status-re-sync-after-request pins
+ * that the word is a known token, not logged as unimplemented, and that
+ * both bits read set after it.
  */
 #define MGRAS_HQ_OP_RE_SYNC 0xf2
 #define MGRAS_HQ_FLAG_QUERY 0x00020000
@@ -2499,7 +2500,7 @@ bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
  * to pg_list3, holding up to eight 16-bit entries high half first, the
  * last with bit 15 set; pg_offset (register 5), pg_widtha (8), register
  * 9 and pg_linecnt (7) 1, with pg_width (4) 0x1000 sent before. In a
- * captured run (irix-20261002T030031-a3ed43) a transfer of 32,640 bytes
+ * traced IRIX guest run a transfer of 32,640 bytes
  * named entries 1 to 8 with pg_offset 0, pg_widtha 0x1000 and register 9
  * 0xf80, and the next, of 28,800, entries 8 to 15 with pg_offset 0xf80,
  * pg_widtha 0x80 and register 9 0x1000: both are the first entry's

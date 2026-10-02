@@ -683,15 +683,38 @@ static void test_hq_status_independent_of_sticky_error(void)
 /*
  * The IRIX kernel's DMA read set-up writes 0xf200 and gives up on the read
  * unless 0x020000 bit 0 comes up within two seconds; nothing is queued
- * ahead of the request in the model, so the bit is already set.
+ * ahead of the request in the model, so the bit is already set. The
+ * request is a known token: it is not reported as an unimplemented
+ * command-FIFO token under -d unimp. Bit 0 reading set is not new with
+ * the token, so the log is what discriminates.
  */
 static void test_hq_status_re_sync_after_request(void)
 {
-    mgras_reset();
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    GError *err = NULL;
+    QTestState *s;
 
-    qtest_writel(qts, REG_CONTEXT_COMMAND, 0xf200);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x1, ==, 0x1);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+    tmpfs = g_dir_make_tmp("sn0-mgras-resync-XXXXXX", &err);
+    g_assert_no_error(err);
+    log = g_strdup_printf("%s/unimp.log", tmpfs);
+    args = g_strdup_printf(MACHINE_ARGS " -d unimp -D %s", log);
+    s = qtest_init(args);
+
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    qtest_writel(s, REG_CONTEXT_COMMAND, 0xf200);
+    g_assert_cmphex(qtest_readl(s, REG_HQ_STATUS) & 0x1, ==, 0x1);
+    g_assert_cmphex(qtest_readl(s, REG_HQ_STATUS) & 0x2, ==, 0x2);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
+    g_assert_no_error(err);
+    g_assert_null(strstr(contents, "unimplemented command-FIFO token"));
+    unlink(log);
+    g_rmdir(tmpfs);
 }
 
 
