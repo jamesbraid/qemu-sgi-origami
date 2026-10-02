@@ -109,7 +109,7 @@ static uint32_t mgras_test_overlay(QTestState *qts, uint32_t x, uint32_t y)
  * 0x020010 bit 16 alone, then replays the paired 0xb1 write -- the same
  * host bytes, reusing the read's page-list mapping -- to confirm the
  * round trip reproduces the weave beside itself, the same doubling
- * mgrasCopyPixels..OC's first kick pair does in the capture.
+ * the pixel-copy routine's OC variant's first kick pair does in the capture.
  */
 #define DMA_READ_NODE      0u
 #define DMA_READ_WIDGET    9u
@@ -445,7 +445,7 @@ static void test_entry_requires_prefix(void)
 }
 
 /*
- * MgrasCtxsw does not write or read a closing
+ * The context-switch routine does not write or read a closing
  * word at 0x120400 -- the image completes on the 63rd word alone. A word
  * written afterward is ordinary command-FIFO traffic, parsed like any
  * other command token rather than checked against a fixed value.
@@ -2356,7 +2356,7 @@ static void test_hq_flags_set_and_clear(void)
 
 /*
  * Two more queries wait on flag bit 17 and read 0x028004:
- * 0xa104 with one index, which __Mgr_GetCurrentAttrState sends for
+ * 0xa104 with one index, which the current-attribute query routine sends for
  * GL_CURRENT_COLOR (indices 4 to 7, read as floats) and the other
  * current attributes, and 0x8b08 with two words, one per histogram bin.
  * Each sets the flag once its own arguments have arrived. perfly waited
@@ -2402,7 +2402,7 @@ static void test_hq_attribute_queries_set_flag_after_arguments(void)
 }
 
 /*
- * __Mgr_GetCurrentAttrState reads 0xa104 indices 8 to 10 as
+ * The current-attribute query routine reads 0xa104 indices 8 to 10 as
  * GL_CURRENT_NORMAL's floats, 11 to 14 as GL_CURRENT_TEXTURE_COORDS' and 15 as
  * GL_EDGE_FLAG, true when the answer has any of bits 0x01c00000. A new context
  * answers OpenGL's initial normal (0, 0, 1), texture coordinates (0, 0, 0, 1)
@@ -2993,7 +2993,7 @@ static void test_re_line_transparent_stipple_keeps_clear_bits(void)
 /*
  * The X server draws a primitive once per box of its window's clip list,
  * loading the box into 0x147/0x148 and 0x11 into 0x14f before each pass
- * and 0 into 0x14f after the last (mgrasPolyPoint in the IRIX 6.5.30
+ * and 0 into 0x14f after the last (the point routine in the IRIX 6.5.30
  * impactsr.so). 0x147 packs x1 << 16 | (x2 - 1); 0x148 packs the same
  * rows counted from the bottom, (1024 - y2) << 16 | (1024 - y1 - 1). A
  * pixel outside the box is not written, so a fill that covers the box

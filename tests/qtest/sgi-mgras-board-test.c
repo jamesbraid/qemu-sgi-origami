@@ -324,7 +324,7 @@ static void test_xmap_buf_select_write(void)
 }
 
 /*
- * SGI's Octane IDE XMAP test (mg_xmapdcbreg, ide.IP30 6.5.30 at
+ * SGI's Octane IDE XMAP test (the XMAP register test, ide.IP30 6.5.30 at
  * 0xa80000002086907c) writes each of eight patterns to XMAP_BUF_SELECT
  * and reads it back: all 32 bits under index byte 0, which it calls the
  * main buffer select, and the low 8 bits under index byte 4, the overlay
@@ -719,7 +719,7 @@ static void test_dac_lut_load(void)
 }
 
 /*
- * SGI's Octane IDE DAC reset (mg_dacreset, ide.IP30 6.5.30 at
+ * SGI's Octane IDE DAC reset (the DAC reset test, ide.IP30 6.5.30 at
  * 0xa800000020854920) addresses DAC registers through REG_DAC_LUT_INDEX,
  * a halfword whose high byte is the register number, and moves their
  * data through REG_DAC_LUT_DATA_2 a byte at a time. It fails the board
@@ -774,7 +774,7 @@ static void test_dac_register_file_matches_ide_reset(void)
 }
 
 /*
- * SGI's Octane IDE DAC address test (mg_dacaddrreg, ide.IP30 6.5.30 at
+ * SGI's Octane IDE DAC address test (the DAC address test, ide.IP30 6.5.30 at
  * 0xa800000020853c2c) writes a byte to 0x071811 and requires it back in
  * bits 15:8 of the halfword at 0x071810, the register number. It then
  * writes the halfword with the pattern in its high byte and checks the
@@ -801,7 +801,7 @@ static void test_dac_address_byte_port(void)
 }
 
 /*
- * SGI's Octane IDE VC3 register test (mg_vc3internalreg, ide.IP30 6.5.30
+ * SGI's Octane IDE VC3 register test (the VC3 register test, ide.IP30 6.5.30
  * at 0xa80000002083da2c) stops video timing, then writes walking-one,
  * walking-zero, 0 and 0xffff patterns to VC3 registers 0-0x13 and reads
  * each straight back, all 16 bits. Register 7 is the SRAM address
@@ -1265,10 +1265,10 @@ static const MgrasBoardExpect mgras_board_expect[] = {
 #define XMAP_INDEX_PP1_REVISION 4
 
 /*
- * The name IRIX 6.5.x hinv prints for the counts MgrasGatherInfo decodes
- * from the two version bytes, and the E-series marker the kernel sets from
- * a GE revision of 3 or more. Products 2 and 3 only: RE count equals GE count,
- * and a TRAM path holds 4 TRAMs unless its field is 3.
+ * The name IRIX 6.5.x hinv prints for the counts the board-information routine
+ * decodes from the two version bytes, and the E-series marker the kernel sets
+ * from a GE revision of 3 or more. Products 2 and 3 only: RE count equals GE
+ * count, and a TRAM path holds 4 TRAMs unless its field is 3.
  */
 static const char *mgras_decode_hinv_name(uint8_t version1, uint8_t version0,
                                           uint8_t ge_revision,
@@ -1493,9 +1493,9 @@ static void test_board_pp1s_follow_re_count(gconstpointer data)
 /*
  * 0x028004 carries the GE revision from reset until the first 0xa2 query,
  * the kernel's or a client's, which replaces it with the answer; a reset
- * brings the revision back. The query is the kernel's MgrasFinish fence,
- * index 0x1fa, which the model answers with zero. Uses the E-series board
- * so the revision cannot be mistaken for the answer.
+ * brings the revision back. The query is the kernel's finish-fence routine
+ * fence, index 0x1fa, which the model answers with zero. Uses the E-series
+ * board so the revision cannot be mistaken for the answer.
  */
 static void test_board_ge_revision_until_query(void)
 {

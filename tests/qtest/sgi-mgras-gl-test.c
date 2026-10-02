@@ -23,8 +23,8 @@
 
 
 /*
- * __Mgr_ReturnMode clears flag 17, writes 0xa20c and three arguments, polls
- * 0x020010 until bit 17 is set, then reads the answer at 0x028004 once.
+ * The state-query routine clears flag 17, writes 0xa20c and three arguments,
+ * polls 0x020010 until bit 17 is set, then reads the answer at 0x028004 once.
  * Index 0x3a is element 0 of the modelview matrix, 1 in the initial
  * identity (test_hq_query_answers_the_matrices).
  */
@@ -80,7 +80,7 @@ static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
 }
 
 /*
- * The kernel's MgrasValidateBanks as the swap captures show it: a 64-bit
+ * The kernel's bank validation routine as the swap captures show it: a 64-bit
  * store of the header and the first word, then a 32-bit store of the
  * second.
  */
@@ -724,8 +724,8 @@ static void test_gl_packet_split_by_a_context_switch(void)
  * Image word 1 is 0xc0000000 or more only on the first delivery of a new
  * context. The IRIX 6.5.30 kernel's context allocator (0xc0000000003f38c8
  * in unix.IP27) zeroes the context, sets image word 0 to -1 and ORs
- * 0xc0000000 into word 1. Once MgrasCtxsw has written the image it clears
- * bit 27 of word 1 for every context, and bits 31, 30, 29 and 26 for
+ * 0xc0000000 into word 1. Once the context-switch routine has written the image
+ * it clears bit 27 of word 1 for every context, and bits 31, 30, 29 and 26 for
  * every context but the default. In a captured run every
  * first delivery of a slot's new context carries both bits (0xe4000000 or
  * 0xec000000) and no later one does; the default context's image keeps
@@ -1199,13 +1199,13 @@ static void test_gl_colour_index_zero_mask_keeps_the_pixel(void)
 
 /*
  * A double-buffered colour-index visual's back buffer holds indices as
- * its front does. __glMgrInitCI sends 0x0a04 once for each colour buffer
- * func_d9502f0 sets up, and it sets up a second one when the visual is
- * double-buffered, which bz's context shows by sending 0x0a04 twice. So
- * an index drawn into bank 1 is a CI8 pixel there as in bank 0, showing
- * through the colour map of the pixel's display ID once the buffer-select
- * mask selects bank 1 for that ID, under the index mask, and bank 0 is
- * left alone. An RGBA draw after it stores direct colour again.
+ * its front does. The colour-index initializer sends 0x0a04 once for each
+ * colour buffer the per-buffer setup routine sets up, and it sets up a second
+ * one when the visual is double-buffered, which bz's context shows by sending
+ * 0x0a04 twice. So an index drawn into bank 1 is a CI8 pixel there as in bank
+ * 0, showing through the colour map of the pixel's display ID once the
+ * buffer-select mask selects bank 1 for that ID, under the index mask, and bank
+ * 0 is left alone. An RGBA draw after it stores direct colour again.
  */
 static void test_gl_colour_index_draws_into_bank_one(void)
 {

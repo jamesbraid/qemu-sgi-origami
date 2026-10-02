@@ -280,9 +280,9 @@ static void test_retrace_short_frame_runs_stock_period(void)
 }
 
 /*
- * The general line as the IRIX 6.5.30 kernel wires it: MgrasInitialize
- * enables 0x3008a200, and mgras_attach puts the general vector in bits
- * 15:8 of 0x011070. The Hub's pending bit for that vector shows the line.
+ * The general line as the IRIX 6.5.30 kernel wires it: the board initialization
+ * routine enables 0x3008a200, and the attach routine puts the general vector in
+ * bits 15:8 of 0x011070. The Hub's pending bit for that vector shows the line.
  */
 static void mgras_general_to_hub(unsigned int general_vector)
 {
@@ -293,9 +293,9 @@ static void mgras_general_to_hub(unsigned int general_vector)
 }
 
 /*
- * MgrasInitialize writes 0x3008a200 to 0x011040, MgrasSchedSwapBuf adds 0x400
- * with a plain store, and MgrasGeneralInterrupt and the context switch's
- * tail remove bits through 0x011048.
+ * The board initialization routine writes 0x3008a200 to 0x011040, the
+ * swap-scheduling routine adds 0x400 with a plain store, and the general
+ * interrupt handler and the context switch's tail remove bits through 0x011048.
  */
 static void test_irq_enable_set_and_clear_ports(void)
 {
@@ -313,8 +313,8 @@ static void test_irq_enable_set_and_clear_ports(void)
 }
 
 /*
- * MgrasSchedSwapBuf enables source 10 and writes the one word 0x3700; the
- * handler disables the source at 0x011048 and acknowledges 0x401.
+ * The swap-scheduling routine enables source 10 and writes the one word 0x3700;
+ * the handler disables the source at 0x011048 and acknowledges 0x401.
  * That the word raises bit 10 is inferred; the model raises it on
  * consuming the word.
  */
@@ -335,7 +335,10 @@ static void test_swap_command_raises_interrupt_10(void)
                     MGRAS_PENDING_SWAP);
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, bit);
 
-    /* MgrasGeneralInterrupt serves the source it finds enabled and pending. */
+    /*
+     * The general interrupt handler serves the source it finds enabled and
+     * pending.
+     */
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) &
                     qtest_readl(qts, REG_IRQ_MASK) & MGRAS_PENDING_SWAP, ==,
                     MGRAS_PENDING_SWAP);
@@ -363,10 +366,10 @@ static void test_swap_command_needs_enable(void)
 
 /*
  * The kernel writes 0x400 to 0x011040 with a plain store before a swap, and
- * nothing in MgrasGeneralInterrupt, MgrasSchedSwapBufFinish or the next
- * MgrasCtxsw writes 0x011040 again before that switch sleeps on source 19.
- * If the store replaced the enable word, the source-19 wake would never
- * arrive.
+ * nothing in the general interrupt handler, the swap-completion routine or the
+ * next context-switch routine writes 0x011040 again before that switch
+ * sleeps on source 19. If the store replaced the enable word, the source-19
+ * wake would never arrive.
  * Inferred: 0x011040 sets enables and 0x011048 clears them.
  */
 static void test_swap_keeps_context_switch_enable(void)
