@@ -3079,10 +3079,10 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
 static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
 {
     static const uint32_t rgb_routines[] = {
-        0x1f44, 0x1655, 0x3e65, 0x156a, 0x352d,
+        0x1655, 0x3e65, 0x156a, 0x352d,
     };
     static const uint32_t rgba_routines[] = {
-        0x1f44, 0x3e65, 0x156a, 0x352d,
+        0x3e65, 0x156a, 0x352d,
     };
     static const uint32_t rgb_unpack[] = {
         0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
