@@ -29,6 +29,9 @@
 
 static char *flash_path;
 
+static uint64_t short_base(unsigned widget);
+static uint64_t long_base(unsigned widget);
+
 static QTestState *start(bool octane2, const char *graphics, const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
@@ -69,6 +72,23 @@ static void assert_identity(QTestState *qts)
     g_assert_cmpuint(memtx_readq(qts, SI_SHORT, &value), ==, 0);
     g_assert_cmphex(value, ==, SI_HQ_REVISION);
     g_assert_cmpuint(memtx_readq(qts, SI_LONG, &value), ==, 0);
+    g_assert_cmphex(value, ==, SI_HQ_REVISION);
+}
+
+static void assert_identity_at(QTestState *qts, unsigned widget)
+{
+    uint32_t word;
+    uint64_t value;
+    uint64_t short_address = short_base(widget);
+    uint64_t long_address = long_base(widget);
+
+    g_assert_cmpuint(memtx_readl(qts, short_address + 4, &word), ==, 0);
+    g_assert_cmphex(word, ==, SI_ID);
+    g_assert_cmpuint(memtx_readl(qts, long_address + 4, &word), ==, 0);
+    g_assert_cmphex(word, ==, SI_ID);
+    g_assert_cmpuint(memtx_readq(qts, short_address, &value), ==, 0);
+    g_assert_cmphex(value, ==, SI_HQ_REVISION);
+    g_assert_cmpuint(memtx_readq(qts, long_address, &value), ==, 0);
     g_assert_cmphex(value, ==, SI_HQ_REVISION);
 }
 
@@ -215,6 +235,14 @@ static void assert_mgras_unreachable(QTestState *qts)
     g_assert_cmpuint(memtx_readl(qts, SI_LONG + 4, &value), !=, 0);
 }
 
+static void assert_mgras_unreachable_at(QTestState *qts, unsigned widget)
+{
+    uint32_t value;
+
+    g_assert_cmpuint(memtx_readl(qts, short_base(widget) + 4, &value), !=, 0);
+    g_assert_cmpuint(memtx_readl(qts, long_base(widget) + 4, &value), !=, 0);
+}
+
 static void assert_link_masks(QTestState *qts, unsigned links)
 {
     const char *names[] = {
@@ -229,46 +257,53 @@ static void assert_link_masks(QTestState *qts, unsigned links)
 
 static void test_link_reset_recovery(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), ",graphics-board=si", "");
+    bool octane2 = GPOINTER_TO_INT(data);
 
-    assert_identity(qts);
-    reset_link(qts, 11);
-    assert_link_alive(qts, 11, false);
-    qtest_clock_step(qts, 19);
-    assert_link_alive(qts, 11, false);
-    qtest_clock_step(qts, 1);
-    assert_link_alive(qts, 11, true);
-    assert_identity(qts);
-    assert_link_masks(qts, SI_LINKS);
+    for (unsigned widget = 9; widget <= 12; widget++) {
+        g_autofree char *selection = g_strdup_printf(
+            ",graphics-board=si,graphics-widget=%u", widget);
+        unsigned links = CORE_LINKS | (1u << widget);
+        QTestState *qts = start(octane2, selection, "");
 
-    /* Recovery preserves routes while the reported alive bit is clear. */
-    reset_link(qts, 11);
-    assert_link_alive(qts, 11, false);
-    assert_identity(qts);
-    qtest_clock_step(qts, 19);
-    assert_link_alive(qts, 11, false);
-    assert_identity(qts);
-    qtest_clock_step(qts, 1);
-    assert_link_alive(qts, 11, true);
-    assert_identity(qts);
+        assert_identity_at(qts, widget);
+        reset_link(qts, widget);
+        assert_link_alive(qts, widget, false);
+        qtest_clock_step(qts, 19);
+        assert_link_alive(qts, widget, false);
+        qtest_clock_step(qts, 1);
+        assert_link_alive(qts, widget, true);
+        assert_identity_at(qts, widget);
+        assert_link_masks(qts, links);
 
-    set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
-    reset_link(qts, 11);
-    assert_link_alive(qts, 11, false);
-    assert_mgras_unreachable(qts);
-    qtest_clock_step(qts, 19);
-    assert_link_alive(qts, 11, false);
-    assert_mgras_unreachable(qts);
-    qtest_clock_step(qts, 1);
-    assert_link_alive(qts, 11, false);
-    assert_mgras_unreachable(qts);
-    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
-                    ==, CORE_LINKS);
-    qtest_system_reset(qts);
-    g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
-                    ==, SI_LINKS);
-    assert_identity(qts);
-    qtest_quit(qts);
+        /* Routing stays usable while the reported alive bit is clear. */
+        reset_link(qts, widget);
+        assert_link_alive(qts, widget, false);
+        assert_identity_at(qts, widget);
+        qtest_clock_step(qts, 19);
+        assert_link_alive(qts, widget, false);
+        assert_identity_at(qts, widget);
+        qtest_clock_step(qts, 1);
+        assert_link_alive(qts, widget, true);
+        assert_identity_at(qts, widget);
+
+        set_property(qts, "/machine/crossbow", "links-alive", CORE_LINKS);
+        reset_link(qts, widget);
+        assert_link_alive(qts, widget, false);
+        assert_mgras_unreachable_at(qts, widget);
+        qtest_clock_step(qts, 19);
+        assert_link_alive(qts, widget, false);
+        assert_mgras_unreachable_at(qts, widget);
+        qtest_clock_step(qts, 1);
+        assert_link_alive(qts, widget, false);
+        assert_mgras_unreachable_at(qts, widget);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, CORE_LINKS);
+        qtest_system_reset(qts);
+        g_assert_cmphex(property(qts, "/machine/crossbow", "links-alive"),
+                        ==, links);
+        assert_identity_at(qts, widget);
+        qtest_quit(qts);
+    }
 }
 
 static void test_link_reset_absent(gconstpointer data)
@@ -602,6 +637,27 @@ static void test_rejected_widget(gconstpointer data)
     }
 }
 
+static void test_rejected_widget_without_board(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+    const char *selections[] = {
+        ",graphics-widget=11",
+        ",graphics-board=none,graphics-widget=9",
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
+        g_autofree char *machine = g_strdup_printf("%s%s",
+            octane2 ? "octane2" : "octane", selections[i]);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-display", "none",
+            "-qmp", "stdio", NULL,
+        };
+
+        assert_launch_rejected(args,
+                               "graphics-widget requires an MGRAS graphics-board");
+    }
+}
+
 static uint64_t short_base(unsigned widget)
 {
     return XBOW + ((uint64_t)widget << 24);
@@ -760,6 +816,7 @@ int main(int argc, char **argv)
         { "interrupt-transport", test_interrupt_transport },
         { "rejected-selection", test_rejected_selection },
         { "rejected-widget", test_rejected_widget },
+        { "rejected-widget-without-board", test_rejected_widget_without_board },
         { "variants", test_variants },
         { "widget-transport", test_widget_transport },
     };
