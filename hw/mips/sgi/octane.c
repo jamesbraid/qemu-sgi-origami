@@ -68,7 +68,6 @@ typedef struct OctaneMachineState {
     MemoryRegion graphics_long;
     char *flash_profile;
     char *flash_drive;
-    char *flash_marker;
     uint64_t flash_select;
     uint64_t flash_strap;
 } OctaneMachineState;
@@ -117,20 +116,6 @@ static void octane_set_flash_drive(Object *obj, const char *value,
 
     g_free(s->flash_drive);
     s->flash_drive = g_strdup(value);
-}
-
-static char *octane_get_flash_marker(Object *obj, Error **errp)
-{
-    return g_strdup(((OctaneMachineState *)obj)->flash_marker);
-}
-
-static void octane_set_flash_marker(Object *obj, const char *value,
-                                    Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-
-    g_free(s->flash_marker);
-    s->flash_marker = g_strdup(value);
 }
 
 static const SGIModelTopology *octane_model(const char *product,
@@ -439,10 +424,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
         DeviceState *chip;
         BlockBackend *blk;
 
-        if (machine->firmware || !s->flash_drive || !s->flash_marker ||
+        if (machine->firmware || !s->flash_drive ||
             s->flash_select > 1 || s->flash_strap > 1) {
             error_setg(&error_fatal, "sharp flash requires flash-drive, "
-                       "flash-marker, flash-select=0|1 and flash-strap=0|1; "
+                       "flash-select=0|1 and flash-strap=0|1; "
                        "do not combine it with -bios");
         }
         blk = blk_by_name(s->flash_drive);
@@ -453,7 +438,6 @@ static void octane_init_common(MachineState *machine, bool octane2)
         chip = qdev_new("lh28f800su");
         object_property_add_child(OBJECT(machine), "sharp-flash", OBJECT(chip));
         qdev_prop_set_drive_err(chip, "drive", blk, &error_fatal);
-        qdev_prop_set_string(chip, "failure-marker", s->flash_marker);
         /* Flash is already out of reset when the CPU starts. */
         qdev_prop_set_bit(chip, "initial-rp-high", true);
         sysbus_realize(SYS_BUS_DEVICE(chip), &error_fatal);
@@ -464,7 +448,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
         flash_chip = chip;
     } else {
         if (strcmp(s->flash_profile, "raw") || s->flash_drive ||
-            s->flash_marker || s->flash_select != UINT64_MAX ||
+            s->flash_select != UINT64_MAX ||
             s->flash_strap != UINT64_MAX) {
             error_setg(&error_fatal, "raw flash cannot take Sharp flash "
                        "properties");
@@ -748,8 +732,6 @@ static void octane_instance_init_common(Object *obj, const char *product)
                             octane_set_flash_profile);
     object_property_add_str(obj, "flash-drive", octane_get_flash_drive,
                             octane_set_flash_drive);
-    object_property_add_str(obj, "flash-marker", octane_get_flash_marker,
-                            octane_set_flash_marker);
     object_property_add_uint64_ptr(obj, "flash-select", &s->flash_select,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint64_ptr(obj, "flash-strap", &s->flash_strap,
@@ -787,7 +769,6 @@ static void octane_instance_finalize(Object *obj)
     g_free(s->graphics_board);
     g_free(s->flash_profile);
     g_free(s->flash_drive);
-    g_free(s->flash_marker);
 }
 
 static void octane_class_init(ObjectClass *oc, const void *data)
