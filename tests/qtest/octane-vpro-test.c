@@ -23,6 +23,7 @@
 
 /* The widget identification register, in its slot's data half. */
 #define ODSY_IDENTITY 0x0004
+#define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_CONTROL 0x0024
 #define ODSY_INT_DEST_UPPER 0x0034
 #define ODSY_INT_DEST_LOWER 0x003c
@@ -48,14 +49,19 @@
 
 static char *flash_path;
 
-static QTestState *start(bool octane2, const char *graphics)
+static QTestState *start(bool octane2, const char *graphics,
+                         const char *profile)
 {
     g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *global = profile ?
+        g_strdup_printf("-global sgi-odyssey.profile=%s", profile) :
+        g_strdup("");
 
-    return qtest_initf("-M %s,graphics-board=%s -m %uM -cpu %s -bios %s -S",
+    return qtest_initf("-M %s,graphics-board=%s -m %uM -cpu %s -bios %s "
+                       "-S %s",
                        octane2 ? "octane2" : "octane", graphics,
                        octane2 ? 256 : 128,
-                       octane2 ? OCTANE2_CPU : "R10000", quoted);
+                       octane2 ? OCTANE2_CPU : "R10000", quoted, global);
 }
 
 static const char *qom_type(QTestState *qts, const char *path)
@@ -75,7 +81,7 @@ static const char *qom_type(QTestState *qts, const char *path)
 /* The board answers as Odyssey at widget 11 through both windows. */
 static void test_widget_identity(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro");
+    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro", NULL);
 
     g_assert_cmpstr(qom_type(qts, VPRO_PATH), ==, "sgi-odyssey");
     g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_IDENTITY), ==,
@@ -89,10 +95,55 @@ static void test_widget_identity(gconstpointer data)
     qtest_quit(qts);
 }
 
+typedef struct VProProfileCase {
+    const char *name;
+    uint32_t revision;
+    uint32_t size_code;
+    bool octane2;
+} VProProfileCase;
+
+static const VProProfileCase profile_cases[] = {
+    { "v6", 1, 0, false }, { "v8", 1, 2, false },
+    { "v10", 0xa, 0, false }, { "v12", 0xa, 2, false },
+    { "v6", 1, 0, true }, { "v8", 1, 2, true },
+    { "v10", 0xa, 0, true }, { "v12", 0xa, 2, true },
+};
+
+/* Each marketed profile keeps its reviewed generation and capacity class. */
+static void test_profile_identity_and_routing(gconstpointer data)
+{
+    const VProProfileCase *profile = data;
+    QTestState *qts = start(profile->octane2, "vpro", profile->name);
+    uint32_t identity = qtest_readl(qts, VPRO_SHORT + ODSY_IDENTITY);
+    uint32_t memory = qtest_readl(qts, VPRO_SHORT + ODSY_MEMORY_CONFIG);
+    uint64_t bit = UINT64_C(1) << TEST_VECTOR;
+
+    g_assert_cmpstr(qom_type(qts, VPRO_PATH), ==, "sgi-odyssey");
+    g_assert_cmphex(identity >> 28, ==, profile->revision);
+    g_assert_cmphex(identity & 0x0fffffff,
+                    ==, ODSY_IDENTITY_DEFAULT & 0x0fffffff);
+    g_assert_cmphex(qtest_readl(qts, VPRO_LONG + ODSY_IDENTITY), ==,
+                    identity);
+    g_assert_cmphex((memory >> 30) & 3, ==, profile->size_code);
+    g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_CONTROL) &
+                    ODSY_CONTROL_WIDGET_MASK, ==, VPRO_WIDGET);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+
+    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
+    qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_LOWER, HEART_PACKET);
+    qtest_writel(qts, VPRO_SHORT + ODSY_INTR_ENABLE_SET,
+                 ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(qtest_readq(qts, HEART + HEART_PENDING) & bit, ==, bit);
+    qtest_writel(qts, VPRO_SHORT + ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(qtest_readq(qts, HEART + HEART_PENDING) & bit, ==, 0);
+    qtest_quit(qts);
+}
+
 /* Without a graphics board the slot's link stays down. */
 static void test_absent(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "none");
+    QTestState *qts = start(GPOINTER_TO_INT(data), "none", NULL);
 
     g_assert_null(qom_type(qts, VPRO_PATH));
     g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
@@ -106,7 +157,7 @@ static void test_absent(gconstpointer data)
  */
 static void test_interrupt_reaches_heart(gconstpointer data)
 {
-    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro");
+    QTestState *qts = start(GPOINTER_TO_INT(data), "vpro", NULL);
     uint64_t bit = UINT64_C(1) << TEST_VECTOR;
 
     qtest_writel(qts, VPRO_SHORT + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
@@ -141,6 +192,15 @@ int main(int argc, char **argv)
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, erased, sizeof(erased)), ==, sizeof(erased));
     close(fd);
+    for (unsigned i = 0; i < G_N_ELEMENTS(profile_cases); i++) {
+        const VProProfileCase *profile = &profile_cases[i];
+        const char *machine = profile->octane2 ? "octane2" : "octane";
+        g_autofree char *path = g_strdup_printf(
+            "/%s/vpro/%s-profile", machine, profile->name);
+
+        qtest_add_data_func(path, (gpointer)profile,
+                            test_profile_identity_and_routing);
+    }
     for (unsigned profile = 0; profile < 2; profile++) {
         for (unsigned i = 0; i < G_N_ELEMENTS(tests); i++) {
             g_autofree char *path = g_strdup_printf("/%s/vpro/%s",

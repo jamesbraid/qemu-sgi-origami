@@ -17,6 +17,7 @@
 
 /* The widget identification register, in its slot's data half. */
 #define ODSY_IDENTITY 0x0004
+#define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_STATUS 0x000c
 #define ODSY_CONTROL 0x0024
 #define ODSY_INT_DEST_UPPER 0x0034
@@ -74,15 +75,24 @@ static char *create_prom(void)
     return path;
 }
 
-static QTestState *fuel_start(const char *topology)
+static QTestState *fuel_start_profile(const char *topology,
+                                      const char *profile)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
+    g_autofree char *global = profile ?
+        g_strdup_printf("-global sgi-odyssey.profile=%s", profile) :
+        g_strdup("");
 
     return qtest_initf("-M fuel,topology=%s,fuel-board-id-word=0x4abc,"
                        "fuel-ioc3-subsystem-id=0xc30a,"
                        "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
-                       "-cpu R14000 -smp 1 -m 512M -bios %s -S",
-                       topology, quoted);
+                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
+                       topology, quoted, global);
+}
+
+static QTestState *fuel_start(const char *topology)
+{
+    return fuel_start_profile(topology, NULL);
 }
 
 static bool qom_exists(QTestState *qts, const char *path)
@@ -112,6 +122,53 @@ static void test_widget_identity(void)
     g_assert_cmphex(qtest_readl(qts, XBRIDGE_CROSSBAR +
                                 XBOW_LINK_STATUS(FUEL_VPRO_WIDGET)) &
                     XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+    qtest_quit(qts);
+}
+
+typedef struct FuelVProProfileCase {
+    const char *name;
+    uint32_t revision;
+    uint32_t size_code;
+} FuelVProProfileCase;
+
+/* V6 and V8 here exercise synthetic profiles, not Fuel hardware support. */
+static const FuelVProProfileCase profile_cases[] = {
+    { "v6", 1, 0 }, { "v8", 1, 2 },
+    { "v10", 0xa, 0 }, { "v12", 0xa, 2 },
+};
+
+static void test_profile_identity_and_routing(gconstpointer data)
+{
+    const FuelVProProfileCase *profile = data;
+    QTestState *qts = fuel_start_profile("fuel-vpro", profile->name);
+    uint32_t identity = qtest_readl(qts, VPRO + ODSY_IDENTITY);
+    uint32_t memory = qtest_readl(qts, VPRO + ODSY_MEMORY_CONFIG);
+    uint64_t bit = UINT64_C(1) << TEST_VECTOR;
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':'type'}}",
+        VPRO_PATH);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "sgi-odyssey");
+    g_assert_cmphex(identity >> 28, ==, profile->revision);
+    g_assert_cmphex(identity & 0x0fffffff,
+                    ==, ODSY_IDENTITY_DEFAULT & 0x0fffffff);
+    g_assert_cmphex((memory >> 30) & 3, ==, profile->size_code);
+    g_assert_cmphex(qtest_readl(qts, VPRO + ODSY_CONTROL) &
+                    ODSY_CONTROL_WIDGET_MASK, ==, FUEL_VPRO_WIDGET);
+    g_assert_cmphex(qtest_readl(qts, XBRIDGE_CROSSBAR +
+                                XBOW_LINK_STATUS(FUEL_VPRO_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+
+    qtest_writel(qts, VPRO + ODSY_INT_DEST_UPPER, INT_DEST_UPPER);
+    qtest_writel(qts, VPRO + ODSY_INT_DEST_LOWER, INT_DEST_LOWER);
+    qtest_writel(qts, VPRO + ODSY_INTR_ENABLE_SET,
+                 ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) & bit,
+                    ==, bit);
+    qtest_writel(qts, VPRO + ODSY_INTR_CLEAR, ODSY_INTR_FIFO_LOW_WATER);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0) & bit,
+                    ==, 0);
     qtest_quit(qts);
 }
 
@@ -159,6 +216,14 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
+    for (unsigned i = 0; i < G_N_ELEMENTS(profile_cases); i++) {
+        const FuelVProProfileCase *profile = &profile_cases[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn1/fuel-vpro/synthetic-%s-profile", profile->name);
+
+        qtest_add_data_func(path, (gpointer)profile,
+                            test_profile_identity_and_routing);
+    }
     qtest_add_func("sn1/fuel-vpro/widget-identity", test_widget_identity);
     qtest_add_func("sn1/fuel-vpro/base-fuel-has-no-board",
                    test_base_fuel_has_no_board);
