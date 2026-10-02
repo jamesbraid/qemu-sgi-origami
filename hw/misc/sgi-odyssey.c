@@ -3021,15 +3021,19 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned b)
     uint32_t h = (s->copy_size >> 16) & 0xffff;
     uint32_t dx = s->copy_dst & 0xffff;
     uint32_t dy = (s->copy_dst >> 16) & 0xffff;
+    uint32_t w_clip = dx < SGI_ODYSSEY_WIDTH ?
+                      MIN(w, SGI_ODYSSEY_WIDTH - dx) : 0;
+    uint32_t h_clip = dy < SGI_ODYSSEY_HEIGHT ?
+                      MIN(h, SGI_ODYSSEY_HEIGHT - dy) : 0;
     bool reverse_rows = dy > sy;
     bool reverse_cols = dx > sx;
     uint32_t row, col;
 
-    for (row = 0; row < h; row++) {
-        uint32_t sr = reverse_rows ? h - 1 - row : row;
+    for (row = 0; row < h_clip; row++) {
+        uint32_t sr = reverse_rows ? h_clip - 1 - row : row;
 
-        for (col = 0; col < w; col++) {
-            uint32_t sc = reverse_cols ? w - 1 - col : col;
+        for (col = 0; col < w_clip; col++) {
+            uint32_t sc = reverse_cols ? w_clip - 1 - col : col;
             /* An out-of-plane source reads zero, as the guarded read did. */
             uint32_t pixel = odyssey_buffer_load(s, b, sx + sc, sy + sr);
 
@@ -3117,14 +3121,15 @@ static bool odyssey_pattern_bit(SGIOdysseyState *s, uint32_t u, uint32_t v)
  * beyond the tile never contributes.
  */
 static void odyssey_pattern_fill(SGIOdysseyState *s, uint32_t x, uint32_t y,
-                                 uint32_t w, uint32_t h, bool is_index,
+                                 uint32_t w, uint32_t h, uint32_t pat_u0,
+                                 uint32_t pat_v0, bool is_index,
                                  uint32_t value)
 {
     uint32_t u, v;
 
     for (v = 0; v < h; v++) {
         for (u = 0; u < w; u++) {
-            if (odyssey_pattern_bit(s, u, v)) {
+            if (odyssey_pattern_bit(s, pat_u0 + u, pat_v0 + v)) {
                 odyssey_paint_pixel(s, x + u, y + v,
                                     odyssey_fill_pixel(is_index, value));
             }
@@ -5120,16 +5125,28 @@ static void odyssey_gl_rect(SGIOdysseyState *s)
  */
 static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
 {
-    uint32_t minx, maxx, miny, maxy;
+    int32_t minx, maxx, miny, maxy;
+    int64_t x0, x1, y0, y1;
     unsigned int i;
 
-    minx = maxx = s->gl_vertex_x[first];
-    miny = maxy = s->gl_vertex_y[first];
+    minx = maxx = (int32_t)s->gl_vertex_x[first];
+    miny = maxy = (int32_t)s->gl_vertex_y[first];
     for (i = first + 1; i < first + 4; i++) {
-        minx = MIN(minx, s->gl_vertex_x[i]);
-        maxx = MAX(maxx, s->gl_vertex_x[i]);
-        miny = MIN(miny, s->gl_vertex_y[i]);
-        maxy = MAX(maxy, s->gl_vertex_y[i]);
+        int32_t vx = (int32_t)s->gl_vertex_x[i];
+        int32_t vy = (int32_t)s->gl_vertex_y[i];
+
+        minx = MIN(minx, vx);
+        maxx = MAX(maxx, vx);
+        miny = MIN(miny, vy);
+        maxy = MAX(maxy, vy);
+    }
+
+    x0 = MAX((int64_t)minx, 0);
+    x1 = MIN((int64_t)maxx, SGI_ODYSSEY_WIDTH);
+    y0 = MAX((int64_t)miny, 0);
+    y1 = MIN((int64_t)maxy, SGI_ODYSSEY_HEIGHT);
+    if (x0 >= x1 || y0 >= y1) {
+        return;
     }
 
     /*
@@ -5141,7 +5158,7 @@ static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
      * (docs/analysis/odyssey-account-panel-black-band.md).
      */
     if (s->dest_buffer_word == ODSY_DEST_ID_PLANES) {
-        odyssey_clear_planes(s, minx, miny, maxx - minx, maxy - miny,
+        odyssey_clear_planes(s, x0, y0, x1 - x0, y1 - y0,
                              s->gl_color_index,
                              (s->plane_write_mask >> ODSY_PLANE_MASK_SHIFT) &
                              0xff);
@@ -5149,12 +5166,13 @@ static void odyssey_gl_quad(SGIOdysseyState *s, uint32_t first)
     }
 
     if (odyssey_pattern_enabled(s)) {
-        odyssey_pattern_fill(s, minx, miny, maxx - minx, maxy - miny,
-                             s->gl_color_is_index, s->gl_color_is_index ?
+        odyssey_pattern_fill(s, x0, y0, x1 - x0, y1 - y0, x0 - minx,
+                             y0 - miny, s->gl_color_is_index,
+                             s->gl_color_is_index ?
                              s->gl_color_index : s->gl_color);
     } else {
-        odyssey_fill_rect(s, minx, miny, maxx - minx, maxy - miny,
-                          s->gl_color_is_index, s->gl_color_is_index ?
+        odyssey_fill_rect(s, x0, y0, x1 - x0, y1 - y0, s->gl_color_is_index,
+                          s->gl_color_is_index ?
                           s->gl_color_index : s->gl_color);
     }
 }
@@ -5195,8 +5213,8 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
         return;
     }
     if (fabs(dx) >= fabs(dy)) {
-        lo = MIN(x1, x2);
-        hi = MAX(x1, x2);
+        lo = MAX(MIN(x1, x2), 0);
+        hi = MIN(MAX(x1, x2), SGI_ODYSSEY_WIDTH);
         for (i = lo; i < hi; i++) {
             double c = i + 0.5;
             uint32_t k = fabs(c - x1) + 0.5;
@@ -5206,8 +5224,8 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
             }
         }
     } else {
-        lo = MIN(y1, y2);
-        hi = MAX(y1, y2);
+        lo = MAX(MIN(y1, y2), 0);
+        hi = MIN(MAX(y1, y2), SGI_ODYSSEY_HEIGHT);
         for (i = lo; i < hi; i++) {
             double c = i + 0.5;
             uint32_t k = fabs(c - y1) + 0.5;

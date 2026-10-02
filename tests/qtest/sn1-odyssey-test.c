@@ -2001,6 +2001,49 @@ static void test_command_fifo_copyrect_overlapping_shift(void)
     qtest_quit(qts);
 }
 
+/* A maximal copy still visits only destination pixels on the plane. */
+static void test_command_fifo_copyrect_large_offscreen(void)
+{
+    QTestState *qts = board_start("");
+    static const struct {
+        uint32_t src, dst;
+    } copies[] = {
+        { 0, UINT32_MAX },
+        { (1021u << 16) | 1277, (1022u << 16) | 1278 },
+    };
+
+    odsy_test_pixel_write(qts, 1277, 1021, 0x11111111);
+    odsy_test_pixel_write(qts, 1278, 1021, 0x22222222);
+    odsy_test_pixel_write(qts, 1277, 1022, 0x33333333);
+    odsy_test_pixel_write(qts, 1278, 1022, 0x44444444);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(copies); i++) {
+        g_test_timer_start();
+        cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX);
+        cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
+        cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+        cmd_push(qts, 0x00002000);
+        cmd_push(qts, copies[i].src);
+        cmd_push(qts, 0x80502050);
+        cmd_push(qts, UINT32_MAX);
+        cmd_push(qts, 0x82223042);
+        cmd_push(qts, 0x00002000);
+        cmd_push(qts, copies[i].dst);
+        cmd_push(qts, 0x3222204b);
+        cmd_push(qts, ODSY_CMD_QUICK_FLUSH_1);
+        cmd_push(qts, ODSY_CMD_QUICK_FLUSH_ARG);
+        cmd_push(qts, ODSY_CMD_STROBE);
+        cmd_push(qts, ODSY_CMD_STROBE);
+        g_assert_cmpfloat(g_test_timer_elapsed(), <, 5.0);
+    }
+
+    g_assert_cmphex(odsy_test_pixel(qts, 1278, 1022), ==, 0x11111111);
+    g_assert_cmphex(odsy_test_pixel(qts, 1279, 1022), ==, 0x22222222);
+    g_assert_cmphex(odsy_test_pixel(qts, 1278, 1023), ==, 0x33333333);
+    g_assert_cmphex(odsy_test_pixel(qts, 1279, 1023), ==, 0x44444444);
+    qtest_quit(qts);
+}
+
 /*
  * A screen-to-screen copy is not clipped by the window-clip rectangles
  * (docs/reviews/odyssey-window-move-copy-diagnosis-20261001.md, its
@@ -3175,6 +3218,32 @@ static void test_command_fifo_pattern_quad(void)
     qtest_quit(qts);
 }
 
+/* Clipping a quad must keep the pattern anchored to its signed first corner. */
+static void test_command_fifo_pattern_quad_straddles_screen(void)
+{
+    QTestState *qts = board_start("");
+    uint32_t bitmap[32] = { [1] = 1u << 30 };
+
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
+    backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
+    backend_push32(qts, ODSY_BACKEND_PAD);
+    index_fill(qts, 0, 0, 0, 3, 3);
+    pattern_load(qts, bitmap);
+    cmd_push(qts, ODSY_CMD_PATTERN_SHAPE);
+    cmd_push(qts, ODSY_PATTERN_SHAPE_32X32);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, ODSY_PATTERN_MODE_ENABLE);
+
+    alarm(10);
+    index_fill(qts, 1, UINT32_MAX, UINT32_MAX, 3, 3);
+    alarm(0);
+    g_assert_cmphex(odsy_shown(qts, 0, 0), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_shown(qts, 1, 0), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_shown(qts, 0, 1), ==, 0xff0000ff);
+    qtest_quit(qts);
+}
+
 /*
  * The 2D stream's line and polygon primitives and multi-rectangle quads
  * (docs/analysis/odyssey-account-icons.md): the greeter's account icons and
@@ -3329,6 +3398,58 @@ static void test_command_fifo_lines(void)
     g_assert_cmphex(odsy_test_pixel(qts, 300, 309), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 310, 309), ==, 0);
 
+    qtest_quit(qts);
+}
+
+/* Extreme endpoints must finish and keep stipple phase at the first vertex. */
+static void test_command_fifo_lines_cross_screen_edge(void)
+{
+    QTestState *qts = board_start("");
+
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_CMAP_HDR, ODSY_LUT_RED);
+    backend_push64(qts, ODSY_LUT_GREEN, ODSY_LUT_BLUE);
+    backend_push32(qts, ODSY_BACKEND_PAD);
+    index_fill(qts, 0, 0, 10, 4, 11);
+    index_fill(qts, 0, 10, 0, 11, 4);
+    index_fill(qts, 0, 1276, 20, 1280, 21);
+    cmd_push(qts, ODSY_CMD_LINE_STIPPLE);
+    cmd_push(qts, 0xaaaa);
+    cmd_push(qts, 0xaaaaaaaa);
+    cmd_push(qts, 0x30f);
+    cmd_push(qts, ODSY_CMD_PATTERN_MODE);
+    cmd_push(qts, 0x80018);
+    colour_index(qts, 2);
+
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 0x80000000, 10);
+    alarm(10);
+    vertex2i(qts, 4, 10);
+    alarm(0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 10, 0x80000000);
+    alarm(10);
+    vertex2i(qts, 10, 4);
+    alarm(0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    cmd_push(qts, ODSY_GL_LINES);
+    vertex2i(qts, 1276, 20);
+    alarm(10);
+    vertex2i(qts, INT32_MAX, 20);
+    alarm(0);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t expected = i % 2 == 0 ? ODSY_BLUE : ODSY_RED;
+
+        g_assert_cmphex(odsy_shown(qts, i, 10), ==, expected);
+        g_assert_cmphex(odsy_shown(qts, 10, i), ==, expected);
+        g_assert_cmphex(odsy_shown(qts, 1276 + i, 20), ==, expected);
+    }
     qtest_quit(qts);
 }
 
@@ -10161,6 +10282,8 @@ int main(int argc, char **argv)
                    test_command_fifo_copyrect);
     qtest_add_func("sn1/odyssey/command-fifo-copyrect-overlapping-shift",
                    test_command_fifo_copyrect_overlapping_shift);
+    qtest_add_func("sn1/odyssey/command-fifo-copyrect-large-offscreen",
+                   test_command_fifo_copyrect_large_offscreen);
     qtest_add_func("sn1/odyssey/command-fifo-copyrect-ignores-window-clip",
                    test_command_fifo_copyrect_ignores_window_clip);
     qtest_add_func("sn1/odyssey/command-fifo-copyrect-prefix-is-a-register",
@@ -10223,6 +10346,8 @@ int main(int argc, char **argv)
                    test_buffers_transfers_follow_mask);
     qtest_add_func("sn1/odyssey/command-fifo-pattern-quad",
                    test_command_fifo_pattern_quad);
+    qtest_add_func("sn1/odyssey/command-fifo-pattern-quad-straddles-screen",
+                   test_command_fifo_pattern_quad_straddles_screen);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-rgb",
                    test_command_fifo_image_raster_rgb);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-formats",
@@ -10235,6 +10360,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_triangle);
     qtest_add_func("sn1/odyssey/command-fifo-lines",
                    test_command_fifo_lines);
+    qtest_add_func("sn1/odyssey/command-fifo-lines-cross-screen-edge",
+                   test_command_fifo_lines_cross_screen_edge);
     qtest_add_func("sn1/odyssey/command-fifo-integer-primitives-stream",
                    test_command_fifo_integer_primitives_stream);
     qtest_add_func("sn1/odyssey/command-fifo-gl-bitmap-rect-reverse-y",
