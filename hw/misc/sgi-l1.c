@@ -2667,7 +2667,7 @@ fuel_mac_done:
         error_setg(errp, "L1 BIC startup requires the expansion profile");
         return;
     }
-    s->product_identity = s->profile->identity;
+    s->product_identity = (s->profile - l1_profiles) + 1;
     if (!s->profile->compute_services) {
         s->auto_power = false;
         s->processors = 0;

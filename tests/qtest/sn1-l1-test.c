@@ -668,6 +668,50 @@ static void test_expansion_migration_mismatch(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_profile_migration(gconstpointer opaque)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-profile-mismatch-XXXXXX",
+                                        &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    unsigned selection = GPOINTER_TO_UINT(opaque);
+    static const char *const profiles[] = {
+        "ip34", "unknown", "ip45", "ip35", "ip37", "pci-expansion",
+    };
+    const char *source = profiles[selection == G_N_ELEMENTS(profiles) ? 2 :
+                                  selection % G_N_ELEMENTS(profiles)];
+    const char *destination = selection < G_N_ELEMENTS(profiles) ? source :
+        profiles[selection == G_N_ELEMENTS(profiles) ? 1 : 2];
+    bool mismatch = selection >= G_N_ELEMENTS(profiles);
+
+    from = qtest_initf("-M none -cpu R10000 -S -device "
+                      "sgi-l1,id=l1c,brick-type=%s" UART, source);
+    to = qtest_initf("-M none -cpu R10000 -S -incoming defer -device "
+                    "sgi-l1,id=l1c,brick-type=%s" UART, destination);
+    if (mismatch) {
+        qtest_set_expected_status(to, EXIT_FAILURE);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    if (mismatch) {
+        qtest_wait_qemu(to);
+    } else {
+        sgi_wait_migration_status(from, "completed", 30);
+        sgi_wait_migration_status(to, "completed", 30);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_selected_board(void)
 {
     GError *error = NULL;
@@ -4288,6 +4332,22 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/expansion/lifecycle-refusal",
                    test_expansion_lifecycle_refusal);
     qtest_add_func("sn1/l1/expansion/records", test_expansion_records);
+    qtest_add_data_func("sn1/l1/profile-migration/ip34",
+                        GUINT_TO_POINTER(0), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/unknown",
+                        GUINT_TO_POINTER(1), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/ip45",
+                        GUINT_TO_POINTER(2), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/ip35",
+                        GUINT_TO_POINTER(3), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/ip37",
+                        GUINT_TO_POINTER(4), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/pci-expansion",
+                        GUINT_TO_POINTER(5), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/ip45-to-unknown",
+                        GUINT_TO_POINTER(6), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/unknown-to-ip45",
+                        GUINT_TO_POINTER(7), test_profile_migration);
     qtest_add_func("sn1/l1/expansion/migration", test_expansion_migration);
     qtest_add_func("sn1/l1/expansion/input-refusal",
                    test_expansion_input_refusal);
