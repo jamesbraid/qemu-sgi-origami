@@ -71,6 +71,7 @@ typedef struct OctaneMachineState {
     char *topology_name;
     char *graphics_board;
     uint8_t graphics_widget;
+    bool graphics_widget_set;
     MemoryRegion graphics_fabric;
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
@@ -112,6 +113,7 @@ static void octane_set_graphics_widget(Object *obj, Visitor *v,
                                        const char *name, void *opaque,
                                        Error **errp)
 {
+    OctaneMachineState *s = (OctaneMachineState *)obj;
     uint8_t value;
 
     if (!visit_type_uint8(v, name, &value, errp)) {
@@ -123,7 +125,8 @@ static void octane_set_graphics_widget(Object *obj, Visitor *v,
                    OCTANE_GRAPHICS_WIDGET_FIRST, OCTANE_GRAPHICS_WIDGET_LAST);
         return;
     }
-    ((OctaneMachineState *)obj)->graphics_widget = value;
+    s->graphics_widget = value;
+    s->graphics_widget_set = true;
 }
 
 static char *octane_get_flash_profile(Object *obj, Error **errp)
@@ -441,6 +444,11 @@ static void octane_init_common(MachineState *machine, bool octane2)
                              s->topology_name);
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
+
+    if (s->graphics_widget_set && !graphics) {
+        error_setg(&error_fatal,
+                   "graphics-widget requires an MGRAS graphics-board");
+    }
 
     if (machine->ram_size != octane_model_ram(s->node) ||
         machine->smp.cpus != 1) {
