@@ -3748,6 +3748,8 @@ static void test_command_fifo_image_raster_colour_index(void)
 #define ODSY_GL_COLOR_3F 0xc580cc0e
 #define ODSY_GL_VERTEX_2F 0x8080c801
 #define ODSY_GL_TRIANGLES 0x00000004
+#define ODSY_GL_QUADS 0x00000007
+#define ODSY_GL_TEX_RECT 0x8f80b968
 #define ODSY_GL_MATRIX_SELECT_WINDOW 0x34008000
 #define ODSY_GL_MATRIX_SELECT_TEXTURE 0x34008014
 #define ODSY_GL_MATRIX_LOAD 0x9080bdc8
@@ -8151,6 +8153,16 @@ static void test_texture_chain_explicit_level(void)
     push_user_words(qts, words, ARRAY_SIZE(words));
     texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x0000ffff);
+    for (unsigned i = 0; i < 4; i++) {
+        const uint32_t sampler[] = {
+            0x08000420, 2, 2, 1, 0x13000040 + i * 0x20, 0, 0,
+        };
+
+        user_cmd_push(qts, 0x00011c16);
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        texture_adapter_point(qts, 20 + i, 10, 0.25f, 0.25f);
+        g_assert_cmphex(odsy_test_pixel(qts, 20 + i, 10), ==, 0x0000ffff);
+    }
 
     /* A zero upper LOD excludes the stale second entry. */
     const uint32_t cap[] = { 0x00011013, 0, 0, 0, 0 };
@@ -8170,6 +8182,84 @@ static void test_texture_chain_explicit_level(void)
     push_user_words(qts, unknown, ARRAY_SIZE(unknown));
     texture_adapter_point(qts, 13, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_texture_chain_height_one(void)
+{
+    const uint32_t words[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000800, 4, 1, 1, 0x13000040, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x180000, 0x41100002, 0,
+        0x00010e81, 0x181000, 0x41100002, 0,
+        0x00010406, 0,
+        0x00011013, 0, 0, 0x0100, 0x0100,
+    };
+    QTestState *qts = board_start("");
+
+    texture_chain_upload_solid(qts, 0x180000, 4, 1, 0xff0000ff);
+    texture_chain_upload_solid(qts, 0x181000, 2, 1, 0x0000ffff);
+    texture_adapter_window(qts);
+    odsy_test_pixel_write(qts, 10, 10, 0x12345678);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x0000ffff);
+    qtest_quit(qts);
+}
+
+static void test_texture_chain_construction(void)
+{
+    const uint32_t pixels[16] = {
+        0xff0000ff, 0, 0x0000ffff, 0,
+        0, 0, 0, 0,
+        0x00ff00ff, 0, 0xffffffff, 0,
+        0, 0, 0, 0,
+    };
+    const uint32_t words[] = {
+        ODSY_CMD_DEST_SELECT, 0x181000, 2, 0x080024d0, 0,
+        0x00010405, 0x10,
+        0x00010ebc, 0x180000, 0x41100002, 0,
+        0x00010406, 60,
+        0x00011c16, 0x00000840, 4, 4, 0, 0x13640000, 0, 0,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_QUADS,
+        ODSY_GL_TEX_RECT,
+        0, 0, 0, 0,
+        0, 0, 0,
+        0x40000000, 0x40000000, 0,
+        0, 0, 0x3f400000, 0x3f400000,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    upload_begin(qts, 0x180000, 2, 0x080024d0, 4, 4);
+    upload_first_header(qts, 0x4b);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(16, ODSY_IMAGE_FMT_RGB));
+    push_user_words(qts, pixels, ARRAY_SIZE(pixels));
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 2, 2), ==,
+                    0xffffffff);
+    odsy_test_pixel_write(qts, 10, 10, 0x12345678);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 0), ==,
+                    0xff0000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 1, 0), ==,
+                    0x0000ffff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 1), ==,
+                    0x00ff00ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 1, 1), ==,
+                    0xffffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
+
+    uint32_t bad[ARRAY_SIZE(words)];
+    memcpy(bad, words, sizeof(bad));
+    bad[1] = 0x182000;
+    bad[ARRAY_SIZE(bad) - 3] = 0x3f000000;
+    push_user_words(qts, bad, ARRAY_SIZE(bad));
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 0, 0), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
     qtest_quit(qts);
 }
 
@@ -10565,6 +10655,10 @@ int main(int argc, char **argv)
                    test_texture_adapter_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
                    test_texture_chain_explicit_level);
+    qtest_add_func("sn1/odyssey/texture-adapter/height-one",
+                   test_texture_chain_height_one);
+    qtest_add_func("sn1/odyssey/texture-adapter/construction",
+                   test_texture_chain_construction);
     qtest_add_func("sn1/odyssey/texture-adapter/binding-filters-matrix",
                    test_texture_adapter_binding_filters_matrix);
     qtest_add_func("sn1/odyssey/texture-adapter/components-environment",
