@@ -942,6 +942,41 @@ static void test_source_dma_byte_lanes(void)
     qtest_quit(s);
 }
 
+static void test_source_dma_wide_register(void)
+{
+    QTestState *s = assembly_start(
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-global sgi-xbridge-assembly-fixture.host-wide-register=on "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0");
+    uint64_t head = VIEW(2), card = head + 0x200000;
+    const uint32_t address[] = { 0x80008000, 0x40000000 };
+    const uint64_t sentinel = UINT64_C(0x1122334455667788);
+    const uint64_t expected = UINT64_C(0x4041424344454647);
+
+    qtest_writel(s, head + 0x20010, 0x01000000);
+    qtest_writel(s, head + 0x20004, 6);
+    qtest_writel(s, head + 0x84, 0xa << 20);
+    /* Select the uncorrected byte path for direct and page DMA. */
+    qtest_writel(s, head + 0x204, 0x81010);
+    qtest_writeq(s, head + 0x10000, 0x8a21);
+    for (unsigned i = 0; i < ARRAY_SIZE(address); i++) {
+        qtest_writeq(s, FABRIC + SCRATCH, sentinel);
+        qtest_writel(s, card, address[i]);
+        qtest_writel(s, card + 4, 8);
+        qtest_writel(s, card + 8, 0x40);
+        qtest_writel(s, card + 0xc, 1);
+        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==, expected);
+
+        qtest_writeq(s, FABRIC + 0x9000, sentinel);
+        qtest_writel(s, card + 0x14, address[i]);
+        qtest_writel(s, card + 0x1c, 0);
+        qtest_writel(s, card, 0x80009000);
+        qtest_writel(s, card + 0xc, 2);
+        g_assert_cmphex(qtest_readq(s, FABRIC + 0x9000), ==, expected);
+    }
+    qtest_quit(s);
+}
+
 static void run_assembly_migration(bool context)
 {
     GError *error = NULL;
@@ -1213,6 +1248,8 @@ int main(int argc, char **argv)
                    test_six_head_interrupts);
     qtest_add_func("/sn1/xbridge-chip/explicit-context-crossbar",
                    test_explicit_context_crossbar);
+    qtest_add_func("/sn1/xbridge-chip/source-dma-wide-register",
+                   test_source_dma_wide_register);
     qtest_add_func("/sn1/xbridge-chip/slot-source-dma", test_slot_source_dma);
     qtest_add_func("/sn1/xbridge-chip/source-dma-byte-lanes",
                    test_source_dma_byte_lanes);

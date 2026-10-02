@@ -20,9 +20,31 @@ struct XBridgeAssemblyState {
     MemoryRegion host_view;
     uint8_t port[4];
     bool source_aware_host;
+    bool host_wide_register;
+    MemoryRegion wide_register;
+    uint64_t wide_value;
     bool context_loop;
     DeviceState *ii;
     SGIXioLink host_link;
+};
+
+static uint64_t assembly_wide_read(void *opaque, hwaddr address, unsigned size)
+{
+    return ((XBridgeAssemblyState *)opaque)->wide_value;
+}
+
+static void assembly_wide_write(void *opaque, hwaddr address, uint64_t value,
+                                unsigned size)
+{
+    ((XBridgeAssemblyState *)opaque)->wide_value = value;
+}
+
+static const MemoryRegionOps assembly_wide_ops = {
+    .read = assembly_wide_read,
+    .write = assembly_wide_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 8, .max_access_size = 8 },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
 static void assembly_realize(DeviceState *dev, Error **errp)
@@ -46,6 +68,12 @@ static void assembly_realize(DeviceState *dev, Error **errp)
     if (!memory_region_init_ram(&s->host, OBJECT(s), "xbridge-fixture.host",
                                 0x100000, errp)) {
         return;
+    }
+    if (s->host_wide_register) {
+        memory_region_init_io(&s->wide_register, OBJECT(s), &assembly_wide_ops,
+                              s, "xbridge-fixture.wide-register", 8);
+        memory_region_add_subregion_overlap(&s->host, 0x8000,
+                                             &s->wide_register, 1);
     }
     memory_region_init_alias(&s->host_view, OBJECT(s), "host-view",
                              &s->host, 0, memory_region_size(&s->host));
@@ -151,6 +179,8 @@ static void assembly_finalize(Object *obj)
 }
 
 static const Property assembly_properties[] = {
+    DEFINE_PROP_BOOL("host-wide-register", XBridgeAssemblyState,
+                      host_wide_register, false),
     DEFINE_PROP_BOOL("context-loop", XBridgeAssemblyState, context_loop, false),
     DEFINE_PROP_BOOL("source-aware-host", XBridgeAssemblyState,
                       source_aware_host, false),
