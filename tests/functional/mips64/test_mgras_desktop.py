@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 #
-# SI/MGRAS graphical desktop: boot an Origin 2000 with an SI board in IO3 to
+# MGRAS graphical desktop: boot an Origin 2000 with an SI board in IO3 to
 # the IRIX greeter, log in as guest, and require the default desktop to
 # show its expected colours
 #

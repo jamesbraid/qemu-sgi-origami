@@ -1,5 +1,5 @@
 # Expected colours for named regions of IRIX 6.5's xdm greeter and
-# default desktop, as SI/MGRAS graphics should display them
+# default desktop, as MGRAS graphics should display them
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """
