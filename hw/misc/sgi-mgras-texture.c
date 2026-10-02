@@ -49,22 +49,29 @@
  *   the format's bytes a texel. Texels of a level no transfer has reached
  *   hold whatever TRAM held there, 0 after a reset (the model's choice;
  *   the board's TRAM contents at reset are unknown).
- *   The pixel program is read for one case: the three-unsigned-byte RGB
- *   program the image path draws GL_RGB with, which perfly's client
- *   loaded for the CH-53's RGB body texture kept as RGBA4 (its DMA rows
- *   192 bytes for 64 texels). Its image is three bytes a texel into a
- *   level kept as RGB or RGBA at 4 or 8 bits, alpha 1 where the level
- *   keeps one, as OpenGL 1.2.1 3.6.4 converts an RGB group; inferred, as
- *   the GE program is not read. Any other program is taken as the kept
- *   layout's own bytes, approximated: only the four-unsigned-byte one
- *   was traced, so the others are taken as the identity, as routine
- *   0x511a is at the default pixel transfer state, as the image path
- *   takes 0x49d0. TL_MODE is state that persists
- *   across loads, since the client skips it when reloading the image it
- *   loaded last. An unpaired 0x9c00, which the client's untraced wide-level
- *   branch sends, and a 0x511a transfer outside a bracket are logged and
- *   not rejected. An inline image, GL_ABGR_EXT or a transfer of another
- *   byte count is logged and nothing is stored.
+ *   The pixel program's unpack block is read for the image's shape: its
+ *   routine word gives the components (0x4064 four, 0x40f2 three, 0x417e
+ *   two, 0x420c one) and its scale word the bytes a component (1/255 one,
+ *   1/65535 two), established as words beside matching byte counts in
+ *   perfly's, atlantis's, buttonfly's and blast's loads, the meanings
+ *   inferred. An image of the kept layout's components, or of three into
+ *   RGBA (alpha 1, as OpenGL 1.2.1 3.6.4 converts an RGB group), is
+ *   taken; two-byte components are read big-endian and reduced to the
+ *   kept depth (see "Depth"). Anything else is logged and nothing is
+ *   stored. The rest of the program is not read, approximated: only the
+ *   four- and three-unsigned-byte ones were traced, so others are taken
+ *   as the identity, as routine 0x511a is at the default pixel transfer
+ *   state, as the image path takes 0x49d0. TL_MODE is state that
+ *   persists across loads, since the client skips it when reloading the
+ *   image it loaded last. An unpaired 0x9c00, which the client's
+ *   untraced wide-level branch sends, and a 0x511a transfer outside a
+ *   bracket are logged and not rejected. An inline image or a transfer
+ *   of another byte count is logged and nothing is stored. The HQ
+ *   pixel-format word's GL_ABGR_EXT bit (0xe8d for bytes, 0xe8e for
+ *   two-byte components) on an image of four components kept as RGBA
+ *   reverses each texel's components; the same word reorders the image
+ *   path's draw (inferred to apply here too). On two components it was
+ *   never traced and is logged, nothing stored.
  *
  * - Storage. A level's texels go into TRAM (see "TRAM" below) at the
  *   block the context's 0xeb04 base and the load's TXMIPMAP word name, in
@@ -105,7 +112,11 @@
  *   12 bits of its host halfword (approximated; the board's reduction is
  *   unknown, and a render of texels differing in the dropped bits would
  *   settle it) and is drawn as the nearest of 255, the sampler's texels
- *   being 8-bit.
+ *   being 8-bit. A two-byte host component kept at 8 bits is
+ *   round(c * 255 / 65535) and at 4 bits that value's top four bits,
+ *   approximated for the same reason; OpenGL 1.2.1 3.6.4 defines the
+ *   component as c / 65535. One-byte components into a 12-bit level are
+ *   refused, logged: no such load was traced.
  *
  * - Bind and draw. 0x0b00 with TEXMODE1 bit 0 set turns texturing on,
  *   0x0c00 or bit 0 clear off. A draw reads level 0 out of TRAM under the
@@ -382,12 +393,21 @@ enum {
 #define MGRAS_TEX_HQ_COMPS(hq)   (((hq) >> 2) & 3)
 /*
  * The GE words the pixel program names its unpack block with: the block's
- * address is the program's fourth word, and its routine word is the
- * block's second, 0x4064 for an image of four components.
+ * address is the program's fourth word. The block's second word is the
+ * unpack routine, which gives the image's component count, and its sixth
+ * a float scale, 1/255 for components of one byte and 1/65535 for two
+ * bytes. Both were read from the client's loads, the routine words beside
+ * images of matching sizes: established as words, the meanings inferred.
  */
 #define MGRAS_TEX_GE_PROGRAM     0x13b
 #define MGRAS_TEX_GE_UNPACK_ROUTINE 1
+#define MGRAS_TEX_GE_UNPACK_SCALE 5
 #define MGRAS_TEX_UNPACK_4       0x4064
+#define MGRAS_TEX_UNPACK_3       0x40f2
+#define MGRAS_TEX_UNPACK_2       0x417e
+#define MGRAS_TEX_UNPACK_1       0x420c
+#define MGRAS_TEX_SCALE_BYTE     0x3b808081u
+#define MGRAS_TEX_SCALE_SHORT    0x37800080u
 
 /*
  * The load's six GE words at 0xe3d: word 3 is the level's TXMIPMAP word,
@@ -439,32 +459,71 @@ static uint32_t mgras_tex_components(uint32_t mode)
     return MGRAS_TEX_LAYOUT(mode) + 1;
 }
 
-/*
- * Bytes a texel in the host image and in the model's storage, a byte a
- * component at 4 and 8 bits and a big-endian halfword at 12.
- */
-static uint32_t mgras_tex_host_texel(uint32_t mode)
-{
-    return mgras_tex_components(mode) *
-           (MGRAS_TEX_DEPTH(mode) == MGRAS_TEX_DEPTH_12 ? 2 : 1);
-}
-
 /* Host bytes a texel of the image the pending load carries. */
 static uint32_t mgras_tex_load_texel(const SGIMgrasTexture *t)
 {
-    return t->load_host ? t->load_host : mgras_tex_host_texel(t->load_mode);
+    return t->load_comps * t->load_csize;
 }
 
-/* The unpack routine word of the GE's pixel program, if it names one. */
-static bool mgras_tex_unpack_word(SGIMgrasState *s, uint32_t *word)
+/*
+ * The image the GE's pixel program unpacks, from its unpack block: its
+ * components a texel and bytes a component. False for a program with no
+ * block or a routine or scale word not seen in a traced load.
+ */
+static bool mgras_tex_unpack(SGIMgrasState *s, uint32_t *comps,
+                             uint32_t *csize)
 {
     uint32_t params = s->ge_param[MGRAS_TEX_GE_PROGRAM + 3];
+    uint32_t routine, scale;
 
-    if (params >= SGI_MGRAS_GE_PARAM_WORDS - MGRAS_TEX_GE_UNPACK_ROUTINE) {
+    if (params >= SGI_MGRAS_GE_PARAM_WORDS - MGRAS_TEX_GE_UNPACK_SCALE) {
         return false;
     }
-    *word = s->ge_param[params + MGRAS_TEX_GE_UNPACK_ROUTINE];
+    routine = s->ge_param[params + MGRAS_TEX_GE_UNPACK_ROUTINE];
+    scale = s->ge_param[params + MGRAS_TEX_GE_UNPACK_SCALE];
+    switch (routine) {
+    case MGRAS_TEX_UNPACK_4:
+        *comps = 4;
+        break;
+    case MGRAS_TEX_UNPACK_3:
+        *comps = 3;
+        break;
+    case MGRAS_TEX_UNPACK_2:
+        *comps = 2;
+        break;
+    case MGRAS_TEX_UNPACK_1:
+        *comps = 1;
+        break;
+    default:
+        return false;
+    }
+    switch (scale) {
+    case MGRAS_TEX_SCALE_BYTE:
+        *csize = 1;
+        break;
+    case MGRAS_TEX_SCALE_SHORT:
+        *csize = 2;
+        break;
+    default:
+        return false;
+    }
     return true;
+}
+
+/*
+ * Whether an image of comps components of csize bytes lands in a level
+ * kept as mode: the same components, or RGB into RGBA with alpha 1. A
+ * 12-bit level is fed from two-byte components only.
+ */
+static bool mgras_tex_image_fits(uint32_t mode, uint32_t comps,
+                                 uint32_t csize)
+{
+    uint32_t kept = mgras_tex_components(mode);
+
+    if (comps != kept && !(comps == 3 && kept == 4)) {
+        return false;
+    }
+    return csize == 2 || MGRAS_TEX_DEPTH(mode) != MGRAS_TEX_DEPTH_12;
 }
 
 /* Bits a component of a kept format: 4, 8 or 12. */
@@ -1121,7 +1180,7 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     uint32_t size = s->ge_param[MGRAS_TEX_GE_SIZE];
     uint32_t rw = size & 0xffff, rh = size >> 16;
     uint32_t hq = s->dma_desc_30000[0];
-    uint32_t host, unpack;
+    uint32_t comps, csize;
     bool abgr;
     uint64_t bit;
 
@@ -1144,48 +1203,45 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
         return true;
     }
     /*
-     * Only two pixel programs were traced: four unsigned bytes and, for
-     * GL_RGB, three. The program itself is not decoded; the three-byte
-     * one is told apart below by sgi_mgras_gl_pixels_rgb8(). Approximated:
-     * any other program is taken as the kept layout's own bytes, so one
-     * that reorders or converts components would be taken as the
-     * identity. The load is keyed on routine 0x511a and sized by the
-     * rectangle the size word names. The one other thing checked is the HQ
-     * pixel format's GL_ABGR_EXT bit.
+     * The image's shape comes from the pixel program's unpack block (see
+     * mgras_tex_unpack()), not from decoding the program, so the load
+     * is keyed on routine 0x511a and sized by the rectangle the size
+     * word names. Approximated: the rest of the program is not checked,
+     * so one that reorders or converts components beyond what is handled
+     * here would be taken as the identity. A block with an unseen word
+     * is refused.
      *
-     * GL_ABGR_EXT is taken for an image of four components (HQ bits 3:2
-     * and the unpack routine word agree) kept as RGBA, and stored with the
-     * components reversed: the same word and program draw as alpha, blue,
-     * green, red through the pixel path. That the texture load reorders as
-     * the pixel path does is inferred, the word, program and kick being the
-     * same. An ABGR image of two components (luminance alpha) was never
-     * traced and is refused, logged.
+     * Components of one byte are the kept depth's own bytes. Components
+     * of two bytes are read big-endian and reduced to the kept depth:
+     * round(c * 255 / 65535) for 8 bits, that value's top four for 4
+     * bits, and c >> 4 for 12 bits. Approximated: the board's own
+     * conversion is inferred (OpenGL 1.2.1 defines a component as
+     * c / 65535, which the reduction follows).
+     *
+     * The HQ pixel format's GL_ABGR_EXT bit is taken for an image of four
+     * components kept as RGBA, with HQ bits 1:0 (bytes a component)
+     * agreeing with the scale word, and stored with the components
+     * reversed: the same word and program draw as alpha, blue, green, red
+     * through the pixel path. That the texture load reorders as the pixel
+     * path does is inferred, the word, program and kick being the same.
+     * An ABGR image of two components (luminance alpha) was never traced
+     * and is refused, logged.
      */
-    abgr = hq & MGRAS_TEX_HQ_ABGR;
-    if (abgr && (MGRAS_TEX_HQ_COMPS(hq) != 3 ||
-                 !mgras_tex_unpack_word(s, &unpack) ||
-                 unpack != MGRAS_TEX_UNPACK_4 ||
-                 MGRAS_TEX_LAYOUT(mode) != MGRAS_TEX_LAYOUT_RGBA)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with HQ pixel "
-                      "format 0x%x (GL_ABGR_EXT) into TL_MODE 0x%x is not "
-                      "modelled; nothing stored\n", hq, mode);
+    if (!mgras_tex_unpack(s, &comps, &csize)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load through a pixel "
+                      "program whose unpack block is not one seen in a "
+                      "traced load is not modelled; nothing stored\n");
         return true;
     }
-    /*
-     * The three-byte RGB program (GL_RGB, as perfly's CH-53 body texture
-     * came) feeds a level kept as RGB or RGBA at 4 or 8 bits; any other
-     * program is taken as the kept layout's own bytes, as above.
-     */
-    host = 0;
-    if (sgi_mgras_gl_pixels_rgb8(s)) {
-        if (MGRAS_TEX_LAYOUT(mode) < MGRAS_TEX_LAYOUT_RGB ||
-            MGRAS_TEX_DEPTH(mode) >= MGRAS_TEX_DEPTH_12) {
-            qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load of an RGB "
-                          "image kept as TL_MODE 0x%x is not modelled; "
-                          "nothing stored\n", mode);
-            return true;
-        }
-        host = 3;
+    abgr = hq & MGRAS_TEX_HQ_ABGR;
+    if (!mgras_tex_image_fits(mode, comps, csize) ||
+        (abgr && (comps != 4 || MGRAS_TEX_HQ_COMPS(hq) != 3 ||
+                  (hq & 3) != csize))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load of an image of %u "
+                      "components of %u bytes (HQ pixel format 0x%x) kept "
+                      "as TL_MODE 0x%x is not modelled; nothing stored\n",
+                      comps, csize, hq, mode);
+        return true;
     }
     if (!rw || !rh || rw > w || rh > h || x > w - rw || y > h - rh) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load of %u by %u at "
@@ -1218,7 +1274,8 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
     t->load_x = x;
     t->load_y = y;
     t->load_size = size;
-    t->load_host = host;
+    t->load_comps = comps;
+    t->load_csize = csize;
     t->load_abgr = abgr;
     return true;
 }
@@ -1270,8 +1327,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t depth = mgras_tex_depth_bits(mode);
     uint32_t slot = mgras_tex_slot_bits(mode);
     /* The image's components a texel, and bytes a component. */
-    uint32_t src = t->load_host ? t->load_host : comps;
-    uint32_t size = mgras_tex_host_texel(mode) / comps;
+    uint32_t src = t->load_comps;
+    uint32_t size = t->load_csize;
     uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
     const uint8_t *in = t->staging;
     uint64_t start;
@@ -1295,14 +1352,14 @@ static void mgras_tex_commit(SGIMgrasState *s)
             if (k >= src) {
                 /* An RGB image's alpha is 1 (OpenGL 1.2.1, 3.6.4). */
                 v = (1u << depth) - 1;
-            } else if (depth == 4) {
-                /* Truncation to 4 bits, the model's choice, as above. */
-                v = in[n] >> 4;
-            } else if (depth == 8) {
-                v = in[n];
+            } else if (size == 1) {
+                v = depth == 4 ? in[n] >> 4 : in[n];
             } else {
-                /* The top 12 bits of the halfword. */
-                v = lduw_be_p(&in[2 * n]) >> 4;
+                /* Two-byte components: see sgi_mgras_texture_load_start. */
+                uint32_t c = lduw_be_p(&in[2 * n]);
+
+                v = depth == 12 ? c >> 4 :
+                    depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
             }
             mgras_tram_put(s->tram, bit, depth, v);
         }
@@ -1660,13 +1717,11 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
                               t->load_mode, &bit) ||
             !rw || !rh || rw > w || rh > h ||
             t->load_x > w - rw || t->load_y > h - rh ||
-            t->load_abgr > 1 ||
-            (t->load_abgr && (t->load_host ||
-              MGRAS_TEX_LAYOUT(t->load_mode) != MGRAS_TEX_LAYOUT_RGBA)) ||
-            (t->load_host &&
-             (t->load_host != 3 ||
-              MGRAS_TEX_LAYOUT(t->load_mode) < MGRAS_TEX_LAYOUT_RGB ||
-              MGRAS_TEX_DEPTH(t->load_mode) >= MGRAS_TEX_DEPTH_12))) {
+            t->load_abgr > 1 || t->load_comps < 1 || t->load_comps > 4 ||
+            t->load_csize < 1 || t->load_csize > 2 ||
+            !mgras_tex_image_fits(t->load_mode, t->load_comps,
+                                  t->load_csize) ||
+            (t->load_abgr && t->load_comps != 4)) {
             return false;
         }
     }
@@ -1675,8 +1730,8 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
         VMSTATE_UINT32(texmode2, SGIMgrasTexture),
@@ -1706,7 +1761,8 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(load_x, SGIMgrasTexture),
         VMSTATE_UINT32(load_y, SGIMgrasTexture),
         VMSTATE_UINT32(load_size, SGIMgrasTexture),
-        VMSTATE_UINT32(load_host, SGIMgrasTexture),
+        VMSTATE_UINT32(load_comps, SGIMgrasTexture),
+        VMSTATE_UINT32(load_csize, SGIMgrasTexture),
         VMSTATE_UINT32(load_abgr, SGIMgrasTexture),
         VMSTATE_END_OF_LIST()
     }
@@ -1733,7 +1789,8 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->texrbuffer | t->tl_addr | t->base | t->t_offset | t->on |
                    t->bracket | t->load | t->load_base | t->load_block |
                    t->load_spec | t->load_mode | t->load_x | t->load_y |
-                   t->load_size | t->load_host | t->load_abgr;
+                   t->load_size | t->load_comps | t->load_csize |
+                   t->load_abgr;
 
     for (int i = 0; i < SGI_MGRAS_TEX_TABLE; i++) {
         any |= t->txmipmap[i] | t->txborder[i] | t->tl_mipmap[i];

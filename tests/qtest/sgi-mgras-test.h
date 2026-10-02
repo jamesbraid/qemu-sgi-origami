@@ -1589,20 +1589,41 @@ static inline void tex_record(QTestState *t, uint32_t reg, uint32_t value)
 }
 
 /*
- * The client's load of one w-by-h image of bpt bytes a texel through the
- * GE pixel program kind (GL_PIX_4UB or GL_PIX_3UB). TL_MODE goes out only
+ * The unpack routine word the client names an image of comps components
+ * with, and the scale word for components of csize bytes.
+ */
+static inline uint32_t tex_unpack_word(uint32_t comps)
+{
+    static const uint32_t words[] = { 0, 0x420c, 0x417e, 0x40f2, 0x4064 };
+
+    return words[comps];
+}
+
+static inline uint32_t tex_unpack_scale(uint32_t csize)
+{
+    return csize == 2 ? 0x37800080 : 0x3b808081;
+}
+
+/*
+ * The client's load of one w-by-h image of comps components and bpt bytes
+ * a texel through the GE pixel program kind (GL_PIX_4UB or GL_PIX_3UB),
+ * with the unpack block that names that shape. TL_MODE goes out only
  * when send_mode is set, as the client skips it on a reload; box is the
  * destination rectangle and size word.
  */
 static inline void tex_load_program(QTestState *t, int kind, bool send_mode,
                                     uint32_t mode, uint32_t spec,
                                     const uint8_t *texels, uint32_t w,
-                                    uint32_t h, uint32_t bpt,
+                                    uint32_t h, uint32_t comps, uint32_t bpt,
                                     const uint32_t box[6], bool bracket,
                                     unsigned int nasid, uint32_t src_bytes)
 {
     static const uint32_t draw[8] = { 0, 0, 0, 1, 0, 1, 0x511a, 0x98 };
     uint32_t bytes = w * h * bpt;
+    uint32_t unpack[6] = {
+        DIV_ROUND_UP(bytes, 4), tex_unpack_word(comps), 0x464, 0xb, 0xc,
+        tex_unpack_scale(bpt / comps),
+    };
 
     if (send_mode) {
         tex_record(t, TEX_TL_MODE, mode);
@@ -1618,6 +1639,7 @@ static inline void tex_load_program(QTestState *t, int kind, bool send_mode,
         gl_word(t, TEX_LOAD_OPEN);
     }
     gl_pixels_program(t, kind, DIV_ROUND_UP(bytes, 4), 0, 0, w - 1, h - 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_UNPACK, unpack, 6);
     gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, 6);
     gl_word(t, TEX_PAIRS);
     gl_word(t, 1);
@@ -1646,12 +1668,13 @@ static inline void tex_load_program(QTestState *t, int kind, bool send_mode,
 /* The load through the four-unsigned-byte program. */
 static inline void tex_load_fmt(QTestState *t, bool send_mode, uint32_t mode,
                                 uint32_t spec, const uint8_t *texels,
-                                uint32_t w, uint32_t h, uint32_t bpt,
-                                const uint32_t box[6], bool bracket,
-                                unsigned int nasid, uint32_t src_bytes)
+                                uint32_t w, uint32_t h, uint32_t comps,
+                                uint32_t bpt, const uint32_t box[6],
+                                bool bracket, unsigned int nasid,
+                                uint32_t src_bytes)
 {
-    tex_load_program(t, GL_PIX_4UB, send_mode, mode, spec, texels, w, h, bpt,
-                     box, bracket, nasid, src_bytes);
+    tex_load_program(t, GL_PIX_4UB, send_mode, mode, spec, texels, w, h,
+                     comps, bpt, box, bracket, nasid, src_bytes);
 }
 
 /* The same load for a level of four unsigned bytes a texel. */
@@ -1661,7 +1684,7 @@ static inline void tex_load_full(QTestState *t, bool send_mode, uint32_t mode,
                                  bool bracket, unsigned int nasid,
                                  uint32_t src_bytes)
 {
-    tex_load_fmt(t, send_mode, mode, spec, texels, w, h, 4, box, bracket,
+    tex_load_fmt(t, send_mode, mode, spec, texels, w, h, 4, 4, box, bracket,
                  nasid, src_bytes);
 }
 
