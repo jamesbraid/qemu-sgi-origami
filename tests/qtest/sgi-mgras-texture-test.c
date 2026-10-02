@@ -408,6 +408,7 @@ static void test_gl_texture_border_is_logged_untextured(void)
         { 0x14, 0x15 },
     };
     static const uint32_t bordered[6] = { 0, 0, 6, 4, 4 << 16 | 6, 0 };
+    static const uint32_t border_words[6] = { 4, 0, 0, 3, 2, 0 };
     g_autofree char *tmpfs = NULL;
     g_autofree char *log = NULL;
     g_autofree char *args = NULL;
@@ -443,9 +444,16 @@ static void test_gl_texture_border_is_logged_untextured(void)
     gl_word(t, GL_CONTEXT_OPENER);
     gl_viewport(t, 0, 0, 128, 128);
     gl_window_projection(t);
+    /*
+     * The load names TXMIPMAP word 3, and the draw goes through the same
+     * word, so the colour drawn shows whether the refused load stored a
+     * level there. The 0x5a image would not draw white.
+     */
+    gl_ge_load(t, GL_GE_ERAM, 0xe3d, border_words, 6);
     tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, image, 6, 4,
                 bordered, true);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_mipmap_word(t, 3);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
