@@ -419,6 +419,19 @@ struct SGIOdysseyState {
     uint32_t gl_block16[4];
     bool gl_rect_depth_logged;
     bool gl_rect_pattern_logged;
+    /*
+     * Diagnostic only: whether a non-all-ones 0x452 index write mask (bits
+     * 11:0) has already been reported in index mode. No retained capture
+     * shows what a real colour-index drawable sends there -- every probe is
+     * RGBA, where the field is always 0 for the unrelated reason that an
+     * RGBA drawable has no index planes -- and the board's own reset value
+     * leaves it 0, not GL's own all-ones "fully open" default. Applying the
+     * bits as a literal write mask would need to pick one of those as the
+     * safe case with no evidence for either, so instead they are decoded,
+     * never applied, and reported once whenever they are not all-ones,
+     * which includes the board's own reset value.
+     */
+    bool gl_index_mask_logged;
     SGIBoardMemory depth_mem;
     uint32_t depth_plane;
 

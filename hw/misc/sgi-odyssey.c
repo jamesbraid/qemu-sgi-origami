@@ -1520,6 +1520,49 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_LOGIC_OP_MASK 0xf
 
 /*
+ * Bit 15 of the same register is GL_STENCIL_TEST
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md), conditional on
+ * the drawable's stencil planes. This model has none (the shared rasterizer's
+ * stencil pipeline is wired for no visual here), and absent a stencil buffer
+ * OpenGL's own stencil test is defined to always pass, so feeding the enable
+ * is decoding real GL state, not drawing with a stencil test that has any
+ * effect. 0x041f carries the function, reference and value mask together:
+ * bits 27:25 the comparison, GL_NEVER = 0 to GL_ALWAYS = 7, bits 7:0 the
+ * reference clamped to [0, 2^s - 1], bits 15:8 the value mask ANDed with
+ * 2^s - 1, and bits 24:22, 21:19, 18:16 the fail, depth-fail and depth-pass
+ * operations: KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4, INVERT 5. 0x452
+ * bits 19:12 are the write mask under the same (2^s - 1) rule, forced 0
+ * without stencil planes.
+ */
+#define ODSY_MODE_STENCIL_TEST (1u << 15)
+#define ODSY_REG_STENCIL_FUNC 0x041f    /* 1 operand */
+#define ODSY_STENCIL_FUNC_SHIFT 25
+#define ODSY_STENCIL_FUNC_MASK 0x7
+#define ODSY_STENCIL_REF_MASK 0xff
+#define ODSY_STENCIL_VALUE_MASK_SHIFT 8
+#define ODSY_STENCIL_VALUE_MASK_MASK 0xff
+#define ODSY_STENCIL_OP_FAIL_SHIFT 22
+#define ODSY_STENCIL_OP_ZFAIL_SHIFT 19
+#define ODSY_STENCIL_OP_ZPASS_SHIFT 16
+#define ODSY_STENCIL_OP_MASK 0x7
+#define ODSY_WRITE_STENCIL_SHIFT 12
+#define ODSY_WRITE_STENCIL_MASK 0xff
+
+/*
+ * 0x452 bits 11:0 are glIndexMask ANDed with the drawable's index-plane mask
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): every retained
+ * capture is RGBA, where the field is always 0 because an RGBA drawable has
+ * no index planes, so no capture shows what a real colour-index drawable
+ * sends here. This board's own reset default for the word also leaves these
+ * bits 0, a value every colour-index draw already relies on reading as
+ * unmasked (odyssey_gl_store_colour()). Applying the bits as a literal write
+ * mask would make that the ordinary, unconfigured case instead of the
+ * exception, which no known guest does -- so the bits are decoded and a
+ * non-default value is reported, not applied.
+ */
+#define ODSY_WRITE_INDEX_MASK 0xfff
+
+/*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
  * above root/EZsetup/demos/guest) and the text-field caret
  * (docs/analysis/odyssey-glyph-raster-format.md). BEGIN with primitive 0xa
@@ -3307,14 +3350,28 @@ static uint32_t odyssey_float_index(uint32_t bits)
     return (uint32_t)f & ODSY_INDEX_MASK;
 }
 
-/* Synthetic RGB carries the index, so ordinary channel masks do not apply. */
+/*
+ * Synthetic RGB carries the index, so ordinary channel masks do not apply.
+ * 0x452 bits 11:0, the index write mask proper, are decoded but never
+ * applied here (see the field's own comment): no retained capture shows
+ * what a real colour-index drawable sends there, so there is no basis for
+ * a masking rule to implement. Whenever the field reads as anything but
+ * all-ones -- GL's own "fully open" write mask, and not the board's own
+ * reset value of 0 -- that gap is reported once rather than left silent.
+ */
 static void odyssey_gl_store_colour(void *opaque, SGIColourTarget target,
                                     int x, int y, uint32_t colour)
 {
     SGIOdysseyState *s = opaque;
     uint32_t mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
                     ODSY_WRITE_COLOUR_MASK;
+    uint32_t index_mask = s->gl_write_mask & ODSY_WRITE_INDEX_MASK;
 
+    if (index_mask != ODSY_WRITE_INDEX_MASK && !s->gl_index_mask_logged) {
+        s->gl_index_mask_logged = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: index write mask 0x%03x is "
+                      "decoded but not applied\n", index_mask);
+    }
     if (mask && target < ODSY_BUFFERS && odyssey_pixel_allowed(s, x, y)) {
         odyssey_buffer_store(s, target, x, y, colour & ODSY_INDEX_MASK);
     }
@@ -3649,14 +3706,21 @@ static void odyssey_gl_feed(SGIOdysseyState *s, uint16_t op,
 
 /*
  * Hand the GL state register 0x0404 carries to the shared context: bit 12,
- * the shade model, bit 16, the depth test, bit 14, the alpha test, bit 17,
- * blending, bit 19, index logic op, and bit 20, colour logic op. The shared
- * rasterizer fills a flat triangle from its provoking vertex, the last one
- * for triangles and strips as GL specifies.
+ * the shade model, bit 16, the depth test, bit 14, the alpha test, bit 15,
+ * the stencil test, bit 17, blending, bit 19, index logic op, and bit 20,
+ * colour logic op. The shared rasterizer fills a flat triangle from its
+ * provoking vertex, the last one for triangles and strips as GL specifies.
  * Nothing in the stream says which vertex the board takes; the library
  * never reorders or repeats colours to steer it, so GL's own rule is
  * INFERRED. Called on every 0x0404, including the X server's pattern-mode
  * writes, which touch only the 2D interpreter's own state otherwise.
+ *
+ * This model has no stencil planes, so the shared rasterizer's stencil
+ * pipeline stays permanently unset and the enable below never gates a
+ * pixel: with no stencil buffer, OpenGL defines the stencil test to always
+ * pass, which is exactly the behaviour a model with no stencil planes
+ * already has. Feeding the enable keeps the decoded GL state faithful
+ * without drawing a stencil test that could never do anything.
  */
 static void odyssey_gl_apply_mode(SGIOdysseyState *s)
 {
@@ -3664,6 +3728,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                      SGI_GL_FLAT : SGI_GL_SMOOTH;
     uint32_t depth_test = SGI_GL_DEPTH_TEST;
     uint32_t alpha_test = SGI_GL_ALPHA_TEST;
+    uint32_t stencil_test = SGI_GL_STENCIL_TEST;
     uint32_t blend = SGI_GL_BLEND;
     uint32_t index_logic_op = SGI_GL_INDEX_LOGIC_OP;
     uint32_t color_logic_op = SGI_GL_COLOR_LOGIC_OP;
@@ -3681,6 +3746,8 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &depth_test, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_ALPHA_TEST ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &alpha_test, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_STENCIL_TEST ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &stencil_test, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_BLEND ?
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &blend, 1);
     odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_INDEX_LOGIC_OP ?
@@ -3730,6 +3797,31 @@ static uint32_t odyssey_blend_factor(uint32_t code, bool dst)
         return SGI_GL_ONE_MINUS_CONSTANT_ALPHA;
     case 0x40:
         return dst ? UINT32_MAX : SGI_GL_SRC_ALPHA_SATURATE;
+    default:
+        return UINT32_MAX;
+    }
+}
+
+/*
+ * 0x041f's three 3-bit stencil-op fields (fail, depth-fail, depth-pass) to
+ * the shared layer's enum: KEEP 0, ZERO 1, REPLACE 2, INCR 3, DECR 4,
+ * INVERT 5. Returns UINT32_MAX for the two codes the board leaves unused.
+ */
+static uint32_t odyssey_stencil_op(uint32_t code)
+{
+    switch (code) {
+    case 0:
+        return SGI_GL_KEEP;
+    case 1:
+        return 0;                       /* GL_ZERO */
+    case 2:
+        return SGI_GL_REPLACE;
+    case 3:
+        return SGI_GL_INCR;
+    case 4:
+        return SGI_GL_DECR;
+    case 5:
+        return SGI_GL_INVERT;
     default:
         return UINT32_MAX;
     }
@@ -6342,10 +6434,20 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->gl_depth_func = s->cmd_operand[0];
         odyssey_gl_apply_depth(s);
         break;
-    case ODSY_REG_WRITE_MASK:
+    case ODSY_REG_WRITE_MASK: {
+        uint32_t stencil_mask = (s->cmd_operand[0] >>
+                                 ODSY_WRITE_STENCIL_SHIFT) &
+                                ODSY_WRITE_STENCIL_MASK;
+
         s->gl_write_mask = s->cmd_operand[0];
         odyssey_gl_apply_depth(s);
+        /*
+         * Forced 0 without stencil planes, which this model has none of; fed
+         * regardless, since it is still the GL state the library decoded.
+         */
+        odyssey_gl_feed(s, SGI_GL_OP_STENCIL_MASK, &stencil_mask, 1);
         break;
+    }
     case ODSY_REG_ALPHA_FUNC: {
         uint32_t word = s->cmd_operand[0];
         uint32_t args[2];
@@ -6355,6 +6457,35 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         args[1] = odyssey_f32_bits((word & ODSY_ALPHA_REF_MASK) /
                                    ODSY_ALPHA_REF_SCALE);
         odyssey_gl_feed(s, SGI_GL_OP_ALPHA_FUNC, args, 2);
+        break;
+    }
+    case ODSY_REG_STENCIL_FUNC: {
+        uint32_t word = s->cmd_operand[0];
+        uint32_t args[3];
+        uint32_t fail, zfail, zpass;
+
+        args[0] = SGI_GL_NEVER_ENUM + ((word >> ODSY_STENCIL_FUNC_SHIFT) &
+                                       ODSY_STENCIL_FUNC_MASK);
+        args[1] = word & ODSY_STENCIL_REF_MASK;
+        args[2] = (word >> ODSY_STENCIL_VALUE_MASK_SHIFT) &
+                  ODSY_STENCIL_VALUE_MASK_MASK;
+        odyssey_gl_feed(s, SGI_GL_OP_STENCIL_FUNC, args, 3);
+
+        fail = odyssey_stencil_op((word >> ODSY_STENCIL_OP_FAIL_SHIFT) &
+                                  ODSY_STENCIL_OP_MASK);
+        zfail = odyssey_stencil_op((word >> ODSY_STENCIL_OP_ZFAIL_SHIFT) &
+                                   ODSY_STENCIL_OP_MASK);
+        zpass = odyssey_stencil_op((word >> ODSY_STENCIL_OP_ZPASS_SHIFT) &
+                                   ODSY_STENCIL_OP_MASK);
+        if (fail == UINT32_MAX || zfail == UINT32_MAX || zpass == UINT32_MAX) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: stencil op word 0x%x is "
+                          "not modeled\n", word);
+        } else {
+            args[0] = fail;
+            args[1] = zfail;
+            args[2] = zpass;
+            odyssey_gl_feed(s, SGI_GL_OP_STENCIL_OP, args, 3);
+        }
         break;
     }
     case ODSY_REG_BLEND: {
@@ -7473,6 +7604,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->gl_block16[3] = 0x3f800000;
     s->gl_rect_depth_logged = false;
     s->gl_rect_pattern_logged = false;
+    s->gl_index_mask_logged = false;
     /*
      * Lighting out of reset. The hardware's values are unknown; the model
      * starts at GL's initial material, light-model ambient, normal and
