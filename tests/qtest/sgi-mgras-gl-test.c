@@ -968,6 +968,33 @@ static void test_gl_matrix_stack_holds_32(void)
 }
 #define GL_Q_PROJECTION       0x4a
 #define GL_Q_MATRIX_MODE      0x29
+#define GL_Q_WINDOW_ORIGIN    0x31f
+
+static void test_hq_query_answers_the_window_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_gl_slot(qts, GL_SLOT_A, 256, 640, 128, 128, 0x11);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==,
+                    (640u << 16) | 256u);
+
+    mgras_enter_gl_slot(qts, GL_SLOT_B, 400, 700, 128, 128, 0x11);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==,
+                    (700u << 16) | 400u);
+
+    mgras_enter_gl_slot(qts, GL_SLOT_A, 256, 640, 128, 128, 0x11);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==,
+                    (640u << 16) | 256u);
+
+    mgras_enter_gl_slot(qts, GL_SLOT_A, 0xfffe, 0xfffd, 128, 128, 0x11);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==, 0xfffdfffe);
+
+    mgras_enter_gl_slot(qts, GL_SLOT_A, 256, 640, 128, 128, 0);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==, 0);
+
+    mgras_enter_gl_slot(qts, GL_SLOT_A, 256, 640, 128, 128, 0x31);
+    g_assert_cmphex(gl_query(qts, GL_Q_WINDOW_ORIGIN, 1), ==, 0);
+}
 
 /*
  * Each matrix query answers its own stack's current matrix, column-major,
@@ -1918,6 +1945,8 @@ int main(int argc, char **argv)
                    test_hq_query_sets_flag_after_arguments);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-matrices",
                    test_hq_query_answers_the_matrices);
+    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-window-origin",
+                   test_hq_query_answers_the_window_origin);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-position",
                    test_hq_query_answers_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",

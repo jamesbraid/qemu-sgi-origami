@@ -1142,7 +1142,7 @@ static void mgras_gl_bind(SGIMgrasState *s)
     uint32_t mode = clip >> 4;
     unsigned int back = s->gl_banks[0] & 1;
     SGIGLDrawable d = {
-        .origin = { origin & 0xffff, origin >> 16 },
+        .origin = { sextract32(origin, 0, 16), sextract32(origin, 16, 16) },
         .front = 1u << (back ^ 1),
         .back = 1u << back,
         /*
@@ -1541,6 +1541,7 @@ void sgi_mgras_gl_context_loaded(SGIMgrasState *s)
  */
 #define MGRAS_GL_ATTR_INDEX      4
 #define MGRAS_GL_QUERY_RASTER_INDEX 0x351
+#define MGRAS_GL_QUERY_WINDOW_ORIGIN 0x31f
 
 uint32_t sgi_mgras_gl_attribute_answer(SGIMgrasState *s, uint32_t index)
 {
@@ -1982,6 +1983,12 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
     }
     if (mgras_gl_raster_query(s, index, &out[0])) {
         return out[0];
+    }
+    if (index == MGRAS_GL_QUERY_WINDOW_ORIGIN &&
+        mgras_gl(s)->cur.drawable.bound) {
+        const int32_t *origin = mgras_gl(s)->cur.drawable.origin;
+
+        return (uint16_t)origin[0] | (uint32_t)(uint16_t)origin[1] << 16;
     }
     if (index == MGRAS_GL_QUERY_WRITEMASK) {
         return mgras_gl_writemask_answer(s);
