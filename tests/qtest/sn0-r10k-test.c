@@ -1256,26 +1256,279 @@ static void test_r10k_tlb_interleaved(void)
     qtest_quit(qts);
 }
 
-int main(int argc, char **argv)
-{
-    g_test_init(&argc, &argv, NULL);
+#define COUNT_IMAGE_SIZE    0x1000
+#define COUNT_DONE_OFF      0x60
+#define COUNT_FAULT_OFF     0x68
+#define COUNT_START_OFF     0x70
+#define COUNT_END_OFF       0x78
+#define COUNT_DONE_MAGIC    0x434e544d /* "CNTM" */
+#define CP0_COUNT           9
 
-    qtest_add_func("/sn0/nmi/entry-and-retrigger",
-                   test_nmi_entry_and_retrigger);
-    qtest_add_func("/sn0/nmi/reset-rearms", test_nmi_reset_rearms);
-    qtest_add_func("/r16000/nmi/entry-and-retrigger",
-                   test_r16000_nmi_entry_and_retrigger);
-    qtest_add_func("/r16000/nmi/cold-reset-control",
-                   test_r16000_nmi_reset_rearms);
-    qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
-    qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
-    g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
-    qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
-                   test_indirect_and_unmapped_chaining);
-    qtest_add_func("/sn0/tcg/prefetch-hints",
-                   test_r10k_prefetch_hints);
-    qtest_add_func("/sn0/tcg/tlb-interleaved",
-                   test_r10k_tlb_interleaved);
+static void count_write_guest_image(int fd)
+{
+    uint8_t *image = g_malloc0(COUNT_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = COUNT_IMAGE_SIZE };
+    ssize_t written;
+
+    img.pos = VEC_TLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_FAULT_OFF);
+    img.pos = VEC_XTLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_FAULT_OFF);
+    img.pos = VEC_CACHE_ERROR;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_FAULT_OFF);
+    img.pos = VEC_GENERAL;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_FAULT_OFF);
+
+    img.pos = 0;
+    /* Clear ERL */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    /* Read initial Count into S0 (16) */
+    emit_mfc0(&img, 16, CP0_COUNT);
+
+    /* Loop 100 iterations reading count */
+    emit_addiu(&img, R_T1, R_ZERO, 100);
+    unsigned int loop_start = img.pos;
+    emit_mfc0(&img, R_T0, CP0_COUNT);
+    emit_addiu(&img, R_T1, R_T1, -1);
+    emit_branch(&img, OPC_BNE, R_T1, R_ZERO, loop_start);
+    emit_nop(&img);
+
+    /* Read final Count into S1 (17) */
+    emit_mfc0(&img, 17, CP0_COUNT);
+
+    emit_lui(&img, R_T0, STATE_KSEG1_HI);
+    emit_sd(&img, 16, R_T0, COUNT_START_OFF);
+    emit_sd(&img, 17, R_T0, COUNT_END_OFF);
+
+    emit_lui(&img, R_T2, (uint16_t)(COUNT_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T2, R_T2, (int16_t)(COUNT_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T2, R_T0, COUNT_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int spin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(&img);
+
+    written = write(fd, image, COUNT_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, COUNT_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_count_chaining(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-count-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    count_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + COUNT_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + COUNT_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)COUNT_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + COUNT_DONE_OFF), ==,
+                    (uint64_t)COUNT_DONE_MAGIC);
+    uint32_t start = (uint32_t)qtest_readq(qts, STATE_PHYS + COUNT_START_OFF);
+    uint32_t end = (uint32_t)qtest_readq(qts, STATE_PHYS + COUNT_END_OFF);
+    g_assert_cmpuint(end, >, start);
+
+    qtest_quit(qts);
+}
+
+#define R_S0                16
+
+#define COUNT_INT_IMAGE_SIZE    0x1000
+#define COUNT_INT_DONE_OFF      0xa0
+#define COUNT_INT_FAULT_OFF     0xa8
+#define COUNT_INT_EPC_OFF       0xb0
+#define COUNT_INT_CANARY_OFF    0xb8
+#define COUNT_INT_CAUSE_OFF     0xc0
+#define COUNT_INT_DONE_MAGIC    0x434e5449 /* "CNTI" */
+#define CP0_COMPARE             11
+#define CP0_CAUSE               13
+#define CP0_EPC                 14
+#define COUNT_INT_CODE_START    0x500
+
+static void count_interrupt_write_guest_image(int fd, uint32_t *canary_pc)
+{
+    uint8_t *image = g_malloc0(COUNT_INT_IMAGE_SIZE);
+    GuestImage img = { .code = image, .pos = 0, .size = COUNT_INT_IMAGE_SIZE };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, COUNT_INT_CODE_START);
+    emit_nop(&img);
+
+    img.pos = VEC_TLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_INT_FAULT_OFF);
+    img.pos = VEC_XTLB_REFILL;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_INT_FAULT_OFF);
+    img.pos = VEC_CACHE_ERROR;
+    emit_report_and_spin(&img, FAULT_MAGIC, COUNT_INT_FAULT_OFF);
+
+    /*
+     * General exception / interrupt vector:
+     * When Count reaches Compare, timer interrupt IP7 fires.
+     * With Status.IE=1, Status.IM7=1, Status.EXL=0, Status.ERL=0,
+     * the interrupt vectors here.
+     * We record EPC, Cause, and canary $s0.
+     */
+    img.pos = VEC_GENERAL;
+    emit_mfc0(&img, R_T0, CP0_EPC);
+    emit_mfc0(&img, R_T2, CP0_CAUSE);
+    emit_lui(&img, R_T3, STATE_KSEG1_HI);
+    emit_sd(&img, R_T0, R_T3, COUNT_INT_EPC_OFF);
+    emit_sd(&img, R_S0, R_T3, COUNT_INT_CANARY_OFF);
+    emit_sd(&img, R_T2, R_T3, COUNT_INT_CAUSE_OFF);
+
+    /* Acknowledge/clear the timer interrupt */
+    emit_mtc0(&img, R_ZERO, CP0_COMPARE);
+
+    /* Signal completion */
+    emit_lui(&img, R_T0, (uint16_t)(COUNT_INT_DONE_MAGIC >> 16));
+    emit_addiu(&img, R_T0, R_T0, (int16_t)(COUNT_INT_DONE_MAGIC & 0xffff));
+    emit_sd(&img, R_T0, R_T3, COUNT_INT_DONE_OFF);
+    emit(&img, OPC_SYNC);
+
+    unsigned int hspin = img.pos;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, hspin);
+    emit_nop(&img);
+
+    /* Dedicated interrupt vector when Cause.IV == 1 */
+    img.pos = 0x400;
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, VEC_GENERAL);
+    emit_nop(&img);
+
+    img.pos = COUNT_INT_CODE_START;
+
+    /* Base address for memory stores: STATE_KSEG1_HI */
+    emit_lui(&img, R_T3, STATE_KSEG1_HI);
+
+    /* Initialize canary register $s0 to 0 */
+    emit_addiu(&img, R_S0, R_ZERO, 0);
+
+    /* Clear ERL in Status */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_addiu(&img, R_T1, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    /*
+     * Reset Count to 0 and arm Compare for 20,000,000 ticks (200 ms).
+     * Writing Count directly establishes timer_adjacent_pending and
+     * guarantees Compare is in the future.
+     */
+    emit_mtc0(&img, R_ZERO, CP0_COUNT);
+    emit_ehb(&img);
+    emit_lui(&img, R_T2, 0x0131);
+    emit_ori(&img, R_T2, R_T2, 0x2d00); /* 20,000,000 ticks = 200 ms */
+    emit_mtc0(&img, R_T2, CP0_COMPARE);
+    emit_ehb(&img);
+
+    /* Enable interrupts: IE (bit 0) and IM7 (bit 15) -> Status |= 0x8001 */
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_lui(&img, R_T1, 0);
+    emit_ori(&img, R_T1, R_T1, 0x8001);
+    emit_or(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+
+    /*
+     * Polling loop:
+     * Set canary $s0 = 0 before mfc0.
+     * Read Count. When Count reaches Compare, helper raises timer IP7.
+     * With DISAS_EXIT, execution exits immediately at the mfc0 boundary.
+     * The interrupt is taken before the next instruction (addiu $s0, 0x1111)
+     * runs, leaving $s0 == 0 and EPC == address of addiu.
+     */
+    unsigned int poll_loop = img.pos;
+    emit_addiu(&img, R_S0, R_ZERO, 0);
+    emit_mfc0(&img, R_T0, CP0_COUNT);
+    *canary_pc = 0xbfc00000u + img.pos;
+    emit_addiu(&img, R_S0, R_ZERO, 0x1111);
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, poll_loop);
+    emit_nop(&img);
+
+    written = write(fd, image, COUNT_INT_IMAGE_SIZE);
+    g_assert_cmpint(written, ==, COUNT_INT_IMAGE_SIZE);
+    g_free(image);
+}
+
+static void test_r10k_count_interrupt_delivery(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint32_t expected_epc = 0;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-count-int-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    count_interrupt_write_guest_image(fd, &expected_epc);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+
+    for (int i = 0; i < POLL_TRIES; i++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + COUNT_INT_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + COUNT_INT_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, (uint64_t)COUNT_INT_DONE_MAGIC);
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + COUNT_INT_FAULT_OFF), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + COUNT_INT_DONE_OFF), ==,
+                    (uint64_t)COUNT_INT_DONE_MAGIC);
+
+    /* Canary register $s0 must be 0: instruction after mfc0 did NOT execute */
+    uint64_t canary = qtest_readq(qts, STATE_PHYS + COUNT_INT_CANARY_OFF);
+    g_assert_cmphex(canary, ==, 0);
+
+    /* EPC must point to the instruction immediately following mfc0 Count */
+    uint64_t epc = qtest_readq(qts, STATE_PHYS + COUNT_INT_EPC_OFF);
+    g_assert_cmphex((uint32_t)epc, ==, expected_epc);
+
+    /* Cause must have IP7 (bit 15) set and ExcCode == 0 (Interrupt) */
+    uint64_t cause_raw = qtest_readq(qts, STATE_PHYS + COUNT_INT_CAUSE_OFF);
+    uint32_t cause = (uint32_t)cause_raw;
+    g_assert_cmphex(cause & (1u << 15), ==, (1u << 15));
+    g_assert_cmphex(cause & 0x7cu, ==, 0);
+
+    qtest_quit(qts);
+}
+
+    qtest_add_func("/sn0/tcg/count-chaining",
+                   test_r10k_count_chaining);
+    qtest_add_func("/sn0/tcg/count-interrupt-delivery",
+                   test_r10k_count_interrupt_delivery);
 
     return g_test_run();
 }
