@@ -824,6 +824,7 @@
           "component": { "$ref": "#/$defs/identifier" },
           "bus": { "$ref": "#/$defs/identifier" },
           "role": { "enum": ["master", "endpoint", "bridge-upstream", "bridge-downstream"] },
+          "pci_head": { "type": "integer", "minimum": 0 },
           "provenance": { "$ref": "#/$defs/fact-provenance" },
           "sources": { "$ref": "#/$defs/sources" },
           "evidence_gap": { "type": "string", "minLength": 1 },
@@ -883,7 +884,16 @@
           "controlled_by": { "$ref": "#/$defs/identifier", "description": "Component whose node owns or controls this attachment." },
           "chip_select": { "type": "integer", "description": "Byte-bus device select." },
           "notes": { "type": "string" }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "required": ["pci_head"] },
+            "then": {
+              "required": ["role"],
+              "properties": { "role": { "const": "bridge-downstream" } }
+            }
+          }
+        ]
       }
     },
 
