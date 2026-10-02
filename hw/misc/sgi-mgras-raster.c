@@ -100,6 +100,9 @@
 #define MGRAS_DESC_20000_REG_ROWS 7
 #define MGRAS_DESC_20000_REG_BPR 8
 #define MGRAS_DESC_20000_REG_KICK 11
+/* X.Org's pg_list0 to pg_list3, and the word after pg_widtha. */
+#define MGRAS_DESC_20000_REG_PAGE_LIST 0
+#define MGRAS_DESC_20000_REG_LAST_BYTES 9
 #define MGRAS_DESC_20000_REG_LIST_EXECUTE 0x0c
 #define MGRAS_DMA_KICK_DIRECTION_READ 0x08
 
@@ -2486,6 +2489,90 @@ bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
         }
         sgi_dma_unmap(&map);
     }
+    return !ret;
+}
+
+/*
+ * The HQ page-list form, as the OpenGL client's TRAM restore sends it
+ * (its texture-load-from-save routine, 0xd9a4390 in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so): 0x00080010 with four words, X.Org's pg_list0
+ * to pg_list3, holding up to eight 16-bit entries high half first, the
+ * last with bit 15 set; pg_offset (register 5), pg_widtha (8), register
+ * 9 and pg_linecnt (7) 1, with pg_width (4) 0x1000 sent before. In a
+ * captured run (irix-20261002T030031-a3ed43) a transfer of 32,640 bytes
+ * named entries 1 to 8 with pg_offset 0, pg_widtha 0x1000 and register 9
+ * 0xf80, and the next, of 28,800, entries 8 to 15 with pg_offset 0xf80,
+ * pg_widtha 0x80 and register 9 0x1000: both are the first entry's
+ * pg_widtha bytes from pg_offset, the middle entries whole, and register
+ * 9's bytes of the last, established as that arithmetic on the two
+ * shapes. Inferred: that an entry indexes the slot's page list, which the
+ * kernel installed just before. The bytes run on through the pages as one
+ * stream.
+ */
+bool sgi_mgras_raster_dma_page_list_read(SGIMgrasState *s, uint32_t kick_byte,
+                                         uint8_t *buf, uint64_t bytes)
+{
+    const uint32_t *d = s->dma_desc_20000;
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    uint32_t width = d[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t first = d[MGRAS_DESC_20000_REG_BPR];
+    uint32_t last = d[MGRAS_DESC_20000_REG_LAST_BYTES];
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    g_autofree uint64_t *chosen = NULL;
+    uint32_t entry[8], n = 0;
+    uint64_t total;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl, run;
+    SGIDMAMap map = { 0 };
+    bool ended = false;
+    int ret;
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(entry) && !ended; i++) {
+        uint32_t half = d[MGRAS_DESC_20000_REG_PAGE_LIST + i / 2] >>
+                        (i % 2 ? 0 : 16);
+
+        entry[n++] = half & 0x7fff;
+        ended = half & 0x8000;
+    }
+    total = n == 1 ? first : first + (uint64_t)(n - 2) * width + last;
+    if (!ended || width != MGRAS_DMA_PAGE_SIZE ||
+        offset + first > MGRAS_DMA_PAGE_SIZE ||
+        (n > 1 && offset + first != MGRAS_DMA_PAGE_SIZE) || total != bytes) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: page-list DMA of %u "
+                      "entries%s, offset 0x%" PRIx64 ", first 0x%x, last 0x%x "
+                      "for a transfer of %" PRIu64 " bytes; nothing moved\n",
+                      n, ended ? "" : " with no last entry", offset, first,
+                      last, bytes);
+        return false;
+    }
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    chosen = g_new(uint64_t, n);
+    for (uint32_t i = 0; i < n; i++) {
+        if (entry[i] >= pl.npages) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: page-list DMA entry "
+                          "%u past the slot's %u pages; nothing moved\n",
+                          entry[i], pl.npages);
+            return false;
+        }
+        chosen[i] = page_addr[entry[i]];
+    }
+    run = (SGIDMAPageList) {
+        .addr = chosen,
+        .npages = n,
+        .page_size = MGRAS_DMA_PAGE_SIZE,
+    };
+    ret = sgi_dma_map(&bus, &map, &run, offset, bytes,
+                      DMA_DIRECTION_TO_DEVICE, trace, s->trace_sequence - 1);
+    if (!ret && !sgi_dma_map_copy(&map, offset, buf, bytes, false)) {
+        ret = SGI_FAIL_BOUNDS;
+    }
+    sgi_dma_unmap(&map);
     return !ret;
 }
 

@@ -50,8 +50,8 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
 /*
  * Whether a DMA kick, a read when read, is the one an open TRAM save or
- * restore was waiting for: if so it was taken here and has moved its
- * bytes.
+ * restore (or a 0x9d10 transfer the model does not take) was waiting for:
+ * if so it was taken here and has moved its bytes.
  */
 bool sgi_mgras_texture_tram_kick(SGIMgrasState *s, uint32_t kick_byte,
                                  bool read);

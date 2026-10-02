@@ -1731,10 +1731,12 @@ static void test_mxi_texbase_both_rows(gconstpointer data)
 #define TRAM_READ_DONE        0x0000da00
 #define TRAM_RESTORE_OPEN     0x0000e300
 #define TRAM_GE_COUNT_HDR     0x0000d80c
+#define TRAM_GE_DMA_HDR       0x00009d10
 #define TRAM_RE_SYNC          0x0000f200
 #define TRAM_READ_FENCE       0x000e0100
 #define TRAM_TEX_BASE_HDR     0x0000eb04
 #define TRAM_FORMAT_RGBA8     0x00400080
+#define TRAM_FORMAT_RGB8      0x00400070
 #define TRAM_BLOCK_ROWS       0x40
 #define TRAM_BLOCK_BYTES      0x4000
 #define TRAM_BUFFER_OFFSET    0x4000u
@@ -1743,6 +1745,8 @@ static void test_mxi_texbase_both_rows(gconstpointer data)
 #define TEX_TL_ADDR           0x1a3
 #define TEX_TL_MIPMAP         0x1a4
 #define TEX_TL_SPEC_WHOLE     0xd60
+#define TEX_TL_MODE_RGB8      0x34024
+#define TEX_TEXMODE1_RGB_ON   0x40851
 
 /* 0x7f08 register pairs, as the kernel's register-write routine sends. */
 static void tram_pairs(QTestState *t, const uint32_t *pairs, uint32_t n)
@@ -2005,6 +2009,185 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     qtest_quit(t);
 }
 
+/* DMA-map slot 1's page list, eight pages from frame first, as the kernel. */
+#define TRAM_SLOT1_LIST       0x3000u
+
+static void tram_slot1_map(QTestState *t, uint32_t first)
+{
+    static const uint8_t header[24] = { 0 };
+    uint8_t list[8 * 8];
+
+    for (int i = 0; i < 8; i++) {
+        stq_be_p(list + 8 * i, first + i);
+    }
+    qtest_memwrite(t, TRAM_SLOT1_LIST, header, sizeof(header));
+    qtest_memwrite(t, TRAM_SLOT1_LIST + 0x18, list, sizeof(list));
+    /* DMA-map slot 1: registers 0x22/0x23, 0x31 and 0x4c. */
+    qtest_writel(t, MGRAS_REG(0x130400), 0x00482208);
+    qtest_writeq(t, MGRAS_REG(0x130400), TRAM_SLOT1_LIST + 0x18);
+    qtest_writeq(t, MGRAS_REG(0x130400), ((uint64_t)0x00483104 << 32) | 8);
+    qtest_writeq(t, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484c04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+}
+
+/*
+ * The client's GE transfer: 0x9d10 with bytes / 4 in three 9-bit parts and
+ * the GE routine, then the HQ page-list form over slot 1's entries first
+ * to first + pages - 1, whole pages, kicked 0xa3, and the fence.
+ */
+static void tram_ge_dma(QTestState *t, uint32_t routine, uint32_t bytes,
+                        uint32_t first)
+{
+    uint32_t words = bytes / 4, pages = bytes / 0x1000;
+    uint32_t list[4] = { 0 };
+
+    gl_word(t, TRAM_GE_DMA_HDR);
+    gl_word(t, (words >> 18) & 0x1ff);
+    gl_word(t, (words >> 9) & 0x1ff);
+    gl_word(t, words & 0x1ff);
+    gl_word(t, routine);
+    for (uint32_t i = 0; i < pages; i++) {
+        uint32_t e = (first + i) | (i == pages - 1 ? 0x8000 : 0);
+
+        list[i / 2] |= e << (i % 2 ? 0 : 16);
+    }
+    gl_word(t, 0x00080404);
+    gl_word(t, 0x1000);
+    gl_word(t, 0x00080604);
+    gl_word(t, 0);
+    gl_word(t, 0x00080010);
+    for (int i = 0; i < 4; i++) {
+        gl_word(t, list[i]);
+    }
+    gl_word(t, 0x00080504);
+    gl_word(t, 0);
+    gl_word(t, 0x00080804);
+    gl_word(t, 0x1000);
+    gl_word(t, 0x00080904);
+    gl_word(t, 0x1000);
+    gl_word(t, 0x00080704);
+    gl_word(t, 1);
+    qtest_writel(t, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    gl_word(t, 0x00080b04);
+    gl_word(t, 0xa3);
+    gl_word(t, MGRAS_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(t, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+}
+
+/* TL_ADDR 0 and TL_MIPMAP entry 0 = block, as the client's restore. */
+static void tram_tl_mipmap(QTestState *t, uint32_t block)
+{
+    tex_record(t, TEX_TL_ADDR, 0);
+    gl_word(t, TEX_TABLE);
+    gl_word(t, 0xc65);
+    gl_word(t, 0xc66);
+    gl_word(t, TEX_TL_MIPMAP);
+    gl_word(t, block);
+}
+
+/*
+ * The client's own save and restore of a texture its manager evicts, as
+ * the IP27GR532 client sent them for an RGB texture in a captured run:
+ * the read through the kernel (0xe50c, format 0x400070) takes three bytes
+ * a location, 12 KiB for a block's 64 rows, and holds the level's RGB
+ * bytes in order; a texture loaded over it replaces it; and the restore,
+ * a load under TL_SPEC 0xd60 of 64 rows 64 wide at TL_MIPMAP's block, its
+ * bytes through 0x9d10 for routine 0x511a and the page-list form from
+ * slot 1, puts the first texture back, which then draws. A model that took
+ * the restore's kick as a raster image, as before, draws the second.
+ */
+#define TEX_GE_LOAD_ROUTINE   0x511a
+#define TRAM_RGB_BLOCK_BYTES  0x3000
+
+static void test_tram_client_restore_round_trip(void)
+{
+    static const uint32_t box[6] = { 0, 0, 4, 2, 2 << 16 | 4, 0 };
+    static const uint32_t rows[6] = { 0, 0, 64, 64, 64 << 16 | 64, 0 };
+    QTestState *t = tex_start(TEX_ARGS);
+    g_autofree uint8_t *buffer = g_malloc(TRAM_RGB_BLOCK_BYTES);
+    uint8_t texels[32], first[24], second[24];
+
+    tex_texels(texels);
+    for (int i = 0; i < 8; i++) {
+        memcpy(&first[3 * i], &texels[4 * i], 3);
+        for (int k = 0; k < 3; k++) {
+            second[3 * i + k] = first[3 * i + k] ^ 0x5a;
+        }
+    }
+    tex_load_fmt(t, true, TEX_TL_MODE_RGB8, TEX_SPEC_4X2, first, 4, 2, 3,
+                 box, true, 0, 0);
+    memset(buffer, TRAM_BUFFER_FILL, TRAM_RGB_BLOCK_BYTES);
+    qtest_memwrite(t, TRAM_BUFFER, buffer, TRAM_RGB_BLOCK_BYTES);
+
+    tex_mipmap_word(t, 0);
+    tram_save_rss(t);
+    tram_read(t, TRAM_BLOCK_ROWS, TRAM_FORMAT_RGB8, TRAM_RGB_BLOCK_BYTES,
+              GL_ERAM_READ_KICK);
+    qtest_memread(t, TRAM_BUFFER, buffer, TRAM_RGB_BLOCK_BYTES);
+    g_assert_true(tram_buffer_holds(buffer, TRAM_RGB_BLOCK_BYTES, first,
+                                    sizeof(first)));
+
+    tex_load_fmt(t, false, 0, TEX_SPEC_4X2, second, 4, 2, 3, box, true, 0, 0);
+    tex_bind(t, TEX_TEXMODE1_RGB_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
+                    second[0] << 16 | second[1] << 8 | second[2]);
+
+    /* The saved bytes sit at frame 0xb, entry 4 of slot 1's list from 7. */
+    tram_slot1_map(t, 7);
+    tex_record(t, TEX_TL_MODE, 0x4024);
+    tram_tl_mipmap(t, 0);
+    tex_record(t, TEX_TL_SPEC, TEX_TL_SPEC_WHOLE);
+    tram_save_rss(t);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, rows, 6);
+    tram_ge_dma(t, TEX_GE_LOAD_ROUTINE, TRAM_RGB_BLOCK_BYTES, 4);
+    gl_word(t, TEX_RESTORE_RSS);
+
+    tex_bind(t, TEX_TEXMODE1_RGB_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (int i = 0; i < 8; i++) {
+        const uint8_t *p = &first[3 * i];
+
+        g_assert_cmphex(tex_texel_pixel(t, i % 4, i / 4), ==,
+                        p[0] << 16 | p[1] << 8 | p[2]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+/*
+ * A 0x9d10 for any other routine, or outside the whole-TRAM shape, opens a
+ * transfer to the GE the model does not take: its kick moves nothing,
+ * here under a raster box over screen row 0 1,024 pixels wide that would
+ * take a 4 KiB page of slot 1, the listed one or the first, as 1,024
+ * pixels of 0x5a bytes.
+ */
+static void test_tram_ge_dma_is_not_a_raster_image(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t fill[0x1000];
+    uint32_t before[4];
+
+    memset(fill, 0x5a, sizeof(fill));
+    qtest_memwrite(t, 0x7000, fill, sizeof(fill));
+    qtest_memwrite(t, 0xb000, fill, sizeof(fill));
+    tram_slot1_map(t, 7);
+    qtest_writeq(t, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BLOCK_START, 0));
+    qtest_writeq(t, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (1023u << 16) | 0));
+    for (int i = 0; i < 4; i++) {
+        before[i] = mgras_test_pixel(t, 256 * i + 3, 0);
+    }
+    tex_record(t, TEX_TL_SPEC, TEX_SPEC_4X2);
+    tram_ge_dma(t, 0x49d0, 0x1000, 4);
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(mgras_test_pixel(t, 256 * i + 3, 0), ==, before[i]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 /*
  * A save whose read kick never came does not take the next read that is
  * not its own: after a lone 0xe50c, a raster read of three pixels of
@@ -2106,6 +2289,10 @@ int main(int argc, char **argv)
                    test_tram_load_is_one_store);
     qtest_add_func("sn0/origin2000/mgras/tram-save-returns-the-block",
                    test_tram_save_returns_the_block);
+    qtest_add_func("sn0/origin2000/mgras/tram-client-restore-round-trip",
+                   test_tram_client_restore_round_trip);
+    qtest_add_func("sn0/origin2000/mgras/tram-ge-dma-is-not-a-raster-image",
+                   test_tram_ge_dma_is_not_a_raster_image);
     qtest_add_func("sn0/origin2000/mgras/tram-open-save-ends-at-other-kick",
                    test_tram_open_save_ends_at_other_kick);
     qtest_add_func("sn0/origin2000/mgras/"
