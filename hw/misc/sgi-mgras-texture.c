@@ -37,7 +37,14 @@
  *   texels along the image's rows (established as words; that the board
  *   places each strip at x, y is inferred from them). The model stores
  *   each strip into the level, keeping the strips loaded before it, and
- *   refuses one that does not lie inside the level. Words 0xe36 and 0xe37,
+ *   refuses one that does not lie inside the level and the one-texel
+ *   border around it. A bordered image (distort's) is sent at x = y = -1
+ *   with the level's size plus two in each direction, its strips at -1,
+ *   64 ... 448 and 512 for a 512-wide level; the model stores the texels
+ *   inside the level and drops the border, approximated: whether the board
+ *   keeps them (the load's fifth GE word, the TXBORDER word, may name
+ *   their block, inferred) and how a clamped read uses them are unknown.
+ *   Words 0xe36 and 0xe37,
  *   the rectangle's size again where the image path loads inclusive
  *   corners, are not read, and neither are the bytes a pixel in XFRMODE,
  *   0xc00080 on these four-byte levels. The kept format is TL_MODE's
@@ -138,12 +145,8 @@
  *   is the shared rasterizer's, OpenGL 1.2.1, approximated.
  *
  * Not implemented, and logged with the draw untextured: the multi-buffer
- * read (TEXMODE2 bit 4 and TL_MODE bit 8), bordered textures (a bordered
- * image is two texels wider and taller than its level, so its load does
- * not lie inside the level and is not stored, and its draw has no level
- * of its own: it is untextured unless an older level was loaded under the
- * same key, which a refused load leaves drawable, as every refusal here
- * does; inferred, as no bordered load was traced), detail,
+ * read (TEXMODE2 bit 4 and TL_MODE bit 8), the border texels of a
+ * bordered image (see "Load"), detail,
  * the texture colour table, one-dimensional and volume textures,
  * texture-select groups and two-component GL_ABGR_EXT loads.
  *
@@ -524,6 +527,21 @@ static bool mgras_tex_image_fits(uint32_t mode, uint32_t comps,
         return false;
     }
     return csize == 2 || MGRAS_TEX_DEPTH(mode) != MGRAS_TEX_DEPTH_12;
+}
+
+/*
+ * Whether a rectangle of rw by rh at x, y, the guest's signed words, lies
+ * inside a w by h level and the one-texel border around it. A bordered
+ * image is sent at -1, -1 with two texels more in each direction (distort
+ * and its 512-by-512 level's strips at -1, 64 to 448 and 512).
+ */
+static bool mgras_tex_rect_fits(uint32_t x, uint32_t y, uint32_t rw,
+                                uint32_t rh, uint32_t w, uint32_t h)
+{
+    int64_t sx = (int32_t)x, sy = (int32_t)y;
+
+    return rw && rh && sx >= -1 && sy >= -1 && sx + rw <= (int64_t)w + 1 &&
+           sy + rh <= (int64_t)h + 1;
 }
 
 /* Bits a component of a kept format: 4, 8 or 12. */
@@ -1243,11 +1261,11 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
                       comps, csize, hq, mode);
         return true;
     }
-    if (!rw || !rh || rw > w || rh > h || x > w - rw || y > h - rh) {
+    if (!mgras_tex_rect_fits(x, y, rw, rh, w, h)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load of %u by %u at "
-                      "%u, %u (size word 0x%x) is not inside TL_SPEC 0x%x's "
-                      "%u by %u; nothing stored\n", rw, rh, x, y, size, spec,
-                      w, h);
+                      "%d, %d (size word 0x%x) is not inside TL_SPEC 0x%x's "
+                      "%u by %u and its one-texel border; nothing stored\n",
+                      rw, rh, (int32_t)x, (int32_t)y, size, spec, w, h);
         return true;
     }
     if (MGRAS_TEX_DEPTH(mode) > MGRAS_TEX_DEPTH_12) {
@@ -1331,6 +1349,8 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t size = t->load_csize;
     uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
     const uint8_t *in = t->staging;
+    uint32_t w = 1u << log2w, h = 1u << log2h;
+    bool stored = false;
     uint64_t start;
 
     if (!mgras_tram_place(t->load_base, t->load_block, log2w, log2h, mode,
@@ -1338,17 +1358,33 @@ static void mgras_tex_commit(SGIMgrasState *s)
         /* load_start placed it; only a migrated load can get here. */
         goto done;
     }
+    /*
+     * The model drops the border: a texel outside the level, in the
+     * one-texel ring around it that a bordered image carries, is read
+     * and not stored. Approximated: that the board keeps those texels
+     * (in the block the load's TXBORDER word names, which is inferred
+     * from the word) and how a clamped read uses them are unknown, so
+     * a draw samples the border colour register, not the image's border.
+     */
     for (uint32_t row = 0; row < rh; row++, in += rw * src * size) {
-        uint64_t texel = ((uint64_t)(t->load_y + row) << log2w) + t->load_x;
+        int64_t ty = (int64_t)(int32_t)t->load_y + row;
 
+        if (ty < 0 || ty >= h) {
+            continue;
+        }
         for (uint32_t i = 0; i < rw * comps; i++) {
             /* An ABGR image's components come in reverse order. */
             uint32_t k = t->load_abgr ? comps - 1 - i % comps : i % comps;
             uint32_t n = i / comps * src + k;
-            uint64_t bit = start + (texel + i / comps) * slot +
-                           i % comps * depth;
+            int64_t tx = (int64_t)(int32_t)t->load_x + i / comps;
+            uint64_t bit;
             uint32_t v;
 
+            if (tx < 0 || tx >= w) {
+                continue;
+            }
+            bit = start + (((uint64_t)ty << log2w) + tx) * slot +
+                  i % comps * depth;
             if (k >= src) {
                 /* An RGB image's alpha is 1 (OpenGL 1.2.1, 3.6.4). */
                 v = (1u << depth) - 1;
@@ -1362,7 +1398,11 @@ static void mgras_tex_commit(SGIMgrasState *s)
                     depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
             }
             mgras_tram_put(s->tram, bit, depth, v);
+            stored = true;
         }
+    }
+    if (!stored) {
+        goto done;
     }
     mgras_tram_mark(s, start, ((uint64_t)slot << log2w) << log2h);
     trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
@@ -1715,8 +1755,7 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
                               MGRAS_TEX_SPEC_LOG2W(t->load_spec),
                               MGRAS_TEX_SPEC_LOG2H(t->load_spec),
                               t->load_mode, &bit) ||
-            !rw || !rh || rw > w || rh > h ||
-            t->load_x > w - rw || t->load_y > h - rh ||
+            !mgras_tex_rect_fits(t->load_x, t->load_y, rw, rh, w, h) ||
             t->load_abgr > 1 || t->load_comps < 1 || t->load_comps > 4 ||
             t->load_csize < 1 || t->load_csize > 2 ||
             !mgras_tex_image_fits(t->load_mode, t->load_comps,

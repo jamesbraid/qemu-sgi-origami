@@ -386,17 +386,27 @@ static void tex_mipmap_word(QTestState *t, uint32_t block)
     gl_word(t, block);
 }
 
+/* Each texel of tex_texels() drawn as its own R, G and B. */
+static void tex_expect_texels(QTestState *t, const uint8_t texels[32])
+{
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 4; x++) {
+            const uint8_t *p = &texels[4 * (4 * y + x)];
+
+            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
+                            p[0] << 16 | p[1] << 8 | p[2]);
+        }
+    }
+}
+
 /*
  * The fifth of the load's GE words at 0xe3d is the level's TXBORDER word,
  * not a sign of a border: the traced one-level value, the first block
  * less one, and the words perfly's unbordered mipmapped levels carried
  * (TXMIPMAP 0xc with TXBORDER 0x10, 0x111 with 0x13, 0x14 with 0x15)
- * all draw the level, each through the TXMIPMAP word its load named. A
- * bordered image, two texels wider and taller than its level, does not
- * lie inside the level: it is logged and stores nothing, so its draw is
- * white and untextured.
+ * all draw the level, each through the TXMIPMAP word its load named.
  */
-static void test_gl_texture_border_is_logged_untextured(void)
+static void test_gl_texture_txborder_word_is_not_a_border(void)
 {
     static const struct {
         uint32_t block;
@@ -409,22 +419,9 @@ static void test_gl_texture_border_is_logged_untextured(void)
         { 0x111, 0x13 },
         { 0x14, 0x15 },
     };
-    static const uint32_t bordered[6] = { 0, 0, 6, 4, 4 << 16 | 6, 0 };
-    static const uint32_t border_words[6] = { 4, 0, 0, 9, 8, 0 };
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *log = NULL;
-    g_autofree char *args = NULL;
-    g_autofree char *contents = NULL;
-    GError *err = NULL;
-    uint8_t texels[32], image[96];
-    QTestState *t;
-    int logged = 0;
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32];
 
-    tmpfs = g_dir_make_tmp("sn0-mgras-tex-border-XXXXXX", &err);
-    g_assert_no_error(err);
-    log = g_strdup_printf("%s/unimp.log", tmpfs);
-    args = g_strdup_printf(TEX_ARGS " -d unimp -D %s", log);
-    t = tex_start(args);
     tex_texels(texels);
     for (int i = 0; i < ARRAY_SIZE(cases); i++) {
         const uint32_t words[6] = { 4, 0, 0, cases[i].block,
@@ -441,35 +438,88 @@ static void test_gl_texture_border_is_logged_untextured(void)
         g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
                         texels[0] << 16 | texels[1] << 8 | texels[2]);
     }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
 
+/*
+ * A bordered image, as distort loads its levels: sent at x = y = -1 with
+ * the level's size plus two each way. A 6-by-4 image at -1, -1 into a
+ * 4-by-2 level stores the 4-by-2 interior and drops the border ring
+ * (approximated: what the board does with border texels is unknown), so
+ * the draw shows the interior, not the ring's 0x5a, and not untextured
+ * white as when the model refused the load.
+ */
+static void test_gl_texture_bordered_image_stores_interior(void)
+{
+    static const uint32_t bordered[6] = {
+        0xffffffff, 0xffffffff, 4, 2, 4 << 16 | 6, 0,
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[96];
+
+    tex_texels(texels);
     memset(image, 0x5a, sizeof(image));
-    gl_word(t, GL_CONTEXT_OPENER);
-    gl_viewport(t, 0, 0, 128, 128);
-    gl_window_projection(t);
-    /*
-     * The load names TXMIPMAP word 9, which no load above reached, and the
-     * draw goes through the same word, so the colour drawn shows whether
-     * the refused load stored a level there. The 0x5a image would not
-     * draw white.
-     */
-    gl_ge_load(t, GL_GE_ERAM, 0xe3d, border_words, 6);
+    for (int y = 0; y < 2; y++) {
+        memcpy(&image[4 * (6 * (y + 1) + 1)], &texels[16 * y], 16);
+    }
     tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, image, 6, 4,
                 bordered, true);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
-    tex_mipmap_word(t, 9);
     tex_quad(t);
-    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, TEX_WHITE);
+    tex_expect_texels(t, texels);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
-    g_assert_true(g_file_get_contents(log, &contents, NULL, &err));
-    g_assert_no_error(err);
-    for (const char *p = contents;
-         (p = strstr(p, "is not inside TL_SPEC")); p++) {
-        logged++;
-    }
-    g_assert_cmpint(logged, ==, 1);
     qtest_quit(t);
-    unlink(log);
-    g_rmdir(tmpfs);
+}
+
+/*
+ * A bordered level loaded as strips, as distort's 512-wide level is: the
+ * strips run -1 and on, then the interior, then the last border column,
+ * and a row of border above and below. The three strips of a 4-by-2
+ * level at x = -1 (3 wide), 2 (2 wide) and 4 (1 wide), then a border
+ * row at y = 2 and at y = -1, leave the interior whole: the border-only
+ * strips store nothing and a strip keeps only the part inside the level.
+ */
+static void test_gl_texture_bordered_strips(void)
+{
+    static const struct {
+        int32_t x, y;
+        uint32_t w, h;
+    } strips[] = {
+        { -1, 0, 3, 2 }, { 2, 0, 2, 2 }, { 4, 0, 1, 2 },
+        { 0, 2, 4, 1 }, { 0, -1, 4, 1 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[32], image[32];
+
+    tex_texels(texels);
+    gl_word(t, TEX_LOAD_OPEN);
+    for (int k = 0; k < ARRAY_SIZE(strips); k++) {
+        const uint32_t box[6] = {
+            strips[k].x, strips[k].y, strips[k].w, strips[k].h,
+            strips[k].h << 16 | strips[k].w, 0,
+        };
+
+        memset(image, 0x5a, sizeof(image));
+        for (int y = 0; y < strips[k].h; y++) {
+            for (int x = 0; x < strips[k].w; x++) {
+                int tx = strips[k].x + x, ty = strips[k].y + y;
+
+                if (tx >= 0 && tx < 4 && ty >= 0 && ty < 2) {
+                    memcpy(&image[4 * (strips[k].w * y + x)],
+                           &texels[4 * (4 * ty + tx)], 4);
+                }
+            }
+        }
+        tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, image,
+                    strips[k].w, strips[k].h, box, false);
+    }
+    gl_word(t, TEX_LOAD_CLOSE);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    tex_expect_texels(t, texels);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
 }
 
 /*
@@ -607,19 +657,6 @@ static void tex_load_4x2_as(QTestState *t, uint32_t hq, uint32_t scale,
     gl_word(t, TEX_LOAD_CLOSE);
     gl_word(t, TEX_RESTORE_RSS);
     tex_record(t, TEX_TXSIZE, 0);
-}
-
-/* Each texel of tex_texels() drawn as its own R, G and B. */
-static void tex_expect_texels(QTestState *t, const uint8_t texels[32])
-{
-    for (int y = 0; y < 2; y++) {
-        for (int x = 0; x < 4; x++) {
-            const uint8_t *p = &texels[4 * (4 * y + x)];
-
-            g_assert_cmphex(tex_texel_pixel(t, x, y), ==,
-                            p[0] << 16 | p[1] << 8 | p[2]);
-        }
-    }
 }
 
 /*
@@ -767,13 +804,14 @@ static void test_gl_texture_load_rgb_shorts(void)
  * strip's x and y at GE parameters 0xe34 and 0xe35 and its size in the
  * size word, and lands there in the level. The two 2-by-2 strips of a
  * 4-by-2 level, sent right one first, make the whole level; a strip that
- * would run past the level's edge stores nothing and leaves it whole.
+ * would run past the level's edge and its one-texel border (here by two
+ * texels) stores nothing and leaves it whole.
  */
 static void test_gl_texture_level_from_strips(void)
 {
-    static const uint32_t past[6] = { 3, 0, 2, 2, 2 << 16 | 2, 0 };
+    static const uint32_t past[6] = { 3, 0, 3, 2, 2 << 16 | 3, 0 };
     QTestState *t = tex_start(TEX_ARGS);
-    uint8_t texels[32], strip[2][16], other[16];
+    uint8_t texels[32], strip[2][16], other[24];
 
     tex_texels(texels);
     memset(other, 0x5a, sizeof(other));
@@ -800,7 +838,7 @@ static void test_gl_texture_level_from_strips(void)
                             p[0] << 16 | p[1] << 8 | p[2]);
         }
     }
-    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, other, 2, 2, past,
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_4X2, other, 3, 2, past,
                 true);
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     tex_quad(t);
@@ -2523,8 +2561,13 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/tram-open-save-ends-at-other-kick",
                    test_tram_open_save_ends_at_other_kick);
     qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-texture-border-is-logged-untextured",
-                   test_gl_texture_border_is_logged_untextured);
+                   "gl-texture-txborder-word-is-not-a-border",
+                   test_gl_texture_txborder_word_is_not_a_border);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-bordered-image-stores-interior",
+                   test_gl_texture_bordered_image_stores_interior);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-bordered-strips",
+                   test_gl_texture_bordered_strips);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-table-defaults-are-silent",
                    test_gl_texture_table_defaults_are_silent);
