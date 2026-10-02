@@ -206,6 +206,18 @@ static void sn1_node_place_claims(SN1NodeState *node)
             bool typed = peer && peer->ready && peer->isolated_route &&
                          sn1_fabric_number(peer) != own;
 
+            bool direct = typed &&
+                sn1_fabric_resolve_named(&node->endpoint, own) ==
+                &node->endpoint;
+
+            for (unsigned memory = 0; memory < 2; memory++) {
+                hwaddr base = memory ? SN1_HUB_REMOTE_BOOT : SN1_RAM_ADDRESS;
+
+                memory_region_set_address(&node->ni_memory_view[view][memory],
+                    base + ((uint64_t)own << SN1_FABRIC_ADDRESS_SHIFT));
+                memory_region_set_enabled(&node->ni_memory_view[view][memory],
+                                          direct);
+            }
             for (unsigned space = 0; space < SN1_NODE_SPACES; space++) {
                 memory_region_set_enabled(
                     &node->ni_processor[view][space].region, typed);
@@ -497,6 +509,23 @@ static void sn1_node_init_claims(SN1NodeState *node)
     sn1_fabric_init_floor(&node->endpoint, node->claim_floor);
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         sn1_node_view_claims(node, cpu, &node->cpu_sysmem[cpu]);
+        /* Keep instruction memory on the existing RAM/ROM and MD aliases. */
+        for (unsigned memory = 0; memory < 2; memory++) {
+            hwaddr base = memory ? SN1_HUB_REMOTE_BOOT : SN1_RAM_ADDRESS;
+            uint64_t size = memory ? UINT64_C(0x8000000) :
+                                    SN1_FABRIC_WINDOW_SIZE;
+            g_autofree char *name = g_strdup_printf(
+                "sn1.node%u.cpu%u.direct-%s", node->nasid, cpu,
+                memory ? "boot" : "memory");
+
+            memory_region_init_alias(&node->ni_memory_view[cpu][memory],
+                OBJECT(node), name, get_system_memory(),
+                sn1_node_address(node, base), size);
+            memory_region_set_enabled(&node->ni_memory_view[cpu][memory],
+                                      false);
+            memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu], base,
+                &node->ni_memory_view[cpu][memory], 1);
+        }
         for (unsigned space = 0; space < SN1_NODE_SPACES; space++) {
             sn1_fabric_init_processor_view(&node->ni_processor[cpu][space],
                 &node->endpoint, cpu, space, &node->cpu_sysmem[cpu]);
