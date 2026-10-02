@@ -69,10 +69,11 @@
  *   base block the kernel's 0xeb04 names, the TXMIPMAP word the load
  *   names and TL_SPEC's level number, not at a TRAM byte address. The
  *   load's GE words at 0xe3d carry the level's TXMIPMAP word, the first
- *   block in 7:0 and a per-image flag in bit 8, and the draw sends the
- *   same word for the level through the TXMIPMAP table: ivview's three
- *   levels loaded 0, 0x100 and 0 and drew 0, 0x100 and 0, and perfly's
- *   three textures loaded and drew 0, 4 and 0xc for level 0 (established
+ *   block in 7:0 and bit 8, which perfly set on alternate levels of a
+ *   shared block (placement inside it, meaning unknown), and the draw
+ *   sends the same word for the level through the TXMIPMAP table:
+ *   ivview's three levels loaded 0, 0x100 and 0 and drew 0, 0x100 and 0,
+ *   and perfly's three textures loaded and drew 0, 4 and 0xc for level 0 (established
  *   as words; that the board reads the level from the block it was loaded
  *   to is inferred). The draw finds level n by TXMIPMAP entry n, the
  *   client writing the table from the first level, 0 in every trace. A
@@ -129,7 +130,9 @@
  * read (TEXMODE2 bit 4 and TL_MODE bit 8), bordered textures (a bordered
  * image is two texels wider and taller than its level, so its load does
  * not lie inside the level and is not stored, and its draw has no level
- * and is untextured; inferred, as no bordered load was traced), detail,
+ * of its own: it is untextured unless an older level was loaded under the
+ * same key, which a refused load leaves drawable, as every refusal here
+ * does; inferred, as no bordered load was traced), detail,
  * the texture colour table, one-dimensional and volume textures,
  * texture-select groups and GL_ABGR_EXT loads.
  *
@@ -593,12 +596,15 @@ bool sgi_mgras_texture_load_start(SGIMgrasState *s, const uint32_t *payload)
         return true;
     }
     /*
-     * The pixel program is not read: only the four-unsigned-byte one was
-     * traced, and the others are unknown. Approximated: the load is keyed
-     * on routine 0x511a and the byte count of the kept format, so a
-     * program that reorders or converts components would be taken as the
-     * identity. The one thing checked is the HQ pixel format's GL_ABGR_EXT
-     * bit, which swaps components and is not modelled.
+     * Only two pixel programs were traced: four unsigned bytes and, for
+     * GL_RGB, three. The program itself is not decoded; the three-byte
+     * one is told apart below by sgi_mgras_gl_pixels_rgb8(). Approximated:
+     * any other program is taken as the kept layout's own bytes, so one
+     * that reorders or converts components would be taken as the
+     * identity. The load is keyed on routine 0x511a and sized by the
+     * rectangle the size word names. The one other thing checked is the HQ
+     * pixel format's GL_ABGR_EXT bit, which swaps components and is not
+     * modelled.
      */
     if (s->dma_desc_30000[0] & MGRAS_TEX_HQ_ABGR) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: texture load with HQ pixel "
