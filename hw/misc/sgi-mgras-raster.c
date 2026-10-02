@@ -2292,7 +2292,8 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int y_top, y_bottom;
-    unsigned int width, bpp;
+    unsigned int width, height, bpp;
+    bool coalesced;
     SGIPixelDMA d;
 
     if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= s->width ||
@@ -2301,11 +2302,22 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
     }
     x1 = MIN(x1, s->width - 1);
     width = x1 - x0 + 1;
-    bpp = bpr / width;
     y_top = s->height - 1 - y0;
     y_bottom = s->height - 1 - y1;
-    if (bpr % width || (bpp != 1 && bpp != 4) || y_top > y_bottom ||
-        rows != (uint32_t)(y_bottom - y_top + 1)) {
+    if (y_top > y_bottom) {
+        return false;
+    }
+    height = y_bottom - y_top + 1;
+    coalesced = rows == 1 && pitch == bpr && bpr % (width * height) == 0;
+    if (coalesced) {
+        bpp = bpr / (width * height);
+    } else {
+        if (bpr % width || rows != height) {
+            return false;
+        }
+        bpp = bpr / width;
+    }
+    if (bpp != 1 && bpp != 4) {
         return false;
     }
 
@@ -2314,8 +2326,8 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
         .x = x0,
         .y = y_top,
         .w = width,
-        .h = rows,
-        .pitch = pitch,
+        .h = height,
+        .pitch = coalesced ? width * bpp : pitch,
         .guest_bpp = bpp,
         .offset = mgras_raster_dma_src_offset(s),
     };

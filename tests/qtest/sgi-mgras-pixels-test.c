@@ -1089,6 +1089,14 @@ static void test_byte_row_pairs_rgb_survives_dma_copy(void)
     static const uint8_t row0[8] = {
         0x00, 0xc0, 0xc0, 0xc0, 0x00, 0xc1, 0xc1, 0xc1,
     };
+    static const uint8_t coalesced[16] = {
+        0x00, 0xc0, 0xc0, 0xc0, 0x00, 0xc1, 0xc1, 0xc1,
+        0x00, 0xc1, 0xc1, 0xc1, 0x00, 0xc0, 0xc0, 0xc0,
+    };
+    static const uint8_t unchanged[16] = {
+        0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+        0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+    };
     uint8_t got[16];
 
     mgras_reset();
@@ -1162,6 +1170,7 @@ static void test_byte_row_pairs_rgb_survives_dma_copy(void)
                  got, sizeof(got));
     g_assert_cmpmem(got, 8, row0, sizeof(row0));
 
+
     /* Draw the same bytes back beside the seed, box (4,0)-(7,3). */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x0c006204));
@@ -1181,6 +1190,33 @@ static void test_byte_row_pairs_rgb_survives_dma_copy(void)
         }
     }
     g_assert_cmphex(mgras_test_display_pixel(qts, 4, 0), ==, 0x00c0c0c0);
+
+    memset(got, 0xa5, sizeof(got));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                   got, sizeof(got));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (1u << 16) | 1022u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 16);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 16);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                  got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), coalesced, sizeof(coalesced));
+
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                   unchanged, sizeof(unchanged));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                  got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), unchanged, sizeof(unchanged));
 }
 
 /*
