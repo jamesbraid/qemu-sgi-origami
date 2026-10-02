@@ -130,9 +130,10 @@ def _run_feature(test, vm, board, feature, desktop_frame):
                 test.fail(f'{feature.name} on {board.option} does not '
                           f'match {ref_path}: {message} -- {shot}')
         else:
+            # Reported once every feature has drawn, so one run leaves a
+            # candidate for each missing reference.
             result['reference'] = 'missing'
-            test.fail(f'{feature.name}: no reference {ref_path}; candidate '
-                      f'statistics are in {candidate}')
+            result['reference_path'] = ref_path
     finally:
         # One killall per name: IRIX killall with no name signals every
         # process. The ps line shows any target that survived.
@@ -224,3 +225,10 @@ def run_board(test, board_key, prom, disk):
                                           prom=prom, disk=disk)},
                   out, indent=2, sort_keys=True)
         out.write('\n')
+
+    missing = [f"{f.name} ({results[f.name]['reference_path']}; candidate "
+               f"{results[f.name]['candidate']})"
+               for f in matrix.features_for(board)
+               if results.get(f.name, {}).get('reference') == 'missing']
+    if missing:
+        test.fail('no reference for ' + ', '.join(missing))
