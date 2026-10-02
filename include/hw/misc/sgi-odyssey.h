@@ -436,6 +436,15 @@ struct SGIOdysseyState {
     uint32_t depth_plane;
 
     /*
+     * The scissor and window clip box, 0x081d, as last written: word 0
+     * (x_min << 12) | x_max, word 1 (y_min << 12) | y_max
+     * (hw/misc/sgi-odyssey.c, ODSY_REG_CLIP_BOX). Migrated; reset to the
+     * full window and post_load re-applies it, since the shared context's
+     * own scissor box is transient render state and is not migrated.
+     */
+    uint32_t gl_clip_box[2];
+
+    /*
      * Lighting (docs/analysis/odyssey-gl-shading-depth-lighting.md and
      * odyssey-gl-geometry-program.md). The geometry engine's program state as
      * the library writes it: gl_const the constant-memory list of microcode

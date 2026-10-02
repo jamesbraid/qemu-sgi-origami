@@ -1225,7 +1225,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * for glTexParameter, glTexEnv or glEnable(GL_TEXTURE_2D) at once; the next
  * draw's validation pushes:
  *
- * - 0x0405 bit 4: 2D texturing on.
+ * - 0x0405 bit 4: 2D texturing on. Bits 2:0 are unrelated: the user
+ *   clip-plane enable count (ODSY_TEX_MODE_CLIP_COUNT_MASK below).
  * - 0x1c16, seven operands: the sampler (log2 sizes, width, height, the
  *   component code, wrap modes and filters).
  * - 0x141b, five operands: the texture environment (replace, modulate,
@@ -1637,6 +1638,68 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_LINE_POINT_SIZE 0x084a /* 2 operands: line width, point size */
 #define ODSY_LINE_POINT_SIZE_MASK 0xffffff
 #define ODSY_LINE_POINT_SIZE_SCALE 128.0f
+
+/*
+ * The scissor and window clip box, 0x081d, two operands
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md): word 0
+ * (x_min << 12) | x_max, word 1 (y_min << 12) | y_max, each field 12 bits,
+ * inclusive, relative to the window origin with y counted in rows down from
+ * the window's top edge. The library always sends the intersection of the
+ * window, the viewport and, while GL_SCISSOR_TEST is on, the scissor box; an
+ * empty intersection arrives as minimum 1, maximum 0. Fed to the shared
+ * layer as SGI_GL_OP_SCISSOR's x, y, width, height taken directly with no
+ * flip: x = x_min, width = x_max - x_min + 1, y = y_min, height =
+ * y_max - y_min + 1, clamped to 0 rather than negative for an empty box.
+ * This family never sets the shared context's window_rows_down flag --
+ * odyssey_gl_load_combined() loads the client's own combined matrix through
+ * a fixed viewport centred on the window origin, which already makes the
+ * ordinary projection/viewport math come out top-down -- so "no flip" here
+ * means the direct y = y_min mapping, not that literal flag. Confirmed
+ * against the evidence review's own worked example: a box of x 0-127, y
+ * 0-7 is observed to affect only the top eight rows of the window, which
+ * only the direct mapping predicts. Whether the board's own row count
+ * matches the library's top-down box is inferred, not directly observed.
+ *
+ * No probe ever shows a 0x404 enable bit for GL_SCISSOR_TEST: the library
+ * keeps the three rectangles intersected into 0x81d whether or not
+ * scissoring is on, so there is no guest-visible toggle for a model to key
+ * on. The shared context's scissor test is instead left permanently enabled
+ * from reset onward (odyssey_reset_registers()), with the box defaulting to
+ * the full SGI_ODYSSEY_WIDTH x SGI_ODYSSEY_HEIGHT window so a guest that
+ * never writes 0x81d draws exactly as it did before this register existed.
+ */
+#define ODSY_REG_CLIP_BOX 0x081d /* 2 operands */
+#define ODSY_CLIP_BOX_MIN_SHIFT 12
+#define ODSY_CLIP_BOX_FIELD_MASK 0xfff
+
+/*
+ * User clip planes, class 0x31 index 0x120 + 4j
+ * (docs/reviews/odyssey-fragment-state-evidence-20261001.md), reusing the
+ * same index-select field as the light-vector loads
+ * (ODSY_PROG_LIGHT_VEC_SELECT, gl_light_vec_sel): the slot select word is
+ * followed by ODSY_GL_CLIP_PLANE_LOAD and the plane's four eye-space floats,
+ * a, b, c, d, passed through to SGI_GL_OP_CLIP_PLANE unchanged -- the shared
+ * layer transforms by the inverse modelview itself. The library loads every
+ * enabled plane, user planes first and then its own two internal
+ * depth-range planes, into consecutive slots starting at 0x120, including
+ * slots beyond the hardware's six-plane budget: a model accepts those loads
+ * and leaves the ones past SGI_GL_CLIP_PLANES silently unmodeled, since the
+ * shared context has no storage for them and this is expected library
+ * traffic, not a guest error.
+ *
+ * Which of the stored planes are actually tested is a separate question,
+ * answered by 0x0405 bits 2:0 (the same register as ODSY_TEX_MODE_2D): a
+ * three-bit thermometer count n of enabled planes -- bit 2 set for n > 0,
+ * bit 1 for n > 1, bit 0 for n > 2 -- recomputed on every 0x405 write, planes
+ * 0..n-1 fed SGI_GL_OP_ENABLE and the rest SGI_GL_OP_DISABLE. Because the
+ * budget caps at 3, slots 3 to 5 -- which can still receive the library's
+ * two internal depth-range planes -- can never be enabled through this
+ * field, so they never clip anything in this model; the datasheet's "leave
+ * depth_range at [0, 1]" is consistent with that.
+ */
+#define ODSY_GL_CLIP_PLANE_BASE 0x120
+#define ODSY_GL_CLIP_PLANE_STRIDE 4
+#define ODSY_TEX_MODE_CLIP_COUNT_MASK 0x7
 
 /*
  * The BEGIN-0xa image raster path: the greeter's account icons (the pixmaps
@@ -3904,6 +3967,51 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &cull_face, 1);
     odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
     odyssey_gl_feed(s, SGI_GL_OP_FRONT_FACE, &front_face, 1);
+}
+
+/*
+ * Push the family-shadowed clip box (ODSY_REG_CLIP_BOX) to the shared
+ * context's scissor rectangle (see the macro's own comment for the
+ * encoding and the always-on rationale). min > max -- including the
+ * library's own 0x1000, 0x1000 empty encoding -- clips every fragment,
+ * matched here with a zero-area box rather than a negative width or
+ * height, which SGI_GL_OP_SCISSOR rejects.
+ */
+static void odyssey_gl_apply_clip_box(SGIOdysseyState *s)
+{
+    unsigned x_min = (s->gl_clip_box[0] >> ODSY_CLIP_BOX_MIN_SHIFT) &
+                     ODSY_CLIP_BOX_FIELD_MASK;
+    unsigned x_max = s->gl_clip_box[0] & ODSY_CLIP_BOX_FIELD_MASK;
+    unsigned y_min = (s->gl_clip_box[1] >> ODSY_CLIP_BOX_MIN_SHIFT) &
+                     ODSY_CLIP_BOX_FIELD_MASK;
+    unsigned y_max = s->gl_clip_box[1] & ODSY_CLIP_BOX_FIELD_MASK;
+    uint32_t box[4] = { x_min, y_min, 0, 0 };
+
+    if (x_min <= x_max && y_min <= y_max) {
+        box[2] = x_max - x_min + 1;
+        box[3] = y_max - y_min + 1;
+    }
+    odyssey_gl_feed(s, SGI_GL_OP_SCISSOR, box, 4);
+}
+
+/*
+ * Recompute which of the shared context's six clip-plane slots are tested,
+ * from 0x0405 bits 2:0's thermometer count n (see ODSY_TEX_MODE_CLIP_COUNT_
+ * MASK's comment): slots 0..n-1 enabled, the rest disabled. Called on every
+ * 0x0405 write and after migration; does not touch the loaded coefficients
+ * themselves, which a separate load (ODSY_GL_CLIP_PLANE_LOAD) feeds.
+ */
+static void odyssey_gl_apply_clip_planes(SGIOdysseyState *s)
+{
+    unsigned bits = s->tex_mode & ODSY_TEX_MODE_CLIP_COUNT_MASK;
+    unsigned n = ctpop32(bits);
+
+    for (unsigned i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        uint32_t plane = SGI_GL_CLIP_PLANE0 + i;
+
+        odyssey_gl_feed(s, i < n ? SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE,
+                        &plane, 1);
+    }
 }
 
 /*
@@ -6533,13 +6641,38 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->gl_back_shininess_sqrt = s->cmd_operand[0];
         break;
     case ODSY_GL_SHININESS_DERIVED:
-    case ODSY_GL_CLIP_PLANE_LOAD:
     case ODSY_PROG_RUN_ONCE:
         /*
          * Consumed, not kept: the derived shininess floats and the one-shot
-         * run have no modelled effect;
-         * clip planes are reported as a program stage.
+         * run have no modelled effect.
          */
+        break;
+    case ODSY_GL_CLIP_PLANE_LOAD:
+        /*
+         * See ODSY_GL_CLIP_PLANE_BASE's comment: accept and pass through
+         * loads into the shared layer's six slots, silently drop loads past
+         * that budget (expected library traffic, not an error), and report
+         * only a selector this model cannot place at all.
+         */
+        if (s->gl_light_vec_sel >= ODSY_GL_CLIP_PLANE_BASE &&
+            (s->gl_light_vec_sel - ODSY_GL_CLIP_PLANE_BASE) %
+            ODSY_GL_CLIP_PLANE_STRIDE == 0) {
+            unsigned plane = (s->gl_light_vec_sel - ODSY_GL_CLIP_PLANE_BASE) /
+                             ODSY_GL_CLIP_PLANE_STRIDE;
+
+            if (plane < SGI_GL_CLIP_PLANES) {
+                uint32_t args[5];
+
+                args[0] = plane;
+                memcpy(&args[1], s->cmd_operand, 4 * sizeof(uint32_t));
+                odyssey_gl_feed(s, SGI_GL_OP_CLIP_PLANE, args, 5);
+            }
+        } else if (!s->gl_block_logged) {
+            s->gl_block_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: class 0x31 clip-plane "
+                          "load at index 0x%x is not modeled\n",
+                          s->gl_light_vec_sel);
+        }
         break;
     case ODSY_GL_LIGHT_COLOUR_LOAD:
         if (s->gl_light_colour_sel < SGI_ODYSSEY_GL_LIGHT_COLOURS) {
@@ -6749,11 +6882,17 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         odyssey_gl_feed(s, SGI_GL_OP_POLYGON_OFFSET_EXT, args, 2);
         break;
     }
+    case ODSY_REG_CLIP_BOX:
+        s->gl_clip_box[0] = s->cmd_operand[0];
+        s->gl_clip_box[1] = s->cmd_operand[1];
+        odyssey_gl_apply_clip_box(s);
+        break;
     case ODSY_REG_FOG:
         /* Fog: consumed, not modeled (see ODSY_REG_FOG). */
         break;
     case ODSY_REG_TEX_MODE:
         s->tex_mode = s->cmd_operand[0];
+        odyssey_gl_apply_clip_planes(s);
         break;
     case ODSY_REG_TEX_SAMPLER:
         memcpy(s->tex_sampler, s->cmd_operand, sizeof(s->tex_sampler));
@@ -7806,6 +7945,23 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
         assert(sgi_gl_enable_polygon_modes(&s->gl_ctx, &sink));
     }
     s->gl_in_prim = false;
+    /*
+     * The clip box and its scissor test (ODSY_REG_CLIP_BOX's comment):
+     * sgi_gl_init() leaves the shared context's scissor box and test both
+     * at zero, which would clip away every draw if the test were simply
+     * switched on. Unlike this family's other 0x0404-derived state, there
+     * is no reset pattern-mode value that already matches a usable scissor
+     * default, so the full window is set here explicitly before the test
+     * is enabled, once and for good.
+     */
+    s->gl_clip_box[0] = ODSY_CLIP_BOX_FIELD_MASK & (SGI_ODYSSEY_WIDTH - 1);
+    s->gl_clip_box[1] = ODSY_CLIP_BOX_FIELD_MASK & (SGI_ODYSSEY_HEIGHT - 1);
+    odyssey_gl_apply_clip_box(s);
+    {
+        uint32_t scissor_test = SGI_GL_SCISSOR_TEST;
+
+        odyssey_gl_feed(s, SGI_GL_OP_ENABLE, &scissor_test, 1);
+    }
     s->gl_matrix_slot = SGI_GL_MODELVIEW;
     memset(s->gl_modelview, 0, sizeof(s->gl_modelview));
     for (i = 0; i < 4; i++) {
@@ -8455,6 +8611,14 @@ static int odyssey_post_load(void *opaque, int version_id)
     }
     odyssey_clip_update(s);
     odyssey_gl_apply_mode(s);
+    /*
+     * The shared context's scissor box and clip-plane enables are transient
+     * render state, not migrated; reset already gave gl_clip_box its
+     * full-window default before this runs, so a pre-v30 sender with no
+     * clip box in its stream still re-applies that default correctly here.
+     */
+    odyssey_gl_apply_clip_box(s);
+    odyssey_gl_apply_clip_planes(s);
     odyssey_gl_apply_depth(s);
     odyssey_gl_reload_combined(s);
     odyssey_gl_program(s);
@@ -8472,7 +8636,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 29,
+    .version_id = 30,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -8646,6 +8810,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
          */
         VMSTATE_UINT32_2DARRAY_V(query_current, SGIOdysseyState, 5, 5, 29),
         VMSTATE_UINT32_V(query_current_valid, SGIOdysseyState, 29),
+        /* The 0x81d clip box, window-relative min/max pairs (v30). */
+        VMSTATE_UINT32_ARRAY_V(gl_clip_box, SGIOdysseyState, 2, 30),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

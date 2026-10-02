@@ -4868,6 +4868,136 @@ static void test_command_fifo_gl_polygon_offset(void)
 }
 
 /*
+ * Clip box (docs/reviews/odyssey-fragment-state-evidence-20261001.md): 0x081d
+ * packs two inclusive, window-relative fields per word, x_min/x_max then
+ * y_min/y_max, each 12 bits, y counted down from the window's top row. It
+ * reaches the shared layer as glScissor, with GL_SCISSOR_TEST left always on
+ * (there is no enable bit; the library always sends the intersection it
+ * wants drawn). A full-window fill restricted to the probe window's top
+ * eight rows paints only that band; any min > max field, including the
+ * library's own 0x1000, 0x1000 words, clips every fragment.
+ */
+#define ODSY_REG_CLIP_BOX 0x0001081d
+
+static void clip_box_set(QTestState *qts, uint32_t x_min, uint32_t x_max,
+                         uint32_t y_min, uint32_t y_max)
+{
+    user_cmd_push(qts, ODSY_REG_CLIP_BOX);
+    user_cmd_push(qts, (x_min << 12) | x_max);
+    user_cmd_push(qts, (y_min << 12) | y_max);
+}
+
+/*
+ * Two triangles spanning the probe window's full clip-space extent. The
+ * clip-box test needs a vertex-based fill, not the family's own GL_RECT
+ * (the screen-aligned-rectangle clear path, ODSY_GL_RECT): that op builds
+ * its raster directly in absolute screen coordinates and is tested only
+ * against this family's own clip rectangles (odyssey_gl_rect(),
+ * sgi_soft_raster()'s SGI_RASTER_CLEAR case), never against the shared
+ * per-fragment path, so it never consults the shared scissor box. A
+ * triangle fill goes through sgi_soft_fragment_at() and does.
+ */
+static const uint32_t odsy_full_window_tri_a[9] = {
+    0xbf800000, 0xbf800000, 0,          /* (-1, -1, 0) */
+    0x3f800000, 0xbf800000, 0,          /* ( 1, -1, 0) */
+    0x3f800000, 0x3f800000, 0,          /* ( 1,  1, 0) */
+};
+static const uint32_t odsy_full_window_tri_b[9] = {
+    0xbf800000, 0xbf800000, 0,          /* (-1, -1, 0) */
+    0x3f800000, 0x3f800000, 0,          /* ( 1,  1, 0) */
+    0xbf800000, 0x3f800000, 0,          /* (-1,  1, 0) */
+};
+
+static void push_full_window_tris(QTestState *qts, uint32_t r, uint32_t g,
+                                  uint32_t b)
+{
+    push_triangle_3f(qts, r, g, b, odsy_full_window_tri_a);
+    push_triangle_3f(qts, r, g, b, odsy_full_window_tri_b);
+}
+
+static void test_command_fifo_gl_clip_box(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+
+    /* Restricted to the top eight rows: only that band takes the fill. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    clip_box_set(qts, 0, 127, 0, 7);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 260), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    /* A restored full-window box takes the fill everywhere again. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    clip_box_set(qts, 0, 127, 0, 127);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    /* The library's own empty encoding, min > max on both words: nothing. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    user_cmd_push(qts, ODSY_REG_CLIP_BOX);
+    user_cmd_push(qts, 0x1000);
+    user_cmd_push(qts, 0x1000);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_BLUE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Clip planes (docs/reviews/odyssey-fragment-state-evidence-20261001.md):
+ * plane j is loaded at class 0x31 index 0x120 + 4j with 0x908091bb and four
+ * eye-space floats, and 0x0405 bits 2:0 thermometer-code how many of the
+ * loaded slots are tested (bit 2 set for n > 0). The probe window's combined
+ * matrix is identity, so clip-space x is window-relative x scaled to
+ * [-1, 1]; plane (1, 0, 0, 0) keeps only x >= 0, the window's right half.
+ */
+#define ODSY_REG_TEX_MODE 0x00010405
+#define ODSY_GL_CLIP_PLANE_LOAD 0x908091bb
+
+static void clip_plane_load(QTestState *qts, unsigned j, uint32_t a,
+                            uint32_t b, uint32_t c, uint32_t d)
+{
+    user_cmd_push(qts, ODSY_PROG(0x31, 0x120 + 4 * j));
+    user_cmd_push(qts, ODSY_GL_CLIP_PLANE_LOAD);
+    user_cmd_push(qts, a);
+    user_cmd_push(qts, b);
+    user_cmd_push(qts, c);
+    user_cmd_push(qts, d);
+}
+
+static void test_command_fifo_gl_clip_plane(void)
+{
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    clip_plane_load(qts, 0, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ZERO);
+
+    /* n = 0 (no bits set): the plane is loaded but not yet tested. */
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 270, 340), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    /* n = 1 (bit 2 set): only the right half, x >= 0, survives. */
+    set_reg(qts, ODSY_REG_TEX_MODE, 0x4);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 270, 340), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    /* Disabled again (n = 0): the whole window takes the fill once more. */
+    set_reg(qts, ODSY_REG_TEX_MODE, 0x0);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
+    push_full_window_tris(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO);
+    g_assert_cmphex(odsy_test_pixel(qts, 270, 340), ==, ODSY_PLANE_YELLOW);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+
+    qtest_quit(qts);
+}
+
+/*
  * The record light.c selects: entries 0x5cb 0x5d8 0x5e5, one directional
  * light. The triangle is lit -- (1, 0.5, 0.25) where the normal faces the
  * light, 0.8 of it at the right corner, black edge-on -- the values the
@@ -6221,6 +6351,14 @@ static void test_command_fifo_gl_texture_state(void)
     upload_begin(qts, 0x16b000, 2, 0x08000020, 8, 8);
     upload_first_header(qts, 0x42);
     upload_end(qts);
+    /*
+     * upload_begin()'s own 0x81d word was that upload's clip box (the
+     * object's 8x8 extent), not a lingering window setting -- per the
+     * evidence review, the register "arrives with every draw, enabled
+     * or not". Restore it to the probe window's own full 128x128 extent
+     * before this draw, the same way a real client's draw setup would.
+     */
+    clip_box_set(qts, 0, 127, 0, 127);
     push_user_words(qts, draw, ARRAY_SIZE(draw));
     g_assert_cmphex(odsy_test_pixel(qts, 370, 300), ==, 0xffffffffu);
     g_assert_cmphex(odsy_test_pixel(qts, 114, 44), ==, 0);
@@ -7610,6 +7748,15 @@ static void texture_adapter_window(QTestState *qts)
     user_cmd_push(qts, ODSY_GL_MATRIX_LOAD);
     push_user_words(qts, identity, ARRAY_SIZE(identity));
     set_reg(qts, ODSY_REG_WRITE_MASK, 0x00f00000);
+    /*
+     * texture_adapter_upload()'s own upload_begin() already sent this
+     * same 0x81d register with the object's width and height -- that is
+     * its own draw's clip box, per the evidence review's "arrives with
+     * every draw" rule, not a lingering window setting. Restore it to
+     * this family's full default window before the point draws below,
+     * the same way a real client's own next draw would.
+     */
+    clip_box_set(qts, 0, 1279, 0, 1023);
 }
 
 /* Draw with the retained coordinate, without supplying another one. */
@@ -9947,6 +10094,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_line_point_size);
     qtest_add_func("sn1/odyssey/command-fifo-gl-polygon-offset",
                    test_command_fifo_gl_polygon_offset);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-clip-box",
+                   test_command_fifo_gl_clip_box);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-clip-plane",
+                   test_command_fifo_gl_clip_plane);
     qtest_add_func("sn1/odyssey/command-fifo-gl-depth-sign",
                    test_command_fifo_gl_depth_sign);
     qtest_add_func("sn1/odyssey/command-fifo-gl-colour-mask",
