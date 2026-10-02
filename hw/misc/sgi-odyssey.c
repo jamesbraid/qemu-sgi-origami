@@ -7055,7 +7055,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->gl_integer_prim = true;
         }
         if (s->gl_begin_open && !s->image_active &&
-            (s->tex_mode & ODSY_TEX_MODE_2D)) {
+            (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D))) {
             if (!s->gl_in_prim) {
                 uint32_t mode = s->gl_primitive;
 
