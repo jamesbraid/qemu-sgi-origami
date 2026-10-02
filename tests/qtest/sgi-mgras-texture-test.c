@@ -2061,6 +2061,35 @@ static void tram_kernel_save(QTestState *t, uint32_t block)
               GL_ERAM_READ_KICK);
 }
 
+static void tram_save_map(QTestState *t);
+
+/* Save a row range starting at the named 64-row TRAM block. */
+static void tram_kernel_save_rows(QTestState *t, uint32_t block,
+                                  uint32_t rows, uint32_t bytes)
+{
+    const uint32_t pairs[] = {
+        TEX_TXSIZE, 0xd6d6, TEX_TXLOD, 0, TEX_TXCLAMPSIZE, 0x80000,
+        TEX_TL_MODE, 0, TEX_TEXMODE1, 0x58, TEX_TEXMODE2, 0x11804,
+        TEX_TXADDR, 0, TEX_TXMIPMAP, block,
+    };
+
+    gl_one(t, TRAM_TEX_BASE_HDR, 0);
+    tram_pairs(t, pairs, ARRAY_SIZE(pairs) / 2);
+    tram_save_rss(t);
+    gl_word(t, TRAM_READ_HDR);
+    gl_word(t, rows);
+    gl_word(t, TRAM_FORMAT_RGBA8);
+    gl_word(t, TRAM_READ_LAST_WORD);
+    gl_word(t, TRAM_RE_SYNC);
+    g_assert_cmphex(qtest_readl(t, REG_HQ_STATUS) & 1, ==, 1);
+    tram_save_map(t);
+    gl_eram_kick(t, TRAM_BUFFER_OFFSET, bytes, GL_ERAM_READ_KICK);
+    gl_word(t, TRAM_READ_FENCE);
+    gl_one(t, 0x000a0704, 0);
+    gl_word(t, TRAM_READ_DONE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
 /* The kernel's restore of one block from the host buffer, as traced. */
 static void tram_kernel_restore(QTestState *t, uint32_t block)
 {
@@ -2281,6 +2310,116 @@ static void test_mxi_tram_save_restore(gconstpointer data)
     g_assert_null(strstr(contents, "DMA image transfer"));
     unlink(log);
     g_rmdir(tmpfs);
+}
+
+#define TRAM_SAVE_ONE_ROWS       8192u
+#define TRAM_SAVE_HALF_ROWS      4096u
+#define TRAM_SAVE_ONE_BLOCKS     (TRAM_SAVE_ONE_ROWS / TRAM_BLOCK_ROWS)
+#define TRAM_SAVE_HALF_BLOCKS    (TRAM_SAVE_HALF_ROWS / TRAM_BLOCK_ROWS)
+#define TRAM_SAVE_ONE_BYTES      (TRAM_SAVE_ONE_ROWS * 64u * 4u)
+#define TRAM_SAVE_HALF_BYTES     (TRAM_SAVE_HALF_ROWS * 64u * 4u)
+#define TRAM_SAVE_PAGE_BYTES     4096u
+#define TRAM_SAVE_PAGES          ((TRAM_BUFFER_OFFSET + \
+                                   TRAM_SAVE_ONE_BYTES + \
+                                   TRAM_SAVE_PAGE_BYTES - 1) / \
+                                  TRAM_SAVE_PAGE_BYTES)
+#define TRAM_SAVE_LIST           0x00300000u
+
+/* Slot 2 maps enough pages for the complete save buffer. */
+static void tram_save_map(QTestState *t)
+{
+    uint8_t header[24] = { 0 };
+    g_autofree uint8_t *list = g_malloc0(TRAM_SAVE_PAGES * 8);
+
+    for (uint32_t i = 0; i < TRAM_SAVE_PAGES; i++) {
+        stq_be_p(list + i * 8, 7 + i);
+    }
+    qtest_memwrite(t, TRAM_SAVE_LIST, header, sizeof(header));
+    qtest_memwrite(t, TRAM_SAVE_LIST + sizeof(header), list,
+                   TRAM_SAVE_PAGES * 8);
+    qtest_writel(t, MGRAS_REG(0x130400), 0x00482408);
+    qtest_writeq(t, MGRAS_REG(0x130400),
+                 TRAM_SAVE_LIST + sizeof(header));
+    qtest_writeq(t, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483204 << 32) | TRAM_SAVE_PAGES);
+    qtest_writeq(t, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484d04 << 32) | (GL_PIX_DMA_WIDGET << 16));
+}
+
+static void tram_assert_save_bytes(const char *shape, const uint8_t *actual,
+                                   const uint8_t *expected, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        if (actual[i] != expected[i]) {
+            g_test_message("%s first differs at byte 0x%zx: got 0x%02x, "
+                           "expected 0x%02x", shape, i, actual[i],
+                           expected[i]);
+            break;
+        }
+    }
+    g_assert_cmpmem(actual, len, expected, len);
+}
+
+/* Distinguish each saved 16 KiB block without assuming its TRAM contents. */
+static void tram_fill_save_block(uint8_t block[TRAM_BLOCK_BYTES],
+                                 uint32_t number)
+{
+    for (uint32_t i = 0; i < TRAM_BLOCK_BYTES; i++) {
+        block[i] = number * 53 + i * 29 + (i >> 8);
+    }
+}
+
+/*
+ * The traced save words describe 64 rows of 64 four-byte locations per
+ * 16 KiB block. On a two-RE board, compare one 8,192-row pass against two
+ * 4,096-row passes, whose second TXMIPMAP entry starts at block 64. The
+ * expected bytes come from the known blocks written before the saves, not
+ * from either save result; the byte positions inside a block are the
+ * model's stated approximation.
+ */
+static void test_mxi_tram_save_shapes(void)
+{
+    g_autofree uint8_t *one = g_malloc(TRAM_SAVE_ONE_BYTES);
+    g_autofree uint8_t *first = g_malloc(TRAM_SAVE_HALF_BYTES);
+    g_autofree uint8_t *second = g_malloc(TRAM_SAVE_HALF_BYTES);
+    g_autofree uint8_t *expected = g_malloc(TRAM_SAVE_ONE_BYTES);
+    uint8_t block[TRAM_BLOCK_BYTES];
+    QTestState *t = mxi_start("mxi");
+
+    g_assert_cmpuint(TRAM_SAVE_ONE_BLOCKS, ==, 128);
+    g_assert_cmpuint(TRAM_SAVE_HALF_BLOCKS, ==, 64);
+    for (uint32_t n = 0; n < TRAM_SAVE_ONE_BLOCKS; n++) {
+        tram_fill_save_block(block, n);
+        memcpy(expected + n * TRAM_BLOCK_BYTES, block, sizeof(block));
+        qtest_memwrite(t, TRAM_BUFFER, block, sizeof(block));
+        gl_enter_slot(t, GL_SLOT_DEFAULT);
+        tram_kernel_restore(t, n);
+    }
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    tram_kernel_save_rows(t, 0, TRAM_SAVE_ONE_ROWS, TRAM_SAVE_ONE_BYTES);
+    qtest_memread(t, TRAM_BUFFER, one, TRAM_SAVE_ONE_BYTES);
+    tram_assert_save_bytes("one-pass save", one, expected,
+                           TRAM_SAVE_ONE_BYTES);
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    tram_kernel_save_rows(t, 0, TRAM_SAVE_HALF_ROWS, TRAM_SAVE_HALF_BYTES);
+    qtest_memread(t, TRAM_BUFFER, first, TRAM_SAVE_HALF_BYTES);
+    tram_assert_save_bytes("first half-pass save", first, expected,
+                           TRAM_SAVE_HALF_BYTES);
+
+    gl_enter_slot(t, GL_SLOT_DEFAULT);
+    tram_kernel_save_rows(t, TRAM_SAVE_HALF_BLOCKS, TRAM_SAVE_HALF_ROWS,
+                          TRAM_SAVE_HALF_BYTES);
+    qtest_memread(t, TRAM_BUFFER, second, TRAM_SAVE_HALF_BYTES);
+    tram_assert_save_bytes("second half-pass save", second,
+                           expected + TRAM_SAVE_HALF_BYTES,
+                           TRAM_SAVE_HALF_BYTES);
+    g_assert_cmpmem(one, TRAM_SAVE_HALF_BYTES, first, TRAM_SAVE_HALF_BYTES);
+    g_assert_cmpmem(one + TRAM_SAVE_HALF_BYTES, TRAM_SAVE_HALF_BYTES,
+                    second, TRAM_SAVE_HALF_BYTES);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
 }
 
 /* DMA-map slot 1's page list, eight pages from frame first, as the kernel. */
@@ -2641,6 +2780,8 @@ int main(int argc, char **argv)
                         "emxi", test_mxi_tram_save_restore);
     qtest_add_data_func("sn0/origin2000/mgras/mxi-tram-save-restore/si-t",
                         "si-t", test_mxi_tram_save_restore);
+    qtest_add_func("sn0/origin2000/mgras/mxi-tram-save-shapes",
+                   test_mxi_tram_save_shapes);
 
     ret = g_test_run();
     qtest_quit(qts);
