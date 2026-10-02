@@ -93,3 +93,10 @@ sgi_bridge_dma_xlate_direct(uint64_t addr, uint64_t translated, unsigned widget)
 sgi_bridge_dma_xlate_plain(uint64_t addr, int flag) "DMA translate plain addr 0x%" PRIx64 " flag %d"
 sgi_bridge_lane_swap_read(uint64_t addr, unsigned size) "lane swap read addr 0x%" PRIx64 " size %u"
 sgi_bridge_lane_swap_write(uint64_t addr, unsigned size) "lane swap write addr 0x%" PRIx64 " size %u"
+
+# sgi-xbridge.c
+sgi_xbridge_pci_irq(int64_t vtime, unsigned widget, unsigned device, unsigned pin, int level) "vtime %" PRId64 " source_widget %u device %u PCI_pin %u level %d"
+sgi_xbridge_irq_pin(int64_t vtime, unsigned widget, int pin, bool was, bool level, uint32_t status, uint32_t enable, uint32_t mode) "vtime %" PRId64 " source_widget %u pin %d %d->%d status 0x%08x enable 0x%08x mode 0x%08x"
+sgi_xbridge_irq_packet(int64_t vtime, unsigned widget, unsigned pin, bool set, uint32_t host, unsigned target, uint64_t address, unsigned number, bool present, int result) "vtime %" PRId64 " source_widget %u pin %u set %d host 0x%08x target_widget %u address 0x%" PRIx64 " number %u target_present %d result %d"
+sgi_xbridge_dma_translate(int64_t vtime, unsigned widget, unsigned device, uint64_t address, int target, uint64_t translated, uint64_t mask, int perm, int access) "vtime %" PRId64 " source_widget %u device %u address 0x%" PRIx64 " target_widget %d translated 0x%" PRIx64 " mask 0x%" PRIx64 " perm %d access %d"
+sgi_xbridge_dma_packet(int64_t vtime, unsigned widget, unsigned device, uint64_t address, unsigned size, bool write, int result) "vtime %" PRId64 " source_widget %u device %u address 0x%" PRIx64 " size %u write %d result %d"
