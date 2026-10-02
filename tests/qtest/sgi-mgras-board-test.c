@@ -577,9 +577,12 @@ static void test_pp1_select_leaves_sync_registers_shared(void)
  * with different colours both read back from the planes scanout uses. A model
  * that split the REs' pixels would have to change this deliberately.
  */
-static void test_two_re_board_draws_one_set_of_planes(void)
+static void test_two_re_board_draws_one_set_of_planes(gconstpointer data)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+    const char *board = data;
+    g_autofree char *args = g_strdup_printf(
+        MACHINE_ARGS " -global sgi-mgras.board=%s", board);
+    QTestState *s = qtest_init(args);
 
     mgras_enter_context(s);
     qtest_writeq(s, REG_CONTEXT_COMMAND,
@@ -1906,8 +1909,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "pp1-select-leaves-sync-registers-shared",
                    test_pp1_select_leaves_sync_registers_shared);
-    qtest_add_func("sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes",
-                   test_two_re_board_draws_one_set_of_planes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/ssi",
+        "ssi", test_two_re_board_draws_one_set_of_planes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/essi",
+        "essi", test_two_re_board_draws_one_set_of_planes);
     qtest_add_func("sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
                    test_xmap_revision_and_fifo_capacity);
     qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
