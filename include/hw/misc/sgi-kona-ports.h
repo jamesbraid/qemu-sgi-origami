@@ -308,6 +308,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * 0x1d5 or 0x106 with five words, 0x179 with 22, and 0x178 with the
  * handle; the post-texture scale and bias 0xed with four words.
  */
+#define SGI_KONA_CMD_GL_TEX_PREFIX  0x1c4
 #define SGI_KONA_CMD_GL_TEX_LOAD    0x174
 #define SGI_KONA_CMD_GL_TEX_LOAD_ID 0x176
 #define SGI_KONA_CMD_GL_TEX_BIND_ID 0x178
