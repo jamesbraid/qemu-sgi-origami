@@ -1365,9 +1365,7 @@ static void test_read_pixels(void)
 /*
  * glGet's 0x4c: the modelview matrix glLoadMatrixf set, as sixteen float
  * words from byte 8; the viewport as four integers; the depth range
- * glDepthRange set as two floats; and GL_DEPTH_TEST's enable as 1. A name
- * the model does not keep, GL_MAX_TEXTURE_SIZE, still posts word 0 and
- * leaves the page's words as they were.
+ * glDepthRange set as two floats; and GL_DEPTH_TEST's enable as 1.
  */
 static void test_get_queries(void)
 {
@@ -1402,10 +1400,93 @@ static void test_get_queries(void)
     assert_reply_posted(qts);
     g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 1);
 
-    qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 4);
-    kona_command(qts, 0x4c, (uint32_t[]){ 0xd33 }, 1);
-    assert_reply_posted(qts);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0xa5a5a5a5);
+}
+
+/* Sentinels catch partial payload writes as well as a false ready word. */
+static void prepare_refused_reply(QTestState *s)
+{
+    qtest_memset(s, RETURN_PAGE, 0xa5, 0x4000);
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+}
+
+static void assert_reply_unchanged(QTestState *s)
+{
+    uint8_t expected[0x4000], got[0x4000];
+
+    memset(expected, 0xa5, sizeof(expected));
+    memset(expected, 0, 4);
+    qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+}
+
+static void test_unknown_query_refused(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    prepare_refused_reply(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xd33 }, 1);
+    assert_reply_unchanged(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "sgi-kona: glGet of 0xd33"));
+}
+
+static void test_read_pixels_refused(gconstpointer opaque)
+{
+    const uint32_t *args = opaque;
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, args, 7);
+    assert_reply_unchanged(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "sgi-kona: glReadPixels"));
+}
+
+/* A refused push must not add an entry above a supported saved group. */
+static void test_push_attrib_refused(gconstpointer opaque)
+{
+    uint32_t mask = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command_f(s, 0x6b, (float[]){ 0.125, 0.25, 0.5, 1 }, 4);
+    kona_command(s, 0xc9, (uint32_t[]){ 1 }, 1);
+    assert_reply_posted(s);
+    kona_command_f(s, 0x6b, (float[]){ 1, 0, 0, 1 }, 4);
+    prepare_refused_reply(s);
+    kona_command(s, 0xc9, (uint32_t[]){ mask | 1 }, 1);
+    assert_reply_unchanged(s);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, fbits(0.125));
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "sgi-kona: glPushAttrib"));
+}
+
+/* The outgoing page exists, but reads and pushes need a current context. */
+static void test_reply_without_context_refused(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command_kicked(s, 0x1fc, (uint32_t[]){ 1 }, 1);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]){ 0, 0, 1, 1, 0x1908, 0x1401, 0 }, 7);
+    assert_reply_unchanged(s);
+    kona_command(s, 0xc9, (uint32_t[]){ 1 }, 1);
+    assert_reply_unchanged(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_unchanged(s);
+    qtest_quit(s);
 }
 
 /*
@@ -1503,6 +1584,13 @@ static void test_attrib_stack_migrates(void)
 
 int main(int argc, char **argv)
 {
+    static const uint32_t bad_format[] = { 0, 0, 1, 1, 0x1902, 0x1401, 0 };
+    static const uint32_t bad_type[] = { 0, 0, 1, 1, 0x1908, 0x1406, 0 };
+    static const uint32_t too_large[] = { 0, 0, 4095, 1, 0x1908, 0x1401, 0 };
+    static const uint32_t huge_width[] = {
+        0, 0, UINT32_MAX, 1, 0x1908, 0x1401, 0,
+    };
+
     int ret;
 
     g_test_init(&argc, &argv, NULL);
@@ -1539,6 +1627,24 @@ int main(int argc, char **argv)
                    test_push_and_pop_attrib);
     qtest_add_func("sn0/origin2000/kona-3d/attrib-stack-migrates",
                    test_attrib_stack_migrates);
+
+
+    qtest_add_func("sn0/origin2000/kona-3d/unknown-query-refused",
+                   test_unknown_query_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-format-refused",
+                        bad_format, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-type-refused",
+                        bad_type, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-size-refused",
+                        too_large, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-huge-width-refused",
+                        huge_width, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/push-texture-refused",
+                        GUINT_TO_POINTER(0x40000), test_push_attrib_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/push-transform-refused",
+                        GUINT_TO_POINTER(0x1000), test_push_attrib_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/reply-without-context-refused",
+                   test_reply_without_context_refused);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
