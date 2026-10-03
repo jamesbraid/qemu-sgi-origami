@@ -14,6 +14,173 @@
 #include "cpu.h"
 #include "internal.h"
 #include "migration/cpu.h"
+#include "migration/qemu-file-types.h"
+
+static size_t r10k_scache_field_limit(const R10KState *r10k,
+                                      const VMStateField *field)
+{
+    if (field->offset == offsetof(R10KState, scache_mru)) {
+        return r10k->scache_size / 256;
+    }
+    switch (field->size) {
+    case 1:
+        return r10k->scache_size / 128;
+    case 2:
+        return r10k->scache_size / 16;
+    case 4:
+        return r10k->scache_size / 128;
+    case 8:
+        return r10k->scache_size / 8;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static bool scache_sub_array_load(QEMUFile *f, void *pv, size_t size,
+                                  const VMStateField *field, Error **errp)
+{
+    const R10KState *r10k =
+        (const R10KState *)((const char *)pv - field->offset);
+    size_t limit = r10k_scache_field_limit(r10k, field);
+    int i;
+
+    switch (field->size) {
+    case 1: {
+        uint8_t *arr = *(uint8_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint8_t val;
+
+            qemu_get_8s(f, &val);
+            if (arr && idx < limit) {
+                arr[idx] = val;
+            }
+        }
+        break;
+    }
+    case 2: {
+        uint16_t *arr = *(uint16_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint16_t val;
+
+            qemu_get_be16s(f, &val);
+            if (arr && idx < limit) {
+                arr[idx] = val;
+            }
+        }
+        break;
+    }
+    case 4: {
+        uint32_t *arr = *(uint32_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint32_t val;
+
+            qemu_get_be32s(f, &val);
+            if (arr && idx < limit) {
+                arr[idx] = val;
+            }
+        }
+        break;
+    }
+    case 8: {
+        uint64_t *arr = *(uint64_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint64_t val;
+
+            qemu_get_be64s(f, &val);
+            if (arr && idx < limit) {
+                arr[idx] = val;
+            }
+        }
+        break;
+    }
+    default:
+        g_assert_not_reached();
+    }
+    return true;
+}
+
+static bool scache_sub_array_save(QEMUFile *f, void *pv, size_t size,
+                                  const VMStateField *field,
+                                  JSONWriter *vmdesc, Error **errp)
+{
+    const R10KState *r10k =
+        (const R10KState *)((const char *)pv - field->offset);
+    size_t limit = r10k_scache_field_limit(r10k, field);
+    int i;
+
+    switch (field->size) {
+    case 1: {
+        const uint8_t *arr = *(const uint8_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint8_t val = (arr && idx < limit) ? arr[idx] : 0;
+
+            qemu_put_8s(f, &val);
+        }
+        break;
+    }
+    case 2: {
+        const uint16_t *arr = *(const uint16_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint16_t val = (arr && idx < limit) ? arr[idx] : 0;
+
+            qemu_put_be16s(f, &val);
+        }
+        break;
+    }
+    case 4: {
+        const uint32_t *arr = *(const uint32_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint32_t val = (arr && idx < limit) ? arr[idx] : 0;
+
+            qemu_put_be32s(f, &val);
+        }
+        break;
+    }
+    case 8: {
+        const uint64_t *arr = *(const uint64_t **)pv;
+
+        for (i = 0; i < field->num; i++) {
+            size_t idx = field->start + i;
+            uint64_t val = (arr && idx < limit) ? arr[idx] : 0;
+
+            qemu_put_be64s(f, &val);
+        }
+        break;
+    }
+    default:
+        g_assert_not_reached();
+    }
+    return true;
+}
+
+static const VMStateInfo vmstate_info_scache_sub_array = {
+    .name = "scache_sub_array",
+    .load = scache_sub_array_load,
+    .save = scache_sub_array_save,
+};
+
+#define VMSTATE_SCACHE_SUB_ARRAY(_field, _state, _start, _num, _type) { \
+    .name       = (stringify(_field)),                                  \
+    .num        = (_num),                                               \
+    .start      = (_start),                                             \
+    .info       = &vmstate_info_scache_sub_array,                       \
+    .size       = sizeof(_type),                                        \
+    .offset     = offsetof(_state, _field),                             \
+}
 
 /*
  * The base R10000 state: the first megabyte of the secondary-cache diagnostic
@@ -28,12 +195,16 @@ static const VMStateDescription vmstate_r10k_state = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, 0, R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, 0, R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState, 0, R10K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState, 0, R10K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState, 0,
-                                 R10K_SCACHE_QUADWORDS),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState, 0,
+                                 R10K_SCACHE_TAGS, uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState, 0,
+                                 R10K_SCACHE_TAGS, uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState, 0,
+                                 R10K_SCACHE_SETS, uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState, 0,
+                                 R10K_SCACHE_DWORDS, uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState, 0,
+                                 R10K_SCACHE_QUADWORDS, uint16_t),
         VMSTATE_UINT32_ARRAY(icache_taglo, R10KState, R10K_ICACHE_TAGS),
         VMSTATE_UINT8_ARRAY(icache_taghi, R10KState, R10K_ICACHE_TAGS),
         VMSTATE_UINT8_ARRAY(icache_lru, R10KState, R10K_ICACHE_SETS),
@@ -77,16 +248,18 @@ static const VMStateDescription vmstate_r10k_scache_r14k = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, R10K_SCACHE_TAGS,
-                                 R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, R10K_SCACHE_TAGS,
-                                R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState, R10K_SCACHE_SETS,
-                                R14K_SCACHE_SETS - R10K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState, R10K_SCACHE_DWORDS,
-                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState, R10K_SCACHE_QUADWORDS,
-                                 R14K_SCACHE_QUADWORDS - R10K_SCACHE_QUADWORDS),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState, R10K_SCACHE_TAGS,
+                                 R14K_SCACHE_TAGS - R10K_SCACHE_TAGS, uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState, R10K_SCACHE_TAGS,
+                                 R14K_SCACHE_TAGS - R10K_SCACHE_TAGS, uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState, R10K_SCACHE_SETS,
+                                 R14K_SCACHE_SETS - R10K_SCACHE_SETS, uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState, R10K_SCACHE_DWORDS,
+                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS,
+                                 uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState, R10K_SCACHE_QUADWORDS,
+                                 R14K_SCACHE_QUADWORDS - R10K_SCACHE_QUADWORDS,
+                                 uint16_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -122,17 +295,22 @@ static const VMStateDescription vmstate_r12000_extra = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, R10K_SCACHE_TAGS,
-                                 R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, R10K_SCACHE_TAGS,
-                                R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState, R10K_SCACHE_SETS,
-                                R10K_SCACHE_4M_SETS - R10K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState, R10K_SCACHE_DWORDS,
-                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState, R10K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS,
+                                 uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState, R10K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState, R10K_SCACHE_SETS,
+                                 R10K_SCACHE_4M_SETS - R10K_SCACHE_SETS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState, R10K_SCACHE_DWORDS,
+                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS,
+                                 uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState,
                                  R10K_SCACHE_QUADWORDS,
-                                 R14K_SCACHE_QUADWORDS - R10K_SCACHE_QUADWORDS),
+                                 R14K_SCACHE_QUADWORDS - R10K_SCACHE_QUADWORDS,
+                                 uint16_t),
         VMSTATE_UINT8_SUB_ARRAY(bpt, R10KState, R10K_BPT_ENTRIES,
                                 R12K_BPT_ENTRIES - R10K_BPT_ENTRIES),
         VMSTATE_END_OF_LIST()
@@ -169,17 +347,22 @@ static const VMStateDescription vmstate_r10k_scache_4m = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, R14K_SCACHE_TAGS,
-                                 R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, R14K_SCACHE_TAGS,
-                                R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState, R14K_SCACHE_SETS,
-                                R10K_SCACHE_4M_SETS - R14K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState, R14K_SCACHE_DWORDS,
-                                 R10K_SCACHE_4M_DWORDS - R14K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState, R14K_SCACHE_QUADWORDS,
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState, R14K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS,
+                                 uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState, R14K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState, R14K_SCACHE_SETS,
+                                 R10K_SCACHE_4M_SETS - R14K_SCACHE_SETS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState, R14K_SCACHE_DWORDS,
+                                 R10K_SCACHE_4M_DWORDS - R14K_SCACHE_DWORDS,
+                                 uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState, R14K_SCACHE_QUADWORDS,
                                  R10K_SCACHE_4M_QUADWORDS -
-                                 R14K_SCACHE_QUADWORDS),
+                                 R14K_SCACHE_QUADWORDS,
+                                 uint16_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -209,26 +392,31 @@ static const VMStateDescription vmstate_r10k_scache_8m = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState,
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState,
                                  R10K_SCACHE_4M_TAGS,
                                  R10K_SCACHE_MAX_TAGS / 2 -
-                                 R10K_SCACHE_4M_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState,
-                                R10K_SCACHE_4M_TAGS,
-                                R10K_SCACHE_MAX_TAGS / 2 -
-                                R10K_SCACHE_4M_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState,
-                                R10K_SCACHE_4M_SETS,
-                                R10K_SCACHE_MAX_SETS / 2 -
-                                R10K_SCACHE_4M_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState,
+                                 R10K_SCACHE_4M_TAGS,
+                                 uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState,
+                                 R10K_SCACHE_4M_TAGS,
+                                 R10K_SCACHE_MAX_TAGS / 2 -
+                                 R10K_SCACHE_4M_TAGS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState,
+                                 R10K_SCACHE_4M_SETS,
+                                 R10K_SCACHE_MAX_SETS / 2 -
+                                 R10K_SCACHE_4M_SETS,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState,
                                  R10K_SCACHE_4M_DWORDS,
                                  R10K_SCACHE_MAX_DWORDS / 2 -
-                                 R10K_SCACHE_4M_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+                                 R10K_SCACHE_4M_DWORDS,
+                                 uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState,
                                  R10K_SCACHE_4M_QUADWORDS,
                                  R10K_SCACHE_MAX_QUADWORDS / 2 -
-                                 R10K_SCACHE_4M_QUADWORDS),
+                                 R10K_SCACHE_4M_QUADWORDS,
+                                 uint16_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -258,21 +446,26 @@ static const VMStateDescription vmstate_r10k_scache_16m = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState,
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taglo, R10KState,
                                  R10K_SCACHE_MAX_TAGS / 2,
-                                 R10K_SCACHE_MAX_TAGS / 2),
-        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState,
-                                R10K_SCACHE_MAX_TAGS / 2,
-                                R10K_SCACHE_MAX_TAGS / 2),
-        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState,
-                                R10K_SCACHE_MAX_SETS / 2,
-                                R10K_SCACHE_MAX_SETS / 2),
-        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState,
+                                 R10K_SCACHE_MAX_TAGS / 2,
+                                 uint32_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_taghi, R10KState,
+                                 R10K_SCACHE_MAX_TAGS / 2,
+                                 R10K_SCACHE_MAX_TAGS / 2,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_mru, R10KState,
+                                 R10K_SCACHE_MAX_SETS / 2,
+                                 R10K_SCACHE_MAX_SETS / 2,
+                                 uint8_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_data, R10KState,
                                  R10K_SCACHE_MAX_DWORDS / 2,
-                                 R10K_SCACHE_MAX_DWORDS / 2),
-        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+                                 R10K_SCACHE_MAX_DWORDS / 2,
+                                 uint64_t),
+        VMSTATE_SCACHE_SUB_ARRAY(scache_ecc, R10KState,
                                  R10K_SCACHE_MAX_QUADWORDS / 2,
-                                 R10K_SCACHE_MAX_QUADWORDS / 2),
+                                 R10K_SCACHE_MAX_QUADWORDS / 2,
+                                 uint16_t),
         VMSTATE_END_OF_LIST()
     }
 };

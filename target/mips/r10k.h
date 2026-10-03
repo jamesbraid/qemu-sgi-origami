@@ -193,13 +193,6 @@ typedef struct R10KState {
     /* CP0 CacheErr is copied from the reporting cache on exception delivery. */
     int32_t CP0_CacheErr;
 
-    /* R10000 external secondary-cache diagnostic state. */
-    uint32_t scache_taglo[R10K_SCACHE_MAX_TAGS];
-    uint8_t scache_taghi[R10K_SCACHE_MAX_TAGS];
-    uint8_t scache_mru[R10K_SCACHE_MAX_SETS];
-    uint64_t scache_data[R10K_SCACHE_MAX_DWORDS];
-    uint16_t scache_ecc[R10K_SCACHE_MAX_QUADWORDS];
-
     /*
      * R10000 primary-cache diagnostic state. The tag arrays keep each tag's
      * defined TagLo bits except the set-wide least-recently-used bit, which
@@ -217,10 +210,22 @@ typedef struct R10KState {
     uint8_t dcache_lru[R10K_DCACHE_SETS];
     uint32_t dcache_data[R10K_PCACHE_WORDS];
     uint8_t dcache_parity[R10K_PCACHE_WORDS];
+
     /* Board links survive reset. */
     R10KBusSystemRequestFn bus_request;
     void *bus_request_opaque;
     uint16_t requester_id;
+
+    /*
+     * Secondary-cache storage, allocated dynamically to fitted capacity
+     * (survives reset; buffers are re-zeroed on cold reset).
+     */
+    uint32_t scache_size;
+    uint32_t *scache_taglo;
+    uint8_t *scache_taghi;
+    uint8_t *scache_mru;
+    uint64_t *scache_data;
+    uint16_t *scache_ecc;
 } R10KState;
 
 void r10k_cpu_set_bus_handler(MIPSCPU *cpu,

@@ -297,7 +297,25 @@ bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp)
 void mips_r10k_cpu_realize(MIPSCPU *cpu)
 {
     if (cpu->env.cpu_model->insn_flags & INSN_R10K) {
+        uint32_t capacity;
+        uint32_t alloc_size;
+        R10KState *r10k;
+
         cpu->env.r10k = g_new0(R10KState, 1);
+        r10k = cpu->env.r10k;
+
+        capacity = r10k_scache_capacity(cpu->env.cpu_model->cfg.scache_size,
+            extract32(cpu->env.cpu_model->CP0_Config0, CP0C0_R10K_SS, 3));
+        if (capacity == 0) {
+            capacity = R10K_SCACHE_SIZE;
+        }
+        alloc_size = MAX(capacity, R10K_SCACHE_SIZE);
+        r10k->scache_size = capacity;
+        r10k->scache_taglo = g_new0(uint32_t, alloc_size / 128);
+        r10k->scache_taghi = g_new0(uint8_t, alloc_size / 128);
+        r10k->scache_mru = g_new0(uint8_t, alloc_size / 256);
+        r10k->scache_data = g_new0(uint64_t, alloc_size / 8);
+        r10k->scache_ecc = g_new0(uint16_t, alloc_size / 16);
     }
 }
 
@@ -310,6 +328,19 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
         R10KState *r10k = env->r10k;
 
         memset(r10k, 0, offsetof(R10KState, bus_request));
+        if (r10k->scache_size) {
+            uint32_t alloc_size = MAX(r10k->scache_size, R10K_SCACHE_SIZE);
+
+            memset(r10k->scache_taglo, 0,
+                   (alloc_size / 128) * sizeof(uint32_t));
+            memset(r10k->scache_taghi, 0,
+                   (alloc_size / 128) * sizeof(uint8_t));
+            memset(r10k->scache_mru, 0,
+                   (alloc_size / 256) * sizeof(uint8_t));
+            memset(r10k->scache_data, 0, alloc_size);
+            memset(r10k->scache_ecc, 0,
+                   (alloc_size / 16) * sizeof(uint16_t));
+        }
         r10k->CP0_TagLo_rw_bitmask = env->cpu_model->CP0_TagLo_rw_bitmask;
         r10k->CP0_ECC_rw_bitmask = env->cpu_model->CP0_ECC_rw_bitmask;
         r10k->CP0_Config0_preserve_bitmask =
@@ -346,7 +377,14 @@ void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id)
 
 void mips_r10k_cpu_unrealize(MIPSCPU *cpu)
 {
-    g_clear_pointer(&cpu->env.r10k, g_free);
+    if (cpu->env.r10k) {
+        g_free(cpu->env.r10k->scache_taglo);
+        g_free(cpu->env.r10k->scache_taghi);
+        g_free(cpu->env.r10k->scache_mru);
+        g_free(cpu->env.r10k->scache_data);
+        g_free(cpu->env.r10k->scache_ecc);
+        g_clear_pointer(&cpu->env.r10k, g_free);
+    }
     cpu->env.cpu_model = MIPS_CPU_GET_CLASS(cpu)->cpu_def;
     if (cpu->r10k_profile) {
         g_clear_pointer(&cpu->r10k_profile->cpu_model, g_free);
