@@ -1293,6 +1293,37 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     return true;
 }
 
+bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
+                                const SGIGLTexImage *texture,
+                                const float coord[4], const float color[4],
+                                float out[4])
+{
+    unsigned reports = 0;
+    SGIRasterTarget target = { .texture = texture };
+    SGISoftDraw r = {
+        .t = &target,
+        .st = state,
+        .texture_reports = &reports,
+    };
+    SGISoftFrag frag = { 0 };
+
+    if (!state || !texture || !coord || !color || !out ||
+        !sgi_soft_texture_setup(&r) || !r.texture) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        frag.texcoord[k] = coord[k];
+        frag.rgba[k] = color[k];
+    }
+    if (!sgi_soft_texture(&r, &frag)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = frag.rgba[k];
+    }
+    return true;
+}
+
 /*
  * Fog (3.10): the fog factor f from the fragment's fog coordinate c by
  * the mode, clamped to [0, 1], blends an RGBA fragment's red, green and
