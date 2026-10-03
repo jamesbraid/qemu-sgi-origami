@@ -1296,6 +1296,86 @@ static void test_dma_image_transfer_reads_rgb_red_in_low_byte(void)
     g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
 }
 
+static void test_dma_image_transfer_reads_rgb555(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_READ_DATA_PFN,
+    };
+    static const uint8_t poison[16] = {
+        0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+        0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee, 0xee,
+    };
+    static const uint8_t want[8] = {
+        0x28, 0xc2, 0x28, 0xc2, 0x28, 0xc2, 0x28, 0xc2,
+    };
+    uint8_t got[sizeof(poison)];
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_PAGE),
+                   list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_BASE),
+                   list_entry, sizeof(list_entry));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                   poison, sizeof(poison));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) |
+                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x12u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, 0x34u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, 0x56u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (1u << 16) | 1u));
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 0), ==, 0x00123456);
+    g_assert_cmphex(mgras_test_pixel(qts, 1, 1), ==, 0x00123456);
+
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 dma_read_node_addr(DMA_READ_LIST_BASE));
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484b04 << 32) | (DMA_READ_WIDGET << 16));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, 0x01000000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x00002200));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (1u << 16) | 1022u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 2);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0xb9);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                  got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(want), want, sizeof(want));
+    g_assert_cmpmem(got + sizeof(want), sizeof(got) - sizeof(want),
+                    poison + sizeof(want), sizeof(poison) - sizeof(want));
+}
+
+
 #undef DMA_READ_NODE
 #undef DMA_READ_WIDGET
 #undef DMA_READ_LIST_PAGE
@@ -4951,6 +5031,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-reads-rgb555",
+                   test_dma_image_transfer_reads_rgb555);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-rgb-red-in-low-byte",
                    test_dma_image_transfer_reads_rgb_red_in_low_byte);
