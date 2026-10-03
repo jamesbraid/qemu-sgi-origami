@@ -4363,6 +4363,79 @@ static void test_gl_readpixels_dma_captured_rgb64x1(void)
     }
 }
 
+static void test_gl_readpixels_dma_captured_one_row_selectors(void)
+{
+    enum { WIDTH = 64, PAGE_COUNT = 3 };
+    static const uint32_t widths[] = { 48, 64 };
+    uint32_t pixels[WIDTH];
+    uint8_t image[WIDTH * 4];
+    uint8_t poison[PAGE_COUNT * 4096];
+    uint8_t got[sizeof(poison)];
+    const uint32_t first_width = 41;
+
+    for (uint32_t pixel = 0; pixel < WIDTH; pixel++) {
+        uint8_t red = 0x10 + pixel;
+        uint8_t green = 0x20 + pixel;
+        uint8_t blue = 0x30 + pixel;
+
+        pixels[pixel] = (uint32_t)red << 24 | (uint32_t)green << 16 |
+                        (uint32_t)blue << 8 | 0xff;
+        image[pixel * 4] = red;
+        image[pixel * 4 + 1] = green;
+        image[pixel * 4 + 2] = blue;
+        image[pixel * 4 + 3] = 0xff;
+    }
+    memset(poison, 0xa5, sizeof(poison));
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 1, 1, pixels, WIDTH);
+    gl_read_dma_map_pages_slot(qts, PAGE_COUNT, 3, 0x19u << 16);
+
+    for (unsigned int shape = 0; shape < ARRAY_SIZE(widths); shape++) {
+        uint32_t width = widths[shape];
+        uint32_t second_width = width - first_width;
+
+        for (unsigned int malformed = 0; malformed < 2; malformed++) {
+            uint32_t first_mode = malformed ? 0xc10081 : 0xc10080;
+            uint32_t second_mode = malformed ? 0xc10481 : 0xc10480;
+
+            qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+            gl_word(qts, GL_READ_OPEN);
+            gl_read_registers(qts, 1, 1, 1, first_width, 1,
+                              first_mode, false);
+            gl_read_dma_class_a_signature_format(qts, first_width, 1,
+                                                 0xc10080);
+            gl_read_dma_descriptor_at(qts, 0x100, 0x800, 1,
+                                      first_width * 4, 0xbf);
+            gl_word(qts, 0x0000da00);
+            gl_read_registers(qts, first_width + 1, 1, 1, second_width, 1,
+                              second_mode, false);
+            gl_read_dma_class_a_signature_format(qts, second_width, 1,
+                                                 0xc10480);
+            gl_read_dma_descriptor_at(qts, 0x100, 0x8a4, 1,
+                                      second_width * 4, 0xbf);
+            gl_word(qts, 0x0000da00);
+            gl_word(qts, GL_READ_CLOSE);
+
+            qtest_memread(qts, 0x30000, got, sizeof(got));
+            if (malformed) {
+                g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+            } else {
+                g_assert_cmpmem(got, 0x800, poison, 0x800);
+                g_assert_cmpmem(got + 0x800, first_width * 4, image,
+                                first_width * 4);
+                g_assert_cmpmem(got + 0x8a4, second_width * 4,
+                                image + first_width * 4, second_width * 4);
+                g_assert_cmpmem(got + 0x8a4 + second_width * 4,
+                                sizeof(got) - 0x8a4 - second_width * 4,
+                                poison + 0x8a4 + second_width * 4,
+                                sizeof(poison) - 0x8a4 - second_width * 4);
+            }
+            g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+        }
+    }
+}
+
 static void test_gl_readpixels_dma_bracket_migration(void)
 {
     static const uint32_t row0[] = { 0x212223ff, 0x313233ff };
@@ -5216,6 +5289,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-readpixels-dma-captured-rgb-64x1",
                    test_gl_readpixels_dma_captured_rgb64x1);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-readpixels-dma-captured-one-row-selectors",
+                   test_gl_readpixels_dma_captured_one_row_selectors);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bracket-migration",
                    test_gl_readpixels_dma_bracket_migration);
 
