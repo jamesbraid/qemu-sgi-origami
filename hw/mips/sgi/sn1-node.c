@@ -622,6 +622,8 @@ static void sn1_node_init_claims(SN1NodeState *node)
     /* DMA keeps its attributes and reaches only the named memory space. */
     sn1_fabric_init_processor_view(&node->ni_fabric_memory, &node->endpoint,
         SN1_NODE_FABRIC_VIEW, 0, &node->fabric);
+    /* BTE forwards memory while a node-owned register callback is active. */
+    node->ni_fabric_memory.region.disable_reentrancy_guard = true;
     node->node_notifier.notify = sn1_node_number_changed;
     node->cable_notifier.notify = sn1_node_cable_changed;
     sgi_bedrock_lb_add_node_notifier(&SGI_BEDROCK(node->bedrock)->lb,

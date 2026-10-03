@@ -467,10 +467,11 @@ static uint64_t bte_cpu_readq(QTestState *qts, unsigned cpu, uint64_t address)
 
 static uint64_t bte_memory_transfer(QTestState *qts, unsigned node,
     unsigned engine, uint64_t source, uint64_t destination,
-    uint64_t notification, bool zero)
+    uint64_t notification, bool zero, bool named)
 {
     unsigned cpu = node * 2;
-    uint64_t base = BTE0 + engine * 0x10000;
+    uint64_t base = (named ? BEDROCK_NODE(node ? 2 : 0) + BTE0_HUB : BTE0) +
+                    engine * 0x10000;
 
     bte_cpu_writeq(qts, cpu, base + BTE_STATUS, 1 | BTE_BUSY);
     bte_cpu_writeq(qts, cpu, base + 8, source);
@@ -520,41 +521,75 @@ static void test_bte_memory_route(const void *data)
         g_assert_true(qtest_memwrite_cpu(qts, node * 2, own + 0x10000,
                                          source, sizeof(source)));
         for (unsigned engine = 0; engine < 2; engine++) {
-            for (unsigned zero = 0; zero < 2; zero++) {
-                memset(bytes, 0xa0 + node, sizeof(bytes));
-                g_assert_true(qtest_memwrite_cpu(qts, node * 2,
-                    peer + 0x20000, bytes, sizeof(bytes)));
-                bte_cpu_writeq(qts, node * 2, peer + 0x30000, UINT64_MAX);
-                g_assert_cmphex(bte_memory_transfer(qts, node, engine,
-                    own + 0x10000, peer + 0x20000, peer + 0x30000, zero),
-                    ==, 0);
-                g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
-                    peer + 0x20000, result, sizeof(result)));
-                if (zero) {
-                    memset(bytes, 0, sizeof(source));
-                } else {
-                    memcpy(bytes, source, sizeof(source));
+            for (unsigned named = 0; named < 2; named++) {
+                for (unsigned zero = 0; zero < 2; zero++) {
+                    memset(bytes, 0xa0 + node, sizeof(bytes));
+                    g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                        peer + 0x20000, bytes, sizeof(bytes)));
+                    bte_cpu_writeq(qts, node * 2, peer + 0x30000, UINT64_MAX);
+                    g_assert_cmphex(bte_memory_transfer(qts, node, engine,
+                        own + 0x10000, peer + 0x20000, peer + 0x30000,
+                        zero, named),
+                        ==, 0);
+                    g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                        peer + 0x20000, result, sizeof(result)));
+                    if (zero) {
+                        memset(bytes, 0, sizeof(source));
+                    } else {
+                        memcpy(bytes, source, sizeof(source));
+                    }
+                    g_assert_cmpmem(result, sizeof(result),
+                                    bytes, sizeof(bytes));
+                    g_assert_cmphex(bte_cpu_readq(qts, (1 - node) * 2,
+                                                  peer + 0x30000), ==, 0);
+                    g_assert_true(qtest_memread_cpu(qts, node * 2,
+                        own + 0x10000, result, sizeof(source)));
+                    g_assert_cmpmem(result, sizeof(source),
+                                    source, sizeof(source));
+                    g_test_message("%s node%u BTE%u %s %s "
+                                   "remote data/notification OK",
+                                   topology, node, engine,
+                                   named ? "named" : "local",
+                                   zero ? "zero" : "copy");
                 }
-                g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
-                g_assert_cmphex(bte_cpu_readq(qts, (1 - node) * 2,
-                                              peer + 0x30000), ==, 0);
-                g_assert_true(qtest_memread_cpu(qts, node * 2,
-                    own + 0x10000, result, sizeof(source)));
-                g_assert_cmpmem(result, sizeof(source), source, sizeof(source));
-                g_test_message("%s node%u BTE%u %s remote data/notification OK",
-                               topology, node, engine, zero ? "zero" : "copy");
             }
         }
+    }
+    /* Named registers enter the routed view before launching DMA. */
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t own = NODE(node ? 2 : 0);
+        uint64_t status, notification;
+
+        memset(bytes, 0x5a, sizeof(bytes));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2, own + 0x20000,
+                                         bytes, sizeof(bytes)));
+        bte_cpu_writeq(qts, node * 2, own + 0x30000, UINT64_MAX);
+        status = bte_memory_transfer(qts, node, 0, own + 0x10000,
+                                    own + 0x20000, own + 0x30000,
+                                    false, true);
+        notification = bte_cpu_readq(qts, node * 2, own + 0x30000);
+        g_test_message("%s node%u named-register local copy status 0x%"
+                       PRIx64 " notification 0x%" PRIx64,
+                       topology, node, status, notification);
+        g_assert_cmphex(status, ==, 0);
+        g_assert_cmphex(notification, ==, 0);
+        g_assert_true(qtest_memread_cpu(qts, node * 2, own + 0x20000,
+                                        result, sizeof(result)));
+        memset(bytes, 0x80 + node, 128);
+        g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
     }
     /* A missing target bank must refuse data, preserving backing RAM. */
     memset(bytes, 0x5a, sizeof(bytes));
     g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x20000,
                                      bytes, sizeof(bytes)));
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG, 0);
-    g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
-        NODE(2) + 0x20000, 0x30000, true), ==, (UINT64_C(1) << 16) | 1);
-    g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
-                    (UINT64_C(1) << 16) | 1);
+    for (unsigned named = 0; named < 2; named++) {
+        g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
+            NODE(2) + 0x20000, 0x30000, true, named),
+            ==, (UINT64_C(1) << 16) | 1);
+        g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
+                        (UINT64_C(1) << 16) | 1);
+    }
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
                    MD_INSTALLED_SELECT2);
     g_assert_true(qtest_memread_cpu(qts, 2, NODE(2) + 0x20000,
@@ -563,10 +598,13 @@ static void test_bte_memory_route(const void *data)
     qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':{"
         "'path':%s,'property':'down','value':true}}",
         routed ? "/machine/master-route" : CABLE_PATH);
-    g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
-        NODE(2) + 0x20000, 0x30000, true), ==, (UINT64_C(1) << 16) | 1);
-    g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
-                    (UINT64_C(1) << 16) | 1);
+    for (unsigned named = 0; named < 2; named++) {
+        g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
+            NODE(2) + 0x20000, 0x30000, true, named),
+            ==, (UINT64_C(1) << 16) | 1);
+        g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
+                        (UINT64_C(1) << 16) | 1);
+    }
     g_assert_true(qtest_memread_cpu(qts, 2, NODE(2) + 0x20000,
                                     result, sizeof(result)));
     g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
