@@ -5426,6 +5426,9 @@ static void test_texture_coordinates(void)
     context_init(&c);
     g_assert_cmpuint(get(&c, SGI_GL_CURRENT_TEXTURE_COORDS, out), ==, 4);
     g_assert_cmphex(out[3], ==, bits(1));
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    g_assert_cmpuint(get(&c, SGI_GL_TEXTURE_3D, out), ==, 1);
+    g_assert_cmphex(out[0], ==, 1);
     command(&c, NULL, SGI_GL_OP_TEXCOORD3F,
             (uint32_t[]) { bits(0.25f), bits(0.5f), bits(0.125f) }, 3);
     get(&c, SGI_GL_CURRENT_TEXTURE_COORDS, out);
@@ -5519,6 +5522,111 @@ static void test_texture_sampling(void)
         frag_quad(&f, 1, 0, 1, 1);
         g_assert_cmphex(frag_pixel(&f, 16, 16), ==, cases[i].expected);
     }
+}
+
+typedef struct Texture3DPixels {
+    uint32_t pixel[8];
+    unsigned reads;
+} Texture3DPixels;
+
+static bool texture_read_3d(void *opaque, uint32_t x, uint32_t y,
+                            uint32_t z, uint32_t *rgba)
+{
+    Texture3DPixels *p = opaque;
+
+    g_assert_cmpuint(x, <, 2);
+    g_assert_cmpuint(y, <, 2);
+    g_assert_cmpuint(z, <, 2);
+    p->reads++;
+    *rgba = p->pixel[z * 4 + y * 2 + x];
+    return true;
+}
+
+static SGIGLTexImage texture_image_3d(Texture3DPixels *p)
+{
+    return (SGIGLTexImage) {
+        .width = 2, .height = 2, .depth = 2,
+        .base_format = SGI_GL_RGBA,
+        .min_filter = SGI_GL_NEAREST, .mag_filter = SGI_GL_NEAREST,
+        .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .wrap_r = SGI_GL_REPEAT,
+        .read_texel_3d = texture_read_3d, .opaque = p,
+    };
+}
+
+static void test_texture_3d_sampling(void)
+{
+    const uint32_t slice0[4] = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+    };
+    const uint32_t slice1[4] = {
+        0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff,
+    };
+    const uint32_t volume[8] = {
+        0x000000ff, 0xff0000ff, 0x00ff00ff, 0x0000ffff,
+        0xffffffff, 0xffff00ff, 0x00ffffff, 0xff00ffff,
+    };
+    const struct {
+        uint32_t wrap_r;
+        float r, q;
+        uint32_t expected;
+    } cases[] = {
+        { SGI_GL_REPEAT, 0.25f, 1, 0xff0000 },
+        { SGI_GL_REPEAT, 0.75f, 1, 0x0000ff },
+        { SGI_GL_REPEAT, 1.25f, 1, 0xff0000 },
+        { SGI_GL_CLAMP_TO_EDGE, 1.25f, 1, 0x0000ff },
+        /* R is divided by Q before the volume slice is selected. */
+        { SGI_GL_REPEAT, 0.75f, 2, 0xff0000 },
+    };
+    Texture3DPixels pixels = { 0 };
+    SGIGLTexImage image = texture_image_3d(&pixels);
+    FragScene f;
+
+    memcpy(pixels.pixel, slice0, sizeof(slice0));
+    memcpy(pixels.pixel + 4, slice1, sizeof(slice1));
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        frag_init(&f);
+        enable(&f.c, SGI_GL_TEXTURE_3D, true);
+        texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+        image.wrap_r = cases[i].wrap_r;
+        f.rec.target.texture = &image;
+        texture_coord(&f, 0.25f, 0.25f, cases[i].r, cases[i].q);
+        frag_quad(&f, 1, 0, 1, 1);
+        g_assert_cmphex(frag_pixel(&f, 16, 16), ==, cases[i].expected);
+    }
+
+    /* LINEAR uses all eight texels, including the other R slice. */
+    frag_init(&f);
+    enable(&f.c, SGI_GL_TEXTURE_3D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    memcpy(pixels.pixel, volume, sizeof(volume));
+    image.min_filter = image.mag_filter = SGI_GL_LINEAR;
+    f.rec.target.texture = &image;
+    texture_coord(&f, 0.5f, 0.5f, 0.5f, 1);
+    frag_quad(&f, 1, 0, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0x808080);
+}
+
+static void test_texture_3d_matrix(void)
+{
+    Texture3DPixels pixels = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+        0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff,
+    } };
+    SGIGLTexImage image = texture_image_3d(&pixels);
+    FragScene f;
+    float matrix[16] = { 1, 0, 0, 0, 0, 1, 0, 0,
+                         0, 0, 1, 0, 0, 0, 0.5f, 1 };
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_3D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    g_assert_true(sgi_gl_set_matrix(&f.c, SGI_GL_TEXTURE, matrix));
+    texture_coord(&f, 0.25f, 0.25f, 0.125f, 1);
+    frag_quad(&f, 1, 0, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0x0000ff);
+
 }
 
 static uint32_t texture_rgb(double r, double g, double b)
@@ -8500,6 +8608,9 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-3d-sampling",
+                    test_texture_3d_sampling);
+    g_test_add_func("/sgi-gl/texture-3d-matrix", test_texture_3d_matrix);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);

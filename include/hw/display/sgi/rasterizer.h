@@ -164,15 +164,17 @@ bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b);
 
 #define SGI_GL_TEX_LEVELS_MAX 31u
 
-/* Absolute level identities in a borrowed, immutable normalized image view. */
+/* Absolute levels in a borrowed, immutable normalized 2D or 3D image view. */
 typedef struct SGIGLTexLevel {
     uint32_t level;
-    uint32_t width, height;
+    uint32_t width, height, depth;
     uint32_t base_format;
     uint32_t internal_format;
     uint32_t border;
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
+    bool (*read_texel_3d)(void *opaque, uint32_t level, uint32_t x,
+                          uint32_t y, uint32_t z, uint32_t *rgba);
     void *opaque;
 } SGIGLTexLevel;
 
@@ -185,8 +187,10 @@ typedef struct SGIGLTexPyramid {
 
 /*
  * One family-owned level-zero image and its texture object's sampler.
- * Dimensions count interior texels; row zero has the lowest T. read_texel
- * gets in-range interior indices and returns canonical RRGGBBAA bytes.
+ * A zero depth keeps the existing 2D callback ABI; positive depth selects
+ * the 3D callback. Dimensions count interior texels; row zero has the lowest
+ * T. The callback for the enabled target gets in-range indices and returns
+ * canonical RRGGBBAA bytes.
  * The family validates storage and guest addressing. It owns object state,
  * binding and migration, rebuilding this borrowed descriptor after load.
  * Image and descriptor stay immutable through each synchronous draw; the
@@ -194,13 +198,15 @@ typedef struct SGIGLTexPyramid {
  * mutation needs family locking or a stable snapshot. No pointer is retained.
  */
 typedef struct SGIGLTexImage {
-    uint32_t width, height;
+    uint32_t width, height, depth;
     uint32_t base_format;
     uint32_t border;
     uint32_t min_filter, mag_filter;
-    uint32_t wrap_s, wrap_t;
+    uint32_t wrap_s, wrap_t, wrap_r;
     float border_color[4];
     bool (*read_texel)(void *opaque, uint32_t x, uint32_t y, uint32_t *rgba);
+    bool (*read_texel_3d)(void *opaque, uint32_t x, uint32_t y, uint32_t z,
+                          uint32_t *rgba);
     void *opaque;
     /*
      * NULL preserves the level-zero interface; otherwise image fields above
