@@ -629,13 +629,12 @@ struct SGIOdysseyState {
      * the box in raster order from a cursor (image_cur_x/image_cur_y) that
      * wraps at image_x2 back to image_x1 on the next row. image_fmt is the
      * running burst's pixel format (0x11 direct RGB, 0x10 four colour indices
-     * per word). A per-group transfer header sets image_group_len, the count
-     * of valid pixels in the group (0 means the group runs unbounded to the
-     * box edge); image_group_painted counts how many of them have been laid
-     * down, so a group's trailing padding pixels are dropped. image_code is
-     * the header's source format code, the one that lays out the burst
-     * bytes; image_bytes and image_nbytes carry a pixel that spans two burst
-     * words. image_code_reported: an unknown code has been reported.
+     * per word, 0x12 two RGBA16 words per pixel for code 0x6b). A per-group
+     * transfer header sets image_group_len, the count of valid pixels for
+     * byte formats or words for SHORT (0 runs unbounded to the box edge);
+     * image_group_painted counts those units. image_code is the header's
+     * source format code. image_bytes and image_nbytes carry a partial pixel
+     * across burst words. image_code_reported records unknown-code reporting.
      */
     bool image_active;
     uint32_t image_x1;

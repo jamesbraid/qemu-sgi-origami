@@ -1759,14 +1759,16 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * the arity in bits 13:10, and the format in the low bits, with bits 9:5
  * clear. fmt 0x11 carries one 0x00RRGGBB pixel per word (the account icons,
  * painted directly); fmt 0x10 packs four 8-bit colour indices per word,
- * leftmost in bits 31:24, each resolved through the colormap. Formats 0x12
- * and 0x14 appear in the DDX but never in the login trace and are not modeled.
+ * leftmost in bits 31:24, each resolved through the colormap. Format 0x12
+ * carries two RGBA16 words per pixel only with source code 0x6b; 0x14 remains
+ * unsupported.
  */
 #define ODSY_IMAGE_BURST_BASE 0x4000
 #define ODSY_IMAGE_BURST_FMT_MASK 0x1f
 #define ODSY_IMAGE_BURST_RESERVED_MASK 0x3e0
 #define ODSY_IMAGE_FMT_CI 0x10
 #define ODSY_IMAGE_FMT_RGB 0x11
+#define ODSY_IMAGE_FMT_RGBA16 0x12
 
 /*
  * The source pixel format: the transfer header's low byte, and the same code
@@ -1785,6 +1787,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_RGB 0x49
 #define ODSY_IMAGE_CODE_RGBA 0x4b
 #define ODSY_IMAGE_CODE_XRGB 0x4c
+#define ODSY_IMAGE_CODE_RGBA16 0x6b
 
 /* The transfer header's group length, bits 23:20, with 15 standing for 16. */
 #define ODSY_IMAGE_HEADER_GROUP_SHIFT 20
@@ -3501,7 +3504,7 @@ static int odyssey_image_object(SGIOdysseyState *s)
  * leaves the framebuffer, so a transparent index shows what was drawn below.
  */
 static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
-                              bool is_index)
+                              bool is_index, bool preserve_alpha)
 {
     bool x_decreasing = s->image_x2 < s->image_x1;
     bool y_decreasing = s->image_y2 < s->image_y1;
@@ -3523,7 +3526,8 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
         odyssey_paint_pixel(s,
                             (int64_t)s->image_cur_x + s->win_origin[0],
                             (int64_t)s->image_cur_y + s->win_origin[1],
-                            is_index ? rgba : (rgba & ~0xffu) | 0xff);
+                            is_index || preserve_alpha ? rgba :
+                            (rgba & ~0xffu) | 0xff);
     }
     if ((x_decreasing && s->image_cur_x == s->image_x2) ||
         (!x_decreasing && s->image_cur_x == s->image_x2 - 1)) {
@@ -3543,8 +3547,8 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
 }
 
 /*
- * One texel of the open image at the raster cursor, as an 0xRRGGBBAA word,
- * or a cleared one (paint false), bounded by the header's group length.
+ * One byte-stream texel of the open image at the raster cursor, bounded by
+ * the header's group length in pixels.
  */
 static void odyssey_image_texel(SGIOdysseyState *s, bool paint, uint32_t rgba,
                                 bool is_index)
@@ -3553,7 +3557,7 @@ static void odyssey_image_texel(SGIOdysseyState *s, bool paint, uint32_t rgba,
         s->image_group_painted >= s->image_group_len) {
         return;
     }
-    odyssey_image_put(s, paint, rgba, is_index);
+    odyssey_image_put(s, paint, rgba, is_index, false);
     s->image_group_painted++;
 }
 
@@ -3632,6 +3636,46 @@ static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
     unsigned int n = odyssey_pixel_bytes(code), i;
     uint8_t b[4];
 
+    if ((code == ODSY_IMAGE_CODE_RGBA16) !=
+        (s->image_fmt == ODSY_IMAGE_FMT_RGBA16)) {
+        return;
+    }
+    if (s->image_fmt == ODSY_IMAGE_FMT_RGBA16) {
+        uint32_t rgba;
+        uint16_t r, g, b16, a;
+
+        if (s->image_group_len &&
+            s->image_group_painted >= s->image_group_len) {
+            return;
+        }
+        if (s->image_nbytes) {
+            r = s->image_bytes >> 16;
+            g = s->image_bytes;
+            b16 = word >> 16;
+            a = word;
+            rgba = odyssey_pack_pixel(
+                ((uint32_t)r * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                ((uint32_t)g * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                ((uint32_t)b16 * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            rgba = (rgba & ~0xffu) |
+                   (((uint32_t)a * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            s->image_bytes = 0;
+            s->image_nbytes = 0;
+            odyssey_image_put(s, true, rgba, false, true);
+        } else {
+            s->image_bytes = word;
+            s->image_nbytes = 1;
+        }
+        s->image_group_painted++;
+        if (s->image_group_len &&
+            s->image_group_painted >= s->image_group_len &&
+            s->image_nbytes) {
+            s->image_bytes = 0;
+            s->image_nbytes = 0;
+        }
+        return;
+    }
+
     if (!n) {
         if (!s->image_code_reported) {
             s->image_code_reported = true;
@@ -3673,6 +3717,7 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
     switch (f) {
     case ODSY_IMAGE_FMT_CI:
     case ODSY_IMAGE_FMT_RGB:
+    case ODSY_IMAGE_FMT_RGBA16:
         *fmt = f;
         return true;
     default:
@@ -5780,6 +5825,8 @@ static void odyssey_gl_end(SGIOdysseyState *s)
      */
     if (s->image_active) {
         s->image_active = false;
+        s->image_bytes = 0;
+        s->image_nbytes = 0;
         return;
     }
 
@@ -7500,6 +7547,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->image_fmt = 0;
             s->image_group_len = 0;
             s->image_group_painted = 0;
+            s->image_bytes = 0;
+            s->image_nbytes = 0;
         }
         break;
     case ODSY_REG_GL_END:
@@ -7584,8 +7633,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         /*
          * The transfer header opens a pixel group: its length (bits 23:20, 15
          * standing for 16, 0 meaning the group runs unbounded to the box edge)
-         * bounds how many pixels of the following bursts are valid, so a
-         * partial last word's padding is dropped. Reset the per-group count.
+         * bounds byte-format pixels or SHORT-format words. Reset the per-group
+         * count and any partial pixel.
          */
     {
         uint32_t glen = (s->cmd_operand[0] >> ODSY_IMAGE_HEADER_GROUP_SHIFT) &
@@ -7926,6 +7975,10 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         if (s->image_active && operands > 0 &&
             odyssey_image_burst_fmt(reg, &fmt)) {
             s->image_fmt = fmt;
+            if ((s->image_code == ODSY_IMAGE_CODE_RGBA16) !=
+                (fmt == ODSY_IMAGE_FMT_RGBA16)) {
+                odyssey_cmd_unimplemented(s, word);
+            }
             s->cmd_state = ODSY_CMD_IMAGE_BURST;
             s->cmd_operand_count = operands;
             s->cmd_operand_index = 0;
