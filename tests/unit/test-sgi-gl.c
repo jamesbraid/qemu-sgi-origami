@@ -6455,6 +6455,70 @@ static void test_texture_post_filter_precision(void)
     g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
 }
 
+/* Pixel producers share filtering and the environment, without quantization. */
+static void test_texture_apply_pixel(void)
+{
+    SGIGLContext c;
+    TexturePixels pixels = { .pixel = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    } };
+    Texture3DPixels volume = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+        0x0000ffff, 0x0000ffff, 0x0000ffff, 0x0000ffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLTexImage image_3d = texture_image_3d(&volume);
+    const float colour[4] = { 0.5, 0.5, 0.5, 0.5 };
+    const float coord[4] = { 0.5, 0.5, 1.5, 2 };
+    const float untouched[4] = { -1, -1, -1, -1 };
+    float out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_2D, true);
+    image.post_filter = texture_post_filter_precision;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, (float)(0.5 / 4095));
+    g_assert_cmpfloat(out[1], ==, (float)(1.5 / 4095));
+    g_assert_cmpfloat(out[2], ==, (float)(1024.0 / 4095));
+    g_assert_cmpfloat(out[3], ==, 0.5f);
+    g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
+
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    enable(&c, SGI_GL_TEXTURE_2D, false);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image_3d, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    g_assert_cmpfloat(out[2], ==, 1);
+    image_3d.depth = 1;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image_3d, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    g_assert_cmpfloat(out[2], ==, 0);
+
+    memcpy(out, untouched, sizeof(out));
+    volume.fail = true;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image_3d, coord,
+                                             colour, out));
+    g_assert_cmpmem(out, sizeof(out), untouched, sizeof(untouched));
+    enable(&c, SGI_GL_TEXTURE_3D, false);
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_false(sgi_gl_texture_apply_pixel(NULL, &image, coord,
+                                            colour, out));
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, NULL, coord,
+                                            colour, out));
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, NULL,
+                                            colour, out));
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            NULL, out));
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, NULL));
+    g_assert_cmpmem(out, sizeof(out), untouched, sizeof(untouched));
+    g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
+}
+
 static void test_polygon_stipple_rgba_texture(void)
 {
     AlphaScene s;
@@ -8950,6 +9014,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
     g_test_add_func("/sgi-gl/texture-post-filter-precision",
                     test_texture_post_filter_precision);
+    g_test_add_func("/sgi-gl/texture-apply-pixel", test_texture_apply_pixel);
     g_test_add_func("/sgi-gl/mipmap-post-filter-order",
                     test_mipmap_post_filter_order);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
