@@ -3462,7 +3462,7 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
     uint32_t tail = s->cmd_operand[7];
     bool rgba8 = fmt == 0x92233002 && tail == 0x3801210b;
     bool rgba16 = (fmt & ~ODSY_DMA_FMT_FRONT) == 0x12633042 &&
-                  tail == 0x3802204b;
+                  (tail == 0x3802204b || tail == 0xf802204b);
     int obj = odyssey_object_find(s, s->cmd_operand[5]);
 
     if (s->cmd_operand[0] != ODSY_DMA_SENTINEL_READ ||
