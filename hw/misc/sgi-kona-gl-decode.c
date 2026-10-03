@@ -330,3 +330,21 @@ bool sgi_kona_gl_query_serialize(const SGIKonaGLQueryInfo *info,
     *length = bytes;
     return true;
 }
+
+/* RGBA channels occupy the bytes from most to least significant. */
+bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
+                                   uint32_t bias, double scale_rgba[4],
+                                   double bias_rgba[4])
+{
+    if (flags & ~0xfu) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned shift = 24 - 8 * k;
+        bool enabled = flags & (8u >> k);
+
+        scale_rgba[k] = enabled ? ((scale >> shift) & 0xff) / 255.0 : 1.0;
+        bias_rgba[k] = enabled ? ((bias >> shift) & 0xff) / 255.0 : 0.0;
+    }
+    return true;
+}

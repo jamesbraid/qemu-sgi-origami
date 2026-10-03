@@ -91,4 +91,9 @@ bool sgi_kona_gl_query_serialize(const SGIKonaGLQueryInfo *info,
                                  const uint64_t *values, unsigned count,
                                  uint8_t *out, size_t capacity, size_t *length);
 
+/* Unknown flag bits refuse the record without changing either output. */
+bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
+                                   uint32_t bias, double scale_rgba[4],
+                                   double bias_rgba[4]);
+
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

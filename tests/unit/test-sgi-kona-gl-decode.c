@@ -499,6 +499,43 @@ static void test_query_word_bytes(void)
     }
 }
 
+static void test_texture_transform(void)
+{
+    double scale[4], bias[4];
+
+    /* Default records carry zero packed data but disable every channel. */
+    g_assert_true(sgi_kona_gl_texture_transform(0, 0, 0, scale, bias));
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmpfloat(scale[k], ==, 1.0);
+        g_assert_cmpfloat(bias[k], ==, 0.0);
+    }
+    g_assert_true(sgi_kona_gl_texture_transform(0xf, 0xff804000,
+                                               0x004080ff, scale, bias));
+    g_assert_cmpfloat(scale[0], ==, 1.0);
+    g_assert_cmpfloat(scale[1], ==, 128.0 / 255.0);
+    g_assert_cmpfloat(scale[2], ==, 64.0 / 255.0);
+    g_assert_cmpfloat(scale[3], ==, 0.0);
+    g_assert_cmpfloat(bias[0], ==, 0.0);
+    g_assert_cmpfloat(bias[1], ==, 64.0 / 255.0);
+    g_assert_cmpfloat(bias[2], ==, 128.0 / 255.0);
+    g_assert_cmpfloat(bias[3], ==, 1.0);
+
+    /* Disabled channels ignore arbitrary bytes in both packed words. */
+    g_assert_true(sgi_kona_gl_texture_transform(0xa, 0x80ff40ff,
+                                               0x40ff80ff, scale, bias));
+    g_assert_cmpfloat(scale[0], ==, 128.0 / 255.0);
+    g_assert_cmpfloat(bias[0], ==, 64.0 / 255.0);
+    g_assert_cmpfloat(scale[2], ==, 64.0 / 255.0);
+    g_assert_cmpfloat(bias[2], ==, 128.0 / 255.0);
+    for (unsigned k = 1; k < 4; k += 2) {
+        g_assert_cmpfloat(scale[k], ==, 1.0);
+        g_assert_cmpfloat(bias[k], ==, 0.0);
+    }
+    g_assert_false(sgi_kona_gl_texture_transform(0x10, 0, 0, scale, bias));
+    g_assert_cmpfloat(scale[0], ==, 128.0 / 255.0);
+    g_assert_cmpfloat(bias[0], ==, 64.0 / 255.0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -520,5 +557,7 @@ int main(int argc, char **argv)
                     test_query_native_bytes);
     g_test_add_func("/sgi-kona-gl-decode/query-word-bytes",
                     test_query_word_bytes);
+    g_test_add_func("/sgi-kona-gl-decode/texture-transform",
+                    test_texture_transform);
     return g_test_run();
 }
