@@ -6262,8 +6262,9 @@ done:
 static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
 
 /*
- * The local draw-sentinel SHORT adapter: stage the bounded payload first so
- * a failed source read cannot leave a partially painted rectangle.
+ * Stage the pixel bytes first so a failed source read cannot leave a
+ * partially painted rectangle. Entry lengths count pixels; row gaps advance
+ * the address cursor only while the current entry has bytes remaining.
  */
 static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
                                              const SGIDMABus *bus,
@@ -6275,14 +6276,15 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     uint32_t y = hdr[ODSY_DMA_HDR_ORIGIN] >> 16;
     uint32_t w = hdr[ODSY_DMA_HDR_SIZE] & 0xffff;
     uint32_t h = hdr[ODSY_DMA_HDR_SIZE] >> 16 ?: 0x10000;
+    uint32_t skip = hdr[ODSY_DMA_HDR_SKIP];
     uint32_t rowbytes = hdr[ODSY_DMA_HDR_ROWBYTES] & ODSY_DMA_ROWBYTES_MASK;
-    uint64_t payload_len = 0, pos = 0;
+    uint64_t payload_len = 0, pos = 0, out = 0;
     g_autofree uint8_t *payload = NULL;
-    int n;
+    uint32_t left, r;
+    int n, i;
 
     if (hdr[ODSY_DMA_HDR_FORMAT] != 0x02635000 ||
-        hdr[ODSY_DMA_HDR_CONTROL] != 0x7a02006b ||
-        hdr[ODSY_DMA_HDR_SKIP] != 0) {
+        hdr[ODSY_DMA_HDR_CONTROL] != 0x7a02006b) {
         if (odyssey_dma_report(s, ODSY_DMA_REPORT_UPLOAD_SENTINEL)) {
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA upload to sentinel "
                           "0x%x with format 0x%x and control 0x%x is not "
@@ -6297,8 +6299,8 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     if (n < 0) {
         return;
     }
-    for (int i = 0; i < n; i++) {
-        payload_len += e[i].len;
+    for (int j = 0; j < n; j++) {
+        payload_len += e[j].len;
     }
     if (!w || !h || rowbytes != (uint64_t)w * 8 ||
         payload_len != (uint64_t)rowbytes * h) {
@@ -6309,15 +6311,36 @@ static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
     }
 
     payload = g_malloc(payload_len);
-    for (int i = 0; i < n; i++) {
-        if (!sgi_dma_read(bus, e[i].addr, payload + pos, e[i].len, true,
-                          seq)) {
-            return;
+    i = 0;
+    left = n ? e[0].len : 0;
+    for (r = 0; r < h; r++) {
+        uint32_t got = 0;
+
+        while (got < rowbytes) {
+            uint32_t take;
+
+            if (!left) {
+                i++;
+                pos = 0;
+                left = e[i].len;
+            }
+            take = MIN(left, rowbytes - got);
+            if (pos > UINT64_MAX - e[i].addr ||
+                !sgi_dma_read(bus, e[i].addr + pos,
+                              payload + out + got, take, true, seq)) {
+                return;
+            }
+            got += take;
+            pos += take;
+            left -= take;
         }
-        pos += e[i].len;
+        if (left) {
+            pos += skip;
+        }
+        out += rowbytes;
     }
 
-    for (uint32_t r = 0; r < h; r++) {
+    for (r = 0; r < h; r++) {
         for (uint32_t c = 0; c < w; c++) {
             const uint8_t *src = payload + (uint64_t)r * rowbytes + c * 8;
             uint32_t rgba, red = lduw_be_p(src), green = lduw_be_p(src + 2);
