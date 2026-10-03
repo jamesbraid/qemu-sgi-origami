@@ -40,6 +40,9 @@ static void cpu_post_save(void *opaque)
 
 static int cpu_pre_load(void *opaque)
 {
+    MIPSCPU *cpu = opaque;
+
+    cpu->env.timer_adjacent_pending = false;
     mips_r10k_profile_pre_load(opaque);
     return 0;
 }
@@ -432,7 +435,9 @@ static bool mips_timer_adjacent_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.timer_adjacent_pending;
+    /* The next instruction may have executed without writing Compare. */
+    return cpu->env.timer_adjacent_pending &&
+           cpu->env.timer_adjacent_pc == cpu->env.active_tc.PC;
 }
 
 static int mips_timer_adjacent_post_load(void *opaque, int version_id)
