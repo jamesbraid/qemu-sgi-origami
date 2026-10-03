@@ -173,6 +173,31 @@ static inline void gen_r10k_mfc0_load32(TCGv arg, target_ulong off)
     tcg_gen_ext_i32_tl(arg, t0);
 }
 
+static inline void gen_r10k_mfc0_load32_r10k(TCGv arg, target_ulong off)
+{
+    TCGv_ptr r10k = tcg_temp_new_ptr();
+    TCGv_i32 t0 = tcg_temp_new_i32();
+
+    tcg_gen_ld_ptr(r10k, tcg_env, offsetof(CPUMIPSState, r10k));
+    tcg_gen_ld_i32(t0, r10k, off);
+    tcg_gen_ext_i32_tl(arg, t0);
+}
+
+static inline void gen_r10k_mfc0_load64_r10k(TCGv arg, target_ulong off,
+                                             bool low32_only)
+{
+    TCGv_ptr r10k = tcg_temp_new_ptr();
+    TCGv_i64 tmp = tcg_temp_new_i64();
+
+    tcg_gen_ld_ptr(r10k, tcg_env, offsetof(CPUMIPSState, r10k));
+    tcg_gen_ld_i64(tmp, r10k, off);
+    if (low32_only) {
+        gen_move_low32(arg, tmp);
+    } else {
+        tcg_gen_mov_tl(arg, tmp);
+    }
+}
+
 R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
                             const char **register_name)
 {
@@ -185,10 +210,9 @@ R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
          */
         if (ctx->diagnostic_rw_bitmask) {
             /* A 64-bit register: a word read returns its low word. */
-            TCGv_i64 tmp = tcg_temp_new_i64();
-
-            gen_helper_mfc0_r10k_diagnostic(tmp, tcg_env);
-            gen_move_low32(arg, tmp);
+            gen_r10k_mfc0_load64_r10k(arg,
+                                      offsetof(R10KState, CP0_Diagnostic),
+                                      true);
         } else {
             tcg_gen_movi_tl(arg, 0);
         }
@@ -267,7 +291,12 @@ R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
         switch (sel) {
         case CP0_REG27__CACHERR:
             /* Read-only; loaded only by a Cache Error exception. */
-            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
+            if (ctx->has_cache_diagnostics) {
+                gen_r10k_mfc0_load32_r10k(arg,
+                                          offsetof(R10KState, CP0_CacheErr));
+            } else {
+                tcg_gen_movi_tl(arg, 0);
+            }
             *register_name = "CacheErr";
             break;
         default:
@@ -370,7 +399,9 @@ R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
          */
         if (ctx->diagnostic_rw_bitmask) {
             /* A 64-bit register: a doubleword read returns all of it. */
-            gen_helper_mfc0_r10k_diagnostic(arg, tcg_env);
+            gen_r10k_mfc0_load64_r10k(arg,
+                                      offsetof(R10KState, CP0_Diagnostic),
+                                      false);
         } else {
             tcg_gen_movi_tl(arg, 0);
         }
@@ -432,7 +463,12 @@ R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
         switch (sel) {
         case CP0_REG27__CACHERR:
             /* Read-only; loaded only by a Cache Error exception. */
-            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
+            if (ctx->has_cache_diagnostics) {
+                gen_r10k_mfc0_load32_r10k(arg,
+                                          offsetof(R10KState, CP0_CacheErr));
+            } else {
+                tcg_gen_movi_tl(arg, 0);
+            }
             *register_name = "CacheErr";
             break;
         default:
