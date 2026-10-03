@@ -178,6 +178,13 @@ static unsigned int sn1_node_number(SN1NodeState *node)
     return sn1_fabric_number(&node->endpoint);
 }
 
+static hwaddr sn1_promdata_live_node_base(void *opaque)
+{
+    SN1NodeState *node = opaque;
+
+    return (hwaddr)sn1_node_number(node) << SN1_FABRIC_ADDRESS_SHIFT;
+}
+
 static SN1NodeState *sn1_node_peer(SN1NodeState *node)
 {
     SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
@@ -1819,6 +1826,9 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
                              &node->cpu_uncached[i],
                              &node->cpu_uncached_alias[i],
                              promdata_prefix);
+            /* Classification follows identity; backing stays at placement. */
+            node->promdata[i].live_node_base = sn1_promdata_live_node_base;
+            node->promdata[i].node_opaque = node;
             if (node->promdata_fast) {
                 node->cpu_uncached_ready[i] = true;
             }
