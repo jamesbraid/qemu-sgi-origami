@@ -1158,6 +1158,9 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     } else if (!sgi_soft_texture_sample(r, NULL, im->min_filter, s, t, texel)) {
         return false;
     }
+    if (im->post_filter) {
+        im->post_filter(im->opaque, texel);
+    }
     for (int k = 0; k < 4; k++) {
         bool alpha = k == 3;
 
