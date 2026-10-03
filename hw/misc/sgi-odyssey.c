@@ -4316,6 +4316,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             .words = s->obj_used,
         };
         image->depth = depth;
+        image->volume = true;
         image->wrap_r = SGI_GL_REPEAT;
         image->read_texel_3d = odyssey_texture_read_3d;
         image->opaque = &chain->volume;
