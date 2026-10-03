@@ -198,354 +198,201 @@ static inline void gen_r10k_mfc0_load64_r10k(TCGv arg, target_ulong off,
     }
 }
 
-R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
-                            const char **register_name)
+static const char * const perf_mfc0_names[8] = {
+    "Performance0", "Performance1", "Performance2", "Performance3",
+    "Performance4", "Performance5", "Performance6", "Performance7"
+};
+
+static const char * const perf_mtc0_names[8] = {
+    "Performance0", "Performance",  "Performance",  "Performance",
+    "Performance4", "Performance4", "Performance6", "Performance6"
+};
+
+static const uint8_t perf_min_pairs[8] = { 0, 1, 2, 2, 3, 3, 4, 4 };
+
+static R10KCp0Result gen_diag_mfc0(DisasContext *ctx, TCGv arg, int sel,
+                                   bool is_64, const char **register_name)
 {
-    switch (reg) {
-    case CP0_REGISTER_22:
-        /*
-         * Implementation dependent: the R10000 family's Diagnostic register
-         * lives here, and every other processor reads zero and ignores writes
-         * as it did before that register was modeled.
-         */
-        if (ctx->diagnostic_rw_bitmask) {
-            /* A 64-bit register: a word read returns its low word. */
-            gen_r10k_mfc0_load64_r10k(arg,
-                                      offsetof(R10KState, CP0_Diagnostic),
-                                      true);
-        } else {
-            tcg_gen_movi_tl(arg, 0);
-        }
-        *register_name = "Diagnostic";
-        break;
-    case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[0]));
-            *register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            if (ctx->performance_counter_pairs < 1) {
-                return R10K_CP0_UNIMP;
-            }
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance1";
-            break;
-        case CP0_REG25__PERFCTL1:
-            if (ctx->performance_counter_pairs < 2) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[2]));
-            *register_name = "Performance2";
-            break;
-        case CP0_REG25__PERFCNT1:
-            if (ctx->performance_counter_pairs < 2) {
-                return R10K_CP0_UNIMP;
-            }
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance3";
-            break;
-        case CP0_REG25__PERFCTL2:
-            if (ctx->performance_counter_pairs < 3) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[4]));
-            *register_name = "Performance4";
-            break;
-        case CP0_REG25__PERFCNT2:
-            if (ctx->performance_counter_pairs < 3) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance5";
-            break;
-        case CP0_REG25__PERFCTL3:
-            if (ctx->performance_counter_pairs < 4) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[6]));
-            *register_name = "Performance6";
-            break;
-        case CP0_REG25__PERFCNT3:
-            if (ctx->performance_counter_pairs < 4) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance7";
-            break;
-        default:
-            return R10K_CP0_UNIMP;
-        }
-        break;
-    case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only; loaded only by a Cache Error exception. */
-            if (ctx->has_cache_diagnostics) {
-                gen_r10k_mfc0_load32_r10k(arg,
-                                          offsetof(R10KState, CP0_CacheErr));
-            } else {
-                tcg_gen_movi_tl(arg, 0);
-            }
-            *register_name = "CacheErr";
-            break;
-        default:
-            return R10K_CP0_UNIMP;
-        }
-        break;
+    *register_name = "Diagnostic";
+    if (ctx->diagnostic_rw_bitmask) {
+        gen_r10k_mfc0_load64_r10k(arg, offsetof(R10KState, CP0_Diagnostic),
+                                  !is_64);
+    } else {
+        tcg_gen_movi_tl(arg, 0);
     }
     return R10K_CP0_DONE;
 }
 
-R10KCp0Result gen_mtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
-                            const char **register_name)
+static R10KCp0Result gen_diag_mtc0(DisasContext *ctx, TCGv arg, int sel,
+                                   bool is_64, const char **register_name)
 {
-    switch (reg) {
-    case CP0_REGISTER_22:
-        /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->diagnostic_rw_bitmask) {
-            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
-        }
-        *register_name = "Diagnostic";
-        break;
-    case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            /*
-             * The R10000 family's control registers are narrower than the
-             * MIPS32 one this helper was written for, and its two must agree
-             * with each other.
-             */
-            if (ctx->performance_counter_pairs) {
-                gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                                 tcg_constant_i32(sel));
-            } else {
-                gen_helper_mtc0_performance0(tcg_env, arg);
-            }
-            *register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            if (ctx->performance_counter_pairs < 1) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL1:
-        case CP0_REG25__PERFCNT1:
-            if (ctx->performance_counter_pairs < 2) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL2:
-        case CP0_REG25__PERFCNT2:
-            if (ctx->performance_counter_pairs < 3) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance4";
-            break;
-        case CP0_REG25__PERFCTL3:
-        case CP0_REG25__PERFCNT3:
-            if (ctx->performance_counter_pairs < 4) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance6";
-            break;
-        default:
-            return R10K_CP0_UNIMP;
-        }
-        break;
-    case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
-            *register_name = "CacheErr";
-            break;
-        default:
-            return R10K_CP0_UNIMP;
-        }
-        break;
+    *register_name = "Diagnostic";
+    if (ctx->diagnostic_rw_bitmask) {
+        gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
     }
     return R10K_CP0_DONE;
 }
 
-R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
-                             const char **register_name)
+static R10KCp0Result gen_perf_mfc0(DisasContext *ctx, TCGv arg, int sel,
+                                   bool is_64, const char **register_name)
 {
-    switch (reg) {
-    case CP0_REGISTER_22:
-        /*
-         * Implementation dependent: the R10000 family's Diagnostic register
-         * lives here, and every other processor reads zero and ignores writes
-         * as it did before that register was modeled.
-         */
-        if (ctx->diagnostic_rw_bitmask) {
-            /* A 64-bit register: a doubleword read returns all of it. */
-            gen_r10k_mfc0_load64_r10k(arg,
-                                      offsetof(R10KState, CP0_Diagnostic),
-                                      false);
-        } else {
-            tcg_gen_movi_tl(arg, 0);
+    if (sel < 0 || sel >= 8) {
+        return R10K_CP0_UNIMP;
+    }
+    *register_name = perf_mfc0_names[sel];
+
+    if (is_64) {
+        if (sel >= 4) {
+            return R10K_CP0_UNIMP;
         }
-        *register_name = "Diagnostic";
-        break;
-    case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
+        if (sel == 0) {
             if (ctx->performance_counter_pairs == 4) {
                 return R10K_CP0_UNIMP;
             }
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[0]));
-            *register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            if (ctx->performance_counter_pairs != 2) {
-                return R10K_CP0_UNIMP;
-            }
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance1";
-            break;
-        case CP0_REG25__PERFCTL1:
-            if (ctx->performance_counter_pairs != 2) {
-                return R10K_CP0_UNIMP;
-            }
-            gen_r10k_mfc0_load32(arg,
-                                 offsetof(CPUMIPSState, CP0_Performance[2]));
-            *register_name = "Performance2";
-            break;
-        case CP0_REG25__PERFCNT1:
-            if (ctx->performance_counter_pairs != 2) {
-                return R10K_CP0_UNIMP;
-            }
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance3";
-            break;
-        case CP0_REG25__PERFCTL2:
-            *register_name = "Performance4";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCNT2:
-            *register_name = "Performance5";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCTL3:
-            *register_name = "Performance6";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCNT3:
-            *register_name = "Performance7";
-            return R10K_CP0_UNIMP;
-        default:
+        } else if (ctx->performance_counter_pairs != 2) {
             return R10K_CP0_UNIMP;
         }
-        break;
-    case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only; loaded only by a Cache Error exception. */
-            if (ctx->has_cache_diagnostics) {
-                gen_r10k_mfc0_load32_r10k(arg,
-                                          offsetof(R10KState, CP0_CacheErr));
-            } else {
-                tcg_gen_movi_tl(arg, 0);
-            }
-            *register_name = "CacheErr";
-            break;
-        default:
+    } else {
+        if (ctx->performance_counter_pairs < perf_min_pairs[sel]) {
             return R10K_CP0_UNIMP;
         }
-        break;
+    }
+
+    if ((sel & 1) == 0) {
+        gen_r10k_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[sel]));
+    } else {
+        gen_helper_mfc0_r10k_performance(arg, tcg_env, tcg_constant_i32(sel));
     }
     return R10K_CP0_DONE;
 }
 
-R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
-                             const char **register_name)
+static R10KCp0Result gen_perf_mtc0(DisasContext *ctx, TCGv arg, int sel,
+                                   bool is_64, const char **register_name)
 {
-    switch (reg) {
-    case CP0_REGISTER_22:
-        /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->diagnostic_rw_bitmask) {
-            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
+    if (sel < 0 || sel >= 8) {
+        return R10K_CP0_UNIMP;
+    }
+    *register_name = perf_mtc0_names[sel];
+
+    if (is_64) {
+        if (sel >= 4) {
+            return R10K_CP0_UNIMP;
         }
-        *register_name = "Diagnostic";
-        break;
-    case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            /*
-             * The R10000 family's control registers are narrower than the
-             * MIPS32 one this helper was written for, and its two must agree
-             * with each other.
-             */
+        if (sel == 0) {
             if (ctx->performance_counter_pairs == 2) {
                 gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                                 tcg_constant_i32(sel));
+                                                 tcg_constant_i32(0));
             } else if (!ctx->performance_counter_pairs) {
                 gen_helper_mtc0_performance0(tcg_env, arg);
             } else {
                 return R10K_CP0_UNIMP;
             }
-            *register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-        case CP0_REG25__PERFCTL1:
-        case CP0_REG25__PERFCNT1:
-            if (ctx->performance_counter_pairs != 2) {
-                return R10K_CP0_UNIMP;
-            }
+            return R10K_CP0_DONE;
+        }
+        if (ctx->performance_counter_pairs != 2) {
+            return R10K_CP0_UNIMP;
+        }
+        gen_helper_mtc0_r10k_performance(tcg_env, arg, tcg_constant_i32(sel));
+        return R10K_CP0_DONE;
+    }
+
+    if (sel == 0) {
+        if (ctx->performance_counter_pairs) {
             gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            *register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL2:
-            *register_name = "Performance4";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCNT2:
-            *register_name = "Performance5";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCTL3:
-            *register_name = "Performance6";
-            return R10K_CP0_UNIMP;
-        case CP0_REG25__PERFCNT3:
-            *register_name = "Performance7";
-            return R10K_CP0_UNIMP;
-        default:
-            return R10K_CP0_UNIMP;
+                                             tcg_constant_i32(0));
+        } else {
+            gen_helper_mtc0_performance0(tcg_env, arg);
         }
-        break;
-    case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
-            *register_name = "CacheErr";
-            break;
-        default:
-            return R10K_CP0_UNIMP;
-        }
-        break;
+        return R10K_CP0_DONE;
+    }
+
+    if (ctx->performance_counter_pairs < perf_min_pairs[sel]) {
+        return R10K_CP0_UNIMP;
+    }
+    gen_helper_mtc0_r10k_performance(tcg_env, arg, tcg_constant_i32(sel));
+    return R10K_CP0_DONE;
+}
+
+static R10KCp0Result gen_cacherr_mfc0(DisasContext *ctx, TCGv arg, int sel,
+                                      bool is_64, const char **register_name)
+{
+    if (sel != CP0_REG27__CACHERR) {
+        return R10K_CP0_UNIMP;
+    }
+    *register_name = "CacheErr";
+    if (ctx->has_cache_diagnostics) {
+        gen_r10k_mfc0_load32_r10k(arg, offsetof(R10KState, CP0_CacheErr));
+    } else {
+        tcg_gen_movi_tl(arg, 0);
     }
     return R10K_CP0_DONE;
+}
+
+static R10KCp0Result gen_cacherr_mtc0(DisasContext *ctx, TCGv arg, int sel,
+                                      bool is_64, const char **register_name)
+{
+    if (sel != CP0_REG27__CACHERR) {
+        return R10K_CP0_UNIMP;
+    }
+    *register_name = "CacheErr";
+    return R10K_CP0_DONE;
+}
+
+typedef struct R10KCp0Handler {
+    R10KCp0Result (*read)(DisasContext *ctx, TCGv arg, int sel, bool is_64,
+                          const char **name);
+    R10KCp0Result (*write)(DisasContext *ctx, TCGv arg, int sel, bool is_64,
+                           const char **name);
+} R10KCp0Handler;
+
+static const R10KCp0Handler r10k_cp0_handlers[32] = {
+    [CP0_REGISTER_22] = { gen_diag_mfc0, gen_diag_mtc0 },
+    [CP0_REGISTER_25] = { gen_perf_mfc0, gen_perf_mtc0 },
+    [CP0_REGISTER_27] = { gen_cacherr_mfc0, gen_cacherr_mtc0 },
+};
+
+R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                            const char **register_name)
+{
+    if (reg >= 0 && reg < ARRAY_SIZE(r10k_cp0_handlers) &&
+        r10k_cp0_handlers[reg].read) {
+        return r10k_cp0_handlers[reg].read(ctx, arg, sel, false,
+                                           register_name);
+    }
+    return R10K_CP0_UNIMP;
+}
+
+R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                             const char **register_name)
+{
+    if (reg >= 0 && reg < ARRAY_SIZE(r10k_cp0_handlers) &&
+        r10k_cp0_handlers[reg].read) {
+        return r10k_cp0_handlers[reg].read(ctx, arg, sel, true,
+                                           register_name);
+    }
+    return R10K_CP0_UNIMP;
+}
+
+R10KCp0Result gen_mtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                            const char **register_name)
+{
+    if (reg >= 0 && reg < ARRAY_SIZE(r10k_cp0_handlers) &&
+        r10k_cp0_handlers[reg].write) {
+        return r10k_cp0_handlers[reg].write(ctx, arg, sel, false,
+                                            register_name);
+    }
+    return R10K_CP0_UNIMP;
+}
+
+R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                             const char **register_name)
+{
+    if (reg >= 0 && reg < ARRAY_SIZE(r10k_cp0_handlers) &&
+        r10k_cp0_handlers[reg].write) {
+        return r10k_cp0_handlers[reg].write(ctx, arg, sel, true,
+                                            register_name);
+    }
+    return R10K_CP0_UNIMP;
 }
 
 /*
