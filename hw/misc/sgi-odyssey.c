@@ -1255,8 +1255,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * - 0x0e80 + i, three operands each, 64 entries: the level table, each a
  *   level's object base, a format-and-width word and 0.
  * - 0x0406: the table index of level 0.
- * - 0xc380c821 and two floats before a vertex: its texture coordinate,
- *   untransformed; the board applies the texture matrix (slot 0x14).
+ * - 0xc380c41f and one float, or 0xc380c821 and two floats, before a
+ *   vertex: its texture coordinate, untransformed; the board applies the
+ *   texture matrix (slot 0x14).
  *
  * The model resolves reviewed 2D level chains through the shared rasterizer
  * once per synchronous draw. Unknown sampler words remain observable and
@@ -1272,6 +1273,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_TEX_LEVEL 0x0e80       /* 3 operands, 0x0e80 .. 0x0ebf */
 #define ODSY_REG_TEX_LEVEL0 0x0406      /* 1 operand */
 #define ODSY_REG_TEX_LOD 0x1013        /* 4 operands */
+#define ODSY_GL_TEXCOORD_1F 0xc380c41f  /* 1 operand: s */
 #define ODSY_GL_TEXCOORD_2F 0xc380c821  /* 2 operands: s, t */
 #define ODSY_GL_TEXCOORD_SHAPE 0xffffff00
 #define ODSY_GL_TEXCOORD_TAG 0xc380c800
@@ -6957,7 +6959,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     }
     if ((tag & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG &&
         tag != ODSY_GL_TEXCOORD_2F) {
-        /* The 1f, 3f, 4f and integer forms: consumed, not kept. */
+        /* The 3f, 4f and integer forms: consumed, not kept. */
         odyssey_cmd_unimplemented(s, tag);
         return;
     }
@@ -7424,6 +7426,10 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_TEX_LOD:
         memcpy(s->tex_lod, s->cmd_operand, sizeof(s->tex_lod));
         break;
+    case ODSY_GL_TEXCOORD_1F:
+        s->tex_coord[0] = s->cmd_operand[0];
+        s->tex_coord[1] = 0;
+        break;
     case ODSY_GL_TEXCOORD_2F:
         memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
         break;
@@ -7768,7 +7774,8 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         odyssey_cmd_start(s, word, 2);
         return;
     }
-    if ((word & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG ||
+    if (word == ODSY_GL_TEXCOORD_1F ||
+        (word & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG ||
         word == ODSY_GL_TEX_RECT) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
         return;

@@ -8709,7 +8709,7 @@ static void texture_chain_upload_solid(QTestState *qts, uint32_t base,
 }
 
 static void texture_integer_quad(QTestState *qts, uint32_t x0, uint32_t y0,
-                                 uint32_t x1, uint32_t y1)
+                                 uint32_t x1, uint32_t y1, bool one_d)
 {
     const uint32_t vertex[][4] = {
         { x0, y0, 0, 0 }, { x1, y0, ODSY_F_ONE, 0 },
@@ -8720,9 +8720,11 @@ static void texture_integer_quad(QTestState *qts, uint32_t x0, uint32_t y0,
     user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
     user_cmd_push(qts, ODSY_CMD_GL_QUADS);
     for (unsigned i = 0; i < ARRAY_SIZE(vertex); i++) {
-        user_cmd_push(qts, 0xc380c821);
+        user_cmd_push(qts, one_d ? 0xc380c41f : 0xc380c821);
         user_cmd_push(qts, vertex[i][2]);
-        user_cmd_push(qts, vertex[i][3]);
+        if (!one_d) {
+            user_cmd_push(qts, vertex[i][3]);
+        }
         user_cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
         user_cmd_push(qts, vertex[i][0]);
         user_cmd_push(qts, vertex[i][1]);
@@ -8768,7 +8770,7 @@ static void test_texture_chain_integer_quads(void)
         uint32_t x = 10 + i * 20;
 
         push_user_words(qts, lod, ARRAY_SIZE(lod));
-        texture_integer_quad(qts, x, 10, x + 10, 20);
+        texture_integer_quad(qts, x, 10, x + 10, 20, false);
         g_assert_cmphex(odsy_test_pixel(qts, x + 5, 15), ==, colour[i]);
     }
     g_assert_cmphex(odsy_test_pixel(qts, 80, 15), ==, 0);
@@ -8779,7 +8781,7 @@ static void test_texture_chain_integer_quads(void)
     push_window_transform(qts, flipped);
     push_user_words(qts, lod0, ARRAY_SIZE(lod0));
     odsy_test_pixel_write(qts, 115, 215, 0);
-    texture_integer_quad(qts, 10, 10, 20, 20);
+    texture_integer_quad(qts, 10, 10, 20, 20, false);
     g_assert_cmphex(odsy_test_pixel(qts, 115, 313), ==, colour[0]);
     g_assert_cmphex(odsy_test_pixel(qts, 115, 215), ==, 0);
     qtest_quit(qts);
@@ -8870,7 +8872,7 @@ static void test_texture_one_dimensional_mode(void)
     for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
         g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==, pixels[i]);
     }
-    texture_integer_quad(qts, 32, 32, 96, 96);
+    texture_integer_quad(qts, 32, 32, 96, 96, true);
     for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
         g_assert_cmphex(odsy_test_pixel(qts, 40 + 16 * i, 48), ==, pixels[i]);
     }
