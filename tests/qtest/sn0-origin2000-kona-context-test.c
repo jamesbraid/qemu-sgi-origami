@@ -934,6 +934,26 @@ static void test_get_error_answer(void)
     g_assert_nonnull(strstr(found, "sgi_kona_return_post token 0x3e "));
 }
 
+/* Deactivation leaves the explicit return-page registration in force. */
+static void test_reply_after_deactivation(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    context_a_with_filled_page(s);
+    context_deactivate(s, 1);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A + 8), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A + 4), ==, 0x5a5a5a5a);
+
+    guest_fill_word(s, RETURN_A, 0);
+    context_first_physical(s, SAVE_B, RETURN_B);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    g_assert_cmphex(guest_word(s, RETURN_A), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_B), ==, 1);
+    qtest_quit(s);
+}
+
 /* glFinish's 0xc6 1: a non-zero word 0 and nothing else on the page. */
 static void test_finish_sets_word_0(void)
 {
@@ -1256,5 +1276,7 @@ int main(int argc, char **argv)
                    "retrace-request-without-context",
                    test_retrace_request_without_context);
 
+    qtest_add_func("sn0/origin2000/kona-context/reply-after-deactivation",
+                   test_reply_after_deactivation);
     return g_test_run();
 }

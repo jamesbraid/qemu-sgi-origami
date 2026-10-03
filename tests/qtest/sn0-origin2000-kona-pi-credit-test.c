@@ -16,6 +16,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 #include "sn0-user-image.h"
 
 #define KONA_WIDGET         11
@@ -98,6 +99,21 @@ static void build_store_server(SN0Image *p)
     sn0_patch_branch(p, at, loop);
 }
 
+/* Source and destination load the same synthetic store-server firmware. */
+static QTestState *store_server(const char *uri)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    build_store_server(image);
+    path = sn0_image_write(image, "sn0-kona-pi-credit");
+    qts = qtest_initf("%s-bios %s %s %s", MACHINE_ARGS, path,
+                       uri ? "-incoming" : "", uri ? uri : "");
+    unlink(path);
+    return qts;
+}
+
 /*
  * A machine whose processor serves the mailbox, with slot A's page over
  * the command page, its counter at the driver's total and the map
@@ -106,14 +122,7 @@ static void build_store_server(SN0Image *p)
  */
 static QTestState *start(void)
 {
-    g_autofree SN0Image *image = g_new0(SN0Image, 1);
-    g_autofree char *path = NULL;
-    QTestState *qts;
-
-    build_store_server(image);
-    path = sn0_image_write(image, "sn0-kona-pi-credit");
-    qts = qtest_initf("%s-bios %s", MACHINE_ARGS, path);
-    unlink(path);
+    QTestState *qts = store_server(NULL);
 
     qtest_writeq(qts, HUB + PI_GFX_PAGE(0), PI_GFX_PAGE_ENABLE | COMMAND_PAGE);
     qtest_writeq(qts, HUB + PI_GFX_CREDIT(0), TOTAL);
@@ -231,6 +240,69 @@ static void test_list_words_return_no_credit(void)
     qtest_quit(qts);
 }
 
+/* Buffer configuration keeps its counted stores until the tenth argument. */
+static void test_gl_buffer_holds_credits(void)
+{
+    static const uint32_t config[] = { 0, 12, 0, 1, 0, 0, 24, 0, 0, 0 };
+    QTestState *qts = start();
+
+    qtest_writel(qts, REG_COMMAND, 0x1fd);
+    qtest_writel(qts, REG_COMMAND, 0x10000340);
+    qtest_writel(qts, REG_COMMAND, 0x9000);
+    qtest_writel(qts, REG_COMMAND, 0x10000);
+    store_word(qts, 1);
+    for (unsigned i = 0; i < ARRAY_SIZE(config); i++) {
+        store_word(qts, config[i]);
+        g_assert_cmpuint(credit(qts), ==,
+                         i + 1 == ARRAY_SIZE(config) ? TOTAL : TOTAL - i - 1);
+    }
+    qtest_quit(qts);
+}
+
+/* The DMA push page costs the same credits as the command page. */
+static void test_dma_push_holds_credits(void)
+{
+    static const uint32_t packet[] = { 0x1eb, 0x40, 0x9000, 4, 4, 0, 0 };
+    QTestState *qts = start();
+
+    qtest_writeq(qts, HUB + PI_GFX_PAGE(0),
+                  PI_GFX_PAGE_ENABLE | UINT64_C(0x0b800000));
+    for (unsigned i = 0; i < ARRAY_SIZE(packet); i++) {
+        store(qts, UINT64_C(0x920000000b80007c), packet[i], 4);
+        g_assert_cmpuint(credit(qts), ==,
+                         i + 1 == ARRAY_SIZE(packet) ? TOTAL : TOTAL - i - 1);
+    }
+    qtest_quit(qts);
+}
+
+/* Finishing a migrated packet returns the credits charged on its source. */
+static void test_owed_credits_migrate(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from = start(), *to;
+
+    dir = g_dir_make_tmp("sn0-kona-credit-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = store_server(uri);
+    store_word(from, 1);
+    store_word(from, 9);
+    g_assert_cmpuint(credit(from), ==, TOTAL - 1);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    qtest_qmp_eventwait(from, "STOP");
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmpuint(credit(to), ==, TOTAL - 1);
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    store_word(to, 0);
+    g_assert_cmpuint(credit(to), ==, TOTAL);
+    assert_probe_answered(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -244,5 +316,11 @@ int main(int argc, char **argv)
                    test_doubleword_store_returns_one_credit);
     qtest_add_func("sn0/origin2000/kona-pi-credit/list-words",
                    test_list_words_return_no_credit);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/gl-buffer-holds",
+                   test_gl_buffer_holds_credits);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/dma-push-holds",
+                   test_dma_push_holds_credits);
+    qtest_add_func("sn0/origin2000/kona-pi-credit/owed-credits-migrate",
+                   test_owed_credits_migrate);
     return g_test_run();
 }
