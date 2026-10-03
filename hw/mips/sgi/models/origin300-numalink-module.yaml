@@ -1,13 +1,27 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Origin 300 with the NUMAlink module, reference composition. Resolve before
-# validation or generation.
+# Origin 300 with NUMAlink module, physical reference only.
 configuration_version: 1
 layers:
   - layers/architectures/sn1.yaml
   - layers/assemblies/ip45.yaml
-  - layers/modules/origin300-base.yaml
   - layers/products/origin300-numalink-module.yaml
 module_instances:
+  - model: layers/modules/origin300-base.yaml
+    prefix: base1-
+    parent: base1-module
+    adopt_roots: true
+    observed_hardware:
+      mode: projected
+      sources: ["007-4498-002 p.8, 93: each attached enclosure is an Origin 300 base module"]
+      note: Reuses base-module component observations as a reference projection, not a capture of this selected two-base rack.
+  - model: layers/modules/origin300-base.yaml
+    prefix: base2-
+    parent: base2-module
+    adopt_roots: true
+    observed_hardware:
+      mode: projected
+      sources: ["007-4498-002 p.8, 93: each attached enclosure is an Origin 300 base module"]
+      note: Reuses base-module component observations as a reference projection, not a capture of this selected two-base rack.
   - model: layers/modules/numalink-module.yaml
     prefix: numalink-
-    parent: link-connector
+    parent: rack
