@@ -409,3 +409,80 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     *params = next;
     return true;
 }
+
+uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
+{
+    uint32_t components;
+
+    switch (format) {
+    case 3:                     /* ALPHA */
+    case 6:                     /* LUMINANCE */
+        components = 1;
+        break;
+    case 4:                     /* RGB */
+        components = 3;
+        break;
+    case 5:                     /* RGBA */
+        components = 4;
+        break;
+    case 7:                     /* LUMINANCE_ALPHA */
+        components = 2;
+        break;
+    default:
+        return 0;
+    }
+    if (type == 1) {
+        return components;
+    }
+    return type == 6 ? components * sizeof(float) : 0;
+}
+
+bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+                                    const uint32_t *source, uint32_t *rgba)
+{
+    uint32_t components = sgi_kona_gl_texture_pixel_bytes(format, 1);
+    uint32_t values[4] = { 0, 0, 0, 255 };
+    uint32_t r, g, b, a;
+
+    if (!sgi_kona_gl_texture_pixel_bytes(format, type)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < components; i++) {
+        if (type == 1) {
+            values[i] = (*source >> (24 - i * 8)) & 255;
+        } else {
+            float component;
+
+            /* Reject both NaNs and infinities before host FP arithmetic. */
+            if ((source[i] & 0x7f800000) == 0x7f800000) {
+                return false;
+            }
+            memcpy(&component, &source[i], sizeof(component));
+            values[i] = (uint32_t)(CLAMP((double)component, 0.0, 1.0) *
+                                   255.0 + 0.5);
+        }
+    }
+    r = values[0];
+    g = values[1];
+    b = values[2];
+    a = values[3];
+    switch (format) {
+    case 3:
+        a = r;
+        r = g = b = 0;
+        break;
+    case 4:
+        a = 255;
+        break;
+    case 6:
+        g = b = r;
+        a = 255;
+        break;
+    case 7:
+        a = g;
+        g = b = r;
+        break;
+    }
+    *rgba = (r << 24) | (g << 16) | (b << 8) | a;
+    return true;
+}

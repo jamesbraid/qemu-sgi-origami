@@ -678,6 +678,77 @@ static void test_texture_dimensions(void)
     }
 }
 
+static void test_texture_pixel_conversion(void)
+{
+    const uint32_t byte_source[] = { 0x4080c0ff };
+    const uint32_t float_source[] = {
+        0x3e800000, 0x3f000000, 0x3f400000, 0x3f800000,
+    };
+    const uint32_t expected[] = {
+        0x00000040, 0x4080c0ff, 0x4080c0ff, 0x404040ff, 0x40404080,
+    };
+    const uint32_t expected_float[] = {
+        0x00000040, 0x4080bfff, 0x4080bfff, 0x404040ff, 0x40404080,
+    };
+    const uint32_t components[] = { 1, 3, 4, 1, 2 };
+    const uint32_t saturated[] = {
+        0xbf800000, 0x40000000, 0x00000000, 0x80000000,
+    };
+    uint32_t rgba;
+
+    for (uint32_t format = 3; format <= 7; format++) {
+        g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==,
+                         components[format - 3]);
+        g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==,
+                         4 * components[format - 3]);
+        g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, 1, byte_source,
+                                                     &rgba));
+        g_assert_cmphex(rgba, ==, expected[format - 3]);
+        g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, 6, float_source,
+                                                     &rgba));
+        g_assert_cmphex(rgba, ==, expected_float[format - 3]);
+        for (uint32_t type = 0; type < 8; type++) {
+            if (type != 1 && type != 6) {
+                rgba = 0x12345678;
+                g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, type),
+                                 ==, 0);
+                g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
+                                                              float_source,
+                                                              &rgba));
+                g_assert_cmphex(rgba, ==, 0x12345678);
+            }
+        }
+        for (unsigned component = 0;
+             component < components[format - 3]; component++) {
+            const uint32_t invalid[] = {
+                0x7fc00000, 0x7f800001, 0x7f800000, 0xff800000,
+            };
+            for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+                uint32_t source[4];
+
+                memcpy(source, float_source, sizeof(source));
+                source[component] = invalid[i];
+                rgba = 0x12345678;
+                g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 6,
+                                                              source, &rgba));
+                g_assert_cmphex(rgba, ==, 0x12345678);
+            }
+        }
+    }
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(5, 6, saturated, &rgba));
+    g_assert_cmphex(rgba, ==, 0x00ff0000);
+    for (uint32_t format = 0; format <= 8; format++) {
+        if (format < 3 || format > 7) {
+            rgba = 0x12345678;
+            g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==, 0);
+            g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==, 0);
+            g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 1,
+                                                          byte_source, &rgba));
+            g_assert_cmphex(rgba, ==, 0x12345678);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -707,5 +778,7 @@ int main(int argc, char **argv)
                     test_texture_dimensions);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
+    g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
+                    test_texture_pixel_conversion);
     return g_test_run();
 }

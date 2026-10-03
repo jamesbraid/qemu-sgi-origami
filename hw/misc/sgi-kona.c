@@ -4059,21 +4059,17 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
     s->texture_upload = (SGIKonaTextureUpload) { 0 };
 }
 
-static uint32_t sgi_kona_texture_source_bytes(uint32_t format)
+static uint32_t sgi_kona_texture_source_words(const SGIKonaTextureUpload *u)
 {
-    switch (format) {
-    case 3:                     /* GL_ALPHA */
-    case 6:                     /* GL_LUMINANCE */
-        return 1;
-    case 4:                     /* GL_RGB */
-        return 3;
-    case 5:                     /* GL_RGBA */
-        return 4;
-    case 7:                     /* GL_LUMINANCE_ALPHA */
-        return 2;
-    default:
-        return 0;
-    }
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(u->header[3],
+                                                   u->header[4]);
+
+    return DIV_ROUND_UP(MAX(bytes, 4), 4);
+}
+
+static uint32_t sgi_kona_texture_buffer_words(const SGIKonaTextureUpload *u)
+{
+    return u->count * (u->complete ? 1 : sgi_kona_texture_source_words(u));
 }
 
 static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
@@ -4098,7 +4094,8 @@ static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
 static uint32_t sgi_kona_texture_row_words(const SGIKonaTextureUpload *u,
                                            uint32_t row)
 {
-    uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3]);
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(u->header[3],
+                                                      u->header[4]);
     uint32_t pad = (u->header[5] + (uint64_t)row * u->source_stride) & 3;
 
     return DIV_ROUND_UP(pad + u->header[1] * bytes, 4);
@@ -4141,7 +4138,8 @@ static void sgi_kona_texture_upload_word(SGIKonaState *s, uint32_t value)
 {
     SGIKonaTextureUpload *u = &s->texture_upload;
     uint32_t width = u->header[1], row, word, pad, offset;
-    uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3]);
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(u->header[3],
+                                                      u->header[4]);
 
     if (!u->count) {
         return;
@@ -4154,52 +4152,42 @@ static void sgi_kona_texture_upload_word(SGIKonaState *s, uint32_t value)
             uint32_t byte = offset - pad;
             uint32_t at = row * width + byte / bytes;
 
+            at = at * sgi_kona_texture_source_words(u) + (byte % bytes) / 4;
             u->pixels[at] |= ((value >> (24 - k * 8)) & 0xff) <<
-                             (24 - (byte % bytes) * 8);
+                             (24 - ((byte % bytes) % 4) * 8);
         }
     }
 }
 
-static void sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
+static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
 {
     uint32_t base = sgi_kona_texture_storage_base(u->header);
+    uint32_t words = sgi_kona_texture_source_words(u);
 
     for (uint32_t at = 0; at < u->count; at++) {
-        uint32_t source = u->pixels[at];
-        uint32_t r = source >> 24, g = (source >> 16) & 255;
-        uint32_t b = (source >> 8) & 255, a = source & 255;
+        uint32_t rgba;
 
-        switch (u->header[3]) {
-        case 3:
-            a = r;
-            r = g = b = 0;
-            break;
-        case 4:
-            a = 255;
-            break;
-        case 6:
-            g = b = r;
-            a = 255;
-            break;
-        case 7:
-            a = g;
-            g = b = r;
-            break;
+        if (!sgi_kona_gl_texture_pixel_rgba(u->header[3], u->header[4],
+                                            u->pixels + at * words, &rgba)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: native texture component is unsupported;"
+                          " upload refused\n");
+            return false;
         }
         switch (base) {
         case SGI_GL_ALPHA:
-            r = g = b = 0;
+            rgba &= 0xff;
             break;
         case SGI_GL_LUMINANCE:
-            g = b = 0;
-            a = 255;
+            rgba = (rgba & 0xff000000) | 0xff;
             break;
         case SGI_GL_LUMINANCE_ALPHA:
-            g = b = 0;
+            rgba &= 0xff0000ff;
             break;
         }
-        u->pixels[at] = (r << 24) | (g << 16) | (b << 8) | a;
+        u->pixels[at] = rgba;
     }
+    return true;
 }
 
 static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
@@ -4331,14 +4319,14 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
 {
     const char *reason = NULL;
     uint64_t pixels, words, stride;
-    uint32_t bytes = sgi_kona_texture_source_bytes(h[3]);
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(h[3], h[4]);
     SGIKonaTextureUpload *u = &s->texture_upload;
     SGIKonaTextureUpload framing = { 0 };
     const SGIKonaGLPipe *p;
 
     sgi_kona_texture_upload_clear(s);
     /* Unknown source pairs cannot be counted or staged. */
-    if (!bytes || h[4] != 1 || h[6] > 1 || !h[1] || !h[2] ||
+    if (!bytes || h[6] > 1 || !h[1] || !h[2] ||
         h[1] > SGI_KONA_GL_IMAGE_MAX || h[2] > SGI_KONA_GL_IMAGE_MAX ||
         h[5] > 3 || i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused:"
@@ -4372,10 +4360,12 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         (uint64_t)h[11] + h[1] - 1 != h[13] ||
         (uint64_t)h[12] + h[2] - 1 != h[14]) {
         reason = "unsupported native destination layout";
-    } else if (pixels > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
+    } else if (pixels * DIV_ROUND_UP(MAX(bytes, 4), 4) >
+               SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
         reason = "payload exceeds model staging capacity";
     } else {
-        u->pixels = g_try_new0(uint32_t, pixels);
+        u->pixels = g_try_new0(uint32_t,
+                              pixels * DIV_ROUND_UP(MAX(bytes, 4), 4));
         if (!u->pixels) {
             reason = "model staging allocation failed";
         }
@@ -4699,8 +4689,11 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
     }
     if (s->gl_data_token == SGI_KONA_CMD_GL_TEX_LOAD &&
         s->texture_upload.count) {
-        sgi_kona_texture_upload_normalize(&s->texture_upload);
-        s->texture_upload.complete = true;
+        if (sgi_kona_texture_upload_normalize(&s->texture_upload)) {
+            s->texture_upload.complete = true;
+        } else {
+            sgi_kona_texture_upload_clear(s);
+        }
     }
     trace_sgi_kona_command_unmodelled(s->gl_data_token, s->gl_data_have);
     s->gl_data_token = 0;
@@ -5968,7 +5961,8 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
 {
     SGIKonaTextureUpload *u = &s->texture_upload;
     uint8_t chunk[4096];
-    uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3]);
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(u->header[3],
+                                                      u->header[4]);
     uint32_t row_bytes = u->header[1] * bytes;
     uint32_t height = u->header[2];
     uint64_t span = (uint64_t)(height - 1) * u->source_stride + row_bytes;
@@ -6002,14 +5996,19 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                 if (col < row_bytes) {
                     uint32_t at = row * u->header[1] + col / bytes;
 
+                    at = at * sgi_kona_texture_source_words(u) +
+                         (col % bytes) / 4;
                     u->pixels[at] |= (uint32_t)chunk[k] <<
-                                     (24 - (col % bytes) * 8);
+                                     (24 - ((col % bytes) % 4) * 8);
                 }
             }
             offset += n;
         }
     }
-    sgi_kona_texture_upload_normalize(u);
+    if (!sgi_kona_texture_upload_normalize(u)) {
+        sgi_kona_texture_upload_clear(s);
+        return false;
+    }
     u->complete = true;
     return true;
 }
@@ -9107,10 +9106,10 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
     }
     return h[0] == 0xde1 && h[1] && h[2] &&
            h[1] <= SGI_KONA_GL_IMAGE_MAX && h[2] <= SGI_KONA_GL_IMAGE_MAX &&
-           sgi_kona_texture_source_bytes(h[3]) && h[4] == 1 && h[5] < 4 &&
+           sgi_kona_gl_texture_pixel_bytes(h[3], h[4]) && h[5] < 4 &&
            h[6] <= 1 && h[7] <= h[6] && !h[8] && u->source_stride &&
            (!h[6] || u->source_stride >=
-            (uint64_t)h[1] * sgi_kona_texture_source_bytes(h[3])) &&
+            (uint64_t)h[1] * sgi_kona_gl_texture_pixel_bytes(h[3], h[4])) &&
            sgi_kona_texture_storage_base(h) && h[10] != UINT32_MAX && !h[15] &&
            h[16] <= 0xff && (h[16] & 15) <= 13 && (h[16] >> 4) <= 13 &&
            ((h[17] & ~1u) == (0x2180 | (h[6] << 2)) ||
@@ -9118,7 +9117,8 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
            (uint64_t)h[11] + h[1] - 1 == h[13] &&
            (uint64_t)h[12] + h[2] - 1 == h[14] &&
            (uint64_t)h[1] * h[2] == u->count &&
-           u->count <= SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t);
+           (uint64_t)u->count * sgi_kona_texture_source_words(u) <=
+           SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t);
 }
 
 static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
@@ -9128,14 +9128,14 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     SGIKonaTextureUpload *u = pv;
 
     qemu_put_be32(f, UINT32_MAX);
-    qemu_put_be32(f, 1);
+    qemu_put_be32(f, 2);
     for (unsigned k = 0; k < 20; k++) {
         qemu_put_be32(f, u->header[k]);
     }
     qemu_put_be32(f, u->count);
     qemu_put_be32(f, u->source_stride);
     qemu_put_byte(f, u->complete);
-    for (uint32_t k = 0; k < u->count; k++) {
+    for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
     if (qemu_file_get_error(f)) {
@@ -9155,8 +9155,9 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
 
     uint32_t first = qemu_get_be32(f);
     bool extended = first == UINT32_MAX;
+    uint32_t version = extended ? qemu_get_be32(f) : 0;
 
-    if (extended && qemu_get_be32(f) != 1) {
+    if (version > 2 || (extended && !version)) {
         goto invalid;
     }
     for (unsigned k = 0; k < 20; k++) {
@@ -9167,15 +9168,16 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
                                   (tmp.count ? tmp.header[1] * 4 : 0);
     complete = qemu_get_byte(f);
     tmp.complete = complete;
-    if (complete > 1 || !sgi_kona_texture_upload_valid(&tmp)) {
+    if (complete > 1 || (version < 2 && tmp.count && tmp.header[4] != 1) ||
+        !sgi_kona_texture_upload_valid(&tmp)) {
         goto invalid;
     }
     if (tmp.count) {
-        tmp.pixels = g_try_new(uint32_t, tmp.count);
+        tmp.pixels = g_try_new(uint32_t, sgi_kona_texture_buffer_words(&tmp));
         if (!tmp.pixels) {
             goto invalid;
         }
-        for (uint32_t k = 0; k < tmp.count; k++) {
+        for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(&tmp); k++) {
             tmp.pixels[k] = qemu_get_be32(f);
         }
     }
@@ -9213,7 +9215,7 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
             if (s->gl_data_remaining) {
                 return -EINVAL;
             }
-            for (uint32_t at = 0; at < u->count; at++) {
+            for (uint32_t at = 0; at < sgi_kona_texture_buffer_words(u); at++) {
                 if (u->pixels[at]) {
                     return -EINVAL;
                 }
@@ -9228,8 +9230,10 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
         }
         if (!u->complete) {
             uint32_t width = u->header[1];
-            uint32_t bytes = sgi_kona_texture_source_bytes(u->header[3]);
+            uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(u->header[3],
+                                                      u->header[4]);
             uint32_t consumed_row, consumed_word;
+            uint32_t source_words = sgi_kona_texture_source_words(u);
 
             sgi_kona_texture_source_position(u, s->gl_data_have,
                                              &consumed_row, &consumed_word);
@@ -9238,14 +9242,15 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
                 uint32_t pad = (u->header[5] +
                                 (uint64_t)row * u->source_stride) & 3;
 
-                for (unsigned k = 0; k < 4; k++) {
+                for (unsigned k = 0; k < source_words * 4; k++) {
                     uint32_t word = (pad + x * bytes + k) / 4;
                     bool future = row > consumed_row ||
                                   (row == consumed_row &&
                                    word >= consumed_word);
 
                     if ((k >= bytes || future) &&
-                        ((u->pixels[at] >> (24 - k * 8)) & 0xff)) {
+                        ((u->pixels[at * source_words + k / 4] >>
+                          (24 - (k % 4) * 8)) & 0xff)) {
                         return -EINVAL;
                     }
                 }
