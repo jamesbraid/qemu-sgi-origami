@@ -2194,6 +2194,12 @@ static void sgi_kona_gl_window(SGIKonaState *s, uint32_t selector,
     w->x = args[0];
     w->y = args[1];
     if (selector == SGI_KONA_CMD_CONTEXT_RECORDS) {
+        if (!w->placed) {
+            /* Retirement clears placement, retaining the context visual. */
+            w->double_buffered = s->gl_pipe[i].draw_config_received &&
+                                 s->gl_pipe[i].draw_config[3] != 0;
+            w->displayed_bank = 0;
+        }
         w->width = args[6];
         w->height = args[7];
         w->placed = 1;

@@ -2214,6 +2214,122 @@ static void test_return_source_migrates(gconstpointer opaque)
     g_rmdir(tmpfs);
 }
 
+/* Destroy and replacement placement retain the context's double visual. */
+static void test_read_destroyed_window_replaced(gconstpointer opaque)
+{
+    bool migrate = GPOINTER_TO_INT(opaque);
+    static const uint32_t config[10] = { 0, 12, 0, 1 };
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    gl_make_current(from);
+    kona_command(from, 1, config, 10);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command_f(from, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
+    kona_command(from, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    assert_read_buffer(from, 0x405);
+    assert_read_colour(from, 0x0000ff);
+    kona_command(from, 0xc6, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(from, 0x1f4, (uint32_t[]){ 1, 1 }, 2);
+    kona_command_kicked(from, 0x172, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(from, 0x1e6, (uint32_t[]){ 0x800003, 0xd, 5 }, 3);
+    kona_command_kicked(from, 0x1e7, (uint32_t[]){ 1 }, 1);
+    qtest_clock_step(from, 20000000);
+    assert_read_colour(from, 0xff0000);
+    kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    assert_source_refused(from);
+    place_read_window(from, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    if (migrate) {
+        tmpfs = g_dir_make_tmp("sn0-kona-replace-migration-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        to = qtest_init(dest_args);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    assert_read_buffer(s, 0x405);
+    assert_read_colour(s, 0x0000ff);
+    kona_command(s, 0x37, (uint32_t[]){ 0x404 }, 1);
+    assert_read_colour(s, 0xff0000);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(tmpfs);
+    }
+    qtest_quit(from);
+}
+
+/* Replacement preserves refusal markers and native state across retirement. */
+static void test_read_retired_state(gconstpointer opaque)
+{
+    unsigned token = GPOINTER_TO_UINT(opaque);
+    static const uint32_t config[10] = { 0, 12, 0, 1 };
+    static const uint32_t bad[10] = { 0, 7, 0, 1 };
+    static const uint32_t range[] = { 0x3fd00000, 1, 0x3fe00000, 1 };
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-retired-state-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    gl_make_current(from);
+    kona_command(from, 1, config, 10);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0xcf, range, 4);
+    kona_command(from, 0x37, (uint32_t[]){ 0x400 }, 1);
+    kona_command(from, token, bad, token == 0x114 ? 1 : 10);
+    kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    assert_source_refused(from);
+    sgi_migrate_stopped(from, uri);
+    assert_source_refused(to);
+    place_read_window(to, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_source_refused(to);
+    assert_native_depth(to, 0xb70, range, 4);
+    kona_command(to, 1, config, 10);
+    kona_command(to, 4, config, 10);
+    if (token == 0x114) {
+        assert_source_refused(to);
+    } else {
+        assert_read_buffer(to, 0x400);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/* Geometry updates to a placed window must retain an odd swap's bank roles. */
+static void test_read_placed_move_keeps_swap(void)
+{
+    static const uint32_t config[10] = { 0, 12, 0, 1 };
+
+    gl_reset();
+    gl_make_current(qts);
+    kona_command(qts, 1, config, 10);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command_f(qts, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    kona_command(qts, 0xc6, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(qts, 0x1f4, (uint32_t[]){ 1, 1 }, 2);
+    kona_command_kicked(qts, 0x172, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(qts, 0x1e6, (uint32_t[]){ 0x800003, 0xd, 5 }, 3);
+    kona_command_kicked(qts, 0x1e7, (uint32_t[]){ 1 }, 1);
+    qtest_clock_step(qts, 20000000);
+    kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+    assert_read_colour(qts, 0x0000ff);
+    place_read_window(qts, PROBE_X + 1, PROBE_Y + 1, PROBE_SIZE, PROBE_SIZE);
+    assert_read_buffer(qts, 0x404);
+    assert_read_colour(qts, 0x0000ff);
+    kona_command(qts, 0x37, (uint32_t[]){ 0x405 }, 1);
+    assert_read_colour(qts, 0xff0000);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -2344,6 +2460,22 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0x1004), test_return_source_migrates);
     qtest_add_data_func("sn0/origin2000/kona-3d/partial-binding-migrates",
                         GUINT_TO_POINTER(0x1114), test_return_source_migrates);
+
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-destroyed-replaced",
+                        GINT_TO_POINTER(false),
+                        test_read_destroyed_window_replaced);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-replaced-migrates",
+                        GINT_TO_POINTER(true),
+                        test_read_destroyed_window_replaced);
+
+    qtest_add_data_func("sn0/origin2000/kona-3d/retired-invalid-draw",
+                        GUINT_TO_POINTER(1), test_read_retired_state);
+    qtest_add_data_func("sn0/origin2000/kona-3d/retired-invalid-read",
+                        GUINT_TO_POINTER(4), test_read_retired_state);
+    qtest_add_data_func("sn0/origin2000/kona-3d/retired-unknown-binding",
+                        GUINT_TO_POINTER(0x114), test_read_retired_state);
+    qtest_add_func("sn0/origin2000/kona-3d/placed-move-keeps-swap",
+                   test_read_placed_move_keeps_swap);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
