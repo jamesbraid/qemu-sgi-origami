@@ -21,6 +21,294 @@
 #include "sn0-user-image.h"
 #include "sgi-mgras-test.h"
 
+/*
+ * Context PIO from qemu.stderr, sequences 3959994-3960056.
+ * qemu.stderr SHA-256:
+ * 192abcd0e0742d0edfd4795d9be1f03ecb55b89c14ce4e5e701725f337b22adb
+ */
+static const uint32_t visual_context[MGRAS_CONTEXT_WORDS] = {
+    0x3bcd, 0x2c000000, 0x2f80100, 0x11,
+    0x0, 0x1ca3000, 0x22d240, 0xa8000000,
+    0xc0000000, 0x1ca3000, 0x80, 0x1000107,
+    0x2f802ff, 0x90240, 0x2f80100, 0x90240,
+    0x1, 0x1, 0x1000100, 0x1070107,
+    0x80008, 0x10c00000, 0xa00a00, 0xa00,
+    0xcac, 0xc004504, 0x0, 0xff,
+    0xff, 0x500, 0x800, 0xa00,
+    0x0, 0x0, 0x0, 0x0,
+    0x4ff, 0x3ff, 0xffffff, 0xffffff,
+    0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0,
+};
+
+static void mgras_enter_visual_context(QTestState *qts)
+{
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < ARRAY_SIZE(visual_context); i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, visual_context[i]);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & MGRAS_PENDING_CONTEXT, ==,
+                    MGRAS_PENDING_CONTEXT);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+}
+
+#define VISUAL_READ_OPEN       0x00009600
+#define VISUAL_READ_CLOSE      0x00009700
+#define VISUAL_READ_RSS_PAIRS  0x00007f08
+#define VISUAL_READ_RSS_TRIPLE 0x00007c08
+#define VISUAL_READ_SYNC       0x0000f200
+
+static void mgras_visual_read_map(QTestState *qts)
+{
+    static const uint8_t header[24] = { 0 };
+    uint8_t pages[16] = { 0 };
+
+    stq_be_p(pages, 0x30);
+    stq_be_p(pages + 8, 0x31);
+    qtest_memwrite(qts, 0x2000, header, sizeof(header));
+    qtest_memwrite(qts, 0x2018, pages, sizeof(pages));
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482608);
+    qtest_writeq(qts, MGRAS_REG(0x130400), 0x2018);
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483304 << 32) | 2);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484e04 << 32) | (9u << 16));
+}
+
+static void mgras_visual_read_registers(QTestState *qts, uint32_t size,
+                                        uint32_t end)
+{
+    gl_word(qts, VISUAL_READ_RSS_TRIPLE);
+    gl_word(qts, 1);
+    gl_word(qts, 4);
+    gl_word(qts, GL_INLINE_BLOCK | 16);
+    gl_word(qts, 0x153);
+    gl_word(qts, size);
+    gl_word(qts, 0x2b2);
+    gl_word(qts, 0);
+
+    gl_word(qts, VISUAL_READ_RSS_PAIRS);
+    gl_word(qts, 2);
+    gl_word(qts, 4);
+    gl_word(qts, GL_INLINE_BLOCK | 16);
+    gl_word(qts, 0x158);
+    gl_word(qts, size);
+    gl_word(qts, 0x159);
+    gl_word(qts, 0x400080);
+
+    gl_word(qts, VISUAL_READ_RSS_TRIPLE);
+    gl_word(qts, 2);
+    gl_word(qts, 6);
+    gl_word(qts, GL_INLINE_BLOCK | 24);
+    gl_word(qts, REG_BLOCK_START);
+    gl_word(qts, 0x00040004);
+    gl_word(qts, 0x31a);
+    gl_word(qts, REG_BLOCK_END);
+    gl_word(qts, end);
+    gl_word(qts, 0x31c);
+}
+
+static void mgras_visual_read_descriptor(QTestState *qts, uint32_t bpr,
+                                         uint32_t class_a_size)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080004 << 32) | 0x80000000);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | bpr);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, (uint64_t)0x00080504 << 32);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080604 << 32) | 0xd50);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | bpr);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0204 << 32) | (bpr == 4 ? 4 : 8));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0304 << 32) | class_a_size);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0404 << 32) | 0x400080);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0604 << 32) | 0xa);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0xbf);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0504 << 32) | 0x4009);
+}
+
+static void mgras_visual_read_pixels(QTestState *qts, uint32_t width,
+                                     bool malformed_bounds, bool bracketed)
+{
+    uint32_t size = (width << 16) | width;
+    uint32_t end = ((3 + width) << 16) | (3 + width);
+
+    if (malformed_bounds) {
+        end++;
+    }
+    if (bracketed) {
+        gl_word(qts, VISUAL_READ_OPEN);
+    }
+    gl_word(qts, 0x0000d214);
+    gl_word(qts, 0x11e23929);
+    gl_word(qts, 0x01000000);
+    gl_word(qts, 0xff);
+    gl_word(qts, 0);
+    gl_word(qts, 2);
+    gl_word(qts, 0x0000cd24);
+    gl_word(qts, 0);
+    gl_word(qts, 1);
+    gl_word(qts, 4);
+    gl_word(qts, 0x31e);
+    gl_word(qts, 0);
+    gl_word(qts, 2);
+    gl_word(qts, 1);
+    gl_word(qts, 0x18d);
+    gl_word(qts, 0);
+    mgras_visual_read_registers(qts, size, end);
+    gl_one(qts, 0x0000db04, 0x4009);
+    gl_word(qts, VISUAL_READ_SYNC);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 1, ==, 1);
+    gl_word(qts, 0x000c0004);
+    gl_word(qts, 0x200);
+    mgras_visual_read_descriptor(qts, width * width * 4, size);
+    gl_word(qts, 0x000e0400);
+    gl_word(qts, 0x000e0100);
+    gl_word(qts, 0x000a0704);
+    gl_word(qts, 0);
+    gl_word(qts, 0x000c0004);
+    gl_word(qts, 0xe00);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 1, ==, 1);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, 0x0000d300);
+    if (bracketed) {
+        gl_word(qts, VISUAL_READ_CLOSE);
+    }
+}
+
+static void mgras_visual_clear_and_select_front(QTestState *qts)
+{
+    mgras_reset();
+    mgras_enter_visual_context(qts);
+    gl_viewport(qts, 0, 0, 8, 8);
+    gl_scissor(qts, 0, 0, 8, 8);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    /* The 0x440c payload is copied from the public front-left read. */
+    gl_word(qts, 0x0000440c);
+    gl_word(qts, 0);
+    gl_word(qts, 0);
+    gl_word(qts, 0x404);
+    mgras_visual_read_map(qts);
+}
+
+static void test_gl_clear_captured_readpixels_1x1(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    /* 0xff is a local approximation, not captured alpha routing. */
+    static const uint8_t red[4] = { 0xff, 0x00, 0x00, 0xff };
+    uint8_t got[12];
+
+    mgras_visual_clear_and_select_front(qts);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+static void test_gl_clear_captured_readpixels_2x2(void)
+{
+    static const uint8_t poison[24] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    /* 0xff is a local approximation, not captured alpha routing. */
+    static const uint8_t red[16] = {
+        0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff,
+        0xff, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0xff,
+    };
+    uint8_t got[24];
+
+    mgras_visual_clear_and_select_front(qts);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 2, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
+    g_assert_cmpmem(got + 20, 4, poison + 20, 4);
+}
+
+static void test_gl_clear_captured_readpixels_rejects_malformed_bounds(void)
+{
+    static const uint8_t poison[24] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    uint8_t got[sizeof(poison)];
+
+    mgras_visual_clear_and_select_front(qts);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 2, true, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+static void test_gl_clear_captured_readpixels_requires_bracket(void)
+{
+    static const uint8_t poison[24] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    uint8_t got[sizeof(poison)];
+
+    mgras_visual_clear_and_select_front(qts);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 2, false, false);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+}
+
+static void test_gl_clear_captured_front_buffer_pixel(void)
+{
+    mgras_reset();
+    mgras_enter_visual_context(qts);
+
+    /* Set a known direct-colour path for the display-pixel check. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(qts, 29, 0, 0xffffff00);
+    qtest_writeb(qts, REG_XMAP_INDEX, 14 << 2);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x1408);
+    mgras_tag_wid(qts, 256, 256, 263, 263, 14);
+
+    gl_viewport(qts, 0, 0, 8, 8);
+    gl_scissor(qts, 0, 0, 8, 8);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    /* Client (4,4) maps to native row 259; the X image uses row 260. */
+    g_assert_cmphex(mgras_test_pixel(qts, 260, 259), ==, 0xff0000);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 264, 259), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 260, 260), ==, 0xff0000);
+}
+
 
 /*
  * An inline data block's header has bit 31 set and a 20-bit byte length.
@@ -2964,6 +3252,18 @@ int main(int argc, char **argv)
                    test_inline_block_uses_20_bit_length);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-fills-the-window",
                    test_gl_clear_fills_the_window);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-small-window",
+                   test_gl_clear_captured_front_buffer_pixel);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-1x1",
+                   test_gl_clear_captured_readpixels_1x1);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-2x2",
+                   test_gl_clear_captured_readpixels_2x2);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "malformed-bounds",
+                   test_gl_clear_captured_readpixels_rejects_malformed_bounds);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "requires-bracket",
+                   test_gl_clear_captured_readpixels_requires_bracket);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-ignores-the-viewport",
                    test_gl_clear_ignores_the_viewport);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-needs-the-window-rectangle",

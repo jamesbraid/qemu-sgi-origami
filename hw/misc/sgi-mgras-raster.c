@@ -2195,6 +2195,7 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
         p[0] = color >> 16;
         p[1] = color >> 8;
         p[2] = color;
+        /* 0xff is a local approximation; no alpha plane exists. */
         p[3] = 0xff;
     }
     if (!sgi_dma_map_copy(&d->map, d->offset, bytes, bpr, true)) {
@@ -2379,15 +2380,21 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     uint32_t xy0, xy1, x0, y0, x1, y1, origin_x, origin_y;
     uint32_t window_x0, window_y0, window_x1, window_y1;
     uint32_t width, height, pixels, pitch, rows, bpr, mode;
+    uint32_t signature_size =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0];
+    uint32_t signature_extent =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1];
+    uint32_t signature_format =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2];
     uint64_t source_x0, source_y0, source_x1, source_y1;
     SGIPixelDMA d;
+    bool captured_signature =
+        (signature_size == 4 && signature_extent == 0x00010001 &&
+         signature_format == 0x00400080) ||
+        (signature_size == 8 && signature_extent == 0x00020002 &&
+         (signature_format == 0x00400080 || signature_format == 0x00c00080));
 
-    if (!sgi_mgras_gl_client_read_active(s) ||
-        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0] != 8 ||
-        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1] !=
-            0x00020002 ||
-        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2] !=
-            0x00c00080 ||
+    if (!sgi_mgras_gl_client_read_active(s) || !captured_signature ||
         s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3] != 0xa) {
         return false;
     }
