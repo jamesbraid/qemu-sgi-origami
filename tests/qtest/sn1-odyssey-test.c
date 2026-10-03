@@ -9031,6 +9031,21 @@ static void texture_adapter_upload_scalar(QTestState *qts, uint32_t base)
     upload_end(qts);
 }
 
+static void texture_adapter_upload_luminance_alpha(QTestState *qts,
+                                                    uint32_t base,
+                                                    const uint32_t rows[2])
+{
+    upload_begin(qts, base, 2, 0x080024d0, 2, 2);
+    for (unsigned y = 0; y < 2; y++) {
+        user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+        user_cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x48));
+        user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+        user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+        user_cmd_push(qts, rows[y]);
+    }
+    upload_end(qts);
+}
+
 static void texture_adapter_window(QTestState *qts)
 {
     const uint32_t identity[16] = {
@@ -9823,6 +9838,71 @@ static void test_texture_adapter_scalar_components(void)
                              (const uint32_t[5]) { 3, 0, 0, 0, 0 });
     texture_adapter_point(qts, 17, 10, 0.75f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_luminance_alpha(void)
+{
+    const uint32_t capture_rows[2] = { 0x00ffffff, 0xffff00ff };
+    const uint32_t synthetic_rows[2] = { 0x12345678, 0x9abcdef0 };
+    const uint32_t env[5] = { 1, 0, 0, 0, 0 };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload_luminance_alpha(qts, 0x180000, capture_rows);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    0x000000ff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 0), ==,
+                    0xffffffff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 1), ==,
+                    0xffffffff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 1), ==,
+                    0x000000ff);
+
+    texture_adapter_window(qts);
+    texture_adapter_bind_env(qts, 0x180000, 0x11800000, env);
+    texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
+    texture_adapter_point(qts, 11, 10, 0.75f, 0.25f);
+    texture_adapter_point(qts, 10, 11, 0.25f, 0.75f);
+    texture_adapter_point(qts, 11, 11, 0.75f, 0.75f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x000000ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xffffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 11), ==, 0xffffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 11), ==, 0x000000ff);
+
+    odsy_test_pixel_write(qts, 12, 10, 0x12345678);
+    texture_adapter_bind(qts, 0x180000, 0x11800000, 3);
+    texture_adapter_point(qts, 12, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, 0x12345678);
+
+    texture_adapter_upload_luminance_alpha(qts, 0x181000, synthetic_rows);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 0), ==,
+                    0x12121234);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 1, 0), ==,
+                    0x56565678);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 0, 1), ==,
+                    0x9a9a9abc);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x181000, 1, 1), ==,
+                    0xdededef0);
+
+    /* One valid pair plus a padded pair must write only one texel. */
+    upload_begin(qts, 0x182000, 2, 0x080024d0, 2, 2);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    user_cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x48));
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
+    user_cmd_push(qts, 0x1234dead);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 0, 0), ==,
+                    0x12121234);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x182000, 1, 0), ==, 0);
+
+    /* LA8 data paired with the RGB word format is unsupported. */
+    upload_begin(qts, 0x183000, 2, 0x080024d0, 2, 2);
+    upload_first_header(qts, 0x48);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, 0x12345678);
+    upload_end(qts);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x183000, 0, 0), ==, 0);
     qtest_quit(qts);
 }
 
@@ -12291,6 +12371,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_components_environment);
     qtest_add_func("sn1/odyssey/texture-adapter/scalar-components",
                    test_texture_adapter_scalar_components);
+    qtest_add_func("sn1/odyssey/texture-adapter/luminance-alpha",
+                   test_texture_adapter_luminance_alpha);
     qtest_add_func("sn1/odyssey/texture-adapter/level-zero-3d",
                    test_texture_adapter_level_zero_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/3d-state-restore",
