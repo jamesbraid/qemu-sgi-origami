@@ -71,6 +71,27 @@ static void test_registers(void)
     qtest_quit(s);
 }
 
+static void test_position(void)
+{
+    QTestState *s = qtest_init(ARGS);
+    const uint64_t inputs = UINT64_C(3) << 20;
+    const uint64_t values[] = {
+        0, UINT64_MAX & ~inputs, UINT64_C(1) << 22,
+        UINT64_C(1) << 23, UINT64_C(0x123456789abcdef) & ~inputs,
+    };
+
+    g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, inputs);
+    for (unsigned i = 0; i < G_N_ELEMENTS(values); i++) {
+        qtest_writeq(s, BASE + 0x50, values[i]);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, values[i] | inputs);
+    }
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, inputs);
+    qtest_writeq(s, BASE + 0x50, 0);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, inputs);
+    qtest_quit(s);
+}
+
 static void test_routing(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -290,6 +311,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
+    qtest_add_func("/sgi/sn1-router/position", test_position);
     qtest_add_func("/sgi/sn1-router/routing", test_routing);
     qtest_add_func("/sgi/sn1-router/vector-links", test_vector_links);
     qtest_add_func("/sgi/sn1-router/silent-peer", test_silent_peer);
