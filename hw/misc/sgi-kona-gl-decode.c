@@ -377,9 +377,8 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     /*
      * Non-repeat S/T collapse three public clamp modes into the same bits.
      * Their border storage is not established by this sampler record.
-     * Detail selectors still need their separate image binding.
      */
-    if (!min_filter[min] || (mag > 1 && mag != 5) ||
+    if (!min_filter[min] || (mag > 1 && (mag < 3 || mag > 5)) ||
         (bind[3] & 0x7000) ||
         !scale_s || !scale_t) {
         return false;
@@ -387,30 +386,44 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     next.min_filter = min_filter[min];
     next.mag_filter = mag ? SGI_GL_LINEAR : SGI_GL_NEAREST;
     next.filter_curve_slot = 0;
-    if (mag == 5) {
+    next.detail_level = 0;
+    next.detail_mode = SGI_GL_MODULATE;
+    if (mag >= 3) {
         switch (bind[2] & 0x0c000000) {
         case 0:
-            next.mag_filter = SGI_GL_LINEAR_SHARPEN_SGIS;
+            next.mag_filter = mag == 5 ? SGI_GL_LINEAR_SHARPEN_SGIS :
+                                        SGI_GL_LINEAR_DETAIL_SGIS;
             break;
         case 0x04000000:
-            next.mag_filter = SGI_GL_LINEAR_SHARPEN_COLOR_SGIS;
+            next.mag_filter = mag == 5 ? SGI_GL_LINEAR_SHARPEN_COLOR_SGIS :
+                                        SGI_GL_LINEAR_DETAIL_COLOR_SGIS;
             break;
         case 0x08000000:
-            next.mag_filter = SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS;
+            next.mag_filter = mag == 5 ? SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS :
+                                        SGI_GL_LINEAR_DETAIL_ALPHA_SGIS;
             break;
         default:
             return false;
         }
         next.filter_curve_slot = bind[1] & 0xfff;
-        /* Categorical negative bounds cannot evaluate a sharpening curve. */
+        /* Categorical negative bounds cannot evaluate a filter curve. */
         if ((lo && lo < 64) || hi < 64) {
             return false;
         }
     }
+    if (mag == 3 || mag == 4) {
+        unsigned detail_level = (bind[2] >> 21) & 7;
+
+        if (detail_level > 4) {
+            return false;
+        }
+        next.detail_level = -(int)detail_level;
+        next.detail_mode = mag == 3 ? SGI_GL_ADD : SGI_GL_MODULATE;
+    }
     next.wrap_s = next.wrap_t = SGI_GL_REPEAT;
     next.lod_scale_s = scale_s / 16.0;
     next.lod_scale_t = scale_t / 16.0;
-    if (min >= 3 || mag == 5) {
+    if (min >= 3 || mag >= 3) {
         /*
          * Positive effective LOD bounds encode trunc(64 * (LOD + 1)).
          * Below 64 the base-zero producer uses a quantized exponential.
@@ -429,6 +442,44 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
         }
     }
     *params = next;
+    return true;
+}
+
+bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
+                                         uint32_t *internal)
+{
+    static const struct {
+        uint32_t base, internal;
+    } formats[] = {
+        [0] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
+        [1] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
+        [2] = { SGI_GL_RGBA, SGI_GL_RGBA },
+        [3] = { SGI_GL_LUMINANCE, 0x8042 },
+        [6] = { SGI_GL_LUMINANCE, 0x803f },
+        [7] = { SGI_GL_ALPHA, 0x803b },
+        [9] = { SGI_GL_LUMINANCE_ALPHA, 0x8043 },
+        [10] = { SGI_GL_LUMINANCE, 0x8040 },
+        [11] = { SGI_GL_ALPHA, 0x803c },
+        [13] = { SGI_GL_LUMINANCE_ALPHA, 0x8044 },
+        [14] = { SGI_GL_LUMINANCE_ALPHA, 0x8045 },
+        [15] = { SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
+        [16] = { SGI_GL_LUMINANCE, 0x8041 },
+        [17] = { SGI_GL_ALPHA, SGI_GL_ALPHA },
+        [18] = { SGI_GL_ALPHA, 0x803d },
+        [21] = { SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
+        [23] = { SGI_GL_ALPHA, 0x803e },
+        [33] = { SGI_GL_RGB, 0x8051 },
+        [34] = { SGI_GL_RGBA, 0x8058 },
+        [37] = { SGI_GL_RGB, SGI_GL_RGB },
+        [38] = { SGI_GL_RGB, SGI_GL_RGB },
+        [41] = { SGI_GL_RGBA, SGI_GL_RGBA },
+    };
+
+    if (index >= ARRAY_SIZE(formats) || !formats[index].base) {
+        return false;
+    }
+    *base = formats[index].base;
+    *internal = formats[index].internal;
     return true;
 }
 

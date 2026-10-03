@@ -111,6 +111,10 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
 
+/* Decode supported native internal-format table indexes transactionally. */
+bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
+                                         uint32_t *internal);
+
 /* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 
