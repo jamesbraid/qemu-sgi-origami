@@ -2893,6 +2893,148 @@ static void test_stencil_visual_readback_remains_refused(void)
     assert_read_colour(qts, 0xff0000);
 }
 
+static void test_stencil_partial_visual_migration(void)
+{
+    static const struct { uint32_t before, after; } cases[] = {
+        { 8, 0 }, { 0, 8 }, { 8, 4 }, { 4, 8 },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *dir = NULL, *uri = NULL, *dest_args = NULL;
+        uint32_t config[] = { 0, 12, 0, 0, 0, 0, 24, cases[i].after, 0, 0 };
+        GError *err = NULL;
+        QTestState *from, *to;
+
+        dir = g_dir_make_tmp("sn0-kona-stencil-visual-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        from = qtest_init(MACHINE_ARGS);
+        to = qtest_init(dest_args);
+        stencil_setup(from);
+        stencil_clear(from, 61, 255);
+        stencil_function(from, 0x200, 0, 255);
+        stencil_config(from, cases[i].before);
+        /* The changed width is pending; the complete record still owns it. */
+        kona_command(from, 1, config, 8);
+        sgi_migrate_stopped(from, uri);
+        for (unsigned run = 0; run < 2; run++) {
+            QTestState *s = run ? to : from;
+
+            qtest_writel(s, REG_COMMAND, config[8]);
+            qtest_writel(s, REG_COMMAND, config[9]);
+            stencil_triangle(s);
+            if (cases[i].after == 0) {
+                assert_stencil_colour(s, 0xff0000);
+            } else {
+                assert_stencil_colour(s, 0x0000ff);
+            }
+            if (cases[i].after == 0) {
+                assert_read_colour(s, 0x0000ff);
+            } else {
+                assert_source_refused(s);
+            }
+            stencil_config(s, 8);
+            assert_stencil_value(s, 61);
+            assert_source_refused(s);
+        }
+        qtest_quit(to);
+        qtest_quit(from);
+        g_rmdir(dir);
+    }
+}
+
+static void test_stencil_accumulation_clear_diagnostic(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint32_t before[3];
+
+    stencil_setup(s);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    stencil_clear(s, 73, 255);
+    before[0] = stencil_colour_or_depth(s, 0);
+    before[1] = stencil_colour_or_depth(s, 1);
+    before[2] = stencil_colour_or_depth(s, 5);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x200 }, 1);
+    g_assert_cmphex(stencil_colour_or_depth(s, 0), ==, before[0]);
+    g_assert_cmphex(stencil_colour_or_depth(s, 1), ==, before[1]);
+    g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, before[2]);
+    assert_stencil_value(s, 73);
+    kona_command_f(s, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command_d(s, 0x1f, (double[]){ 0.25 }, 1);
+    kona_command(s, 0x1e, (uint32_t[]){ 91 }, 1);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4700 }, 1);
+    assert_stencil_colour(s, 0x00ff00);
+    g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x400000);
+    g_assert_cmphex(stencil_colour_or_depth(s, 1), ==, before[1]);
+    assert_stencil_value(s, 91);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "glClear of buffers 0x200; only colour"));
+    g_assert_nonnull(strstr(found, "glClear of buffers 0x4700; only colour"));
+    g_assert_cmpuint(count_occurrences(found, "glClear of buffers"), ==, 2);
+    g_assert_false(log_shows_misframing(found));
+}
+
+static void test_stencil_invalid_state_enumerants(void)
+{
+    static const uint32_t invalid_func[] = { 0, 0x208, UINT32_MAX };
+
+    gl_reset();
+    stencil_setup(qts);
+    for (unsigned i = 0; i < G_N_ELEMENTS(invalid_func); i++) {
+        stencil_clear(qts, 17, 255);
+        stencil_function(qts, 0x202, 17, 255);
+        stencil_operations(qts, 0, 0, 0x1e01);
+        kona_command(qts, 0xcc,
+                     (uint32_t[]){ invalid_func[i], 99, 0 }, 3);
+        stencil_triangle(qts);
+        assert_stencil_value(qts, 17);
+    }
+    for (unsigned bad = 0; bad < 3; bad++) {
+        for (unsigned outcome = 0; outcome < 3; outcome++) {
+            uint32_t ops[] = { 0x1e01, 0x1e01, 0x1e01 };
+
+            stencil_clear(qts, 40, 255);
+            stencil_function(qts, outcome == 0 ? 0x200 : 0x207, 99, 255);
+            stencil_operations(qts, 0, 0x1e02, 0x1e03);
+            kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+            kona_command(qts, 0xce,
+                         (uint32_t[]){ outcome == 1 ? 0x200 : 0x207 }, 1);
+            ops[bad] = 0x1e06;
+            kona_command(qts, 0xcd, ops, 3);
+            stencil_triangle(qts);
+            assert_stencil_value(qts, outcome == 0 ? 0 :
+                                  outcome == 1 ? 41 : 39);
+        }
+    }
+}
+
+/* Destroy reason retires a window; fresh mapping resets context state. */
+static void test_stencil_destroyed_context_pixels_retained(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 73, 255);
+    stencil_function(qts, 0x200, 12, 15);
+    stencil_operations(qts, 0x1e01, 0x1e01, 0x1e01);
+    kona_command(qts, 0x20, (uint32_t[]){ 15 }, 1);
+    kona_command(qts, 0x1e, (uint32_t[]){ 91 }, 1);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    gl_make_current_depth(qts, 24);
+    gl_window_cleared(qts, 0, 0, 1);
+    stencil_config(qts, 8);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb90 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    assert_stencil_value(qts, 73);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x400 }, 1);
+    assert_stencil_value(qts, 0);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -3076,6 +3218,18 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-3d/stencil/"
                    "visual-readback-remains-refused",
                    test_stencil_visual_readback_remains_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
+                   "partial-visual-migration",
+                   test_stencil_partial_visual_migration);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
+                   "accumulation-clear-diagnostic",
+                   test_stencil_accumulation_clear_diagnostic);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
+                   "invalid-state-enumerants",
+                   test_stencil_invalid_state_enumerants);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
+                   "destroyed-context-pixels-retained",
+                   test_stencil_destroyed_context_pixels_retained);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
