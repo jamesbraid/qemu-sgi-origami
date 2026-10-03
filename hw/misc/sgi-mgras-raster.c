@@ -2175,6 +2175,14 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
 
             if (d->guest_bpp == 1) {
                 p[0] = stored[col];
+            } else if (d->guest_bpp == 2) {
+                uint16_t rgb555 = ((stored[col] >> 19) & 0x1f) |
+                                  ((stored[col] >> 6) & 0x3e0) |
+                                  ((stored[col] << 7) & 0x7c00);
+
+                /* The 15-bit visual stores red in the low five bits. */
+                p[0] = rgb555 >> 8;
+                p[1] = rgb555;
             } else {
                 p[0] = 0;
                 p[1] = stored[col];
@@ -2372,7 +2380,7 @@ static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
         }
         bpp = bpr / width;
     }
-    if (bpp != 1 && bpp != 4) {
+    if (bpp != 1 && bpp != 2 && bpp != 4) {
         return false;
     }
 
