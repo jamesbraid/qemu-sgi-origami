@@ -11402,6 +11402,119 @@ static void test_readback_direction(void)
     qtest_quit(qts);
 }
 
+static void test_draw_sentinel_short_upload(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, (2 << 16) | 3, 0x50, (2 << 16) | 2,
+        0x02635000, 0, 16, 0x7a02006b,
+    };
+    const uint64_t pte[] = {
+        ODSY_DMA_PTE(RB_PAGE_A, 3), ODSY_DMA_PTE(RB_PAGE_B, 29),
+    };
+    const uint8_t pixels[32] = {
+        0x00, 0x00, 0x80, 0x00, 0xff, 0xff, 0x40, 0x00,
+        0xff, 0xff, 0x00, 0x00, 0x80, 0x00, 0xff, 0xff,
+        0x80, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00, 0x00,
+        0x7f, 0xff, 0xff, 0xff, 0x00, 0x01, 0x80, 0x00,
+    };
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+    qtest_memwrite(qts, RB_PAGE_A, pixels, 3);
+    qtest_memwrite(qts, RB_PAGE_B, pixels + 3, sizeof(pixels) - 3);
+
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+
+    /* Source row zero lands on the lower screen row; each pixel is RGBA16. */
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 203), ==, 0x0080ff40);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 203), ==, 0xff0080ff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 103, 202), ==, 0x80402000);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 104, 202), ==, 0x7fff0080);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 105, 203), ==, 0);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 103, 203), ==, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_draw_sentinel_short_zero_origin_clip(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, 0, 0x50, (2 << 16) | 2,
+        0x02635000, 0, 16, 0x7a02006b,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 32) };
+    const uint8_t pixels[32] = {
+        0x00, 0x00, 0x80, 0x00, 0xff, 0xff, 0x40, 0x00,
+        0xff, 0xff, 0x00, 0x00, 0x80, 0x00, 0xff, 0xff,
+        0x80, 0x00, 0x40, 0x00, 0x20, 0x00, 0x00, 0x00,
+        0x7f, 0xff, 0xff, 0xff, 0x00, 0x01, 0x80, 0x00,
+    };
+
+    window_origin(qts, 0, 0);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 0, 0 } }, 1);
+    qtest_memwrite(qts, RB_PAGE_A, pixels, sizeof(pixels));
+    readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+
+    /* Bottom-up row one maps to screen row zero; clip keeps one pixel. */
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0x80402000);
+    g_assert_cmphex(odsy_test_pixel(qts, 1, 0), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 1), ==, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_draw_sentinel_short_rejections(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        RB_DRAW_SENTINEL, 0, 0x50, (2 << 16) | 2,
+        0x02635000, 0, 16, 0x7a02006b,
+    };
+    const uint64_t good_pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 32) };
+    const uint64_t short_pte[] = { ODSY_DMA_PTE(RB_PAGE_A, 31) };
+    const uint64_t failed_pte[] = {
+        ODSY_DMA_PTE(RB_PAGE_A, 16), ODSY_DMA_PTE(0x80000000, 16),
+    };
+    const uint8_t pixels[32] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    };
+
+    window_origin(qts, 0, 0);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    qtest_memwrite(qts, RB_PAGE_A, pixels, sizeof(pixels));
+
+    /* An unsupported control is observable but cannot paint. */
+    hdr[7] ^= 1;
+    readback_run(qts, hdr, good_pte, ARRAY_SIZE(good_pte));
+    hdr[7] ^= 1;
+
+    /* Wrong row bytes and a short entry payload are rejected before reads. */
+    hdr[6] = 8;
+    readback_run(qts, hdr, good_pte, ARRAY_SIZE(good_pte));
+    hdr[6] = 16;
+    readback_run(qts, hdr, short_pte, ARRAY_SIZE(short_pte));
+
+    /* A later DMA read failure leaves the earlier staged row unpainted. */
+    readback_run(qts, hdr, failed_pte, ARRAY_SIZE(failed_pte));
+
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 1), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 1, 1), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 1, 0), ==, 0);
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /*
  * The GL library's one-pixel read of the read drawable, as captured: word 1
  * is drawable-relative, so the window origin is added and the pixel at
@@ -12337,6 +12450,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/command-fifo-dma-image",
                    test_command_fifo_dma_image);
     qtest_add_func("sn1/odyssey/readback/direction", test_readback_direction);
+    qtest_add_func("sn1/odyssey/dma/draw-sentinel-short",
+                   test_draw_sentinel_short_upload);
+    qtest_add_func("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",
+                   test_draw_sentinel_short_zero_origin_clip);
+    qtest_add_func("sn1/odyssey/dma/draw-sentinel-short-rejections",
+                   test_draw_sentinel_short_rejections);
     qtest_add_func("sn1/odyssey/readback/sentinel-drawable-relative",
                    test_readback_sentinel_drawable_relative);
     qtest_add_func("sn1/odyssey/readback/intermediate-block",
