@@ -378,27 +378,29 @@ Their exact QEMU revision and capture environment were not recorded.
 Whole-system performance workloads
 ----------------------------------
 
-``func-mips64-irix_performance`` boots the installed IRIX 6.5.30 disk once
+``mips64-irix_performance`` boots the installed IRIX 6.5.30 disk once
 on an Origin 200 with 128 MiB and one R10000 CPU. It then warms and repeats
 four checked workloads: stock ``compress``/``uncompress`` round trips,
 IOC3 TCP receive, IOC3 TCP transmit, and an idle shell window. Transfers use
 SLIRP. Each workload has one warmup and three measured samples by default.
 The CPU workload is single-process even when the machine has two CPUs.
 
-Use an optimized build with tests, HMP and SLIRP enabled. Select the native
-performance setup and suite explicitly:
+Use an optimized build with tests, HMP and SLIRP enabled. Run the native
+Meson benchmark:
 
 .. code-block:: sh
 
    export QEMU_TEST_SGI_ASSET_DIR=/path/to/sgi-assets
-   build/pyvenv/bin/meson test -C build --setup qemu:performance \
-       --suite qemu:performance --num-processes 1 --print-errorlogs
+   build/pyvenv/bin/meson test -C build --benchmark \
+       --suite qemu:sgi --print-errorlogs
 
 The inputs are the checksum-pinned IP27 PROM and ``irix/6.5.30/root.qcow2``
-listed above. Guest writes use snapshot mode. The quick, slow and thorough
-setups exclude the performance suite. The performance setup fixes
-``MALLOC_PERTURB_`` at zero instead of Meson's random allocator perturbation.
-An unset asset root skips the test.
+listed above. Guest writes use snapshot mode. QEMU also generates
+``make bench-sgi`` from this registration. Ordinary ``meson test`` and
+``make check`` runs do not select benchmarks. Meson runs benchmarks serially
+and does not inject random ``MALLOC_PERTURB_`` values. The report records its
+effective value, with an unset value treated as zero. An unset asset root
+skips the case.
 Require its named JUnit case with ``scripts/check-sgi-test-results.py`` when
 a skip would invalidate the experiment.
 
