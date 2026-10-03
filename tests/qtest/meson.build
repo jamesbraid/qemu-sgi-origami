@@ -78,9 +78,9 @@ slow_qtests = {
   # The KONA GL suite draws through the shared rasterizer and carries a
   # migration; it shares one single-node machine between its other cases.
   'sn0-origin2000-kona-gl-test': 120,
-  # The KONA 3D suite starts a logged machine for its framing cases and
-  # carries migrations, like the context suite.
-  'sn0-origin2000-kona-3d-test': 120,
+  # Texture framing covers every partial header and payload migration.
+  # The 120 s budget expired during the eleventh of 168 new positions.
+  'sn0-origin2000-kona-3d-test': 900,
   # The KONA X image DMA suite starts a logged machine for each case and
   # reads back a 256 by 256 image's rows one pixel at a time.
   'sn0-origin2000-kona-xdma-test': 120,

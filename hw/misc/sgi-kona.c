@@ -4057,19 +4057,30 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
 static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
                                               const uint32_t *h)
 {
+    static const uint32_t captured_8x8[][20] = {
+        { 0xde1, 8, 8, 5, 1, 0, 0, 0, 0, 0x30,
+          0, 0, 0, 7, 7, 0, 0x33, 0x2181, 0, 0 },
+        { 0xde1, 8, 8, 5, 1, 0, 0, 0, 0, 0x30,
+          1, 0, 0, 7, 7, 0, 0x33, 0x2189, 0, 0 },
+    };
     const char *reason = NULL;
     uint64_t bytes;
+    bool exact_8x8 = false;
 
-    /* Only the retained 2x2, 4x2 and 2x4 inline capture has a known count. */
+    for (unsigned k = 0; k < ARRAY_SIZE(captured_8x8); k++) {
+        exact_8x8 |= !memcmp(h, captured_8x8[k], sizeof(captured_8x8[k]));
+    }
+    /* The opaque 8x8 words are correlated only by these exact captures. */
     if (i == SGI_KONA_CONTEXT_NONE) {
         reason = "no current context";
     } else if (h[0] != 0xde1 || h[3] != 5 || h[4] != 1) {
         reason = "unsupported target or native pair";
     } else if (!((h[1] == 2 && (h[2] == 2 || h[2] == 4)) ||
-                 (h[1] == 4 && h[2] == 2))) {
+                 (h[1] == 4 && h[2] == 2) || exact_8x8)) {
         reason = "unsupported dimensions";
-    } else if (h[5] || h[6] || h[7] || h[8] || h[9] != 0x30 || h[10] ||
-               h[15] || h[16] != 0x23 || h[17] != 0x2181 || h[18] || h[19]) {
+    } else if (!exact_8x8 &&
+               (h[5] || h[6] || h[7] || h[8] || h[9] != 0x30 || h[10] ||
+                h[15] || h[16] != 0x23 || h[17] != 0x2181 || h[18] || h[19])) {
         reason = "unsupported invariant words";
     } else if (s->gl_pipe[i].unpack_alignment != 4 ||
                s->gl_pipe[i].unpack_row_length != 0) {
