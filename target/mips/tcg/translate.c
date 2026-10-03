@@ -1372,7 +1372,8 @@ void gen_store_fpr32(DisasContext *ctx, TCGv_i32 t, int reg)
      * FR set: with it clear the upper halves are the odd singles, and the
      * pairing is what those bits mean.
      */
-    if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+    if (ctx->fp_single_result_clears_upper &&
+        (ctx->hflags & MIPS_HFLAG_F64)) {
         tcg_gen_mov_i64(fpu_f64[reg], t64);
     } else {
         tcg_gen_deposit_i64(fpu_f64[reg], fpu_f64[reg], t64, 0, 32);
@@ -1529,7 +1530,7 @@ void check_cp1_64bitmode(DisasContext *ctx)
      * through UX. With the mode enabled but FR clear the manual says
      * nothing, and the Reserved Instruction refusal below stands.
      */
-    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+    if (unlikely(ctx->fp_l_format_requires_64bit_mode &&
                  !(ctx->hflags & MIPS_HFLAG_64))) {
         gen_fp_unimplemented(ctx);
         return;
@@ -5171,7 +5172,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
 
-    if (reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K) &&
+    if (reg == CP0_REGISTER_25 && ctx->performance_counter_pairs &&
         sel >= ctx->performance_counter_pairs * 2) {
         gen_reserved_instruction(ctx);
         return;
@@ -5682,7 +5683,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG18__WATCHLO0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_1e0i(mfc0_watchlo, arg, sel);
             register_name = "WatchLo";
             break;
@@ -5706,7 +5707,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG19__WATCHHI0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_1e0i(mfc0_watchhi, arg, sel);
             register_name = "WatchHi";
             break;
@@ -5761,7 +5762,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG23__DEBUG:
             /* The R10000 family has no EJTAG; its register 23 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             gen_helper_mfc0_debug(arg, tcg_env); /* EJTAG support */
             register_name = "Debug";
             break;
@@ -5798,7 +5799,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG24__DEPC:
             /* The R10000 family has no EJTAG; its register 24 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             /* EJTAG support */
             tcg_gen_ld_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             tcg_gen_ext32s_tl(arg, arg);
@@ -5925,7 +5926,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     const char *register_name = "invalid";
     bool icount;
 
-    if (reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K) &&
+    if (reg == CP0_REGISTER_25 && ctx->performance_counter_pairs &&
         sel >= ctx->performance_counter_pairs * 2) {
         gen_reserved_instruction(ctx);
         return;
@@ -6421,7 +6422,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG18__WATCHLO0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_0e1i(mtc0_watchlo, arg, sel);
             register_name = "WatchLo";
             break;
@@ -6445,7 +6446,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG19__WATCHHI0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_0e1i(mtc0_watchhi, arg, sel);
             register_name = "WatchHi";
             break;
@@ -6499,7 +6500,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG23__DEBUG:
             /* The R10000 family has no EJTAG; its register 23 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             gen_helper_mtc0_debug(tcg_env, arg); /* EJTAG support */
             /* DISAS_STOP isn't good enough here, hflags may have changed. */
             gen_save_pc(ctx->base.pc_next + 4);
@@ -6551,7 +6552,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG24__DEPC:
             /* The R10000 family has no EJTAG; its register 24 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             /* EJTAG support */
             tcg_gen_st_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
@@ -6682,6 +6683,12 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
 
+    if (reg == CP0_REGISTER_25 && ctx->performance_counter_pairs &&
+        sel >= ctx->performance_counter_pairs * 2) {
+        gen_reserved_instruction(ctx);
+        return;
+    }
+
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
@@ -6690,7 +6697,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
      * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
-        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
+        !(reg == CP0_REGISTER_25 &&
+          sel < ctx->performance_counter_pairs * 2)) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -7155,7 +7163,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG18__WATCHLO0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_1e0i(dmfc0_watchlo, arg, sel);
             register_name = "WatchLo";
             break;
@@ -7179,7 +7187,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG19__WATCHHI0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_1e0i(dmfc0_watchhi, arg, sel);
             register_name = "WatchHi";
             break;
@@ -7231,7 +7239,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG23__DEBUG:
             /* The R10000 family has no EJTAG; its register 23 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             gen_helper_mfc0_debug(arg, tcg_env); /* EJTAG support */
             register_name = "Debug";
             break;
@@ -7268,7 +7276,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG24__DEPC:
             /* The R10000 family has no EJTAG; its register 24 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             /* EJTAG support */
             tcg_gen_ld_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
@@ -7388,6 +7396,12 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     const char *register_name = "invalid";
     bool icount;
 
+    if (reg == CP0_REGISTER_25 && ctx->performance_counter_pairs &&
+        sel >= ctx->performance_counter_pairs * 2) {
+        gen_reserved_instruction(ctx);
+        return;
+    }
+
     /*
      * On the R10000 family the selector bits of a coprocessor 0 move to or from
      * register 25 are not the MIPS32 register selector; they are part of that
@@ -7396,7 +7410,8 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
      * keeps the rule that a nonzero selector needs MIPS32.
      */
     if (sel != 0 &&
-        !(reg == CP0_REGISTER_25 && (ctx->insn_flags & INSN_R10K))) {
+        !(reg == CP0_REGISTER_25 &&
+          sel < ctx->performance_counter_pairs * 2)) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
@@ -7870,7 +7885,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG18__WATCHLO0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_0e1i(mtc0_watchlo, arg, sel);
             register_name = "WatchLo";
             break;
@@ -7894,7 +7909,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         case CP0_REG19__WATCHHI0:
             /* The R10000 family has this one watch pair and no selector. */
             CP0_CHECK((ctx->CP0_Config1 & (1 << CP0C1_WR)) ||
-                      (ctx->insn_flags & INSN_R10K));
+                      ctx->watch_is_physical);
             gen_helper_0e1i(mtc0_watchhi, arg, sel);
             register_name = "WatchHi";
             break;
@@ -7946,7 +7961,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG23__DEBUG:
             /* The R10000 family has no EJTAG; its register 23 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             gen_helper_mtc0_debug(tcg_env, arg); /* EJTAG support */
             /* DISAS_STOP isn't good enough here, hflags may have changed. */
             gen_save_pc(ctx->base.pc_next + 4);
@@ -7996,7 +8011,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG24__DEPC:
             /* The R10000 family has no EJTAG; its register 24 is undefined. */
-            CP0_CHECK(!(ctx->insn_flags & INSN_R10K));
+            CP0_CHECK(!ctx->no_ejtag);
             /* EJTAG support */
             tcg_gen_st_tl(arg, tcg_env, offsetof(CPUMIPSState, CP0_DEPC));
             register_name = "DEPC";
@@ -8624,7 +8639,7 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
          * reads a per-thread register into the general register named
          * by the branch offset's bits 15:11.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->cop0_branches_reserved) {
             gen_reserved_instruction(ctx);
             return;
         }
@@ -8644,7 +8659,7 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
          * silently write coprocessor 0 state, so the same refusal is
          * the only safe reading.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->cop0_branches_reserved) {
             gen_reserved_instruction(ctx);
             return;
         }
@@ -8740,7 +8755,7 @@ static void gen_cp0(CPUMIPSState *env, DisasContext *ctx, uint32_t opc,
     case OPC_WAIT:
         opn = "wait";
         /* The R10000's COP0 instruction set has no WAIT. */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->no_wait) {
             gen_reserved_instruction(ctx);
             break;
         }
@@ -9235,7 +9250,8 @@ static inline void gen_movcf_s(DisasContext *ctx, int fs, int fd, int cc,
     TCGv_i32 t0;
     TCGLabel *l1;
 
-    if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+    if (ctx->fp_single_result_clears_upper &&
+        (ctx->hflags & MIPS_HFLAG_F64)) {
         gen_movcf_s_r10k(ctx, fs, fd, cc, tf);
         return;
     }
@@ -9436,7 +9452,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             gen_load_fpr32(ctx, fp0, fs);
             if (ctx->abs2008) {
                 tcg_gen_andi_i32(fp0, fp0, 0x7fffffffUL);
-            } else if (ctx->insn_flags & INSN_R10K) {
+            } else if (ctx->fp_abs_chs_are_arithmetic) {
                 gen_helper_float_abs_s_r10k(fp0, tcg_env, fp0);
             } else {
                 gen_helper_float_abs_s(fp0, fp0);
@@ -9459,7 +9475,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             gen_load_fpr32(ctx, fp0, fs);
             if (ctx->abs2008) {
                 tcg_gen_xori_i32(fp0, fp0, 1UL << 31);
-            } else if (ctx->insn_flags & INSN_R10K) {
+            } else if (ctx->fp_abs_chs_are_arithmetic) {
                 gen_helper_float_chs_s_r10k(fp0, tcg_env, fp0);
             } else {
                 gen_helper_float_chs_s(fp0, fp0);
@@ -9599,7 +9615,8 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
     case OPC_MOVZ_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
         check_mips4_enabled_fp(ctx);
-        if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+        if (ctx->fp_single_result_clears_upper &&
+            (ctx->hflags & MIPS_HFLAG_F64)) {
             gen_movzn_s_r10k(ctx, fs, fd, ft, true);
         } else {
             TCGLabel *l1 = gen_new_label();
@@ -9617,7 +9634,8 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
     case OPC_MOVN_S:
         check_insn_opc_removed(ctx, ISA_MIPS_R6);
         check_mips4_enabled_fp(ctx);
-        if ((ctx->insn_flags & INSN_R10K) && (ctx->hflags & MIPS_HFLAG_F64)) {
+        if (ctx->fp_single_result_clears_upper &&
+            (ctx->hflags & MIPS_HFLAG_F64)) {
             gen_movzn_s_r10k(ctx, fs, fd, ft, false);
         } else {
             TCGLabel *l1 = gen_new_label();
@@ -9930,7 +9948,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             gen_load_fpr64(ctx, fp0, fs);
             if (ctx->abs2008) {
                 tcg_gen_andi_i64(fp0, fp0, 0x7fffffffffffffffULL);
-            } else if (ctx->insn_flags & INSN_R10K) {
+            } else if (ctx->fp_abs_chs_are_arithmetic) {
                 gen_helper_float_abs_d_r10k(fp0, tcg_env, fp0);
             } else {
                 gen_helper_float_abs_d(fp0, fp0);
@@ -9955,7 +9973,7 @@ static void gen_farith(DisasContext *ctx, enum fopcode op1,
             gen_load_fpr64(ctx, fp0, fs);
             if (ctx->abs2008) {
                 tcg_gen_xori_i64(fp0, fp0, 1ULL << 63);
-            } else if (ctx->insn_flags & INSN_R10K) {
+            } else if (ctx->fp_abs_chs_are_arithmetic) {
                 gen_helper_float_chs_d_r10k(fp0, tcg_env, fp0);
             } else {
                 gen_helper_float_chs_d(fp0, fp0);
@@ -13528,7 +13546,7 @@ static void decode_opc_special2_legacy(CPUMIPSState *env, DisasContext *ctx)
          * list). Left ungated for the other pre-MIPS32 models that
          * accept it.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->no_special2_mul) {
             gen_reserved_instruction(ctx);
             break;
         }
@@ -14817,7 +14835,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         check_cp0_enabled(ctx);
         check_insn(ctx, ISA_MIPS3 | ISA_MIPS_R1);
         if ((ctx->hflags & MIPS_HFLAG_ITC_CACHE) ||
-            (ctx->insn_flags & INSN_R10K)) {
+            ctx->has_cache_diagnostics) {
             gen_cache_operation(ctx, rt, rs, imm);
         }
         /* Treat as NOP. */
@@ -14825,7 +14843,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
     case OPC_PREF:
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1 | INSN_R5900);
         check_mips4_enabled(ctx);
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->has_r10k_prefetch) {
             gen_pref_r10k(ctx, rt, rs, imm);
         }
         /* Treat as NOP. */
@@ -14855,7 +14873,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
          * instruction, or the paired-single format — into the wrong
          * refusal or an execution.
          */
-        if ((ctx->insn_flags & INSN_R10K) &&
+        if (ctx->fp_undefined_format_unimplemented &&
             extract32(ctx->opcode, 24, 2) >= 2 &&
             !r10k_cop1_fmt_defined(ctx->opcode)) {
             check_cp1_enabled(ctx);
@@ -15015,7 +15033,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             gen_loongson_lswc2(ctx, rt, rs, rd);
         } else {
             /* OPC_LWC2, OPC_SWC2 */
-            if (ctx->insn_flags & INSN_R10K) {
+            if (ctx->cop2_absent_cu2_selects_exception) {
                 gen_cop2_exception_r10k(ctx);
             } else {
                 /* COP2: Not implemented. */
@@ -15038,7 +15056,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             gen_loongson_lsdc2(ctx, rt, rs, rd);
         } else {
             /* OPC_LWC2, OPC_SWC2 */
-            if (ctx->insn_flags & INSN_R10K) {
+            if (ctx->cop2_absent_cu2_selects_exception) {
                 gen_cop2_exception_r10k(ctx);
             } else {
                 /* COP2: Not implemented. */
@@ -15047,7 +15065,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         }
         break;
     case OPC_CP2:
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->cop2_absent_cu2_selects_exception) {
             gen_cop2_exception_r10k(ctx);
             break;
         }
@@ -15075,7 +15093,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             case OPC_PREFX:
                 check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R2);
                 check_mips4_enabled(ctx);
-                if (ctx->insn_flags & INSN_R10K) {
+                if (ctx->has_r10k_prefetch) {
                     gen_prefx_r10k(ctx, rd, rs, rt);
                 }
                 /* Treat as NOP. */
@@ -15194,7 +15212,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
          * Reserved Instruction exception causes). The silent acceptance
          * below stands for the other processors.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->no_mdmx) {
             gen_reserved_instruction(ctx);
             break;
         }
@@ -15311,6 +15329,25 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->crcp = (env->CP0_Config5 >> CP0C5_CRCP) & 1;
     ctx->partial_lwr_preserves_upper =
         env->cfg.partial_lwr_preserves_upper;
+    ctx->watch_is_physical = env->cfg.watch_is_physical;
+    ctx->has_cache_diagnostics = env->cfg.has_cache_diagnostics;
+    ctx->xx_gates_mips4 = env->cfg.xx_gates_mips4;
+    ctx->fp_single_result_clears_upper =
+        env->cfg.fp_single_result_clears_upper;
+    ctx->fp_l_format_requires_64bit_mode =
+        env->cfg.fp_l_format_requires_64bit_mode;
+    ctx->fp_abs_chs_are_arithmetic = env->cfg.fp_abs_chs_are_arithmetic;
+    ctx->fp_undefined_format_unimplemented =
+        env->cfg.fp_undefined_format_unimplemented;
+    ctx->cop2_absent_cu2_selects_exception =
+        env->cfg.cop2_absent_cu2_selects_exception;
+    ctx->no_ejtag = env->cfg.no_ejtag;
+    ctx->no_wait = env->cfg.no_wait;
+    ctx->no_special2_mul = env->cfg.no_special2_mul;
+    ctx->no_mdmx = env->cfg.no_mdmx;
+    ctx->has_r10k_prefetch = env->cfg.has_r10k_prefetch;
+    ctx->cop0_branches_reserved = env->cfg.cop0_branches_reserved;
+    ctx->diagnostic_rw_bitmask = env->cfg.diagnostic_rw_bitmask;
 #ifndef CONFIG_USER_ONLY
     ctx->has_store_transaction = env_archcpu(env)->store_transaction != NULL;
 #endif

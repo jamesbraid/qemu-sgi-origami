@@ -312,7 +312,7 @@ static inline void restore_pamask(CPUMIPSState *env)
      * wider does not need it enabling: the R10000 family's forty bits are not
      * an extension, so its declared width applies from reset.
      */
-    if ((env->hflags & MIPS_HFLAG_ELPA) || (env->insn_flags & INSN_R10K)) {
+    if ((env->hflags & MIPS_HFLAG_ELPA) || env->cfg.pamask_full_at_reset) {
         env->PAMask = (1ULL << env->PABITS) - 1;
     } else {
         env->PAMask = PAMASK_BASE;
@@ -395,7 +395,7 @@ static inline void compute_hflags(CPUMIPSState *env)
          * raw, the value lands on the ERL mmu index and behaves as a
          * kernel variant instead.
          */
-        if (ksu == MIPS_HFLAG_KSU && (env->insn_flags & INSN_R10K)) {
+        if (ksu == MIPS_HFLAG_KSU && env->cfg.ksu_3_is_user_mode) {
             ksu = MIPS_HFLAG_UM;
         }
         env->hflags |= ksu;
@@ -416,7 +416,7 @@ static inline void compute_hflags(CPUMIPSState *env)
      * grant stands for the other processors, where 64-bit operations are
      * always valid above user mode.
      */
-    if ((env->insn_flags & INSN_R10K) &&
+    if (env->cfg.sx_gates_supervisor_64_bit &&
         (env->hflags & MIPS_HFLAG_KSU) == MIPS_HFLAG_SM &&
         !(env->CP0_Status & (1 << CP0St_SX))) {
         env->hflags &= ~MIPS_HFLAG_64;
@@ -500,7 +500,7 @@ static inline void compute_hflags(CPUMIPSState *env)
          * not, and a kernel relies on that, never setting the bit for itself.
          */
         if ((env->CP0_Status & (1U << CP0St_XX)) ||
-            ((env->insn_flags & INSN_R10K) &&
+            (env->cfg.xx_gates_cop1x_user_only &&
              (env->hflags & MIPS_HFLAG_KSU) != MIPS_HFLAG_UM)) {
             env->hflags |= MIPS_HFLAG_COP1X;
         }

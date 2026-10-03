@@ -737,7 +737,7 @@ bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
     int hit = (wp->flags >> BP_HIT_SHIFT) & BP_MEM_ACCESS;
     hwaddr phys;
 
-    if (!(env->insn_flags & INSN_R10K)) {
+    if (!env->cfg.watch_is_physical) {
         return false;
     }
     if (!(((hit & BP_MEM_READ) && (lo & CP0WL_R10K_R)) ||

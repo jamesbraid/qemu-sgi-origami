@@ -56,6 +56,21 @@ typedef struct DisasContext {
     bool partial_lwr_preserves_upper;
     bool has_store_transaction;
     bool count_compare_adjacent_recovery;
+    bool watch_is_physical;
+    bool has_cache_diagnostics;
+    bool xx_gates_mips4;
+    bool fp_single_result_clears_upper;
+    bool fp_l_format_requires_64bit_mode;
+    bool fp_abs_chs_are_arithmetic;
+    bool fp_undefined_format_unimplemented;
+    bool cop2_absent_cu2_selects_exception;
+    bool no_ejtag;
+    bool no_wait;
+    bool no_special2_mul;
+    bool no_mdmx;
+    bool has_r10k_prefetch;
+    bool cop0_branches_reserved;
+    uint64_t diagnostic_rw_bitmask;
 } DisasContext;
 
 #define DISAS_STOP       DISAS_TARGET_0

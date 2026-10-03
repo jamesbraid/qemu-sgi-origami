@@ -7,7 +7,7 @@
  * Unlike the other vendor translate units this one has no decodetree
  * file: the R10000 defines no encodings of its own, it only refuses
  * encodings the shared decoder accepts, so everything here is a check
- * or a variant that decoder calls behind an INSN_R10K test. Those call
+ * or a variant that decoder calls behind model configuration checks. Those call
  * sites carry no TARGET_MIPS64 guard, so this file builds for every
  * MIPS target even though only mips64 can create an R10000.
  */
@@ -27,7 +27,7 @@
  */
 void check_mips4_enabled(DisasContext *ctx)
 {
-    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+    if (unlikely(ctx->xx_gates_mips4 &&
                  !(ctx->hflags & MIPS_HFLAG_COP1X))) {
         gen_reserved_instruction(ctx);
     }
@@ -67,7 +67,7 @@ void gen_cop2_exception_r10k(DisasContext *ctx)
  */
 void check_mips4_enabled_fp(DisasContext *ctx)
 {
-    if (unlikely((ctx->insn_flags & INSN_R10K) &&
+    if (unlikely(ctx->xx_gates_mips4 &&
                  !(ctx->hflags & MIPS_HFLAG_COP1X))) {
         gen_fp_unimplemented(ctx);
     }
@@ -183,7 +183,7 @@ R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
          * lives here, and every other processor reads zero and ignores writes
          * as it did before that register was modeled.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->diagnostic_rw_bitmask) {
             /* A 64-bit register: a word read returns its low word. */
             TCGv_i64 tmp = tcg_temp_new_i64();
 
@@ -284,7 +284,7 @@ R10KCp0Result gen_mtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
     switch (reg) {
     case CP0_REGISTER_22:
         /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->diagnostic_rw_bitmask) {
             gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
         }
         *register_name = "Diagnostic";
@@ -368,7 +368,7 @@ R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
          * lives here, and every other processor reads zero and ignores writes
          * as it did before that register was modeled.
          */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->diagnostic_rw_bitmask) {
             /* A 64-bit register: a doubleword read returns all of it. */
             gen_helper_mfc0_r10k_diagnostic(arg, tcg_env);
         } else {
@@ -449,7 +449,7 @@ R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
     switch (reg) {
     case CP0_REGISTER_22:
         /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->insn_flags & INSN_R10K) {
+        if (ctx->diagnostic_rw_bitmask) {
             gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
         }
         *register_name = "Diagnostic";

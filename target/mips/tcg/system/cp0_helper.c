@@ -1217,7 +1217,7 @@ void helper_mtc0_status(CPUMIPSState *env, target_ulong arg1)
      * this family: other models store the bit silently today and keep
      * doing so.
      */
-    if ((env->insn_flags & INSN_R10K) && (val & ~old & (1 << CP0St_RE))) {
+    if (env->cfg.status_re_logs_unimp && (val & ~old & (1 << CP0St_RE))) {
         qemu_log_mask(LOG_UNIMP,
                       "mips: Status.RE set: reverse-endian user mode is "
                       "not implemented; user-mode loads and stores keep "
