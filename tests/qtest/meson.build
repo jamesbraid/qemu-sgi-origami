@@ -84,6 +84,9 @@ slow_qtests = {
   # Complete pixel contracts took 165.72 s beside the fill suite.
   # Allow three times that observed duration for the expanded copy cases.
   'sn0-origin2000-kona-pixel-test': 500,
+  # Complete fill contracts took 149.27 s beside the pixel suite.
+  # Round three times that observed duration up to 450 seconds.
+  'sn0-origin2000-kona-fill-test': 450,
   # The KONA X image DMA suite starts a logged machine for each case and
   # reads back a 256 by 256 image's rows one pixel at a time.
   'sn0-origin2000-kona-xdma-test': 120,
@@ -238,6 +241,8 @@ qtest_priorities = {
   'sn0-fabric-test': 60,
   # Enlarging the pixel budget must not promote it ahead of other suites.
   'sn0-origin2000-kona-pixel-test': 60,
+  # Keep the fill suite's scheduling order independent of its larger budget.
+  'sn0-origin2000-kona-fill-test': 60,
   # Keep the Hub suite's scheduling order independent of its larger budget.
   'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
