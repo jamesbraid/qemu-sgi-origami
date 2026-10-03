@@ -349,6 +349,13 @@ bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
     return true;
 }
 
+void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
+                                    uint32_t *height)
+{
+    *width = 1u << (bind[3] & 15);
+    *height = 1u << ((bind[3] >> 4) & 15);
+}
+
 /* Native min selectors group spatial and mipmap interpolation separately. */
 bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
@@ -370,7 +377,8 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
      * Their border storage is not established by this sampler record.
      * Detail and sharpening mag selectors need their filter-curve tables.
      */
-    if (!min_filter[min] || mag > 1 || (bind[3] & 0x7000)) {
+    if (!min_filter[min] || mag > 1 || (bind[3] & 0x7000) ||
+        (record[1] & 0xffff) != 0x1010) {
         return false;
     }
     next.min_filter = min_filter[min];
@@ -383,8 +391,7 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
          * storage-dependent negative-LOD conversion we do not implement.
          * Public base/max levels cannot be recovered from these bounds.
          */
-        if ((record[2] & 0xfff00000) || (lo && lo < 64) || hi < 64 ||
-            ((record[1] >> 16) & 0xff) != 16) {
+        if ((record[2] & 0xfff00000) || (lo && lo < 64) || hi < 64) {
             return false;
         }
         next.min_lod = lo ? lo / 64.0 - 1.0 : -1000.0;

@@ -103,6 +103,10 @@ bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
  * border colour and post-filter transforms remain with their owning records.
  * Unsupported encodings leave every parameter unchanged.
  */
+/* Level-zero dimensions reconstructed from the emitted logarithms. */
+void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
+                                    uint32_t *height);
+
 bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
