@@ -3856,31 +3856,69 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
 }
 
 /*
- * The words of a texel load's image rows on the page, from its header, or
- * 0 with a log when the header does not say.
- *
- * Established: the rows follow the 20 header words, each row as the whole
- * words covering it from its word-aligned start. Inferred: header words 1
- * and 2 are the image's width and height, words 3 and 4 its format and
- * type (the record fields the readback also sends), word 5 the low two
- * bits of the source address, and word 6 nonzero when the image goes by
- * DMA instead, with no rows on the page. Every row then starts at the
- * same two low bits only when the unpack row stride is a whole number of
- * words, which the model requires. A side above SGI_KONA_GL_IMAGE_MAX,
- * the model's own bound and no known limit of the pipe, is taken as a
- * misread header.
+ * Legacy public-enum headers keep their reviewed row framing: words 1/2
+ * give dimensions, 3/4 format/type, 5 the source address low bits, and
+ * nonzero 6 DMA ingress. Each row starts at those low bits only with a
+ * whole-word unpack stride. IMAGE_MAX is a model bound, not a pipe limit.
  */
 #define SGI_KONA_GL_IMAGE_MAX 8192
+
+static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
+                                              const uint32_t *h)
+{
+    const char *reason = NULL;
+    uint64_t bytes;
+
+    /* Only the retained 2x2, 4x2 and 2x4 inline capture has a known count. */
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        reason = "no current context";
+    } else if (h[0] != 0xde1 || h[3] != 5 || h[4] != 1) {
+        reason = "unsupported target or native pair";
+    } else if (!((h[1] == 2 && (h[2] == 2 || h[2] == 4)) ||
+                 (h[1] == 4 && h[2] == 2))) {
+        reason = "unsupported dimensions";
+    } else if (h[5] || h[6] || h[7] || h[8] || h[9] != 0x30 || h[10] ||
+               h[15] || h[16] != 0x23 || h[17] != 0x2181 || h[18] || h[19]) {
+        reason = "unsupported invariant words";
+    } else if (s->gl_pipe[i].unpack_alignment != 4 ||
+               s->gl_pipe[i].unpack_row_length != 0) {
+        reason = "unsupported unpack state";
+    } else if (umul64_overflow(h[1], h[2], &bytes) ||
+               umul64_overflow(bytes, 4, &bytes) || bytes % 4 ||
+               bytes / 4 > SGI_KONA_GL_DATA_MAX) {
+        reason = "payload exceeds model staging capacity";
+    }
+    if (reason) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused: %s;"
+                      " payload length unknown, stream recovery unsafe; header",
+                      reason);
+        for (unsigned k = 0; k < 20; k++) {
+            qemu_log_mask(LOG_UNIMP, " 0x%08" PRIx32, h[k]);
+        }
+        qemu_log_mask(LOG_UNIMP, "\n");
+        return 0;
+    }
+    return bytes / 4;
+}
 
 static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
                                            const uint32_t *h)
 {
-    const SGIKonaGLPipe *p = &s->gl_pipe[i];
-    uint32_t bytes = sgi_kona_gl_pixel_bytes(h[3], h[4]);
-    uint64_t row = (uint64_t)(p->unpack_row_length ? p->unpack_row_length :
-                              h[1]) * bytes;
-    uint64_t stride = ROUND_UP(row, MAX(p->unpack_alignment, 1));
-    uint64_t words;
+    const SGIKonaGLPipe *p;
+    uint32_t bytes;
+    uint64_t row, stride, words;
+
+    if (h[3] == 5 || h[4] == 1 || i == SGI_KONA_CONTEXT_NONE) {
+        return sgi_kona_gl_tex_native_words(s, i, h);
+    }
+    bytes = sgi_kona_gl_pixel_bytes(h[3], h[4]);
+    if (!bytes) {
+        return sgi_kona_gl_tex_native_words(s, i, h);
+    }
+    p = &s->gl_pipe[i];
+    row = (uint64_t)(p->unpack_row_length ? p->unpack_row_length :
+                     h[1]) * bytes;
+    stride = ROUND_UP(row, MAX(p->unpack_alignment, 1));
 
     if (h[6]) {
         return 0;
@@ -4021,8 +4059,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         sgi_kona_gl_pop_lights_open(s, args[0]);
         return;
     case SGI_KONA_CMD_GL_TEX_LOAD:
-        words = i == SGI_KONA_CONTEXT_NONE ? 0 :
-                sgi_kona_gl_tex_load_words(s, i, args);
+        words = sgi_kona_gl_tex_load_words(s, i, args);
         if (words) {
             sgi_kona_gl_data_open(s, selector, words);
         }
@@ -6708,6 +6745,22 @@ static void sgi_kona_test_get_gc(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/* Host-only staging inspection uses the existing x-test-gc-index cursor. */
+static void sgi_kona_test_get_gl_data_word(Object *obj, Visitor *v,
+                                          const char *name, void *opaque,
+                                          Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    uint32_t value;
+
+    if (s->test_gc_index >= SGI_KONA_GL_DATA_MAX) {
+        error_setg(errp, "GL staging index exceeds model capacity");
+        return;
+    }
+    value = s->gl_data[s->test_gc_index];
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
@@ -6719,6 +6772,10 @@ static void sgi_kona_instance_init(Object *obj)
         sgi_gl_init(&s->gl_attrib[k], k / SGI_KONA_GL_ATTRIB_DEPTH);
     }
 
+    object_property_add_uint32_ptr(obj, "x-test-gl-data-have", &s->gl_data_have,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add(obj, "x-test-gl-data-word", "uint32",
+                        sgi_kona_test_get_gl_data_word, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
