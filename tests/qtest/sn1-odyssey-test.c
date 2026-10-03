@@ -8829,18 +8829,27 @@ static void texture_adapter_upload(QTestState *qts, uint32_t base,
     upload_end(qts);
 }
 
-static void texture_adapter_bind(QTestState *qts, uint32_t base,
-                                  uint32_t sampler, uint32_t env)
+static void texture_adapter_bind_env(QTestState *qts, uint32_t base,
+                                      uint32_t sampler,
+                                      const uint32_t env[5])
 {
     const uint32_t words[] = {
         0x00010405, 0x10,
         0x00011c16, 0x08000420, 2, 2, 1, sampler, 0, 0,
-        0x0001141b, env, 0, 0, 0, 0,
+        0x0001141b, env[0], env[1], env[2], env[3], env[4],
         0x00010e80, base, 0, 0,
         0x00010406, 0,
     };
 
     push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void texture_adapter_bind(QTestState *qts, uint32_t base,
+                                  uint32_t sampler, uint32_t env)
+{
+    const uint32_t words[] = { env, 0, 0, 0, 0 };
+
+    texture_adapter_bind_env(qts, base, sampler, words);
 }
 
 static void texture_adapter_point(QTestState *qts, int x, int y,
@@ -9565,6 +9574,92 @@ static void test_texture_adapter_components_environment(void)
     texture_adapter_point(qts, 20, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, ODSY_PLANE_YELLOW);
     qtest_quit(qts);
+}
+
+static void test_texture_adapter_blend_environment(void)
+{
+    const uint32_t white[4] = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    };
+    const uint32_t mixed_env[5] = {
+        4, 0x00111222, 0x00333444, 0, 0,
+    };
+    const uint32_t changed_env[5] = {
+        4, 0x00000fff, 0x00800000, 0, 0,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload(qts, 0x181000, white);
+    texture_adapter_window(qts);
+    texture_adapter_bind_env(qts, 0x181000, 0x11000000, mixed_env);
+    texture_adapter_point(qts, 10, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x112233ff);
+
+    texture_adapter_bind_env(qts, 0x181000, 0x11000000, changed_env);
+    texture_adapter_point(qts, 11, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x00ff80ff);
+
+    for (unsigned field = 0; field < 4; field++) {
+        uint32_t invalid_env[5] = { 4, 0, 0, 0, 0 };
+        uint32_t x = 12 + field;
+
+        switch (field) {
+        case 0:
+            invalid_env[1] = 0x01000000;
+            break;
+        case 1:
+            invalid_env[2] = 0x01000000;
+            break;
+        case 2:
+            invalid_env[3] = 1;
+            break;
+        case 3:
+            invalid_env[4] = 1;
+            break;
+        }
+        odsy_test_pixel_write(qts, x, 10, 0xa1b2c3d4);
+        texture_adapter_bind_env(qts, 0x181000, 0x11000000, invalid_env);
+        texture_adapter_point(qts, x, 10, 0.25f, 0.25f);
+        g_assert_cmphex(odsy_test_pixel(qts, x, 10), ==, 0xa1b2c3d4);
+    }
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_blend_state_restore(void)
+{
+    const uint32_t white[4] = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    };
+    const uint32_t env[5] = { 4, 0x00111222, 0x00333444, 0, 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-texture-blend-state-XXXXXX",
+                             &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_adapter_upload(from, 0x181000, white);
+    texture_adapter_window(from);
+    texture_adapter_bind_env(from, 0x181000, 0x11000000, env);
+    texture_adapter_point(from, 10, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(from, 10, 10), ==, 0x112233ff);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    /* No sampler or environment reupload: family state rebuilds the draw. */
+    texture_adapter_point(to, 11, 10, 0.75f, 0.75f);
+    g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x112233ff);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void test_texture_adapter_storage_dimensions(void)
@@ -11775,6 +11870,10 @@ int main(int argc, char **argv)
                    test_texture_adapter_binding_filters_matrix);
     qtest_add_func("sn1/odyssey/texture-adapter/components-environment",
                    test_texture_adapter_components_environment);
+    qtest_add_func("sn1/odyssey/texture-adapter/blend-environment",
+                   test_texture_adapter_blend_environment);
+    qtest_add_func("sn1/odyssey/texture-adapter/blend-state-restore",
+                   test_texture_adapter_blend_state_restore);
     qtest_add_func("sn1/odyssey/texture-adapter/storage-dimensions",
                    test_texture_adapter_storage_dimensions);
     qtest_add_func("sn1/odyssey/texture-adapter/state-restore",
