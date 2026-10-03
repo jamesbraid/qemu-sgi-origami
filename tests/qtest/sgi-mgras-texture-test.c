@@ -269,7 +269,7 @@ static void test_gl_texture_color_table(gconstpointer data)
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
 
     tex_color_table_upload(t, 3 * TEX_COLOR_TABLE_ENTRIES);
-    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | 0x180);
     tex_color_table_mode(t, true);
     tex_quad(t);
     g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x7cd765);

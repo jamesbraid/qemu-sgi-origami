@@ -424,8 +424,6 @@ typedef struct SGIMgrasTexture {
     uint32_t color_table_selector, color_table_written;
     uint32_t color_table_active, color_table_valid;
     uint8_t color_table_data[SGI_MGRAS_TEXTURE_COLOR_TABLE_BYTES];
-    uint32_t color_table_rgba[SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES];
-    SGIGLTexColorTable color_table;
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.
