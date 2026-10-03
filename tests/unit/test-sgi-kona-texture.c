@@ -431,12 +431,12 @@ static void test_native_chunks(void)
     a = save(&src);
     g_assert_true(load(a, &dst));
     /* Missing texels and unused bitmap bits cannot carry forged state. */
-    stl_be_p(a->data + 328, 1);
+    stl_be_p(a->data + 332, 1);
     g_assert_false(load(a, &dst));
-    stl_be_p(a->data + 328, 0);
-    a->data[344] |= 0x80;
+    stl_be_p(a->data + 332, 0);
+    a->data[348] |= 0x80;
     g_assert_false(load(a, &dst));
-    a->data[344] = 0;
+    a->data[348] = 0;
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
@@ -589,8 +589,9 @@ static void test_native_migration(void)
     g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
     assert_image(&dst, red, 1, 1);
     /* Version four had complete native images and no coverage/format fields. */
+    g_byte_array_remove_range(a, 328, 4);
     g_byte_array_remove_range(a, 332, 1);
-    g_byte_array_set_size(a, a->len - 64);
+    g_byte_array_set_size(a, a->len - 80);
     stl_be_p(a->data, 4);
     g_assert_true(load(a, &dst));
     g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
@@ -666,7 +667,7 @@ static void test_native_sampling(void)
     a = save(&src);
     g_assert_true(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
-    stl_be_p(a->data + a->len - 72, 3);
+    stl_be_p(a->data + a->len - 88, 3);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
     g_byte_array_unref(a);
@@ -842,8 +843,8 @@ static void test_sharpen_curve_sampling(void)
     im = sgi_kona_texture_resolve(&dst);
     g_assert_true(im->read_filter_weight(im->opaque, -7, &weight));
     g_assert_cmpfloat(weight, ==, 0.5);
-    /* Version eight appends object fields20 and detail binding28. */
-    stl_be_p(a->data + a->len - 188, SGI_KONA_TEXTURE_CURVE_SLOTS);
+    /* The curve slot precedes the newer object fields and detail binding. */
+    stl_be_p(a->data + a->len - 204, SGI_KONA_TEXTURE_CURVE_SLOTS);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0xc0c0c0);
     g_byte_array_unref(a);
@@ -852,6 +853,7 @@ static void test_sharpen_curve_sampling(void)
     g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
     a = save(&src);
     g_byte_array_set_size(a, a->len - 28);
+    g_byte_array_remove_range(a, a->len - 152, 16);
     g_byte_array_remove_range(a, a->len - 156, 20);
     g_byte_array_remove_range(a, a->len - 140, 4);
     stl_be_p(a->data, 6);
@@ -913,7 +915,7 @@ static void test_native_internal_format(void)
     g_assert_true(load(a, &dst));
     g_assert_cmphex(texel(&dst, 0, 0), ==, 0x806040ff);
     /* One object, no curves; new fields precede the global detail binding. */
-    stl_be_p(a->data + a->len - 52, 2);
+    stl_be_p(a->data + a->len - 68, 2);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(texel(&dst, 0, 0), ==, 0x806040ff);
     g_byte_array_unref(a);
@@ -924,9 +926,22 @@ static void test_native_internal_format(void)
     im = sgi_kona_texture_resolve(&dst);
     g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
     g_assert_cmpfloat_with_epsilon(out[3], 32.0 / 255, .000001);
+    /* Version eight has logical formats, but no volume or R sampler state. */
+    a = save(&src);
+    g_byte_array_remove_range(a, 328, 4);
+    g_byte_array_remove_range(a, a->len - 48, 16);
+    stl_be_p(a->data, 8);
+    g_assert_true(load(a, &dst));
+    g_assert_cmphex(texel(&dst, 0, 0), ==, 0x806040ff);
+    g_assert_false(sgi_kona_texture_resolve(&dst)->volume);
+    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->wrap_r, ==, SGI_GL_REPEAT);
+    g_assert_cmpfloat(sgi_kona_texture_resolve(&dst)->lod_scale_r, ==, 1);
+    g_byte_array_unref(a);
     /* Version seven had no logical override or detail binding. */
     a = save(&src);
     g_byte_array_set_size(a, a->len - 28);
+    g_byte_array_remove_range(a, 328, 4);
+    g_byte_array_remove_range(a, a->len - 20, 16);
     g_byte_array_remove_range(a, a->len - 24, 20);
     stl_be_p(a->data, 7);
     g_assert_true(load(a, &dst));
@@ -1063,6 +1078,299 @@ static void test_native_detail(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+static void native_volume_setup(SGIKonaTextureState *s,
+                                 SGIKonaTextureParams *p)
+{
+    uint32_t table[16];
+
+    sgi_kona_texture_init(s);
+    sgi_kona_texture_defaults(p);
+    p->min_filter = p->mag_filter = SGI_GL_NEAREST;
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = UINT32_MAX;
+    }
+    table[0] = 23;
+    table[1] = 47;
+    g_assert_true(sgi_kona_texture_native_table(s, 9, table));
+    g_assert_true(sgi_kona_texture_native_volume_dimensions(s, 9, 2, 2, 2));
+    g_assert_true(sgi_kona_texture_bind(s, 9, p));
+}
+
+static uint32_t native_voxel(SGIKonaTextureState *s, unsigned level,
+                              unsigned x, unsigned y, unsigned z)
+{
+    const SGIGLTexImage *im = sgi_kona_texture_resolve(s);
+    const SGIGLTexLevel *l = &im->pyramid->levels[level];
+    uint32_t rgba;
+
+    g_assert_true(im->volume);
+    g_assert_nonnull(l->read_texel_3d);
+    g_assert_true(l->read_texel_3d(l->opaque, l->level, x, y, z, &rgba));
+    return rgba;
+}
+
+static void test_native_volume_slices(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_3D, [1] = 1, [2] = 2, [9] = 0x30,
+        [10] = 9, [11] = 1, [13] = 1, [14] = 1, [15] = 1,
+        [16] = 0x333, [17] = 0x40, [18] = 23, [19] = 47,
+    };
+    const uint32_t right[] = { 0x00ff00ff, 0x0000ffff };
+    const uint32_t left[] = { 0xffffffff, 0x808080ff };
+    const uint32_t plane[] = { 0xff0000ff, 0xff0000ff,
+                               0xff0000ff, 0xff0000ff };
+    GByteArray *a;
+    uint64_t bytes;
+
+    native_volume_setup(&src, &p);
+    sgi_kona_texture_init(&dst);
+    /* A high slice arriving first retains holes in all earlier slices. */
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, right,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_cmpuint(sgi_kona_texture_resolve(&src)->pyramid->count, ==, 0);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmpuint(dst.bytes, ==, src.bytes);
+    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->pyramid->count, ==, 0);
+    /* A nonzero uncovered voxel cannot be restored from a stream. */
+    stl_be_p(a->data + 332, 1);
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    h[1] = 2;
+    h[11] = 0;
+    h[15] = 0;
+    g_assert_true(sgi_kona_texture_native_upload(&dst, h, plane,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    h[1] = 1;
+    h[13] = 0;
+    h[15] = 1;
+    g_assert_true(sgi_kona_texture_native_upload(&dst, h, left,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->pyramid->count, ==, 1);
+    for (unsigned y = 0; y < 2; y++) {
+        for (unsigned x = 0; x < 2; x++) {
+            g_assert_cmphex(native_voxel(&dst, 0, x, y, 0), ==, plane[0]);
+            g_assert_cmphex(native_voxel(&dst, 0, x, y, 1), ==,
+                            x ? right[y] : left[y]);
+        }
+    }
+    bytes = dst.bytes;
+    h[2] = 1;
+    h[14] = 0;
+    g_assert_true(sgi_kona_texture_native_upload(&dst, h, red,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_cmpuint(dst.bytes, ==, bytes);
+    g_assert_cmphex(native_voxel(&dst, 0, 0, 0, 1), ==, red[0]);
+    g_assert_cmphex(native_voxel(&dst, 0, 0, 1, 1), ==, left[1]);
+    g_assert_cmphex(native_voxel(&dst, 0, 1, 0, 1), ==, right[0]);
+    a = save(&dst);
+    g_assert_true(load(a, &src));
+    g_assert_cmphex(native_voxel(&src, 0, 0, 0, 1), ==, red[0]);
+    stl_be_p(a->data + 328, UINT32_MAX);
+    g_assert_false(load(a, &src));
+    g_assert_cmphex(native_voxel(&src, 0, 0, 0, 1), ==, red[0]);
+    g_byte_array_unref(a);
+    a = save(&dst);
+    stl_be_p(a->data + 292, 2);
+    g_assert_false(load(a, &src));
+    g_byte_array_unref(a);
+    a = save(&dst);
+    stl_be_p(a->data + a->len - 48, 3);
+    g_assert_false(load(a, &src));
+    g_byte_array_unref(a);
+    a = save(&dst);
+    stl_be_p(a->data + a->len - 44, 0);
+    g_assert_false(load(a, &src));
+    g_byte_array_unref(a);
+    g_assert_false(sgi_kona_texture_native_volume_dimensions(&src, 9, 2, 2, 3));
+    g_assert_false(sgi_kona_texture_native_volume_dimensions(&src, 9,
+                                                            4096, 4096, 2));
+    h[15] = UINT32_MAX;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    h[15] = 2;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    h[15] = 0;
+    h[17] = 0x20;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    h[17] = 0x40;
+    bytes = src.bytes;
+    h[16]++;
+    src.bytes = SGI_KONA_TEXTURE_BYTES;
+    g_assert_false(sgi_kona_texture_native_upload(&src, h, red,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    src.bytes = bytes;
+    sgi_kona_texture_reset(&src);
+    g_assert_cmpuint(src.bytes, ==, 0);
+    g_assert_null(sgi_kona_texture_resolve(&src));
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
+typedef struct VolumeLinePixels {
+    unsigned count;
+    uint32_t last;
+} VolumeLinePixels;
+
+static void volume_line_store(void *opaque, SGIColourTarget target,
+                               int x, int y, uint32_t colour)
+{
+    VolumeLinePixels *pixels = opaque;
+
+    pixels->count++;
+    pixels->last = colour;
+}
+
+static void native_volume_r_derivatives(SGIKonaTextureState *s,
+                                         SGIKonaTextureParams *p)
+{
+    SGIGLContext c;
+    SGIGLDrawable drawable = {
+        .bound = true, .clip = { .n = 1, .r[0] = { 0, 0, 4, 4 } },
+    };
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "unit test",
+    };
+    float vertices[2][SGI_GL_VERTEX_FLOATS] = { 0 };
+    VolumeLinePixels pixels;
+    SGIRasterTarget target = { .store_colour = volume_line_store,
+                              .opaque = &pixels };
+    SGIGLDraw draw = { .mode = SGI_GL_LINES, .count = 2,
+                      .vertices = &vertices[0][0] };
+
+    sgi_gl_init(&c, 0);
+    sgi_gl_set_drawable(&c, &drawable);
+    c.cur.viewport[2] = c.cur.viewport[3] = 4;
+    c.cur.texture_3d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    draw.state = &c.cur;
+    for (unsigned i = 0; i < 2; i++) {
+        vertices[i][0] = i ? .5 : -.5;
+        vertices[i][3] = 1;
+        vertices[i][4] = vertices[i][5] = vertices[i][6] = vertices[i][7] = 1;
+        vertices[i][SGI_GL_V_TEXCOORD] = .5;
+        vertices[i][SGI_GL_V_TEXCOORD + 1] = .5;
+        vertices[i][SGI_GL_V_TEXCOORD + 2] = i;
+        vertices[i][SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+    p->min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
+    p->mag_filter = SGI_GL_NEAREST;
+    p->min_lod = -1000;
+    p->max_lod = 1000;
+    for (unsigned strong = 0; strong < 2; strong++) {
+        p->lod_scale_r = strong ? 4 : 1;
+        g_assert_true(sgi_kona_texture_bind(s, 9, p));
+        target.texture = sgi_kona_texture_resolve(s);
+        pixels = (VolumeLinePixels) { 0 };
+        sgi_soft_draw(&rules, &target, &draw);
+        g_assert_cmpuint(pixels.count, >, 0);
+        if (strong) {
+            g_assert_cmphex(pixels.last, ==, 0x0000ff);
+        } else {
+            g_assert_cmphex(pixels.last, !=, 0x0000ff);
+        }
+    }
+    sgi_gl_cleanup(&c);
+}
+
+static void test_native_volume_sampling(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_3D, [1] = 2, [2] = 2, [9] = 0x30,
+        [10] = 9, [13] = 1, [14] = 1,
+        [16] = 0x333, [17] = 0x40, [18] = 23, [19] = 47,
+    };
+    const uint32_t red_plane[] = { 0xff0000ff, 0xff0000ff,
+                                   0xff0000ff, 0xff0000ff };
+    const uint32_t green_plane[] = { 0x00ff00ff, 0x00ff00ff,
+                                     0x00ff00ff, 0x00ff00ff };
+    const uint32_t blue[] = { 0x0000ffff };
+    SGIGLDrawState state = { .texture_3d = true,
+                            .texture_env_mode = SGI_GL_REPLACE };
+    const float color[4] = { 1, 1, 1, 1 };
+    float coord[4] = { .5, .5, .25, 1 }, out[4];
+    const SGIGLTexImage *im;
+    GByteArray *a;
+
+    native_volume_setup(&src, &p);
+    sgi_kona_texture_init(&dst);
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, red_plane,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    h[15] = 1;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, green_plane,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    /* Identical tile exponents do not identify the logical mipmap level. */
+    h[1] = h[2] = 1;
+    h[13] = h[14] = h[15] = 0;
+    h[17] |= 8;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, blue,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_cmpuint(im->pyramid->count, ==, 2);
+    g_assert_cmpuint(im->pyramid->levels[0].depth, ==, 2);
+    g_assert_cmpuint(im->pyramid->levels[1].depth, ==, 1);
+    g_assert_cmphex(native_voxel(&src, 1, 0, 0, 0), ==, blue[0]);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    coord[2] = 2.75;
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[1], ==, 1);
+    p.min_filter = p.mag_filter = SGI_GL_LINEAR;
+    p.wrap_r = SGI_GL_CLAMP_TO_EDGE;
+    p.lod_scale_r = 2;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_cmpfloat(im->lod_scale_r, ==, 2);
+    coord[2] = -.5;
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    coord[2] = .5;
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[0], ==, .5);
+    g_assert_cmpfloat(out[1], ==, .5);
+    p.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
+    p.min_lod = p.max_lod = 1;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[2], ==, 1);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    im = sgi_kona_texture_resolve(&dst);
+    g_assert_cmpfloat(im->lod_scale_r, ==, 2);
+    g_assert_cmpuint(im->wrap_r, ==, SGI_GL_CLAMP_TO_EDGE);
+    g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[2], ==, 1);
+    g_byte_array_unref(a);
+    native_volume_r_derivatives(&src, &p);
+    p.lod_scale_r = NAN;
+    g_assert_false(sgi_kona_texture_bind(&src, 9, &p));
+    /* A second key matching the same pair/parity/dimensions refuses drawing. */
+    p.min_filter = p.mag_filter = SGI_GL_NEAREST;
+    p.lod_scale_r = 1;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    h[16]++;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, blue,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    im = sgi_kona_texture_resolve(&src);
+    out[0] = .123f;
+    g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord, color, out));
+    g_assert_cmpfloat(out[0], ==, .123f);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 static void test_filter_curve_budget(void)
 {
     SGIKonaTextureState s;
@@ -1150,6 +1458,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-internal-format",
                     test_native_internal_format);
     g_test_add_func("/sgi/kona/texture/native-detail", test_native_detail);
+    g_test_add_func("/sgi/kona/texture/native-volume/slices",
+                    test_native_volume_slices);
+    g_test_add_func("/sgi/kona/texture/native-volume/sampling",
+                    test_native_volume_sampling);
     g_test_add_func("/sgi/kona/texture/native-migration",
                     test_native_migration);
     g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
