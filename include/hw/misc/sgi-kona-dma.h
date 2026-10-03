@@ -24,7 +24,7 @@
  * that arrives while an X pixel write opened under its DMA mode bit waits
  * for its rows is the X server's image: its bytes, read through the XG
  * map RAM, feed that write (sgi_kona_x_image_dma()). With neither, the
- * bytes go to the qtest framebuffer placement below.
+ * packet is logged without transferring bytes or posting completion.
  *
  * Every transfer is an SGIPixelDMA (hw/display/sgi/pixel-dma.c) against
  * the board memory, so the shared layer resolves the guest pages, bounds
@@ -37,11 +37,11 @@
  *
  *   - The push register at +0x80007c. The kernel FIFO port's placement
  *     is unresolved: the driver's +0x7c could name three places.
- *   - The framebuffer destination of a packet with neither a record nor
- *     an X pixel write waiting. No packet word names one, so such a
- *     transfer lands at the qtest-set flat pixel offset
- *     x-test-dma-fb-offset, counted from the top display line's left
- *     end, one source line per display line going down, and is logged.
+ *   - The synthetic framebuffer transfer requires the host-only
+ *     x-test-dma-framebuffer opt-in, disabled by default. Its destination
+ *     x-test-dma-fb-offset counts from the top display line's left end,
+ *     one source line per display line going down. No guest command
+ *     enables this test interface.
  *   - The reverse direction, framebuffer to guest, which no guest sends:
  *     x-test-dma-reverse, qtest only, reading pixels resolved by their
  *     tags as the scanout shows them.
@@ -200,6 +200,7 @@ typedef struct SGIKonaDma {
      * test_completions how many it has published, read through the
      * x-test-dma-last-* and x-test-dma-completions properties.
      */
+    bool test_framebuffer;
     bool test_reverse;
     uint32_t test_fb_offset;
     uint32_t test_last_kind;

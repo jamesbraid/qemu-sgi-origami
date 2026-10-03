@@ -163,6 +163,7 @@ static uint32_t kona_list_word(QTestState *s, uint32_t at)
 
 static void kona_set_dma_fb_offset(QTestState *s, uint32_t offset)
 {
+    qtest_qom_set_bool(s, KONA_QOM_PATH, "x-test-dma-framebuffer", true);
     kona_qom_set_uint(s, "x-test-dma-fb-offset", offset);
 }
 
