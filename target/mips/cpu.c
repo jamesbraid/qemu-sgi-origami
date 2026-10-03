@@ -765,10 +765,6 @@ static TCGTBCPUState mips_get_tb_cpu_state(CPUState *cs)
     CPUMIPSState *env = cpu_env(cs);
     uint32_t flags = env->hflags & MIPS_HFLAG_TB_MASK;
 
-    if (env->timer_adjacent_pending) {
-        flags |= TB_FLAG_MIPS_TIMER_ADJACENT;
-    }
-
 #ifdef CONFIG_USER_ONLY
     if (!cs->prctl_unalign_sigbus) {
         flags |= TB_FLAG_MIPS_FIXADE;

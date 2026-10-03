@@ -4414,10 +4414,7 @@ static void gen_trap(DisasContext *ctx, uint32_t opc,
 static void gen_goto_tb(DisasContext *ctx, unsigned tb_slot_idx,
                         target_ulong dest)
 {
-    if (ctx->timer_count_written) {
-        gen_save_pc(dest);
-        tcg_gen_exit_tb(NULL, 0);
-    } else if (translator_use_goto_tb(&ctx->base, dest)) {
+    if (translator_use_goto_tb(&ctx->base, dest)) {
         tcg_gen_goto_tb(tb_slot_idx);
         gen_save_pc(dest);
         tcg_gen_exit_tb(ctx->base.tb, tb_slot_idx);
@@ -6236,12 +6233,12 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_09:
         switch (sel) {
         case CP0_REG09__COUNT:
-            gen_helper_mtc0_count(tcg_env, arg);
             if (ctx->count_compare_adjacent_recovery) {
-                ctx->timer_count_written = true;
-                gen_save_pc(ctx->base.pc_next + 4);
-                ctx->base.is_jmp = DISAS_EXIT;
+                target_ulong next_pc = (ctx->hflags & MIPS_HFLAG_BMASK) ?
+                                       ctx->btarget : (ctx->base.pc_next + 4);
+                gen_save_pc(next_pc);
             }
+            gen_helper_mtc0_count(tcg_env, arg);
             register_name = "Count";
             break;
         default:
@@ -6261,6 +6258,9 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_11:
         switch (sel) {
         case CP0_REG11__COMPARE:
+            if (ctx->count_compare_adjacent_recovery) {
+                gen_save_pc(ctx->base.pc_next);
+            }
             gen_helper_mtc0_compare(tcg_env, arg);
             register_name = "Compare";
             break;
@@ -7688,13 +7688,13 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_09:
         switch (sel) {
         case CP0_REG09__COUNT:
+            if (ctx->count_compare_adjacent_recovery) {
+                target_ulong next_pc = (ctx->hflags & MIPS_HFLAG_BMASK) ?
+                                       ctx->btarget : (ctx->base.pc_next + 4);
+                gen_save_pc(next_pc);
+            }
             gen_helper_mtc0_count(tcg_env, arg);
             ctx->base.is_jmp = DISAS_STOP;
-            if (ctx->count_compare_adjacent_recovery) {
-                ctx->timer_count_written = true;
-                gen_save_pc(ctx->base.pc_next + 4);
-                ctx->base.is_jmp = DISAS_EXIT;
-            }
             register_name = "Count";
             break;
         default:
@@ -7714,6 +7714,9 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     case CP0_REGISTER_11:
         switch (sel) {
         case CP0_REG11__COMPARE:
+            if (ctx->count_compare_adjacent_recovery) {
+                gen_save_pc(ctx->base.pc_next);
+            }
             gen_helper_mtc0_compare(tcg_env, arg);
             register_name = "Compare";
             break;
@@ -15296,8 +15299,6 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->cmgcr = (env->CP0_Config3 >> CP0C3_CMGCR) & 1;
     /* Restore delay slot state from the tb context.  */
     ctx->hflags = tb_flags & MIPS_HFLAG_TB_MASK;
-    ctx->timer_adjacent_pending = tb_flags & TB_FLAG_MIPS_TIMER_ADJACENT;
-    ctx->timer_count_written = false;
     ctx->ulri = (env->CP0_Config3 >> CP0C3_ULRI) & 1;
     ctx->ps = ((env->active_fpu.fcr0 >> FCR0_PS) & 1) ||
              (env->insn_flags & (INSN_LOONGSON2E | INSN_LOONGSON2F));
@@ -15369,18 +15370,6 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         ctx->opcode = translator_ldl_end(env, &ctx->base, ctx->base.pc_next,
                                          mo_endian(ctx));
         insn_bytes = 4;
-        if (ctx->timer_adjacent_pending) {
-            bool compare = (MASK_CP0(ctx->opcode) == OPC_MTC0 ||
-                            MASK_CP0(ctx->opcode) == OPC_DMTC0) &&
-                           extract32(ctx->opcode, 11, 5) == CP0_REGISTER_11 &&
-                           extract32(ctx->opcode, 0, 3) == 0;
-
-            if (!compare) {
-                tcg_gen_st8_i32(tcg_constant_i32(0), tcg_env,
-                    offsetof(CPUMIPSState, timer_adjacent_pending));
-            }
-            ctx->timer_adjacent_pending = false;
-        }
         decode_opc(env, ctx);
     } else if (ctx->insn_flags & ASE_MICROMIPS) {
         ctx->opcode = translator_lduw_end(env, &ctx->base, ctx->base.pc_next,

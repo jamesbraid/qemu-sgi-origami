@@ -927,6 +927,7 @@ typedef struct CPUArchState {
      */
     uint32_t cp0_timer_ip7;
     bool timer_adjacent_pending;
+    target_ulong timer_adjacent_pc;
     uint32_t timer_adjacent_count;
     uint64_t timer_adjacent_start_ticks;
     uint64_t timer_adjacent_migration_age_ticks;
@@ -1420,7 +1421,6 @@ typedef struct CPUArchState {
                             MIPS_HFLAG_HWRENA_ULR)
 
 #define TB_FLAG_MIPS_FIXADE  0x40000000
-#define TB_FLAG_MIPS_TIMER_ADJACENT 0x80000000
     target_ulong btarget;        /* Jump / branch target               */
     target_ulong bcond;          /* Branch condition (if needed)       */
 

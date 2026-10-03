@@ -199,6 +199,7 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
             env->timer_adjacent_count = count;
             env->timer_adjacent_start_ticks =
                 clock_ns_to_ticks(cpu->count_clock, now_ns);
+            env->timer_adjacent_pc = env->active_tc.PC;
             env->timer_adjacent_pending = true;
         }
         /* Update timer timer */
@@ -233,7 +234,8 @@ void cpu_mips_store_count_guest(CPUMIPSState *env, uint32_t count)
 void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
 {
     bool matched = false;
-    bool adjacent = env->timer_adjacent_pending;
+    bool adjacent = env->timer_adjacent_pending &&
+                    (env->active_tc.PC == env->timer_adjacent_pc);
     uint32_t count = env->CP0_Count;
     uint32_t forward = 0;
     uint64_t elapsed = 0;

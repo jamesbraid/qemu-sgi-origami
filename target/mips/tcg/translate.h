@@ -55,8 +55,6 @@ typedef struct DisasContext {
     bool crcp;
     bool partial_lwr_preserves_upper;
     bool has_store_transaction;
-    bool timer_adjacent_pending;
-    bool timer_count_written;
     bool count_compare_adjacent_recovery;
 } DisasContext;
 
