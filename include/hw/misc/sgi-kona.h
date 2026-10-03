@@ -1093,6 +1093,14 @@ struct SGIKonaState {
      * property, fixed at realize.
      */
     SGIBoardMemory mem;
+    /* Independent desktop planes preserve the original memory layout. */
+    SGIBoardMemory desktop_mem;
+    bool desktop_state_used;
+    uint32_t desktop_map[256];
+    bool desktop_map_valid[256];
+    /* Diagnostic suppression is host state, rebuilt after reset/load. */
+    bool desktop_map_reported[256];
+    bool desktop_id_reported;
     uint32_t list_memory_size;
     uint32_t plane_front;
     uint32_t plane_back;

@@ -29,6 +29,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "hw/display/sgi/x-gc.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-link.h"
@@ -156,6 +157,46 @@ static uint32_t sgi_kona_x_color(SGIKonaState *s, uint32_t index)
     return sgi_kona_rgb10(entry);
 }
 
+/* Installed unsupported maps stay visible as black and log their raw entry. */
+static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
+                                      unsigned index, unsigned mode,
+                                      unsigned count)
+{
+    uint32_t raw = s->desktop_map[id];
+    unsigned base = (raw >> 7) & 0x1ffff;
+
+    if (((raw >> 3) & 15) != mode ||
+        base > SGI_KONA_X_COLOR_MAP_ENTRIES - count) {
+        if (!s->desktop_map_reported[id]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported desktop map "
+                          "%u raw=0x%08x\n", id, raw);
+            s->desktop_map_reported[id] = true;
+        }
+        return 0;
+    }
+    return sgi_kona_rgb10(s->x_color_map[base + index]);
+}
+
+static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
+                                            int x, int y)
+{
+    unsigned id = sgi_plane_load(&s->desktop_mem,
+                     sgi_board_memory_plane(&s->desktop_mem, 0), x, y) >> 2;
+
+    if (id >= ARRAY_SIZE(s->desktop_map)) {
+        if (!s->desktop_id_reported) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported display ID "
+                          "%u\n", id);
+            s->desktop_id_reported = true;
+        }
+        return 0;
+    }
+    if (!s->desktop_map_valid[id]) {
+        return sgi_kona_x_color(s, word);
+    }
+    return sgi_kona_desktop_color(s, id, word & 0xff, 7, 256);
+}
+
 /* A colour bank's plane and the plane of its tags; bank 0 or 1. */
 static uint32_t sgi_kona_bank_plane(SGIKonaState *s, unsigned bank)
 {
@@ -264,16 +305,51 @@ static uint32_t sgi_kona_bank_read(SGIKonaState *s, unsigned bank, int x,
     case SGI_KONA_TAG_COLOR_INDEX:
         return s->colormap[word & 0xff];
     case SGI_KONA_TAG_X_INDEX:
-        return sgi_kona_x_color(s, word);
+        return sgi_kona_desktop_index_color(s, word, x, y);
     default:
         return word;
     }
 }
 
+/* The first overlay is visible; the second retains pixels without scanout. */
+static uint32_t sgi_kona_desktop_compose(SGIKonaState *s, int x, int y,
+                                        uint32_t main)
+{
+    unsigned popup = sgi_plane_load(&s->desktop_mem,
+                       sgi_board_memory_plane(&s->desktop_mem, 3), x, y);
+    unsigned overlay = sgi_plane_load(&s->desktop_mem,
+                         sgi_board_memory_plane(&s->desktop_mem, 1), x, y);
+
+    if (popup) {
+        if (!s->desktop_map_valid[0x3f]) {
+            if (!s->desktop_map_reported[0x3f]) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: popup map not installed\n");
+                s->desktop_map_reported[0x3f] = true;
+            }
+            return 0;
+        }
+        return sgi_kona_desktop_color(s, 0x3f, popup & 3, 1, 4);
+    }
+    if (overlay) {
+        if (!s->desktop_map_valid[0x40]) {
+            if (!s->desktop_map_reported[0x40]) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: overlay map not installed\n");
+                s->desktop_map_reported[0x40] = true;
+            }
+            return 0;
+        }
+        return sgi_kona_desktop_color(s, 0x40, overlay & 0xff, 7, 256);
+    }
+    return main;
+}
+
 /* The pixel the display shows at plane (x, y), from the bank it shows. */
 uint32_t sgi_kona_fb_read(SGIKonaState *s, int x, int y)
 {
-    return sgi_kona_bank_read(s, sgi_kona_displayed_bank(s, x, y), x, y);
+    return sgi_kona_desktop_compose(s, x, y,
+             sgi_kona_bank_read(s, sgi_kona_displayed_bank(s, x, y), x, y));
 }
 
 /* A direct-colour word into the front bank at plane (x, y). */
@@ -310,6 +386,9 @@ static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         for (int x = r.x0; x <= r.x1; x++) {
             dst[x] = sgi_kona_bank_read(s, 1, x, row) & 0x00ffffff;
         }
+    }
+    for (unsigned x = 0; x < SGI_KONA_FB_WIDTH; x++) {
+        dst[x] = sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff;
     }
 }
 
@@ -4742,58 +4821,125 @@ static bool sgi_kona_x_clip_contains(SGIKonaState *s, int64_t x, int64_t y)
     return false;
 }
 
-/*
- * Fill [x1, x2) by [y1, y2), clipped to the screen and the X clip and
- * masked by the loaded stipple, into the front colour bank with the GC's
- * colour index, tagged as an X pixel, and mark the lines.
- *
- * Approximated: y counts down from the top display line, the X server's
- * convention, where the textport's wire y counts up; the stock guest's
- * first box covers the screen either way, and a guest fill of a box away
- * from the centre would tell the orientation. The model draws into the
- * front bank only, with no logic op or write mask.
- */
-static void sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
-                            int64_t x2, int64_t y2)
+/* Complete GC diagnostics retain unsupported semantic fields. */
+static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
 {
+    SGIXGCStatus status = sgi_x_gc_decode(s->x_gc, gc);
+
+    if (status == SGI_X_GC_OK && !gc->opaque_or_tiled) {
+        return true;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported X GC status %u:", status);
+    for (unsigned i = 0; i < SGI_KONA_X_GC_WORDS; i++) {
+        qemu_log_mask(LOG_UNIMP, " %08x", s->x_gc[i]);
+    }
+    qemu_log_mask(LOG_UNIMP, "\n");
+    return false;
+}
+
+/*
+ * Retain the existing clipped/stippled geometry and bank-zero model choice.
+ * Validate every accessed destination before any canonical word/tag store.
+ */
+static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
+                            int64_t x2, int64_t y2, bool commit)
+{
+    SGIBoardMemory *memory = &s->mem;
     const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
     const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
-    uint32_t index = sgi_kona_x_gc_index(s->x_gc);
+    uint32_t target_tag = SGI_KONA_TAG_X_INDEX;
+    SGIXGC gc;
     SGIKonaRect clip;
 
+    if (!sgi_kona_x_decode(s, &gc)) {
+        return false;
+    }
+    if (gc.target == SGI_X_GC_DID || gc.target == SGI_X_GC_OVERLAY0 ||
+        gc.target == SGI_X_GC_OVERLAY1 || gc.target == SGI_X_GC_POPUP) {
+        unsigned plane = gc.target == SGI_X_GC_DID ? 0 :
+                         gc.target == SGI_X_GC_OVERLAY0 ? 1 :
+                         gc.target == SGI_X_GC_OVERLAY1 ? 2 : 3;
+
+        memory = &s->desktop_mem;
+        front = sgi_board_memory_plane(memory, plane);
+        tag = NULL;
+    } else if (gc.target == SGI_X_GC_MAIN_RGB8) {
+        target_tag = SGI_KONA_TAG_DIRECT;
+    } else if (gc.target != SGI_X_GC_MAIN_CI8) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: X fill target %u unsupported\n",
+                      gc.target);
+        return false;
+    }
+    if (sgi_x_gc_noop(&gc)) {
+        return true;
+    }
     sgi_kona_x_clip(s, &clip);
     x1 = MAX(x1, clip.x1);
     y1 = MAX(y1, clip.y1);
     x2 = MIN(x2, clip.x2);
     y2 = MIN(y2, clip.y2);
     if (x1 >= x2 || y1 >= y2) {
-        return;
+        return true;
+    }
+    assert(bql_locked());
+    if (sgi_x_gc_needs_destination(&gc)) {
+        for (int y = y1; y < y2; y++) {
+            int row = SGI_KONA_FB_HEIGHT - 1 - y;
+
+            for (int x = x1; x < x2; x++) {
+                if (!sgi_kona_x_clip_contains(s, x, y) ||
+                    !sgi_kona_x_stipple_bit(s, x, y)) {
+                    continue;
+                }
+                if ((tag && sgi_plane_load(memory, tag, x, row) !=
+                            target_tag) ||
+                    sgi_plane_load(memory, front, x, row) > gc.width_mask) {
+                    qemu_log_mask(LOG_UNIMP, "sgi-kona: X fill incompatible "
+                                  "destination at (%d,%d)\n", x, y);
+                    return false;
+                }
+            }
+        }
+    }
+    if (!commit) {
+        return true;
     }
     for (int y = y1; y < y2; y++) {
-        /* The front plane is bottom-origin: display line y is this row. */
         int row = SGI_KONA_FB_HEIGHT - 1 - y;
+        bool changed = false;
 
         for (int x = x1; x < x2; x++) {
+            uint32_t old, value;
+
             if (!sgi_kona_x_clip_contains(s, x, y) ||
                 !sgi_kona_x_stipple_bit(s, x, y)) {
                 continue;
             }
-            sgi_plane_store(&s->mem, front, x, row, index);
-            sgi_plane_store(&s->mem, tag, x, row, SGI_KONA_TAG_X_INDEX);
+            old = sgi_plane_load(memory, front, x, row);
+            value = sgi_x_gc_apply(&gc, gc.foreground, old);
+            if (value != old || (tag && sgi_plane_load(memory, tag, x, row) !=
+                                          target_tag)) {
+                sgi_plane_store(memory, front, x, row, value);
+                if (tag) {
+                    sgi_plane_store(memory, tag, x, row, target_tag);
+                } else {
+                    s->desktop_state_used = true;
+                    if (gc.target == SGI_X_GC_DID) {
+                        s->desktop_id_reported = false;
+                    }
+                }
+                changed = true;
+            }
+        }
+        if (changed) {
+            sgi_scanout_invalidate_plane(&s->scanout, front, row, row);
         }
     }
-    sgi_scanout_invalidate_plane(&s->scanout, front,
-                                 SGI_KONA_FB_HEIGHT - y2,
-                                 SGI_KONA_FB_HEIGHT - 1 - y1);
+    return true;
 }
 
-/*
- * One X box, the words w0 = x1 << 16 | y1 and w1 = x2 << 16 | y2 with signed
- * 16-bit halves and an exclusive far corner, in absolute screen coordinates
- * (established from the senders). The X load position is not added: every
- * box sender sets it to 0, 0 first.
- */
-static void sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1)
+static bool sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1,
+                                 bool commit)
 {
     int x1 = (int16_t)(w0 >> 16);
     int y1 = (int16_t)w0;
@@ -4801,7 +4947,7 @@ static void sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1)
     int y2 = (int16_t)w1;
 
     trace_sgi_kona_x_box(x1, y1, x2, y2, sgi_kona_x_gc_index(s->x_gc));
-    sgi_kona_x_fill(s, x1, y1, x2, y2);
+    return sgi_kona_x_fill(s, x1, y1, x2, y2, commit);
 }
 
 /*
@@ -4812,7 +4958,8 @@ static void sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1)
  * list. The guest check is the greeter button's face (244, 299)-(308, 323)
  * taking the GC's colour after a position of 240, 295.
  */
-static void sgi_kona_x_fill_rect(SGIKonaState *s, uint32_t w0, uint32_t w1)
+static bool sgi_kona_x_fill_rect(SGIKonaState *s, uint32_t w0, uint32_t w1,
+                                  bool commit)
 {
     int64_t x = (int16_t)(w0 >> 16) + (int64_t)(int32_t)s->x_position[0];
     int64_t y = (int16_t)w0 + (int64_t)(int32_t)s->x_position[1];
@@ -4821,7 +4968,7 @@ static void sgi_kona_x_fill_rect(SGIKonaState *s, uint32_t w0, uint32_t w1)
 
     trace_sgi_kona_x_rect(x, y, width, height,
                           sgi_kona_x_gc_index(s->x_gc));
-    sgi_kona_x_fill(s, x, y, x + width, y + height);
+    return sgi_kona_x_fill(s, x, y, x + width, y + height, commit);
 }
 
 /*
@@ -4855,13 +5002,18 @@ static void sgi_kona_x_spans(SGIKonaState *s, uint32_t token,
                       n);
         return;
     }
-    for (uint32_t i = 0; i < n; i++) {
-        int x = (int16_t)(args[1 + i] >> 16);
-        int y = (int16_t)args[1 + i];
-        uint32_t width = args[1 + n + i];
+    for (unsigned pass = 0; pass < 2; pass++) {
+        for (uint32_t i = 0; i < n; i++) {
+            int x = (int16_t)(args[1 + i] >> 16);
+            int y = (int16_t)args[1 + i];
+            uint32_t width = args[1 + n + i];
 
-        trace_sgi_kona_x_span(x, y, width, index);
-        sgi_kona_x_fill(s, x, y, (int64_t)x + width, (int64_t)y + 1);
+            trace_sgi_kona_x_span(x, y, width, index);
+            if (!sgi_kona_x_fill(s, x, y, (int64_t)x + width,
+                                 (int64_t)y + 1, pass != 0)) {
+                return;
+            }
+        }
     }
 }
 
@@ -4904,61 +5056,50 @@ static void sgi_kona_x_box_data_drop(SGIKonaState *s, uint32_t next)
 static void sgi_kona_x_boxes(SGIKonaState *s, bool rects, const uint32_t *args,
                              unsigned argc)
 {
-    void (*fill)(SGIKonaState *, uint32_t, uint32_t) =
+    bool (*fill)(SGIKonaState *, uint32_t, uint32_t, bool) =
         rects ? sgi_kona_x_fill_rect : sgi_kona_x_fill_box;
 
     if (s->x_boxes_have & 1) {
         sgi_kona_x_box_data_drop(s, rects ? SGI_KONA_CMD_X_RECT :
                                          SGI_KONA_CMD_X_BOX);
     }
-    for (uint32_t i = 0; i + 1 < s->x_boxes_have; i += 2) {
-        fill(s, s->x_boxes[i], s->x_boxes[i + 1]);
+    for (unsigned pass = 0; pass < 2; pass++) {
+        for (uint32_t i = 0; i + 1 < s->x_boxes_have; i += 2) {
+            if (!fill(s, s->x_boxes[i], s->x_boxes[i + 1], pass != 0)) {
+                goto done;
+            }
+        }
+        for (unsigned i = 0; i + 1 < argc; i += 2) {
+            if (!fill(s, args[i], args[i + 1], pass != 0)) {
+                goto done;
+            }
+        }
     }
+done:
     s->x_boxes_have = 0;
-    for (unsigned i = 0; i + 1 < argc; i += 2) {
-        fill(s, args[i], args[i + 1]);
-    }
 }
 
-/* The cleared desktop subset permits only solid full-mask index copy. */
-static bool sgi_kona_x_point_gc(SGIKonaState *s)
-{
-    static const uint32_t forms[][7] = {
-        { 0x180c, 0x40001, 1, 6, 5, 1, 1 },
-        { 0xc, 1, 1, 6, 0, 1, 1 },
-    };
-    const uint32_t *gc = s->x_gc;
-
-    return !(gc[0] & ~0xff000) && gc[1] == 0x1ffe &&
-           gc[4] == 0xf00fff && !gc[5] &&
-           (!memcmp(gc + 6, forms[0], sizeof(forms[0])) ||
-            !memcmp(gc + 6, forms[1], sizeof(forms[1])));
-}
-
-static void sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
-                                  unsigned count)
+static bool sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
+                                   unsigned count, bool commit)
 {
     for (unsigned i = 0; i < count; i++) {
         int x = (int16_t)(words[i] >> 16);
         int y = (int16_t)words[i];
 
-        sgi_kona_x_fill(s, x, y, x + 1, y + 1);
+        if (!sgi_kona_x_fill(s, x, y, x + 1, y + 1, commit)) {
+            return false;
+        }
     }
+    return true;
 }
 
 static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
                               unsigned argc)
 {
-    if (!sgi_kona_x_point_gc(s)) {
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: unsupported X point GC:");
-        for (unsigned i = 0; i < SGI_KONA_X_GC_WORDS; i++) {
-            qemu_log_mask(LOG_UNIMP, " %08x", s->x_gc[i]);
-        }
-        qemu_log_mask(LOG_UNIMP, "\n");
-    } else {
-        sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have);
-        sgi_kona_x_point_words(s, args, argc);
+    if (sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have, false) &&
+        sgi_kona_x_point_words(s, args, argc, false)) {
+        sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have, true);
+        sgi_kona_x_point_words(s, args, argc, true);
     }
     s->x_boxes_have = 0;
 }
@@ -5712,8 +5853,19 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
                       selector);
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
-    case SGI_KONA_CMD_DISPLAY_MODE:
     case SGI_KONA_CMD_X_DID_MAP:
+        if (args[0] < ARRAY_SIZE(s->desktop_map)) {
+            s->desktop_map[args[0]] = args[1];
+            s->desktop_map_valid[args[0]] = true;
+            s->desktop_map_reported[args[0]] = false;
+            s->desktop_state_used = true;
+            sgi_scanout_invalidate_all(&s->scanout);
+        } else {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported desktop map "
+                          "ID %u raw=0x%08x\n", args[0], args[1]);
+        }
+        break;
+    case SGI_KONA_CMD_DISPLAY_MODE:
     case SGI_KONA_CMD_X_DID_CONFIG:
     case SGI_KONA_CMD_WG_FLUSH:
         /*
@@ -6863,6 +7015,25 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->arm_high_count = SGI_KONA_ARM_HIGH_WORDS;
 
     sgi_kona_board_memory_init(s);
+    /* RAW32 is model storage for DID16, two overlay16 planes and popup2. */
+    sgi_board_memory_init(&s->desktop_mem,
+                          (uint64_t)SGI_KONA_FB_WIDTH *
+                          SGI_KONA_FB_HEIGHT * 16);
+    for (unsigned i = 0; i < 4; i++) {
+        SGIPlane plane = {
+            .base = (uint64_t)i * SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 4,
+            .len = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * 4,
+            .width = SGI_KONA_FB_WIDTH,
+            .height = SGI_KONA_FB_HEIGHT,
+            .stride = SGI_KONA_FB_WIDTH * 4,
+            .format = SGI_PLANE_RAW,
+            .packing = SGI_PACK_LE_RED_LOW,
+            .bottom_origin = true,
+            .evidence = "model representation: logical desktop plane",
+        };
+
+        sgi_board_memory_add_plane(&s->desktop_mem, &plane, &error_abort);
+    }
     sgi_scanout_init(&s->scanout, DEVICE(s), &sgi_kona_head_ops, s);
     s->scanout.composite_cursor = true;
     sgi_scanout_set_mode(&s->scanout, &sgi_kona_scanout_mode);
@@ -6903,14 +7074,18 @@ static void sgi_kona_test_get_plane_word(Object *obj, Visitor *v,
                                          Error **errp)
 {
     SGIKonaState *s = SGI_KONA(obj);
+    SGIBoardMemory *memory = s->test_plane < s->mem.nplanes ?
+                             &s->mem : &s->desktop_mem;
+    unsigned id = s->test_plane < s->mem.nplanes ? s->test_plane :
+                  s->test_plane - s->mem.nplanes;
     const SGIPlane *p = NULL;
     uint32_t value = 0;
 
     if (DEVICE(obj)->realized) {
-        p = sgi_kona_plane(s, s->test_plane);
+        p = sgi_board_memory_plane(memory, id);
     }
     if (p) {
-        value = sgi_plane_load(&s->mem, p, s->test_pixel_x, s->test_pixel_y);
+        value = sgi_plane_load(memory, p, s->test_pixel_x, s->test_pixel_y);
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -6921,17 +7096,21 @@ static void sgi_kona_test_get_plane_digest(Object *obj, Visitor *v,
                                            Error **errp)
 {
     SGIKonaState *s = SGI_KONA(obj);
+    SGIBoardMemory *memory = s->test_plane < s->mem.nplanes ?
+                             &s->mem : &s->desktop_mem;
+    unsigned id = s->test_plane < s->mem.nplanes ? s->test_plane :
+                  s->test_plane - s->mem.nplanes;
     const SGIPlane *p = DEVICE(obj)->realized ?
-                        sgi_kona_plane(s, s->test_plane) : NULL;
+                        sgi_board_memory_plane(memory, id) : NULL;
     g_autofree char *digest = NULL;
 
-    if (!p || !s->mem.bytes || p->base > s->mem.bytes_len ||
-        p->len > s->mem.bytes_len - p->base) {
+    if (!p || !memory->bytes || p->base > memory->bytes_len ||
+        p->len > memory->bytes_len - p->base) {
         error_setg(errp, "Selected KONA plane has no device-backed storage");
         return;
     }
     digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
-                                          s->mem.bytes + p->base, p->len);
+                                          memory->bytes + p->base, p->len);
     visit_type_str(v, name, &digest, errp);
 }
 
@@ -7066,6 +7245,7 @@ static void sgi_kona_instance_finalize(Object *obj)
         sgi_gl_cleanup(&s->gl_attrib[k]);
     }
     sgi_board_memory_cleanup(&s->mem);
+    sgi_board_memory_cleanup(&s->desktop_mem);
     g_free(s->legacy_framebuffer);
     g_free(s->bitmap_payload);
     g_free(s->map_ram);
@@ -7245,6 +7425,12 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
      * phase.
      */
     memset(s->mem.bytes, 0, s->mem.bytes_len);
+    memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
+    s->desktop_state_used = false;
+    memset(s->desktop_map, 0, sizeof(s->desktop_map));
+    memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
+    memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
+    s->desktop_id_reported = false;
     sgi_scanout_reset(&s->scanout);
 }
 
@@ -7344,6 +7530,12 @@ static int sgi_kona_cursor_pre_load(void *opaque)
 {
     SGIKonaState *s = opaque;
 
+    memset(s->desktop_mem.bytes, 0, s->desktop_mem.bytes_len);
+    s->desktop_state_used = false;
+    memset(s->desktop_map, 0, sizeof(s->desktop_map));
+    memset(s->desktop_map_valid, 0, sizeof(s->desktop_map_valid));
+    memset(s->desktop_map_reported, 0, sizeof(s->desktop_map_reported));
+    s->desktop_id_reported = false;
     s->cursor_state_loaded = false;
     s->cursor_stage_words = 0;
     s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
@@ -7488,6 +7680,47 @@ static int sgi_kona_post_load(void *opaque, int version_id)
 DEFINE_VMSTATE_SGI_BOARD_MEMORY(vmstate_sgi_kona_board_memory,
                                 TYPE_SGI_KONA "/board-memory",
                                 SGIKonaState, mem);
+static bool sgi_kona_desktop_needed(void *opaque)
+{
+    return SGI_KONA(opaque)->desktop_state_used;
+}
+
+static int sgi_kona_desktop_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    for (unsigned plane = 0; plane < s->desktop_mem.nplanes; plane++) {
+        const SGIPlane *p = sgi_board_memory_plane(&s->desktop_mem, plane);
+        uint32_t mask = plane == 3 ? 3 : 0xffff;
+
+        for (unsigned y = 0; y < p->height; y++) {
+            for (unsigned x = 0; x < p->width; x++) {
+                if (sgi_plane_load(&s->desktop_mem, p, x, y) & ~mask) {
+                    return -EINVAL;
+                }
+            }
+        }
+    }
+    s->desktop_state_used = true;
+    sgi_scanout_invalidate_all(&s->scanout);
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_desktop = {
+    .name = TYPE_SGI_KONA "/desktop",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_desktop_needed,
+    .post_load = sgi_kona_desktop_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(desktop_mem, SGIKonaState, 0,
+                         vmstate_sgi_board_memory, SGIBoardMemory),
+        VMSTATE_UINT32_ARRAY(desktop_map, SGIKonaState, 256),
+        VMSTATE_BOOL_ARRAY(desktop_map_valid, SGIKonaState, 256),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 DEFINE_VMSTATE_SGI_SCANOUT(vmstate_sgi_kona_scanout, TYPE_SGI_KONA "/scanout",
                            SGIKonaState, scanout);
 
@@ -8210,6 +8443,7 @@ static const VMStateDescription vmstate_sgi_kona = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_kona_board_memory,
         &vmstate_sgi_kona_scanout,
+        &vmstate_sgi_kona_desktop,
         &vmstate_sgi_kona_x_server,
         &vmstate_sgi_kona_contexts,
         &vmstate_sgi_kona_dma,
