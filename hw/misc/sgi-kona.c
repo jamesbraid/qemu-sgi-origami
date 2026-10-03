@@ -5648,8 +5648,17 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
                   pack == SGI_KONA_X_PACK_OPAQUE_BITMAP;
 
     memcpy(raw, s->x_write_gc, sizeof(raw));
-    if ((setup[SGI_KONA_X_SETUP_MODE] & ~SGI_KONA_X_SETUP_MODE_DMA) ||
-        setup[SGI_KONA_X_SETUP_DST_PACK] != 1 ||
+    if (setup[SGI_KONA_X_SETUP_MODE] & ~SGI_KONA_X_SETUP_MODE_DMA) {
+        return false;
+    }
+    if (pack == 2) {
+        return setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
+               setup[SGI_KONA_X_SETUP_SHIFT] == 8 &&
+               sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
+               gc->target == SGI_X_GC_MAIN_RGB8 && raw[10] == 8 &&
+               !gc->opaque_or_tiled;
+    }
+    if (setup[SGI_KONA_X_SETUP_DST_PACK] != 1 ||
         setup[SGI_KONA_X_SETUP_SHIFT] != (bitmap ? 0 : 8) ||
         (!bitmap && pack != 0)) {
         return false;
@@ -5828,6 +5837,10 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
             return;
         }
         value = value ? gc->foreground : gc->background;
+    }
+    /* X RGB pixels occupy the low 24 bits of each big-endian word. */
+    if (gc->target == SGI_X_GC_MAIN_RGB8) {
+        value &= 0xffffff;
     }
     sgi_plane_store(&s->x_write_mem, source, x, y, value);
     sgi_plane_store(&s->x_write_mem, valid, x, y, 1);
@@ -6208,12 +6221,15 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
     SGIKonaRect r;
     g_autofree SGIKonaXPreparedPixel *prepared = NULL;
     SGIXGC gc;
+    uint8_t target_tag;
 
     if (!s->x_write_snapshot || s->x_write_refused ||
         s->x_pixel_remaining || !sgi_kona_x_write_decode(s, &gc) ||
         sgi_x_gc_noop(&gc)) {
         return;
     }
+    target_tag = gc.target == SGI_X_GC_MAIN_RGB8 ? SGI_KONA_TAG_DIRECT :
+                                                SGI_KONA_TAG_X_INDEX;
     sgi_kona_x_write_bounds(s, &r);
     if (r.x1 >= r.x2 || r.y1 >= r.y2) {
         return;
@@ -6241,14 +6257,14 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
             dest = sgi_plane_load(&s->mem, front, x, py);
             dest_tag = sgi_plane_load(&s->mem, tag, x, py);
             if (sgi_x_gc_needs_destination(&gc) &&
-                (dest_tag != SGI_KONA_TAG_X_INDEX || dest > gc.width_mask)) {
+                (dest_tag != target_tag || dest > gc.width_mask)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: X streamed write "
                               "incompatible destination (%u,%u)\n", x, y);
                 return;
             }
             pixel->value = sgi_x_gc_apply(&gc,
                 sgi_plane_load(&s->x_write_mem, source, x, y), dest);
-            pixel->tag = SGI_KONA_TAG_X_INDEX;
+            pixel->tag = target_tag;
             pixel->write = pixel->value != dest || pixel->tag != dest_tag;
         }
     }
@@ -8336,7 +8352,8 @@ static bool sgi_kona_x_write_state_valid(SGIKonaState *s)
                 DIV_ROUND_UP(pad + bpp * (col + 1), 32) : UINT64_MAX;
             bool arrived = candidate && end <= consumed;
 
-            if (present > 1 || value > 0xff || (!present && value) ||
+            if (present > 1 || value > (decoded ? gc.width_mask : 0xff) ||
+                (!present && value) ||
                 (present && (!arrived || sgi_x_gc_noop(&gc))) ||
                 (!s->x_write_refused && arrived && !sgi_x_gc_noop(&gc) &&
                  setup[SGI_KONA_X_SETUP_SRC_PACK] != SGI_KONA_X_PACK_BITMAP &&
