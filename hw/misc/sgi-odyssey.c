@@ -1786,6 +1786,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_MASK 0xff
 #define ODSY_IMAGE_CODE_CI 0x41
 #define ODSY_IMAGE_CODE_LUM 0x42
+#define ODSY_IMAGE_CODE_LUM_ALPHA 0x48
 #define ODSY_IMAGE_CODE_RGB 0x49
 #define ODSY_IMAGE_CODE_RGBA 0x4b
 #define ODSY_IMAGE_CODE_XRGB 0x4c
@@ -3593,6 +3594,9 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
     case ODSY_IMAGE_CODE_LUM:
         *rgba = odyssey_pack_pixel(b[0], b[0], b[0]);
         return true;
+    case ODSY_IMAGE_CODE_LUM_ALPHA:
+        *rgba = (odyssey_pack_pixel(b[0], b[0], b[0]) & ~0xffu) | b[1];
+        return true;
     case ODSY_IMAGE_CODE_CI:
         /* The raw index: scanout resolves it through the pixel's drawable. */
         *paint = b[0] != 0;
@@ -3616,6 +3620,8 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
     case ODSY_IMAGE_CODE_LUM:
     case ODSY_IMAGE_CODE_CI:
         return 1;
+    case ODSY_IMAGE_CODE_LUM_ALPHA:
+        return 2;
     default:
         return 0;
     }
@@ -3641,9 +3647,13 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  */
 static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 {
-    return code == ODSY_IMAGE_CODE_RGBA12 ?
-           fmt == ODSY_IMAGE_FMT_RGB || fmt == ODSY_IMAGE_FMT_RGBA16 :
-           fmt != ODSY_IMAGE_FMT_RGBA16;
+    if (code == ODSY_IMAGE_CODE_RGBA12) {
+        return fmt == ODSY_IMAGE_FMT_RGB || fmt == ODSY_IMAGE_FMT_RGBA16;
+    }
+    if (code == ODSY_IMAGE_CODE_LUM_ALPHA) {
+        return fmt == ODSY_IMAGE_FMT_CI;
+    }
+    return fmt != ODSY_IMAGE_FMT_RGBA16;
 }
 
 static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
@@ -4081,6 +4091,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     case 0x01000000:
         image->base_format = SGI_GL_LUMINANCE;
         break;
+    case 0x01800000:
+        image->base_format = SGI_GL_LUMINANCE_ALPHA;
+        break;
     case 0x00800000:
         image->base_format = SGI_GL_ALPHA;
         break;
@@ -4118,6 +4131,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         (s->tex_env[0] == 3 &&
          (image->base_format == SGI_GL_ALPHA ||
           image->base_format == SGI_GL_LUMINANCE ||
+          image->base_format == SGI_GL_LUMINANCE_ALPHA ||
           image->base_format == SGI_GL_INTENSITY)) ||
         (s->tex_env[0] == 4 &&
          (((s->tex_env[1] | s->tex_env[2]) & 0xff000000) ||
