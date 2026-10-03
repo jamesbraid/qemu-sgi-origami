@@ -4335,6 +4335,238 @@ static void test_cpu_number_read_is_per_cpu(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static const uint32_t ii_handshake_code[] = {
+        0x34032200, /* module-specific instruction result in v1 */
+        0x400a6000, /* mfc0 t2, Status */
+        0x354a0080, /* enable KX */
+        0x408a6000, /* mtc0 t2, Status */
+        0x000000c0, /* ehb */
+        0x3c109200, /* local register window */
+        0x0010803c, /* dsll32 s0, s0, 0 */
+        0x3c080100, /* PI base */
+        0x02088025, /* or s0, s0, t0 */
+        0xde110020, /* physical CPU slot */
+        0x34080060, /* LB offset high */
+        0x00084438, /* dsll t0, t0, 16 */
+        0x02084025, /* or t0, s0, t0 */
+        0xdd170000, /* live LB identity */
+        0x0017b83e, /* dsrl32 s7, s7, 0 */
+        0x32f7007f, /* andi s7, s7, 127 */
+        0x00179138, /* dsll s2, s7, 4 */
+        0x36521100, /* node-specific scratch signature */
+        0x3c080040, /* II offset */
+        0x02088025, /* or s0, s0, t0 */
+        0x36100158, /* II scratch 1 */
+        0x34130000, /* iteration count */
+        0x16200015, /* slot C uses the responding program */
+        0x00000000,
+        0x364a0000, /* ori t2, s2, expected phase */
+        0x34140001, /* phase marker */
+        0xde080000, /* ld t0, 0(s0) */
+        0x150afffe, /* bne t0, t2, poll */
+        0x00000000,
+        0x364a0001, /* ori t2, s2, next phase */
+        0xfe0a0000, /* sd t2, 0(s0) */
+        0x364a0003, /* ori t2, s2, expected phase */
+        0x34140004, /* phase marker */
+        0xde080000, /* ld t0, 0(s0) */
+        0x150afffe, /* bne t0, t2, poll */
+        0x00000000,
+        0x364a0002, /* ori t2, s2, next phase */
+        0xfe0a0000, /* sd t2, 0(s0) */
+        0x66730001, /* daddiu s3, s3, 1 */
+        0x34080040, /* iteration limit */
+        0x1668ffef, /* repeat A */
+        0x00000000,
+        0x10000013, /* A completes */
+        0x00000000,
+        0x364a0001, /* ori t2, s2, expected phase */
+        0x34140002, /* phase marker */
+        0xde080000, /* ld t0, 0(s0) */
+        0x150afffe, /* bne t0, t2, poll */
+        0x00000000,
+        0x364a0003, /* ori t2, s2, next phase */
+        0xfe0a0000, /* sd t2, 0(s0) */
+        0x364a0002, /* ori t2, s2, expected phase */
+        0x34140003, /* phase marker */
+        0xde080000, /* ld t0, 0(s0) */
+        0x150afffe, /* bne t0, t2, poll */
+        0x00000000,
+        0x364a0000, /* ori t2, s2, next phase */
+        0xfe0a0000, /* sd t2, 0(s0) */
+        0x66730001, /* daddiu s3, s3, 1 */
+        0x34080040, /* iteration limit */
+        0x1668ffef, /* repeat C */
+        0x00000000,
+        0x3415cafe, /* completion marker */
+        0x1000ffff, /* park */
+        0x00000000,
+    };
+
+/* Synthetic four-phase rendezvous; each node preserves its own signature. */
+static char *create_ii_handshake_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    const uint32_t code[] = {
+        0x400a6000, 0x354a0080, 0x408a6000, 0x000000c0,
+        0x3c089200, 0x0008403c, 0x3c090160, 0x01094025,
+        0xdd0b0000, 0x000b583e, 0x316b007f, /* live NASID */
+        0x000b5ef8, 0x3c0c0001, 0x358c002e, 0x016c5825,
+        0x408b1000, /* EntryLo0: own-node RAM, C5, D/V */
+        0x656c4000, 0x408c1800,
+        0x3c0c001f, 0x358ce000, 0x408c2800, /* 1 MiB pages */
+        0x3c16c000, 0x0016b03c, 0x3c0c1000, 0x02ccb025,
+        0x66cc0004, 0x40ac5000, /* EntryHi ASID 4 */
+        0x40800000, 0x000000c0, 0x42000002, 0x000000c0,
+        0x400c6000, 0x240dfffb, 0x018d6024, 0x408c6000,
+        0x000000c0, 0x02c00008, 0x00000000, /* jump to mapped RAM */
+    };
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image, 0x100000ff);
+    for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x400 + 4 * i, code[i]);
+    }
+    fd = g_file_open_tmp("sn1-ii-handshake-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_own_node_ii_handshake(const void *data)
+{
+    unsigned config = GPOINTER_TO_UINT(data);
+    unsigned own = config & 3;
+    bool routed = config & 4;
+    bool control = config & 8;
+    const char *topology = routed ?
+        "origin300-numalink-pci-expansion-experiment" : "origin300-two-chassis";
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[8];
+    QTestState *qts;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_ii_handshake_prom();
+    fd = g_file_open_tmp("sn1-ii-handshake-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S",
+        topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
+        prom, image);
+    stq_be_p(bytes, (uint64_t)own << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                                    bytes, sizeof(bytes)));
+    for (unsigned node = 0; node < 2; node++) {
+        unsigned nasid = node ? own : 0;
+        uint8_t program[sizeof(ii_handshake_code)];
+
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, sizeof(bytes)));
+        for (unsigned i = 0; i < ARRAY_SIZE(ii_handshake_code); i++) {
+            stl_be_p(program + 4 * i,
+                     ii_handshake_code[i] | (i == 0 ? nasid : 0));
+        }
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            ((uint64_t)nasid << 33) + 0x400000, program, sizeof(program)));
+        for (unsigned slice = 0; slice < 2; slice++) {
+            uint8_t readback[sizeof(program)];
+
+            g_assert_true(qtest_memread_cpu(qts, node * 2 + slice,
+                ((uint64_t)nasid << 33) + 0x400000,
+                readback, sizeof(readback)));
+            g_assert_cmpmem(readback, sizeof(readback),
+                            program, sizeof(program));
+            g_test_message("CPU%u planted instruction 0x%08x",
+                           node * 2 + slice, ldl_be_p(readback));
+        }
+        stq_be_p(bytes, 0x1100 + (node && !control ? own * 16 : 0));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8,
+            bytes, sizeof(bytes)));
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    if (control) {
+        /* A wrong signature must hold both participants before round one. */
+        wait_for_cpu_gpr(qts, 0, "s5", 0xcafe);
+        wait_for_cpu_gpr(qts, 2, "s4", 1);
+        wait_for_cpu_gpr(qts, 3, "s4", 2);
+        g_usleep(100000);
+        for (unsigned cpu = 2; cpu < 4; cpu++) {
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s3"), ==, 0);
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s5"), ==, 0);
+            g_test_message("wrong-signature CPU%u iterations 0 phase %" PRIu64,
+                           cpu, cpu_gpr(qts, cpu, "s4"));
+        }
+        stop_vm(qts);
+        stq_be_p(bytes, 0x1100 + own * 16);
+        g_assert_true(qtest_memwrite_cpu(qts, 2,
+            BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8,
+            bytes, sizeof(bytes)));
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    }
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+
+        while (cpu_gpr(qts, cpu, "s5") != 0xcafe &&
+               g_get_monotonic_time() < deadline) {
+            g_usleep(POLL_INTERVAL_US);
+        }
+    }
+    stop_vm(qts);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers %u", cpu);
+
+        g_test_message("handshake CPU%u %s", cpu, registers);
+    }
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        unsigned nasid = cpu / 2 ? own : 0;
+
+        g_test_message("%s NASID %u CPU %u slot %u iterations %" PRIu64
+                       " signature 0x%" PRIx64 " phase %" PRIu64
+                       " instruction result 0x%" PRIx64,
+                       topology, nasid, cpu, (cpu & 1) * 2,
+                       cpu_gpr(qts, cpu, "s3"), cpu_gpr(qts, cpu, "s2"),
+                       cpu_gpr(qts, cpu, "s4"), cpu_gpr(qts, cpu, "v1"));
+        g_assert_cmphex(cpu_gpr(qts, cpu, "v1"), ==, 0x2200 + nasid);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s5"), ==, 0xcafe);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s1"), ==, (cpu & 1) * 2);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s2"), ==, 0x1100 + nasid * 16);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s3"), ==, 64);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s4"), ==, cpu & 1 ? 3 : 4);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s0"), ==,
+                        UINT64_C(0x9200000001400158));
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s6"), ==,
+                        UINT64_C(0xc000000010000000));
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s7"), ==, nasid);
+        g_assert_true(qtest_memread_cpu(qts, cpu,
+            BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8,
+            bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, 0x1100 + nasid * 16);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_routed_cpu_number_read_is_per_cpu(const void *data)
 {
     g_autofree char *prom = NULL;
@@ -5479,6 +5711,17 @@ int main(int argc, char **argv)
                         test_boot_flash_nonraw_image);
     qtest_add_data_func("sn1/address-map/cpu-number-read-is-per-cpu", NULL,
                         test_cpu_number_read_is_per_cpu);
+    qtest_add_data_func("sn1/address-map/own-node-ii-handshake/direct-node1",
+                        GUINT_TO_POINTER(1), test_own_node_ii_handshake);
+    qtest_add_data_func("sn1/address-map/own-node-ii-handshake/direct-node2",
+                        GUINT_TO_POINTER(2), test_own_node_ii_handshake);
+    qtest_add_data_func("sn1/address-map/own-node-ii-handshake/routed-node1",
+                        GUINT_TO_POINTER(5), test_own_node_ii_handshake);
+    qtest_add_data_func("sn1/address-map/own-node-ii-handshake/routed-node2",
+                        GUINT_TO_POINTER(6), test_own_node_ii_handshake);
+    qtest_add_data_func(
+        "sn1/address-map/own-node-ii-handshake/routed-wrong-signature-control",
+        GUINT_TO_POINTER(14), test_own_node_ii_handshake);
     qtest_add_data_func("sn1/address-map/routed-cpu-number-read-is-per-cpu",
                         NULL, test_routed_cpu_number_read_is_per_cpu);
     qtest_add_data_func(
