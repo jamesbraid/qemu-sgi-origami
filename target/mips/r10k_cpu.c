@@ -9,16 +9,18 @@
 #include "internal.h"
 
 static void mips_r10000_prid_get(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
+                                 void *opaque, Error **errp)
 {
-    uint32_t value = MIPS_CPU(obj)->r10k_profile->r10000_prid;
+    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
+    uint32_t value = profile ? profile->r10000_prid : 0;
 
     visit_type_uint32(v, name, &value, errp);
 }
 
 static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
+                                 void *opaque, Error **errp)
 {
+    MIPSCPU *cpu = MIPS_CPU(obj);
     uint32_t value;
 
     if (DEVICE(obj)->realized) {
@@ -33,7 +35,11 @@ static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
                    name);
         return;
     }
-    MIPS_CPU(obj)->r10k_profile->r10000_prid = value;
+    if (!cpu->r10k_profile) {
+        error_setg(errp, "%s unavailable on this CPU model", name);
+        return;
+    }
+    cpu->r10k_profile->r10000_prid = value;
 }
 
 static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
@@ -42,19 +48,19 @@ static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
 };
 
 static void mips_r12000_property_get(Object *obj, Visitor *v,
-                                      const char *name, void *opaque,
-                                      Error **errp)
+                                     const char *name, void *opaque,
+                                     Error **errp)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
     unsigned int field = (uintptr_t)opaque;
-    uint32_t value = cpu->r10k_profile->values[field];
+    uint32_t value = cpu->r10k_profile ? cpu->r10k_profile->values[field] : 0;
 
     visit_type_uint32(v, name, &value, errp);
 }
 
 static void mips_r12000_property_set(Object *obj, Visitor *v,
-                                      const char *name, void *opaque,
-                                      Error **errp)
+                                     const char *name, void *opaque,
+                                     Error **errp)
 {
     MIPSCPU *cpu = MIPS_CPU(obj);
     unsigned int field = (uintptr_t)opaque;
@@ -65,6 +71,10 @@ static void mips_r12000_property_set(Object *obj, Visitor *v,
         return;
     }
     if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!cpu->r10k_profile) {
+        error_setg(errp, "%s unavailable on this CPU model", name);
         return;
     }
     cpu->r10k_profile->values[field] = value;
@@ -125,7 +135,8 @@ static void mips_r16000_experimental_get(Object *obj, Visitor *v,
                                          const char *name, void *opaque,
                                          Error **errp)
 {
-    bool value = MIPS_CPU(obj)->r10k_profile->r16000_experimental;
+    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
+    bool value = profile ? profile->r16000_experimental : false;
 
     visit_type_bool(v, name, &value, errp);
 }
@@ -144,6 +155,10 @@ static void mips_r16000_experimental_set(Object *obj, Visitor *v,
     if (!visit_type_bool(v, name, &value, errp)) {
         return;
     }
+    if (!cpu->r10k_profile) {
+        error_setg(errp, "%s unavailable on this CPU model", name);
+        return;
+    }
     cpu->r10k_profile->r16000_experimental = value;
 }
 
@@ -157,9 +172,12 @@ static void mips_r16000_property_get(Object *obj, Visitor *v,
 {
     R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
     unsigned int field = (uintptr_t)opaque;
-    uint32_t value = field == 0 ? profile->r16000_reset_mode :
-                                 profile->r16000_scache_bytes;
+    uint32_t value = 0;
 
+    if (profile) {
+        value = field == 0 ? profile->r16000_reset_mode :
+                             profile->r16000_scache_bytes;
+    }
     visit_type_uint32(v, name, &value, errp);
 }
 
@@ -177,6 +195,10 @@ static void mips_r16000_property_set(Object *obj, Visitor *v,
         return;
     }
     if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (!profile) {
+        error_setg(errp, "%s unavailable on this CPU model", name);
         return;
     }
     if (field == 0) {
@@ -240,9 +262,47 @@ static bool mips_r16000_validate(MIPSCPU *cpu, Error **errp)
     return false;
 }
 
+void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
+{
+    const struct mips_def_t *def = data;
+
+    if (!(def->insn_flags & INSN_R10K)) {
+        return;
+    }
+    if (!strcmp(def->name, "R10000")) {
+        object_class_property_add(oc, "r10000-prid", "uint32",
+                                  mips_r10000_prid_get, mips_r10000_prid_set,
+                                  NULL, NULL);
+    }
+    if (!strcmp(def->name, "R12000")) {
+        for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
+            object_class_property_add(oc, r12000_property_names[i], "uint32",
+                                      mips_r12000_property_get,
+                                      mips_r12000_property_set,
+                                      NULL, (void *)i);
+        }
+    }
+    if (!strcmp(def->name, "R16000")) {
+        object_class_property_add(oc, "r16000-experimental", "bool",
+                                  mips_r16000_experimental_get,
+                                  mips_r16000_experimental_set, NULL, NULL);
+        object_class_property_set_description(oc, "r16000-experimental",
+            "Opt in to the CPU-only R16000 compatibility experiment");
+        for (uintptr_t i = 0; i < ARRAY_SIZE(r16000_property_names); i++) {
+            object_class_property_add(oc, r16000_property_names[i], "uint32",
+                                      mips_r16000_property_get,
+                                      mips_r16000_property_set,
+                                      NULL, (void *)i);
+        }
+        object_class_property_set_description(oc, "r16000-reset-mode",
+            "Explicit board Config0 bits 24:0; primary cache sizes are fixed");
+        object_class_property_set_description(oc, "r16000-scache-bytes",
+            "Explicit secondary-cache capacity in bytes for the experiment");
+    }
+}
+
 void mips_r10k_cpu_init(MIPSCPU *cpu)
 {
-    Object *obj = OBJECT(cpu);
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(cpu);
 
     if (!(mcc->cpu_def->insn_flags & INSN_R10K)) {
@@ -251,33 +311,6 @@ void mips_r10k_cpu_init(MIPSCPU *cpu)
     cpu->r10k_profile = g_new0(R10KCPUProfile, 1);
     if (!strcmp(mcc->cpu_def->name, "R10000")) {
         cpu->r10k_profile->r10000_prid = mcc->cpu_def->CP0_PRid;
-        object_property_add(obj, "r10000-prid", "uint32",
-                            mips_r10000_prid_get, mips_r10000_prid_set,
-                            NULL, NULL);
-    }
-    if (!strcmp(mcc->cpu_def->name, "R12000")) {
-        for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
-            object_property_add(obj, r12000_property_names[i], "uint32",
-                                mips_r12000_property_get,
-                                mips_r12000_property_set,
-                                NULL, (void *)i);
-        }
-    }
-    if (!strcmp(mcc->cpu_def->name, "R16000")) {
-        object_property_add(obj, "r16000-experimental", "bool",
-                            mips_r16000_experimental_get,
-                            mips_r16000_experimental_set, NULL, NULL);
-        object_property_set_description(obj, "r16000-experimental",
-            "Opt in to the CPU-only R16000 compatibility experiment");
-        for (uintptr_t i = 0; i < ARRAY_SIZE(r16000_property_names); i++) {
-            object_property_add(obj, r16000_property_names[i], "uint32",
-                                mips_r16000_property_get,
-                                mips_r16000_property_set, NULL, (void *)i);
-        }
-        object_property_set_description(obj, "r16000-reset-mode",
-            "Explicit board Config0 bits 24:0; primary cache sizes are fixed");
-        object_property_set_description(obj, "r16000-scache-bytes",
-            "Explicit secondary-cache capacity in bytes for the experiment");
     }
 }
 
