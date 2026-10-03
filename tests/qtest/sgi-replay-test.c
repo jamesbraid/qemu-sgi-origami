@@ -996,6 +996,92 @@ static unsigned int first_line_with_prefix(const char *path,
     g_error("%s: no line starts with '%s'", path, prefix);
 }
 
+static unsigned int trace_access_count(const char *path, const char *event,
+                                       const char *access)
+{
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    unsigned int count = 0;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned int i = 0; lines[i]; i++) {
+        if (g_str_has_prefix(lines[i], event) && strstr(lines[i], access)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void run_family_checkpoint(const char *name, const char *write_event,
+                                  const char *prefix_write,
+                                  const char *suffix_write)
+{
+    g_autofree char *path = g_test_build_filename(G_TEST_DIST, "..", "data",
+                                                 "sgi-replay", name, NULL);
+    unsigned int marker = first_line_with_prefix(path, "# checkpoint");
+    g_autofree char *end_line = g_strdup_printf("%u", marker - 1);
+    g_autofree char *start_line = g_strdup_printf("%u", marker);
+    g_autofree char *dir = NULL;
+    g_autofree char *checkpoint = NULL;
+    g_autofree char *save_trace = NULL;
+    g_autofree char *load_trace = NULL;
+    g_autoptr(GError) error = NULL;
+
+    g_assert_cmpuint(marker, >, 2);
+    dir = g_dir_make_tmp("sgi-replay-checkpoint-XXXXXX", &error);
+    g_assert_no_error(error);
+    checkpoint = g_build_filename(dir, "checkpoint.state", NULL);
+    save_trace = g_build_filename(dir, "save.trace", NULL);
+    load_trace = g_build_filename(dir, "load.trace", NULL);
+
+    /* The write just before the marker belongs only to the saved prefix. */
+    g_setenv("SGI_REPLAY_END_LINE", end_line, true);
+    g_setenv("SGI_REPLAY_CHECKPOINT_SAVE", checkpoint, true);
+    g_setenv("SGI_REPLAY_TRACE", save_trace, true);
+    run_replay(path, NULL);
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_SAVE");
+    g_unsetenv("SGI_REPLAY_END_LINE");
+
+    g_setenv("SGI_REPLAY_CHECKPOINT_LOAD", checkpoint, true);
+    g_setenv("SGI_REPLAY_START_LINE", start_line, true);
+    g_setenv("SGI_REPLAY_TRACE", load_trace, true);
+    run_replay(path, NULL);
+    g_unsetenv("SGI_REPLAY_CHECKPOINT_LOAD");
+    g_unsetenv("SGI_REPLAY_START_LINE");
+    g_unsetenv("SGI_REPLAY_TRACE");
+
+    g_assert_cmpuint(trace_access_count(save_trace, write_event, prefix_write),
+                     ==, 1);
+    g_assert_cmpuint(trace_access_count(save_trace, write_event, suffix_write),
+                     ==, 0);
+    g_assert_cmpuint(trace_access_count(load_trace, write_event, prefix_write),
+                     ==, 0);
+    g_assert_cmpuint(trace_access_count(load_trace, write_event, suffix_write),
+                     ==, 1);
+
+    unlink(checkpoint);
+    unlink(save_trace);
+    unlink(load_trace);
+    rmdir(dir);
+}
+
+static void test_kona_checkpoint(void)
+{
+    run_family_checkpoint("kona-checkpoint.replay", "sgi_kona_pio_write ",
+                          "offset 0xc10000 value 0xc8 size 4",
+                          "offset 0xc10000 value 0x96 size 4");
+}
+
+static void test_odyssey_checkpoint(void)
+{
+    run_family_checkpoint("odyssey-checkpoint.replay", "sgi_odyssey_mmio ",
+                          "offset 0x24 size 4 value 0xf00320b write=1",
+                          "offset 0x20 size 8 value 0x55667788 write=1");
+}
+
 /*
  * checkpoint-boundary-once proves the MMIO-count contract at a line
  * boundary; neither it nor replay-screendump ever look at what a
@@ -1423,6 +1509,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     if (qtest_has_device("sgi-kona")) {
         qtest_add_func("sgi-replay/kona/ordering", test_kona_ordering);
+        qtest_add_func("sgi-replay/kona/checkpoint", test_kona_checkpoint);
         qtest_add_func("sgi-replay/kona/screendump", test_kona_screendump);
         qtest_add_func("sgi-replay/kona/unsupported-plane",
                        test_invalid_kona_plane);
@@ -1431,6 +1518,8 @@ int main(int argc, char **argv)
     }
     if (qtest_has_machine("origin300") && qtest_has_device("sgi-odyssey")) {
         qtest_add_func("sgi-replay/odyssey/ordering", test_odyssey_ordering);
+        qtest_add_func("sgi-replay/odyssey/checkpoint",
+                       test_odyssey_checkpoint);
         qtest_add_func("sgi-replay/odyssey/unsupported-plane",
                        test_invalid_odyssey_plane);
         qtest_add_func("sgi-replay/odyssey/aperture-bounds",

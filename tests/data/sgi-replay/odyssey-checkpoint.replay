@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Synthetic same-build model checkpoint test, not a guest or hardware capture.
+sgi-replay 2
+head sgi-odyssey
+read 4 0x000024 0xb
+write 4 0x000024 0x0f00320b
+# checkpoint
+read 4 0x000024 0x0f00320b
+read 8 0x000020 0x0f00320b
+write 8 0x000020 0x55667788
+read 4 0x000024 0x55667788
+read 8 0x000020 0x55667788
