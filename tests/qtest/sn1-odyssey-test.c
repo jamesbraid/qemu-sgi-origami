@@ -9706,6 +9706,54 @@ static void test_texture_adapter_nearest(void)
     qtest_quit(qts);
 }
 
+static void test_texture_adapter_nearest_clamp(void)
+{
+    const uint32_t pixels[4] = {
+        0xff000040, 0x00ff0080, 0x0000ffc0, 0xffffffff,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload(qts, 0x180000, pixels);
+    texture_adapter_window(qts);
+
+    texture_adapter_bind(qts, 0x180000, 0x13000000, 1);
+    texture_adapter_point(qts, 10, 10, -0.25f, 0.25f);
+    texture_adapter_point(qts, 11, 10, 1.25f, 0.25f);
+    texture_adapter_point(qts, 12, 10, 0.25f, -0.25f);
+    texture_adapter_point(qts, 13, 10, 0.25f, 1.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x00ff0080);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, 0x0000ffc0);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0xff000040);
+
+    texture_adapter_bind(qts, 0x180000, 0x13001400, 1);
+    texture_adapter_point(qts, 14, 10, -0.25f, 0.25f);
+    texture_adapter_point(qts, 15, 10, 1.25f, 0.25f);
+    texture_adapter_point(qts, 16, 10, 0.25f, -0.25f);
+    texture_adapter_point(qts, 17, 10, 0.25f, 1.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 15, 10), ==, 0x00ff0080);
+    g_assert_cmphex(odsy_test_pixel(qts, 16, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x0000ffc0);
+
+    texture_adapter_bind(qts, 0x180000, 0x13002800, 1);
+    texture_adapter_point(qts, 18, 10, -0.25f, 0.25f);
+    texture_adapter_point(qts, 19, 10, 1.25f, 0.25f);
+    texture_adapter_point(qts, 20, 10, 0.25f, -0.25f);
+    texture_adapter_point(qts, 21, 10, 0.25f, 1.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 18, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 19, 10), ==, 0x00ff0080);
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 21, 10), ==, 0x0000ffc0);
+
+    /* Unsupported filtering drops the draw before looking up this image. */
+    texture_adapter_bind(qts, 0xdead00, 0x13002802, 1);
+    odsy_test_pixel_write(qts, 22, 10, 0x12345678);
+    texture_adapter_point(qts, 22, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
 static void test_texture_adapter_binding_filters_matrix(void)
 {
     const uint32_t pixels[4] = {
@@ -12355,6 +12403,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_rgba12_byte_upload);
     qtest_add_func("sn1/odyssey/texture-adapter/nearest",
                    test_texture_adapter_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/nearest-clamp",
+                   test_texture_adapter_nearest_clamp);
     qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
                    test_texture_chain_explicit_level);
     qtest_add_func("sn1/odyssey/texture-adapter/integer-quads",
