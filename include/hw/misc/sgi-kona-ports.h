@@ -338,6 +338,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_DID_CONFIG   0x133
 #define SGI_KONA_CMD_X_PIXEL_SETUP  0x136
 #define SGI_KONA_CMD_X_PIXEL_COPY   0x137
+#define SGI_KONA_CMD_X_PIXEL_READ   0x138
 #define SGI_KONA_CMD_X_PIXEL_WRITE  0x139
 #define SGI_KONA_CMD_X_PIXEL_FINISH 0x13a
 #define SGI_KONA_CMD_X_LOAD_STIPPLE 0x13c

@@ -970,6 +970,23 @@ static void sgi_kona_register_reason_page(SGIKonaState *s, uint32_t page,
     }
 }
 
+static void sgi_kona_x_read_invalidate(SGIKonaState *s)
+{
+    s->x_read_gc_valid = false;
+    s->x_read_setup_valid = false;
+}
+
+/* A retained outgoing page never authorizes a new context's indexed read. */
+static bool sgi_kona_x_read_current(const SGIKonaState *s)
+{
+    int i = s->context_current;
+
+    return i >= 0 && i < SGI_KONA_CONTEXTS && s->contexts[i].valid &&
+           !s->context_page_pending && s->contexts[i].return_page_valid &&
+           s->return_page_valid &&
+           s->return_page == s->contexts[i].return_page;
+}
+
 /*
  * 0x1f2 a b len: remember the return-data page, where the pipe answers
  * a process's requests and the process polls word 0. KONApcxswap sends
@@ -997,6 +1014,9 @@ static void sgi_kona_register_return_page(SGIKonaState *s, uint32_t page,
         if (c) {
             s->return_page_valid = false;
         }
+        if (!sgi_kona_x_read_current(s)) {
+            sgi_kona_x_read_invalidate(s);
+        }
         return;
     }
     s->return_page = addr;
@@ -1006,6 +1026,9 @@ static void sgi_kona_register_return_page(SGIKonaState *s, uint32_t page,
         c->return_page = addr;
         c->return_page_valid = true;
         trace_sgi_kona_context_return_page(s->context_current, addr);
+    }
+    if (!sgi_kona_x_read_current(s)) {
+        sgi_kona_x_read_invalidate(s);
     }
 }
 
@@ -1032,6 +1055,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     SGIKonaContext *c;
     int slot = SGI_KONA_CONTEXT_NONE;
 
+    sgi_kona_x_read_invalidate(s);
     offset &= 0xfff;
     for (int i = 0; i < SGI_KONA_CONTEXTS; i++) {
         c = &s->contexts[i];
@@ -1227,6 +1251,7 @@ static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
  */
 static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
 {
+    sgi_kona_x_read_invalidate(s);
     trace_sgi_kona_context_deactivate(index);
     if (s->context_current == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -4077,6 +4102,7 @@ static uint32_t sgi_kona_x_gc_index(const uint32_t *gc)
 static void sgi_kona_x_load_gc(SGIKonaState *s, const uint32_t *args)
 {
     memcpy(s->x_gc, args, sizeof(s->x_gc));
+    s->x_read_gc_valid = sgi_kona_x_read_current(s);
     trace_sgi_kona_x_gc(s->x_gc[0], sgi_kona_x_gc_index(s->x_gc));
 }
 
@@ -4097,6 +4123,7 @@ static void sgi_kona_x_load_position(SGIKonaState *s, const uint32_t *args)
 static void sgi_kona_x_clip_run_drop(SGIKonaState *s, uint32_t next)
 {
     if (s->x_clip_run_have) {
+        sgi_kona_x_read_invalidate(s);
         trace_sgi_kona_x_clip_run_dropped(s->x_clip_run_have, next);
         s->x_clip_run_have = 0;
     }
@@ -4561,6 +4588,7 @@ static void sgi_kona_x_box_data(SGIKonaState *s, uint32_t token,
 static void sgi_kona_x_box_data_drop(SGIKonaState *s, uint32_t next)
 {
     if (s->x_boxes_have) {
+        sgi_kona_x_read_invalidate(s);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: X data run of %u words dropped before 0x%x\n",
                       s->x_boxes_have, next);
@@ -4659,8 +4687,114 @@ enum {
 static void sgi_kona_x_pixel_setup(SGIKonaState *s, const uint32_t *args)
 {
     memcpy(s->x_pixel_setup, args, sizeof(s->x_pixel_setup));
+    s->x_read_setup_valid = sgi_kona_x_read_current(s);
     trace_sgi_kona_x_pixel_setup(args[0], args[1], args[2], args[3], args[4],
                                  args[5], args[6]);
+}
+
+/* Main-index reads ignore foreground and write masks. */
+static bool sgi_kona_x_read_gc(const uint32_t *gc)
+{
+    static const uint32_t forms[][7] = {
+        { 0x180c, 0x40001, 1, 6, 5, 1, 1 },
+        { 0xc, 1, 1, 6, 0, 1, 1 },
+    };
+
+    return !memcmp(gc + 6, forms[0], sizeof(forms[0])) ||
+           !memcmp(gc + 6, forms[1], sizeof(forms[1]));
+}
+
+/* A bank-1 window hides bank 0 from indexed desktop reads. */
+static bool sgi_kona_x_read_hidden(SGIKonaState *s, int64_t x, int64_t y,
+                                  int64_t width, int64_t height)
+{
+    SGIClipRect r;
+
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        if (sgi_kona_bank1_window(s, i, &r) &&
+            x <= r.x1 && x + width > r.x0 &&
+            y <= r.y1 && y + height > r.y0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Main eight-bit indices with padded rows and synchronous completion. */
+static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
+{
+    const uint32_t *setup = s->x_pixel_setup;
+    int64_t x = (int32_t)args[0], y = (int32_t)args[1];
+    uint64_t width = setup[SGI_KONA_X_SETUP_WIDTH];
+    uint64_t height = setup[SGI_KONA_X_SETUP_HEIGHT];
+    uint64_t pitch = ROUND_UP(width, 4);
+    int64_t plane_y;
+    const char *reason;
+    g_autofree uint8_t *data = NULL;
+
+    if (!sgi_kona_x_read_current(s)) {
+        reason = "no current context-owned return page";
+    } else if (s->x_pixel_open || s->x_pixel_remaining ||
+               s->gl_data_remaining || s->gl_tex_table_remaining ||
+               s->x_boxes_have || s->x_clip_run_have) {
+        reason = "an incompatible transfer is open";
+    } else if (!s->x_read_gc_valid || !s->x_read_setup_valid) {
+        reason = "GC or setup not loaded in this activation";
+    } else if (!sgi_kona_x_read_gc(s->x_gc)) {
+        reason = "unsupported main-index GC";
+    } else if (setup[SGI_KONA_X_SETUP_MODE] != 2 ||
+               setup[SGI_KONA_X_SETUP_SRC_PACK] != 1 ||
+               setup[SGI_KONA_X_SETUP_DST_PACK] != 0 ||
+               setup[SGI_KONA_X_SETUP_SHIFT] != 8 ||
+               setup[SGI_KONA_X_SETUP_PAD] != 0) {
+        reason = "unsupported indexed-read setup";
+    } else if ((int32_t)width <= 0 || (int32_t)height <= 0 ||
+               x < 0 || y < 0 || x + width > SGI_KONA_FB_WIDTH ||
+               y + height > SGI_KONA_FB_HEIGHT) {
+        reason = "rectangle outside the main plane";
+    } else if (pitch > SGI_KONA_RETURN_PAGE_BYTES - 8 ||
+               height > (SGI_KONA_RETURN_PAGE_BYTES - 8) / pitch) {
+        reason = "payload exceeds the return page";
+    } else {
+        plane_y = SGI_KONA_FB_HEIGHT - y - height;
+        if (sgi_kona_x_read_hidden(s, x, plane_y, width, height)) {
+            reason = "bank 0 hidden by a displayed bank-1 window";
+            goto refused;
+        }
+        /* Check every source before writing any part of the reply. */
+        for (uint32_t r = 0; r < height; r++) {
+            for (uint32_t c = 0; c < width; c++) {
+                int64_t py = SGI_KONA_FB_HEIGHT - 1 - y - r;
+                uint32_t tag = sgi_plane_load(&s->mem,
+                    sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, 0)),
+                    x + c, py);
+                uint32_t word = sgi_plane_load(&s->mem,
+                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
+
+                if (tag != SGI_KONA_TAG_X_INDEX || word > 255) {
+                    reason = "source is not a normalized eight-bit X index";
+                    goto refused;
+                }
+            }
+        }
+        data = g_malloc0(pitch * height);
+        for (uint32_t r = 0; r < height; r++) {
+            for (uint32_t c = 0; c < width; c++) {
+                data[r * pitch + c] = sgi_plane_load(&s->mem,
+                    sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
+                    SGI_KONA_FB_HEIGHT - 1 - y - r);
+            }
+        }
+        sgi_kona_post_return(s, SGI_KONA_CMD_X_PIXEL_READ, 8, data,
+                             pitch * height);
+        return;
+    }
+
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: X pixel read at (%" PRId64 ",%"
+                  PRId64 ") setup %u %u %u %u %u %u %u refused: %s\n",
+                  x, y, setup[0], setup[1], setup[2], setup[3], setup[4],
+                  setup[5], setup[6], reason);
 }
 
 /* The setup's source-packing words for the two one-bit forms. */
@@ -5220,6 +5354,9 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_PIXEL_SETUP:
         sgi_kona_x_pixel_setup(s, args);
         break;
+    case SGI_KONA_CMD_X_PIXEL_READ:
+        sgi_kona_x_pixel_read(s, args);
+        break;
     case SGI_KONA_CMD_X_PIXEL_WRITE:
         sgi_kona_x_pixel_write(s, args);
         break;
@@ -5582,6 +5719,13 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_x_box_data_drop(s, token);
         sgi_kona_x_clip_run_drop(s, token);
         return;
+    }
+    if (s->kernel_port.framing || s->gl_port.framing || s->gl_sync_held ||
+        s->video_open || s->color_map_remaining || s->gamma_remaining ||
+        s->cursor_remaining || s->gl_tex_table_remaining ||
+        s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
+        s->x_pixel_remaining || s->x_stipple_store_remaining) {
+        sgi_kona_x_read_invalidate(s);
     }
     if (s->kernel_port.framing) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -6704,6 +6848,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->x_stipple_store_width = 0;
     s->x_stipple_store_height = 0;
     s->x_stipple_store_remaining = 0;
+    sgi_kona_x_read_invalidate(s);
     memset(s->x_pixel_setup, 0, sizeof(s->x_pixel_setup));
     s->x_pixel_open = false;
     s->x_pixel_x = 0;
@@ -7446,6 +7591,35 @@ static const VMStateDescription vmstate_sgi_kona_cursor = {
     },
 };
 
+static bool sgi_kona_x_read_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->x_read_gc_valid || s->x_read_setup_valid;
+}
+
+static int sgi_kona_x_read_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    return sgi_kona_x_read_needed(s) && !sgi_kona_x_read_current(s) ?
+           -EINVAL : 0;
+}
+
+/* Absent older-stream subsection leaves both flags at their reset defaults. */
+static const VMStateDescription vmstate_sgi_kona_x_read = {
+    .name = TYPE_SGI_KONA "/x-read-state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_x_read_needed,
+    .post_load = sgi_kona_x_read_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(x_read_gc_valid, SGIKonaState),
+        VMSTATE_BOOL(x_read_setup_valid, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 6,
@@ -7674,6 +7848,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,
         &vmstate_sgi_kona_gl_attrib,
+        &vmstate_sgi_kona_x_read,
         NULL
     },
 };

@@ -1014,6 +1014,10 @@ struct SGIKonaState {
     uint32_t x_stipple_store_height;
     uint32_t x_stipple_store_remaining;
 
+    /* Complete read state is valid only within one context activation. */
+    bool x_read_gc_valid;
+    bool x_read_setup_valid;
+
     /*
      * The last X pixel setup (SGI_KONA_CMD_X_PIXEL_SETUP), and a pixel
      * write open until its X pixel finish: its destination, bits per
