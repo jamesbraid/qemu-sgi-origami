@@ -390,7 +390,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_PUSH_ATTRIB, 1 },
     { SGI_KONA_CMD_GL_POP_ATTRIB, 1 },
     { SGI_KONA_CMD_GL_POP_LIGHTS, 1 },      /* the count; its words follow */
-    /* Textures. */
+    /* Textures. The opaque prefix count is inferred from two captures. */
+    { SGI_KONA_CMD_GL_TEX_PREFIX, 1 },
     { SGI_KONA_CMD_GL_TEX_LOAD, SGI_KONA_GL_TEX_LOAD_WORDS },
     { SGI_KONA_CMD_GL_TEX_LOAD_ID, 1 },
     { SGI_KONA_CMD_GL_TEX_BIND_ID, 1 },

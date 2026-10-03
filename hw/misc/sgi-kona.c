@@ -4339,6 +4339,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_GL_POP_LIGHTS:
         sgi_kona_gl_pop_lights_open(s, args[0]);
         return;
+    case SGI_KONA_CMD_GL_TEX_PREFIX:
+        /* Captured operands zero and one have no established meaning. */
+        if (args[0] > 1) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported opaque texture "
+                          "prefix operand 0x%" PRIx32
+                          "; consumed, no effects\n",
+                          args[0]);
+        }
+        trace_sgi_kona_command_unmodelled(selector, argc);
+        return;
     case SGI_KONA_CMD_GL_TEX_LOAD:
         words = sgi_kona_gl_tex_load_words(s, i, args);
         if (words) {
