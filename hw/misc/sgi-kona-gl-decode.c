@@ -434,6 +434,7 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
 
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 {
+    static const uint8_t widths[] = { 1, 1, 2, 2, 4, 4, 4 };
     uint32_t components;
 
     switch (format) {
@@ -453,10 +454,7 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
     default:
         return 0;
     }
-    if (type == 1) {
-        return components;
-    }
-    return type == 6 ? components * sizeof(float) : 0;
+    return type < ARRAY_SIZE(widths) ? components * widths[type] : 0;
 }
 
 bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
@@ -470,19 +468,43 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
         return false;
     }
     for (uint32_t i = 0; i < components; i++) {
-        if (type == 1) {
-            values[i] = (*source >> (24 - i * 8)) & 255;
-        } else {
-            float component;
+        double component;
+        uint32_t raw;
+
+        switch (type) {
+        case 0:
+        case 1:
+            raw = (source[0] >> (24 - i * 8)) & 255;
+            component = type == 1 ? raw / 255.0 :
+                        (2.0 * (int8_t)raw + 1) / 255.0;
+            break;
+        case 2:
+        case 3:
+            raw = (source[i / 2] >> (16 - (i % 2) * 16)) & 65535;
+            component = type == 3 ? raw / 65535.0 :
+                        (2.0 * (int16_t)raw + 1) / 65535.0;
+            break;
+        case 4:
+        case 5:
+            raw = source[i];
+            component = type == 5 ? raw / 4294967295.0 :
+                        (2.0 * (int32_t)raw + 1) / 4294967295.0;
+            break;
+        case 6: {
+            float value;
 
             /* Reject both NaNs and infinities before host FP arithmetic. */
             if ((source[i] & 0x7f800000) == 0x7f800000) {
                 return false;
             }
-            memcpy(&component, &source[i], sizeof(component));
-            values[i] = (uint32_t)(CLAMP((double)component, 0.0, 1.0) *
-                                   255.0 + 0.5);
+            memcpy(&value, &source[i], sizeof(value));
+            component = value;
+            break;
         }
+        default:
+            g_assert_not_reached();
+        }
+        values[i] = (uint32_t)(CLAMP(component, 0.0, 1.0) * 255.0 + 0.5);
     }
     r = values[0];
     g = values[1];
