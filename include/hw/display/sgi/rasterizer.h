@@ -193,10 +193,22 @@ typedef struct SGIGLTexPyramid {
  * gets in-range interior indices and returns canonical RRGGBBAA bytes.
  * The family validates storage and guest addressing. It owns object state,
  * binding and migration, rebuilding this borrowed descriptor after load.
- * Image and descriptor stay immutable through each synchronous draw; the
- * callback must neither change the binding nor re-enter drawing. Concurrent
- * mutation needs family locking or a stable snapshot. No pointer is retained.
+ * The family owns sampler and texture-table state, backing entries, and
+ * migration. It rebuilds these borrowed descriptors after load. Image, table,
+ * and backing entries stay immutable through each synchronous draw; callbacks
+ * must not change the binding or re-enter drawing. Concurrent mutation needs
+ * family locking or a stable snapshot. The rasterizer retains no pointer.
  */
+#define SGI_GL_TEXTURE_COLOR_TABLE_MAX 256
+
+typedef struct SGIGLTexColorTable {
+    bool enabled;
+    uint32_t size;
+    uint32_t base_format;
+    /* Canonical RRGGBBAA entries owned by the family. */
+    const uint32_t *rgba;
+} SGIGLTexColorTable;
+
 typedef struct SGIGLTexImage {
     uint32_t width, height;
     uint32_t base_format;
@@ -216,6 +228,8 @@ typedef struct SGIGLTexImage {
     uint32_t depth;
     uint32_t wrap_r;
     bool volume;
+    /* Borrowed family state, immutable and live for the synchronous draw. */
+    const SGIGLTexColorTable *color_table;
 } SGIGLTexImage;
 
 /*

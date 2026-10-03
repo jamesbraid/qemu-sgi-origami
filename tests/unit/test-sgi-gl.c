@@ -5754,6 +5754,49 @@ static void test_texture_projective(void)
                    texture_rgb(21.0 / 26, 21.0 / 26, 21.0 / 26));
 }
 
+static void test_texture_color_table(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x808080ff, 0x808080ff, 0x808080ff, 0x808080ff } };
+    const uint32_t entries[] = { 0xbfbfbfbf, 0x40404040 };
+    SGIGLTexColorTable table = {
+        .enabled = false, .size = ARRAY_SIZE(entries),
+        .base_format = SGI_GL_INTENSITY, .rgba = entries,
+    };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(128.0 / 255, 128.0 / 255, 128.0 / 255));
+
+    image.color_table = &table;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(128.0 / 255, 128.0 / 255, 128.0 / 255));
+
+    table.enabled = true;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 0.5f, 0.5f, 0.5f, 1);
+    /* Lookup uses the filtered texel, then MODULATE multiplies .25 by .5. */
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(32.0 / 255, 32.0 / 255, 32.0 / 255));
+}
+
 static void test_texture_fog_order(void)
 {
     TexturePixels pixels = { .pixel = {
@@ -5904,6 +5947,20 @@ static void test_texture_errors(void)
         g_assert_cmpstr(log, ==, "");
         g_assert_cmpuint(texture_error_pixels.reads, ==, 0);
     }
+}
+
+static void test_texture_color_table_invalid_bounds(void)
+{
+    static const uint32_t entries[3] = { 0, 0, 0 };
+    static const SGIGLTexColorTable table = {
+        .enabled = true, .size = ARRAY_SIZE(entries),
+        .base_format = SGI_GL_RGBA, .rgba = entries,
+    };
+
+    texture_error_init();
+    texture_error_image.color_table = &table;
+    texture_error_assert("invalid color table bounds or format", 0);
+    g_assert_cmpuint(texture_error_pixels.reads, >, 0);
 }
 
 static void test_texture_environment_without_image(void)
@@ -8500,10 +8557,13 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-color-table", test_texture_color_table);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
     g_test_add_func("/sgi-gl/texture-errors", test_texture_errors);
+    g_test_add_func("/sgi-gl/texture-color-table-invalid-bounds",
+                    test_texture_color_table_invalid_bounds);
     g_test_add_func("/sgi-gl/texture-environment-without-image",
                     test_texture_environment_without_image);
     g_test_add_func("/sgi-gl/texture-invalid-quad-polygon",

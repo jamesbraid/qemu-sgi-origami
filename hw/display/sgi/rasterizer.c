@@ -1189,6 +1189,62 @@ static void sgi_soft_texture_mix(double value[4], const double other[4],
     }
 }
 
+static bool sgi_soft_texture_color_table(const SGISoftDraw *r,
+                                        double texel[4])
+{
+    const SGIGLTexColorTable *table = r->texture->color_table;
+    bool replace[4] = { false, false, false, false };
+    bool luminance = false;
+
+    if (!table || !table->enabled || !table->size) {
+        return true;
+    }
+    if (!table->rgba || table->size > SGI_GL_TEXTURE_COLOR_TABLE_MAX ||
+        (table->size & (table->size - 1)) ||
+        !sgi_soft_texture_format(table->base_format)) {
+        sgi_soft_texture_report(r, 32, "invalid color table bounds or format, "
+                                "fragment dropped");
+        return false;
+    }
+    switch (table->base_format) {
+    case SGI_GL_ALPHA:
+        replace[3] = true;
+        break;
+    case SGI_GL_LUMINANCE:
+        replace[0] = replace[1] = replace[2] = true;
+        luminance = true;
+        break;
+    case SGI_GL_LUMINANCE_ALPHA:
+        replace[0] = replace[1] = replace[2] = replace[3] = true;
+        luminance = true;
+        break;
+    case SGI_GL_INTENSITY:
+        replace[0] = replace[1] = replace[2] = replace[3] = true;
+        luminance = true;
+        break;
+    case SGI_GL_RGB:
+        replace[0] = replace[1] = replace[2] = true;
+        break;
+    case SGI_GL_RGBA:
+        replace[0] = replace[1] = replace[2] = replace[3] = true;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        if (replace[k]) {
+            double scaled = MIN(MAX(texel[k], 0.0), 1.0) *
+                            (table->size - 1);
+            uint32_t index = floor(scaled + 0.5);
+            uint32_t rgba = table->rgba[index];
+            unsigned channel = luminance ? 0 : k;
+
+            texel[k] = ((rgba >> (24 - channel * 8)) & 0xff) / 255.0;
+        }
+    }
+    return true;
+}
+
 static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
 {
     const SGIGLTexImage *im = r->texture;
@@ -1239,6 +1295,9 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
         }
     } else if (!sgi_soft_texture_sample(r, NULL, im->min_filter, s, t, u,
                                         texel)) {
+        return false;
+    }
+    if (!sgi_soft_texture_color_table(r, texel)) {
         return false;
     }
     for (int k = 0; k < 4; k++) {
@@ -3262,7 +3321,7 @@ bool sgi_gl_texture_test_sample(const SGIGLTexImage *im,
     unsigned reports = 0;
     SGISoftDraw r = { .texture = im, .texture_reports = &reports };
 
-    return sgi_soft_texture_sample(&r, level, filter, s, t, out);
+    return sgi_soft_texture_sample(&r, level, filter, s, t, 0, out);
 }
 
 void sgi_gl_texture_test_mix(double value[4], const double other[4],
