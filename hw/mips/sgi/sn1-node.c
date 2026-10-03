@@ -255,6 +255,15 @@ static void sn1_node_place_claims(SN1NodeState *node)
                                               true);
                 }
             }
+        } else {
+            bool typed = sn1_fabric_routed(&node->endpoint) ||
+                (peer && peer->ready && peer->isolated_route && other != own);
+
+            memory_region_set_enabled(&node->ni_fabric_memory.region, typed);
+            memory_region_set_enabled(&node->claim[view][0][0], !typed);
+            if (typed) {
+                memory_region_set_enabled(&node->claim[view][0][1], false);
+            }
         }
     }
     for (view = 0; view < node->nr_cpus; view++) {
@@ -610,6 +619,9 @@ static void sn1_node_init_claims(SN1NodeState *node)
         memory_region_set_enabled(&node->local_form[cpu][3], false);
     }
     sn1_node_view_claims(node, SN1_NODE_FABRIC_VIEW, &node->fabric);
+    /* DMA keeps its attributes and reaches only the named memory space. */
+    sn1_fabric_init_processor_view(&node->ni_fabric_memory, &node->endpoint,
+        SN1_NODE_FABRIC_VIEW, 0, &node->fabric);
     node->node_notifier.notify = sn1_node_number_changed;
     node->cable_notifier.notify = sn1_node_cable_changed;
     sgi_bedrock_lb_add_node_notifier(&SGI_BEDROCK(node->bedrock)->lb,
