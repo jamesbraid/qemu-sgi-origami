@@ -16,6 +16,7 @@
 #include "libqtest.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
+#include "qobject/qdict.h"
 #include <math.h>
 #include "sgi-migrate.h"
 #include "sgi-test.h"
@@ -1322,50 +1323,134 @@ static void gl_rect_scene(QTestState *s)
     gl_end(s);
 }
 
-/*
- * glReadPixels' 0x39 of the 3 by 2 pixels at window (10, 20), straddling
- * the rectangle's lower-left corner: GL_RGBA and GL_UNSIGNED_BYTE come
- * back from byte 8 of the return page, bottom row first, alpha 255; then
- * GL_RGB, whose 9-byte rows pad to 12 under the default pack alignment
- * of 4. A model that answers nothing leaves word 0 clear and the client
- * waiting.
- */
+/* Native RGB bytes are dense at byte 8, independently of pack stride. */
 static void test_read_pixels(void)
 {
-    static const uint32_t rgba[6] = {
-        0x0000ffff, 0x0000ffff, 0x0000ffff,
-        0x0000ffff, 0xff0000ff, 0xff0000ff,
-    };
-    static const uint8_t rgb[21] = {
-        0, 0, 0xff, 0, 0, 0xff, 0, 0, 0xff, 0, 0, 0,
+    static const uint8_t rgb[] = {
+        0, 0, 0xff, 0, 0, 0xff, 0, 0, 0xff,
         0, 0, 0xff, 0xff, 0, 0, 0xff, 0, 0,
     };
-    uint8_t got[21];
+    uint8_t got[4 + sizeof(rgb) + 4];
 
     gl_reset();
     gl_make_current(qts);
     gl_rect_scene(qts);
-    qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 64);
-    kona_command(qts, 0x39, (uint32_t[]){ 10, 20, 3, 2, 0x1908, 0x1401, 0 },
-                 7);
-    assert_reply_posted(qts);
-    for (int k = 0; k < 6; k++) {
-        g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8 + 4 * k), ==,
-                        rgba[k]);
+    for (unsigned low = 0; low < 4; low++) {
+        qtest_memset(qts, RETURN_PAGE, 0xa5, 0x4000);
+        qtest_memset(qts, RETURN_PAGE, 0, 4);
+        kona_command(qts, 0x39,
+                     (uint32_t[]){ 10, 20, 3, 2, 4, 1, low }, 7);
+        assert_reply_posted(qts);
+        qtest_memread(qts, RETURN_PAGE + 4, got, sizeof(got));
+        for (unsigned k = 0; k < 4; k++) {
+            g_assert_cmphex(got[k], ==, 0xa5);
+            g_assert_cmphex(got[4 + sizeof(rgb) + k], ==, 0xa5);
+        }
+        g_assert_cmpmem(got + 4, sizeof(rgb), rgb, sizeof(rgb));
     }
+    for (unsigned low = 0; low < 4; low++) {
+        uint8_t dense[360], expected[360];
 
-    qtest_memset(qts, RETURN_PAGE + 8, 0, 64);
-    kona_command(qts, 0x39, (uint32_t[]){ 10, 20, 3, 2, 0x1907, 0x1401, 0 },
-                 7);
+        for (unsigned r = 0; r < 8; r++) {
+            for (unsigned c = 0; c < 15; c++) {
+                unsigned at = (r * 15 + c) * 3;
+                bool red = r >= 1 && c >= 1;
+
+                expected[at] = red ? 0xff : 0;
+                expected[at + 1] = 0;
+                expected[at + 2] = red ? 0 : 0xff;
+            }
+        }
+        qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 364);
+        kona_command(qts, 0x39,
+                     (uint32_t[]){ 10, 20, 15, 8, 4, 1, low }, 7);
+        assert_reply_posted(qts);
+        qtest_memread(qts, RETURN_PAGE + 8, dense, sizeof(dense));
+        g_assert_cmpmem(dense, sizeof(dense), expected, sizeof(expected));
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE + 368), ==, 0xa5a5a5a5);
+    }
+}
+
+/* The conservative small-return cap is 16368 bytes, with no truncation. */
+static void test_read_pixels_capacity(void)
+{
+    uint8_t payload[16368];
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command_kicked(qts, 0x1f3,
+                        (uint32_t[]){ PROBE_X, PROBE_Y, 0x05670080,
+                                      0x05670080, PROBE_X, PROBE_Y,
+                                      682, 8, 0, 0xd, 0 }, 11);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    qtest_memset(qts, RETURN_PAGE, 0xa5, 0x4000);
+    qtest_memset(qts, RETURN_PAGE, 0, 4);
+    kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 682, 8, 4, 1, 0 }, 7);
     assert_reply_posted(qts);
-    qtest_memread(qts, RETURN_PAGE + 8, got, sizeof(got));
-    g_assert_cmpmem(got, sizeof(got), rgb, sizeof(rgb));
+    qtest_memread(qts, RETURN_PAGE + 8, payload, sizeof(payload));
+    for (unsigned k = 0; k < sizeof(payload); k += 3) {
+        g_assert_cmphex(payload[k], ==, 0);
+        g_assert_cmphex(payload[k + 1], ==, 0);
+        g_assert_cmphex(payload[k + 2], ==, 0xff);
+    }
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16376), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16380), ==, 0xa5a5a5a5);
+}
+
+static void assert_read_colour(QTestState *s, uint32_t rgb)
+{
+    uint8_t got[18];
+
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    kona_command(s, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+    for (unsigned k = 0; k < sizeof(got); k += 3) {
+        g_assert_cmphex(got[k], ==, rgb >> 16);
+        g_assert_cmphex(got[k + 1], ==, (rgb >> 8) & 0xff);
+        g_assert_cmphex(got[k + 2], ==, rgb & 0xff);
+    }
+}
+
+static void assert_read_buffer(QTestState *s, uint32_t buffer)
+{
+    kona_command(s, 0x4c, (uint32_t[]){ 0xc02 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, buffer);
+}
+
+static void test_read_selection(void)
+{
+    static const uint32_t invalid[] = { 0, 0x402, 0x405, 0x401, 0x403,
+                                        0x406, 0x407, 0x408, 0x409, 0xdead };
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    assert_read_buffer(qts, 0x404);
+    assert_read_colour(qts, 0x0000ff);
+    for (unsigned k = 0; k < ARRAY_SIZE(invalid); k++) {
+        kona_command(qts, 0x37, &invalid[k], 1);
+        qtest_memset(qts, RETURN_PAGE, 0, 4);
+        kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 0);
+        kona_command(qts, 0x4c, (uint32_t[]){ 0xc02 }, 1);
+        g_assert_cmphex(guest_word(qts, RETURN_PAGE), ==, 0);
+        kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+        assert_read_buffer(qts, 0x404);
+        assert_read_colour(qts, 0x0000ff);
+    }
+    kona_command(qts, 0x37, (uint32_t[]){ 0x400 }, 1);
+    assert_read_buffer(qts, 0x400);
+    assert_read_colour(qts, 0x0000ff);
 }
 
 /*
  * glGet's 0x4c: the modelview matrix glLoadMatrixf set, as sixteen float
  * words from byte 8; the viewport as four integers; the depth range
- * glDepthRange set as two floats; and GL_DEPTH_TEST's enable as 1.
+ * glDepthRange set as native binary64; and GL_DEPTH_TEST's enable as 1.
  */
 static void test_get_queries(void)
 {
@@ -1378,28 +1463,40 @@ static void test_get_queries(void)
         m[k] = fbits(k + 1.5f);
     }
     kona_command(qts, 0xd3, m, 16);
-    kona_command_d(qts, 0xcf, (double[]){ 0.25, 0.75 }, 2);
+    kona_command(qts, 0xcf,
+                 (uint32_t[]){ 0x3fd00000, 1, 0x3fe00000, 1 }, 4);
+    kona_command(qts, 0xe3, (uint32_t[]){ 7, 11, 113, 97 }, 4);
     kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
 
+    qtest_memset(qts, RETURN_PAGE + 4, 0xa5, 0x3ffc);
     kona_command(qts, 0x4c, (uint32_t[]){ 0xba6 }, 1);
     assert_reply_posted(qts);
     for (int k = 0; k < 16; k++) {
         g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8 + 4 * k), ==, m[k]);
     }
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 72), ==, 0xa5a5a5a5);
+    qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 0x3ff8);
     kona_command(qts, 0x4c, (uint32_t[]){ 0xba2 }, 1);
     assert_reply_posted(qts);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, 0);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16), ==, 128);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 20), ==, 128);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 7);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, 11);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16), ==, 113);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 20), ==, 97);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 24), ==, 0xa5a5a5a5);
+    qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 0x3ff8);
     kona_command(qts, 0x4c, (uint32_t[]){ 0xb70 }, 1);
     assert_reply_posted(qts);
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, fbits(0.25));
-    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, fbits(0.75));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x3fd00000);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, 1);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16), ==, 0x3fe00000);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 20), ==, 1);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 24), ==, 0xa5a5a5a5);
+    qtest_memset(qts, RETURN_PAGE + 8, 0xa5, 0x3ff8);
     kona_command(qts, 0x4c, (uint32_t[]){ 0xb71 }, 1);
     assert_reply_posted(qts);
     g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 1);
-
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
 }
 
 /* Sentinels catch partial payload writes as well as a false ready word. */
@@ -1419,6 +1516,258 @@ static void assert_reply_unchanged(QTestState *s)
     g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
 }
 
+static void assert_source_refused(QTestState *s)
+{
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xc02 }, 1);
+    assert_reply_unchanged(s);
+}
+
+static void test_read_visual_records(void)
+{
+    static const uint32_t config[10] = { 0, 12 };
+    static const uint32_t invalid[][2] = {
+        { 0, 0x100 }, { 1, 0 }, { 1, 7 }, { 1, 16 }, { 2, 8 },
+        { 3, 2 }, { 4, 1 }, { 5, 1 }, { 6, 33 }, { 7, 1 },
+        { 8, 16 }, { 9, 1 },
+    };
+    uint32_t record[10];
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    for (unsigned k = 0; k < ARRAY_SIZE(invalid); k++) {
+        memcpy(record, config, sizeof(record));
+        record[invalid[k][0]] = invalid[k][1];
+        kona_command(qts, 1, record, 10);
+        assert_source_refused(qts);
+        kona_command(qts, 1, config, 10);
+        assert_read_colour(qts, 0x0000ff);
+        kona_command(qts, 4, record, 10);
+        assert_source_refused(qts);
+        kona_command(qts, 4, config, 10);
+        assert_read_colour(qts, 0x0000ff);
+    }
+    memcpy(record, config, sizeof(record));
+    record[1] = 8;
+    kona_command(qts, 1, record, 10);
+    assert_source_refused(qts); /* Both valid, but complete records differ. */
+    kona_command(qts, 4, record, 10);
+    assert_read_colour(qts, 0x0000ff);
+    record[6] = 32;
+    kona_command(qts, 4, record, 10);
+    assert_source_refused(qts);
+    kona_command(qts, 1, record, 10);
+    assert_read_colour(qts, 0x0000ff);
+    kona_command(qts, 0x114, (uint32_t[]){ 0x12345678 }, 1);
+    assert_source_refused(qts);
+    kona_command(qts, 4, record, 10);
+    kona_command(qts, 1, record, 10);
+    kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+    gl_window_cleared(qts, 0, 0, 1);
+    /* Reconfiguration never clears unknown binding. */
+    assert_source_refused(qts);
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    assert_read_colour(qts, 0x0000ff);
+}
+
+/* The existing PROM/GL discriminator does not frame level 1 as GL data. */
+static void test_read_ambiguous_level_preserves_source(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 1, (uint32_t[]){ 1, 12, 0, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    assert_read_buffer(s, 0x404);
+    assert_read_colour(s, 0x0000ff);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found,
+                    "sgi_kona_gl_buffer_config token 0x1 "), ==, 1);
+    g_assert_nonnull(strstr(found, "textport expected a sync word"));
+}
+
+/* A slot command aborts partial GL framing, preserving complete records. */
+static void test_read_partial_records(void)
+{
+    static const uint32_t config[10] = { 0, 12 };
+    static const uint32_t different[10] = { 0, 8, 0, 1 };
+    static const uint32_t selectors[] = { 1, 4, 0x114 };
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    for (unsigned k = 0; k < ARRAY_SIZE(selectors); k++) {
+        kona_command(qts, selectors[k], different, k == 2 ? 0 : 5);
+        qtest_writel(qts, KONA_REG(0xc1000c + 0x20 * 0x1dd), 0);
+        assert_read_buffer(qts, 0x404);
+        assert_read_colour(qts, 0x0000ff);
+    }
+    kona_command(qts, 4, config, 10);
+    assert_read_colour(qts, 0x0000ff);
+}
+
+static void test_read_reply_order(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    const char *payload, *ready;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 3 }, 7);
+    assert_reply_posted(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    payload = strstr(found, "addr 0x320008 len 0x12\n");
+    ready = strstr(found, "addr 0x320000 len 0x4\n");
+    g_assert_nonnull(payload);
+    g_assert_nonnull(ready);
+    g_assert_true(payload < ready);
+}
+
+static void place_read_window(QTestState *s, int32_t x, int32_t y,
+                               uint32_t width, uint32_t height)
+{
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]){ x, y, 0x05670080, 0x05670080,
+                                      x, y, width, height, 0, 0xd, 0 }, 11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]){ x, y, 0 }, 3);
+}
+
+static void test_read_coordinates(void)
+{
+    static const int32_t origins[][2] = {
+        { 273, 219 }, { 91, 307 }, { 0, 0 }, { 1264, 0 },
+        { 0, 1008 }, { 1264, 1008 },
+    };
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+    for (unsigned k = 0; k < ARRAY_SIZE(origins); k++) {
+        place_read_window(qts, origins[k][0], origins[k][1], 16, 16);
+        kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+        assert_read_colour(qts, 0x0000ff);
+        /* Read coordinates do not pass through viewport or scissor. */
+        kona_command(qts, 0xe3, (uint32_t[]){ 7, 9, 3, 2 }, 4);
+        kona_command(qts, 0xc, (uint32_t[]){ 15, 15, 1, 1 }, 4);
+        kona_command(qts, 0x24, (uint32_t[]){ 0xc11 }, 1);
+        assert_read_colour(qts, 0x0000ff);
+        kona_command(qts, 0x25, (uint32_t[]){ 0xc11 }, 1);
+    }
+    place_read_window(qts, -2, -1, 16, 16);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    kona_command(qts, 0x39, (uint32_t[]){ 2, 1, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_posted(qts);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x0000ff00);
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]){ 1, 0, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(qts);
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39,
+                 (uint32_t[]){ INT32_MAX, INT32_MAX, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(qts);
+    place_read_window(qts, 1278, 1022, 16, 16);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(qts);
+    kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 2, 2, 4, 1, 0 }, 7);
+    assert_reply_posted(qts);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x0000ff00);
+}
+
+static void x_read_fixture_command(QTestState *s, uint32_t token,
+                                   const uint32_t *args, unsigned count)
+{
+    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * token), args[0]);
+    for (unsigned k = 1; k < count; k++) {
+        qtest_writel(s, KONA_REG(0xc1000c), args[k]);
+    }
+}
+
+static void test_read_indexed_source_refused(void)
+{
+    QDict *reply;
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    x_read_fixture_command(qts, 0x12e, (uint32_t[]){ 0x2d07, 1, 0x304c1304 },
+                            3);
+    x_read_fixture_command(qts, 0x136, (uint32_t[]){ 0, 0, 1, 8, 1, 1, 0 }, 7);
+    x_read_fixture_command(qts, 0x139,
+                            (uint32_t[]){ PROBE_X + 2, 1023 - PROBE_Y - 1 }, 2);
+    qtest_writel(qts, KONA_REG(0xc1000c), 0x07000000);
+    x_read_fixture_command(qts, 0x13a, (uint32_t[]){ 0 }, 1);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane','value':2}}");
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-x','value':%u}}", PROBE_X + 2);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-y','value':%u}}", PROBE_Y + 1);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane-word'}}");
+    g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 2);
+    qobject_unref(reply);
+    prepare_refused_reply(qts);
+    kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(qts); /* Last source pixel is indexed. */
+    assert_read_buffer(qts, 0x404);
+}
+
+static void test_read_double_buffers(void)
+{
+    static const uint32_t double_config[10] = { 0, 12, 0, 1 };
+    static const uint32_t single_config[10] = { 0, 12 };
+
+    gl_reset();
+    gl_make_current(qts);
+    kona_command(qts, 1, double_config, 10);
+    gl_window_cleared(qts, 0, 0, 1); /* Default back, blue. */
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command_f(qts, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    assert_read_buffer(qts, 0x405);
+    assert_read_colour(qts, 0x0000ff);
+    kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+    assert_read_buffer(qts, 0x404);
+    assert_read_colour(qts, 0xff0000);
+    for (unsigned k = 0; k < 2; k++) {
+        kona_command(qts, 0xc6, (uint32_t[]){ 0 }, 1);
+        kona_command_kicked(qts, 0x1f4, (uint32_t[]){ 1, 1 }, 2);
+        kona_command_kicked(qts, 0x172, (uint32_t[]){ 0 }, 1);
+        kona_command_kicked(qts, 0x1e6, (uint32_t[]){ 0x800003, 0xd, 5 }, 3);
+        kona_command_kicked(qts, 0x1e7, (uint32_t[]){ k + 1 }, 1);
+        qtest_clock_step(qts, 20000000);
+        assert_read_buffer(qts, 0x404);
+        assert_read_colour(qts, k ? 0xff0000 : 0x0000ff);
+        kona_command(qts, 0x37, (uint32_t[]){ 0x402 }, 1);
+        assert_read_buffer(qts, 0x402);
+        assert_read_colour(qts, k ? 0x0000ff : 0xff0000);
+        kona_command(qts, 0x37, (uint32_t[]){ 0x404 }, 1);
+    }
+    kona_command(qts, 0x37, (uint32_t[]){ 0x405 }, 1);
+    kona_command(qts, 1, single_config, 10);
+    assert_source_refused(qts);
+    kona_command(qts, 1, double_config, 10);
+    assert_read_buffer(qts, 0x405);
+    assert_read_colour(qts, 0x0000ff);
+}
+
 static void test_unknown_query_refused(void)
 {
     g_autofree char *log = NULL, *found = NULL;
@@ -1433,6 +1782,25 @@ static void test_unknown_query_refused(void)
     g_assert_nonnull(strstr(found, "sgi-kona: glGet of 0xd33"));
 }
 
+/* Known wire metadata cannot stand in for an unknown state meaning. */
+static void test_unmodeled_queries_refused(void)
+{
+    static const uint32_t names[] = { 0xb14, 0x81c4, 0x81c7, 0x2a00 };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    for (unsigned k = 0; k < ARRAY_SIZE(names); k++) {
+        prepare_refused_reply(s);
+        kona_command(s, 0x4c, &names[k], 1);
+        assert_reply_unchanged(s);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "sgi_kona_return_post token 0x4c "));
+    g_assert_false(log_shows_misframing(found));
+}
+
 static void test_read_pixels_refused(gconstpointer opaque)
 {
     const uint32_t *args = opaque;
@@ -1440,12 +1808,53 @@ static void test_read_pixels_refused(gconstpointer opaque)
     QTestState *s = kona_init_logged(&log);
 
     gl_make_current(s);
+    gl_rect_scene(s);
     prepare_refused_reply(s);
     kona_command(s, 0x39, args, 7);
     assert_reply_unchanged(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    assert_reply_posted(s);
     qtest_quit(s);
     found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
     g_assert_nonnull(strstr(found, "sgi-kona: glReadPixels"));
+}
+
+/* Missing pages and failed bus writes must never publish a ready word. */
+static void test_read_destination_refused(gconstpointer opaque)
+{
+    bool failed_access = GPOINTER_TO_INT(opaque);
+    uint32_t config[10] = { 0, 0xc };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    kona_command_kicked(s, 0x1fd,
+                        (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                      tagged_offset_word(SAVE_AREA),
+                                      0x10000 }, 3);
+    kona_command(s, 1, config, 10);
+    kona_command(s, 2, (uint32_t[]){ 0 }, 1);
+    gl_rect_scene(s);
+    prepare_refused_reply(s);
+    if (failed_access) {
+        /* Outside this fixture's 64 MiB RAM. */
+        kona_command_kicked(s, 0x1f2,
+                            (uint32_t[]){ physical_page_word(0x08000000),
+                                          tagged_offset_word(0x08000000),
+                                          0x4000 }, 3);
+    }
+    kona_command(s, 0x39, (uint32_t[]){ 10, 20, 3, 2, 4, 1, 0 }, 7);
+    assert_reply_unchanged(s);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    assert_reply_posted(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_null(strstr(found, "sgi_kona_return_post token 0x39 "));
+    g_assert_false(log_shows_misframing(found));
 }
 
 /* A refused push must not add an entry above a supported saved group. */
@@ -1582,14 +1991,245 @@ static void test_attrib_stack_migrates(void)
     g_rmdir(tmpfs);
 }
 
+static void assert_native_depth(QTestState *s, uint32_t name,
+                                const uint32_t *words, unsigned count)
+{
+    qtest_memset(s, RETURN_PAGE, 0, 4);
+    qtest_memset(s, RETURN_PAGE + 4, 0xa5, 64);
+    kona_command(s, 0x4c, &name, 1);
+    assert_reply_posted(s);
+    for (unsigned k = 0; k < count; k++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * k), ==, words[k]);
+    }
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * count), ==, 0xa5a5a5a5);
+}
+
+static void test_native_depth_state(void)
+{
+    static const uint32_t range[] = { 0x3fe00000, 1, 0x3fd00000, 1 };
+    static const uint32_t clear[] = { 0x3fe00000, 3 };
+    static const uint32_t zero_one[] = { 0, 0, 0x3ff00000, 0 };
+
+    gl_reset();
+    gl_make_current(qts);
+    assert_native_depth(qts, 0xb70, zero_one, 4);
+    assert_native_depth(qts, 0xb73, zero_one + 2, 2);
+    kona_command(qts, 0xcf, range, 4);
+    kona_command(qts, 0x1f, clear, 2);
+    assert_native_depth(qts, 0xb70, range, 4);
+    assert_native_depth(qts, 0xb73, clear, 2);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x800 | 0x100 | 0x20 }, 1);
+    assert_reply_posted(qts);
+    kona_command_d(qts, 0xcf, (double[]){ -2, 3 }, 2);
+    kona_command_d(qts, 0x1f, (double[]){ -1 }, 1);
+    assert_native_depth(qts, 0xb70, zero_one, 4);
+    assert_native_depth(qts, 0xb73, zero_one, 2);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_depth(qts, 0xb70, range, 4);
+    assert_native_depth(qts, 0xb73, clear, 2);
+    kona_command(qts, 0xcf,
+                 (uint32_t[]){ 0x7ff00000, 0, 0x3fe00000, 0 }, 4);
+    kona_command(qts, 0x1f, (uint32_t[]){ 0x7ff80000, 1 }, 2);
+    assert_native_depth(qts, 0xb70, range, 4);
+    assert_native_depth(qts, 0xb73, clear, 2);
+    kona_command(qts, 0xcf,
+                 (uint32_t[]){ 0x80000000, 0, 0x3ff00000, 0 }, 4);
+    assert_native_depth(qts, 0xb70,
+                        (uint32_t[]){ 0x80000000, 0, 0x3ff00000, 0 }, 4);
+    gl_reset();
+    gl_make_current(qts);
+    assert_native_depth(qts, 0xb70, zero_one, 4);
+    assert_native_depth(qts, 0xb73, zero_one + 2, 2);
+}
+
+static void test_native_state_migrates(void)
+{
+    static const uint32_t range[] = { 0x3fd00000, 1, 0x3fe00000, 1 };
+    static const uint32_t clear[] = { 0x3fe00000, 3 };
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-return-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    gl_make_current(from);
+    gl_window_cleared(from, 0.25, 0.5, 0.75);
+    kona_command(from, 0xcf, range, 4);
+    kona_command(from, 0x1f, clear, 2);
+    kona_command(from, 0x37, (uint32_t[]){ 0x400 }, 1);
+    kona_command(from, 0xc9, (uint32_t[]){ 0x800 | 0x100 | 0x20 }, 1);
+    assert_reply_posted(from);
+    kona_command_d(from, 0xcf, (double[]){ 0.75, 0.125 }, 2);
+    kona_command_d(from, 0x1f, (double[]){ 0.25 }, 1);
+    kona_command(from, 0x37, (uint32_t[]){ 0 }, 1);
+    sgi_migrate_stopped(from, uri);
+    assert_source_refused(to);
+    assert_native_depth(to, 0xb70,
+                        (uint32_t[]){ 0x3fe80000, 0, 0x3fc00000, 0 }, 4);
+    assert_native_depth(to, 0xb73, (uint32_t[]){ 0x3fd00000, 0 }, 2);
+    kona_command(to, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_depth(to, 0xb70, range, 4);
+    assert_native_depth(to, 0xb73, clear, 2);
+    assert_read_buffer(to, 0x400);
+    assert_read_colour(to, 0x4080bf);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/* RGB setters replace alpha with one in the current-color reply. */
+static void test_current_colour_rgb(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    kona_command_f(qts, 0x6b, (float[]){ 1, 0, 0, 0.125 }, 4);
+    kona_command_f(qts, 0x63, (float[]){ 0.25, 0.5, 0.75 }, 3);
+    kona_command(qts, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_posted(qts);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, fbits(0.25));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 12), ==, fbits(0.5));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 16), ==, fbits(0.75));
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 20), ==, fbits(1));
+}
+
+static void return_context_deactivate(QTestState *s)
+{
+    qtest_writel(s, REG_KICK, 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1fc);
+    qtest_writel(s, REG_KICK, 0x10000);
+    qtest_writel(s, REG_COMMAND, 0);
+}
+
+static void return_context_restore(QTestState *s, uint64_t save)
+{
+    kona_command_kicked(s, 0x1f9,
+                        (uint32_t[]){ guest_word(s, save),
+                                      physical_page_word(save),
+                                      tagged_offset_word(save),
+                                      0xedededed }, 4);
+    kona_command_kicked(s, 0x1ed, (uint32_t[]){ 0, 0x9000, 0 }, 3);
+    kona_command_kicked(s, guest_word(s, save + 8), (uint32_t[]){ 0 }, 1);
+}
+
+/* Two contexts share a page, keeping their query and source state separate. */
+static void test_return_context_isolation(void)
+{
+    static const uint32_t range_a[] = { 0x3fd00000, 1, 0x3fe00000, 1 };
+    static const uint32_t defaults[] = { 0, 0, 0x3ff00000, 0 };
+    static const uint32_t config[10] = { 0, 12 };
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command(s, 0xcf, range_a, 4);
+    kona_command_f(s, 0x6b, (float[]){ 0.25, 0.5, 0.75, 0.125 }, 4);
+    kona_command(s, 0x37, (uint32_t[]){ 0x400 }, 1);
+    return_context_deactivate(s);
+    kona_command_kicked(s, 0x1fd,
+                        (uint32_t[]){ physical_page_word(save_b),
+                                      tagged_offset_word(save_b), 0x10000 }, 3);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    kona_command(s, 1, config, 10);
+    gl_window_cleared(s, 1, 0, 0);
+    assert_native_depth(s, 0xb70, defaults, 4);
+    assert_read_buffer(s, 0x404);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_posted(s);
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8 + 4 * k), ==, fbits(1));
+    }
+    kona_command(s, 4, (uint32_t[]){ 0, 8, 0, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    kona_command(s, 0x114, (uint32_t[]){ 0xabcdef01 }, 1);
+    assert_source_refused(s);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    assert_native_depth(s, 0xb70, range_a, 4);
+    assert_read_buffer(s, 0x400);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xb00 }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, fbits(0.25));
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 20), ==, fbits(0.125));
+    /* Framebuffer pixels are shared even though source eligibility is not. */
+    assert_read_colour(s, 0xff0000);
+    return_context_deactivate(s);
+    return_context_restore(s, save_b);
+    assert_native_depth(s, 0xb70, defaults, 4);
+    assert_source_refused(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+}
+
+/* Invalid records, unknown binding and partial packets survive migration. */
+static void test_return_source_migrates(gconstpointer opaque)
+{
+    unsigned value = GPOINTER_TO_UINT(opaque);
+    unsigned token = value & 0xfff;
+    bool partial = value & 0x1000;
+    unsigned count = token == 0x114 ? 1 : 10;
+    unsigned prefix = partial ? (token == 0x114 ? 0 : 5) : count;
+    static const uint32_t valid[] = { 0, 12, 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint32_t invalid[] = { 0x100, 12, 0, 0, 0, 0, 0, 0, 0, 0 };
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-source-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    gl_make_current(from);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 4, valid, 10);
+    kona_command(from, token, invalid, prefix);
+    sgi_migrate_stopped(from, uri);
+    for (unsigned k = prefix; k < count; k++) {
+        qtest_writel(to, REG_COMMAND, invalid[k]);
+    }
+    assert_source_refused(to);
+    kona_command(to, 1, valid, 10);
+    kona_command(to, 4, valid, 10);
+    kona_command(to, 0x37, (uint32_t[]){ 0x404 }, 1);
+    if (token == 0x114) {
+        assert_source_refused(to);
+    } else {
+        assert_read_buffer(to, 0x404);
+        assert_read_colour(to, 0x0000ff);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
-    static const uint32_t bad_format[] = { 0, 0, 1, 1, 0x1902, 0x1401, 0 };
-    static const uint32_t bad_type[] = { 0, 0, 1, 1, 0x1908, 0x1406, 0 };
-    static const uint32_t too_large[] = { 0, 0, 4095, 1, 0x1908, 0x1401, 0 };
+    static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
+    static const uint32_t bad_type[] = { 0, 0, 1, 1, 4, 6, 0 };
+    static const uint32_t too_large[] = { 0, 0, 5457, 1, 4, 1, 0 };
     static const uint32_t huge_width[] = {
-        0, 0, UINT32_MAX, 1, 0x1908, 0x1401, 0,
+        0, 0, UINT32_MAX, UINT32_MAX, 4, 1, 0,
     };
+
+    static const uint32_t raw_enums[] = { 10, 20, 3, 2, 0x1907, 0x1401, 0 };
+    static const uint32_t low_bits[] = { 10, 20, 3, 2, 4, 1, 4 };
+    static const uint32_t zero_width[] = { 10, 20, 0, 2, 4, 1, 0 };
+    static const uint32_t zero_height[] = { 10, 20, 3, 0, 4, 1, 0 };
+    static const uint32_t negative_width[] = { 10, 20, -1, 2, 4, 1, 0 };
+    static const uint32_t ambiguous[] = { 10, 20, 8, 1, 4, 1, 0 };
+    static const uint32_t clipped[] = { 127, 127, 2, 2, 4, 1, 0 };
 
     int ret;
 
@@ -1622,13 +2262,37 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-3d/culled-triangle",
                    test_culled_triangle);
     qtest_add_func("sn0/origin2000/kona-3d/read-pixels", test_read_pixels);
+    qtest_add_func("sn0/origin2000/kona-3d/read-capacity",
+                   test_read_pixels_capacity);
+    qtest_add_func("sn0/origin2000/kona-3d/read-visual-records",
+                   test_read_visual_records);
+    qtest_add_func("sn0/origin2000/kona-3d/read-ambiguous-level",
+                   test_read_ambiguous_level_preserves_source);
+    qtest_add_func("sn0/origin2000/kona-3d/read-partial-records",
+                   test_read_partial_records);
+    qtest_add_func("sn0/origin2000/kona-3d/read-reply-order",
+                   test_read_reply_order);
+    qtest_add_func("sn0/origin2000/kona-3d/read-coordinates",
+                   test_read_coordinates);
+    qtest_add_func("sn0/origin2000/kona-3d/read-indexed-source-refused",
+                   test_read_indexed_source_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/read-double-buffers",
+                   test_read_double_buffers);
+    qtest_add_func("sn0/origin2000/kona-3d/read-selection",
+                   test_read_selection);
     qtest_add_func("sn0/origin2000/kona-3d/get-queries", test_get_queries);
+    qtest_add_func("sn0/origin2000/kona-3d/native-depth-state",
+                   test_native_depth_state);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state-migrates",
+                   test_native_state_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/push-and-pop-attrib",
                    test_push_and_pop_attrib);
     qtest_add_func("sn0/origin2000/kona-3d/attrib-stack-migrates",
                    test_attrib_stack_migrates);
 
 
+    qtest_add_func("sn0/origin2000/kona-3d/unmodeled-queries-refused",
+                   test_unmodeled_queries_refused);
     qtest_add_func("sn0/origin2000/kona-3d/unknown-query-refused",
                    test_unknown_query_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/read-format-refused",
@@ -1639,12 +2303,47 @@ int main(int argc, char **argv)
                         too_large, test_read_pixels_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/read-huge-width-refused",
                         huge_width, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-raw-enums-refused",
+                        raw_enums, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-low-bits-refused",
+                        low_bits, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-zero-width-refused",
+                        zero_width, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-zero-height-refused",
+                        zero_height, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-negative-width-refused",
+                        negative_width, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-ambiguous-extent-refused",
+                        ambiguous, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-clipped-refused",
+                        clipped, test_read_pixels_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-missing-page-refused",
+                        GINT_TO_POINTER(false), test_read_destination_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-failed-page-refused",
+                        GINT_TO_POINTER(true), test_read_destination_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/push-texture-refused",
                         GUINT_TO_POINTER(0x40000), test_push_attrib_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/push-transform-refused",
                         GUINT_TO_POINTER(0x1000), test_push_attrib_refused);
     qtest_add_func("sn0/origin2000/kona-3d/reply-without-context-refused",
                    test_reply_without_context_refused);
+
+    qtest_add_func("sn0/origin2000/kona-3d/current-colour-rgb",
+                   test_current_colour_rgb);
+    qtest_add_func("sn0/origin2000/kona-3d/return-context-isolation",
+                   test_return_context_isolation);
+    qtest_add_data_func("sn0/origin2000/kona-3d/invalid-draw-migrates",
+                        GUINT_TO_POINTER(1), test_return_source_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/invalid-read-migrates",
+                        GUINT_TO_POINTER(4), test_return_source_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/unknown-binding-migrates",
+                        GUINT_TO_POINTER(0x114), test_return_source_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/partial-draw-migrates",
+                        GUINT_TO_POINTER(0x1001), test_return_source_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/partial-read-migrates",
+                        GUINT_TO_POINTER(0x1004), test_return_source_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/partial-binding-migrates",
+                        GUINT_TO_POINTER(0x1114), test_return_source_migrates);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();

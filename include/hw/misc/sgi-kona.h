@@ -300,12 +300,18 @@ typedef struct SGIKonaGLWindow {
     uint32_t displayed_bank;    /* 0 or 1 */
 } SGIKonaGLWindow;
 
+/* Native return state follows its GL context and accepted attribute groups. */
+typedef struct SGIKonaGLReturnState {
+    uint64_t depth_range[2];
+    uint64_t clear_depth;
+    uint32_t read_buffer;
+    bool read_buffer_unsupported;
+} SGIKonaGLReturnState;
+
 /*
- * The GL state each context table entry's pipe keeps beside its shared GL
- * context: the pixel-store state glPixelStorei sends (0x33), which the
- * pipe applies to the images it takes and returns, since the library
- * converts none (inferred), and its visual's depth buffer. Only the row
- * lengths and alignments are kept; GL's initial alignment is 4.
+ * Pixel-store state remains available to image transfers. Small RGB replies
+ * use dense rows regardless of pack state. Complete visual records and read
+ * bindings authorize their source separately from the renderer's state.
  */
 typedef struct SGIKonaGLPipe {
     uint32_t unpack_alignment;
@@ -317,8 +323,16 @@ typedef struct SGIKonaGLPipe {
      * context's visual asked for, 0 for none (see sgi_kona_gl_draw()).
      */
     uint32_t depth_bits;
-    /* glReadBuffer's enumerant, 0 until the client sends one. */
-    uint32_t read_buffer;
+    SGIKonaGLReturnState returns;
+    uint32_t draw_config[10];
+    uint32_t read_config[10];
+    bool draw_config_received;
+    bool draw_config_valid;
+    bool read_config_received;
+    bool read_config_valid;
+    bool read_compatible;
+    bool read_binding_unknown;
+    uint32_t read_binding_word;
 } SGIKonaGLPipe;
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
@@ -867,6 +881,8 @@ struct SGIKonaState {
      * holds, and the mask each was pushed with.
      */
     SGIGLContext gl_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLReturnState
+        gl_return_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t gl_attrib_mask[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t gl_attrib_depth[SGI_KONA_CONTEXTS];
 
