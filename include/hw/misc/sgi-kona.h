@@ -591,11 +591,11 @@ typedef enum SGIKonaBitmapState {
 /*
  * The X colour map the X load colour map (SGI_KONA_CMD_X_COLOR_MAP) fills,
  * by address: the stock X server loads 256 entries at 0x2d00 and single
- * entries after them. The table's size is the model's choice, covering
- * that window; SGI_KONA_X_COLOR_MAP_WINDOW is the base an X pixel's index
- * is added to (inferred, see sgi_kona_x_color()).
+ * entries after them. Montrym's published architecture paper specifies
+ * 32768 colour-index map entries. SGI_KONA_X_COLOR_MAP_WINDOW is the
+ * inferred default window base, see sgi_kona_x_color().
  */
-#define SGI_KONA_X_COLOR_MAP_ENTRIES 0x4000
+#define SGI_KONA_X_COLOR_MAP_ENTRIES 0x8000
 #define SGI_KONA_X_COLOR_MAP_WINDOW  0x2d00
 
 /*
@@ -680,6 +680,8 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_TAG_COLOR_INDEX 1
 /* An X server pixel: an index into the X colour map, see sgi_kona_x_color(). */
 #define SGI_KONA_TAG_X_INDEX     2
+/* A native 12-bit main index, retained as its left-aligned 16-bit value. */
+#define SGI_KONA_TAG_X_INDEX12   3
 
 #define SGI_KONA_LIST_ROW_BYTES  4096
 #define SGI_KONA_LIST_DEFAULT    (1 * MiB)

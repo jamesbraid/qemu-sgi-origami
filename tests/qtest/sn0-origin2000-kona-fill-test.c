@@ -657,7 +657,7 @@ static void test_x_map_resolves_at_scanout(void)
 /*
  * A colour-map load reaching past the model's table stores the entries
  * inside it, counts the rest as outside, logs them, and stays in step:
- * three entries from 0x3fff put the first in the table's last entry.
+ * three entries from 0x7fff put the first in the table's last entry.
  */
 static void test_x_map_past_table(void)
 {
@@ -665,12 +665,12 @@ static void test_x_map_past_table(void)
     g_autofree char *found = NULL;
     QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
 
-    load_x_map(s, 0x3fff, (uint32_t[]){ 1, 9, 0 }, 3);
+    load_x_map(s, 0x7fff, (uint32_t[]){ 1, 9, 0 }, 3);
     assert_in_step(s);
     qtest_quit(s);
 
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "colour map load at 0x3fff count 3: 2 "
+    g_assert_nonnull(strstr(found, "colour map load at 0x7fff count 3: 2 "
                                    "entries outside the model's table"));
 }
 
@@ -1941,7 +1941,7 @@ static void test_semantic_did_map(void)
                  (uint32_t[]){ 1, (0x2e00 << 7) | (11 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x132,
-                 (uint32_t[]){ 1, (0x3fff << 7) | (7 << 3) }, 2);
+                 (uint32_t[]){ 1, (0x7fff << 7) | (7 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
         g_autofree char *actual = semantic_plane_digest(qts, plane);
@@ -1997,7 +1997,7 @@ static void test_semantic_ancillary(void)
                  (uint32_t[]){ 0x3f, (0x2f00 << 7) | (7 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x132,
-                 (uint32_t[]){ 0x3f, (0x3fff << 7) | (1 << 3) }, 2);
+                 (uint32_t[]){ 0x3f, (0x7fff << 7) | (1 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x132,
                  (uint32_t[]){ 0x3f, (0x2f00 << 7) | (1 << 3) }, 2);
@@ -2010,7 +2010,7 @@ static void test_semantic_ancillary(void)
                  (uint32_t[]){ 0x40, (0x2e00 << 7) | (1 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x132,
-                 (uint32_t[]){ 0x40, (0x3fff << 7) | (7 << 3) }, 2);
+                 (uint32_t[]){ 0x40, (0x7fff << 7) | (7 << 3) }, 2);
     g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
     kona_command(qts, 0x132,
                  (uint32_t[]){ 0x40, (0x2e00 << 7) | (7 << 3) }, 2);
@@ -2080,7 +2080,7 @@ static void test_semantic_desktop_migration(gconstpointer opaque)
     bool present = variant != 0;
     uint32_t map = variant == 4 ? 0 :
                    variant == 2 ? (0x2e00 << 7) | (11 << 3) :
-                   variant == 3 ? (0x3fff << 7) | (7 << 3) :
+                   variant == 3 ? (0x7fff << 7) | (7 << 3) :
                                   (0x2e00 << 7) | (7 << 3);
     g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
     GError *err = NULL;
@@ -2112,9 +2112,9 @@ static void test_semantic_desktop_migration(gconstpointer opaque)
     }
     /* A reused destination has different nondefault ancillary pixels. */
     kona_command(to, 0x132,
-                 (uint32_t[]){ 0, (0x3fff << 7) | (11 << 3) }, 2);
+                 (uint32_t[]){ 0, (0x7fff << 7) | (11 << 3) }, 2);
     kona_command(to, 0x132,
-                 (uint32_t[]){ 1, (0x3fff << 7) | (11 << 3) }, 2);
+                 (uint32_t[]){ 1, (0x7fff << 7) | (11 << 3) }, 2);
     did[0] = 0x12300;
     kona_command(to, TOKEN_GC, did, ARRAY_SIZE(did));
     kona_command(to, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);

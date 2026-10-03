@@ -8,8 +8,8 @@
  * big-endian words.
  *
  * Source packing defines the framed payload size. Eight-bit writes stage X
- * indices and native RGB8 pixels until finish. Sixteen-bit conversion
- * remains unsupported and consumes its known payload without drawing.
+ * indices and native RGB8 pixels until finish. Native 12-bit indices use
+ * sixteen-bit source words. L16 conversion remains unsupported.
  * What 1-bit rows paint is
  * sn0-origin2000-kona-glyph-test.c's subject; here they are checked for
  * framing only. These cases check that rule and the framing, not the
@@ -60,6 +60,7 @@
 #define PLANE_FRONT_TAG 2
 #define TAG_DIRECT      0
 #define TAG_X_INDEX     2
+#define TAG_X_INDEX12   3
 
 #define X_MAP_WINDOW    0x2d00
 #define ENTRY_GREY_192  0x304c1304
@@ -1985,6 +1986,148 @@ static void staged_dma_words(QTestState *s, const uint32_t *words, unsigned n)
     qtest_writel(s, KONA_REG(0xc00108), 0);
 }
 
+static void index12_gc(QTestState *s, uint32_t mask, unsigned gx)
+{
+    uint32_t gc[13] = { 0x12300, 0, 0, 0, 0, 0,
+                       0x180c, 0x40001, 1, 0, 5, 1, 1 };
+    uint32_t native_mask = (mask << 4) | 15;
+
+    gc[4] = (native_mask >> 4) | ((native_mask & 15) << 20);
+    gc[9] = gx * 2;
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+}
+
+static void index12_write(QTestState *s, uint32_t value)
+{
+    uint32_t word = value << 16;
+
+    index12_gc(s, 0xfff, 3);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 1, 1, 4, 1, 1, 0 }, 7);
+    pixel_write(s, 10, 20);
+    data_words(s, &word, 1);
+    pixel_finish(s);
+}
+
+static void test_write_index12(gconstpointer opaque)
+{
+    static const uint32_t words[] = { 0x01230abc, 0x0fff0aaa };
+    static const uint32_t indices[] = { 0x123, 0xabc, 0xfff, 0xaaa };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 1 || mode == 4;
+    bool migrate = mode >= 2;
+    unsigned consumed = mode == 2 ? 1 : mode == 3 ? 2 : 0;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+    uint32_t did[13] = { 0, 0, 0, 0, 0xf00fff, 0,
+                         8, 1, 0, 6, 0, 1, 1 };
+
+    /* DID 6, 7 and 8 select separate 4096-entry maps, including >16K. */
+    for (unsigned k = 0; k < 3; k++) {
+        unsigned base = 0x3800 + 0x1000 * k;
+        unsigned value = (6 + k) << 2;
+
+        did[0] = ((value & 15) << 3) | ((value & 0xfff0) << 4);
+        x_command(s, TOKEN_GC, did, ARRAY_SIZE(did));
+        x_command(s, 0x154,
+                  (uint32_t[]){ ((10 + k) << 16) | 20,
+                                ((11 + k) << 16) | 21 }, 2);
+        x_command(s, 0x132,
+                  (uint32_t[]){ 6 + k, (base << 7) | (11 << 3) | 4 }, 2);
+        x_command(s, TOKEN_COLOR_MAP,
+                  (uint32_t[]){ base + indices[k], 1 }, 2);
+        data_words(s, (uint32_t[]){ 0x3ff << (20 - 10 * k) }, 1);
+    }
+    index12_gc(s, 0xfff, 3);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ dma ? 0x10 : 0, 1, 1, 4, 4, 1, 0 }, 7);
+    pixel_write(s, 10, 20);
+    data_words(s, words, consumed);
+    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    if (migrate) {
+        dir = g_dir_make_tmp("kona-index12-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (dma) {
+        staged_dma_words(s, words, ARRAY_SIZE(words));
+    } else {
+        data_words(s, words + consumed, ARRAY_SIZE(words) - consumed);
+    }
+    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    pixel_finish(s);
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmphex(front_at(s, 10 + k, 20), ==, indices[k] << 4);
+        g_assert_cmphex(front_tag_at(s, 10 + k, 20), ==, TAG_X_INDEX12);
+    }
+    {
+        g_autofree uint8_t *frame = kona_screendump(s);
+
+        for (unsigned k = 0; k < 3; k++) {
+            g_assert_cmphex(ppm_pixel(frame, 10 + k, 20), ==,
+                            0xff << (16 - 8 * k));
+        }
+        /* No installed DID map can reinterpret this as an 8-bit index. */
+        g_assert_cmphex(ppm_pixel(frame, 13, 20), ==, 0);
+    }
+    /* Mode15 is not ordinary 16-bit palette addressing. */
+    x_command(s, 0x132, (uint32_t[]){ 6, (15 << 3) | 6 }, 2);
+    {
+        g_autofree uint8_t *frame = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(frame, 10, 20), ==, 0);
+    }
+    assert_in_step(s);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
+static void test_write_l16_refused(void)
+{
+    uint32_t word = 0xabcd0000;
+
+    qtest_system_reset(qts);
+    index12_write(qts, 0x123);
+    index12_gc(qts, 0xfff, 3);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 1, 1, 0, 1, 1, 0 }, 7);
+    pixel_write(qts, 10, 20);
+    data_words(qts, &word, 1);
+    pixel_finish(qts);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0x1230);
+    g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX12);
+    assert_in_step(qts);
+}
+
+static void test_write_index12_logic(void)
+{
+    const unsigned source = 0x96a, dest = 0x3c5, mask = 0x53a;
+    uint32_t word = source << 16;
+
+    qtest_system_reset(qts);
+    for (unsigned gx = 0; gx < 16; gx++) {
+        index12_write(qts, dest);
+        index12_gc(qts, mask, gx);
+        x_command(qts, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]){ 0, 1, 1, 4, 1, 1, 0 }, 7);
+        pixel_write(qts, 10, 20);
+        data_words(qts, &word, 1);
+        pixel_finish(qts);
+        g_assert_cmphex(front_at(qts, 10, 20), ==,
+                        copy_expected(gx, source << 4, dest << 4,
+                                       (mask << 4) | 15, 16));
+        g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX12);
+    }
+    assert_in_step(qts);
+}
+
 static void test_write_rgb_staged(gconstpointer opaque)
 {
     static const uint32_t words[] = {
@@ -2610,6 +2753,20 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
                    test_read_indexed_rows);
     qtest_add_func("sn0/origin2000/kona-pixel/weave", test_weave);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12/pio",
+                        GUINT_TO_POINTER(0), test_write_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12/dma",
+                        GUINT_TO_POINTER(1), test_write_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12/migrate-partial",
+                        GUINT_TO_POINTER(2), test_write_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12/migrate-complete",
+                        GUINT_TO_POINTER(3), test_write_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12/migrate-dma",
+                        GUINT_TO_POINTER(4), test_write_index12);
+    qtest_add_func("sn0/origin2000/kona-pixel/index12/l16-refused",
+                   test_write_l16_refused);
+    qtest_add_func("sn0/origin2000/kona-pixel/index12/logic",
+                   test_write_index12_logic);
     qtest_add_data_func("sn0/origin2000/kona-pixel/rgb-write/pio",
                         GUINT_TO_POINTER(0), test_write_rgb_staged);
     qtest_add_data_func("sn0/origin2000/kona-pixel/rgb-write/dma",

@@ -7,6 +7,7 @@
 typedef enum SGIXGCTarget {
     SGI_X_GC_UNSUPPORTED,
     SGI_X_GC_MAIN_CI8,
+    SGI_X_GC_MAIN_INDEX16,
     SGI_X_GC_MAIN_RGB8,
     SGI_X_GC_OVERLAY0,
     SGI_X_GC_OVERLAY1,
@@ -42,6 +43,9 @@ uint32_t sgi_x_logic_op(unsigned gx, uint32_t source, uint32_t destination);
 /* RGB8 accepts zero or full alpha, with all field-gap bits zero. */
 SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
                             SGIXGC *decoded);
+/* Preserve the full native main-plane index and mask. */
+SGIXGCStatus sgi_x_gc_decode_main_index(const uint32_t words[SGI_X_GC_WORDS],
+                                       SGIXGC *decoded);
 uint32_t sgi_x_gc_apply(const SGIXGC *gc, uint32_t source,
                         uint32_t destination);
 bool sgi_x_gc_noop(const SGIXGC *gc);

@@ -180,7 +180,7 @@ static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
 }
 
 static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
-                                            int x, int y)
+                                            int x, int y, bool index12)
 {
     unsigned id = sgi_plane_load(&s->desktop_mem,
                      sgi_board_memory_plane(&s->desktop_mem, 0), x, y) >> 2;
@@ -194,9 +194,11 @@ static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
         return 0;
     }
     if (!s->desktop_map_valid[id]) {
-        return sgi_kona_x_color(s, word);
+        return index12 ? 0 : sgi_kona_x_color(s, word);
     }
-    return sgi_kona_desktop_color(s, id, word & 0xff, 7, 256);
+    return index12 ? sgi_kona_desktop_color(s, id, (word >> 4) & 0xfff,
+                                           11, 4096) :
+                     sgi_kona_desktop_color(s, id, word & 0xff, 7, 256);
 }
 
 /* A colour bank's plane and the plane of its tags; bank 0 or 1. */
@@ -307,7 +309,9 @@ static uint32_t sgi_kona_bank_read(SGIKonaState *s, unsigned bank, int x,
     case SGI_KONA_TAG_COLOR_INDEX:
         return s->colormap[word & 0xff];
     case SGI_KONA_TAG_X_INDEX:
-        return sgi_kona_desktop_index_color(s, word, x, y);
+        return sgi_kona_desktop_index_color(s, word, x, y, false);
+    case SGI_KONA_TAG_X_INDEX12:
+        return sgi_kona_desktop_index_color(s, word, x, y, true);
     default:
         return word;
     }
@@ -5644,6 +5648,12 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
     if (setup[SGI_KONA_X_SETUP_MODE] & ~SGI_KONA_X_SETUP_MODE_DMA) {
         return false;
     }
+    if (pack == 1) {
+        return setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
+               setup[SGI_KONA_X_SETUP_SHIFT] == 4 &&
+               sgi_x_gc_decode_main_index(raw, gc) == SGI_X_GC_OK &&
+               raw[10] == 5 && !gc->opaque_or_tiled;
+    }
     if (pack == 2) {
         return setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
                setup[SGI_KONA_X_SETUP_SHIFT] == 8 &&
@@ -5834,6 +5844,8 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
     /* X RGB pixels occupy the low 24 bits of each big-endian word. */
     if (gc->target == SGI_X_GC_MAIN_RGB8) {
         value &= 0xffffff;
+    } else if (gc->target == SGI_X_GC_MAIN_INDEX16) {
+        value = (value << 4) & 0xffff;
     }
     sgi_plane_store(&s->x_write_mem, source, x, y, value);
     sgi_plane_store(&s->x_write_mem, valid, x, y, 1);
@@ -6228,7 +6240,8 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
         return;
     }
     target_tag = gc.target == SGI_X_GC_MAIN_RGB8 ? SGI_KONA_TAG_DIRECT :
-                                                SGI_KONA_TAG_X_INDEX;
+                 gc.target == SGI_X_GC_MAIN_INDEX16 ? SGI_KONA_TAG_X_INDEX12 :
+                                                    SGI_KONA_TAG_X_INDEX;
     sgi_kona_x_write_bounds(s, &r);
     if (r.x1 >= r.x2 || r.y1 >= r.y2) {
         return;
@@ -8617,16 +8630,31 @@ DEFINE_VMSTATE_SGI_SCANOUT(vmstate_sgi_kona_scanout, TYPE_SGI_KONA "/scanout",
  * version 2 source kept none of it, and its destination starts with no
  * scissor and an empty cache with no stipple loaded, as that source drew.
  * A binary with version 2 (up to 61b7e6c4e2) refuses version 3.
+ *
+ * Version 4 adds the upper half of the documented 32K palette. Older
+ * sources load that half as zero; older destinations refuse version 4.
  */
 static bool sgi_kona_x_server_needed(void *opaque)
 {
     return true;
 }
 
+static int sgi_kona_x_server_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    if (version_id < 4) {
+        memset(s->x_color_map + 0x4000, 0,
+               0x4000 * sizeof(s->x_color_map[0]));
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_kona_x_server = {
     .name = TYPE_SGI_KONA "/x-server",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
+    .post_load = sgi_kona_x_server_post_load,
     .needed = sgi_kona_x_server_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(video_tail_sum, SGIKonaState),
@@ -8635,8 +8663,8 @@ static const VMStateDescription vmstate_sgi_kona_x_server = {
         VMSTATE_UINT32(x_boxes_have, SGIKonaState),
         VMSTATE_UINT32_V(color_map_start, SGIKonaState, 2),
         VMSTATE_UINT32_V(color_map_outside, SGIKonaState, 2),
-        VMSTATE_UINT32_ARRAY_V(x_color_map, SGIKonaState,
-                               SGI_KONA_X_COLOR_MAP_ENTRIES, 2),
+        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0, 0x4000, 2,
+                          vmstate_info_uint32, uint32_t),
         VMSTATE_UINT32_ARRAY_V(x_position, SGIKonaState,
                                SGI_KONA_X_POSITION_WORDS, 2),
         VMSTATE_UINT32_V(x_clip_count, SGIKonaState, 2),
@@ -8674,6 +8702,8 @@ static const VMStateDescription vmstate_sgi_kona_x_server = {
         VMSTATE_UINT32_V(x_stipple_store_width, SGIKonaState, 3),
         VMSTATE_UINT32_V(x_stipple_store_height, SGIKonaState, 3),
         VMSTATE_UINT32_V(x_stipple_store_remaining, SGIKonaState, 3),
+        VMSTATE_SUB_ARRAY(x_color_map, SGIKonaState, 0x4000, 0x4000, 4,
+                          vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },
 };
