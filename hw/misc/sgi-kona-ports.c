@@ -179,6 +179,18 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_POINT6, 6 },
     { SGI_KONA_CMD_X_DATA1, 1 },
     { SGI_KONA_CMD_X_DATA3, 3 },
+    /* Established lengths, rendering outside the desktop subset. */
+    { 0x14e, 24 },
+    { 0x14f, 1 },
+    { 0x150, 6 },
+    { 0x159, 2 },
+    { 0x15b, 1 },
+    { 0x15c, 7 },
+    { 0x15d, 2 },
+    { 0x15e, 7 },
+    { 0x15f, 1 },
+    { 0x160, 6 },
+    { 0x161, 24 },
     /*
      * The box routines' rectangles, two words each: X box6 carries six, X
      * box the last of a run, and the data tokens one to five before that X

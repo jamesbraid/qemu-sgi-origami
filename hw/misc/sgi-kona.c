@@ -4283,18 +4283,7 @@ static void sgi_kona_x_spans(SGIKonaState *s, uint32_t token,
     }
 }
 
-/*
- * The words of a run of data tokens (0x142, 0x144, 0x147, 0x149, 0x14b),
- * kept until the token that ends the run. The senders send the last box of
- * a run as X box 0x154, or the last rectangle as X rect 0x152, after one
- * data token carrying the ones before it, so the ending token says how
- * the run's words read. The model draws a run when an X box, box6, rect or
- * rect6 ends it, and drops it, traced, when anything else does, a kernel
- * packet the kernel interleaves with the X server's included. Whether a
- * real pipe draws a data token's words on their own, or keeps a run across
- * a kernel packet, is unknown; every box or rectangle of a run gives the
- * same pixels either way.
- */
+/* Deferred data words use the next supported point, box or rect's shape. */
 static void sgi_kona_x_box_data(SGIKonaState *s, uint32_t token,
                                 const uint32_t *args, unsigned argc)
 {
@@ -4316,6 +4305,9 @@ static void sgi_kona_x_box_data(SGIKonaState *s, uint32_t token,
 static void sgi_kona_x_box_data_drop(SGIKonaState *s, uint32_t next)
 {
     if (s->x_boxes_have) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: X data run of %u words dropped before 0x%x\n",
+                      s->x_boxes_have, next);
         trace_sgi_kona_x_box_data_dropped(s->x_boxes_have, next);
         s->x_boxes_have = 0;
     }
@@ -4331,6 +4323,10 @@ static void sgi_kona_x_boxes(SGIKonaState *s, bool rects, const uint32_t *args,
     void (*fill)(SGIKonaState *, uint32_t, uint32_t) =
         rects ? sgi_kona_x_fill_rect : sgi_kona_x_fill_box;
 
+    if (s->x_boxes_have & 1) {
+        sgi_kona_x_box_data_drop(s, rects ? SGI_KONA_CMD_X_RECT :
+                                         SGI_KONA_CMD_X_BOX);
+    }
     for (uint32_t i = 0; i + 1 < s->x_boxes_have; i += 2) {
         fill(s, s->x_boxes[i], s->x_boxes[i + 1]);
     }
@@ -4338,6 +4334,49 @@ static void sgi_kona_x_boxes(SGIKonaState *s, bool rects, const uint32_t *args,
     for (unsigned i = 0; i + 1 < argc; i += 2) {
         fill(s, args[i], args[i + 1]);
     }
+}
+
+/* The cleared desktop subset permits only solid full-mask index copy. */
+static bool sgi_kona_x_point_gc(SGIKonaState *s)
+{
+    static const uint32_t forms[][7] = {
+        { 0x180c, 0x40001, 1, 6, 5, 1, 1 },
+        { 0xc, 1, 1, 6, 0, 1, 1 },
+    };
+    const uint32_t *gc = s->x_gc;
+
+    return !(gc[0] & ~0xff000) && gc[1] == 0x1ffe &&
+           gc[4] == 0xf00fff && !gc[5] &&
+           (!memcmp(gc + 6, forms[0], sizeof(forms[0])) ||
+            !memcmp(gc + 6, forms[1], sizeof(forms[1])));
+}
+
+static void sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
+                                  unsigned count)
+{
+    for (unsigned i = 0; i < count; i++) {
+        int x = (int16_t)(words[i] >> 16);
+        int y = (int16_t)words[i];
+
+        sgi_kona_x_fill(s, x, y, x + 1, y + 1);
+    }
+}
+
+static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
+                              unsigned argc)
+{
+    if (!sgi_kona_x_point_gc(s)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported X point GC:");
+        for (unsigned i = 0; i < SGI_KONA_X_GC_WORDS; i++) {
+            qemu_log_mask(LOG_UNIMP, " %08x", s->x_gc[i]);
+        }
+        qemu_log_mask(LOG_UNIMP, "\n");
+    } else {
+        sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have);
+        sgi_kona_x_point_words(s, args, argc);
+    }
+    s->x_boxes_have = 0;
 }
 
 /* The words of an X pixel setup, in send order. */
@@ -4786,6 +4825,10 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
                                   argc > 1 ? args[1] : 0,
                                   argc > 2 ? args[2] : 0, argc);
     switch (selector) {
+    case SGI_KONA_CMD_X_DATA1:
+    case SGI_KONA_CMD_X_DATA3:
+    case SGI_KONA_CMD_X_POINT:
+    case SGI_KONA_CMD_X_POINT6:
     case SGI_KONA_CMD_X_DATA2:
     case SGI_KONA_CMD_X_DATA4:
     case SGI_KONA_CMD_X_DATA6:
@@ -4927,6 +4970,8 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_PIXEL_COPY:
         sgi_kona_x_pixel_copy(s, args);
         break;
+    case SGI_KONA_CMD_X_DATA1:
+    case SGI_KONA_CMD_X_DATA3:
     case SGI_KONA_CMD_X_DATA2:
     case SGI_KONA_CMD_X_DATA4:
     case SGI_KONA_CMD_X_DATA6:
@@ -4949,13 +4994,22 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_X_POINT:
     case SGI_KONA_CMD_X_POINT6:
-    case SGI_KONA_CMD_X_DATA1:
-    case SGI_KONA_CMD_X_DATA3:
-        /*
-         * Consume every coordinate before considering another selector:
-         * its low bits can match a GL token. Point drawing and the joining
-         * of line-data runs are not modelled.
-         */
+        sgi_kona_x_points(s, args, argc);
+        break;
+    case 0x14e:
+    case 0x14f:
+    case 0x150:
+    case 0x159:
+    case 0x15b:
+    case 0x15c:
+    case 0x15d:
+    case 0x15e:
+    case 0x15f:
+    case 0x160:
+    case 0x161:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported X drawing token 0x%x\n",
+                      selector);
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
     case SGI_KONA_CMD_DISPLAY_MODE:
@@ -5279,6 +5333,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                       s->kernel_port.argc_expected -
                       s->kernel_port.argc_have);
         sgi_command_port_reset(&s->kernel_port);
+        sgi_kona_x_box_data_drop(s, token);
     }
     if (s->gl_port.framing) {
         qemu_log_mask(LOG_GUEST_ERROR,
