@@ -2126,7 +2126,7 @@ static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 33, .minimum_version_id = 32,
+    .name = TYPE_SGI_MGRAS, .version_id = 34, .minimum_version_id = 34,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2318,6 +2318,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(tram_kernel_txaddr, SGIMgrasState, 32),
         VMSTATE_UINT32_V(tram_kernel_tladdr, SGIMgrasState, 32),
         VMSTATE_UINT32_V(tram_kernel_rows, SGIMgrasState, 32),
+        /* Version 34 extends command payloads for the 32-row GL stipple. */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 16, 16, 34,
+                          vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {

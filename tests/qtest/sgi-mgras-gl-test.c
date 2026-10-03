@@ -90,6 +90,8 @@ static void test_hq_query_flag_only_from_query(void)
 #define GL_POINT_MODE        0x1b00
 #define GL_CCW               0x901
 #define GL_CULL_OFF          0x00007300
+#define GL_TEX_COORD3F_HDR   0x2000080c
+#define GL_TEX_COORD2F_HDR   0x40000808
 
 static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
 {
@@ -1841,6 +1843,73 @@ static void test_hq_query_answers_the_colour_index(void)
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_INDEX, 1), ==, gl_bits(0.25f));
 }
 
+/* The public point probe sends s, t and r in a 0x2000080c packet. */
+static void gl_texcoord3f(QTestState *s, float tex_s, float tex_t,
+                          float tex_r)
+{
+    gl_word(s, GL_TEX_COORD3F_HDR);
+    gl_float(s, tex_s);
+    gl_float(s, tex_t);
+    gl_float(s, tex_r);
+}
+
+static void gl_assert_current_texcoord(QTestState *s, const float coord[4])
+{
+    for (int i = 0; i < 4; i++) {
+        g_assert_cmphex(gl_attribute_query(s, 11 + i), ==,
+                        gl_bits(coord[i]));
+    }
+}
+
+static void test_gl_texcoord3f_packet_and_context_state(void)
+{
+    static const float selected[4] = { 0, 0, 0.5f, 1.0f };
+    static const float initial[4] = { 0, 0, 0, 1 };
+    static const float two_d[4] = { 0.5f, 0.25f, 0, 1 };
+
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_texcoord3f(qts, selected[0], selected[1], selected[2]);
+    gl_assert_current_texcoord(qts, selected);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_assert_current_texcoord(qts, initial);
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_assert_current_texcoord(qts, selected);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_TEX_COORD2F_HDR);
+    gl_float(qts, two_d[0]);
+    gl_float(qts, two_d[1]);
+    gl_assert_current_texcoord(qts, two_d);
+
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_assert_current_texcoord(qts, initial);
+}
+
+static void gl_texcoord3f_migration_setup(QTestState *s)
+{
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_texcoord3f(s, 0, 0, 0.75f);
+}
+
+static void gl_texcoord3f_migration_check(QTestState *s)
+{
+    static const float selected[4] = { 0, 0, 0.75f, 1.0f };
+
+    gl_assert_current_texcoord(s, selected);
+}
+
+static void test_gl_texcoord3f_state_migrates(void)
+{
+    gl_migrate(gl_texcoord3f_migration_setup, gl_texcoord3f_migration_check);
+}
+
 /*
  * The optional subsections a migration stream can carry for GL state:
  * MGRAS's own, and the shared context description's, each sent only while
@@ -2375,6 +2444,11 @@ int main(int argc, char **argv)
                    test_hq_query_answers_the_raster_position);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",
                    test_hq_query_answers_the_colour_index);
+    qtest_add_func("sn0/origin2000/mgras/gl-texcoord3f-"
+                   "packet-and-context-state",
+                   test_gl_texcoord3f_packet_and_context_state);
+    qtest_add_func("sn0/origin2000/mgras/gl-texcoord3f-state-migrates",
+                   test_gl_texcoord3f_state_migrates);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-write-mask",
                    test_hq_query_answers_the_write_mask);
     qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
