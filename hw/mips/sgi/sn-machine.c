@@ -6721,6 +6721,27 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     return false;
                 }
             } else {
+            for (const SGIModelCableList *entry = t->cables; entry;
+                 entry = entry->next) {
+                const SGIModelLinkEndList *ends = entry->value->ends;
+
+                if (QAPI_LIST_LENGTH(ends) != 2) {
+                    continue;
+                }
+                for (unsigned side = 0; side < 2; side++) {
+                    const SGIModelLinkEnd *own = side ?
+                        ends->next->value : ends->value;
+                    const SGIModelLinkEnd *peer = side ?
+                        ends->value : ends->next->value;
+
+                    if (own->kind == SGI_MODEL_LINK_END_KIND_NODE &&
+                        own->index == node_index &&
+                        peer->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
+                        node->ni_route = true;
+                    }
+                }
+            }
+ (mips/sgi: route compute PCI DMA through Numalink)
             for (board_entry = t->io_boards; board_entry;
                  board_entry = board_entry->next) {
                 const SGIModelIoBoard *board = board_entry->value;

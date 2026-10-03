@@ -6694,6 +6694,127 @@ static void test_routed_composer(const void *data)
     g_unlink(prom);
 }
 
+static void test_routed_compute_dma(void)
+{
+    const uint64_t base = SPACE_IO + (UINT64_C(2) << 33) + (0xfULL << 24);
+    const uint64_t bar = base + 0x600000;
+    const uint64_t target = 0x8000;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-bridge-dma-test,bus=node1-head-f.0,addr=2 "
+        "-global sgi-bedrock.device-mask-reset=0xf9ffffffffffffff "
+        "-nodefaults -display none", prom, image);
+    uint8_t bytes[8], expected[8], untouched[8];
+
+    for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
+        stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x780008, bytes, sizeof(bytes)));
+    }
+    /* Static placement one becomes NASID two; DMA still names node zero. */
+    stq_be_p(bytes, UINT64_C(2) << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION, bytes, sizeof(bytes)));
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x681010, 5);
+    stq_be_p(bytes, 3);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + 0x681000, bytes, sizeof(bytes)));
+    expansion_card_write(qts, base + 0x24,
+        (expansion_card_read(qts, base + 0x24, 4) & ~15U) | 0xf, 4);
+    expansion_card_write(qts, base + 0x22010, CARD_MMIO + 0x200000, 4);
+    expansion_card_write(qts, base + 0x22004, PCI_COMMAND_MEMORY_MASTER, 4);
+    expansion_card_write(qts, base + 0x214, 0x81012, 4);
+    expansion_card_write(qts, base + 0x84, 0xa00000, 4);
+    memset(untouched, 0xcc, sizeof(untouched));
+    for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            ((uint64_t)cpu << 33) + target, untouched, sizeof(untouched)));
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            ((uint64_t)cpu << 33) + target + 0x200,
+            untouched, sizeof(untouched)));
+    }
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x80008000, 4);
+    expansion_card_write(qts, bar + DMA_REG_LENGTH, sizeof(bytes), 4);
+    expansion_card_write(qts, bar + DMA_REG_SEED, 0x51, 4);
+    g_assert_cmphex(expansion_card_read(qts, bar + DMA_REG_ADDRESS, 4),
+                    ==, 0x80008000);
+    g_assert_cmpuint(expansion_card_read(qts, bar + DMA_REG_LENGTH, 4),
+                     ==, sizeof(bytes));
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), untouched, sizeof(untouched));
+    /* Source permission alone must not bypass the destination device mask. */
+    stq_be_p(bytes, UINT64_C(1) << 58);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + 0x400120, bytes, sizeof(bytes)));
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), untouched, sizeof(untouched));
+    /* Permit requester two while the other PCI requester stays denied. */
+    stq_be_p(bytes, UINT64_C(1) << 58);
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+        EXPANSION_LB_LOCAL + 0x400120, bytes, sizeof(bytes)));
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        expected[i] = 0x51 + i;
+    }
+    g_assert_true(qtest_memread_cpu(qts, 0, target, bytes, sizeof(bytes)));
+    g_test_message("DMA destination first byte 0x%02x, expected 0x%02x",
+                   bytes[0], expected[0]);
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    expansion_card_write(qts, bar + DMA_REG_SOURCE, 0x80008000, 4);
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x80008200, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target + 0x200,
+                                   bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    for (unsigned offset = 0; offset <= 0x200; offset += 0x200) {
+        g_assert_true(qtest_memread_cpu(qts, 2,
+            (UINT64_C(2) << 33) + target + offset, bytes, sizeof(bytes)));
+        g_assert_cmpmem(bytes, sizeof(bytes), untouched, sizeof(untouched));
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, 0, target + 0x400,
+                                    untouched, sizeof(untouched)));
+    expansion_card_write(qts, bar + DMA_REG_ADDRESS, 0x80008400, 4);
+    /* Deny the launching widget at each II, then allow it without widget E. */
+    for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
+        stq_be_p(bytes, UINT64_MAX & ~(UINT64_C(1) << 15));
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x400118, bytes, sizeof(bytes)));
+        expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+        expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+        g_assert_true(qtest_memread_cpu(qts, 0, target + 0x400,
+                                       bytes, sizeof(bytes)));
+        g_assert_cmpmem(bytes, sizeof(bytes), untouched, sizeof(untouched));
+        stq_be_p(bytes, UINT64_MAX & ~(UINT64_C(1) << 14));
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x400118, bytes, sizeof(bytes)));
+    }
+    expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target + 0x400,
+                                   bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, target + 0x400,
+                                    untouched, sizeof(untouched)));
+    /* A wrong turn must refuse both directions rather than use placement. */
+    stq_be_p(bytes, 0);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + 0x681000, bytes, sizeof(bytes)));
+    expansion_card_write(qts, bar + DMA_REG_SEED, 0x81, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
+    expansion_card_write(qts, bar + DMA_REG_GO, 2, 4);
+    g_assert_true(qtest_memread_cpu(qts, 0, target + 0x400,
+                                   bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), untouched, sizeof(untouched));
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
 static void test_compute_md_special_windows(const void *data)
 {
     bool routed = GPOINTER_TO_INT(data);
@@ -8161,6 +8282,8 @@ int main(int argc, char **argv)
                         test_routed_composer);
     qtest_add_data_func("sn/builder/routed/composer-targeted",
                         GINT_TO_POINTER(1), test_routed_composer);
+    qtest_add_func("sn/builder/routed/compute-dma",
+                   test_routed_compute_dma);
     qtest_add_func("sn/builder/routed/serial-refusals",
                    test_routed_serial_refusals);
     qtest_add_data_func("sn/builder/expansion/controller-serial/override",
