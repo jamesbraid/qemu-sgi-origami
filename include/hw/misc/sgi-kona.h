@@ -316,6 +316,7 @@ typedef struct SGIKonaGLReturnState {
  * bindings authorize their source separately from the renderer's state.
  */
 typedef struct SGIKonaGLPipe {
+    bool unpack_swap_bytes;
     uint32_t unpack_alignment;
     uint32_t unpack_row_length;
     uint32_t pack_alignment;
