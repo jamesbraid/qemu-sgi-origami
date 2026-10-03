@@ -8929,6 +8929,24 @@ static void texture_adapter_bind_env(QTestState *qts, uint32_t base,
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+static void texture_adapter_bind_border(QTestState *qts, uint32_t base,
+                                         uint32_t width_word,
+                                         uint32_t height_word,
+                                         uint32_t border_rg,
+                                         uint32_t border_ba)
+{
+    const uint32_t words[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x08000420, width_word, height_word, 1,
+        0x13003c00, border_rg, border_ba,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, base, 0, 0,
+        0x00010406, 0,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
 static void texture_adapter_bind(QTestState *qts, uint32_t base,
                                   uint32_t sampler, uint32_t env)
 {
@@ -9752,6 +9770,122 @@ static void test_texture_adapter_nearest_clamp(void)
     texture_adapter_point(qts, 22, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0x12345678);
     qtest_quit(qts);
+}
+
+static void test_texture_adapter_nearest_clamp_border(void)
+{
+    static const struct {
+        uint32_t rg, ba, expected;
+    } colours[] = {
+        { 0x00fff000, 0x00000fff, 0xff0000ff },
+        { 0x00000fff, 0x00000fff, 0x00ff00ff },
+        { 0, 0x00ffffff, 0x0000ffff },
+        { 0x00000fff, 0x00fff800, 0x00ffff80 },
+        { 0x00000fff, 0x00fff000, 0x00ffff00 },
+    };
+    const uint64_t page = ODSY_SHADOW_PAGE;
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+    qtest_writel(qts, page + ODSY_HW_PIPE_STATE, 0x4);
+    qtest_writel(qts, page + ODSY_HW_INDEX_WORD, ODSY_GL_REPLAY_INDEX);
+    qtest_writel(qts, page + ODSY_HW_COLOUR_WORD, ODSY_GL_COLOR_3I);
+    texture_adapter_upload(qts, 0x180000, (const uint32_t[4]) {
+        0xff000040, 0x00ff0080, 0x0000ffc0, 0xffffffff,
+    });
+    texture_adapter_window(qts);
+    context_switch_to(qts, 1);
+    for (unsigned i = 0; i < ARRAY_SIZE(colours); i++) {
+        texture_adapter_bind_border(qts, 0x180000, 0x00fc0002,
+                                     0x00fc0002, colours[i].rg,
+                                     colours[i].ba);
+        texture_adapter_point(qts, 10 + i, 10, -0.25f, 0.25f);
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==,
+                        colours[i].expected);
+    }
+    texture_adapter_bind_border(qts, 0x180000, 0x00fc0002, 0x00fc0002,
+                                 0x00000fff, 0x00ffffff);
+    texture_adapter_point(qts, 20, 10, 0.25f, 0.25f);
+    texture_adapter_point(qts, 21, 10, 1.25f, 0.25f);
+    texture_adapter_point(qts, 22, 10, 0.25f, -0.25f);
+    texture_adapter_point(qts, 23, 10, 0.25f, 1.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, 0xff000040);
+    g_assert_cmphex(odsy_test_pixel(qts, 21, 10), ==, 0x00ffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==, 0x00ffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 23, 10), ==, 0x00ffffff);
+
+    /* Each context must upload its own border words after switching. */
+    context_switch_to(qts, 2);
+    texture_adapter_bind_border(qts, 0x180000, 0x00fc0002, 0x00fc0002,
+                                 0x00fff000, 0x00000fff);
+    texture_adapter_point(qts, 24, 10, -0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 24, 10), ==, 0xff0000ff);
+    context_switch_to(qts, 1);
+    texture_adapter_bind_border(qts, 0x180000, 0x00fc0002, 0x00fc0002,
+                                 0x00000fff, 0x00ffffff);
+    texture_adapter_point(qts, 25, 10, -0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 25, 10), ==, 0x00ffffff);
+
+    /* Reject mismatched dimensions and reserved high bits. */
+    odsy_test_pixel_write(qts, 26, 10, 0x12345678);
+    texture_adapter_bind_border(qts, 0x180000, 0x00fc0004, 0x00fc0002,
+                                 0, 0);
+    texture_adapter_point(qts, 26, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 26, 10), ==, 0x12345678);
+    texture_adapter_bind_border(qts, 0x180000, 0x00fd0002, 0x00fc0002,
+                                 0, 0);
+    texture_adapter_point(qts, 26, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 26, 10), ==, 0x12345678);
+    texture_adapter_bind_border(qts, 0x180000, 0x00fc0002, 0x00fc0002,
+                                 0x01000000, 0);
+    texture_adapter_point(qts, 26, 10, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 26, 10), ==, 0x12345678);
+    texture_adapter_bind_border(qts, 0xdead00, 0x00fc0002, 0x00fc0002,
+                                 0, 0);
+    texture_adapter_point(qts, 26, 10, 0.25f, 0.25f);
+    /* A valid sampler without uploaded storage draws untextured. */
+    g_assert_cmphex(odsy_test_pixel(qts, 26, 10), ==, ODSY_PLANE_YELLOW);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_clamp_border_state_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-clamp-border-state-XXXXXX", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_adapter_upload(from, 0x180000, (const uint32_t[4]) {
+        0xff000040, 0x00ff0080, 0x0000ffc0, 0xffffffff,
+    });
+    texture_adapter_window(from);
+    texture_adapter_bind_border(from, 0x180000, 0x00fc0002,
+                                 0x00fc0002, 0x00000fff,
+                                 0x00fff800);
+    texture_adapter_point(from, 10, 10, -0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(from, 10, 10), ==, 0x00ffff80);
+
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    /* Raw sampler words and backing objects survive without reupload. */
+    texture_adapter_point(to, 11, 10, -0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x00ffff80);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void test_texture_adapter_binding_filters_matrix(void)
@@ -12405,6 +12539,10 @@ int main(int argc, char **argv)
                    test_texture_adapter_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/nearest-clamp",
                    test_texture_adapter_nearest_clamp);
+    qtest_add_func("sn1/odyssey/texture-adapter/nearest-clamp-border",
+                   test_texture_adapter_nearest_clamp_border);
+    qtest_add_func("sn1/odyssey/texture-adapter/clamp-border-state-restore",
+                   test_texture_adapter_clamp_border_state_restore);
     qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
                    test_texture_chain_explicit_level);
     qtest_add_func("sn1/odyssey/texture-adapter/integer-quads",
