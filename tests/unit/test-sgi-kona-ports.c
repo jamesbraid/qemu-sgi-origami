@@ -224,10 +224,10 @@ static void test_doorbell_excluded_selectors(void)
 /*
  * The command-page tokens and the word count after each, first argument
  * included, as the kernel and the X server send them. 0x12e and 0x12f count
- * their start and entry count only, 0x130 its slot word only, 0x13d its
- * entry, width and height only, and 0x1a6 its command number only: the
- * device frames the colour-map and gamma entries, the cursor data, the
- * stipple rows and the video command's data words itself.
+ * their start and entry count only, 0x130 and 0x131 their slot word only,
+ * 0x13d its entry, width and height only, and 0x1a6 its command number only.
+ * The device frames the colour-map and gamma entries, the cursor image
+ * and colours, the stipple rows and the video command's data words itself.
  */
 static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1f1, 3 }, { 0x1f2, 3 }, { 0x1fd, 3 }, { 0x1f8, 1 }, { 0x1dd, 1 },
@@ -243,6 +243,9 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1e7, 1 }, { 0x1eb, 6 }, { 0x1c8, 2 },
     { 0x16d, 2 }, { 0x16e, 2 }, { 0x170, 1 }, { 0x171, 1 }, { 0x167, 4 },
     { 0x16f, 3 }, { 0x14c, 1 }, { 0x14d, 6 }, { 0x141, 1 }, { 0x143, 3 },
+    { 0x131, 1 }, { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
+    { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 }, { 0x15f, 1 },
+    { 0x160, 6 }, { 0x161, 24 },
 };
 
 /*
