@@ -177,7 +177,7 @@ static void tex_migration_load_captured_volume(QTestState *t,
                                                uint32_t depth)
 {
     uint32_t bytes = 2 * 2 * depth * 4;
-    uint32_t box[6] = { 0, 0, 1, 1, 2 << 16 | 2, depth };
+    uint32_t box[6] = { 0, 0, 2, 2, 2 << 16 | 2, depth };
     uint32_t flags = depth == 1 ? 0x98 : 0x198;
 
     g_assert_cmpuint(depth, >=, 1);
@@ -659,6 +659,67 @@ static void test_gl_state_migration(void)
     g_rmdir(tmpfs);
 }
 
+static uint32_t gl_stipple_reverse32(uint32_t value)
+{
+    uint32_t out = 0;
+
+    for (int bit = 0; bit < 32; bit++) {
+        out |= ((value >> bit) & 1) << (31 - bit);
+    }
+    return out;
+}
+
+/* A 32-row upload resumes after migration with all earlier rows retained. */
+static void test_gl_polygon_stipple_upload_migration(void)
+{
+    uint32_t rows[32];
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    for (int row = 0; row < ARRAY_SIZE(rows); row++) {
+        rows[row] = 1u << row;
+    }
+    tmpfs = g_dir_make_tmp("sn0-mgras-gl-stipple-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    gl_transform_start(from);
+    gl_width_clear(from);
+    gl_word(from, 0x00004e80);
+    for (int row = 0; row < 17; row++) {
+        gl_word(from, gl_stipple_reverse32(rows[row]));
+    }
+
+    sgi_migrate_stopped(from, uri);
+
+    for (int row = 17; row < ARRAY_SIZE(rows); row++) {
+        gl_word(to, gl_stipple_reverse32(rows[row]));
+    }
+    gl_one(to, 0x00006d04, 1);
+    gl_width_clear(to);
+    gl_word(to, GL_BEGIN_QUADS);
+    gl_vertex2f(to, 0, 0);
+    gl_vertex2f(to, 32, 0);
+    gl_vertex2f(to, 32, 32);
+    gl_vertex2f(to, 0, 32);
+    gl_word(to, GL_END_OF(GL_BEGIN_QUADS));
+    for (int row = 0; row < ARRAY_SIZE(rows); row++) {
+        g_assert_cmphex(gl_window_pixel(to, row, row), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(to, (row + 1) & 31, row), ==, 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 /*
  * Every context's GL state crosses a migration, and so does which one is
  * current: b's clear colour applies before any switch on the destination,
@@ -717,6 +778,169 @@ static void test_gl_context_table_migration(void)
     qtest_quit(to);
     qtest_quit(from);
     g_rmdir(tmpfs);
+}
+
+static void migration_gl_read_map(QTestState *qts)
+{
+    static const uint8_t header[24] = { 0 };
+    uint8_t pages[16] = { 0 };
+
+    stq_be_p(pages, 0x30);
+    stq_be_p(pages + 8, 0x31);
+    qtest_memwrite(qts, 0x2000, header, sizeof(header));
+    qtest_memwrite(qts, 0x2018, pages, sizeof(pages));
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482608);
+    qtest_writeq(qts, MGRAS_REG(0x130400), 0x2018);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483304 << 32) | 2);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00484e04 << 32) | (9u << 16));
+}
+
+static void migration_gl_select_read_buffer(QTestState *qts, uint32_t first,
+                                            uint32_t second, uint32_t mode)
+{
+    gl_word(qts, 0x0000440c);
+    gl_word(qts, first);
+    gl_word(qts, second);
+    gl_word(qts, mode);
+}
+
+static void migration_gl_read_pixel(QTestState *qts,
+                                    const uint8_t expected[4])
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    uint8_t got[sizeof(poison)];
+
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    gl_word(qts, 0x00009600);
+    gl_word(qts, 0x0000d214);
+    gl_word(qts, 0x11e23929);
+    gl_word(qts, 0x01000000);
+    gl_word(qts, 0xff);
+    gl_word(qts, 0);
+    gl_word(qts, 2);
+    gl_word(qts, 0x0000cd24);
+    gl_word(qts, 0);
+    gl_word(qts, 1);
+    gl_word(qts, 4);
+    gl_word(qts, 0x31e);
+    gl_word(qts, 0);
+    gl_word(qts, 2);
+    gl_word(qts, 1);
+    gl_word(qts, 0x18d);
+    gl_word(qts, 0);
+
+    gl_word(qts, 0x00007c08);
+    gl_word(qts, 1);
+    gl_word(qts, 4);
+    gl_word(qts, GL_INLINE_BLOCK | 16);
+    gl_word(qts, 0x153);
+    gl_word(qts, 0x00010001);
+    gl_word(qts, 0x2b2);
+    gl_word(qts, 0);
+    gl_word(qts, 0x00007f08);
+    gl_word(qts, 2);
+    gl_word(qts, 4);
+    gl_word(qts, GL_INLINE_BLOCK | 16);
+    gl_word(qts, 0x158);
+    gl_word(qts, 0x00010001);
+    gl_word(qts, 0x159);
+    gl_word(qts, 0x00400080);
+    gl_word(qts, 0x00007c08);
+    gl_word(qts, 2);
+    gl_word(qts, 6);
+    gl_word(qts, GL_INLINE_BLOCK | 24);
+    gl_word(qts, REG_BLOCK_START);
+    gl_word(qts, 0x00040004);
+    gl_word(qts, 0x31a);
+    gl_word(qts, REG_BLOCK_END);
+    gl_word(qts, 0x00040004);
+    gl_word(qts, 0x31c);
+
+    gl_one(qts, 0x0000db04, 0x4009);
+    gl_word(qts, 0x0000f200);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 1, ==, 1);
+    gl_word(qts, 0x000c0004);
+    gl_word(qts, 0x200);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080004 << 32) | 0x80000000);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)0x00080504 << 32);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080604 << 32) | 0xd50);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0204 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0304 << 32) | 0x00010001);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0404 << 32) | 0x00400080);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0604 << 32) | 0xa);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_FENCE);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0xbf);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0504 << 32) | 0x4009);
+    gl_word(qts, 0x000e0400);
+    gl_word(qts, 0x000e0100);
+    gl_word(qts, 0x000a0704);
+    gl_word(qts, 0);
+    gl_word(qts, 0x000c0004);
+    gl_word(qts, 0xe00);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 1, ==, 1);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, 0x0000d300);
+    gl_word(qts, 0x00009700);
+
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, 4, expected, 4);
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+/* Read-buffer selection belongs to each GL context, not the shared drawable. */
+static void test_gl_read_buffer_context_switch(void)
+{
+    static const uint8_t front[4] = { 0xff, 0, 0, 0xff };
+    static const uint8_t back[4] = { 0, 0xff, 0, 0xff };
+    QTestState *s = qtest_init(MIGRATION_ARGS);
+
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    gl_draw_buffer(s, 1);
+    gl_clear_color(s, 1, 0, 0, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    gl_draw_buffer(s, 2);
+    gl_clear_color(s, 0, 1, 0, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    migration_gl_select_read_buffer(s, 1, 0, 0x405);
+
+    gl_enter_slot(s, GL_SLOT_B);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_window_projection(s);
+    migration_gl_select_read_buffer(s, 0, 0, 0x404);
+    migration_gl_read_map(s);
+
+    gl_enter_slot(s, GL_SLOT_A);
+    migration_gl_read_pixel(s, back);
+    gl_enter_slot(s, GL_SLOT_B);
+    migration_gl_read_pixel(s, front);
+    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+
+    qtest_quit(s);
 }
 
 /*
@@ -927,12 +1151,16 @@ int main(int argc, char **argv)
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
                    test_gl_state_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/upload-migration",
+                   test_gl_polygon_stipple_upload_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
                    test_gl_texture_matrix_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
                    test_gl_longest_block_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
                    test_gl_context_table_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-read-buffer-context-switch",
+                   test_gl_read_buffer_context_switch);
     qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",
                    test_gl_open_primitive_migration);
     qtest_add_func("sn0/origin2000/mgras/context-payload-migration",

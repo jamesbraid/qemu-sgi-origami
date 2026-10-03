@@ -782,6 +782,36 @@ static void test_variants(gconstpointer data)
     }
 }
 
+/* Exercise the XIO-routed raster and readback path for every board tuple. */
+static void test_family_composition(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(variants); i++) {
+        const OctaneVariant *v = &variants[i];
+        g_autofree char *selection = g_strdup_printf(
+            ",graphics-board=%s,graphics-widget=%u", v->board, v->widget);
+        QTestState *qts = start(octane2, selection, v->implemented ? "" :
+                                "-global sgi-mgras.x-unimplemented-board=on");
+        uint64_t sh = short_base(v->widget);
+        uint64_t lo = long_base(v->widget);
+        uint32_t heart = qtest_readl(qts, HEART_WIDGET + CONTROL);
+        uint32_t bridge = qtest_readl(qts, BRIDGE + CONTROL);
+        uint32_t control = 0x39a562d7;
+
+        qtest_writel(qts, sh + CONTROL, control);
+        local_dma(qts, sh, lo);
+
+        /* The command path leaves the owning board's control word intact. */
+        g_assert_cmphex(qtest_readl(qts, sh + CONTROL), ==, control);
+        g_assert_cmphex(qtest_readl(qts, lo + CONTROL), ==, control);
+        g_assert_cmphex(qtest_readl(qts, HEART_WIDGET + CONTROL), ==, heart);
+        g_assert_cmphex(qtest_readl(qts, BRIDGE + CONTROL), ==, bridge);
+        assert_core(qts, octane2);
+        qtest_quit(qts);
+    }
+}
+
 /* DMA into HEART memory and interrupt packets to HEART from widget 12. */
 static void test_widget_transport(gconstpointer data)
 {
@@ -818,6 +848,7 @@ int main(int argc, char **argv)
         { "rejected-widget", test_rejected_widget },
         { "rejected-widget-without-board", test_rejected_widget_without_board },
         { "variants", test_variants },
+        { "family-composition", test_family_composition },
         { "widget-transport", test_widget_transport },
     };
     const uint8_t erased[] = { 0xff, 0xff, 0xff, 0xff };
