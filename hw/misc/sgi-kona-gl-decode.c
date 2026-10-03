@@ -391,16 +391,17 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     if (min >= 3) {
         /*
          * Positive effective LOD bounds encode trunc(64 * (LOD + 1)).
-         * Zero is the lower-bound saturation. Other sub-64 bounds use a
-         * storage-dependent negative-LOD conversion we do not implement.
-         * Public base/max levels cannot be recovered from these bounds.
+         * Below 64 the base-zero producer uses a quantized exponential.
+         * Its exact negative lambda cannot be recovered. For ordinary
+         * filters every negative lambda selects magnification, so retain
+         * that decision with categorical bounds rather than invert it.
+         * Nonzero base levels use another metric and remain unsupported.
          */
-        if (params->base_level || (record[2] & 0xfff00000) ||
-            (lo && lo < 64) || hi < 64) {
+        if (params->base_level || (record[2] & 0xfff00000) || lo > hi) {
             return false;
         }
-        next.min_lod = lo ? lo / 64.0 - 1.0 : -1000.0;
-        next.max_lod = hi / 64.0 - 1.0;
+        next.min_lod = lo >= 64 ? lo / 64.0 - 1.0 : -1000.0;
+        next.max_lod = hi >= 64 ? hi / 64.0 - 1.0 : -1.0;
         if (next.min_lod > next.max_lod) {
             return false;
         }
