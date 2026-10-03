@@ -3758,6 +3758,77 @@ static void test_command_fifo_image_raster_clips_descending(void)
     qtest_quit(qts);
 }
 
+/* Screen image PIO adds the signed window origin before screen checks. */
+static void test_command_fifo_image_raster_window_origin(void)
+{
+    QTestState *qts = board_start("");
+
+    window_origin(qts, 8, 6);
+    image_begin(qts, 2, 3, 4, 4);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00112233);
+    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 9), ==, 0x112233ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 9), ==, 0x445566ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, 0);
+
+    window_origin(qts, 0x1ffe, 0x1ffe);
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    image_begin(qts, 1, 1, 3, 3);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00ff0000);
+    cmd_push(qts, 0x0000ff00);
+    cmd_push(qts, 0x000000ff);
+    cmd_push(qts, 0x00ffffff);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0xffffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 1), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 1, 0), ==, 0);
+
+    window_origin(qts, 100, 200);
+    window_clip(qts, (const uint32_t[][4]) { { 102, 201, 102, 201 } }, 1);
+    image_begin(qts, 1, 1, 3, 3);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(4, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00ff0000);
+    cmd_push(qts, 0x0000ff00);
+    cmd_push(qts, 0x000000ff);
+    cmd_push(qts, 0x00ffffff);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_pixel(qts, 102, 201), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 101, 201), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 102, 202), ==, 0);
+
+    window_origin(qts, 8, 9);
+    cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    cmd_push(qts, 0x16c000);
+    cmd_push(qts, 2);
+    cmd_push(qts, 0x080024d0);
+    cmd_push(qts, 0);
+    image_begin(qts, 2, 3, 3, 4);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00abcdef);
+    cmd_push(qts, ODSY_CMD_GL_END);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 2, 3), ==,
+                    0xabcdefff);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16c000, 10, 12), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 12), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /*
  * The header's format code, not the burst tag, lays out the bytes
  * (docs/analysis/odyssey-gl-texturing.md, section 3): 0x4b one 0xRRGGBBAA
@@ -11526,6 +11597,8 @@ int main(int argc, char **argv)
                    test_command_fifo_image_raster_empty_extent);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-clips-descending",
                    test_command_fifo_image_raster_clips_descending);
+    qtest_add_func("sn1/odyssey/command-fifo-image-raster-window-origin",
+                   test_command_fifo_image_raster_window_origin);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-formats",
                    test_command_fifo_image_raster_formats);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-colour-index",
