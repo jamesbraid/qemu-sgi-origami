@@ -474,18 +474,22 @@ static void board_test_fixture_memory_request(Object *obj, const char *request,
 {
     SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(obj);
     uint64_t address, value;
-    unsigned size, mode, cca;
+    unsigned size, mode, cca, cpu = 2;
     uint8_t bytes[8];
     MemTxAttrs attrs = { .requester_id = 16 };
     AddressSpace *as;
 
     if (!s->memory_callback_ready ||
-        sscanf(request, "%" SCNx64 " %u %" SCNx64 " %u %u",
-               &address, &size, &value, &mode, &cca) != 5 ||
-        !size || size > sizeof(bytes) || mode > 8 || cca > 7) {
+        sscanf(request, "%" SCNx64 " %u %" SCNx64 " %u %u %u",
+               &address, &size, &value, &mode, &cca, &cpu) < 5 ||
+        !size || size > sizeof(bytes) || mode > 8 || cca > 7 ||
+        (cpu != 0 && cpu != 2)) {
         error_setg(errp, "invalid sn1 memory comparison request");
         return;
     }
+    s->memory_callback.endpoint = &SN1_NODE(object_resolve_path(
+        cpu ? "/machine/node1" : "/machine/node0", NULL))->endpoint;
+    attrs.requester_id = cpu ? 16 : 0;
     if (mode == 8) {
         uint64_t page = address & ~UINT64_C(0xfff);
 
@@ -493,7 +497,7 @@ static void board_test_fixture_memory_request(Object *obj, const char *request,
             error_setg(errp, "CPU callback page is already installed");
             return;
         }
-        as = cpu_get_address_space(qemu_get_cpu(2), 0);
+        as = cpu_get_address_space(qemu_get_cpu(cpu), 0);
         s->memory_cpu_root = as->root;
         s->memory_cpu_owner = memory_region_owner(as->root);
         object_ref(s->memory_cpu_owner);
@@ -539,7 +543,7 @@ static void board_test_fixture_memory_request(Object *obj, const char *request,
     attrs.mips_cca = cca;
     attrs.mips_uncached = cca == 2;
     as = mode & 2 ? &s->memory_callback_as :
-        cpu_get_address_space(qemu_get_cpu(2), 0);
+        cpu_get_address_space(qemu_get_cpu(cpu), 0);
     {
         MemoryRegionSection section = memory_region_find(as->root, address,
                                                          size);

@@ -418,8 +418,8 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
                                                attrs, buffer, size);
         }
     }
-    if (local < memory_region_size(node->ram) &&
-        size <= memory_region_size(node->ram) - local) {
+    if (local < memory_region_size(&node->ni_target[0]) &&
+        size <= memory_region_size(&node->ni_target[0]) - local) {
         as = &node->ni_ram_as;
         offset = local;
     } else if (local >= SN1_HUB_REMOTE_REGISTERS_ADDRESS +
