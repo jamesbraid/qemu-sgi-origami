@@ -21,6 +21,13 @@ typedef struct SGIKonaTextureLevel {
     uint32_t *pixels;
 } SGIKonaTextureLevel;
 
+#define SGI_KONA_TEXTURE_TABLE_LEVELS 16u
+
+typedef struct SGIKonaTextureNativeImage {
+    uint32_t header[20];
+    SGIKonaTextureLevel image;
+} SGIKonaTextureNativeImage;
+
 typedef struct SGIKonaTextureObject {
     uint32_t handle, count;
     SGIKonaTextureParams params;
@@ -28,6 +35,10 @@ typedef struct SGIKonaTextureObject {
     SGIGLTexLevel view[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexPyramid pyramid;
     SGIGLTexImage image;
+    uint32_t native_count;
+    bool native_table_valid;
+    uint32_t native_table[SGI_KONA_TEXTURE_TABLE_LEVELS];
+    SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
 } SGIKonaTextureObject;
 
 typedef struct SGIKonaTextureState {
@@ -46,6 +57,19 @@ bool sgi_kona_texture_upload(SGIKonaTextureState *s, uint32_t handle,
                             uint32_t level, uint32_t width, uint32_t height,
                             uint32_t base_format, uint32_t internal_format,
                             const uint32_t *rgba);
+/* Replace a validated rectangle in an existing normalized level. */
+bool sgi_kona_texture_subimage(SGIKonaTextureState *s, uint32_t handle,
+                              uint32_t level, uint32_t x, uint32_t y,
+                              uint32_t width, uint32_t height,
+                              const uint32_t *rgba);
+/* Physical descriptors remain independent of the later logical level table. */
+bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
+                                   const uint32_t header[20],
+                                   const uint32_t *rgba,
+                                   uint32_t base_format,
+                                   uint32_t internal_format);
+bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
+                                  const uint32_t table[16]);
 /* NULL params retain the object's sampler, including for an incomplete view. */
 bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
                           const SGIKonaTextureParams *params);

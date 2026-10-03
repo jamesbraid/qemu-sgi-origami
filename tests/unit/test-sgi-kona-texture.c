@@ -78,6 +78,66 @@ static void test_objects(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+static void assert_image(SGIKonaTextureState *s, const uint32_t *pixels,
+                         uint32_t width, uint32_t height)
+{
+    const SGIGLTexImage *im = sgi_kona_texture_resolve(s);
+    const SGIGLTexLevel *l;
+
+    g_assert_nonnull(im);
+    g_assert_cmpuint(im->pyramid->count, ==, 1);
+    l = &im->pyramid->levels[0];
+    for (unsigned y = 0; y < height; y++) {
+        for (unsigned x = 0; x < width; x++) {
+            uint32_t rgba;
+
+            g_assert_true(l->read_texel(l->opaque, l->level, x, y, &rgba));
+            g_assert_cmphex(rgba, ==, pixels[y * width + x]);
+        }
+    }
+}
+
+static void test_subimage(void)
+{
+    SGIKonaTextureState s;
+    const uint32_t original[] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    const uint32_t patch[] = { 9, 10, 11, 12 };
+    const uint32_t updated[] = { 1, 9, 10, 4, 5, 11, 12, 8 };
+    const uint32_t aliased[] = { 1, 1, 9, 4, 5, 10, 4, 8 };
+    SGIKonaTextureObject *o;
+    uint64_t bytes;
+
+    sgi_kona_texture_init(&s);
+    g_assert_true(sgi_kona_texture_upload(&s, 7, 0, 4, 2,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, original));
+    g_assert_true(sgi_kona_texture_bind(&s, 7, NULL));
+    bytes = s.bytes;
+    g_assert_true(sgi_kona_texture_subimage(&s, 7, 0, 1, 0, 2, 2, patch));
+    assert_image(&s, updated, 4, 2);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 0, 3, 0, 2, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 0, UINT32_MAX, 0,
+                                            2, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 0, 0, UINT32_MAX,
+                                            2, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 0, 0, 0,
+                                            UINT32_MAX, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 1, 0, 0, 2, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 8, 0, 0, 0, 2, 2, patch));
+    g_assert_false(sgi_kona_texture_subimage(&s, 7, 0, 0, 0, 2, 2, NULL));
+    g_assert_true(sgi_kona_texture_subimage(&s, 7, 0, 4, 2, 0, 0, NULL));
+    assert_image(&s, updated, 4, 2);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    g_assert_cmpuint(g_hash_table_size(s.objects), ==, 1);
+
+    /* A source borrowed from the same level is copied before any store. */
+    o = g_hash_table_lookup(s.objects, GUINT_TO_POINTER(7));
+    g_assert_true(sgi_kona_texture_subimage(&s, 7, 0, 1, 0, 2, 2,
+                                           o->levels[0].pixels));
+    assert_image(&s, aliased, 4, 2);
+    sgi_kona_texture_cleanup(&s);
+}
+
 static void store_colour(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour)
 {
@@ -250,6 +310,123 @@ static void test_migration(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+static void test_native(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    uint32_t table[16];
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 2, [2] = 2, [10] = 42,
+        [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2181, [18] = 17,
+    };
+    const uint32_t pixels[] = { 0xff0000ff, 0x00ff00ff,
+                                0x0000ffff, 0xffffffff };
+    const uint32_t updated[] = { 0xff0000ff, 0x00ff00ff,
+                                 0x0000ffff, 0x00ff00ff };
+    uint64_t bytes;
+
+    sgi_kona_texture_init(&s);
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = p.mag_filter = SGI_GL_NEAREST;
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = UINT32_MAX;
+    }
+    table[0] = 17;
+    /* Physical data can arrive before the logical level map. */
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_bind(&s, 42, &p));
+    g_assert_cmpuint(sgi_kona_texture_resolve(&s)->pyramid->count, ==, 0);
+    g_assert_true(sgi_kona_texture_native_table(&s, 42, table));
+    assert_image(&s, pixels, 2, 2);
+    bytes = s.bytes;
+    h[19] = 1;
+    g_assert_false(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    h[19] = 0;
+    h[17] |= 0x20;
+    g_assert_false(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    h[17] &= ~0x20u;
+    assert_image(&s, pixels, 2, 2);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    h[1] = h[2] = h[11] = h[12] = 1;
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, green,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    assert_image(&s, updated, 2, 2);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    h[11] = h[13] = 2;
+    g_assert_false(sgi_kona_texture_native_upload(&s, h, green,
+                                                 SGI_GL_RGBA, SGI_GL_RGBA));
+    assert_image(&s, updated, 2, 2);
+    h[10] = 43;
+    h[1] = h[2] = 2;
+    h[11] = h[12] = 0;
+    h[13] = h[14] = 1;
+    /* A different object can instead receive its table before its data. */
+    g_assert_true(sgi_kona_texture_native_table(&s, 43, table));
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_bind(&s, 43, &p));
+    assert_image(&s, pixels, 2, 2);
+    /* Two banks matching the same descriptor leave the level unresolved. */
+    h[17] ^= 8;
+    g_assert_true(sgi_kona_texture_native_upload(&s, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_cmpuint(sgi_kona_texture_resolve(&s)->pyramid->count, ==, 0);
+    sgi_kona_texture_delete(&s, 43);
+    g_assert_true(sgi_kona_texture_bind(&s, 42, &p));
+    assert_image(&s, updated, 2, 2);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    sgi_kona_texture_delete(&s, 42);
+    g_assert_cmpuint(s.bytes, ==, 0);
+    sgi_kona_texture_cleanup(&s);
+}
+
+static void test_native_migration(void)
+{
+    SGIKonaTextureState src, dst;
+    uint32_t table[16];
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 1, [2] = 1, [10] = 99,
+        [16] = 0x11, [17] = 0x2189,
+    };
+    GByteArray *a;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = UINT32_MAX;
+    }
+    table[0] = 0;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, red,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_bind(&src, 99, NULL));
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmpuint(sgi_kona_texture_resolve(&dst)->pyramid->count, ==, 0);
+    g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
+    assert_image(&dst, red, 1, 1);
+    g_byte_array_unref(a);
+    g_assert_true(sgi_kona_texture_native_table(&src, 99, table));
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    assert_image(&dst, red, 1, 1);
+    g_assert_cmpuint(dst.bytes, ==, src.bytes);
+    /* Native width: header16 + object8 + sampler120 + map72 + header80. */
+    stl_be_p(a->data + 296, UINT32_MAX);
+    g_assert_false(load(a, &dst));
+    assert_image(&dst, red, 1, 1);
+    g_byte_array_unref(a);
+    a = save(&src);
+    g_byte_array_set_size(a, a->len - 1);
+    g_assert_false(load(a, &dst));
+    assert_image(&dst, red, 1, 1);
+    g_byte_array_unref(a);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -257,5 +434,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/objects", test_objects);
     g_test_add_func("/sgi/kona/texture/sampling", test_sampling);
     g_test_add_func("/sgi/kona/texture/migration", test_migration);
+    g_test_add_func("/sgi/kona/texture/subimage", test_subimage);
+    g_test_add_func("/sgi/kona/texture/native", test_native);
+    g_test_add_func("/sgi/kona/texture/native-migration",
+                    test_native_migration);
     return g_test_run();
 }
