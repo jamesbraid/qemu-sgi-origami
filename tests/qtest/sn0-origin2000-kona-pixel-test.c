@@ -124,7 +124,7 @@ static QTestState *kona_init_logged(const char *base_args, char **log)
     fd = g_mkstemp(*log);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
-    return qtest_initf("%s -trace enable=sgi_kona_x_pixel* -d guest_errors,"
+    return qtest_initf("%s -trace enable=sgi_kona_* -d guest_errors,"
                        "unimp -D %s", base_args, *log);
 }
 
@@ -753,6 +753,651 @@ static void test_migration_mid_write(void)
     g_rmdir(tmpfs);
 }
 
+#define READ_PAGE UINT64_C(0x320000)
+#define READ_SAVE UINT64_C(0x340000)
+#define TOKEN_PIXEL_READ 0x138
+
+static uint32_t read_guest_word(QTestState *s, uint64_t addr)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(s, addr, bytes, sizeof(bytes));
+    return (uint32_t)bytes[0] << 24 | (uint32_t)bytes[1] << 16 |
+           (uint32_t)bytes[2] << 8 | bytes[3];
+}
+
+static void read_activate(QTestState *s, uint64_t save, uint64_t page)
+{
+    x_command(s, 0x1fd,
+              (uint32_t[]){ 0x10000000 | (save >> 12),
+                            0x9000 | (save & 0xfff), 0x10000 }, 3);
+    x_command(s, 0x1f2,
+              (uint32_t[]){ 0x10000000 | (page >> 12),
+                            0x9000 | (page & 0xfff), 0x4000 }, 3);
+}
+
+static void read_gc(QTestState *s)
+{
+    x_command(s, TOKEN_GC,
+              (uint32_t[]){ 0, 0, 0, 0, 0, 0,
+                            0x180c, 0x40001, 1, 6, 5, 1, 1 }, 13);
+}
+
+static void read_setup(QTestState *s, unsigned width, unsigned height)
+{
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 2, 1, 0, 8, width, height, 0 }, 7);
+}
+
+static void read_prepare(QTestState *s, uint64_t page)
+{
+    qtest_memset(s, page, 0xa5, 0x4000);
+    qtest_memset(s, page, 0, 4);
+}
+
+static void read_unchanged(QTestState *s, uint64_t page)
+{
+    uint8_t got[0x4000], expected[0x4000];
+
+    memset(expected, 0xa5, sizeof(expected));
+    memset(expected, 0, 4);
+    qtest_memread(s, page, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+}
+
+static uint8_t read_pattern(unsigned x, unsigned y)
+{
+    static const uint8_t first[] = { 0, 1, 0x80, 0xff };
+
+    return x < 4 && y == 0 ? first[x] : 31 * y + 17 * x;
+}
+
+/* Write unequal normalized indices through the existing eight-bit path. */
+static void read_write_pattern(QTestState *s, int x, int y,
+                               unsigned width, unsigned height)
+{
+    unsigned pitch = (width + 3) & ~3;
+
+    pixel_setup(s, 0, 0, width, height, 0);
+    pixel_write(s, x, y);
+    for (unsigned r = 0; r < height; r++) {
+        for (unsigned c = 0; c < pitch; c += 4) {
+            uint32_t word = 0;
+
+            for (unsigned k = 0; k < 4; k++) {
+                word |= (uint32_t)read_pattern(c + k, r) << (24 - 8 * k);
+            }
+            data_words(s, &word, 1);
+        }
+    }
+    pixel_finish(s);
+}
+
+static void read_assert_pattern(QTestState *s, uint64_t page,
+                                unsigned width, unsigned height)
+{
+    unsigned pitch = (width + 3) & ~3;
+    unsigned len = pitch * height;
+    g_autofree uint8_t *got = g_malloc(len);
+
+    g_assert_cmphex(read_guest_word(s, page), ==, 1);
+    g_assert_cmphex(read_guest_word(s, page + 4), ==, 0xa5a5a5a5);
+    qtest_memread(s, page + 8, got, len);
+    for (unsigned r = 0; r < height; r++) {
+        for (unsigned c = 0; c < pitch; c++) {
+            g_assert_cmphex(got[r * pitch + c], ==,
+                            c < width ? read_pattern(c, r) : 0);
+        }
+    }
+    if (len < 0x4000 - 8) {
+        g_assert_cmphex(read_guest_word(s, page + 8 + len), ==, 0xa5a5a5a5);
+    }
+}
+
+static void test_read_indexed_rows(void)
+{
+    qtest_system_reset(qts);
+    read_activate(qts, READ_SAVE, READ_PAGE);
+    read_gc(qts);
+    read_write_pattern(qts, 454, 700, 6, 20);
+    g_assert_cmphex(front_at(qts, 457, 700), ==, 0xff);
+    g_assert_cmphex(front_tag_at(qts, 457, 700), ==, TAG_X_INDEX);
+    read_setup(qts, 6, 20);
+    read_prepare(qts, READ_PAGE);
+    read_unchanged(qts, READ_PAGE);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    read_assert_pattern(qts, READ_PAGE, 6, 20);
+}
+
+static void read_scene(QTestState *s)
+{
+    read_activate(s, READ_SAVE, READ_PAGE);
+    read_gc(s);
+    read_write_pattern(s, 454, 700, 6, 20);
+    read_setup(s, 6, 20);
+}
+
+static void read_refused(QTestState *s, int32_t x, int32_t y)
+{
+    read_prepare(s, READ_PAGE);
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ x, y }, 2);
+    read_unchanged(s, READ_PAGE);
+}
+
+static void read_supported(QTestState *s)
+{
+    read_prepare(s, READ_PAGE);
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    read_assert_pattern(s, READ_PAGE, 6, 20);
+}
+
+static void test_read_shapes(void)
+{
+    static const unsigned shapes[][4] = {
+        { 0, 0, 1, 3 }, { 1276, 0, 4, 2 }, { 0, 1022, 5, 2 },
+        { 1273, 1021, 7, 3 }, { 193, 301, 184, 89 },
+    };
+
+    qtest_system_reset(qts);
+    read_activate(qts, READ_SAVE, READ_PAGE);
+    read_gc(qts);
+    for (unsigned k = 0; k < ARRAY_SIZE(shapes); k++) {
+        unsigned x = shapes[k][0], y = shapes[k][1];
+        unsigned width = shapes[k][2], height = shapes[k][3];
+
+        read_write_pattern(qts, x, y, width, height);
+        read_setup(qts, width, height);
+        read_prepare(qts, READ_PAGE);
+        x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ x, y }, 2);
+        read_assert_pattern(qts, READ_PAGE, width, height);
+    }
+    read_setup(qts, 184, 90);
+    read_refused(qts, 193, 301);
+}
+
+/* Source byte values remain independent of colour maps and write state. */
+static void test_read_ignores_write_state(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_supported(qts);
+    x_command(qts, TOKEN_COLOR_MAP,
+              (uint32_t[]){ X_MAP_WINDOW, 1, 0x3ff00000 }, 3);
+    x_command(qts, TOKEN_POSITION, (uint32_t[]){ 91, 37, 7, 9 }, 4);
+    x_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 0, 0, 10, 10 }, 5);
+    x_command(qts, 0x12d, (uint32_t[]){ 0, 0, 1, 1 }, 4);
+    x_command(qts, 0x13d, (uint32_t[]){ 1, 6, 2, 0, 0 }, 5);
+    x_command(qts, 0x13c, (uint32_t[]){ 1 }, 1);
+    read_supported(qts);
+}
+
+static void test_read_gc_predicates(void)
+{
+    static const uint32_t forms[][13] = {
+        { 0, 0, 0, 0, 0, 0, 0x180c, 0x40001, 1, 6, 5, 1, 1 },
+        { 0, 0, 0, 0, 0, 0, 0xc, 1, 1, 6, 0, 1, 1 },
+    };
+    uint32_t gc[13];
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    for (unsigned f = 0; f < ARRAY_SIZE(forms); f++) {
+        x_command(qts, TOKEN_GC, forms[f], 13);
+        read_supported(qts);
+        for (unsigned k = 0; k < 6; k++) {
+            memcpy(gc, forms[f], sizeof(gc));
+            gc[k] = 0xdeadbeef;
+            x_command(qts, TOKEN_GC, gc, 13);
+            read_supported(qts);
+        }
+        for (unsigned k = 6; k < 13; k++) {
+            memcpy(gc, forms[f], sizeof(gc));
+            gc[k] ^= 2;
+            x_command(qts, TOKEN_GC, gc, 13);
+            read_refused(qts, 454, 700);
+        }
+    }
+    read_gc(qts);
+    read_supported(qts);
+}
+
+static void test_read_setup_refused(void)
+{
+    static const uint32_t changes[][2] = {
+        { 0, 0 }, { 0, 0x12 }, { 1, 0 }, { 1, 2 }, { 2, 1 },
+        { 3, 0 }, { 3, 16 }, { 4, 0 }, { 5, 0 }, { 6, 1 },
+        { 4, UINT32_MAX }, { 5, UINT32_MAX }, { 4, 1280 },
+    };
+    uint32_t setup[7];
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    for (unsigned k = 0; k < ARRAY_SIZE(changes); k++) {
+        memcpy(setup, (uint32_t[]){ 2, 1, 0, 8, 6, 20, 0 }, sizeof(setup));
+        setup[changes[k][0]] = changes[k][1];
+        x_command(qts, TOKEN_PIXEL_SETUP, setup, 7);
+        read_refused(qts, 454, 700);
+    }
+    read_setup(qts, 6, 20);
+    read_supported(qts);
+}
+
+static void test_read_coordinates_refused(void)
+{
+    static const int32_t coords[][2] = {
+        { -1, 700 }, { 454, -1 }, { 1275, 700 }, { 454, 1005 },
+        { INT32_MAX, INT32_MAX }, { INT32_MIN, INT32_MIN },
+        { 0x138, 0x129 }, { 0x136, 0x13a },
+    };
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    for (unsigned k = 0; k < ARRAY_SIZE(coords); k++) {
+        read_refused(qts, coords[k][0], coords[k][1]);
+        read_supported(qts);
+    }
+}
+
+/* A different tag at the last pixel cannot cause a partial reply. */
+static void test_read_wrong_tag(gconstpointer opaque)
+{
+    bool textport = GPOINTER_TO_INT(opaque);
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    if (textport) {
+        qtest_writel(qts, REG_COMMAND, 1);
+        qtest_writel(qts, REG_COMMAND, 6);
+        qtest_writel(qts, REG_COMMAND, 459);
+        qtest_writel(qts, REG_COMMAND, 1023 - 719);
+        g_assert_cmphex(front_tag_at(qts, 459, 719), ==, 1);
+    } else {
+        pixel_setup(qts, 0, 2, 1, 1, 0);
+        pixel_write(qts, 459, 719);
+        data_words(qts, (uint32_t[]){ 0x12abcdef }, 1);
+        pixel_finish(qts);
+        g_assert_cmphex(front_tag_at(qts, 459, 719), ==, TAG_DIRECT);
+    }
+    read_setup(qts, 6, 20);
+    read_refused(qts, 454, 700);
+}
+
+static void read_deactivate(QTestState *s)
+{
+    x_command(s, 0x1fc, (uint32_t[]){ 0 }, 1);
+}
+
+static void read_restore(QTestState *s, uint64_t save)
+{
+    x_command(s, 0x1f9,
+              (uint32_t[]){ read_guest_word(s, save),
+                            0x10000000 | (save >> 12),
+                            0x9000 | (save & 0xfff), 0xedededed }, 4);
+}
+
+static void test_read_context_pages(void)
+{
+    const uint64_t save_b = READ_SAVE + 0x20000;
+    const uint64_t page_b = READ_PAGE + 0x10000;
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_deactivate(qts);
+    read_refused(qts, 454, 700);
+    read_activate(qts, save_b, page_b);
+    read_prepare(qts, page_b);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    read_unchanged(qts, page_b);
+    read_setup(qts, 6, 20);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    read_unchanged(qts, page_b);
+    read_gc(qts);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    read_assert_pattern(qts, page_b, 6, 20);
+    read_unchanged(qts, READ_PAGE);
+    read_prepare(qts, page_b);
+    read_deactivate(qts);
+    read_restore(qts, READ_SAVE);
+    read_refused(qts, 454, 700);
+    read_gc(qts);
+    read_refused(qts, 454, 700);
+    read_setup(qts, 6, 20);
+    read_supported(qts);
+    read_unchanged(qts, page_b);
+}
+
+static void test_read_context_eviction(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_deactivate(qts);
+    for (unsigned k = 1; k < 9; k++) {
+        read_activate(qts, READ_SAVE + k * 0x20000,
+                       READ_PAGE + k * 0x10000);
+        read_deactivate(qts);
+    }
+    read_restore(qts, READ_SAVE);
+    read_gc(qts);
+    read_setup(qts, 6, 20);
+    read_refused(qts, 454, 700);
+}
+
+/* Selector-shaped programmed-I/O words remain pixel data until count zero. */
+static void test_read_inside_write(void)
+{
+    static const uint8_t bytes[] = {
+        0, 0, 1, 0x38, 0, 0, 1, 0x29, 0, 0, 1, 0x36,
+    };
+    uint8_t got[12];
+
+    qtest_system_reset(qts);
+    read_activate(qts, READ_SAVE, READ_PAGE);
+    read_gc(qts);
+    read_prepare(qts, READ_PAGE);
+    pixel_setup(qts, 0, 0, 4, 3, 0);
+    pixel_write(qts, 454, 700);
+    data_words(qts, (uint32_t[]){ 0x138, 0x129, 0x136 }, 3);
+    read_unchanged(qts, READ_PAGE);
+    pixel_finish(qts);
+    read_setup(qts, 4, 3);
+    x_command(qts, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(qts, READ_PAGE), ==, 1);
+    qtest_memread(qts, READ_PAGE + 8, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), bytes, sizeof(bytes));
+}
+
+static void test_read_open_dma_write_refused(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    pixel_setup(qts, 0x10, 0, 4, 2, 0);
+    pixel_write(qts, 454, 700);
+    read_refused(qts, 454, 700);
+    pixel_finish(qts);
+    read_gc(qts);
+    read_setup(qts, 6, 20);
+    read_supported(qts);
+}
+
+static void test_read_pending_run_refused(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    x_command(qts, 0x141, (uint32_t[]){ 0x00010002 }, 1);
+    read_refused(qts, 454, 700);
+    read_gc(qts);
+    read_setup(qts, 6, 20);
+    read_supported(qts);
+}
+
+static void test_read_state_migrates(gconstpointer opaque)
+{
+    unsigned state = GPOINTER_TO_UINT(opaque);
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-read-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    read_scene(from);
+    read_prepare(from, READ_PAGE);
+    if (state == 1) {
+        qtest_writel(from, REG_COMMAND_SLOT(TOKEN_PIXEL_READ), 454);
+    } else if (state == 2) {
+        read_deactivate(from);
+        read_restore(from, READ_SAVE);
+    }
+    sgi_migrate_stopped(from, uri);
+    if (state == 1) {
+        qtest_writel(to, REG_COMMAND_DATA, 700);
+        read_assert_pattern(to, READ_PAGE, 6, 20);
+    } else if (state == 2) {
+        x_command(to, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+        read_unchanged(to, READ_PAGE);
+        read_gc(to);
+        read_setup(to, 6, 20);
+        read_supported(to);
+    } else {
+        read_supported(to);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+/* GL uses the ordinary command port; kernel transitions use kick framing. */
+static void read_gl_command(QTestState *s, uint32_t token,
+                            const uint32_t *args, unsigned count, bool kicked)
+{
+    if (kicked) {
+        qtest_writel(s, KONA_REG(0xc00108), 0x30000);
+    }
+    qtest_writel(s, REG_COMMAND, token);
+    if (kicked) {
+        qtest_writel(s, KONA_REG(0xc00108), 0x10000);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        qtest_writel(s, REG_COMMAND, args[i]);
+    }
+    if (kicked) {
+        qtest_writel(s, KONA_REG(0xc00108), 0);
+    }
+}
+
+static void test_read_bank1_window(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_gl_command(qts, 1, (uint32_t[]){ 0, 12, 0, 1, 0, 0, 0, 0, 0, 0 },
+                    10, false);
+    read_gl_command(qts, 0x1f3,
+                    (uint32_t[]){ 454, 304, 0x05670080, 0x05670080,
+                                  454, 304, 6, 20, 0, 0xd, 0 }, 11, true);
+    read_gl_command(qts, 0x1ee, (uint32_t[]){ 454, 304, 0 }, 3, true);
+    read_gl_command(qts, 0x1d,
+                    (uint32_t[]){ 0, 0x3f800000, 0, 0x3f800000 }, 4, false);
+    read_gl_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1, false);
+    g_assert_cmphex(kona_plane_word(qts, 1, 454, 323), ==, 0x00ff00);
+    g_assert_cmphex(front_at(qts, 454, 700), ==, 0);
+    read_supported(qts);
+
+    read_gl_command(qts, 0xc6, (uint32_t[]){ 0 }, 1, false);
+    read_gl_command(qts, 0x1f4, (uint32_t[]){ 1, 1 }, 2, true);
+    read_gl_command(qts, 0x172, (uint32_t[]){ 0 }, 1, true);
+    read_gl_command(qts, 0x1e6, (uint32_t[]){ 0x800003, 0xd, 5 }, 3, true);
+    read_gl_command(qts, 0x1e7, (uint32_t[]){ 1 }, 1, true);
+    qtest_clock_step(qts, 20000000);
+    read_refused(qts, 454, 700);
+
+    /* A one-pixel intersection refuses the whole otherwise-valid rectangle. */
+    read_gl_command(qts, 0x1f3,
+                    (uint32_t[]){ 459, 304, 0x05670080, 0x05670080,
+                                  459, 304, 6, 20, 0, 0xd, 0 }, 11, true);
+    read_refused(qts, 454, 700);
+    read_gl_command(qts, 0x1f3,
+                    (uint32_t[]){ 460, 304, 0x05670080, 0x05670080,
+                                  460, 304, 6, 20, 0, 0xd, 0 }, 11, true);
+    read_supported(qts);
+}
+
+static void test_read_partial_replacement(void)
+{
+    static const uint32_t gc[] = {
+        0, 0, 0, 0, 0, 0, 0xc, 1, 1, 6, 0, 1, 1,
+    };
+    static const uint32_t setup[] = { 2, 1, 0, 8, 6, 20, 0 };
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_supported(qts);
+    read_supported(qts);
+    for (unsigned field = 0; field < 2; field++) {
+        const uint32_t *args = field ? setup : gc;
+        unsigned count = field ? ARRAY_SIZE(setup) : ARRAY_SIZE(gc);
+        uint32_t token = field ? TOKEN_PIXEL_SETUP : TOKEN_GC;
+
+        for (unsigned n = 1; n < count; n++) {
+            x_command(qts, token, args, n);
+            read_refused(qts, 454, 700);
+            /* Aborted replacement invalidates both read records. */
+            read_gc(qts);
+            read_refused(qts, 454, 700);
+            read_setup(qts, 6, 20);
+            read_supported(qts);
+        }
+    }
+}
+
+static void test_read_reply_order(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    const char *payload, *ready;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+
+    read_scene(s);
+    read_supported(s);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==, 0);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    payload = strstr(found, "addr 0x320008 len 0xa0\n");
+    ready = strstr(found, "addr 0x320000 len 0x4\n");
+    g_assert_nonnull(payload);
+    g_assert_nonnull(ready);
+    g_assert_true(payload < ready);
+}
+
+static void test_read_payload_failure(void)
+{
+    const uint64_t page = 64 * 1024 * 1024 - 8;
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+
+    read_activate(s, READ_SAVE, page);
+    read_gc(s);
+    read_write_pattern(s, 454, 700, 6, 20);
+    read_setup(s, 6, 20);
+    qtest_memset(s, page, 0, 4);
+    qtest_memset(s, page + 4, 0xa5, 4);
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 454, 700 }, 2);
+    g_assert_cmphex(read_guest_word(s, page), ==, 0);
+    g_assert_cmphex(read_guest_word(s, page + 4), ==, 0xa5a5a5a5);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found,
+                    "160-byte write to 0x9000004000000 failed (result 2)"));
+    g_assert_null(strstr(found, "addr 0x3fffff8 len 0x4\n"));
+}
+
+#define READ_OTHER_PAGE UINT64_C(0x360000)
+
+static void read_register(QTestState *s, uint64_t page)
+{
+    x_command(s, 0x1f2,
+              (uint32_t[]){ 0x10000000 | (page >> 12),
+                            0x9000 | (page & 0xfff), 0x4000 }, 3);
+}
+
+static void read_page_reload(QTestState *s, bool setup_first)
+{
+    read_register(s, READ_PAGE);
+    read_refused(s, 454, 700);
+    if (setup_first) {
+        read_setup(s, 6, 20);
+    } else {
+        read_gc(s);
+    }
+    read_refused(s, 454, 700);
+    if (setup_first) {
+        read_gc(s);
+    } else {
+        read_setup(s, 6, 20);
+    }
+    read_supported(s);
+    read_unchanged(s, READ_OTHER_PAGE);
+}
+
+static void test_read_page_transitions(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_supported(qts);
+    /* Same resolved page through either registration path retains validity. */
+    read_register(qts, READ_PAGE);
+    read_supported(qts);
+    qtest_writel(qts, KONA_REG(0x100000 + 4 * 5),
+                 0x20000000 | (READ_PAGE >> 12));
+    x_command(qts, 0x1f2, (uint32_t[]){ 0x14, 0x9000, 0x4000 }, 3);
+    read_supported(qts);
+    /* Unmapped registration preserves the eligible active page. */
+    x_command(qts, 0x1f2, (uint32_t[]){ 0x18, 0x9000, 0x4000 }, 3);
+    read_supported(qts);
+
+    read_prepare(qts, READ_OTHER_PAGE);
+    read_register(qts, READ_OTHER_PAGE);
+    read_refused(qts, 454, 700);
+    read_unchanged(qts, READ_OTHER_PAGE);
+    read_page_reload(qts, false);
+
+    read_register(qts, READ_OTHER_PAGE);
+    /* Loads while mismatched update write state but cannot arm reads. */
+    read_gc(qts);
+    read_write_pattern(qts, 454, 700, 6, 20);
+    g_assert_cmphex(front_at(qts, 457, 700), ==, 0xff);
+    read_setup(qts, 6, 20);
+    read_refused(qts, 454, 700);
+    read_unchanged(qts, READ_OTHER_PAGE);
+    read_page_reload(qts, true);
+}
+
+static void test_read_mismatched_page_migrates(gconstpointer opaque)
+{
+    bool load_mismatched = GPOINTER_TO_INT(opaque);
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-read-page-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    read_scene(from);
+    read_prepare(from, READ_OTHER_PAGE);
+    read_register(from, READ_OTHER_PAGE);
+    if (load_mismatched) {
+        read_gc(from);
+        read_setup(from, 6, 20);
+    }
+    read_refused(from, 454, 700);
+    read_unchanged(from, READ_OTHER_PAGE);
+    sgi_migrate_stopped(from, uri);
+    read_refused(to, 454, 700);
+    read_unchanged(to, READ_OTHER_PAGE);
+    read_page_reload(to, load_mismatched);
+    /* The uninterrupted control follows the same reload/refusal sequence. */
+    read_page_reload(from, load_mismatched);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_read_reset_partial(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    qtest_writel(qts, REG_COMMAND_SLOT(TOKEN_PIXEL_READ), 454);
+    qtest_system_reset(qts);
+    read_refused(qts, 454, 700);
+    read_scene(qts);
+    read_supported(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -760,6 +1405,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
+    qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
+                   test_read_indexed_rows);
     qtest_add_func("sn0/origin2000/kona-pixel/weave", test_weave);
     qtest_add_func("sn0/origin2000/kona-pixel/write-32bit", test_write_32bit);
     qtest_add_func("sn0/origin2000/kona-pixel/write-16bit", test_write_16bit);
@@ -785,6 +1432,58 @@ int main(int argc, char **argv)
                    test_reset_clears_write);
     qtest_add_func("sn0/origin2000/kona-pixel/migration-mid-write",
                    test_migration_mid_write);
+
+    qtest_add_func("sn0/origin2000/kona-pixel/read-shapes", test_read_shapes);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-write-state",
+                   test_read_ignores_write_state);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-gc-predicates",
+                   test_read_gc_predicates);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-setup-refused",
+                   test_read_setup_refused);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-coordinates-refused",
+                   test_read_coordinates_refused);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-direct-tag-refused",
+                        GINT_TO_POINTER(false), test_read_wrong_tag);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-textport-tag-refused",
+                        GINT_TO_POINTER(true), test_read_wrong_tag);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-context-pages",
+                   test_read_context_pages);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-context-eviction",
+                   test_read_context_eviction);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-inside-write",
+                   test_read_inside_write);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-dma-write-refused",
+                   test_read_open_dma_write_refused);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-pending-run-refused",
+                   test_read_pending_run_refused);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-state-migrates",
+                        GUINT_TO_POINTER(0), test_read_state_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-partial-migrates",
+                        GUINT_TO_POINTER(1), test_read_state_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-empty-flags-migrate",
+                        GUINT_TO_POINTER(2), test_read_state_migrates);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-reset-partial",
+                   test_read_reset_partial);
+
+    qtest_add_func("sn0/origin2000/kona-pixel/read-bank1-window",
+                   test_read_bank1_window);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-partial-replacement",
+                   test_read_partial_replacement);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-reply-order",
+                   test_read_reply_order);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-payload-failure",
+                   test_read_payload_failure);
+
+    qtest_add_func("sn0/origin2000/kona-pixel/read-page-transitions",
+                   test_read_page_transitions);
+    qtest_add_data_func(
+                        "sn0/origin2000/kona-pixel/read-mismatched-page-migrates",
+                        GINT_TO_POINTER(false),
+                        test_read_mismatched_page_migrates);
+    qtest_add_data_func(
+                        "sn0/origin2000/kona-pixel/read-mismatched-loads-migrate",
+                        GINT_TO_POINTER(true),
+                        test_read_mismatched_page_migrates);
 
     ret = g_test_run();
     qtest_quit(qts);
