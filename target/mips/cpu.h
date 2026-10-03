@@ -47,8 +47,6 @@ typedef struct MIPSCPUConfig {
     bool cache_error_is_error_level;
     /* Taking any exception breaks the load-linked link. */
     bool exception_breaks_ll_link;
-    /* A load, store, SYNC, CACHE, or PREF between LL and SC breaks the link. */
-    bool ll_sc_intervening_ops_break_link;
     /* The LLAddr register is plain scratch that the link never writes. */
     bool lladdr_is_scratch;
     /*
