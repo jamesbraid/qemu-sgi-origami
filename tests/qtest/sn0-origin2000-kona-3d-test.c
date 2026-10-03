@@ -2386,6 +2386,496 @@ static void test_read_single_retired_replaced(gconstpointer opaque)
     qtest_quit(from);
 }
 
+static void stencil_config(QTestState *s, uint32_t width)
+{
+    kona_command(s, 1,
+                 (uint32_t[]){ 0, 12, 0, 0, 0, 0, 24, width, 0, 0 }, 10);
+}
+
+static void stencil_triangle(QTestState *s)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    gl_triangle_z(s, tri, 0);
+}
+
+static void assert_stencil_colour(QTestState *s, uint32_t rgb)
+{
+    g_autofree uint8_t *image = kona_screendump(s);
+    unsigned at = ((FB_HEIGHT - 1 - (PROBE_Y + PROBE_SIZE / 2)) *
+                   FB_WIDTH + PROBE_X + PROBE_SIZE / 2) * 3;
+
+    g_assert_cmphex(image[at], ==, (rgb >> 16) & 255);
+    g_assert_cmphex(image[at + 1], ==, (rgb >> 8) & 255);
+    g_assert_cmphex(image[at + 2], ==, rgb & 255);
+}
+
+static void test_stencil_visual_present_and_absent(void)
+{
+    gl_reset();
+    gl_make_current_depth(qts, 24);
+    gl_window_cleared(qts, 0, 0, 1);
+    stencil_config(qts, 8);
+    kona_command(qts, 0x1e, (uint32_t[]){ 61 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x400 }, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb90 }, 1);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x200, 0, 255 }, 3);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0x0000ff);
+    stencil_config(qts, 0);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    kona_command(qts, 0x1e, (uint32_t[]){ 9 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x400 }, 1);
+    stencil_config(qts, 8);
+    kona_command_f(qts, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x202, 61, 255 }, 3);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+}
+
+static void stencil_setup(QTestState *s)
+{
+    gl_make_current_depth(s, 24);
+    gl_window_cleared(s, 0, 0, 1);
+    stencil_config(s, 8);
+}
+
+static void stencil_clear(QTestState *s, uint32_t value, uint32_t mask)
+{
+    kona_command(s, 0x20, (uint32_t[]){ mask }, 1);
+    kona_command(s, 0x1e, (uint32_t[]){ value }, 1);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x400 }, 1);
+}
+
+static void stencil_function(QTestState *s, uint32_t func, int32_t ref,
+                             uint32_t mask)
+{
+    kona_command(s, 0x24, (uint32_t[]){ 0xb90 }, 1);
+    kona_command(s, 0xcc, (uint32_t[]){ func, ref, mask }, 3);
+}
+
+static void stencil_operations(QTestState *s, uint32_t fail, uint32_t zfail,
+                               uint32_t pass)
+{
+    kona_command(s, 0xcd, (uint32_t[]){ fail, zfail, pass }, 3);
+}
+
+/* Observe through EQUAL and colour, without adding a stencil reply. */
+static void assert_stencil_value(QTestState *s, uint32_t value)
+{
+    kona_command(s, 0x25, (uint32_t[]){ 0xbc0 }, 1);
+    kona_command(s, 0x25, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(s, 0x21, (uint32_t[]){ 1, 1, 1, 1 }, 4);
+    kona_command(s, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command_f(s, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    stencil_function(s, 0x202, value, 255);
+    stencil_operations(s, 0x1e00, 0x1e00, 0x1e00);
+    stencil_triangle(s);
+    assert_stencil_colour(s, 0xff0000);
+}
+
+static void test_stencil_comparison_order_and_mask(void)
+{
+    const uint32_t funcs[] = { 0x201, 0x204 };
+    const int32_t refs[] = { 2, 9 };
+
+    gl_reset();
+    stencil_setup(qts);
+    for (unsigned i = 0; i < 2; i++) {
+        stencil_clear(qts, 5, 255);
+        stencil_function(qts, funcs[i], refs[i], 255);
+        stencil_operations(qts, 0, 0, 0x1e01);
+        stencil_triangle(qts);
+        assert_stencil_value(qts, refs[i]);
+    }
+    stencil_clear(qts, 0xa5, 255);
+    kona_command(qts, 0x20, (uint32_t[]){ 0xf0 }, 1);
+    stencil_function(qts, 0x202, 0x35, 0x0f);
+    stencil_operations(qts, 0, 0, 0x1e01);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 0x35);
+}
+
+static void test_stencil_operation_range(void)
+{
+    static const struct {
+        uint32_t initial, op;
+        int32_t ref;
+        uint32_t expected;
+    } cases[] = {
+        { 27, 0, 0, 0 }, { 27, 0x1e01, 91, 91 },
+        { 0xa5, 0x150a, 0, 0x5a },
+        { 255, 0x1e02, 0, 255 }, { 0, 0x1e03, 0, 0 },
+        { 1, 0x1e02, 0, 2 }, { 1, 0x1e03, 0, 0 },
+        { 11, 0x1e01, -1, 0 }, { 11, 0x1e01, 300, 255 },
+    };
+
+    gl_reset();
+    stencil_setup(qts);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        stencil_clear(qts, cases[i].initial, 255);
+        stencil_function(qts, 0x207, cases[i].ref, 255);
+        stencil_operations(qts, 0x1e00, 0x1e00, cases[i].op);
+        stencil_triangle(qts);
+        assert_stencil_value(qts, cases[i].expected);
+    }
+}
+
+static void test_stencil_outcome_operations(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    for (unsigned outcome = 0; outcome < 5; outcome++) {
+        stencil_config(qts, 8);
+        if (outcome == 4) {
+            kona_command(qts, 1,
+                         (uint32_t[]){ 0, 12, 0, 0, 0, 0, 0, 8, 0, 0 }, 10);
+        }
+        stencil_clear(qts, 40, 255);
+        stencil_function(qts, outcome == 0 ? 0x200 : 0x207, 99, 255);
+        kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+        kona_command(qts, 0xce,
+                     (uint32_t[]){ outcome == 1 ? 0x200 : 0x207 }, 1);
+        if (outcome == 3) {
+            kona_command(qts, 0x25, (uint32_t[]){ 0xb71 }, 1);
+        }
+        stencil_operations(qts, 0, 0x1e02, 0x1e03);
+        stencil_triangle(qts);
+        assert_stencil_value(qts, outcome == 0 ? 0 : outcome == 1 ? 41 : 39);
+    }
+}
+
+static uint32_t stencil_colour_or_depth(QTestState *s, unsigned plane)
+{
+    QDict *reply;
+    uint32_t value;
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane','value':%u}}", plane);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-x','value':%u}}", PROBE_X + PROBE_SIZE / 2);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-y','value':%u}}", PROBE_Y + PROBE_SIZE / 2);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-plane-word'}}");
+    value = qdict_get_int(reply, "return");
+    qobject_unref(reply);
+    return value;
+}
+
+static void test_stencil_only_clear(void)
+{
+    uint32_t before[3];
+
+    gl_reset();
+    stencil_setup(qts);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    before[0] = stencil_colour_or_depth(qts, 0);
+    before[1] = stencil_colour_or_depth(qts, 1);
+    before[2] = stencil_colour_or_depth(qts, 5);
+    stencil_clear(qts, 0xa5, 255);
+    stencil_function(qts, 0x200, 0, 255);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(qts, 0xce, (uint32_t[]){ 0x200 }, 1);
+    stencil_clear(qts, 0x13c, 0x0f);
+    assert_stencil_colour(qts, 0x0000ff);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 0), ==, before[0]);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 1), ==, before[1]);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==, before[2]);
+    assert_stencil_value(qts, 0xac);
+}
+
+static void test_stencil_alpha_and_disabled_tests(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 19, 255);
+    stencil_function(qts, 0x207, 80, 255);
+    stencil_operations(qts, 0, 0, 0x1e01);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xbc0 }, 1);
+    kona_command(qts, 0xca, (uint32_t[]){ 0x200, F0 }, 2);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 19);
+    stencil_operations(qts, 0, 0, 0x1e01);
+    kona_command(qts, 0x25, (uint32_t[]){ 0xb90 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 19);
+}
+
+static void test_stencil_masks_and_colour_targets(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    kona_command(qts, 1,
+                 (uint32_t[]){ 0, 12, 0, 1, 0, 0, 24, 8, 0, 0 }, 10);
+    for (unsigned target = 0; target < 2; target++) {
+        stencil_clear(qts, 10, 255);
+        stencil_function(qts, 0x207, 0, 255);
+        stencil_operations(qts, 0x1e00, 0x1e00, 0x1e02);
+        kona_command(qts, 0x21, (uint32_t[]){ 0, 0, 0, 0 }, 4);
+        kona_command(qts, 0x22, (uint32_t[]){ 0 }, 1);
+        kona_command(qts, 0xc4, (uint32_t[]){ target ? 0 : 0x408 }, 1);
+        stencil_triangle(qts);
+        assert_stencil_value(qts, 11);
+    }
+    kona_command(qts, 0xc4, (uint32_t[]){ 0 }, 1);
+    stencil_clear(qts, 71, 255);
+    assert_stencil_value(qts, 71);
+    kona_command(qts, 0xc6, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(qts, 0x1f4, (uint32_t[]){ 1, 1 }, 2);
+    kona_command_kicked(qts, 0x172, (uint32_t[]){ 0 }, 1);
+    kona_command_kicked(qts, 0x1e6, (uint32_t[]){ 0x800003, 0xd, 5 }, 3);
+    kona_command_kicked(qts, 0x1e7, (uint32_t[]){ 1 }, 1);
+    qtest_clock_step(qts, 20000000);
+    assert_stencil_value(qts, 71);
+}
+
+static void test_stencil_incomplete_or_invalid_visual_refused(void)
+{
+    static const struct { unsigned field; uint32_t value; } bad[] = {
+        { 7, 4 }, { 4, 1 }, { 9, 1 }, { 1, 7 }, { 6, 33 },
+        { 0, 0x100 }, { 2, 8 }, { 3, 2 }, { 5, 1 }, { 8, 1 },
+    };
+
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    kona_command_kicked(s, 0x1fd,
+                        (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                      tagged_offset_word(SAVE_AREA),
+                                      0x10000 }, 3);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    gl_window_cleared(s, 0, 0, 1);
+    stencil_function(s, 0x207, 99, 255);
+    stencil_triangle(s);
+    assert_stencil_colour(s, 0x0000ff);
+    kona_command_f(s, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4500 }, 1);
+    assert_stencil_colour(s, 0x0000ff);
+    for (unsigned width = 0; width < 2; width++) {
+        for (unsigned i = 0; i < G_N_ELEMENTS(bad); i++) {
+            uint32_t config[] = { 0, 12, 0, 0, 0, 0, 24, width ? 8 : 0, 0, 0 };
+            uint32_t depth_before;
+
+            stencil_config(s, 8);
+            stencil_clear(s, 43, 255);
+            kona_command_f(s, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+            kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+            depth_before = stencil_colour_or_depth(s, 5);
+            g_test_message("invalid visual width %u field %u", width,
+                           bad[i].field);
+            config[bad[i].field] = bad[i].value;
+            kona_command(s, 1, config, 10);
+            kona_command(s, 0xc4, (uint32_t[]){ 0x404 }, 1);
+            stencil_function(s, 0x207, 99, 255);
+            stencil_operations(s, 0x1e01, 0x1e01, 0x1e01);
+            stencil_triangle(s);
+            assert_stencil_colour(s, 0x0000ff);
+            kona_command_f(s, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+            kona_command(s, 0x1e, (uint32_t[]){ 99 }, 1);
+            kona_command(s, 0x1a, (uint32_t[]){ 0x4500 }, 1);
+            assert_stencil_colour(s, 0x0000ff);
+            g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, depth_before);
+            return_context_deactivate(s);
+            return_context_restore(s, SAVE_AREA);
+            kona_command_kicked(s, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+            place_read_window(s, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+            kona_command(s, 0xc4, (uint32_t[]){ 0x404 }, 1);
+            stencil_triangle(s);
+            assert_stencil_colour(s, 0x0000ff);
+            kona_command(s, 0x1a, (uint32_t[]){ 0x4500 }, 1);
+            assert_stencil_colour(s, 0x0000ff);
+            g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, depth_before);
+            stencil_config(s, 8);
+            assert_stencil_value(s, 43);
+        }
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "stencil draw of context"),
+                     ==, 41);
+    g_assert_cmpuint(count_occurrences(found, "stencil clear refused"), ==, 41);
+}
+
+static void test_stencil_clear_scissor_and_clip(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 7, 255);
+    kona_command(qts, 0xc, (uint32_t[]){ 60, 57, 9, 12 }, 4);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xc11 }, 1);
+    kona_command(qts, 0xe3, (uint32_t[]){ 0, 0, 1, 1 }, 4);
+    stencil_clear(qts, 83, 255);
+    kona_command(qts, 0x25, (uint32_t[]){ 0xc11 }, 1);
+    kona_command(qts, 0xe3, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    assert_stencil_value(qts, 83);
+    expected_clear(e, 0x0000ff);
+    expected_object(e, mat_identity(), mat_identity(), tri, 3, 0xff0000);
+    for (unsigned y = 0; y < PROBE_SIZE; y++) {
+        for (unsigned x = 0; x < PROBE_SIZE; x++) {
+            if (x < 60 || x >= 69 || y < 57 || y >= 69) {
+                unsigned at = ((PROBE_SIZE - 1 - y) * PROBE_SIZE + x) * 3;
+
+                e->rgb[at] = e->rgb[at + 1] = 0;
+                e->rgb[at + 2] = 255;
+            }
+        }
+    }
+    assert_window_matches(qts, e);
+    /* Scissor wholly outside the placed window cannot affect its pixels. */
+    kona_command(qts, 0xc, (uint32_t[]){ 150, 5, 11, 17 }, 4);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xc11 }, 1);
+    stencil_clear(qts, 21, 255);
+    kona_command(qts, 0x25, (uint32_t[]){ 0xc11 }, 1);
+    assert_stencil_value(qts, 83);
+}
+
+static void test_stencil_context_and_attrib(void)
+{
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 29, 255);
+    stencil_function(qts, 0x202, 29, 255);
+    stencil_operations(qts, 0x1e00, 0x1e00, 0x1e00);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x400 }, 1);
+    stencil_function(qts, 0x200, 1, 15);
+    stencil_clear(qts, 31, 255);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0x0000ff);
+    assert_stencil_value(qts, 31);
+    stencil_function(qts, 0x200, 0, 255);
+    return_context_deactivate(qts);
+    kona_command_kicked(qts, 0x1fd,
+                        (uint32_t[]){ physical_page_word(save_b),
+                                      tagged_offset_word(save_b), 0x10000 }, 3);
+    kona_command_kicked(qts, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    stencil_config(qts, 0);
+    gl_window_cleared(qts, 0, 0, 1);
+    stencil_function(qts, 0x200, 0, 255);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    return_context_deactivate(qts);
+    return_context_restore(qts, SAVE_AREA);
+    kona_command_f(qts, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0x0000ff);
+    assert_stencil_value(qts, 31);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x2000 }, 1);
+    kona_command(qts, 0x25, (uint32_t[]){ 0xb90 }, 1);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x207, 88, 255 }, 3);
+    stencil_operations(qts, 0x1e00, 0x1e00, 0x1e01);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 88);
+}
+
+static void test_stencil_reset_and_partial_packets(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 71, 255);
+    stencil_function(qts, 0x200, 88, 15);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x207, 0x1a }, 2);
+    gl_reset();
+    stencil_setup(qts);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x207, 88, 255 }, 3);
+    stencil_operations(qts, 0x1e00, 0x1e00, 0x1e01);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 0);
+    kona_command(qts, 0x1a, NULL, 0);
+    gl_reset();
+    stencil_setup(qts);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb90 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    assert_stencil_value(qts, 0);
+    stencil_function(qts, 0x207, 0x1a, 255);
+    stencil_operations(qts, 0x1e00, 0x1e00, 0x1e01);
+    stencil_triangle(qts);
+    assert_stencil_value(qts, 0x1a);
+}
+
+static void test_stencil_state_and_plane_migrate(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-stencil-migrate-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(dest_args);
+    stencil_setup(from);
+    stencil_clear(from, 0xa3, 255);
+    kona_command(from, 0x20, (uint32_t[]){ 15 }, 1);
+    stencil_operations(from, 0, 0x1e03, 0x1e02);
+    stencil_function(from, 0x207, 2, 255);
+    kona_command(from, 0xc9, (uint32_t[]){ 0x400 }, 1);
+    kona_command(from, 0xcc, (uint32_t[]){ 0x207, 0x1a }, 2);
+    sgi_migrate_stopped(from, uri);
+    qtest_writel(to, REG_COMMAND, 255);
+    stencil_triangle(to);
+    assert_stencil_value(to, 0xa4);
+    kona_command(to, 0xc8, (uint32_t[]){ 0 }, 1);
+    stencil_triangle(to);
+    assert_stencil_value(to, 0xa5);
+    assert_source_refused(to);
+    return_context_deactivate(to);
+    return_context_restore(to, SAVE_AREA);
+    assert_source_refused(to);
+    assert_stencil_value(to, 0xa5);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_stencil_visual_readback_remains_refused(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 53, 255);
+    assert_stencil_value(qts, 53);
+    assert_source_refused(qts);
+    return_context_deactivate(qts);
+    return_context_restore(qts, SAVE_AREA);
+    assert_source_refused(qts);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    place_read_window(qts, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_source_refused(qts);
+    assert_stencil_value(qts, 53);
+    stencil_config(qts, 0);
+    kona_command_f(qts, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    assert_read_colour(qts, 0xff0000);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -2540,6 +3030,35 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(true),
                         test_read_single_retired_replaced);
 
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/visual-present-and-absent",
+                   test_stencil_visual_present_and_absent);
+
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/comparison-order-and-mask",
+                   test_stencil_comparison_order_and_mask);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/operation-range",
+                   test_stencil_operation_range);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/outcome-operations",
+                   test_stencil_outcome_operations);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/only-clear",
+                   test_stencil_only_clear);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/alpha-and-disabled-tests",
+                   test_stencil_alpha_and_disabled_tests);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/masks-and-colour-targets",
+                   test_stencil_masks_and_colour_targets);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/"
+                   "incomplete-or-invalid-visual-refused",
+                   test_stencil_incomplete_or_invalid_visual_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/clear-scissor-and-clip",
+                   test_stencil_clear_scissor_and_clip);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/context-and-attrib",
+                   test_stencil_context_and_attrib);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/reset-and-partial-packets",
+                   test_stencil_reset_and_partial_packets);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/state-and-plane-migrate",
+                   test_stencil_state_and_plane_migrate);
+    qtest_add_func("sn0/origin2000/kona-3d/stencil/"
+                   "visual-readback-remains-refused",
+                   test_stencil_visual_readback_remains_refused);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
