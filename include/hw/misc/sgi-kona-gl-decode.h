@@ -124,4 +124,11 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                     const uint32_t *source, uint32_t *rgba);
 
+/*
+ * The first 32 words hold 64 signed mantissa/exponent coefficients. Word 32
+ * is transport padding. Invalid coefficient words leave values unchanged.
+ */
+bool sgi_kona_gl_texture_filter_curve(const uint32_t words[33],
+                                      double values[64]);
+
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

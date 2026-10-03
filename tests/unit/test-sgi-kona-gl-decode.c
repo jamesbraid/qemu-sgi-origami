@@ -749,6 +749,57 @@ static void test_texture_pixel_conversion(void)
     }
 }
 
+static void test_texture_filter_curve(void)
+{
+    uint32_t words[33] = { 0 };
+    double values[64];
+
+    /* A literal quartet crosses signs and all mantissa/exponent positions. */
+    words[0] = 0x9ffc0101;
+    words[1] = 0x80;
+    /* Native padding is not a coefficient or a validity field. */
+    words[32] = 0xdeadbeef;
+    g_assert_true(sgi_kona_gl_texture_filter_curve(words, values));
+    g_assert_cmpfloat(values[0], ==, 1);
+    g_assert_cmpfloat(values[1], ==, -0.5);
+    g_assert_cmpfloat(values[2], ==, 7.9375);
+    g_assert_cmpfloat(values[3], ==, -4);
+    for (unsigned i = 4; i < 64; i++) {
+        g_assert_cmpfloat(values[i], ==, 0);
+    }
+
+    /* Default sharpening sends negated public weights at selected rho nodes. */
+    words[0] = 0x200;
+    words[4] = 0x280;
+    words[8] = 0x300;
+    words[16] = 0x380;
+    g_assert_true(sgi_kona_gl_texture_filter_curve(words, values));
+    g_assert_cmpfloat(values[0], ==, -1);
+    g_assert_cmpfloat(values[8], ==, -0.75);
+    g_assert_cmpfloat(values[16], ==, -0.5);
+    g_assert_cmpfloat(values[32], ==, -0.25);
+    g_assert_cmpfloat(values[63], ==, 0);
+}
+
+static void test_texture_filter_curve_refusal(void)
+{
+    uint32_t words[33] = { 0 };
+    double values[64], unchanged[64];
+
+    for (unsigned i = 0; i < 64; i++) {
+        values[i] = unchanged[i] = i + 0.25;
+    }
+    for (unsigned word = 1; word < 32; word += 2) {
+        words[word] = 0x100;
+        g_assert_false(sgi_kona_gl_texture_filter_curve(words, values));
+        g_assert_cmpmem(values, sizeof(values), unchanged, sizeof(unchanged));
+        words[word] = 0;
+    }
+    g_assert_false(sgi_kona_gl_texture_filter_curve(NULL, values));
+    g_assert_false(sgi_kona_gl_texture_filter_curve(words, NULL));
+    g_assert_cmpmem(values, sizeof(values), unchanged, sizeof(unchanged));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -780,5 +831,9 @@ int main(int argc, char **argv)
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
                     test_texture_pixel_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/values",
+                    test_texture_filter_curve);
+    g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/refusal",
+                    test_texture_filter_curve_refusal);
     return g_test_run();
 }

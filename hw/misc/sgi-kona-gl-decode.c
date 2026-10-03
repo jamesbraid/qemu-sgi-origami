@@ -486,3 +486,31 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
     *rgba = (r << 24) | (g << 16) | (b << 8) | a;
     return true;
 }
+
+bool sgi_kona_gl_texture_filter_curve(const uint32_t words[33],
+                                      double values[64])
+{
+    double decoded[64];
+
+    if (!words || !values) {
+        return false;
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        uint32_t first = words[2 * i], last = words[2 * i + 1];
+        uint32_t code[4] = {
+            first & 0x3ff, (first >> 10) & 0x3ff,
+            (first >> 20) & 0x3ff, (first >> 30) | (last << 2),
+        };
+
+        if (last & ~0xffu) {
+            return false;
+        }
+        for (unsigned j = 0; j < 4; j++) {
+            int mantissa = (int8_t)(code[j] >> 2);
+
+            decoded[4 * i + j] = mantissa * (1 << (code[j] & 3)) / 128.0;
+        }
+    }
+    memcpy(values, decoded, sizeof(decoded));
+    return true;
+}
