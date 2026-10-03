@@ -10222,6 +10222,19 @@ static void test_texture_adapter_linear_st(void)
         0x31008100, 0x908091bb, 0x3c800000, 0, 0, 0xbf000000,
         0x31008104, 0x908091bb, 0, 0x3c800000, 0, 0xbf000000,
     };
+    /* Literal setup and integer quad from the failing public native FIFO. */
+    const uint32_t native_setup[] = {
+        0x28008000, 0x600080f3, 0x28008001, 0x6000810c,
+        0x28008002, 0x60008033, 0x28008003, 0x6000806b,
+        0x28008004, 0x60008077, 0x28008005, 0x6080809a,
+        0x28008006, 0x60008203, 0x28008007, 0x608080c5,
+        0x33008001, 0x290080f3, 0x2a008100, 0x2c00810c,
+    };
+    const uint32_t native_quad[] = {
+        0x00014400, 7,
+        0x8080c800, 32, 32, 0x8080c800, 96, 32,
+        0x8080c800, 96, 96, 0x8080c800, 32, 96, 0x00014001,
+    };
     const uint32_t translated[16] = {
         ODSY_F_ONE, 0, 0, 0x3f000000,
         0, ODSY_F_ONE, 0, 0,
@@ -10249,10 +10262,9 @@ static void test_texture_adapter_linear_st(void)
     texture_adapter_window(from);
     texture_adapter_bind(from, 0x180000, 0x13000000, 1);
     push_user_words(from, planes, ARRAY_SIZE(planes));
-    texture_linear_program(from, 3);
+    push_user_words(from, native_setup, ARRAY_SIZE(native_setup));
+    push_user_words(from, native_quad, ARRAY_SIZE(native_quad));
     for (unsigned i = 0; i < 4; i++) {
-        texture_adapter_point(from, 48 + 32 * (i & 1),
-                               48 + 32 * (i >> 1), 0, 0);
         g_assert_cmphex(odsy_test_pixel(from, 48 + 32 * (i & 1),
                                         48 + 32 * (i >> 1)), ==, pixels[i]);
     }
@@ -10265,27 +10277,66 @@ static void test_texture_adapter_linear_st(void)
     texture_adapter_point(to, 81, 80, 0, 0);
     g_assert_cmphex(odsy_test_pixel(to, 81, 80), ==, pixels[3]);
     texture_linear_program(to, 1);
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[1]);
     texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[1]);
     texture_linear_program(to, 2);
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[2]);
     texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[2]);
     texture_linear_program(to, 0);
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[0]);
     texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[0]);
     texture_linear_program(to, 3);
     user_cmd_push(to, ODSY_GL_MATRIX_SELECT_TEXTURE);
     user_cmd_push(to, ODSY_GL_MATRIX_LOAD);
     push_user_words(to, translated, ARRAY_SIZE(translated));
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 48, 48), ==, pixels[1]);
     texture_adapter_point(to, 49, 48, 0, 0);
     g_assert_cmphex(odsy_test_pixel(to, 49, 48), ==, pixels[1]);
     texture_adapter_window(to);
     push_user_words(to, eye_s, ARRAY_SIZE(eye_s));
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 48, 48), ==, pixels[1]);
     texture_adapter_point(to, 48, 48, 0, 0);
     g_assert_cmphex(odsy_test_pixel(to, 48, 48), ==, pixels[1]);
     push_user_words(to, changed, ARRAY_SIZE(changed));
+    push_user_words(to, native_quad, ARRAY_SIZE(native_quad));
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[3]);
     texture_adapter_point(to, 80, 80, 0, 0);
     g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[3]);
+    {
+        const uint32_t negative_quad[] = {
+            0x00014400, 7,
+            0x8080c800, 0xffffffa0, 0xffffffa0,
+            0x8080c800, 0xffffffe0, 0xffffffa0,
+            0x8080c800, 0xffffffe0, 0xffffffe0,
+            0x8080c800, 0xffffffa0, 0xffffffe0, 0x00014001,
+        };
+        const uint32_t negative_planes[] = {
+            0x31008100, 0x908091bb, 0x3c800000, 0, 0, 0x3fc00000,
+            0x31008104, 0x908091bb, 0, 0x3c800000, 0, 0x3fc00000,
+        };
+        const uint32_t window[16] = {
+            ODSY_F_ONE, 0, 0, 0x43000000,
+            0, ODSY_F_ONE, 0, 0x43000000,
+            0, 0, bitmap_rect_float(0x1.ffff8p31f),
+            bitmap_rect_float(0x1.ffff8p31f), 0, 0, 0, ODSY_F_ONE,
+        };
+
+        push_window_transform(to, window);
+        push_user_words(to, negative_planes, ARRAY_SIZE(negative_planes));
+        push_user_words(to, negative_quad, ARRAY_SIZE(negative_quad));
+        for (unsigned i = 0; i < 4; i++) {
+            g_assert_cmphex(odsy_test_pixel(to, 48 + 32 * (i & 1),
+                                            48 + 32 * (i >> 1)), ==, pixels[i]);
+        }
+    }
     qtest_system_reset(to);
     texture_adapter_upload(to, 0x180000, pixels);
     texture_adapter_window(to);

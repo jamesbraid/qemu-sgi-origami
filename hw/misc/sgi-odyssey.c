@@ -4408,7 +4408,8 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
         s->gl_ctx.cur.texture_env_mode = environments[s->tex_env[0]];
     }
     /* Captured linear planes already include the eye-space transform. */
-    if ((s->cmd_tag == ODSY_GL_VERTEX_2F ||
+    if ((s->cmd_tag == ODSY_GL_VERTEX_2I ||
+         s->cmd_tag == ODSY_GL_VERTEX_2F ||
          s->cmd_tag == ODSY_GL_VERTEX_3F) && s->gl_linear_texgen) {
         double vertex[4] = {
             odyssey_f32(s->cmd_operand[0]),
@@ -4417,6 +4418,10 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
                 odyssey_f32(s->cmd_operand[2]) : 0, 1,
         };
 
+        if (s->cmd_tag == ODSY_GL_VERTEX_2I) {
+            vertex[0] = (int32_t)s->cmd_operand[0];
+            vertex[1] = (int32_t)s->cmd_operand[1];
+        }
         for (unsigned axis = 0; axis < 2; axis++) {
             float value = 0;
 
