@@ -123,19 +123,16 @@ KERNEL_REL = os.path.join('linux-ip27', 'vmlinux')
 NETBOOT_BOOTFILE = 'vmlinux'
 NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
-# Early measurements of this test reached the one-, two- and four-CPU
-# sentinels in 52s, 58s and 310s on a busy host. A recent debug_tcg run of
-# the one-CPU case took 296s from QEMU launch through sentinel and cleanup,
-# so that earlier one-CPU measurement no longer covers the slow host case.
-# These times include the real PROM power-on self-test and netboot before
-# the kernel boot. The one-CPU budget of 600s leaves about twice the recent
-# run time for host variation. The two-CPU budget remains four times its
-# measured run. The four-CPU budget of 900s keeps about three times its
-# measured run, in line with the margin xframe_pci keeps. The Meson timeout
-# registered for this test (mips64/meson.build) covers all three methods
-# running sequentially, with additional time for VM launch and shutdown.
+# These boots include the real PROM self-test and netboot before Linux.
+# A debug_tcg one-CPU run took 296s. Matched two-CPU runs on 2026-10-03
+# took 523s on trunk and 455s with the CPU lookup optimizations, including
+# temporary timing probes. Both exceeded the earlier 240s deadline before
+# Linux started. Keep 600s for one and two CPUs to cover these observed
+# runs, and the existing 900s for four CPUs. The Meson timeout registered
+# for this test (mips64/meson.build) covers all three methods sequentially,
+# with additional time for VM launch and shutdown.
 ONE_CPU_BOOT_TIMEOUT_SECONDS = 600
-TWO_CPU_BOOT_TIMEOUT_SECONDS = 240
+TWO_CPU_BOOT_TIMEOUT_SECONDS = 600
 FOUR_CPU_BOOT_TIMEOUT_SECONDS = 900
 
 

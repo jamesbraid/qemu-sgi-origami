@@ -215,10 +215,10 @@ test_mips64_timeouts = {
   # Three test methods (one, two, and four CPUs) run one after another in
   # this one script, each now netbooting the kernel through the real PROM
   # rather than a direct -kernel load. The one-, two-, and four-CPU boots
-  # are budgeted up to 600s, 240s, and 900s in test_linux_kernel.py. 1860s
+  # are budgeted up to 600s, 600s, and 900s in test_linux_kernel.py. 2220s
   # covers all three running out their budgets in sequence plus 120s for
   # VM launch and shutdown.
-  'linux_kernel' : 1860,
+  'linux_kernel' : 2220,
   # test_linux_multiuser.py boots the networked Gentoo disk to a multiuser
   # login and probes the ssh service. BOOT_TIMEOUT_SECONDS=1200 there (the
   # verified milestone boot reached a networked login in 754-845s); 1320
