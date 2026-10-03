@@ -855,21 +855,6 @@ void helper_mtc0_r10k_diagnostic(CPUMIPSState *env, target_ulong arg1)
     }
 }
 
-/*
- * The Diagnostic and CacheErr registers live behind env->r10k, so a
- * generated CP0 read reaches them through these helpers rather than an
- * offsetof into CPUMIPSState. CacheErr reads zero on every other processor,
- * as it did while the register was a shared field.
- */
-uint64_t helper_mfc0_r10k_diagnostic(CPUMIPSState *env)
-{
-    return env->r10k ? env->r10k->CP0_Diagnostic : 0;
-}
-
-target_ulong helper_mfc0_r10k_cacherr(CPUMIPSState *env)
-{
-    return env->r10k ? (int32_t)env->r10k->CP0_CacheErr : 0;
-}
 
 void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
                                   uint32_t sel)
