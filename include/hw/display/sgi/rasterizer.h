@@ -236,6 +236,10 @@ typedef struct SGIGLTexImage {
     double lod_scale_r;
     /* NULL selects the public default curve; lambda is already clamped. */
     bool (*read_filter_weight)(void *opaque, double lambda, double *weight);
+    /* Borrowed level-zero detail image; L <= 0, mode ADD or MODULATE. */
+    const SGIGLTexLevel *detail_image;
+    int32_t detail_level;
+    uint32_t detail_mode;
 } SGIGLTexImage;
 
 /*
