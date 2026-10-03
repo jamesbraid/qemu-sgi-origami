@@ -3778,6 +3778,402 @@ static void test_native_hints_refused(gconstpointer opaque)
     qtest_quit(s);
 }
 
+typedef struct NativeQueryState {
+    uint32_t stencil[9];
+    uint32_t clips[6];
+    uint32_t lights[8];
+} NativeQueryState;
+
+static const NativeQueryState native_query_default = {
+    .stencil = { 0, 0, 0x207, UINT32_MAX, 0x1e00, 0x1e00, 0x1e00,
+                 0, UINT32_MAX },
+};
+static const NativeQueryState native_query_a = {
+    .stencil = { 1, 0x35, 0x202, 0xa55a00f3, 0x1e01, 0x1e02, 0x1e03,
+                 0x17, 0x5aa500cf },
+    .clips = { 1, 0, 1, 0, 0, 1 },
+    .lights = { 1, 0, 0, 1, 0, 0, 0, 1 },
+};
+static const NativeQueryState native_query_b = {
+    .stencil = { 0, 0x6a, 0x203, 0x135700aa, 0x1e03, 0x1e01, 0x1e02,
+                 0x2b, 0x24680055 },
+    .clips = { 0, 0, 0, 0, 0, 1 },
+    .lights = { 0, 0, 0, 0, 0, 0, 0, 1 },
+};
+
+/* Only one signed32 payload word may replace the patterned return page. */
+static void assert_native_query_word(QTestState *s, uint32_t pname,
+                                     uint32_t value, bool wide)
+{
+    uint8_t got[0x4000 - 4], expected[0x4000 - 4];
+
+    memset(expected, 0xa5, sizeof(expected));
+    expected[4] = value >> 24;
+    expected[5] = value >> 16;
+    expected[6] = value >> 8;
+    expected[7] = value;
+    prepare_refused_reply(s);
+    if (wide) {
+        qtest_writeq(s, REG_COMMAND, (UINT64_C(0x4c) << 32) | pname);
+    } else {
+        kona_command(s, 0x4c, &pname, 1);
+    }
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 4, got, sizeof(got));
+    if (memcmp(got, expected, sizeof(got))) {
+        g_test_message("pname 0x%x: expected 0x%08x, received 0x%08x",
+                       pname, value, ldl_be_p(got + 4));
+    }
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+}
+
+static void assert_native_query_state(QTestState *s, const NativeQueryState *v,
+                                      bool wide)
+{
+    for (unsigned k = 0; k < ARRAY_SIZE(v->stencil); k++) {
+        assert_native_query_word(s, 0xb90 + k, v->stencil[k], wide);
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(v->clips); k++) {
+        assert_native_query_word(s, 0x3000 + k, v->clips[k], wide);
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(v->lights); k++) {
+        assert_native_query_word(s, 0x4000 + k, v->lights[k], wide);
+    }
+}
+
+static void set_native_query_state(QTestState *s, const NativeQueryState *v)
+{
+    kona_command(s, v->stencil[0] ? 0x24 : 0x25,
+                 (uint32_t[]){ 0xb90 }, 1);
+    kona_command(s, 0x1e, &v->stencil[1], 1);
+    kona_command(s, 0xcc,
+                 (uint32_t[]){ v->stencil[2], v->stencil[7], v->stencil[3] },
+                 3);
+    kona_command(s, 0xcd, v->stencil + 4, 3);
+    kona_command(s, 0x20, &v->stencil[8], 1);
+    for (unsigned k = 0; k < ARRAY_SIZE(v->clips); k++) {
+        kona_command(s, v->clips[k] ? 0x24 : 0x25,
+                     (uint32_t[]){ 0x3000 + k }, 1);
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(v->lights); k++) {
+        kona_command(s, v->lights[k] ? 0x24 : 0x25,
+                     (uint32_t[]){ 0x4000 + k }, 1);
+    }
+}
+
+static void test_native_query_bytes(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    assert_native_query_state(qts, &native_query_default, false);
+    set_native_query_state(qts, &native_query_a);
+    assert_native_query_state(qts, &native_query_a, false);
+    assert_native_query_state(qts, &native_query_a, true);
+    set_native_query_state(qts, &native_query_b);
+    assert_native_query_state(qts, &native_query_b, false);
+    qtest_writeq(qts, REG_COMMAND, (UINT64_C(0xcc) << 32) | 0x202);
+    qtest_writeq(qts, REG_COMMAND, (UINT64_C(0x17) << 32) | 0xa55a00f3);
+    assert_native_query_word(qts, 0xb92, 0x202, false);
+    assert_native_query_word(qts, 0xb93, 0xa55a00f3, false);
+    assert_native_query_word(qts, 0xb97, 0x17, false);
+}
+
+static void test_native_indexed_query_bits(void)
+{
+    NativeQueryState expected = native_query_a;
+
+    gl_reset();
+    gl_make_current(qts);
+    set_native_query_state(qts, &expected);
+    for (unsigned k = 0; k < ARRAY_SIZE(expected.clips); k++) {
+        if (expected.clips[k]) {
+            qtest_writeq(qts, REG_COMMAND,
+                         (UINT64_C(0x25) << 32) | (0x3000 + k));
+            expected.clips[k] = 0;
+            assert_native_query_state(qts, &expected, false);
+        }
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(expected.lights); k++) {
+        if (expected.lights[k]) {
+            qtest_writeq(qts, REG_COMMAND,
+                         (UINT64_C(0x25) << 32) | (0x4000 + k));
+            expected.lights[k] = 0;
+            assert_native_query_state(qts, &expected, false);
+        }
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(expected.clips); k++) {
+        qtest_writeq(qts, REG_COMMAND,
+                     (UINT64_C(0x24) << 32) | (0x3000 + k));
+        expected.clips[k] = 1;
+        assert_native_query_state(qts, &expected, false);
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(expected.lights); k++) {
+        qtest_writeq(qts, REG_COMMAND,
+                     (UINT64_C(0x24) << 32) | (0x4000 + k));
+        expected.lights[k] = 1;
+        assert_native_query_state(qts, &expected, false);
+    }
+}
+
+static void test_native_query_invalid(void)
+{
+    const uint32_t unknown[] = { 0x2fff, 0x3006, 0x3fff, 0x4008, 0xd33 };
+
+    gl_reset();
+    gl_make_current(qts);
+    set_native_query_state(qts, &native_query_a);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x208, 0x2b, 0x12345678 }, 3);
+    assert_native_query_state(qts, &native_query_a, false);
+    kona_command(qts, 0xcd, (uint32_t[]){ 0x1e03, 0xffffffff, 0x1e01 }, 3);
+    assert_native_query_state(qts, &native_query_a, false);
+    for (unsigned k = 0; k < ARRAY_SIZE(unknown); k++) {
+        kona_command(qts, 0x24, &unknown[k], 1);
+        assert_native_query_state(qts, &native_query_a, false);
+        prepare_refused_reply(qts);
+        kona_command(qts, 0x4c, &unknown[k], 1);
+        assert_reply_unchanged(qts);
+    }
+}
+
+static void test_native_query_attrib(void)
+{
+    const uint32_t groups[] = { 0x400, 0x2000, 0x40 };
+
+    gl_reset();
+    gl_make_current(qts);
+    for (unsigned k = 0; k < ARRAY_SIZE(groups); k++) {
+        NativeQueryState expected = native_query_b;
+
+        set_native_query_state(qts, &native_query_a);
+        prepare_refused_reply(qts);
+        kona_command(qts, 0xc9, &groups[k], 1);
+        assert_reply_posted(qts);
+        set_native_query_state(qts, &native_query_b);
+        kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+        if (groups[k] == 0x400) {
+            memcpy(expected.stencil, native_query_a.stencil,
+                   sizeof(expected.stencil));
+        } else {
+            memcpy(expected.lights, native_query_a.lights,
+                   sizeof(expected.lights));
+            if (groups[k] == 0x2000) {
+                memcpy(expected.clips, native_query_a.clips,
+                       sizeof(expected.clips));
+                expected.stencil[0] = native_query_a.stencil[0];
+            }
+        }
+        assert_native_query_state(qts, &expected, false);
+        assert_attrib_depth(qts, 0);
+    }
+    set_native_query_state(qts, &native_query_a);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+    set_native_query_state(qts, &native_query_b);
+    prepare_refused_reply(qts);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x3400 }, 1);
+    assert_reply_unchanged(qts);
+    assert_attrib_depth(qts, 1);
+    assert_native_query_state(qts, &native_query_b, false);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(qts, &native_query_a, false);
+}
+
+static void test_native_stencil_query_pixels(void)
+{
+    NativeQueryState expected = native_query_default;
+    const uint32_t stencil[] = {
+        1, 53, 0x202, 255, 0x1e00, 0x1e00, 0x1e00, 53, 255,
+    };
+
+    gl_reset();
+    stencil_setup(qts);
+    stencil_clear(qts, 53, 255);
+    stencil_function(qts, 0x202, 53, 255);
+    stencil_operations(qts, 0x1e00, 0x1e00, 0x1e00);
+    memcpy(expected.stencil, stencil, sizeof(stencil));
+    assert_native_query_state(qts, &expected, false);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x400 }, 1);
+    kona_command(qts, 0xcc, (uint32_t[]){ 0x200, 0, 1 }, 3);
+    kona_command(qts, 0xcd, (uint32_t[]){ 0x1e02, 0x1e03, 0x1e01 }, 3);
+    kona_command(qts, 0x20, (uint32_t[]){ 3 }, 1);
+    kona_command(qts, 0x1e, (uint32_t[]){ 66 }, 1);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(qts, &expected, false);
+    kona_command_f(qts, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    stencil_triangle(qts);
+    assert_stencil_colour(qts, 0xff0000);
+}
+
+static void test_native_query_contexts(void)
+{
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+
+    gl_reset();
+    gl_make_current(qts);
+    set_native_query_state(qts, &native_query_a);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+    return_context_deactivate(qts);
+    attrib_context_fresh(qts, save_b);
+    assert_native_query_state(qts, &native_query_default, false);
+    set_native_query_state(qts, &native_query_b);
+    for (unsigned k = 0; k < 2; k++) {
+        return_context_deactivate(qts);
+        return_context_restore(qts, SAVE_AREA);
+        assert_native_query_state(qts, &native_query_a, false);
+        return_context_deactivate(qts);
+        return_context_restore(qts, save_b);
+        assert_native_query_state(qts, &native_query_b, false);
+    }
+    return_context_deactivate(qts);
+    return_context_restore(qts, SAVE_AREA);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    assert_native_query_state(qts, &native_query_a, false);
+    place_read_window(qts, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_native_query_state(qts, &native_query_a, false);
+    return_context_deactivate(qts);
+    attrib_context_fresh(qts, SAVE_AREA);
+    assert_native_query_state(qts, &native_query_default, false);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(qts, &native_query_default, false);
+    assert_attrib_depth(qts, 0);
+}
+
+static void test_native_query_reset(void)
+{
+    for (unsigned kind = 0; kind < 3; kind++) {
+        gl_reset();
+        gl_make_current(qts);
+        set_native_query_state(qts, &native_query_a);
+        kona_command(qts, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+        if (kind == 0) {
+            kona_command(qts, 0xcc, (uint32_t[]){ 0x203, 0x2b }, 2);
+        } else if (kind == 1) {
+            kona_command(qts, 0xcd, (uint32_t[]){ 0x1e03, 0x1e01 }, 2);
+        } else {
+            kona_command(qts, 0x24, NULL, 0);
+        }
+        gl_reset();
+        gl_make_current(qts);
+        assert_native_query_state(qts, &native_query_default, false);
+        assert_attrib_depth(qts, 0);
+        set_native_query_state(qts, &native_query_b);
+        assert_native_query_state(qts, &native_query_b, false);
+    }
+}
+
+static void native_queries_pop_after_migration(QTestState *s)
+{
+    assert_native_query_state(s, &native_query_default, false);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(s, &native_query_b, false);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    assert_native_query_state(s, &native_query_default, false);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(s, &native_query_b, false);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_query_state(s, &native_query_a, false);
+}
+
+static void test_native_query_migration(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    NativeQueryState expected = native_query_a;
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-native-queries-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(args);
+    gl_make_current(from);
+    if (kind == 0) {
+        set_native_query_state(from, &native_query_a);
+        kona_command(from, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+        set_native_query_state(from, &native_query_b);
+        kona_command(from, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+        set_native_query_state(from, &native_query_default);
+        return_context_deactivate(from);
+        attrib_context_fresh(from, SAVE_AREA + 0x20000);
+        set_native_query_state(from, &native_query_b);
+        kona_command(from, 0xc9, (uint32_t[]){ 0x2400 }, 1);
+        set_native_query_state(from, &native_query_default);
+    } else if (kind < 4) {
+        set_native_query_state(from, &native_query_a);
+        prepare_refused_reply(from);
+        if (kind == 1) {
+            kona_command(from, 0xcc, (uint32_t[]){ 0x203, 0x19 }, 2);
+            expected.stencil[2] = 0x203;
+            expected.stencil[3] = 0x12345678;
+            expected.stencil[7] = 0x19;
+        } else if (kind == 2) {
+            kona_command(from, 0xcd, (uint32_t[]){ 0x1e03, 0x1e01 }, 2);
+            expected.stencil[4] = 0x1e03;
+            expected.stencil[5] = 0x1e01;
+            expected.stencil[6] = 0x1e02;
+        } else {
+            kona_command(from, 0x24, NULL, 0);
+            expected.clips[1] = 1;
+        }
+        assert_reply_unchanged(from);
+    }
+    sgi_migrate_stopped(from, uri);
+    for (unsigned k = 0; k < 2; k++) {
+        QTestState *s = k ? from : to;
+
+        if (kind == 0) {
+            native_queries_pop_after_migration(s);
+        } else if (kind < 4) {
+            qtest_writel(s, REG_COMMAND,
+                         kind == 1 ? 0x12345678 : kind == 2 ? 0x1e02 : 0x3001);
+            assert_reply_unchanged(s);
+            assert_native_query_state(s, &expected, false);
+        } else {
+            assert_native_query_state(s, &native_query_default, false);
+        }
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_native_query_refused(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    const uint32_t first[] = { 0xb90, 0x3000, 0x4000 };
+    const unsigned count[] = { 9, 6, 8 };
+
+    if (kind == 0) {
+        gl_make_current(s);
+        return_context_deactivate(s);
+    } else {
+        kona_command_kicked(s, 0x1fd,
+                            (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                          tagged_offset_word(SAVE_AREA),
+                                          0x10000 }, 3);
+        if (kind == 2) {
+            kona_command_kicked(s, 0x1f2,
+                                (uint32_t[]){ physical_page_word(0x08000000),
+                                              tagged_offset_word(0x08000000),
+                                              0x4000 }, 3);
+        }
+    }
+    for (unsigned g = 0; g < ARRAY_SIZE(first); g++) {
+        for (unsigned k = 0; k < count[g]; k++) {
+            prepare_refused_reply(s);
+            kona_command(s, 0x4c, (uint32_t[]){ first[g] + k }, 1);
+            assert_reply_unchanged(s);
+        }
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -3851,6 +4247,38 @@ int main(int argc, char **argv)
                    test_native_state_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/push-and-pop-attrib",
                    test_push_and_pop_attrib);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/bytes",
+                   test_native_query_bytes);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/indexed-bits",
+                   test_native_indexed_query_bits);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/invalid",
+                   test_native_query_invalid);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/attrib",
+                   test_native_query_attrib);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/stencil-pixels",
+                   test_native_stencil_query_pixels);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/contexts",
+                   test_native_query_contexts);
+    qtest_add_func("sn0/origin2000/kona-3d/native-state/reset",
+                   test_native_query_reset);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/migration",
+                        GUINT_TO_POINTER(0), test_native_query_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/"
+                        "function-migration",
+                        GUINT_TO_POINTER(1), test_native_query_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/"
+                        "operations-migration",
+                        GUINT_TO_POINTER(2), test_native_query_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/enable-migration",
+                        GUINT_TO_POINTER(3), test_native_query_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/default-migration",
+                        GUINT_TO_POINTER(4), test_native_query_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/no-context",
+                        GUINT_TO_POINTER(0), test_native_query_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/missing-page",
+                        GUINT_TO_POINTER(1), test_native_query_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-state/failed-page",
+                        GUINT_TO_POINTER(2), test_native_query_refused);
     qtest_add_func("sn0/origin2000/kona-3d/hints/invalid",
                    test_native_hints_invalid);
     qtest_add_func("sn0/origin2000/kona-3d/hints/attrib",
