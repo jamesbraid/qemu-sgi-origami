@@ -3294,7 +3294,7 @@ bool sgi_gl_texture_test_sample(const SGIGLTexImage *im,
 {
     unsigned reports = 0;
     SGISoftDraw r = {
-        .texture = im, .texture_3d = im->depth || (level && level->depth),
+        .texture = im,
         .texture_reports = &reports,
     };
 

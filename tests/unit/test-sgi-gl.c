@@ -5689,10 +5689,6 @@ static uint32_t texture_rgb(double r, double g, double b)
 }
 
 
-
-/* Nonlinear mapping sees expanded, bilinearly sampled LUMINANCE once. */
-
-
 static bool texture_read_volume_as_2d(void *opaque, uint32_t x, uint32_t y,
                                        uint32_t *rgba)
 {
@@ -5732,6 +5728,20 @@ static void test_texture_dimensionality(void)
     }
     g_assert_cmpuint(pixels.reads, >, 0);
     g_assert_cmpuint(pixels.reads_2d, ==, 0);
+    /* Same S/T and depth: only a volume applies the out-of-range R border. */
+    image.wrap_r = SGI_GL_CLAMP_TO_BORDER;
+    image.border_color[1] = image.border_color[3] = 1;
+    for (int volume = 0; volume < 2; volume++) {
+        frag_init(&f);
+        image.volume = volume;
+        f.rec.target.texture = &image;
+        enable(&f.c, volume ? SGI_GL_TEXTURE_3D : SGI_GL_TEXTURE_2D, true);
+        texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+        texture_coord(&f, 0.25f, 0.25f, 1.5f, 1);
+        frag_quad(&f, 1, 0, 1, 1);
+        g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                        volume ? 0x00ff00 : 0x0000ff);
+    }
 }
 
 static void test_texture_3d_post_filter(void)

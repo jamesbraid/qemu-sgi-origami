@@ -10842,6 +10842,12 @@ static void test_texture_adapter_level_zero_3d(void)
         }
     }
 
+    /* A one-slice 3D binding must still select the volume callback. */
+    texture_adapter_bind_3d(qts, 0x190000, 32, 1, 2, 2, 1);
+    odsy_test_pixel_write(qts, 18, 10, 0x12345678);
+    texture_adapter_point_3d(qts, 18, 10, 0.25f, 0.25f, 1.75f);
+    g_assert_cmphex(odsy_test_pixel(qts, 18, 10), ==, slice_colours[0]);
+
     /* MODULATE must multiply a nonwhite current vertex, including alpha. */
     {
         const uint32_t colour[4] = {
