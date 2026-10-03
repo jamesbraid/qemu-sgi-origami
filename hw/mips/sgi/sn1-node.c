@@ -103,6 +103,17 @@
 #define SN1_HUB_REMOTE_REGISTERS_ADDRESS UINT64_C(0x10030000000)
 #define SN1_XBRIDGE_HOST_PORT 0xa
 
+static const struct {
+    uint64_t address;
+    unsigned mmio;
+    const char *name;
+} sn1_md_windows[] = {
+    { SN1_HUB_DIRECTORY, 5, "sn1.ni-directory" },
+    { SN1_HUB_ECC, 6, "sn1.ni-ecc" },
+    { SN1_HUB_ECC_SCRUB, 10, "sn1.ni-ecc-scrub" },
+    { SN1_MEMORY_SPECIAL_ADDRESS, 9, "sn1.ni-fetchop" },
+};
+
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
@@ -375,6 +386,21 @@ static MemTxResult sn1_node_ni_processor_rw(SN1FabricEndpoint *endpoint,
     AddressSpace *as;
     hwaddr offset;
 
+    for (unsigned i = 0; i < ARRAY_SIZE(sn1_md_windows); i++) {
+        MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock),
+                                                 sn1_md_windows[i].mmio);
+        uint64_t extent = memory_region_size(mr);
+
+        if (local >= sn1_md_windows[i].address &&
+            local - sn1_md_windows[i].address < extent &&
+            size <= extent - (local - sn1_md_windows[i].address)) {
+            offset = local - sn1_md_windows[i].address;
+            return write ? address_space_write(&node->ni_md_as[i], offset,
+                                                attrs, buffer, size) :
+                           address_space_read(&node->ni_md_as[i], offset,
+                                               attrs, buffer, size);
+        }
+    }
     if (local < memory_region_size(node->ram) &&
         size <= memory_region_size(node->ram) - local) {
         as = &node->ni_ram_as;
@@ -537,6 +563,11 @@ static void sn1_node_init_claims(SN1NodeState *node)
                           "sn1.ni-board-id");
     sn1_node_ni_target_as(node, 1, sysbus_mmio_get_region(
         SYS_BUS_DEVICE(node->bedrock), 1), &node->ni_pio_as, "sn1.ni-pio");
+    for (i = 0; i < ARRAY_SIZE(sn1_md_windows); i++) {
+        sn1_node_ni_target_as(node, 5 + i, sysbus_mmio_get_region(
+            SYS_BUS_DEVICE(node->bedrock), sn1_md_windows[i].mmio),
+            &node->ni_md_as[i], sn1_md_windows[i].name);
+    }
     sn1_fabric_init_floor(&node->endpoint, node->claim_floor);
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         sn1_node_view_claims(node, cpu, &node->cpu_sysmem[cpu]);
@@ -1458,6 +1489,20 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
     (void)cpu;
     if (mr == &bedrock->md.ecc_mmio) {
         return sgi_bedrock_md_ecc_store_value(offset, value, size);
+    }
+    for (unsigned view = 0; view < node->nr_cpus; view++) {
+        if (mr == &node->ni_processor[view][1].region) {
+            hwaddr local = offset & (SN1_FABRIC_WINDOW_SIZE - 1);
+            hwaddr ecc = SN1_HUB_ECC - SN1_SPACE_HUB;
+
+            if (local >= ecc &&
+                local - ecc < memory_region_size(&bedrock->md.ecc_mmio)) {
+                /* Select from the full register before the typed write. */
+                return sgi_bedrock_md_ecc_store_value(local - ecc, value,
+                                                     size);
+            }
+            break;
+        }
     }
     return value;
 }
@@ -2482,6 +2527,9 @@ static void sn1_node_unrealize(DeviceState *dev)
     }
     if (node->ni_boot_initialized) {
         address_space_destroy(&node->ni_boot_as);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(node->ni_md_as); i++) {
+        address_space_destroy(&node->ni_md_as[i]);
     }
     address_space_destroy(&node->ni_pio_as);
     address_space_destroy(&node->ni_board_id_as);

@@ -6694,6 +6694,147 @@ static void test_routed_composer(const void *data)
     g_unlink(prom);
 }
 
+static void test_compute_md_special_windows(const void *data)
+{
+    bool routed = GPOINTER_TO_INT(data);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = routed ?
+        expansion_storage_image(16 * 1024 * 1024) : NULL;
+    g_autofree char *drive = routed ? g_strdup_printf(
+        "-drive if=none,id=cfg,file=%s,format=raw", image) : g_strdup("");
+    QTestState *qts = qtest_initf(
+        "-M %s -cpu R14000 -smp %u -m %s -S -bios %s %s "
+        "-nodefaults -display none", routed ?
+        ROUTED_TOPOLOGY "," STORAGE_BINDING : "origin300",
+        routed ? 4 : 2, routed ? "1G" : "512M", prom, drive);
+    uint8_t bytes[8];
+    const uint64_t directory = UINT64_C(0x101c7800408);
+    const uint64_t ecc = UINT64_C(0x10140000006);
+    const uint64_t scrub = UINT64_C(0x10100000006);
+    const uint64_t fetchop = UINT64_C(0x30000040000);
+    uint64_t value;
+
+    /* The density-probe carrier must reach the existing directory decoder. */
+    stq_be_p(bytes, UINT64_C(0x599a599a599a599a));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, directory, bytes, sizeof(bytes)));
+    g_assert_true(nasid_test_cpu_readq(qts, 0, directory, &value));
+    qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x780008,
+                 (UINT64_C(2) << 32) | 0x3300);
+    stw_be_p(bytes, 0xa55a);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, ecc, bytes, 2));
+    g_assert_true(qtest_memread_cpu(qts, 0, ecc, bytes, 2));
+    g_assert_cmphex(lduw_be_p(bytes), ==, 0xa55a);
+    g_assert_true(qtest_memread_cpu(qts, 0, scrub, bytes, 2));
+    g_assert_cmphex(lduw_be_p(bytes), ==, 0xa55a);
+
+    stq_be_p(bytes, 3);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, 0x40000, bytes, 8));
+    g_assert_true(qtest_memread_cpu(qts, 0, fetchop + 8, bytes, 8));
+    g_assert_cmphex(ldq_be_p(bytes), ==, 3);
+    g_assert_true(qtest_memread_cpu(qts, 0, fetchop, bytes, 8));
+    g_assert_cmphex(ldq_be_p(bytes), ==, 4);
+    g_assert_false(nasid_test_cpu_readq(qts, 0, fetchop + 0x20, &value));
+    qtest_quit(qts);
+    if (image) {
+        g_unlink(image);
+    }
+    g_unlink(prom);
+}
+
+static void test_routed_cpu_ecc_store(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *prom = NULL;
+    g_autofree char *storage = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts;
+    int fd;
+    int64_t deadline;
+    const uint32_t code[] = {
+        0x400c6000, /* mfc0 t4, Status */
+        0x358c0080, /* ori t4, t4, KX */
+        0x240dfffb, /* addiu t5, zero, ~ERL */
+        0x018d6024, /* and t4, t4, t5 */
+        0x408c6000, /* mtc0 t4, Status */
+        0x000000c0,
+        0x3c089000, /* t0 = XKPHYS ECC carrier */
+        0x0008403c,
+        0x34090001,
+        0x0009483c,
+        0x3c0a4000,
+        0x012a4825,
+        0x01094025,
+        0x34091111, /* t1 = full source register 0x1111222233334444 */
+        0x00094c38,
+        0x35292222,
+        0x00094c38,
+        0x35293333,
+        0x00094c38,
+        0x35294444,
+        0xa5090006, /* sh t1, 6(t0) */
+        0xa5090004, /* sh t1, 4(t0) */
+        0xa5090002, /* sh t1, 2(t0) */
+        0xa5090000, /* sh t1, 0(t0) */
+        0x3c089600, /* t0 = uncached memory completion flag */
+        0x0008403c,
+        0x34090001,
+        0xfd090108, /* sd t1, 0x108(t0) */
+        0x1000ffff,
+        0x00000000,
+    };
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    stl_be_p(image, 0x100000ff);
+    for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+        stl_be_p(image + 0x400 + i * 4, code[i]);
+    }
+    fd = g_file_open_tmp("sn-builder-routed-ecc-XXXXXX.bin", &prom, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -bios %s -S "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-accel tcg,thread=single -nodefaults -display none", prom, storage);
+    for (unsigned cpu = 0; cpu < 4; cpu += 2) {
+        uint8_t config[8];
+        uint64_t value;
+
+        stq_be_p(config, (UINT64_C(2) << 32) | 0x3300);
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x780008, config, sizeof(config)));
+        g_assert_true(nasid_test_cpu_readq(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x780008, &value));
+        g_assert_cmphex(value, ==, (UINT64_C(2) << 32) | 0x3300);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    while (!qtest_readq(qts, 0x108) &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    if (qtest_readq(qts, 0x108) != 1) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+        g_test_message("Synthetic ECC CPU registers: %s", registers);
+    }
+    g_assert_cmphex(qtest_readq(qts, 0x108), ==, 1);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10140000000)), ==, 0x3333);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10140000002)), ==, 0x2222);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10140000004)), ==, 0x1111);
+    g_assert_cmphex(qtest_readw(qts, UINT64_C(0x10140000006)), ==, 0x4444);
+    qtest_quit(qts);
+    g_unlink(storage);
+    g_unlink(prom);
+}
+
 static void test_routed_serial_refusals(void)
 {
     static const char *options[] = {
@@ -8010,6 +8151,12 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/cpu-board-load",
                         NULL, test_expansion_cpu_board_load);
+    qtest_add_func("sn/builder/md-cpu/routed-ecc-store",
+                   test_routed_cpu_ecc_store);
+    qtest_add_data_func("sn/builder/md-special/direct", NULL,
+                        test_compute_md_special_windows);
+    qtest_add_data_func("sn/builder/md-special/routed",
+                        GINT_TO_POINTER(1), test_compute_md_special_windows);
     qtest_add_data_func("sn/builder/routed/composer-synthetic", NULL,
                         test_routed_composer);
     qtest_add_data_func("sn/builder/routed/composer-targeted",

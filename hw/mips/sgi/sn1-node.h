@@ -195,8 +195,8 @@ typedef struct SN1NodeState {
     SN1FabricEndpoint endpoint;
     SN1FabricProcessorView ni_processor[SGI_SN1_NODE_MAX_CPUS][SN1_NODE_SPACES];
     MemoryRegion ni_memory_view[SGI_SN1_NODE_MAX_CPUS][2];
-    MemoryRegion ni_target[5];
-    MemoryRegion ni_target_part[5][2];
+    MemoryRegion ni_target[9];
+    MemoryRegion ni_target_part[9][2];
     AddressSpace ni_ram_as;
     AddressSpace ni_hub_as;
     AddressSpace ni_uart_as;
@@ -204,6 +204,7 @@ typedef struct SN1NodeState {
     AddressSpace ni_boot_as;
     bool ni_boot_initialized;
     AddressSpace ni_pio_as;
+    AddressSpace ni_md_as[4];
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
