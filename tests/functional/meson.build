@@ -40,7 +40,7 @@ subdir('xtensa')
 subdir('generic')
 
 precache_all = []
-foreach speed : ['quick', 'thorough']
+foreach speed : ['quick', 'thorough', 'performance']
   foreach dir : target_dirs
 
     target_base = dir.split('-')[0]

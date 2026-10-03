@@ -25,7 +25,7 @@ import threading
 import unittest
 
 from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
-                     Console, GuestFault,
+                     Console, GuestFault, posix_cksum,
                      HarnessError, IrixConsole, arp_neighbor_line,
                      arp_neighbor_mac,
                      arp_resolution, dhcp_kind, icmp_echo_exchange,
@@ -39,6 +39,23 @@ from lib_net import (DHCP_NAMES, OPENBSD_LOGIN_STAGES, OPENBSD_TRIPWIRES,
                      build_udp_fragments, parse_ipv4_udp_fragment,
                      reassemble_udp_fragments)
 from test_irix_tg import tg_acceptance_verdict
+
+
+class ChecksumOutputTests(unittest.TestCase):
+    def test_guest_checksum_with_or_without_prompt(self):
+        for prompt in ('', '# '):
+            output = ('cksum /tmp/data; echo "MARK""-cksum-$?\r\n'
+                      f'{prompt}2599787801 4194304 /tmp/data\r\n')
+            self.assertEqual(posix_cksum(output, '/tmp/data'),
+                             ('2599787801', 4194304))
+
+    def test_echo_wrong_file_or_ambiguous_result_is_refused(self):
+        for output in ('echo 1 2 /tmp/data\n', '1 2 /tmp/other\n',
+                       '1 2 /tmp/data\n3 4 /tmp/data\n',
+                       '1\n2 /tmp/data\n', '1 2\n/tmp/data\n', ''):
+            with self.subTest(output=output):
+                with self.assertRaises(HarnessError):
+                    posix_cksum(output, '/tmp/data')
 
 
 # ---------------------------------------------------------------------------
