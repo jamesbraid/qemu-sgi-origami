@@ -4000,8 +4000,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         lo < -15 * 256 || lo > 15 * 256 ||
         hi < -15 * 256 || hi > 15 * 256 ||
         (min >= 0x40 && lo > hi) ||
-        s->tex_env[0] < 1 || s->tex_env[0] > 3 ||
-        (s->tex_env[0] == 3 && image->base_format == SGI_GL_LUMINANCE)) {
+        s->tex_env[0] < 1 || s->tex_env[0] > 4 ||
+        (s->tex_env[0] == 3 && image->base_format == SGI_GL_LUMINANCE) ||
+        (s->tex_env[0] == 4 &&
+         (((s->tex_env[1] | s->tex_env[2]) & 0xff000000) ||
+          s->tex_env[3] || s->tex_env[4]))) {
         goto unsupported;
     }
     image->width = width;
@@ -4084,6 +4087,7 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
 {
     const uint32_t environments[] = {
         SGI_GL_REPLACE, SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL,
+        SGI_GL_BLEND,
     };
     uint32_t strq[4] = { s->tex_coord[0], s->tex_coord[1], 0, ODSY_F32_ONE };
     bool one_d = (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D)) ==
@@ -4128,6 +4132,15 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     if (d->state->texture_2d &&
         !odyssey_texture_setup(s, &image, &texture, &t.texture)) {
         return SGI_GL_DRAW_OK;
+    }
+    if (state.texture_2d && s->tex_env[0] == 4) {
+        /* The family words pack two normalized 12-bit components each. */
+        state.texture_env_color[0] = ((s->tex_env[1] >> 12) & 0xfff) /
+                                     4095.0f;
+        state.texture_env_color[1] = (s->tex_env[1] & 0xfff) / 4095.0f;
+        state.texture_env_color[2] = ((s->tex_env[2] >> 12) & 0xfff) /
+                                     4095.0f;
+        state.texture_env_color[3] = (s->tex_env[2] & 0xfff) / 4095.0f;
     }
     if (!odyssey_gl_index_mode(s)) {
         state.colour_mask = (s->gl_write_mask >> ODSY_WRITE_COLOUR_SHIFT) &
