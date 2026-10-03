@@ -181,6 +181,7 @@ static void populate(SGIGLContext *c, bool other)
                                  SGI_GL_COLOUR_MASK_ALL &
                                  ~SGI_GL_COLOUR_MASK_GREEN;
     c->cur.texture_2d = !other;
+    c->cur.texture_3d = other;
     c->cur.texture_env_mode = other ? SGI_GL_DECAL : SGI_GL_BLEND;
     for (int i = 0; i < 4; i++) {
         c->cur.texture_env_color[i] = other ? 0.25f * i : 1 - 0.125f * i;
@@ -799,6 +800,7 @@ static const Corruption corruptions[] = {
     BAD(cur.logic_op_mode, SGI_GL_CLEAR - 1, "logical operation"),
     BAD(cur.colour_mask, SGI_GL_COLOUR_MASK_ALL + 1, "colour mask"),
     BAD(cur.texture_2d, 2, "texture_2d"),
+    BAD(cur.texture_3d, 2, "texture_3d"),
     BAD(cur.texture_env_mode, 0, "texture environment mode"),
     BAD(cur.texture_env_color[0], 0x7fc00000, "texture environment colour"),
     BAD(cur.texture_env_color[3], 0x3fc00000, "texture environment colour"),
