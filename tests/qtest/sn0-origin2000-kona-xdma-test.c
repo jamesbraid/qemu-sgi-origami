@@ -524,23 +524,32 @@ static void test_completions_acknowledged(void)
 
 /*
  * A packet with neither an X pixel write waiting nor a list record has
- * no destination a guest command names. The model's choice is its qtest
- * placement, logged; it never sets the fatal bit for it.
+ * no destination a guest command names. It must leave pixels and guest
+ * memory unchanged, without posting success or a fabricated fatal error.
  */
 static void test_packet_without_destination(void)
 {
     g_autofree char *log = NULL;
     g_autofree char *found = NULL;
     QTestState *s = kona_init_logged(&log);
+    uint8_t before[64], after[64];
 
+    memset(before, 0xa5, sizeof(before));
+    qtest_memwrite(s, BUFFER_PAGE, before, sizeof(before));
     map_page(s, 0, BUFFER_PAGE);
     dma_packet(s, BUFFER_PAGE, 64, 64, 0, 0x100);
-    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & CAUSE_FATAL, ==, 0);
+    for (unsigned x = 0; x < 16; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, x, 0), ==, 0);
+    }
+    qtest_memread(s, BUFFER_PAGE, after, sizeof(after));
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0);
     qtest_quit(s);
 
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found, "no list record and no X pixel write"
-                                   " waiting; placed at the qtest offset"));
+                                   " waiting; no pixels or completion"));
     g_assert_null(strstr(found, "sgi_kona_x_image_dma "));
 }
 

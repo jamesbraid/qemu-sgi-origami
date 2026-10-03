@@ -383,19 +383,13 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
             sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
                              SGI_DONE_WRITTEN, cookie, total);
         }
-    } else {
-        /*
-         * Neither a list record nor an X pixel write names where the
-         * bytes go. The model's choice is its qtest placement at
-         * x-test-dma-fb-offset, which no guest command sets, logged so a
-         * guest packet that lands there shows.
-         */
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: dma packet with no list record and no X"
-                      " pixel write waiting; placed at the qtest offset"
-                      " %u\n", d->test_fb_offset);
+    } else if (d->test_framebuffer) {
         sgi_kona_dma_framebuffer(s, &pl, in_page, lines, per_line, pitch,
                                  cookie);
+    } else {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: dma packet with no list record and no X"
+                      " pixel write waiting; no pixels or completion\n");
     }
 }
 
@@ -783,11 +777,22 @@ void sgi_kona_dma_reset(SGIKonaDma *d)
 
 /*
  * object_property_add_bool() has no direct-pointer convenience form (unlike
- * object_property_add_uint32_ptr()), so x-test-dma-reverse needs its own
- * getter/setter pair; both recover SGIKonaDma through SGI_KONA(obj), the
+ * object_property_add_uint32_ptr()), so the boolean test controls need
+ * getter/setter pairs; both recover SGIKonaDma through SGI_KONA(obj), the
  * same convention hw/misc/sgi-mgras.c's own get-only x-test-first-ack/
  * x-test-second-ack properties use.
  */
+static bool sgi_kona_dma_test_get_framebuffer(Object *obj, Error **errp)
+{
+    return SGI_KONA(obj)->dma.test_framebuffer;
+}
+
+static void sgi_kona_dma_test_set_framebuffer(Object *obj, bool value,
+                                             Error **errp)
+{
+    SGI_KONA(obj)->dma.test_framebuffer = value;
+}
+
 static bool sgi_kona_dma_test_get_reverse(Object *obj, Error **errp)
 {
     SGIKonaState *s = SGI_KONA(obj);
@@ -811,6 +816,9 @@ static void sgi_kona_dma_test_set_reverse(Object *obj, bool value,
  */
 void sgi_kona_dma_test_props_init(Object *obj, SGIKonaDma *d)
 {
+    object_property_add_bool(obj, "x-test-dma-framebuffer",
+                             sgi_kona_dma_test_get_framebuffer,
+                             sgi_kona_dma_test_set_framebuffer);
     object_property_add_bool(obj, "x-test-dma-reverse",
                              sgi_kona_dma_test_get_reverse,
                              sgi_kona_dma_test_set_reverse);
