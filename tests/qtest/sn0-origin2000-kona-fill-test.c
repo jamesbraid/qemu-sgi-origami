@@ -1189,6 +1189,39 @@ static void test_cursor_refusal_abort(void)
     g_assert_nonnull(strstr(found, "partial command dropped"));
 }
 
+static void test_cursor_reset_partial_image(void)
+{
+    uint32_t image[CURSOR_WORDS];
+    g_autofree uint8_t *pixels = NULL;
+
+    qtest_system_reset(qts);
+    cursor_image(image);
+    qtest_writel(qts, REG_COMMAND_SLOT(0x130), 260);
+    for (unsigned i = 0; i < 130; i++) {
+        qtest_writel(qts, REG_COMMAND_DATA, image[i]);
+    }
+    qtest_system_reset(qts);
+    cursor_register(qts, 0x101, 260);
+    cursor_register(qts, 0x102, cursor_position(100, 50));
+    cursor_register(qts, 0x103, 2);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+
+    /* A surviving partial load would become valid from this orphaned tail. */
+    for (unsigned i = 130; i < CURSOR_WORDS; i++) {
+        qtest_writel(qts, REG_COMMAND_DATA, image[i]);
+    }
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+    g_assert_cmphex(front_at(qts, 100, 50), ==, 0);
+    cursor_load(qts, 260, image);
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff0000);
+    assert_in_step(qts);
+}
+
 static void test_cursor_migration(void)
 {
     for (unsigned partial = 0; partial < 3; partial++) {
@@ -1591,6 +1624,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-reset-partial-image",
+                   test_cursor_reset_partial_image);
     qtest_add_func("sn0/origin2000/kona-fill/cursor-migration",
                    test_cursor_migration);
     qtest_add_func("sn0/origin2000/kona-fill/cursor-migration-refuses-bounds",
