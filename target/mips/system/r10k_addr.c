@@ -42,7 +42,7 @@ hwaddr mips_r10k_xkphys_uncached_window(CPUMIPSState *env, target_ulong address,
     if (!env->cfg.uncached_attribute || (cca != 2 && cca != 7)) {
         return 0;
     }
-    attr = (address >> 57) & 3;
+    attr = ((uint64_t)address >> 57) & 3;
     *pa &= ~(3ULL << 57);
     return (hwaddr)((attr + 1) & 3) << MIPS_UNCACHED_WINDOW_SHIFT;
 }
