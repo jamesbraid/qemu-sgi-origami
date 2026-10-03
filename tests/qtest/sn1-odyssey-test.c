@@ -10926,6 +10926,52 @@ static void test_texture_adapter_level_zero_3d(void)
     qtest_quit(qts);
 }
 
+static void test_texture_adapter_projective_3d(void)
+{
+    const uint32_t colours[4] = {
+        0xff0000ff, 0xffff00ff, 0x0000ffff, 0xffffffff,
+    };
+    const uint32_t r[3] = { 0x3e800000, 0x3fa00000, 0x3fe00000 };
+    QTestState *qts = board_start("");
+
+    for (unsigned z = 0; z < ARRAY_SIZE(colours); z++) {
+        const uint32_t pixels[4] = {
+            colours[z], colours[z], colours[z], colours[z],
+        };
+
+        texture_adapter_upload_3d_slice(qts, 0x16a800 + z * 0x80,
+                                        pixels, 2, 2);
+    }
+    texture_adapter_window(qts);
+    texture_adapter_bind_3d(qts, 0x16a800, 2, 4, 2, 1, 1);
+
+    /* Public glTexCoord4f draw: doubled STR and Q=2 precede integer XY. */
+    user_cmd_push(qts, 0x00014400);
+    user_cmd_push(qts, 7);
+    for (unsigned quad = 0; quad < 3; quad++) {
+        for (unsigned corner = 0; corner < 4; corner++) {
+            bool right = corner == 1 || corner == 2;
+            bool top = corner >= 2;
+            uint32_t vertex[] = {
+                0xc380d025, right ? 0x40000000 : 0,
+                top ? 0x40000000 : 0, r[quad], 0x40000000,
+                0x8080c800, 4 + 40 * (quad + right), top ? 96 : 32,
+            };
+
+            push_user_words(qts, vertex, ARRAY_SIZE(vertex));
+        }
+    }
+    user_cmd_push(qts, 0x00014001);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 40), ==, colours[0]);
+    g_assert_cmphex(odsy_test_pixel(qts, 52, 40), ==, colours[2]);
+    g_assert_cmphex(odsy_test_pixel(qts, 92, 40), ==, colours[3]);
+
+    /* A three-component coordinate restores the implicit Q=1. */
+    texture_adapter_point_3d(qts, 12, 12, 0.25f, 0.25f, 0.875f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 12), ==, colours[3]);
+    qtest_quit(qts);
+}
+
 static void test_texture_adapter_3d_state_restore(void)
 {
     const uint32_t colours[4] = {
@@ -10953,7 +10999,11 @@ static void test_texture_adapter_3d_state_restore(void)
     }
     texture_adapter_window(from);
     texture_adapter_bind_3d(from, 0x1a0000, 2, 4, 2, 1, 1);
-    texture_adapter_point_3d(from, 10, 10, 0.25f, 0.25f, 0.625f);
+    user_cmd_push(from, 0xc380d025);
+    push_user_words(from, (uint32_t[]) {
+        0x3f000000, 0x3f000000, 0x3fa00000, 0x40000000,
+    }, 4);
+    texture_adapter_current_point(from, 10, 10);
     g_assert_cmphex(odsy_test_pixel(from, 10, 10), ==, colours[2]);
 
     uri = g_strdup_printf("file:%s", path);
@@ -10963,7 +11013,7 @@ static void test_texture_adapter_3d_state_restore(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     sgi_wait_migration_status(to, "completed", 30);
 
-    /* The family restores R with the object and sampler state. */
+    /* The family restores R/Q with the object and sampler state. */
     texture_adapter_current_point(to, 11, 10);
     g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, colours[2]);
     qtest_quit(to);
@@ -10998,6 +11048,25 @@ static void test_context_save_texture_coordinate_3d(void)
     g_assert_cmphex(qtest_readl(qts, page + 0x400), ==, coordinate[0]);
     g_assert_cmphex(qtest_readl(qts, page + 0x404), ==, coordinate[1]);
     g_assert_cmphex(qtest_readl(qts, page + 0x408), ==, coordinate[2]);
+
+    user_cmd_push(qts, 0xc380d025);
+    push_user_words(qts, (uint32_t[]) {
+        0x3f000000, 0x3f000000, 0x3fa00000, 0x40000000,
+    }, 4);
+    qtest_writel(qts, page + 0x84, 0);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                 (UINT64_C(7) << 40) | (UINT64_C(1) << 16) | 1);
+    g_assert_cmphex(qtest_readl(qts, page + 0x140), ==, 0xc380d025);
+    g_assert_cmphex(qtest_readl(qts, page + 0x408), ==, 0x3fa00000);
+    g_assert_cmphex(qtest_readl(qts, page + 0x40c), ==, 0x40000000);
+    user_cmd_push(qts, 0xc380cc23);
+    push_user_words(qts, coordinate, ARRAY_SIZE(coordinate));
+    texture_coordinate_replay(qts, page);
+    qtest_writel(qts, page + 0x84, 0);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                 (UINT64_C(7) << 40) | (UINT64_C(1) << 16) | 1);
+    g_assert_cmphex(qtest_readl(qts, page + 0x140), ==, 0xc380d025);
+    g_assert_cmphex(qtest_readl(qts, page + 0x40c), ==, 0x40000000);
     qtest_quit(qts);
 }
 
@@ -13818,6 +13887,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_luminance_alpha);
     qtest_add_func("sn1/odyssey/texture-adapter/level-zero-3d",
                    test_texture_adapter_level_zero_3d);
+    qtest_add_func("sn1/odyssey/texture-adapter/projective-3d",
+                   test_texture_adapter_projective_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/3d-state-restore",
                    test_texture_adapter_3d_state_restore);
     qtest_add_func("sn1/odyssey/context-save-texture-coordinate-3d",

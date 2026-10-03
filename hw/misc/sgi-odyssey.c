@@ -1282,6 +1282,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_GL_TEXCOORD_1F 0xc380c41f  /* 1 operand: s */
 #define ODSY_GL_TEXCOORD_2F 0xc380c821  /* 2 operands: s, t */
 #define ODSY_GL_TEXCOORD_3F 0xc380cc23  /* 3 operands: s, t, r */
+#define ODSY_GL_TEXCOORD_4F 0xc380d025  /* 4 operands: s, t, r, q */
 #define ODSY_GL_TEXCOORD_SHAPE 0xffffff00
 #define ODSY_GL_TEXCOORD_TAG 0xc380c800
 #define ODSY_GL_TEX_RECT 0x8f80b968     /* 14 operands */
@@ -2669,13 +2670,22 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_NORMAL, 0, normal[0],
                         &normal[1], odyssey_cmd_arity(normal[0]));
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_EDGE, 0, edge, NULL, 0);
-    odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
-                        s->tex_mode & ODSY_TEX_MODE_3D ?
-                        ODSY_GL_TEXCOORD_3F : ODSY_GL_TEXCOORD_2F,
-                        s->tex_mode & ODSY_TEX_MODE_3D ?
-                        (uint32_t[3]) { s->tex_coord[0], s->tex_coord[1],
-                                       s->tex_coord_r } : s->tex_coord,
-                        s->tex_mode & ODSY_TEX_MODE_3D ? 3 : 2);
+    if (s->tex_coord_q != ODSY_F32_ONE) {
+        const uint32_t coordinate[4] = {
+            s->tex_coord[0], s->tex_coord[1], s->tex_coord_r, s->tex_coord_q,
+        };
+
+        odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
+                            ODSY_GL_TEXCOORD_4F, coordinate, 4);
+    } else {
+        odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
+                            s->tex_mode & ODSY_TEX_MODE_3D ?
+                            ODSY_GL_TEXCOORD_3F : ODSY_GL_TEXCOORD_2F,
+                            s->tex_mode & ODSY_TEX_MODE_3D ?
+                            (uint32_t[3]) { s->tex_coord[0], s->tex_coord[1],
+                                           s->tex_coord_r } : s->tex_coord,
+                            s->tex_mode & ODSY_TEX_MODE_3D ? 3 : 2);
+    }
     for (i = 0; i < 4; i++) {
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_MATERIAL + i, 0,
                             material[i],
@@ -4407,7 +4417,7 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
         SGI_GL_BLEND,
     };
     uint32_t strq[4] = { s->tex_coord[0], s->tex_coord[1],
-                         s->tex_coord_r, ODSY_F32_ONE };
+                         s->tex_coord_r, s->tex_coord_q };
     bool one_d = (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D)) ==
                  ODSY_TEX_MODE_1D;
     float matrix[16];
@@ -7492,14 +7502,16 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
                3 * sizeof(uint32_t));
         return;
     }
-    if (tag == ODSY_GL_TEXCOORD_3F) {
+    if (tag == ODSY_GL_TEXCOORD_3F || tag == ODSY_GL_TEXCOORD_4F) {
         memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
         s->tex_coord_r = s->cmd_operand[2];
+        s->tex_coord_q = tag == ODSY_GL_TEXCOORD_4F ?
+                         s->cmd_operand[3] : ODSY_F32_ONE;
         return;
     }
     if ((tag & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG &&
         tag != ODSY_GL_TEXCOORD_2F) {
-        /* The 3f, 4f and integer forms: consumed, not kept. */
+        /* Integer forms remain observable and do not alter coordinates. */
         odyssey_cmd_unimplemented(s, tag);
         return;
     }
@@ -7980,10 +7992,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         s->tex_coord[0] = s->cmd_operand[0];
         s->tex_coord[1] = 0;
         s->tex_coord_r = 0;
+        s->tex_coord_q = ODSY_F32_ONE;
         break;
     case ODSY_GL_TEXCOORD_2F:
         memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
         s->tex_coord_r = 0;
+        s->tex_coord_q = ODSY_F32_ONE;
         break;
     case ODSY_GL_TEX_RECT:
         if (!odyssey_texture_build_level(s) && !s->tex_rect_reported) {
@@ -8330,6 +8344,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
     }
     if (word == ODSY_GL_TEXCOORD_1F ||
         word == ODSY_GL_TEXCOORD_3F ||
+        word == ODSY_GL_TEXCOORD_4F ||
         (word & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG ||
         word == ODSY_GL_TEX_RECT) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
@@ -9102,6 +9117,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->tex_lod[3] = 0x0f00;
     memset(s->tex_coord, 0, sizeof(s->tex_coord));
     s->tex_coord_r = 0;
+    s->tex_coord_q = ODSY_F32_ONE;
     s->tex_rect_reported = false;
     memset(s->gl_vertex_x, 0, sizeof(s->gl_vertex_x));
     memset(s->gl_vertex_y, 0, sizeof(s->gl_vertex_y));
@@ -9888,6 +9904,9 @@ static int odyssey_post_load(void *opaque, int version_id)
         s->line_stipple[0] = s->line_stipple[1] = 0xffff;
         s->line_stipple[2] = 0;
     }
+    if (version_id < 37) {
+        s->tex_coord_q = ODSY_F32_ONE;
+    }
     if (version_id < 36) {
         memset(s->tex_linear_plane, 0, sizeof(s->tex_linear_plane));
         s->tex_linear_valid = 0;
@@ -9938,7 +9957,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 36,
+    .version_id = 37,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -10095,6 +10114,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY_V(tex_lod, SGIOdysseyState, 4, 31),
         VMSTATE_UINT32_ARRAY_V(tex_coord, SGIOdysseyState, 2, 22),
         VMSTATE_UINT32_V(tex_coord_r, SGIOdysseyState, 34),
+        VMSTATE_UINT32_V(tex_coord_q, SGIOdysseyState, 37),
         VMSTATE_UINT32_2DARRAY_V(tex_linear_plane, SGIOdysseyState, 2, 4, 36),
         VMSTATE_UINT32_V(tex_linear_valid, SGIOdysseyState, 36),
         /* The colour-mode words (v24). */

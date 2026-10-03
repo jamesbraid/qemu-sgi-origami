@@ -269,8 +269,9 @@ struct SGIOdysseyState {
      * tex_levels the 0x0e80 table, three words an entry, tex_level0 0x406,
      * tex_lod the four 0x1013 words,
      * tex_coord the last 0xc380c821 (s, t) as float bits, untransformed;
-     * tex_coord_r retains the 3D coordinate. The remaining flag
-     * records the unsupported on-board mipmap rectangle report.
+     * tex_coord_r and tex_coord_q retain depth and projective coordinates.
+     * The remaining flag records the unsupported on-board mipmap rectangle
+     * report.
      */
     uint32_t tex_mode;
     uint32_t tex_sampler[7];
@@ -287,6 +288,7 @@ struct SGIOdysseyState {
     uint32_t tex_lod[4];
     uint32_t tex_coord[2];
     uint32_t tex_coord_r;
+    uint32_t tex_coord_q;
     /* Effective object-space linear planes from public API controls. */
     uint32_t tex_linear_plane[2][4];
     uint32_t tex_linear_valid;
