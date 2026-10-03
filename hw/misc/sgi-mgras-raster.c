@@ -1690,6 +1690,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 #define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
 #define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
 #define MGRAS_XFRMODE_CAPTURED_XIMAGE_READ 0x4008a
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW 0x10080
 
 static void mgras_pio_read_start(SGIMgrasState *s, bool client)
 {
@@ -1720,7 +1721,8 @@ static void mgras_pio_read_start(SGIMgrasState *s, bool client)
         y0 = y1;
         y1 = low;
     } else if (mode != MGRAS_XFRMODE_PIO_READ &&
-               !(mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_READ &&
+               !((mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_READ ||
+                  mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW) &&
                  size == 0x00010002 &&
                  s->rss[MGRAS_RSS_XFRCOUNTERS] == size)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read, mode 0x%x, "
