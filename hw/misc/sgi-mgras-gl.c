@@ -3154,6 +3154,13 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     /* The guest's words, so the differences are taken in 64 bits. */
     int64_t w = (int64_t)(int32_t)box[2] - (int32_t)box[0] + 1;
     int64_t h = (int64_t)(int32_t)box[3] - (int32_t)box[1] + 1;
+    bool captured_2x2 = dma_only && row_words == 2 &&
+        (s->gl_context[s->gl_current].tex.mddma_cntrl & 1) &&
+        box[0] == 0 && box[1] == 0 && box[2] == 1 && box[3] == 2 &&
+        box[4] == 0x00020002 && box[5] == 1 &&
+        ge[MGRAS_GE_PIXEL_BOX + 6] == 1 &&
+        ge[MGRAS_GE_PIXEL_BOX + 7] == 1 &&
+        ge[MGRAS_GE_PIXEL_BOX + 8] == 0;
     uint32_t pairs, format;
 
     /*
@@ -3169,18 +3176,23 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     };
     if (w <= 0 || h <= 0 || w > MGRAS_GL_PIXELS_MAX ||
         h > MGRAS_GL_PIXELS_MAX || (uint32_t)w != (box[4] & 0xffff) ||
-        (uint32_t)h != box[4] >> 16) {
+        ((uint32_t)h != box[4] >> 16 && !captured_2x2)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel rectangle %d,%d to %d,%d "
                       "(size word 0x%x) is not modelled\n", box[0], box[1],
                       box[2], box[3], box[4]);
         return false;
     }
-    px->h = h;
+    px->h = captured_2x2 ? box[4] >> 16 : h;
     format = mgras_gl_pixels_float_signature(ge);
     if (format == MGRAS_GL_PIXELS_FORMATS) {
         format = mgras_gl_pixels_match(ge, &pairs);
     } else {
         pairs = 0;
+    }
+    if (captured_2x2 && format != MGRAS_GL_PIXELS_ABGR8) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: captured 2x2 pixel box with "
+                      "GE program %u is not modelled\n", format);
+        return false;
     }
     if (format >= ARRAY_SIZE(mgras_gl_pixel_programs)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GE pixel program of %u "
