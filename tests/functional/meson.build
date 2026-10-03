@@ -40,7 +40,7 @@ subdir('xtensa')
 subdir('generic')
 
 precache_all = []
-foreach speed : ['quick', 'thorough', 'performance']
+foreach speed : ['quick', 'thorough']
   foreach dir : target_dirs
 
     target_base = dir.split('-')[0]
@@ -59,6 +59,7 @@ foreach speed : ['quick', 'thorough', 'performance']
     endif
 
     test_deps = [roms, keymap_targets]
+    target_benchmarks = []
 
     if speed == 'quick'
       suites = ['func-quick', 'func-' + target_base]
@@ -68,6 +69,7 @@ foreach speed : ['quick', 'thorough', 'performance']
       suites = ['func-' + speed, 'func-' + target_base + '-' + speed, speed]
       target_tests = get_variable('tests_' + target_base + '_' + sysmode + '_' + speed, [])
       test_deps += [pyvenv_functests_group]
+      target_benchmarks = get_variable('benchmarks_' + target_base + '_' + sysmode, [])
     endif
 
     test_env = environment()
@@ -88,12 +90,14 @@ foreach speed : ['quick', 'thorough', 'performance']
       test_env.set('QEMU_TEST_GDB', gdb)
     endif
 
-    foreach test : target_tests
+    foreach test : target_tests + target_benchmarks
       testname = '@0@-@1@'.format(target_base, test)
-      test_suites = suites
+      is_benchmark = test in target_benchmarks
+      test_suites = is_benchmark ? ['system-' + target_base] : suites
       if target_base == 'mips64' and sysmode == 'system' and \
-         test in get_variable('tests_mips64_system_sgi', [])
-        test_suites = suites + ['sgi', 'sgi-functional']
+         (test in get_variable('tests_mips64_system_sgi', []) or \
+          test in get_variable('benchmarks_mips64_system', []))
+        test_suites += is_benchmark ? ['sgi'] : ['sgi', 'sgi-functional']
       endif
       if testname == 'mips64-openbsd_install'
         test_suites += ['func-install']
@@ -139,17 +143,21 @@ foreach speed : ['quick', 'thorough', 'performance']
       # If the above bug ever gets fixed, when QEMU changes the min
       # meson version, add the 'depends' and remove the custom
       # 'run_target' logic below & in Makefile.include
-      test('func-' + testname,
-           python,
-           depends: [test_deps, test_emulator, emulator_modules, plugin_modules,
-                     get_variable('test_' + target_base + '_' + sysmode +
-                                  '_extra_deps', {}).get(test, [])],
-           env: test_env,
-           args: [testpath],
-           protocol: 'tap',
-           timeout: time_out,
-           priority: time_out,
-           suite: test_suites)
+      test_kwargs = {
+        'depends': [test_deps, test_emulator, emulator_modules, plugin_modules,
+                    get_variable('test_' + target_base + '_' + sysmode +
+                                 '_extra_deps', {}).get(test, [])],
+        'env': test_env,
+        'args': [testpath],
+        'protocol': 'tap',
+        'timeout': time_out,
+        'suite': test_suites,
+      }
+      if is_benchmark
+        benchmark(testname, python, kwargs: test_kwargs)
+      else
+        test('func-' + testname, python, priority: time_out, kwargs: test_kwargs)
+      endif
     endforeach
   endforeach
 endforeach

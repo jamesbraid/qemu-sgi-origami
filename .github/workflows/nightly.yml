@@ -124,8 +124,7 @@ jobs:
                   --prefix func-mips64- \
                   --exclude-suite func-diag \
                   --exclude-suite func-install \
-                  --exclude-suite func-openbsd \
-                  --exclude-suite performance > "$expected"
+                  --exclude-suite func-openbsd > "$expected"
                 jobs=8
                 ;;
               diag-a)

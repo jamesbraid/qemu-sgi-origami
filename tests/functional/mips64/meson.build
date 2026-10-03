@@ -310,8 +310,7 @@ tests_mips64_system_thorough = [
   'xframe_pci',
 ]
 
-# Explicit selection keeps timing workloads out of correctness campaigns.
-tests_mips64_system_performance = ['irix_performance']
+benchmarks_mips64_system = ['irix_performance']
 
 subdir('roms')
 if sgi_roms_available
@@ -324,8 +323,7 @@ endif
 
 # Preserve the SGI suite membership before adding the general Malta test.
 tests_mips64_system_sgi = tests_mips64_system_quick + \
-                            tests_mips64_system_thorough + \
-                            tests_mips64_system_performance
+                            tests_mips64_system_thorough
 tests_mips64_system_thorough += ['malta']
 test_mips64_timeouts += {'malta': 420}
 
