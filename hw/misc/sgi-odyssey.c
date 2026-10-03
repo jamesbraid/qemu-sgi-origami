@@ -4022,6 +4022,7 @@ typedef struct OdysseyTextureVolume {
     SGIOdysseyState *s;
     uint32_t base, stride_units, level_word2;
     uint32_t width, height, depth, base_format, words;
+    bool colour_table_alpha;
 } OdysseyTextureVolume;
 
 typedef struct OdysseyTextureChain {
@@ -4101,12 +4102,7 @@ static bool odyssey_texture_read_level(void *opaque, uint32_t level,
            odyssey_texture_read(&chain->storage[level], x, y, rgba);
 }
 
-/*
- * The observed L8 path filters its byte texels first, then uses each
- * normalized RGB component as an independent 8-bit index. A half index
- * rounds upward. The fourth table field is retained in raw state but has no
- * established alpha meaning.
- */
+/* Each normalized component indexes the table after filtering. */
 static void odyssey_texture_colour_table(void *opaque, double rgba[4])
 {
     const OdysseyTextureVolume *texture = opaque;
@@ -4121,6 +4117,12 @@ static void odyssey_texture_colour_table(void *opaque, double rgba[4])
                                             (word >> 12) & 0xfff;
 
         rgba[channel] = component / 4095.0;
+    }
+    if (texture->colour_table_alpha) {
+        uint32_t index = floor(MAX(0.0, MIN(rgba[3], 1.0)) * 255.0 + 0.5);
+        uint32_t word = s->tex_colour_table[1][index];
+
+        rgba[3] = (word & 0xfff) / 4095.0;
     }
 }
 
@@ -4138,7 +4140,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     bool clamp = ws == 2 || wt == 2;
     bool border = ws == 3 || wt == 3;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
-    bool colour_table = word == 0x11500001 || word == 0x11500003;
+    bool colour_table_l8 = word == 0x11500001 || word == 0x11500003;
+    bool colour_table_rgba8_rgb = word == 0x13500001;
+    bool colour_table_rgba8_rgba = word == 0x13600001;
+    bool colour_table = colour_table_l8 || colour_table_rgba8_rgb ||
+                        colour_table_rgba8_rgba;
     bool colour_table_disabled = word == 0x11500000;
     uint32_t first = s->tex_level0 & 0x3f, count, terminal;
     int32_t lo = sextract32(s->tex_lod[2], 0, 14);
@@ -4212,7 +4218,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         hi < -15 * 256 || hi > 15 * 256 ||
         (min >= 0x40 && lo > hi) ||
         (colour_table &&
-         (image->base_format != SGI_GL_LUMINANCE || three_d ||
+         ((colour_table_l8 && image->base_format != SGI_GL_LUMINANCE) ||
+          ((colour_table_rgba8_rgb || colour_table_rgba8_rgba) &&
+           image->base_format != SGI_GL_RGBA) || three_d ||
           (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                           ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
           s->tex_colour_table_valid[0] != 0xffff ||
@@ -4313,6 +4321,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     }
     memset(chain, 0, sizeof(*chain));
     chain->volume.s = s;
+    chain->volume.colour_table_alpha = colour_table_rgba8_rgba;
     image->opaque = &chain->volume;
     if (colour_table) {
         image->post_filter = odyssey_texture_colour_table;
