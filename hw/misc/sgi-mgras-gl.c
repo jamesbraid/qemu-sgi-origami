@@ -3692,6 +3692,11 @@ static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge,
     };
     bool rgb = true;
     bool rgba = true;
+    bool rgba_packet = ge[0x1b5] == 0 ||
+        (ge[0x1b5] == 4 && height == 1 &&
+         ((width == 47 && ge[0x1b4] == 0x17) ||
+          (width == 1 && ge[0x1b4] == 0) ||
+          (width == 17 && ge[0x1b4] == 8)));
 
     for (uint32_t i = 0; i < ARRAY_SIZE(rgb_routines); i++) {
         rgb &= ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] == rgb_routines[i];
@@ -3706,13 +3711,14 @@ static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge,
     for (uint32_t i = 0; rgb && i < ARRAY_SIZE(rgb_unpack_fixed); i++) {
         rgb &= ge[rgb_unpack_indices[i]] == rgb_unpack_fixed[i];
     }
-    for (uint32_t i = 0; rgba && i < ARRAY_SIZE(rgba_unpack) - 1; i++) {
+    for (uint32_t i = 1; rgba && i < ARRAY_SIZE(rgba_unpack) - 1; i++) {
         rgba &= ge[0x1b5 + i] == rgba_unpack[i];
     }
     if (rgba) {
         uint32_t signature = ge[0x1b8];
 
-        rgba = mgras_gl_pixels_captured_float_rgba(width, height,
+        rgba = rgba_packet &&
+               mgras_gl_pixels_captured_float_rgba(width, height,
                                                     row_words, dma_only,
                                                     ge[0x1b4]) &&
                signature == 4 + 4 * row_words;
