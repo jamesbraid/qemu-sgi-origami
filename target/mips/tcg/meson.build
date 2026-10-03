@@ -3,6 +3,7 @@ gen = [
   decodetree.process('msa.decode', extra_args: '--decode=decode_ase_msa'),
   decodetree.process('tx79.decode', extra_args: '--static-decode=decode_tx79'),
   decodetree.process('vr54xx.decode', extra_args: '--decode=decode_ext_vr54xx'),
+  decodetree.process('r10k.decode', extra_args: '--decode=decode_ext_r10k'),
   decodetree.process('octeon.decode', extra_args: '--decode=decode_ext_octeon'),
   decodetree.process('lcsr.decode', extra_args: '--decode=decode_ase_lcsr'),
   decodetree.process('godson2.decode', extra_args: ['--static-decode=decode_godson2']),

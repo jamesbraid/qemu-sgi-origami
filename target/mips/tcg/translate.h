@@ -288,6 +288,7 @@ bool decode_ext_tx79(DisasContext *ctx, uint32_t insn);
 bool decode_ext_octeon(DisasContext *ctx, uint32_t insn);
 #endif
 bool decode_ext_vr54xx(DisasContext *ctx, uint32_t insn);
+bool decode_ext_r10k(DisasContext *ctx, uint32_t insn);
 
 static inline bool disas_mt_available(DisasContext *ctx)
 {
