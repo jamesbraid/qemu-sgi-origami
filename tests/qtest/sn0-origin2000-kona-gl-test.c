@@ -431,6 +431,21 @@ static void test_swap_exchanges_banks(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0x00ff00);
 }
 
+/* A depth-only clear must preserve every colour sample. */
+static void test_depth_clear_keeps_colour(void)
+{
+    gl_reset();
+    gl_make_current(qts, false);
+    gl_place_window(qts, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(qts, F1, F0, F1);
+    kona_command(qts, 0x1d, (uint32_t[]){ F0, F1, F0, F1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + 64, 704), ==, 0xff00ff);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X + PROBE_SIZE - 1,
+                                640 + PROBE_SIZE - 1), ==, 0xff00ff);
+}
+
 /* Paint one X pixel red in bank 0 under the GL window. */
 static void x_repaint(QTestState *s)
 {
@@ -693,6 +708,9 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(false), test_destroy_window_migrates);
     qtest_add_data_func("sn0/origin2000/kona-gl/destroy-before-migration",
                         GINT_TO_POINTER(true), test_destroy_window_migrates);
+
+    qtest_add_func("sn0/origin2000/kona-gl/depth-clear-keeps-colour",
+                   test_depth_clear_keeps_colour);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
