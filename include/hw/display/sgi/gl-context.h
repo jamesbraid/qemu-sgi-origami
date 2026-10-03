@@ -267,6 +267,15 @@ enum {
 #define SGI_GL_STENCIL_PASS_DEPTH_PASS 0x0b96
 #define SGI_GL_STENCIL_REF      0x0b97
 #define SGI_GL_STENCIL_WRITEMASK 0x0b98
+#define SGI_GL_PERSPECTIVE_CORRECTION_HINT 0x0c50
+#define SGI_GL_POINT_SMOOTH_HINT 0x0c51
+#define SGI_GL_LINE_SMOOTH_HINT 0x0c52
+#define SGI_GL_POLYGON_SMOOTH_HINT 0x0c53
+#define SGI_GL_FOG_HINT         0x0c54
+#define SGI_GL_DONT_CARE        0x1100
+#define SGI_GL_FASTEST          0x1101
+#define SGI_GL_NICEST           0x1102
+#define SGI_GL_HINTS            5
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_NORMALIZE        0x0ba1
 #define SGI_GL_VIEWPORT         0x0ba2
@@ -772,6 +781,8 @@ typedef struct SGIGLContext {
     bool line_phase_loaded;
     bool draw_error_loaded;
     uint32_t line_phase;
+    /* Advisory modes are retained even though rendering ignores them. */
+    uint32_t hints[SGI_GL_HINTS];
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -868,6 +879,7 @@ typedef enum SGIGLOp {
      * oldest retained vertex instead of its middle one.
      */
     SGI_GL_OP_SWAP_TMESH,
+    SGI_GL_OP_HINT,             /* target, mode */
 } SGIGLOp;
 
 /*

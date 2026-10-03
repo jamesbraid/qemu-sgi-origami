@@ -118,6 +118,9 @@ static void populate(SGIGLContext *c, bool other)
     c->draw_error_loaded = false;
     c->line_phase = 0;
 
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        c->hints[i] = other ? 0x1101 : 0x1102;
+    }
     /* Everything sgi_gl_context_valid() limits, set inside its limits. */
     c->cur.depth_test = !other;
     c->cur.depth_mask = !other;
@@ -226,7 +229,8 @@ static bool context_padding(size_t at)
     }
     return (at >= before && at < offsetof(SGIGLContext, polygon)) ||
            (at >= end && at < offsetof(SGIGLContext, line_phase)) ||
-           at >= offsetof(SGIGLContext, line_phase) + sizeof(uint32_t);
+           at >= offsetof(SGIGLContext, hints) +
+                 sizeof(((SGIGLContext *)0)->hints);
 }
 
 /* The first byte at which two contexts differ, or -1. */
@@ -741,6 +745,11 @@ typedef struct Corruption {
     { offsetof(SGIGLContext, _field), (_value), (_reason) }
 
 static const Corruption corruptions[] = {
+    BAD(hints[0], 0, "hint 0 mode"),
+    BAD(hints[1], 0x1103, "hint 1 mode"),
+    BAD(hints[2], UINT32_MAX, "hint 2 mode"),
+    BAD(hints[3], 0x1103, "hint 3 mode"),
+    BAD(hints[4], 0, "hint 4 mode"),
     BAD(cur.depth_test, 2, "depth_test"),
     BAD(cur.depth_mask, 2, "depth_mask"),
     BAD(cur.cull_face, 2, "cull_face"),
@@ -1733,9 +1742,41 @@ static void test_line_phase_invalid_marker(void)
     }
 }
 
+static void test_hints_restore(void)
+{
+    TestHead src = { 0 }, dst = { 0 };
+    GByteArray *stream;
+
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        sgi_gl_init(&src.gl[i], i);
+        sgi_gl_init(&dst.gl[i], i);
+        for (unsigned h = 0; h < SGI_GL_HINTS; h++) {
+            dst.gl[i].hints[h] = 0x1102;
+        }
+    }
+    /* Omitted nonzero defaults replace stale destination hint values. */
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        for (unsigned h = 0; h < SGI_GL_HINTS; h++) {
+            g_assert_cmphex(dst.gl[i].hints[h], ==, 0x1100);
+            src.gl[i].hints[h] = 0x1100 + (h + i) % 3;
+        }
+    }
+    stream = save_head(&src);
+    g_assert_cmpint(load_head(stream, &dst, NULL), ==, 0);
+    g_byte_array_unref(stream);
+    for (unsigned i = 0; i < CONTEXTS; i++) {
+        g_assert_cmpmem(dst.gl[i].hints, sizeof(dst.gl[i].hints),
+                        src.gl[i].hints, sizeof(src.gl[i].hints));
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-gl-vmstate/hints-restore", test_hints_restore);
     g_test_add_data_func("/sgi-gl-vmstate/line-phase-error-restore-open", NULL,
                          test_line_phase_error_restore);
     g_test_add_data_func("/sgi-gl-vmstate/line-phase-error-restore-closed",

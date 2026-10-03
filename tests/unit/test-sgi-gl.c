@@ -8498,6 +8498,93 @@ static void test_line_stipple_error_clone(gconstpointer closed)
     sgi_gl_cleanup(&legacy);
 }
 
+static void assert_shared_hints(const SGIGLContext *c,
+                                const uint32_t expected[SGI_GL_HINTS])
+{
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        uint32_t out[SGI_GL_GET_WORDS];
+        unsigned n = 0;
+
+        g_assert_true(sgi_gl_get(c, 0xc50 + i, out, &n));
+        g_assert_cmpuint(n, ==, 1);
+        g_assert_cmphex(out[0], ==, expected[i]);
+    }
+}
+
+static void test_hints(void)
+{
+    SGIGLContext c, copy;
+    uint32_t expected[SGI_GL_HINTS] = {
+        0x1100, 0x1100, 0x1100, 0x1100, 0x1100,
+    };
+    const uint32_t bad_modes[] = { 0, 0x1103, UINT32_MAX };
+    const uint32_t bad_targets[] = { 0xc4f, 0xc55, 0x84ef, 0xbb };
+
+    sgi_gl_init(&c, 1);
+    sgi_gl_init(&copy, 2);
+    assert_shared_hints(&c, expected);
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        for (unsigned mode = 0x1100; mode <= 0x1102; mode++) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50 + i, mode }, 2);
+            expected[i] = mode;
+            assert_shared_hints(&c, expected);
+        }
+        for (unsigned j = 0; j < ARRAY_SIZE(bad_modes); j++) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50 + i, bad_modes[j] }, 2);
+            assert_shared_hints(&c, expected);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(bad_targets); i++) {
+        command(&c, NULL, SGI_GL_OP_HINT,
+                 (uint32_t[]){ bad_targets[i], 0x1101 }, 2);
+        assert_shared_hints(&c, expected);
+    }
+    for (unsigned n = 0; n <= 3; n++) {
+        if (n != 2) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50, 0x1100, 0 }, n);
+            assert_shared_hints(&c, expected);
+        }
+    }
+    command(&c, NULL, SGI_GL_OP_HINT, (uint32_t[]){ 0x1101, 0xc50 }, 2);
+    assert_shared_hints(&c, expected);
+    command(&c, NULL, SGI_GL_OP_BEGIN, (uint32_t[]){ SGI_GL_POINTS }, 1);
+    command(&c, NULL, SGI_GL_OP_HINT, (uint32_t[]){ 0xc50, 0x1100 }, 2);
+    assert_shared_hints(&c, expected);
+    command(&c, NULL, SGI_GL_OP_END, NULL, 0);
+    g_assert_true(sgi_gl_clone(&copy, &c));
+    assert_shared_hints(&copy, expected);
+    sgi_gl_reset(&c, 1);
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        expected[i] = 0x1100;
+    }
+    assert_shared_hints(&c, expected);
+    sgi_gl_cleanup(&c);
+    sgi_gl_cleanup(&copy);
+}
+
+static void test_hints_ignore_rendering(void)
+{
+    g_autofree FragScene *f = g_new0(FragScene, 1);
+
+    frag_init(f);
+    for (unsigned hint = 0; hint < SGI_GL_HINTS; hint++) {
+        for (unsigned mode = 0x1100; mode <= 0x1102; mode++) {
+            memset(&f->p, 0, sizeof(f->p));
+            frag_command(f, SGI_GL_OP_HINT,
+                         (uint32_t[]){ 0xc50 + hint, mode }, 2);
+            frag_quad(f, 1, 0, 0, 1);
+            for (unsigned i = 0; i < W * H; i++) {
+                g_assert_cmphex(f->p.colour[0][i], ==, 0xff0000);
+                g_assert_cmphex(f->p.colour[1][i], ==, 0);
+            }
+        }
+    }
+    sgi_gl_cleanup(&f->c);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -8752,5 +8839,8 @@ int main(int argc, char **argv)
                     test_resume_primitive_keeps_stipple_phase);
     g_test_add_func("/sgi-gl/stencil-clear-clip-union",
                     test_stencil_clear_clip_union);
+    g_test_add_func("/sgi-gl/hints", test_hints);
+    g_test_add_func("/sgi-gl/hints-ignore-rendering",
+                    test_hints_ignore_rendering);
     return g_test_run();
 }

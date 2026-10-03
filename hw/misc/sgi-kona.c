@@ -2931,8 +2931,8 @@ static void sgi_kona_gl_stipple_rows(SGIKonaState *s, int i)
  * and glTexEnv convert by OpenGL's rules. glClearDepth's double in 0 to 1
  * is scaled to the 24-bit depth plane, rounded to nearest, the model's
  * choice. Stencil uses the shared stages and an internal S8 plane.
- * glHint and glClearAccum have no shared state and are
- * absorbed. Returns false for a selector this does not carry out.
+ * Hints retain shared enum state without changing rendering. glClearAccum
+ * is absorbed. Returns false for a selector this does not carry out.
  */
 static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
                                      uint32_t selector, const uint32_t *args)
@@ -3085,6 +3085,9 @@ static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
         cmd = (SGIGLCmd) { SGI_GL_OP_DRAW_BUFFERS, 1, a };
         break;
     case SGI_KONA_CMD_GL_HINT:
+        cmd.op = SGI_GL_OP_HINT;
+        cmd.nargs = 2;
+        break;
     case SGI_KONA_CMD_GL_CLEAR_ACCUM:
         trace_sgi_kona_command_unmodelled(selector, 0);
         return true;
@@ -3603,6 +3606,9 @@ static void sgi_kona_gl_restore(SGIGLContext *c, const SGIGLContext *saved,
         SGI_KONA_RESTORE(cur.texture_env_mode);
         memcpy(c->cur.texture_env_color, saved->cur.texture_env_color,
                sizeof(c->cur.texture_env_color));
+    }
+    if (mask & 0x8000) {                        /* GL_HINT_BIT */
+        memcpy(c->hints, saved->hints, sizeof(c->hints));
     }
     if (mask & 0x80000) {                       /* GL_SCISSOR_BIT */
         SGI_KONA_RESTORE(cur.scissor_test);

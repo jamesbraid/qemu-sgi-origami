@@ -82,6 +82,9 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
 {
     memset(c, 0, sizeof(*c));
     c->hw_id = hw_id;
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        c->hints[i] = SGI_GL_DONT_CARE;
+    }
     for (int i = 0; i < 4; i++) {
         c->cur_color[i] = 1.0f;
     }
@@ -602,6 +605,7 @@ static void sgi_gl_matrix_command(SGIGLContext *c, const SGIGLCmd *cmd)
 
 /* The arguments each command takes. */
 static const uint8_t sgi_gl_nargs[] = {
+    [SGI_GL_OP_HINT] = 2,
     [SGI_GL_OP_VIEWPORT] = 4,
     [SGI_GL_OP_CLEAR_COLOR] = 4,
     [SGI_GL_OP_CLEAR_DEPTH] = 1,
@@ -2060,6 +2064,12 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
     sink->raster(sink->opaque, &op);
 }
 
+static bool sgi_gl_hint_mode(uint32_t mode)
+{
+    return mode == SGI_GL_DONT_CARE || mode == SGI_GL_FASTEST ||
+           mode == SGI_GL_NICEST;
+}
+
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd)
 {
@@ -2073,6 +2083,16 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     }
     switch (cmd->op) {
+    case SGI_GL_OP_HINT:
+        if (c->in_begin || a[0] < SGI_GL_PERSPECTIVE_CORRECTION_HINT ||
+            a[0] > SGI_GL_FOG_HINT || !sgi_gl_hint_mode(a[1])) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-gl: hint target 0x%x mode 0x%x ignored%s\n",
+                          a[0], a[1], c->in_begin ? " inside glBegin" : "");
+            return;
+        }
+        c->hints[a[0] - SGI_GL_PERSPECTIVE_CORRECTION_HINT] = a[1];
+        return;
     case SGI_GL_OP_TEXCOORD2F:
     case SGI_GL_OP_TEXCOORD3F:
     case SGI_GL_OP_TEXCOORD4F:
@@ -2537,6 +2557,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return false;
     }
     switch (pname) {
+    case SGI_GL_PERSPECTIVE_CORRECTION_HINT ... SGI_GL_FOG_HINT:
+        out[0] = c->hints[pname - SGI_GL_PERSPECTIVE_CORRECTION_HINT];
+        *n = 1;
+        return true;
     case SGI_GL_CURRENT_COLOR:
         for (int i = 0; i < 4; i++) {
             out[i] = sgi_gl_bits(c->cur_color[i]);
@@ -2990,6 +3014,12 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "tx_depth", c->tx_depth },
     };
 
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        if (!sgi_gl_hint_mode(c->hints[i])) {
+            error_setg(errp, "sgi-gl: hint %u mode 0x%x", i, c->hints[i]);
+            return false;
+        }
+    }
     for (size_t i = 0; i < ARRAY_SIZE(flags); i++) {
         if (flags[i].value > 1) {
             error_setg(errp, "sgi-gl: %s is %u, not 0 or 1", flags[i].name,
@@ -3874,6 +3904,9 @@ static int sgi_gl_context_pre_load(void *opaque)
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
     c->line_phase = 0;
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        c->hints[i] = SGI_GL_DONT_CARE;
+    }
     c->strip_prev = c->strip_swap = 0;
     c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
@@ -3925,6 +3958,29 @@ static const VMStateDescription vmstate_sgi_gl_texture_coords = {
     .fields = (const VMStateField[]) {
         VMSTATE_SGI_GL_FLOATS(cur_texcoord, SGIGLContext, 4),
         VMSTATE_SGI_GL_FLOATS(raster_texcoord, SGIGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_gl_hints_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque;
+
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        if (c->hints[i] != SGI_GL_DONT_CARE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_gl_hints = {
+    .name = "sgi-gl-context/hints",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_hints_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(hints, SGIGLContext, SGI_GL_HINTS),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -3993,6 +4049,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_gl_hints,
         &vmstate_sgi_gl_clear_stencil,
         &vmstate_sgi_gl_rasterization,
         &vmstate_sgi_gl_polygon_stipple,

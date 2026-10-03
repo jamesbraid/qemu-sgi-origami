@@ -1874,6 +1874,49 @@ static void assert_attrib_depth(QTestState *s, uint8_t count)
     g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
 }
 
+static void assert_hint(QTestState *s, unsigned hint, uint8_t mode)
+{
+    uint8_t bytes[12];
+    const uint8_t expected[] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0, 0, 0x11, mode,
+        0xa5, 0xa5, 0xa5, 0xa5,
+    };
+
+    prepare_refused_reply(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xc50 + hint }, 1);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 4, bytes, sizeof(bytes));
+    if (memcmp(bytes, expected, sizeof(bytes))) {
+        g_test_message("hint %u: expected mode %u, payload 0x%08x", hint, mode,
+                       ldl_be_p(bytes + 4));
+    }
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+}
+
+static void test_native_hints(void)
+{
+    gl_reset();
+    gl_make_current(qts);
+    for (unsigned k = 0; k < 5; k++) {
+        assert_hint(qts, k, 0);
+        for (unsigned mode = 0; mode < 3; mode++) {
+            prepare_refused_reply(qts);
+            kona_command(qts, 0xbb,
+                         (uint32_t[]){ 0xc50 + k, 0x1100 + mode }, 2);
+            assert_reply_unchanged(qts);
+            assert_hint(qts, k, mode);
+            assert_hint(qts, k, mode);
+        }
+        kona_command(qts, 0xbb, (uint32_t[]){ 0xc50 + k, 0x1100 }, 2);
+    }
+    qtest_writeq(qts, REG_COMMAND, (UINT64_C(0xbb) << 32) | 0xc50);
+    qtest_writel(qts, REG_COMMAND, 0x1102);
+    assert_hint(qts, 0, 2);
+    qtest_writel(qts, REG_COMMAND, 0xbb);
+    qtest_writeq(qts, REG_COMMAND, (UINT64_C(0xc50) << 32) | 0x1101);
+    assert_hint(qts, 0, 1);
+}
+
 static void test_native_attrib_depth(void)
 {
     gl_reset();
@@ -3416,6 +3459,325 @@ static void test_blend_without_alpha_plane(void)
     }
 }
 
+static const uint8_t hints_default[5] = { 0, 0, 0, 0, 0 };
+static const uint8_t hints_a[5] = { 1, 2, 0, 1, 2 };
+static const uint8_t hints_b[5] = { 2, 0, 1, 2, 1 };
+
+static void set_hints(QTestState *s, const uint8_t modes[5])
+{
+    for (unsigned k = 0; k < 5; k++) {
+        kona_command(s, 0xbb, (uint32_t[]){ 0xc50 + k, 0x1100 + modes[k] }, 2);
+    }
+}
+
+static void assert_hints(QTestState *s, const uint8_t modes[5])
+{
+    for (unsigned k = 0; k < 5; k++) {
+        assert_hint(s, k, modes[k]);
+    }
+}
+
+static void test_native_hints_invalid(void)
+{
+    const uint32_t bad_modes[] = { 0, 0x1103, UINT32_MAX, 0x4c };
+    const uint32_t bad_targets[] = { 0xc4f, 0xc55, 0x84ef, 0xbb };
+
+    gl_reset();
+    gl_make_current(qts);
+    set_hints(qts, hints_a);
+    for (unsigned k = 0; k < 5; k++) {
+        for (unsigned j = 0; j < ARRAY_SIZE(bad_modes); j++) {
+            kona_command(qts, 0xbb,
+                         (uint32_t[]){ 0xc50 + k, bad_modes[j] }, 2);
+            assert_hints(qts, hints_a);
+        }
+    }
+    for (unsigned k = 0; k < ARRAY_SIZE(bad_targets); k++) {
+        kona_command(qts, 0xbb, (uint32_t[]){ bad_targets[k], 0x1101 }, 2);
+        assert_hints(qts, hints_a);
+    }
+    kona_command(qts, 0xbb, (uint32_t[]){ 0x1101, 0xc50 }, 2);
+    kona_command(qts, 0xce, (uint32_t[]){ 0x203 }, 1);
+    assert_hints(qts, hints_a);
+    kona_command(qts, 0x4c, (uint32_t[]){ 0xb74 }, 1);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x203);
+    kona_command(qts, 0x57, (uint32_t[]){ 0 }, 1);
+    set_hints(qts, hints_b);
+    kona_command(qts, 0x71, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_a);
+    return_context_deactivate(qts);
+    set_hints(qts, hints_b);
+    return_context_restore(qts, SAVE_AREA);
+    assert_hints(qts, hints_a);
+}
+
+static void hint_push(QTestState *s, uint32_t mask)
+{
+    uint8_t got[0x4000 - 4], expected[0x4000 - 4];
+
+    memset(expected, 0xa5, sizeof(expected));
+    if (mask & 8) {
+        const uint8_t offset[] = {
+            0, 0, 0, 0, 0x40, 0, 0, 0,
+            0, 0, 0, 0, 0x40, 0x40, 0, 0,
+        };
+
+        memcpy(expected, offset, sizeof(offset));
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0xc9, &mask, 1);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 4, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+}
+
+static void test_native_hints_attrib(void)
+{
+    const uint32_t other_groups[] = { 0x2000, 2, 4, 8, 0x80 };
+
+    gl_reset();
+    gl_make_current(qts);
+    set_hints(qts, hints_a);
+    hint_push(qts, 0x8000);
+    set_hints(qts, hints_b);
+    hint_push(qts, 0x8000);
+    set_hints(qts, hints_default);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_b);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_a);
+    assert_attrib_depth(qts, 0);
+    for (unsigned k = 0; k < ARRAY_SIZE(other_groups); k++) {
+        set_hints(qts, hints_a);
+        prepare_refused_reply(qts);
+        kona_command(qts, 0xc9, &other_groups[k], 1);
+        set_hints(qts, hints_b);
+        kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+        assert_hints(qts, hints_b);
+    }
+    set_hints(qts, hints_a);
+    kona_command_f(qts, 0x168, (float[]){ 2, 3 }, 2);
+    hint_push(qts, 0x8008);
+    set_hints(qts, hints_b);
+    kona_command_f(qts, 0x168, (float[]){ 5, 7 }, 2);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_a);
+    kona_command(qts, 0x4c, (uint32_t[]){ 0x8038 }, 1);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 8), ==, 0x40000000);
+    for (unsigned k = 0; k < 2; k++) {
+        prepare_refused_reply(qts);
+        kona_command(qts, 0xc9,
+                     (uint32_t[]){ 0x8000 | (k ? 0x1000 : 0x40000) }, 1);
+        assert_reply_unchanged(qts);
+        assert_hints(qts, hints_a);
+        assert_attrib_depth(qts, 0);
+    }
+    for (unsigned k = 0; k < 16; k++) {
+        hint_push(qts, 0x8000);
+    }
+    set_hints(qts, hints_b);
+    hint_push(qts, 0x8000);
+    assert_attrib_depth(qts, 16);
+    for (unsigned k = 0; k < 16; k++) {
+        kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+        assert_hints(qts, hints_a);
+    }
+    set_hints(qts, hints_b);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_b);
+    hint_push(qts, 0x8000);
+    set_hints(qts, hints_a);
+    kona_command(qts, 0x57, (uint32_t[]){ 0 }, 1);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    kona_command(qts, 0x71, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_a);
+    assert_attrib_depth(qts, 1);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_b);
+}
+
+static void test_native_hints_contexts(void)
+{
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+    const uint32_t single[10] = { 0, 12 };
+    const uint32_t twice[10] = { 0, 12, 0, 1 };
+
+    gl_reset();
+    gl_make_current(qts);
+    set_hints(qts, hints_a);
+    hint_push(qts, 0x8000);
+    return_context_deactivate(qts);
+    attrib_context_fresh(qts, save_b);
+    assert_hints(qts, hints_default);
+    set_hints(qts, hints_b);
+    for (unsigned k = 0; k < 2; k++) {
+        return_context_deactivate(qts);
+        return_context_restore(qts, SAVE_AREA);
+        assert_hints(qts, hints_a);
+        return_context_deactivate(qts);
+        return_context_restore(qts, save_b);
+        assert_hints(qts, hints_b);
+    }
+    return_context_deactivate(qts);
+    return_context_restore(qts, SAVE_AREA);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    assert_hints(qts, hints_a);
+    place_read_window(qts, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_hints(qts, hints_a);
+    kona_command(qts, 1, twice, 10);
+    assert_hints(qts, hints_a);
+    kona_command(qts, 1, single, 10);
+    assert_hints(qts, hints_a);
+    kona_command_kicked(qts, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE + 0x4000),
+                                      tagged_offset_word(RETURN_PAGE + 0x4000),
+                                      0x4000 }, 3);
+    kona_command_kicked(qts, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    assert_hints(qts, hints_a);
+    return_context_deactivate(qts);
+    attrib_context_fresh(qts, SAVE_AREA);
+    assert_hints(qts, hints_default);
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(qts, hints_default);
+    assert_attrib_depth(qts, 0);
+}
+
+static void test_native_hints_reset(void)
+{
+    for (unsigned words = 0; words < 3; words++) {
+        gl_reset();
+        gl_make_current(qts);
+        set_hints(qts, hints_a);
+        hint_push(qts, 0x8000);
+        kona_command(qts, 0xbb, (uint32_t[]){ 0xc50 }, words ? 1 : 0);
+        if (words == 2) {
+            qtest_writel(qts, REG_COMMAND, 0x1102);
+            assert_hint(qts, 0, 2);
+            kona_command(qts, 0xc9, NULL, 0);
+        }
+        gl_reset();
+        gl_make_current(qts);
+        assert_hints(qts, hints_default);
+        assert_attrib_depth(qts, 0);
+        set_hints(qts, hints_b);
+        assert_hints(qts, hints_b);
+    }
+    gl_reset();
+    gl_make_current(qts);
+    set_hints(qts, hints_a);
+    hint_push(qts, 0x8000);
+    set_hints(qts, hints_b);
+    kona_command(qts, 0xc8, NULL, 0);
+    gl_reset();
+    gl_make_current(qts);
+    assert_hints(qts, hints_default);
+    assert_attrib_depth(qts, 0);
+}
+
+static void hints_after_migration(QTestState *s)
+{
+    assert_hints(s, hints_default);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(s, hints_b);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    assert_hints(s, hints_default);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(s, hints_b);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_hints(s, hints_a);
+}
+
+static void test_native_hints_migration(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-hints-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(args);
+    gl_make_current(from);
+    if (kind == 0) {
+        set_hints(from, hints_a);
+        hint_push(from, 0x8000);
+        set_hints(from, hints_b);
+        hint_push(from, 0x8000);
+        set_hints(from, hints_default);
+        return_context_deactivate(from);
+        attrib_context_fresh(from, SAVE_AREA + 0x20000);
+        set_hints(from, hints_b);
+        hint_push(from, 0x8000);
+        set_hints(from, hints_default);
+    } else if (kind < 3) {
+        set_hints(from, hints_a);
+        prepare_refused_reply(from);
+        kona_command(from, 0xbb, (uint32_t[]){ 0xc54 }, kind - 1);
+        assert_reply_unchanged(from);
+    } else {
+        gl_make_current(to);
+        set_hints(to, hints_b);
+    }
+    sgi_migrate_stopped(from, uri);
+    if (kind == 0) {
+        hints_after_migration(to);
+        hints_after_migration(from);
+    } else if (kind < 3) {
+        const uint8_t expected[5] = { 1, 2, 0, 1, 1 };
+        QTestState *states[] = { to, from };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(states); k++) {
+            if (kind == 1) {
+                qtest_writel(states[k], REG_COMMAND, 0xc54);
+            }
+            qtest_writel(states[k], REG_COMMAND, 0x1101);
+            assert_reply_unchanged(states[k]);
+            assert_hints(states[k], expected);
+        }
+    } else {
+        assert_hints(to, hints_default);
+        assert_hints(from, hints_default);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_native_hints_refused(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    if (kind == 0) {
+        gl_make_current(s);
+        return_context_deactivate(s);
+    } else {
+        kona_command_kicked(s, 0x1fd,
+                            (uint32_t[]){ physical_page_word(SAVE_AREA),
+                                          tagged_offset_word(SAVE_AREA),
+                                          0x10000 }, 3);
+        if (kind == 2) {
+            kona_command_kicked(s, 0x1f2,
+                                (uint32_t[]){ physical_page_word(0x08000000),
+                                              tagged_offset_word(0x08000000),
+                                              0x4000 }, 3);
+        }
+    }
+    for (unsigned k = 0; k < 5; k++) {
+        prepare_refused_reply(s);
+        kona_command(s, 0x4c, (uint32_t[]){ 0xc50 + k }, 1);
+        assert_reply_unchanged(s);
+    }
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -3489,6 +3851,31 @@ int main(int argc, char **argv)
                    test_native_state_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/push-and-pop-attrib",
                    test_push_and_pop_attrib);
+    qtest_add_func("sn0/origin2000/kona-3d/hints/invalid",
+                   test_native_hints_invalid);
+    qtest_add_func("sn0/origin2000/kona-3d/hints/attrib",
+                   test_native_hints_attrib);
+    qtest_add_func("sn0/origin2000/kona-3d/hints/contexts",
+                   test_native_hints_contexts);
+    qtest_add_func("sn0/origin2000/kona-3d/hints/reset",
+                   test_native_hints_reset);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/migration",
+                        GUINT_TO_POINTER(0), test_native_hints_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/"
+                        "partial-selector-migration",
+                        GUINT_TO_POINTER(1), test_native_hints_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/partial-target-migration",
+                        GUINT_TO_POINTER(2), test_native_hints_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/omitted-migration",
+                        GUINT_TO_POINTER(3), test_native_hints_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/no-context",
+                        GUINT_TO_POINTER(0), test_native_hints_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/missing-page",
+                        GUINT_TO_POINTER(1), test_native_hints_refused);
+    qtest_add_data_func("sn0/origin2000/kona-3d/hints/failed-page",
+                        GUINT_TO_POINTER(2), test_native_hints_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/hints/basic",
+                   test_native_hints);
     qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/basic",
                    test_native_attrib_depth);
     qtest_add_func("sn0/origin2000/kona-3d/attrib-depth/limits",
