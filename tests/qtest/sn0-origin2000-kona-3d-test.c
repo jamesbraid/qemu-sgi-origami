@@ -3040,6 +3040,150 @@ static void test_stencil_destroyed_context_pixels_retained(void)
     assert_stencil_value(qts, 0);
 }
 
+static const double depth_blend_triangle[3][3] = {
+    { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+};
+
+static void test_depth_clear_preserves_colour(void)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_reset();
+    gl_make_current_depth(qts, 24);
+    kona_command(qts, 1,
+                 (uint32_t[]){ 0, 12, 0, 1, 0, 0, 24, 0, 0, 0 }, 10);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x404 }, 1);
+    kona_command_f(qts, 0x1d, (float[]){ 1, 0, 0, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    kona_command(qts, 0xc4, (uint32_t[]){ 0x408 }, 1);
+    kona_command_f(qts, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command_d(qts, 0x1f, (double[]){ 0.25 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 0), ==, 0xff0000);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 1), ==, 0x0000ff);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==, 0x400000);
+    expected_clear(e, 0xff0000);
+    assert_window_matches(qts, e);
+    kona_command(qts, 0x22, (uint32_t[]){ 0 }, 1);
+    kona_command_d(qts, 0x1f, (double[]){ 0.75 }, 1);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==, 0x400000);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(qts, 0xce, (uint32_t[]){ 0x207 }, 1);
+    kona_command(qts, 0x21, (uint32_t[]){ 0, 0, 0, 0 }, 4);
+    gl_triangle_z(qts, depth_blend_triangle, 0);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==, 0x400000);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 0), ==, 0xff0000);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 1), ==, 0x0000ff);
+}
+
+static void test_colour_masks_preserve_channels(void)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 1, 0, 1);
+    kona_command(qts, 0x21, (uint32_t[]){ 0, 1, 0, 0 }, 4);
+    kona_command_f(qts, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    expected_clear(e, 0xffffff);
+    assert_window_matches(qts, e);
+    kona_command(qts, 0x21, (uint32_t[]){ 1, 0, 1, 0 }, 4);
+    kona_command_f(qts, 0x63, (float[]){ 0, 0, 0 }, 3);
+    gl_triangle_z(qts, depth_blend_triangle, 0);
+    expected_object(e, mat_identity(), mat_identity(), depth_blend_triangle,
+                    3, 0x00ff00);
+    assert_window_matches(qts, e);
+}
+
+static void test_depth_plane_migration(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest_args = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-depth-qualify-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(dest_args);
+    gl_make_current_depth(from, 24);
+    gl_window_cleared(from, 0, 0, 1);
+    kona_command(from, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    kona_command(from, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(from, 0xce, (uint32_t[]){ 0x201 }, 1);
+    kona_command_f(from, 0x63, (float[]){ 1, 0, 0 }, 3);
+    gl_triangle_z(from, depth_blend_triangle, -0.5);
+    g_assert_cmphex(stencil_colour_or_depth(from, 5), ==, 0x400000);
+    sgi_migrate_stopped(from, uri);
+    expected_clear(e, 0x0000ff);
+    expected_object(e, mat_identity(), mat_identity(), depth_blend_triangle,
+                    3, 0xff0000);
+    for (unsigned run = 0; run < 2; run++) {
+        QTestState *s = run ? to : from;
+
+        g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x400000);
+        assert_window_matches(s, e);
+        kona_command_f(s, 0x63, (float[]){ 0, 1, 0 }, 3);
+        gl_triangle_z(s, depth_blend_triangle, 0);
+        assert_window_matches(s, e);
+        g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x400000);
+        gl_triangle_z(s, depth_blend_triangle, -0.75);
+        expected_clear(e, 0x0000ff);
+        expected_object(e, mat_identity(), mat_identity(), depth_blend_triangle,
+                        3, 0x00ff00);
+        assert_window_matches(s, e);
+        g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x200000);
+        expected_clear(e, 0x0000ff);
+        expected_object(e, mat_identity(), mat_identity(), depth_blend_triangle,
+                        3, 0xff0000);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_blend_without_alpha_plane(void)
+{
+    static const struct {
+        uint32_t src, dst;
+        float alpha;
+        uint32_t rgb;
+    } cases[] = {
+        { 0x302, 0x303, 0, 0x0000ff },
+        { 0x302, 0x303, 1, 0xff0000 },
+        { 0x304, 0, 0.25, 0xff0000 },
+        { 0, 0x305, 0.75, 0x000000 },
+        { 0x308, 1, 0.25, 0x0000ff },
+    };
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_reset();
+    gl_make_current(qts);
+    gl_window_cleared(qts, 0, 0, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xbe2 }, 1);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        for (unsigned clear_alpha = 0; clear_alpha < 2; clear_alpha++) {
+            kona_command_f(qts, 0x1d,
+                           (float[]){ 0, 0, 1, clear_alpha }, 4);
+            kona_command(qts, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+            kona_command(qts, 0xcb,
+                         (uint32_t[]){ cases[i].src, cases[i].dst }, 2);
+            kona_command_f(qts, 0x6b,
+                           (float[]){ 1, 0, 0, cases[i].alpha }, 4);
+            gl_triangle_z(qts, depth_blend_triangle, 0);
+            expected_clear(e, 0x0000ff);
+            expected_object(e, mat_identity(), mat_identity(),
+                            depth_blend_triangle, 3, cases[i].rgb);
+            assert_window_matches(qts, e);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -3235,6 +3379,18 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-3d/stencil/completion/"
                    "destroyed-context-pixels-retained",
                    test_stencil_destroyed_context_pixels_retained);
+    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
+                   "depth-clear-preserves-colour",
+                   test_depth_clear_preserves_colour);
+    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
+                   "colour-masks-preserve-channels",
+                   test_colour_masks_preserve_channels);
+    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
+                   "depth-plane-migration",
+                   test_depth_plane_migration);
+    qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
+                   "blend-without-alpha-plane",
+                   test_blend_without_alpha_plane);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
