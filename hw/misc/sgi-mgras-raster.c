@@ -2422,8 +2422,12 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     SGIPixelDMA d;
     bool captured_format = signature_format == 0x00400080 ||
                            signature_format == 0x00c00080 ||
-                           (signature_width == 41 && signature_height == 32 &&
+                           (signature_width == 41 &&
+                            (signature_height == 32 || signature_height == 1) &&
                             signature_format == 0xc10080) ||
+                           ((signature_width == 23 || signature_width == 7) &&
+                            signature_height == 1 &&
+                            signature_format == 0xc10480) ||
                            (signature_width == 23 && signature_height == 32 &&
                             signature_format == 0xc10480);
     bool captured_split;
@@ -2457,6 +2461,12 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
          pitch == 0x100) ||
         (signature_width == 23 && signature_height == 32 &&
          signature_format == 0xc10480 && mode == 0xc10480) ||
+        (signature_width == 41 && signature_height == 1 &&
+         signature_format == 0xc10080 && mode == 0xc10080 &&
+         pitch == 0x100) ||
+        ((signature_width == 23 || signature_width == 7) &&
+         signature_height == 1 && signature_format == 0xc10480 &&
+         mode == 0xc10480 && pitch == 0x100) ||
         (signature_width == 41 && signature_height == 1 &&
          signature_format == 0x00c00080 && mode == 0x00010080 &&
          pitch == 0x100) ||
