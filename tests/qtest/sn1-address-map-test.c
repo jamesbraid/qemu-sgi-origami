@@ -4505,6 +4505,191 @@ static void test_remote_ram_cross_page_execution(const void *data)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+
+#define MMIO_EXEC_RAM UINT64_C(0x400000)
+#define MMIO_EXEC_VIRTUAL UINT64_C(0xc000000010000000)
+#define MMIO_EXEC_READY UINT64_C(0x600d)
+#define MMIO_EXEC_DONE UINT64_C(0xcafe)
+#define MMIO_EXEC_PARK UINT64_C(0xdead)
+
+static char *create_mmio_execution_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    const uint32_t code[] = {
+        0x400a6000, 0x354a0080, 0x408a6000, 0x000000c0,
+        0x3c089200, 0x0008403c, 0x3c090100, 0x01094025,
+        0xdd0a0020, /* PI_CPU_NUMBER */
+        0x15400024, 0x00000000, /* nonzero slots park */
+        0x3c090160, 0x01094025, 0xdd0b0000,
+        0x000b583e, 0x316b007f,
+        0x1160001d, 0x00000000, /* node zero parks */
+        0x0160b825, /* save live identity in s7 */
+        0x000b5ef8, 0x3c0c0001, 0x358c002e, 0x016c5825,
+        0x408b1000, /* EntryLo0: C5, D/V, non-global */
+        0x656c4000, 0x408c1800, /* next 1 MiB page */
+        0x3c0c001f, 0x358ce000, 0x408c2800,
+        0x3c16c000, 0x0016b03c, 0x3c0c1000, 0x02ccb025,
+        0x66cc0004, 0x40ac5000, /* EntryHi ASID 4 */
+        0x40800000, 0x000000c0, 0x42000002, 0x000000c0,
+        0x400c6000, 0x240dfffb, 0x018d6024, 0x408c6000,
+        0x000000c0, 0x02c00008, 0x00000000,
+        0x3415dead, 0x1000ffff, 0x00000000,
+    };
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image, 0x100000ff);
+    for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x400 + 4 * i, code[i]);
+    }
+    fd = g_file_open_tmp("sn1-mmio-execution-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void assert_mmio_execution_guards(QTestState *qts, unsigned own)
+{
+    g_assert_cmphex(cpu_gpr(qts, 2, "s0"), ==,
+                    UINT64_C(0x9200000001608010));
+    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, 0x1200 + own);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s2"), ==, 0x5678);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s6"), ==, MMIO_EXEC_VIRTUAL);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s7"), ==, own);
+    g_assert_cmphex(cpu_gpr(qts, 2, "t3"), ==,
+                    ((uint64_t)own << 27) | 0x1002e);
+}
+
+static void test_mmio_execution_state(const void *data)
+{
+    unsigned config = GPOINTER_TO_UINT(data);
+    unsigned own = config & 3;
+    bool routed = config & 4;
+    const char *topology = routed ?
+        "origin300-numalink-pci-expansion-experiment" : "origin300-two-chassis";
+    const uint32_t probe[] = {
+        0x34111200 | own, 0x34125678, 0x34130000,
+        0x3c109200, 0x0010803c, 0x3c080160, 0x02088025, 0x36108010,
+        0x3415600d,
+        0xdec80300, 0x1100fffe, 0x00000000, /* wait for host guard check */
+        0x34081111, 0xfe080000, 0xde090000, /* ordinary MMIO store/load */
+        0x10000002, 0xde0a0000, /* MMIO load in taken branch delay slot */
+        0x3411ffff, 0x66730001,
+        0x34082222, 0x10000002, 0xfe080000, /* MMIO delay-slot store */
+        0x3412ffff, 0xde0c0000,
+        0x0c040040, 0xde0d0000, /* jal to odd page, MMIO delay-slot load */
+        0x66730004, 0x3415cafe, 0x1000ffff, 0x00000000,
+    };
+    const uint32_t subroutine[] = {
+        0x66730002, 0x34083333, 0x03e00008, 0xfe080000,
+    }; /* jr return with MMIO delay-slot store */
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[sizeof(probe)], readback[sizeof(probe)];
+    QTestState *qts;
+    uint64_t base = (uint64_t)own << 33;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_mmio_execution_prom();
+    fd = g_file_open_tmp("sn1-mmio-execution-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S",
+        topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
+        prom, image);
+    stq_be_p(bytes, (uint64_t)own << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                                    bytes, 8));
+    g_assert_true(qtest_memread_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                                   readback, 8));
+    g_assert_cmphex((ldq_be_p(readback) >> 32) & 0x7f, ==, own);
+    for (unsigned node = 0; node < 2; node++) {
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(probe); i++) {
+        stl_be_p(bytes + 4 * i, probe[i]);
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, 2, base + MMIO_EXEC_RAM,
+                                    bytes, sizeof(probe)));
+    g_assert_true(qtest_memread_cpu(qts, 2, base + MMIO_EXEC_RAM,
+                                   readback, sizeof(probe)));
+    g_assert_cmpmem(readback, sizeof(probe), bytes, sizeof(probe));
+    for (unsigned i = 0; i < ARRAY_SIZE(subroutine); i++) {
+        stl_be_p(bytes + 4 * i, subroutine[i]);
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        base + MMIO_EXEC_RAM + MiB + 0x100, bytes, sizeof(subroutine)));
+    g_assert_true(qtest_memread_cpu(qts, 2,
+        base + MMIO_EXEC_RAM + MiB + 0x100, readback, sizeof(subroutine)));
+    g_assert_cmpmem(readback, sizeof(subroutine), bytes, sizeof(subroutine));
+    stl_be_p(bytes, 0x3411ffff); /* distinguish the other module's text */
+    g_assert_true(qtest_memwrite_cpu(qts, 0, MMIO_EXEC_RAM, bytes, 4));
+    g_assert_true(qtest_memread_cpu(qts, 0, MMIO_EXEC_RAM, readback, 4));
+    g_assert_cmphex(ldl_be_p(readback), ==, 0x3411ffff);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", MMIO_EXEC_READY);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        if (cpu != 2) {
+            g_autofree char *regs = qtest_hmp(qts, "info registers %u", cpu);
+            g_test_message("park CPU%u %s", cpu, regs);
+            wait_for_cpu_gpr(qts, cpu, "s5", MMIO_EXEC_PARK);
+        }
+    }
+    stop_vm(qts);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        if (cpu != 2) {
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s5"), ==, MMIO_EXEC_PARK);
+        }
+    }
+    assert_mmio_execution_guards(qts, own);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s3"), ==, 0);
+    {
+        g_autofree char *regs = qtest_hmp(qts, "info registers 2");
+        g_test_message("%s own=%u before MMIO %s", topology, own, regs);
+    }
+    stq_be_p(bytes, 1);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        base + MMIO_EXEC_RAM + 0x300, bytes, 8));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", MMIO_EXEC_DONE);
+    stop_vm(qts);
+    {
+        g_autofree char *regs = qtest_hmp(qts, "info registers 2");
+        g_test_message("%s own=%u after MMIO %s", topology, own, regs);
+    }
+    assert_mmio_execution_guards(qts, own);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s3"), ==, 7);
+    g_assert_cmphex(cpu_gpr(qts, 2, "t1"), ==, 0x1111);
+    g_assert_cmphex(cpu_gpr(qts, 2, "t2"), ==, 0x1111);
+    g_assert_cmphex(cpu_gpr(qts, 2, "t4"), ==, 0x2222);
+    g_assert_cmphex(cpu_gpr(qts, 2, "t5"), ==, 0x2222);
+    g_assert_cmphex(cpu_gpr(qts, 2, "ra"), ==, MMIO_EXEC_VIRTUAL + 0x68);
+    g_assert_true(qtest_memread_cpu(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_LB + LB_SCRATCH2, readback, 8));
+    g_assert_cmphex(ldq_be_p(readback), ==, 0x3333);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_cpu_enable_read_is_per_cpu(const void *data)
 {
     g_autofree char *path = NULL;
@@ -5304,6 +5489,14 @@ int main(int argc, char **argv)
                         "sn1/address-map/direct-remote-ram-cross-page-execution",
                         "origin300-two-chassis",
                         test_remote_ram_cross_page_execution);
+    qtest_add_data_func("sn1/address-map/mmio-execution-state/direct-node1",
+                        GUINT_TO_POINTER(1), test_mmio_execution_state);
+    qtest_add_data_func("sn1/address-map/mmio-execution-state/direct-node2",
+                        GUINT_TO_POINTER(2), test_mmio_execution_state);
+    qtest_add_data_func("sn1/address-map/mmio-execution-state/routed-node1",
+                        GUINT_TO_POINTER(5), test_mmio_execution_state);
+    qtest_add_data_func("sn1/address-map/mmio-execution-state/routed-node2",
+                        GUINT_TO_POINTER(6), test_mmio_execution_state);
     qtest_add_data_func("sn1/address-map/cpu-enable-read-is-per-cpu", NULL,
                         test_cpu_enable_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-c-enable-controls-bus", NULL,
