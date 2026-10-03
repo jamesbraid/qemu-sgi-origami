@@ -840,6 +840,7 @@ struct SGIKonaState {
      */
     uint32_t retrace_tag;
     bool retrace_completed;
+    bool video_delivered;
 
     /*
      * The contexts 0x1fd and 0x1f9 have named (see SGIKonaContext), the
