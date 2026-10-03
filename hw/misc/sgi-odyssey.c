@@ -1398,6 +1398,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_CMD_COPY_RECT_SRC_INDEX 1
 #define ODSY_CMD_COPY_RECT_SIZE_INDEX 3
 #define ODSY_CMD_COPY_RECT_DST_INDEX 6
+#define ODSY_COPY_RECT_SOURCE_SHIFT 12
+#define ODSY_COPY_RECT_DEST_SHIFT 20
+#define ODSY_COPY_RECT_FORMAT_SOURCE_SHIFT 24
 
 /*
  * The one-bit pattern-quad text path (docs/analysis/odyssey-glyph-raster-
@@ -3194,7 +3197,8 @@ static void odyssey_clear_planes(SGIOdysseyState *s, uint32_t x, uint32_t y,
  * (the window-placement comment at ODSY_REG_WINDOW_ORIGIN). The plane bound
  * and the drawable-id compare still apply.
  */
-static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned b)
+static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned source,
+                                     unsigned dest)
 {
     uint32_t sx = s->copy_src & 0xffff;
     uint32_t sy = (s->copy_src >> 16) & 0xffff;
@@ -3216,10 +3220,10 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned b)
         for (col = 0; col < w_clip; col++) {
             uint32_t sc = reverse_cols ? w_clip - 1 - col : col;
             /* An out-of-plane source reads zero, as the guarded read did. */
-            uint32_t pixel = odyssey_buffer_load(s, b, sx + sc, sy + sr);
+            uint32_t pixel = odyssey_buffer_load(s, source, sx + sc, sy + sr);
 
             if (odyssey_pixel_in_bounds(s, dx + sc, dy + sr)) {
-                odyssey_buffer_store(s, b, dx + sc, dy + sr, pixel);
+                odyssey_buffer_store(s, dest, dx + sc, dy + sr, pixel);
             }
         }
     }
@@ -3229,7 +3233,12 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s);
 
 static void odyssey_copy_rect(SGIOdysseyState *s)
 {
-    unsigned buffers = odyssey_draw_buffers(s);
+    unsigned source = (s->cmd_operand[2] >> ODSY_COPY_RECT_SOURCE_SHIFT) & 0xf;
+    unsigned dest = (s->cmd_operand[7] >> ODSY_COPY_RECT_DEST_SHIFT) & 0xf;
+    unsigned format_source =
+        (s->cmd_operand[4] >> ODSY_COPY_RECT_FORMAT_SOURCE_SHIFT) & 0xf;
+    unsigned format_dest =
+        (s->cmd_operand[4] >> ODSY_COPY_RECT_DEST_SHIFT) & 0xf;
 
     if (s->cmd_operand[0] == ODSY_DMA_SENTINEL_READ) {
         if (!odyssey_copy_rect_to_object(s)) {
@@ -3238,10 +3247,32 @@ static void odyssey_copy_rect(SGIOdysseyState *s)
         return;
     }
 
-    for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
-        if (buffers & (1u << b)) {
-            odyssey_copy_rect_buffer(s, b);
+    if (source != format_source || dest != format_dest) {
+        odyssey_cmd_unimplemented(s, ODSY_CMD_COPY_RECT_TRIGGER);
+        return;
+    }
+
+    /*
+     * The two observed copy blocks select 0 then 4 in both their source
+     * and destination fields. This is an experimental model policy: the
+     * selector values choose model buffers 0 and 1, but do not identify
+     * physical V12 memory banks. Keep the source and destination choices
+     * separate so a copy never changes another colour buffer.
+     */
+    if ((source == 0 || source == 4) && (dest == 0 || dest == 4)) {
+        odyssey_copy_rect_buffer(s, source >> 2, dest >> 2);
+    } else if (source == dest && (source == 2 || source == 3)) {
+        /* Existing public and modeled templates retain draw-mask behavior. */
+        unsigned buffers = odyssey_draw_buffers(s);
+
+        for (unsigned b = 0; b < ODSY_BUFFERS; b++) {
+            if (buffers & (1u << b)) {
+                odyssey_copy_rect_buffer(s, b, b);
+            }
         }
+    } else {
+        odyssey_cmd_unimplemented(s, ODSY_CMD_COPY_RECT_TRIGGER);
+        return;
     }
     sgi_scanout_invalidate_all(&s->scanout);
 }
