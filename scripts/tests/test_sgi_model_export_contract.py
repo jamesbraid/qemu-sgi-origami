@@ -76,14 +76,16 @@ class ExportTests(unittest.TestCase):
         outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual(sorted(topology["name"] for topology in catalogue["topologies"]),
-                         ["origin300", "origin300-pci-expansion-configuration-storage-experiment",
+                         ["origin300", "origin300-numalink-pci-expansion-experiment",
+                          "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
                           "origin300-two-chassis",
                           "origin300-v12-direct", "origin300-vbrick"])
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
-                         {"origin300", "origin300-pci-expansion-configuration-storage-experiment",
+                         {"origin300", "origin300-numalink-pci-expansion-experiment",
+                          "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
@@ -104,13 +106,15 @@ class ExportTests(unittest.TestCase):
             outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual({topology["name"] for topology in catalogue["topologies"]},
-                         {"origin300", "origin300-pci-expansion-configuration-storage-experiment",
+                         {"origin300", "origin300-numalink-pci-expansion-experiment",
+                          "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
                           "origin300-v12-direct", "origin300-vbrick"})
         self.assertEqual({offering["topology"] for offering in catalogue["offerings"]},
-                         {"origin300", "origin300-pci-expansion-configuration-storage-experiment",
+                         {"origin300", "origin300-numalink-pci-expansion-experiment",
+                          "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
                           "origin300-pci-expansion-pending-register-experiment",
                           "origin300-pci-expansion-unconnected-uart-experiment",
