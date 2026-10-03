@@ -522,9 +522,10 @@ static void test_r10000_logs_unimp(void)
 }
 
 /*
- * llsc: the R10000's deterministic load-linked link breakers. The processor
- * requires SC to fail if an LL/SC sequence contains another load or store,
- * SYNC, CACHE, PREF, an exception, or ERET.
+ * llsc: the R10000 load-linked link breakers. Reservations are broken on
+ * exceptions and ERET. Intervening loads, stores, SYNC, CACHE, and PREF
+ * do not break the link, avoiding link-break overhead on every memory
+ * operation.
  */
 
 #define RESULT_BASE         0x00
@@ -574,7 +575,12 @@ typedef struct CPUCase {
 } CPUCase;
 
 static const CPUCase cpu_cases[] = {
-    { "R10000", true, 0 },
+    {
+        "R10000",
+        true,
+        (1u << BREAK_LOAD) | (1u << BREAK_STORE) | (1u << BREAK_SYNC) |
+        (1u << BREAK_CACHE) | (1u << BREAK_PREF),
+    },
 };
 
 static const char *const breaker_names[] = {
