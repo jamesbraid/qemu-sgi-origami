@@ -2474,10 +2474,10 @@ static void dma_image_table(QTestState *qts, uint64_t table,
                             const uint32_t hdr[8], const uint64_t *pte,
                             unsigned n)
 {
-    uint8_t tbl[ODSY_DMA_TABLE_HEADER + 4 * 8];
+    uint8_t tbl[ODSY_DMA_TABLE_HEADER + 16 * 8];
     unsigned i;
 
-    g_assert_cmpuint(n, <, 4);
+    g_assert_cmpuint(n, <, 16);
     memset(tbl, 0, sizeof(tbl));
     for (i = 0; i < 8; i++) {
         stl_be_p(&tbl[i * 4], hdr[i]);
@@ -11440,6 +11440,125 @@ static void test_draw_sentinel_short_upload(void)
     qtest_quit(qts);
 }
 
+static void test_draw_sentinel_short_row_gap(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t rowbytes = 64 * 8;
+    const uint32_t skip = 512;
+    const uint32_t height = 128;
+    const uint32_t active_bytes = rowbytes * height;
+    const uint32_t max_source_bytes = active_bytes + skip * (height - 1);
+    const uint64_t source[2] = {
+        RB_PAGE_A + 0x20000, RB_PAGE_A + 0x50000,
+    };
+    const uint32_t entry_lengths[2][9] = {
+        { 512, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 7680 },
+        { 400, 8192, 8192, 8192, 8192, 8192, 8192, 8192, 7792 },
+    };
+    const uint8_t guard[16] = {
+        RB_GUARD, RB_GUARD, RB_GUARD, RB_GUARD,
+        RB_GUARD, RB_GUARD, RB_GUARD, RB_GUARD,
+        RB_GUARD, RB_GUARD, RB_GUARD, RB_GUARD,
+        RB_GUARD, RB_GUARD, RB_GUARD, RB_GUARD,
+    };
+
+    window_clip(qts, (const uint32_t[][4]) { { 0, 0, 1279, 1023 } }, 1);
+    draw_mask(qts, ODSY_DRAW_BUFFER1);
+
+    for (unsigned chunk = 0; chunk < 2; chunk++) {
+        uint64_t logical_start[9], physical_start[9];
+        uint64_t logical = 0, physical = 0;
+        uint64_t pte[9];
+        uint64_t base = source[chunk];
+        g_autofree uint8_t *pixels = g_malloc(max_source_bytes);
+        uint32_t hdr[8] = {
+            RB_DRAW_SENTINEL, chunk ? 64 : 0, 0x50,
+            (height << 16) | 64, 0x02635000, skip, rowbytes,
+            0x7a02006b,
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(pte); i++) {
+            uint64_t end = logical + entry_lengths[chunk][i];
+            uint64_t boundary = (logical / rowbytes + 1) * rowbytes;
+            unsigned gaps = 0;
+
+            logical_start[i] = logical;
+            physical_start[i] = physical;
+            while (boundary < end) {
+                gaps++;
+                boundary += rowbytes;
+            }
+            pte[i] = ODSY_DMA_PTE(base + physical,
+                                  entry_lengths[chunk][i]);
+            physical += entry_lengths[chunk][i] + (uint64_t)gaps * skip;
+            logical = end;
+        }
+        g_assert_cmpuint(logical, ==, active_bytes);
+
+        memset(pixels, 0xa5, physical);
+        for (uint32_t r = 0; r < height; r++) {
+            for (uint32_t c = 0; c < 64; c++) {
+                uint64_t active = (uint64_t)r * rowbytes + c * 8;
+                unsigned i;
+                uint64_t gap_count = 0, boundary, end;
+                uint8_t *pixel;
+                uint16_t red = r ? (r + 1) * 257 : 0x4000;
+                uint16_t green = c ? (c + 1) * 257 : 0x2000;
+                uint16_t blue = c ? (r ^ c) * 257 : 0;
+                uint16_t alpha = r ? UINT16_MAX : 0x6000;
+
+                for (i = 0; i + 1 < ARRAY_SIZE(pte); i++) {
+                    if (active < logical_start[i] +
+                                 entry_lengths[chunk][i]) {
+                        break;
+                    }
+                }
+                end = logical_start[i] + entry_lengths[chunk][i];
+                boundary = (logical_start[i] / rowbytes + 1) * rowbytes;
+                while (boundary <= active && boundary < end) {
+                    gap_count++;
+                    boundary += rowbytes;
+                }
+                pixel = pixels + physical_start[i] +
+                        active - logical_start[i] + gap_count * skip;
+                stw_be_p(&pixel[0], red);
+                stw_be_p(&pixel[2], green);
+                stw_be_p(&pixel[4], blue);
+                stw_be_p(&pixel[6], alpha);
+            }
+        }
+        qtest_memwrite(qts, base, pixels, physical);
+        qtest_memwrite(qts, base - sizeof(guard), guard, sizeof(guard));
+        qtest_memwrite(qts, base + physical, guard, sizeof(guard));
+
+        for (unsigned origin = 0; origin < 2; origin++) {
+            uint32_t origin_x = origin ? 256 : 64;
+            uint32_t origin_y = origin ? 256 : 64;
+
+            window_origin(qts, origin_x, origin_y);
+            readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+
+            g_assert_cmphex(odsy_buffer_pixel(qts, 1,
+                                              origin_x + (chunk ? 64 : 0),
+                                              origin_y + height - 1), ==,
+                            0x40200060);
+            g_assert_cmphex(odsy_buffer_pixel(qts, 1,
+                                              origin_x + (chunk ? 64 : 0),
+                                              origin_y + height - 2), ==,
+                            0x022000ff);
+            g_assert_cmphex(odsy_buffer_pixel(qts, 1,
+                                              origin_x + (chunk ? 64 : 0),
+                                              origin_y), ==,
+                            0x802000ff);
+        }
+        readback_expect(qts, base - sizeof(guard), guard, sizeof(guard));
+        readback_expect(qts, base + physical, guard, sizeof(guard));
+    }
+
+    g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_draw_sentinel_short_zero_origin_clip(void)
 {
     QTestState *qts = readback_start("");
@@ -11496,6 +11615,11 @@ static void test_draw_sentinel_short_rejections(void)
     hdr[7] ^= 1;
     readback_run(qts, hdr, good_pte, ARRAY_SIZE(good_pte));
     hdr[7] ^= 1;
+
+    /* An unsupported format remains refused even with a valid control. */
+    hdr[4] ^= 1;
+    readback_run(qts, hdr, good_pte, ARRAY_SIZE(good_pte));
+    hdr[4] ^= 1;
 
     /* Wrong row bytes and a short entry payload are rejected before reads. */
     hdr[6] = 8;
@@ -12576,6 +12700,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/readback/direction", test_readback_direction);
     qtest_add_func("sn1/odyssey/dma/draw-sentinel-short",
                    test_draw_sentinel_short_upload);
+    qtest_add_func("sn1/odyssey/dma/draw-sentinel-short-row-gap",
+                   test_draw_sentinel_short_row_gap);
     qtest_add_func("sn1/odyssey/dma/draw-sentinel-short-zero-origin-clip",
                    test_draw_sentinel_short_zero_origin_clip);
     qtest_add_func("sn1/odyssey/dma/draw-sentinel-short-rejections",
