@@ -4039,6 +4039,7 @@ static void test_command_fifo_image_raster_colour_index(void)
 #define ODSY_GL_VERTEX_2F 0x8080c801
 #define ODSY_GL_TRIANGLES 0x00000004
 #define ODSY_GL_QUADS 0x00000007
+#define ODSY_GL_QUAD_STRIP 0x00000008
 #define ODSY_GL_TEX_RECT 0x8f80b968
 #define ODSY_GL_MATRIX_SELECT_WINDOW 0x34008000
 #define ODSY_GL_MATRIX_SELECT_TEXTURE 0x34008014
@@ -7098,6 +7099,115 @@ static void test_context_restart_one_vertex_strip(void)
     }
     user_cmd_push(qts, ODSY_CMD_GL_END);
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
+    qtest_quit(qts);
+}
+
+static void test_context_restart_quad_strip_after_wrap(void)
+{
+    static const uint32_t vertex[6][2] = {
+        { 0xbf400000, 0xbf400000 }, { 0xbf400000, 0x3f400000 },
+        { 0, 0xbf400000 }, { 0, 0x3f400000 },
+        { 0x3f400000, 0xbf400000 }, { 0x3f400000, 0x3f400000 },
+    };
+    static const uint32_t colour[6][3] = {
+        { ODSY_F_ONE, 0, 0 }, { 0, ODSY_F_ONE, 0 },
+        { 0, 0, ODSY_F_ONE }, { ODSY_F_ONE, ODSY_F_ONE, 0 },
+        { ODSY_F_ONE, 0, ODSY_F_ONE }, { 0, ODSY_F_ONE, ODSY_F_ONE },
+    };
+    static const unsigned replay_slot[3] = { 2, 3, 0 };
+    static const uint32_t pixel[][2] = {
+        { 326, 280 }, { 340, 300 }, { 350, 340 }, { 360, 360 },
+    };
+    uint32_t uninterrupted[ARRAY_SIZE(pixel)];
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_user_words(qts, (const uint32_t[]) {
+        ODSY_CMD_GL_BEGIN, ODSY_GL_QUAD_STRIP,
+    }, 2);
+    for (unsigned i = 0; i < 6; i++) {
+        user_cmd_push(qts, ODSY_GL_COLOR_3F);
+        push_user_words(qts, colour[i], ARRAY_SIZE(colour[i]));
+        user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+        push_user_words(qts, vertex[i], ARRAY_SIZE(vertex[i]));
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    for (unsigned i = 0; i < ARRAY_SIZE(pixel); i++) {
+        uninterrupted[i] = odsy_test_pixel(qts, pixel[i][0], pixel[i][1]);
+        g_assert_cmphex(uninterrupted[i], !=, 0);
+    }
+    qtest_quit(qts);
+
+    qts = shadow_start("");
+    probe_window(qts);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_QUAD_STRIP);
+    for (unsigned i = 0; i < 5; i++) {
+        user_cmd_push(qts, ODSY_GL_COLOR_3F);
+        push_user_words(qts, colour[i], ARRAY_SIZE(colour[i]));
+        user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+        push_user_words(qts, vertex[i], ARRAY_SIZE(vertex[i]));
+    }
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT, ODSY_CTX_SWITCH_TO_1);
+    g_assert_cmphex(qtest_readl(qts, ODSY_SHADOW_PAGE + ODSY_HW_PIPE_STATE),
+                    ==, 0x00a06078);
+    g_assert_cmphex((qtest_readl(qts, ODSY_SHADOW_PAGE + 0x8c + 8 * 2) >> 28)
+                    & 3, ==, 0);
+    g_assert_cmphex((qtest_readl(qts, ODSY_SHADOW_PAGE + 0x8c + 8 * 3) >> 28)
+                    & 3, ==, 1);
+    g_assert_cmphex((qtest_readl(qts, ODSY_SHADOW_PAGE + 0x8c) >> 28) & 3,
+                    ==, 2);
+    for (unsigned i = 0; i < 3; i++) {
+        uint64_t ring = ODSY_SHADOW_PAGE + 0x120 + 4 * i;
+        uint64_t operands = ODSY_SHADOW_PAGE + 0x380 + 16 * i;
+
+        g_assert_cmphex(qtest_readl(qts, ring), ==, ODSY_GL_COLOR_3F);
+        for (unsigned j = 0; j < 3; j++) {
+            g_assert_cmphex(qtest_readl(qts, operands + 4 * j), ==,
+                            colour[i + 2][j]);
+        }
+    }
+
+    cmd_push(qts, 0x10444);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x10400);
+    cmd_push(qts, ODSY_GL_QUAD_STRIP);
+    cmd_push(qts, 0x10850);
+    cmd_push(qts, 0x00180008);
+    cmd_push(qts, 0);
+    cmd_push(qts, 0x740);
+    cmd_push(qts, 0x1e0);
+    cmd_push(qts, 0x741);
+    cmd_push(qts, 0x0040a000);
+    for (unsigned i = 0; i < ARRAY_SIZE(replay_slot); i++) {
+        unsigned slot = replay_slot[i];
+        unsigned descriptor_slot = (qtest_readl(qts, ODSY_SHADOW_PAGE +
+                                                  0x8c + 8 * slot) >> 28) & 3;
+        uint64_t vertex_word = ODSY_SHADOW_PAGE + 0x100 + 4 * slot;
+        uint64_t vertex_operands = ODSY_SHADOW_PAGE + 0x300 + 16 * slot;
+        uint64_t colour_record = ODSY_SHADOW_PAGE + 0x120 +
+                                 4 * descriptor_slot;
+        uint64_t colour_operands = ODSY_SHADOW_PAGE + 0x380 +
+                                   16 * descriptor_slot;
+
+        cmd_push(qts, qtest_readl(qts, colour_record));
+        for (unsigned j = 0; j < 3; j++) {
+            cmd_push(qts, qtest_readl(qts, colour_operands + 4 * j));
+        }
+        cmd_push(qts, qtest_readl(qts, vertex_word));
+        for (unsigned j = 0; j < 2; j++) {
+            cmd_push(qts, qtest_readl(qts, vertex_operands + 4 * j));
+        }
+    }
+    user_cmd_push(qts, ODSY_GL_COLOR_3F);
+    push_user_words(qts, colour[5], ARRAY_SIZE(colour[5]));
+    user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+    push_user_words(qts, vertex[5], ARRAY_SIZE(vertex[5]));
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    for (unsigned i = 0; i < ARRAY_SIZE(pixel); i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, pixel[i][0], pixel[i][1]), ==,
+                        uninterrupted[i]);
+    }
     qtest_quit(qts);
 }
 
@@ -13356,6 +13466,8 @@ int main(int argc, char **argv)
                    test_context_save_zero_vertex_primitive);
     qtest_add_func("sn1/odyssey/context-restart-one-vertex-strip",
                    test_context_restart_one_vertex_strip);
+    qtest_add_func("sn1/odyssey/context-restart-quad-strip-after-wrap",
+                   test_context_restart_quad_strip_after_wrap);
     qtest_add_func("sn1/odyssey/context-switch-integer-quad",
                    test_context_switch_integer_quad);
     qtest_add_func("sn1/odyssey/context-switch-polygon-assembly",
