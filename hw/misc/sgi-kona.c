@@ -47,6 +47,7 @@
 #include "qapi/visitor.h"
 #include "qom/object.h"
 #include "system/dma.h"
+#include "qemu/main-loop.h"
 #include "trace.h"
 
 /* Widget-header identification: revision:part:manufacturer:1, generic. */
@@ -2087,6 +2088,193 @@ static bool sgi_kona_gl_has_depth(SGIKonaState *s, uint32_t i)
     return i < SGI_KONA_CONTEXTS && s->gl_pipe[i].depth_bits;
 }
 
+static void sgi_kona_renderer_stop(SGIKonaState *s)
+{
+    if (s->renderer) {
+        assert(bql_locked());
+        sgi_renderer_free(s->renderer);
+        s->renderer = NULL;
+    }
+    s->renderer_generation++;
+}
+
+static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
+                                    SGIPlaneFormat format, int64_t x, int64_t y)
+{
+    unsigned bpp = sgi_plane_bytes_per_pixel(format);
+    uint64_t end;
+
+    if (!p || p->format != format || !p->bottom_origin ||
+        p->packing != (format == SGI_PLANE_RGB24 ? SGI_PACK_LE_RED_HIGH :
+                                                    SGI_PACK_LE_RED_LOW) ||
+        x < 0 || y < 0 ||
+        x + SGI_RENDERER_SIZE > p->width ||
+        y + SGI_RENDERER_SIZE > p->height ||
+        p->stride < (uint64_t)p->width * bpp ||
+        p->base > s->mem.bytes_len || p->len > s->mem.bytes_len - p->base) {
+        return false;
+    }
+    end = (y + SGI_RENDERER_SIZE - 1) * p->stride +
+          (x + SGI_RENDERER_SIZE) * bpp;
+    return end <= p->len;
+}
+
+static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
+                                      SGIRendererRequest *request,
+                                      SGIColourTarget *target)
+{
+    static const float identity[16] = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
+    };
+    static const float projection[16] = {
+        1.0f / 64, 0, 0, 0, 0, 1.0f / 64, 0, 0,
+        0, 0, -1, 0, -1, -1, 0, 1,
+    };
+    static const int32_t viewport[4] = { 0, 0, 128, 128 };
+    const SGIGLDrawState *st = d->state;
+    const SGIGLDrawable *drawable = &st->drawable;
+    const uint32_t *visual;
+    const SGIClipRect *clip;
+    int bank;
+    int64_t x = drawable->origin[0], y = drawable->origin[1];
+
+    if (d->context >= SGI_KONA_CONTEXTS ||
+        d->context != s->context_current || !s->gl_grammar ||
+        !s->contexts[d->context].valid ||
+        !s->gl_pipe[d->context].draw_config_received) {
+        return false;
+    }
+    visual = s->gl_pipe[d->context].draw_config;
+    if (visual[0] || (visual[1] != 8 && visual[1] != 12) || visual[2] ||
+        visual[3] > 1 || visual[4] || visual[5] ||
+        (visual[6] != 0 && visual[6] != 24) ||
+        visual[7] || visual[8] || visual[9]) {
+        return false;
+    }
+    if (d->mode != SGI_GL_TRIANGLES || d->count != 3 || d->back_colors ||
+        d->nmaterials || d->fill_by_triangle || d->polygon_stipple_enabled ||
+        d->line_stipple_enabled || d->line_phase ||
+        (d->polygon_modes && (d->polygon_modes[0] != SGI_GL_FILL ||
+                              d->polygon_modes[1] != SGI_GL_FILL)) ||
+        s->gl[d->context].raster_enables || s->gl[d->context].lighting ||
+        s->gl[d->context].light_model_two_side) {
+        return false;
+    }
+    if (drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty ||
+        st->index_bits || (st->draw_buffers != SGI_GL_DRAW_FRONT &&
+                           st->draw_buffers != SGI_GL_DRAW_BACK)) {
+        return false;
+    }
+    *target = st->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
+                                                    drawable->back;
+    bank = sgi_kona_target_bank(s, *target);
+    clip = &drawable->clip.r[0];
+    if (bank < 0 || clip->x0 > clip->x1 || clip->y0 > clip->y1 ||
+        clip->x1 < x || clip->y1 < y ||
+        clip->x0 > x + 127 || clip->y0 > y + 127 ||
+        !s->mem.bytes || s->mem.pages || !s->scanout.dirty ||
+        y < 0 || y + 128 > s->scanout.frame_height ||
+        !sgi_kona_renderer_plane(s, sgi_kona_plane(s,
+                                   sgi_kona_bank_plane(s, bank)),
+                                  SGI_PLANE_RGB24, x, y) ||
+        !sgi_kona_renderer_plane(s, sgi_kona_plane(s,
+                                   sgi_kona_bank_tag_plane(s, bank)),
+                                  SGI_PLANE_TAG, x, y)) {
+        return false;
+    }
+    if (st->shade_model != SGI_GL_FLAT ||
+        (st->colour_mask & 7) != 7 || (st->colour_mask & ~15) ||
+        st->cull_face || st->alpha_test || st->depth_test || st->stencil_test ||
+        st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
+        st->polygon_offset || st->texture_2d || st->dither || st->clip_planes ||
+        st->scissor_test || st->window_matrix_given || st->window_rows_down ||
+        st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
+        memcmp(st->modelview, identity, sizeof(identity)) ||
+        memcmp(st->projection, projection, sizeof(projection)) ||
+        memcmp(st->viewport, viewport, sizeof(viewport))) {
+        return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        const float *vertex = d->vertices + i * SGI_GL_VERTEX_FLOATS;
+
+        memcpy(request->vertices[i], vertex, sizeof(request->vertices[i]));
+        if (vertex[SGI_GL_V_COLOR + 3] != 1) {
+            return false;
+        }
+        for (unsigned c = 0; c < 3; c++) {
+            float colour = vertex[SGI_GL_V_COLOR + c];
+
+            if ((colour != 0 && colour != 1) ||
+                (i && colour != d->vertices[SGI_GL_V_COLOR + c])) {
+                return false;
+            }
+            request->rgb[c] = colour == 1 ? 255 : 0;
+        }
+    }
+    request->clip[0] = MAX((int64_t)clip->x0 - x, 0);
+    request->clip[1] = MAX((int64_t)clip->y0 - y, 0);
+    request->clip[2] = MIN((int64_t)clip->x1 - x, 127);
+    request->clip[3] = MIN((int64_t)clip->y1 - y, 127);
+    request->generation = s->renderer_generation;
+    return sgi_renderer_request_valid(request);
+}
+
+static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
+{
+    SGIRendererRequest *request;
+    SGIColourTarget target;
+    Error *err = NULL;
+    bool success = false;
+
+    if (!s->host_gpu) {
+        return false;
+    }
+    assert(bql_locked());
+    s->renderer_fallbacks++;
+    if (s->renderer_failed) {
+        return false;
+    }
+    request = g_try_new0(SGIRendererRequest, 1);
+    if (!request) {
+        s->renderer_failed = true;
+        return false;
+    }
+    if (!sgi_kona_renderer_request(s, d, request, &target)) {
+        goto out;
+    }
+    if (!s->renderer) {
+        s->renderer = sgi_renderer_new(&err);
+    }
+    if (!s->renderer || !sgi_renderer_draw(s->renderer, request, &err)) {
+        s->renderer_failed = true;
+        if (err) {
+            error_report_err(err);
+        }
+        goto out;
+    }
+    /* BQL keeps the validated target, planes and dirty storage unchanged. */
+    assert(request->generation == s->renderer_generation);
+    for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
+        for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
+            const uint8_t *pixel = request->rgba +
+                                  (y * SGI_RENDERER_SIZE + x) * 4;
+
+            if (pixel[3]) {
+                sgi_kona_gl_store_colour(s, target,
+                    d->state->drawable.origin[0] + x,
+                    d->state->drawable.origin[1] + y,
+                    (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]);
+            }
+        }
+    }
+    s->renderer_draws++;
+    s->renderer_fallbacks--;
+    success = true;
+out:
+    g_free(request);
+    return success;
+}
+
 static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
                                                 const SGIGLDraw *d)
 {
@@ -2111,6 +2299,9 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy = *d;
         copy.state = &st;
         d = &copy;
+    }
+    if (sgi_kona_renderer_draw(s, d)) {
+        return SGI_GL_DRAW_OK;
     }
     ret = sgi_soft_draw(&rules, &t, d);
     if (ret != SGI_GL_DRAW_OK) {
@@ -6713,10 +6904,27 @@ static void sgi_kona_test_get_plane_word(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
-/*
- * Host-only qtest access to the gamma table: the entry at gamma-RAM
- * address test_gamma_addr, or 0 for an address the table does not cover.
- */
+/* Complete plane bytes, for preservation and migration comparisons. */
+static void sgi_kona_test_get_plane_digest(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    const SGIPlane *p = DEVICE(obj)->realized ?
+                        sgi_kona_plane(s, s->test_plane) : NULL;
+    g_autofree char *digest = NULL;
+
+    if (!p || !s->mem.bytes || p->base > s->mem.bytes_len ||
+        p->len > s->mem.bytes_len - p->base) {
+        error_setg(errp, "Selected KONA plane has no device-backed storage");
+        return;
+    }
+    digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                          s->mem.bytes + p->base, p->len);
+    visit_type_str(v, name, &digest, errp);
+}
+
+/* Host-only access to the selected gamma-table entry. */
 static void sgi_kona_test_get_gamma(Object *obj, Visitor *v, const char *name,
                                     void *opaque, Error **errp)
 {
@@ -6786,6 +6994,8 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-plane-word", "uint32",
                         sgi_kona_test_get_plane_word, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-plane-digest", "str",
+                        sgi_kona_test_get_plane_digest, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-gamma-addr",
                                    &s->test_gamma_addr,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -6795,6 +7005,10 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-gc", "uint32", sgi_kona_test_get_gc,
                         NULL, NULL, NULL);
+    object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "x-test-gpu-fallbacks",
+                                   &s->renderer_fallbacks, OBJ_PROP_FLAG_READ);
     sgi_kona_dma_test_props_init(obj, &s->dma);
 }
 
@@ -6815,6 +7029,7 @@ static void sgi_kona_instance_finalize(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
+    sgi_kona_renderer_stop(s);
     if (s->scanout.con) {
         sgi_scanout_cleanup(&s->scanout);
     }
@@ -6864,6 +7079,9 @@ static void sgi_kona_instance_finalize(Object *obj)
 static void sgi_kona_reset_hold(Object *obj, ResetType type)
 {
     SGIKonaState *s = SGI_KONA(obj);
+
+    sgi_kona_renderer_stop(s);
+    s->renderer_failed = false;
 
     s->widget_control = 0;
     s->onewire_reg = 0;
@@ -7020,6 +7238,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 }
 
 static const Property sgi_kona_properties[] = {
+    DEFINE_PROP_BOOL("host-gpu", SGIKonaState, host_gpu, false),
     DEFINE_PROP_LINK("fabric", SGIKonaState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     /* The node whose processor interfaces count the board's credits. */
@@ -7061,6 +7280,7 @@ static int sgi_kona_pre_save(void *opaque)
 {
     SGIKonaState *s = opaque;
 
+    sgi_kona_renderer_stop(s);
     s->legacy_framebuffer_count = 0;
     s->legacy_framebuffer_dirty = false;
     return 0;
@@ -7130,6 +7350,9 @@ static int sgi_kona_cursor_pre_load(void *opaque)
 static int sgi_kona_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
+
+    sgi_kona_renderer_stop(s);
+    s->renderer_failed = false;
 
     /*
      * An open video command can hold no more data words than it takes, or
@@ -7989,6 +8212,14 @@ static const VMStateDescription vmstate_sgi_kona = {
     },
 };
 
+static DeviceUnrealize sgi_kona_parent_unrealize;
+
+static void sgi_kona_unrealize(DeviceState *dev)
+{
+    sgi_kona_renderer_stop(SGI_KONA(dev));
+    sgi_kona_parent_unrealize(dev);
+}
+
 static void sgi_kona_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -7997,6 +8228,8 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI KONA: InfiniteReality graphics pipe";
     dc->vmsd = &vmstate_sgi_kona;
+    device_class_set_parent_unrealize(dc, sgi_kona_unrealize,
+                                      &sgi_kona_parent_unrealize);
     /*
      * Ordinarily fitted by the machine at a free XIO slot, but also
      * `-device`-creatable: a late board's own "fabric" can resolve

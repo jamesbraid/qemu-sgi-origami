@@ -22,6 +22,7 @@
 #include "hw/misc/sgi-kona-dma.h"
 #include "hw/misc/sgi-kona-ports.h"
 #include "system/memory.h"
+#include "ui/sgi-renderer.h"
 #include "qemu/units.h"
 #include "qom/object.h"
 
@@ -685,6 +686,14 @@ typedef enum SGIKonaBitmapState {
 
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
+
+    /* Disposable host execution state; canonical planes alone migrate. */
+    SGIRenderer *renderer;
+    bool host_gpu;
+    bool renderer_failed;
+    uint64_t renderer_generation;
+    uint64_t renderer_draws;
+    uint64_t renderer_fallbacks;
 
     /*
      * Set by build_widget(), before this board re-parents: the XIO
