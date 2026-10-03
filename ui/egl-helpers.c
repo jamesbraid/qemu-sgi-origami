@@ -17,6 +17,7 @@
 #include "qemu/osdep.h"
 
 #include "qemu/drm.h"
+#include "qemu/thread.h"
 #include "qemu/error-report.h"
 #include "ui/console.h"
 #include "ui/egl-helpers.h"
@@ -29,6 +30,194 @@ EGLDisplay qemu_egl_display;
 EGLConfig qemu_egl_config;
 DisplayGLMode qemu_egl_mode;
 bool qemu_egl_angle_d3d;
+
+typedef struct QemuEGLDisplayRecord {
+    EGLDisplay display;
+    EGLConfig config;
+    DisplayGLMode mode;
+    EGLContext root;
+    QemuThread owner;
+    char *rendernode;
+    uint64_t generation;
+    unsigned references;
+    unsigned providers;
+    bool gbm;
+    bool quarantined;
+#ifdef CONFIG_GBM
+    struct gbm_device *native;
+    int fd;
+#endif
+} QemuEGLDisplayRecord;
+
+struct QemuEGLDisplayLease {
+    QemuEGLDisplayRecord *record;
+    unsigned contexts;
+    bool provider;
+    bool quarantined;
+};
+
+static QemuEGLDisplayRecord *egl_record;
+static QemuRecMutex egl_record_mutex;
+static gsize egl_record_mutex_initialized;
+static uint64_t egl_generation;
+static bool egl_startup_quarantined;
+static EGLContext egl_failed_context;
+
+static void egl_record_lock(void)
+{
+    if (g_once_init_enter(&egl_record_mutex_initialized)) {
+        qemu_rec_mutex_init(&egl_record_mutex);
+        g_once_init_leave(&egl_record_mutex_initialized, 1);
+    }
+    qemu_rec_mutex_lock(&egl_record_mutex);
+}
+
+static void egl_record_unlock(void)
+{
+    qemu_rec_mutex_unlock(&egl_record_mutex);
+}
+
+EGLDisplay qemu_egl_display_lease_display(const QemuEGLDisplayLease *lease)
+{
+    return lease->record->display;
+}
+
+EGLConfig qemu_egl_display_lease_config(const QemuEGLDisplayLease *lease)
+{
+    return lease->record->config;
+}
+
+uint64_t qemu_egl_display_lease_generation(const QemuEGLDisplayLease *lease)
+{
+    return lease->record->generation;
+}
+
+bool qemu_egl_display_lease_usable(const QemuEGLDisplayLease *lease)
+{
+    bool usable;
+
+    egl_record_lock();
+    usable = !lease->record->quarantined;
+    egl_record_unlock();
+    return usable;
+}
+
+void qemu_egl_display_context_created(QemuEGLDisplayLease *lease)
+{
+    egl_record_lock();
+    lease->contexts++;
+    egl_record_unlock();
+}
+
+void qemu_egl_display_context_destroyed(QemuEGLDisplayLease *lease)
+{
+    egl_record_lock();
+    assert(lease->contexts);
+    lease->contexts--;
+    egl_record_unlock();
+}
+
+void qemu_egl_display_quarantine(QemuEGLDisplayLease *lease)
+{
+    egl_record_lock();
+    lease->quarantined = true;
+    lease->record->quarantined = true;
+    egl_record_unlock();
+}
+
+QemuEGLDisplayLease *qemu_egl_display_acquire_existing(DisplayGLMode mode,
+                                                     Error **errp)
+{
+    QemuEGLDisplayLease *lease = NULL;
+
+    egl_record_lock();
+    if (!egl_record || !egl_record->gbm || egl_record->quarantined ||
+        egl_record->mode != mode) {
+        error_setg(errp, "No compatible managed GBM EGL display");
+    } else {
+        lease = g_try_new0(QemuEGLDisplayLease, 1);
+        if (!lease) {
+            error_setg(errp, "Cannot allocate EGL display lease");
+        } else {
+            lease->record = egl_record;
+            egl_record->references++;
+        }
+    }
+    egl_record_unlock();
+    return lease;
+}
+
+bool qemu_egl_display_acquire_context(QemuEGLDisplayLease **result,
+                                      Error **errp)
+{
+    QemuEGLDisplayLease *lease;
+    bool success = false;
+
+    *result = NULL;
+    egl_record_lock();
+    if (!egl_record) {
+        success = true;
+    } else if (egl_record->quarantined || !egl_record->providers) {
+        error_setg(errp, "No usable EGL provider for a new context");
+    } else {
+        lease = g_try_new0(QemuEGLDisplayLease, 1);
+        if (!lease) {
+            error_setg(errp, "Cannot allocate EGL context display lease");
+        } else {
+            lease->record = egl_record;
+            egl_record->references++;
+            *result = lease;
+            success = true;
+        }
+    }
+    egl_record_unlock();
+    return success;
+}
+
+DisplayGLMode qemu_egl_display_lease_mode(const QemuEGLDisplayLease *lease)
+{
+    return lease->record->mode;
+}
+
+static void egl_record_release(QemuEGLDisplayLease *lease)
+{
+    QemuEGLDisplayRecord *record = lease->record;
+
+    assert(!lease->contexts);
+    if (lease->quarantined) {
+        return;
+    }
+    assert(record->references);
+    if (--record->references == 0) {
+        assert(!record->providers && record->root == EGL_NO_CONTEXT);
+        if (!eglTerminate(record->display)) {
+            record->quarantined = true;
+            record->references++;
+            lease->quarantined = true;
+            return;
+        }
+#ifdef CONFIG_GBM
+        if (record->native) {
+            gbm_device_destroy(record->native);
+            close(record->fd);
+        }
+#endif
+        egl_record = NULL;
+        g_free(record->rendernode);
+        g_free(record);
+    }
+    g_free(lease);
+}
+
+void qemu_egl_display_release(QemuEGLDisplayLease *lease)
+{
+    if (lease) {
+        egl_record_lock();
+        assert(!lease->provider);
+        egl_record_release(lease);
+        egl_record_unlock();
+    }
+}
 
 /* ------------------------------------------------------------------ */
 
@@ -230,7 +419,7 @@ EGLContext qemu_egl_rn_ctx;
 int qemu_egl_rn_fd;
 struct gbm_device *qemu_egl_rn_gbm_dev;
 
-int egl_rendernode_init(const char *rendernode, DisplayGLMode mode)
+static int egl_rendernode_init(const char *rendernode, DisplayGLMode mode)
 {
     qemu_egl_rn_fd = -1;
     int rc;
@@ -279,13 +468,18 @@ int egl_rendernode_init(const char *rendernode, DisplayGLMode mode)
     return 0;
 
 err:
-    if (qemu_egl_rn_gbm_dev) {
-        gbm_device_destroy(qemu_egl_rn_gbm_dev);
+    if (egl_startup_quarantined) {
+        return -1;
     }
-    if (qemu_egl_rn_fd != -1) {
-        close(qemu_egl_rn_fd);
+    if (qemu_egl_display != EGL_NO_DISPLAY) {
+        if (!eglTerminate(qemu_egl_display)) {
+            egl_startup_quarantined = true;
+            return -1;
+        }
+        qemu_egl_display = EGL_NO_DISPLAY;
     }
-
+    g_clear_pointer(&qemu_egl_rn_gbm_dev, gbm_device_destroy);
+    g_clear_fd(&qemu_egl_rn_fd, NULL);
     return -1;
 }
 
@@ -540,7 +734,7 @@ EGLDisplay qemu_egl_get_display(EGLNativeDisplayType native,
     return dpy;
 }
 
-static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
+static int qemu_egl_init_dpy_unlocked(EGLNativeDisplayType dpy,
                              EGLenum platform,
                              DisplayGLMode mode)
 {
@@ -597,6 +791,22 @@ static int qemu_egl_init_dpy(EGLNativeDisplayType dpy,
 
     qemu_egl_mode = gles ? DISPLAY_GL_MODE_ES : DISPLAY_GL_MODE_CORE;
     return 0;
+}
+
+static int qemu_egl_init_dpy(EGLNativeDisplayType dpy, EGLenum platform,
+                            DisplayGLMode mode)
+{
+    int result;
+
+    egl_record_lock();
+    if (egl_record) {
+        error_report("egl: cannot replace a managed display");
+        result = -1;
+    } else {
+        result = qemu_egl_init_dpy_unlocked(dpy, platform, mode);
+    }
+    egl_record_unlock();
+    return result;
 }
 
 #endif
@@ -694,13 +904,18 @@ EGLContext qemu_egl_init_ctx(void)
     b = eglMakeCurrent(qemu_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, ectx);
     if (b == EGL_FALSE) {
         error_report("egl: eglMakeCurrent failed");
+        if (!eglDestroyContext(qemu_egl_display, ectx)) {
+            egl_failed_context = ectx;
+            egl_startup_quarantined = true;
+        }
         return NULL;
     }
 
     return ectx;
 }
 
-bool egl_init(const char *rendernode, DisplayGLMode mode, Error **errp)
+static bool egl_init_display(const char *rendernode, DisplayGLMode mode,
+                             Error **errp)
 {
     ERRP_GUARD();
 
@@ -735,24 +950,130 @@ bool egl_init(const char *rendernode, DisplayGLMode mode, Error **errp)
     return true;
 }
 
-void egl_cleanup(void)
+static void egl_record_aliases(QemuEGLDisplayRecord *record)
 {
-    if (qemu_egl_display) {
-        eglReleaseThread();
-    }
-
-    if (qemu_egl_rn_ctx) {
-        eglDestroyContext(qemu_egl_display, qemu_egl_rn_ctx);
-        qemu_egl_rn_ctx = NULL;
-    }
-
-    if (qemu_egl_display) {
-        eglTerminate(qemu_egl_display);
-        qemu_egl_display = NULL;
-    }
-
+    qemu_egl_display = record ? record->display : EGL_NO_DISPLAY;
+    qemu_egl_config = record ? record->config : NULL;
+    qemu_egl_mode = record ? record->mode : DISPLAY_GL_MODE_OFF;
+    qemu_egl_rn_ctx = record ? record->root : EGL_NO_CONTEXT;
 #ifdef CONFIG_GBM
-    g_clear_pointer(&qemu_egl_rn_gbm_dev, gbm_device_destroy);
-    g_clear_fd(&qemu_egl_rn_fd, NULL);
+    qemu_egl_rn_gbm_dev = record ? record->native : NULL;
+    qemu_egl_rn_fd = record ? record->fd : -1;
 #endif
+}
+
+bool egl_init_session(const char *rendernode, DisplayGLMode mode,
+                      QemuEGLDisplayLease **session, Error **errp)
+{
+    QemuEGLDisplayLease *lease;
+    QemuEGLDisplayRecord *record;
+    DisplayGLMode requested = mode == DISPLAY_GL_MODE_ON ?
+                              DISPLAY_GL_MODE_CORE : mode;
+    bool success = false;
+
+    assert(session && !*session);
+    egl_record_lock();
+    record = egl_record;
+    if (record && (record->quarantined || record->mode != requested ||
+                   g_strcmp0(record->rendernode, rendernode) ||
+                   !qemu_thread_is_self(&record->owner))) {
+        error_setg(errp, "egl: incompatible managed provider session");
+        goto out;
+    }
+    lease = g_try_new0(QemuEGLDisplayLease, 1);
+    if (!lease) {
+        error_setg(errp, "egl: cannot allocate provider session");
+        goto out;
+    }
+    if (!record) {
+        if (qemu_egl_display != EGL_NO_DISPLAY) {
+            error_setg(errp, "egl: cannot replace an unmanaged display");
+            g_free(lease);
+            goto out;
+        }
+        record = g_try_new0(QemuEGLDisplayRecord, 1);
+        if (!record) {
+            error_setg(errp, "egl: cannot allocate display record");
+            g_free(lease);
+            goto out;
+        }
+        if (!egl_init_display(rendernode, mode, errp)) {
+            if (!egl_startup_quarantined) {
+                g_free(record);
+                g_free(lease);
+                goto out;
+            }
+            record->quarantined = true;
+            lease->quarantined = true;
+        }
+        record->display = qemu_egl_display;
+        record->config = qemu_egl_config;
+        record->mode = qemu_egl_mode;
+        record->root = egl_startup_quarantined ? egl_failed_context :
+                                               qemu_egl_rn_ctx;
+        record->rendernode = g_strdup(rendernode);
+        record->generation = ++egl_generation;
+        qemu_thread_get_self(&record->owner);
+#ifdef CONFIG_GBM
+        record->native = qemu_egl_rn_gbm_dev;
+        record->fd = qemu_egl_rn_fd;
+        record->gbm = record->native != NULL;
+#endif
+        egl_record = record;
+    } else {
+        egl_record_aliases(record);
+        if (!record->providers) {
+            record->root = qemu_egl_init_ctx();
+            if (!record->root) {
+                record->root = egl_failed_context;
+                record->quarantined = true;
+                lease->quarantined = true;
+            }
+            qemu_egl_rn_ctx = record->root;
+        }
+    }
+    lease->record = record;
+    record->references++;
+    if (record->quarantined) {
+        lease->quarantined = true;
+        if (!errp || !*errp) {
+            error_setg(errp, "egl: provider startup quarantined");
+        }
+        goto out;
+    }
+    lease->provider = true;
+    record->providers++;
+    *session = lease;
+    success = true;
+out:
+    egl_record_unlock();
+    return success;
+}
+
+void egl_cleanup_session(QemuEGLDisplayLease *lease)
+{
+    QemuEGLDisplayRecord *record;
+
+    if (!lease) {
+        return;
+    }
+    egl_record_lock();
+    record = lease->record;
+    assert(lease->provider && !lease->contexts && record->providers);
+    if (--record->providers == 0) {
+        if (!qemu_thread_is_self(&record->owner) ||
+            (eglGetCurrentContext() == record->root &&
+             !eglMakeCurrent(record->display, EGL_NO_SURFACE,
+                             EGL_NO_SURFACE, EGL_NO_CONTEXT)) ||
+            !eglDestroyContext(record->display, record->root)) {
+            lease->quarantined = true;
+            record->quarantined = true;
+            error_report("egl: provider teardown quarantined");
+        } else {
+            record->root = EGL_NO_CONTEXT;
+        }
+        egl_record_aliases(NULL);
+    }
+    egl_record_release(lease);
+    egl_record_unlock();
 }
