@@ -9066,6 +9066,55 @@ static void texture_adapter_upload_scalar(QTestState *qts, uint32_t base)
     upload_end(qts);
 }
 
+static void texture_adapter_upload_l8_table_input(QTestState *qts,
+                                                   uint32_t base)
+{
+    upload_begin(qts, base, 2, 0x080024d0, 2, 2);
+    upload_first_header(qts, 0x42);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, 0x004080ff);
+    upload_end(qts);
+}
+
+static uint32_t texture_table_index_word(unsigned index)
+{
+    return (index * 4095 + 127) / 255;
+}
+
+static uint32_t texture_table_pio_word(unsigned index, bool plane1,
+                                       bool alternate)
+{
+    uint32_t ramp = texture_table_index_word(index);
+    uint32_t red = alternate ? 4095 - ramp : ramp;
+    uint32_t green = alternate ? ramp : 4095 - ramp;
+    uint32_t blue = !alternate ?
+                    (index * index * 4095 + 32512) / (255 * 255) : 0;
+
+    if (plane1) {
+        return (blue << 20) | ramp;
+    }
+    return (red << 20) | green;
+}
+
+static void texture_adapter_upload_colour_table(QTestState *qts,
+                                                bool alternate)
+{
+    uint32_t words[16];
+
+    for (unsigned plane = 0; plane < 2; plane++) {
+        for (unsigned block = 0; block < 16; block++) {
+            unsigned base = 16 * block;
+
+            for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
+                words[j] = texture_table_pio_word(base + j, plane,
+                                                  alternate);
+            }
+            user_cmd_push(qts, 0x00013e00 | (plane << 4) | block);
+            push_user_words(qts, words, ARRAY_SIZE(words));
+        }
+    }
+}
+
 static void texture_adapter_upload_luminance_alpha(QTestState *qts,
                                                     uint32_t base,
                                                     const uint32_t rows[2])
@@ -9983,6 +10032,137 @@ static void test_texture_adapter_components_environment(void)
     texture_adapter_point(qts, 20, 10, 0.25f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, ODSY_PLANE_YELLOW);
     qtest_quit(qts);
+}
+
+/* RGB table lookup follows L8 filtering and preserves the incoming alpha. */
+static void test_texture_adapter_colour_table(void)
+{
+    const uint32_t half_alpha[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload_l8_table_input(qts, 0x180000);
+    texture_adapter_window(qts);
+    texture_adapter_upload_colour_table(qts, false);
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+
+    texture_adapter_point_rgba(qts, 10, 10, 0.25f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x00ff0080);
+    texture_adapter_point_rgba(qts, 11, 10, 0.75f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x40bf1080);
+    texture_adapter_point_rgba(qts, 12, 10, 0.75f, 0.75f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, 0xff00ff80);
+
+    /*
+     * The four equally weighted L8 taps average to 111.75, which selects
+     * index 112. Its quadratic blue entry rounds to 49; looking up each tap
+     * before filtering would instead average blue values 0, 16, 64, and 255
+     * to 84.
+     */
+    texture_adapter_bind(qts, 0x180000, 0x11500003, 1);
+    texture_adapter_point_rgba(qts, 13, 10, 0.5f, 0.5f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x708f3180);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), !=, 0x708f5480);
+
+    texture_adapter_bind(qts, 0x180000, 0x11500000, 1);
+    texture_adapter_point_rgba(qts, 14, 10, 0.75f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, 0x40404080);
+    texture_adapter_upload_colour_table(qts, true);
+    texture_adapter_bind(qts, 0x180000, 0x11500000, 1);
+    texture_adapter_point_rgba(qts, 15, 10, 0.75f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 15, 10), ==, 0x40404080);
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+    texture_adapter_point_rgba(qts, 16, 10, 0.75f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 16, 10), ==, 0xbf400080);
+    texture_adapter_point_rgba(qts, 17, 10, 0.75f, 0.75f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x00ff0080);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_colour_table_incomplete(void)
+{
+    const uint32_t half_alpha[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload_l8_table_input(qts, 0x180000);
+    texture_adapter_window(qts);
+    {
+        uint32_t words[16];
+
+        for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
+            words[j] = texture_table_pio_word(j, false, false);
+        }
+        user_cmd_push(qts, 0x00013e00);
+        push_user_words(qts, words, ARRAY_SIZE(words));
+    }
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+    odsy_test_pixel_write(qts, 10, 10, 0x12345678);
+    texture_adapter_point_rgba(qts, 10, 10, 0.75f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_colour_table_reset(void)
+{
+    const uint32_t half_alpha[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload_l8_table_input(qts, 0x180000);
+    texture_adapter_window(qts);
+    texture_adapter_upload_colour_table(qts, false);
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+    texture_adapter_point_rgba(qts, 10, 10, 0.25f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x00ff0080);
+
+    qtest_system_reset(qts);
+    texture_adapter_upload_l8_table_input(qts, 0x180000);
+    texture_adapter_window(qts);
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+    odsy_test_pixel_write(qts, 11, 10, 0x12345678);
+    texture_adapter_point_rgba(qts, 11, 10, 0.25f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_colour_table_migration(void)
+{
+    const uint32_t half_alpha[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-colour-table-state-XXXXXX", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_adapter_upload_l8_table_input(from, 0x180000);
+    texture_adapter_window(from);
+    texture_adapter_upload_colour_table(from, false);
+    texture_adapter_bind(from, 0x180000, 0x11500001, 1);
+    texture_adapter_point_rgba(from, 10, 10, 0.25f, 0.25f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(from, 10, 10), ==, 0x00ff0080);
+
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    texture_adapter_point_rgba(to, 11, 10, 0.75f, 0.75f, half_alpha);
+    g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0xff00ff80);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void test_texture_adapter_scalar_components(void)
@@ -13081,6 +13261,14 @@ int main(int argc, char **argv)
                    test_texture_adapter_binding_filters_matrix);
     qtest_add_func("sn1/odyssey/texture-adapter/components-environment",
                    test_texture_adapter_components_environment);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table",
+                   test_texture_adapter_colour_table);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-incomplete",
+                   test_texture_adapter_colour_table_incomplete);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-reset",
+                   test_texture_adapter_colour_table_reset);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-migration",
+                   test_texture_adapter_colour_table_migration);
     qtest_add_func("sn1/odyssey/texture-adapter/scalar-components",
                    test_texture_adapter_scalar_components);
     qtest_add_func("sn1/odyssey/texture-adapter/luminance-alpha",
