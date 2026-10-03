@@ -852,6 +852,18 @@ static void mips_cpu_class_init(ObjectClass *c, const void *data)
 #endif
     cc->max_as = MIPSASIdx_MAX;
     cc->disas_set_info = mips_cpu_disas_set_info;
+#if TARGET_LONG_BITS == 64
+    static const char * const mips_gdb_core_xml_files[] = {
+        "mips64-cpu.xml", "mips64-cp0.xml", "mips64-fpu.xml",
+        "mips64-qemu.xml", NULL
+    };
+#else
+    static const char * const mips_gdb_core_xml_files[] = {
+        "mips32-cpu.xml", "mips32-cp0.xml", "mips32-fpu.xml",
+        "mips32-qemu.xml", NULL
+    };
+#endif
+    cc->gdb_core_xml_files = mips_gdb_core_xml_files;
     cc->gdb_num_core_regs = 73;
     cc->gdb_stop_before_watchpoint = true;
 #ifdef CONFIG_TCG

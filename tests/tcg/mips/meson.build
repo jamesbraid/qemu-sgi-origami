@@ -6,7 +6,21 @@ tests += {
   'hello-mips.c': {
     'cflags': ['-mno-abicalls', '-fno-PIC', '-fno-stack-protector', '-mabi=32',
                '-nostdlib']
-  }
+  },
+}
+
+tests += {
+  'registers-plugin32.S': {
+    'cflags': ['-mno-abicalls', '-fno-PIC', '-mabi=32', '-nostdlib'],
+    'plugin_test': {'plugin': 'registers', 'args': ['mips-registers=on']},
+  },
+}
+
+tests += {
+  'registers-plugin32.S': {
+    'gdb_test': ['--test', files('../multiarch/gdbstub/registers.py')],
+    'env_var': 'MIPS_REGISTER_FIXTURE=1',
+  },
 }
 
 if 'qemu-mips' in emulators

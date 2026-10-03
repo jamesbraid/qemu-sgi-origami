@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- Copyright (C) 2026 The QEMU Project developers
+
+     SPDX-License-Identifier: GPL-2.0-or-later
+-->
+<!DOCTYPE feature SYSTEM "gdb-target.dtd">
+<feature name="org.qemu.mips.core">
+  <reg name="qemu_unused" bitsize="32" regnum="72"/>
+</feature>

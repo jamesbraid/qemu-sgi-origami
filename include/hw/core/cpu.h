@@ -129,8 +129,13 @@ struct SysemuCPUOps;
  *       breakpoint.  Used by AVR to handle a gdb mis-feature with
  *       its Harvard architecture split code and data.
  * @gdb_core_xml_file: File name for core registers GDB XML description.
- * @gdb_num_core_regs: Number of core registers accessible to GDB if no
- *                     @gdb_core_xml_file available (otherwise inferred).
+ * @gdb_core_xml_files: Optional NULL-terminated list of sparse core register
+ *                      feature files. Their occupied register numbers must
+ *                      uniquely cover @gdb_num_core_regs.
+ * @gdb_num_core_regs: Number of core registers accessible to GDB. It must be
+ *                     set when @gdb_core_xml_files is used; it is inferred
+ *                     when @gdb_core_xml_file or @gdb_get_core_xml_file is
+ *                     used. Without core XML, it defines the register count.
  * @gdb_get_core_xml_file: Optional callback that returns the file name for
  * the core registers GDB XML description. The returned value is expected to
  * be a simple constant string: the caller will not g_free() it. If this
@@ -172,6 +177,7 @@ struct CPUClass {
     vaddr (*gdb_adjust_breakpoint)(CPUState *cpu, vaddr addr);
 
     const char *gdb_core_xml_file;
+    const char * const *gdb_core_xml_files;
     const char * (*gdb_arch_name)(CPUState *cpu);
     const char * (*gdb_get_core_xml_file)(CPUState *cpu);
 

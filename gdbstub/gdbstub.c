@@ -510,7 +510,12 @@ GArray *gdb_get_register_list(CPUState *cpu)
         GDBRegisterState *r = &g_array_index(cpu->gdb_regs, GDBRegisterState, f);
         for (int i = 0; i < r->feature->num_regs; i++) {
             const char *name = r->feature->regs[i];
-            GDBRegDesc desc = {
+            GDBRegDesc desc;
+
+            if (!name) {
+                continue;
+            }
+            desc = (GDBRegDesc) {
                 r->base_reg + i,
                 name,
                 r->feature->name
@@ -590,6 +595,44 @@ static const char *gdb_get_core_xml_file(CPUState *cpu)
     return cc->gdb_core_xml_file;
 }
 
+static bool gdb_has_core_xml(CPUState *cpu)
+{
+    return cpu->cc->gdb_core_xml_files || gdb_get_core_xml_file(cpu);
+}
+
+static void gdb_register_core_features(CPUState *cpu)
+{
+    const CPUClass *cc = cpu->cc;
+    bool *occupied = g_new0(bool, cc->gdb_num_core_regs);
+
+    assert(cc->gdb_num_core_regs > 0);
+    assert(!gdb_get_core_xml_file(cpu));
+    for (const char * const *file = cc->gdb_core_xml_files; *file; file++) {
+        const GDBFeature *feature = gdb_find_static_feature(*file);
+
+        assert(feature->num_regs > 0);
+        assert(feature->base_reg >= 0);
+        assert(feature->base_reg <= cc->gdb_num_core_regs);
+        assert(feature->num_regs <= cc->gdb_num_core_regs - feature->base_reg);
+        for (int i = 0; i < feature->num_regs; i++) {
+            int reg = feature->base_reg + i;
+
+            if (feature->regs[i]) {
+                assert(!occupied[reg]);
+                occupied[reg] = true;
+            }
+        }
+        gdb_register_feature(cpu, feature->base_reg,
+                             cc->gdb_read_register, cc->gdb_write_register,
+                             feature);
+    }
+    for (int i = 0; i < cc->gdb_num_core_regs; i++) {
+        assert(occupied[i]);
+    }
+    g_free(occupied);
+    cpu->gdb_num_regs = cpu->gdb_num_g_regs = cc->gdb_num_core_regs;
+}
+
 void gdb_init_cpu(CPUState *cpu)
 {
     const CPUClass *cc = cpu->cc;
@@ -598,7 +641,9 @@ void gdb_init_cpu(CPUState *cpu)
 
     cpu->gdb_regs = g_array_new(false, false, sizeof(GDBRegisterState));
 
-    if (xmlfile) {
+    if (cc->gdb_core_xml_files) {
+        gdb_register_core_features(cpu);
+    } else if (xmlfile) {
         assert(!cc->gdb_num_core_regs);
         feature = gdb_find_static_feature(xmlfile);
         assert(feature->base_reg == 0);
@@ -1680,7 +1725,7 @@ void gdb_extend_qsupported_features(char *qflags)
 static void handle_query_supported(GArray *params, void *user_ctx)
 {
     g_string_printf(gdbserver_state.str_buf, "PacketSize=%x", MAX_PACKET_LENGTH);
-    if (gdb_get_core_xml_file(first_cpu)) {
+    if (gdb_has_core_xml(first_cpu)) {
         g_string_append(gdbserver_state.str_buf, ";qXfer:features:read+");
     }
 
@@ -1737,7 +1782,7 @@ static void handle_query_xfer_features(GArray *params, void *user_ctx)
     }
 
     process = gdb_get_cpu_process(gdbserver_state.g_cpu);
-    if (!gdb_get_core_xml_file(gdbserver_state.g_cpu)) {
+    if (!gdb_has_core_xml(gdbserver_state.g_cpu)) {
         gdb_put_packet("");
         return;
     }

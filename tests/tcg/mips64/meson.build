@@ -8,6 +8,20 @@ tests += {
   },
 }
 
+tests += {
+  '../mips/registers-plugin64.S': {
+    'cflags': ['-mno-abicalls', '-fno-PIC', '-mabi=64', '-nostdlib'],
+    'plugin_test': {'plugin': 'registers', 'args': ['mips-registers=on']},
+  },
+}
+
+tests += {
+  '../mips/registers-plugin64.S': {
+    'gdb_test': ['--test', files('../multiarch/gdbstub/registers.py')],
+    'env_var': 'MIPS_REGISTER_FIXTURE=1',
+  },
+}
+
 # export tests for mips64el
 tcg_tests_mips64 = tests
 

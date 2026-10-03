@@ -6,6 +6,8 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import os
+import re
 import gdb
 import xml.etree.ElementTree as ET
 from test_gdbstub import main, report
@@ -52,7 +54,9 @@ def fetch_xml_regmap():
             name = r.attrib["name"]
             regnum = int(r.attrib["regnum"])
 
-            entry = { "name": name, "regnum": regnum }
+            entry = {"name": name, "regnum": regnum,
+                     "bitsize": int(r.attrib["bitsize"]),
+                     "type": r.attrib.get("type")}
 
             if name in reg_map:
                 report(False, f"duplicate register {entry} vs {reg_map[name]}")
@@ -65,6 +69,65 @@ def fetch_xml_regmap():
            f"counted all {total_regs} registers in XML")
 
     return reg_map
+
+
+def check_mips_g_packet(reg_map):
+    report("qemu_unused" in reg_map,
+           "MIPS target description names legacy slot 72")
+    report(len(reg_map) == 73, "MIPS target description has 73 registers")
+    regnums = {entry["regnum"] for entry in reg_map.values()}
+    report(regnums == set(range(73)),
+           "MIPS target description covers register numbers 0 through 72")
+    widths = {entry["bitsize"] for entry in reg_map.values()}
+    report(len(widths) == 1 and next(iter(widths)) in (32, 64),
+           "MIPS core registers use one target-long width")
+    if len(widths) != 1:
+        return
+    width = next(iter(widths))
+    packet = gdb.execute("maintenance packet g", False, True)
+    match = re.search(r'received: "([0-9a-fA-F]+)"', packet)
+    report(match is not None, "GDB reads the complete MIPS g packet")
+    if match:
+        report(len(match.group(1)) == 73 * (width // 4),
+               "MIPS g packet retains all 73 target-long slots")
+    expected_fpu_type = "ieee_single" if width == 32 else "ieee_double"
+    fpu_regs = [entry for entry in reg_map.values()
+                if 38 <= entry["regnum"] <= 69]
+    report(len(fpu_regs) == 32 and all(
+        entry["type"] == expected_fpu_type for entry in fpu_regs),
+        f"MIPS FPU registers use {expected_fpu_type} types")
+
+
+def check_mips_abi_registers(frame):
+    """Check the standard MIPS ABI names against the test program."""
+    expected = {
+        "a0": 0,
+        "a1": 0x1234567,
+        "a2": 0x2345678,
+        "a3": 0x3456789,
+        "gp": 0x456789a,
+        "s2": 0x56789ab,
+        "s3": 0x6789abc,
+        "v1": 0x789abcd,
+    }
+
+    for name, value in expected.items():
+        try:
+            actual = int(frame.read_register(name))
+        except (ValueError, gdb.error) as e:
+            report(False, f"failed to read MIPS ABI register {name}: {e}")
+            continue
+        report(actual == value,
+               f"MIPS ABI register {name} is 0x{actual:x}, "
+               f"expected 0x{value:x}")
+
+
+def is_mips_target():
+    try:
+        arch = gdb.selected_frame().architecture().name().lower()
+        return arch.startswith("mips")
+    except gdb.error:
+        return False
 
 
 def get_register_by_regnum(reg_map, regnum):
@@ -152,10 +215,10 @@ def initial_register_read(reg_map):
         try:
             if "hidden" in e:
                 value = frame.read_register(regnum)
-                e["initial"] = value
+                e["initial"] = value.bytes
             elif "seen" in e:
                 value = frame.read_register(name)
-                e["initial"] = value
+                e["initial"] = value.bytes
 
         except ValueError:
                 report(False, f"failed to read reg: {name}")
@@ -179,19 +242,28 @@ def complete_and_diff(reg_map):
     changed = 0
 
     for e in reg_map.values():
-        if "initial" in e and "hidden" not in e:
+        if "initial" in e:
             name = e["name"]
-            old_val = e["initial"]
+            reg = e["regnum"] if "hidden" in e else name
+            old_bytes = e["initial"]
 
             try:
-                new_val = frame.read_register(name)
+                new_val = frame.read_register(reg)
             except ValueError:
                 report(False, f"failed to read {name} at end of run")
                 continue
 
-            if new_val != old_val:
-                print(f"{name} changes from {old_val} to {new_val}")
+            # Some target descriptions include zero-width bookkeeping slots.
+            # Comparing their gdb.Value objects can overflow GDB's type logic.
+            new_bytes = new_val.bytes
+            if new_bytes != old_bytes:
+                print(f"{name} changes from {old_bytes.hex()} "
+                      f"to {new_bytes.hex()}")
                 changed += 1
+
+    if (is_mips_target() and
+            os.environ.get("MIPS_REGISTER_FIXTURE") == "1"):
+        check_mips_abi_registers(frame)
 
     # as long as something changed we can be confident its working
     report(changed > 0, f"{changed} registers were changed")
@@ -200,12 +272,19 @@ def complete_and_diff(reg_map):
 def run_test():
     "Run through the tests"
 
+    mips_target = is_mips_target()
     reg_map = fetch_xml_regmap()
 
-    if reg_map is not None:
-        crosscheck_remote_xml(reg_map)
-        initial_register_read(reg_map)
-        complete_and_diff(reg_map)
+    if reg_map is None:
+        if mips_target:
+            report(False, "MIPS target description is available to GDB")
+        return
+
+    if mips_target:
+        check_mips_g_packet(reg_map)
+    crosscheck_remote_xml(reg_map)
+    initial_register_read(reg_map)
+    complete_and_diff(reg_map)
 
 
 main(run_test)
