@@ -4382,18 +4382,26 @@ static void sgi_machine_build_fabric_links(SGIMachineState *s,
     }
 }
 
-/* Resolve the declared endpoint kind independently of module ownership. */
-static SN1FabricEndpoint *sgi_machine_bedrock_endpoint(
-    SGIMachineState *s, const SGIModelLinkEnd *end, Error **errp)
+typedef struct SGIMachineNetEnd {
+    Object *port;
+    unsigned int index;
+    const char *cable_property;
+} SGIMachineNetEnd;
+
+/* Resolve cable wiring independently of terminal transaction callbacks. */
+static bool sgi_machine_bedrock_net_end(
+    SGIMachineState *s, const SGIModelLinkEnd *end, SGIMachineNetEnd *net_end,
+    Error **errp)
 {
     DeviceState *dev;
+    SN1FabricEndpoint *endpoint;
 
     switch (end->kind) {
     case SGI_MODEL_LINK_END_KIND_NODE:
         if (end->index >= s->num_nodes) {
             error_setg(errp, "Bedrock cable names node %u out of range",
                        end->index);
-            return NULL;
+            return false;
         }
         dev = s->bedrock_nodes[end->index];
         break;
@@ -4401,19 +4409,28 @@ static SN1FabricEndpoint *sgi_machine_bedrock_endpoint(
         if (end->index >= s->io_peer_count) {
             error_setg(errp, "Bedrock cable names I/O peer %u without a "
                        "constructed assembly", end->index);
-            return NULL;
+            return false;
         }
         dev = s->io_peers[end->index];
         break;
     default:
         error_setg(errp, "Bedrock cable endpoint kind is unsupported");
-        return NULL;
+        return false;
     }
     if (!dev || !object_dynamic_cast(OBJECT(dev), TYPE_SGI_SN1_FABRIC)) {
         error_setg(errp, "Bedrock cable endpoint has no fabric interface");
-        return NULL;
+        return false;
     }
-    return SGI_SN1_FABRIC_GET_CLASS(dev)->endpoint(OBJECT(dev));
+    endpoint = SGI_SN1_FABRIC_GET_CLASS(dev)->endpoint(OBJECT(dev));
+    if (!endpoint) {
+        return false;
+    }
+    *net_end = (SGIMachineNetEnd) {
+        .port = OBJECT(endpoint->bedrock),
+        .index = end->port,
+        .cable_property = "net-cable",
+    };
+    return true;
 }
 
 /* Existing compute pairs retain their separately modeled L1 peer relation. */
@@ -4428,7 +4445,7 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
     for (i = 0; i < cable_count; i++) {
         const SGIModelCable *cable = cables[i];
         const SGIModelLinkEnd *ends[2];
-        SN1FabricEndpoint *endpoints[2];
+        SGIMachineNetEnd endpoints[2];
         DeviceState *dev;
         unsigned int side;
 
@@ -4440,8 +4457,8 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
         ends[0] = cable->ends->value;
         ends[1] = cable->ends->next->value;
         for (side = 0; side < 2; side++) {
-            endpoints[side] = sgi_machine_bedrock_endpoint(s, ends[side], errp);
-            if (!endpoints[side]) {
+            if (!sgi_machine_bedrock_net_end(s, ends[side],
+                                               &endpoints[side], errp)) {
                 return false;
             }
         }
@@ -4450,16 +4467,16 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
         qdev_prop_set_uint32(dev, "kind", cable->kind);
         for (side = 0; side < 2; side++) {
             sgi_net_cable_set_end(SGI_NET_CABLE(dev), side,
-                                 OBJECT(endpoints[side]->bedrock),
-                                 ends[side]->port);
+                                 endpoints[side].port, endpoints[side].index);
         }
         if (!qdev_realize(dev, NULL, errp)) {
             object_unref(OBJECT(dev));
             return false;
         }
         for (side = 0; side < 2; side++) {
-            if (!object_property_set_link(OBJECT(endpoints[side]->bedrock),
-                                           "net-cable", OBJECT(dev), errp)) {
+            if (!object_property_set_link(endpoints[side].port,
+                                           endpoints[side].cable_property,
+                                           OBJECT(dev), errp)) {
                 object_unref(OBJECT(dev));
                 return false;
             }
