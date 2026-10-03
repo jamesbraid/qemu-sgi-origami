@@ -34,6 +34,16 @@ class GuestFault(HarnessError):
     the wrong value, this ends the whole run."""
 
 
+def posix_cksum(output, path):
+    """Read one cksum result, allowing a queued root prompt before output."""
+    matches = re.findall(r'^(?:# )?(\d+)[ \t]+(\d+)[ \t]+' + re.escape(path)
+                         + r'\r?$', output, re.M)
+    if len(matches) != 1:
+        raise HarnessError(f'expected one checksum result for {path}')
+    crc, size = matches[0]
+    return crc, int(size)
+
+
 def arp_request_frame(sender_mac, sender_ip, target_ip):
     """Build an Ethernet broadcast ARP request from textual IPv4 addresses."""
     if len(sender_mac) != 6:
