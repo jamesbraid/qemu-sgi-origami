@@ -2541,6 +2541,12 @@ static void gl_pixels_float_program(QTestState *qts, bool rgba,
     }
 }
 
+static void gl_pixels_float_unpack_second_word(QTestState *qts,
+                                                 uint32_t value)
+{
+    gl_ge_load(qts, GL_GE_ERAM, 0x1b5, &value, 1);
+}
+
 static void gl_pixels_float_rgb_shape_program(QTestState *qts,
                                               uint32_t unpack_bytes,
                                               uint32_t pixel_groups)
@@ -5039,6 +5045,7 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
 
             gl_pixels_program(qts, GL_PIX_4UB, 47 * 4, 0, 0, 46, 0, 1);
             gl_pixels_float_program(qts, true, false, 0x17, 0x2f4);
+            gl_pixels_float_unpack_second_word(qts, 4);
             gl_pixels_draw(qts, 188);
             for (uint32_t col = 0; col < 47; col++) {
                 uint8_t red = 16 + 13 * col;
@@ -5056,6 +5063,7 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
             gl_pixels_float_program(qts, true, false,
                                     images[image].remainder_first,
                                     images[image].remainder_signature);
+            gl_pixels_float_unpack_second_word(qts, 4);
             gl_pixels_draw(qts, remainder * 4);
             for (uint32_t col = 0; col < remainder; col++) {
                 uint32_t source_x = 47 + col;
@@ -5111,6 +5119,26 @@ static void test_gl_pixels_captured_float_rgba_wide_client_offsets(void)
         }
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
+
+    gl_pixels_context(qts, 0);
+    gl_raster_pos2f(qts, 1.5f, 1.5f);
+    gl_pixels_program(qts, GL_PIX_4UB, 47 * 4, 0, 0, 46, 0, 1);
+    gl_pixels_float_program(qts, true, false, 0x17, 0x2f4);
+    gl_pixels_float_unpack_second_word(qts, 5);
+    gl_pixels_draw(qts, 188);
+    for (uint32_t col = 0; col < 47; col++) {
+        components[col * 4] = gl_bits(1.0f);
+        components[col * 4 + 1] = gl_bits(1.0f);
+        components[col * 4 + 2] = gl_bits(1.0f);
+        components[col * 4 + 3] = gl_bits(1.0f);
+    }
+    gl_pixels_row(qts, 0, components, 188);
+    gl_pixels_fence(qts);
+
+    for (uint32_t col = 0; col < 47; col++) {
+        g_assert_cmphex(gl_window_pixel(qts, 1 + col, 1), ==, 0);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
 static void test_gl_pixels_rgb_count_stays_per_row(void)
