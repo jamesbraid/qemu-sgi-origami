@@ -947,7 +947,11 @@ enum {
 #define ODSY_GL_LINES 0x00000001
 #define ODSY_GL_LINE_LOOP 0x00000002
 #define ODSY_GL_LINE_STRIP 0x00000003
+#define ODSY_GL_TRIANGLES 0x00000004
+#define ODSY_GL_TRIANGLE_STRIP 0x00000005
+#define ODSY_GL_TRIANGLE_FAN 0x00000006
 #define ODSY_GL_QUADS 0x00000007
+#define ODSY_GL_QUAD_STRIP 0x00000008
 #define ODSY_GL_POLYGON 0x00000009
 
 /*
@@ -7609,8 +7613,12 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->gl_integer_prim = true;
         }
         if (s->gl_begin_open && !s->image_active &&
-            (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
-                            ODSY_TEX_MODE_3D))) {
+            ((s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                             ODSY_TEX_MODE_3D)) ||
+             s->gl_primitive == ODSY_GL_TRIANGLES ||
+             s->gl_primitive == ODSY_GL_TRIANGLE_STRIP ||
+             s->gl_primitive == ODSY_GL_TRIANGLE_FAN ||
+             s->gl_primitive == ODSY_GL_QUAD_STRIP)) {
             if (!s->gl_in_prim) {
                 uint32_t mode = s->gl_primitive;
 
@@ -7773,7 +7781,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_GL_VERTEX_3F:
         /*
          * A float vertex uses the shared GL path. Open the primitive lazily
-         * on its first vertex, as for a textured integer primitive above.
+         * on its first vertex, as for shared integer geometry above.
          */
         if (!s->gl_in_prim && !s->gl_restart_absorb) {
             uint32_t mode = s->gl_primitive;
@@ -8010,8 +8018,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_GL_BEGIN:
         /*
          * Record the primitive and, for an image, open the raster path. The
-         * shared GL path opens on a float or texture-enabled integer vertex;
-         * untextured integer primitives stay on the 2D interpreter.
+         * shared GL path opens on a float vertex, a textured integer vertex,
+         * or an integer assembly absent from the 2D interpreter. Untextured
+         * integer points, lines, quads and polygons retain the 2D path.
          */
         s->gl_primitive = s->cmd_operand[0];
         s->gl_vertex_count = 0;
