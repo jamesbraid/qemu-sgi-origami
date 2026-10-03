@@ -4183,7 +4183,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint64_t slice_stride;
 
         if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
-            s->tex_sampler[4] != 0x13000000 || s->tex_env[0] != 1 ||
+            s->tex_sampler[4] != 0x13000000 || s->tex_env[0] > 2 ||
             entry[1] != (0x41100000 | stride_units) ||
             entry[2] == 0 || stride_units != expected_units || !base ||
             s->obj_count > SGI_ODYSSEY_OBJECTS ||
