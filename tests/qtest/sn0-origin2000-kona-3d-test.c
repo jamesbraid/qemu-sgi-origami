@@ -4205,6 +4205,197 @@ static void assert_texture_staging(QTestState *s, const uint32_t *v,
     }
 }
 
+static void texture_native_bind(QTestState *s, uint32_t handle)
+{
+    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+
+    kona_command(s, 0x1d5, (uint32_t[]) { handle, 0, 0, 0x11, 0 }, 5);
+    kona_command(s, 0x179, record, 22);
+}
+
+static void assert_texture_pixel(QTestState *s, uint32_t x, uint32_t y,
+                                   uint32_t expected)
+{
+    QDict *reply;
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-x','value':%u}}", x);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-y','value':%u}}", y);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-texture-pixel'}}");
+    g_assert_cmphex(qdict_get_int(reply, "return"), ==, expected);
+    qobject_unref(reply);
+}
+
+/* Incomplete rows and mismatched publication never replace a sampled image. */
+static void test_texture_native_publication(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t h[20];
+
+    gl_make_current(s);
+    memcpy(h, texture_header, sizeof(h));
+    h[10] = 0x12345678;
+    texture_native_bind(s, h[10]);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    assert_texture_pixel(s, 0, 0, 0);
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2, texture_source[k]);
+    }
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 3; k++) {
+        qtest_writel(s, REG_COMMAND, 0xaabbccdd);
+    }
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    qtest_writel(s, REG_COMMAND, 0xaabbccdd);
+    kona_command(s, 0x176, (uint32_t[]) { h[10] + 1 }, 1);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+    kona_command(s, 0x1c5, (uint32_t[]) { h[10] }, 1);
+    assert_texture_pixel(s, 0, 0, 0);
+    /* A table supplied after upload resolves the same stored source bytes. */
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    texture_native_bind(s, h[10]);
+    assert_texture_pixel(s, 1, 1, texture_source[3]);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, 0xaabbccdd);
+    }
+    kona_command(s, 0x1c5, (uint32_t[]) { h[10] }, 1);
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    texture_native_bind(s, h[10]);
+    assert_texture_pixel(s, 0, 0, 0);
+    kona_command(s, 0x174, h, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, 0xaabbccdd);
+    }
+    kona_command(s, 0xb, NULL, 0);
+    for (unsigned k = 0; k < 32; k++) {
+        qtest_writel(s, REG_COMMAND, 0);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { h[10] }, 1);
+    assert_texture_pixel(s, 0, 0, 0);
+    qtest_system_reset(s);
+    assert_texture_pixel(s, 0, 0, 0);
+    qtest_quit(s);
+}
+
+static void test_texture_native_draw(void)
+{
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    texture_native_bind(s, 0);
+    kona_command(s, 0x174, texture_header, 20);
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+    kona_command(s, 0xed, (uint32_t[]) { 0, 10, 0x80ffffff, 0x00008000 }, 4);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x800080);
+    kona_command(s, 0x1d7, (uint32_t[]) { 0, 0, 0, 0 }, 4);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0xff0000);
+    qtest_quit(s);
+}
+
+static void test_texture_native_rows(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t h[20];
+    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0, 0, 0, 0x55 };
+
+    gl_make_current(s);
+    memcpy(h, texture_header, sizeof(h));
+    h[1] = h[2] = 16;
+    h[13] = h[14] = 15;
+    h[16] = 0x44;
+    h[18] = 0x55;
+    kona_command(s, 0x1d5, (uint32_t[]) { 0, 0, 0, 0x44, 0 }, 5);
+    /* Select the physical descriptor supplied by this upload. */
+    kona_command(s, 0x179, record, 22);
+    for (unsigned pad = 0; pad < 4; pad++) {
+        h[5] = pad;
+        kona_command(s, 0x174, h, 20);
+        for (unsigned y = 0; y < 16; y++) {
+            for (unsigned x = 0; x < 16 + !!pad; x++) {
+                uint32_t word = 0;
+
+                for (unsigned k = 0; k < 4; k++) {
+                    int offset = x * 4 + k - pad;
+                    unsigned byte = 0xee;
+
+                    if (offset >= 0 && offset < 64) {
+                        uint32_t pixel = 0x102030ff +
+                                         ((offset / 4) << 24) + (y << 16);
+
+                        byte = (pixel >> (24 - (offset % 4) * 8)) & 0xff;
+                    }
+                    word = (word << 8) | byte;
+                }
+                qtest_writel(s, REG_COMMAND, word);
+            }
+        }
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        assert_texture_pixel(s, 0, 0, 0x102030ff);
+        assert_texture_pixel(s, 15, 15, 0x1f2f30ff);
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_native_migrates(gconstpointer opaque)
+{
+    unsigned before = GPOINTER_TO_UINT(opaque);
+    g_autofree char *tmpfs = NULL, *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-texture-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    gl_make_current(from);
+    texture_native_bind(from, 0);
+    kona_command(from, 0x174, texture_header, 20);
+    for (unsigned k = 0; k < before; k++) {
+        qtest_writel(from, REG_COMMAND, texture_source[k]);
+    }
+    sgi_migrate_stopped(from, uri);
+    assert_texture_pixel(to, 0, 0, 0);
+    for (unsigned k = before; k < 4; k++) {
+        qtest_writel(to, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(to, 0x176, (uint32_t[]) { 0 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(to, k % 2, k / 2, texture_source[k]);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_texture_captured(void)
 {
     const unsigned dims[][2] = { { 2, 2 }, { 4, 2 }, { 2, 4 } };
@@ -4408,8 +4599,7 @@ static void test_texture_migrates(void)
 
 static void test_texture_refused(void)
 {
-    const unsigned fields[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
-                                15, 16, 17, 18, 19 };
+    const unsigned fields[] = { 0, 3, 4, 6, 7, 8, 9, 15, 17 };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
     uint32_t h[20], before[7];
@@ -4433,8 +4623,10 @@ static void test_texture_refused(void)
             return_context_deactivate(s);
         }
         prepare_refused_reply(s);
-        /* Unknown lengths deliberately have no payload or recovery probe. */
         kona_command(s, 0x174, h, 20);
+        if (h[3] == 5 && h[4] == 1 && !h[6]) {
+            texture_words(s, texture_source, 4, 0);
+        }
         assert_reply_unchanged(s);
         for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
             g_assert_cmphex(stencil_colour_or_depth(s, plane), ==,
@@ -4445,9 +4637,9 @@ static void test_texture_refused(void)
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "native texture header refused:"),
                      ==, ARRAY_SIZE(fields) + 3);
-    g_assert_cmpuint(count_occurrences(found, "stream recovery unsafe; header"),
-                     ==, ARRAY_SIZE(fields) + 3);
-    g_assert_null(strstr(found, "sgi_kona_gl_data token 0x174"));
+    g_assert_cmpuint(count_occurrences(found, "payload length unknown"), ==, 3);
+    g_assert_cmpuint(count_occurrences(found, "draining framed rows"),
+                     ==, ARRAY_SIZE(fields));
 }
 
 static const uint32_t texture_8x8_headers[][20] = {
@@ -4694,7 +4886,7 @@ static void test_texture_prefix_widths(gconstpointer opaque)
     uint32_t prefix = GPOINTER_TO_UINT(opaque);
     g_autofree char *log = NULL, *found = NULL;
     g_autofree char *consumed =
-        g_strdup_printf("token 0x%x argc 1 consumed", prefix);
+        g_strdup_printf("token 0x%x args", prefix);
     QTestState *s = kona_init_logged(&log);
     char *before[7];
 
@@ -4734,7 +4926,7 @@ static void test_texture_prefix_reset(gconstpointer opaque)
     uint32_t prefix = GPOINTER_TO_UINT(opaque);
     g_autofree char *log = NULL, *found = NULL;
     g_autofree char *consumed =
-        g_strdup_printf("token 0x%x argc 1 consumed", prefix);
+        g_strdup_printf("token 0x%x args", prefix);
     QTestState *s = kona_init_logged(&log);
     char *before[7];
 
@@ -4765,7 +4957,7 @@ static void test_texture_prefix_migration(gconstpointer opaque)
     g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
     g_autofree char *log = NULL, *found = NULL;
     g_autofree char *consumed =
-        g_strdup_printf("token 0x%x argc 1 consumed", prefix);
+        g_strdup_printf("token 0x%x args", prefix);
     GError *err = NULL;
     QTestState *from, *to;
     char *before[7];
@@ -4809,7 +5001,7 @@ static void test_texture_prefix_migration(gconstpointer opaque)
     g_rmdir(dir);
 }
 
-static void test_texture_prefix_unsupported(gconstpointer opaque)
+static void test_texture_prefix_handles(gconstpointer opaque)
 {
     uint32_t prefix = GPOINTER_TO_UINT(opaque);
     static const uint32_t operands[] = {
@@ -4817,7 +5009,7 @@ static void test_texture_prefix_unsupported(gconstpointer opaque)
     };
     g_autofree char *log = NULL, *found = NULL;
     g_autofree char *consumed =
-        g_strdup_printf("token 0x%x argc 1 consumed", prefix);
+        g_strdup_printf("token 0x%x args", prefix);
     QTestState *s = kona_init_logged(&log);
     char *before[7];
 
@@ -4835,10 +5027,6 @@ static void test_texture_prefix_unsupported(gconstpointer opaque)
     texture_free_digests(before);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_cmpuint(count_occurrences(found, prefix == 0x1c5 ?
-                     "unsupported opaque texture cleanup prefix operand" :
-                     "unsupported opaque texture prefix operand"),
-                     ==, ARRAY_SIZE(operands));
     g_assert_cmpuint(count_occurrences(found, consumed),
                      ==, ARRAY_SIZE(operands));
     g_assert_cmpuint(count_occurrences(found,
@@ -5435,6 +5623,17 @@ int main(int argc, char **argv)
                    test_texture_migrates);
     qtest_add_func("sn0/origin2000/kona-3d/texture/refused",
                    test_texture_refused);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/native-draw",
+                   test_texture_native_draw);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/native-rows",
+                   test_texture_native_rows);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/native-migrate-rows",
+                        GUINT_TO_POINTER(2), test_texture_native_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/"
+                        "native-migrate-complete", GUINT_TO_POINTER(4),
+                        test_texture_native_migrates);
+    qtest_add_func("sn0/origin2000/kona-3d/texture/publication",
+                   test_texture_native_publication);
     qtest_add_func("sn0/origin2000/kona-3d/texture/captured",
                    test_texture_captured);
     qtest_add_func("sn0/origin2000/kona-3d/unmodeled-queries-refused",
@@ -5586,13 +5785,13 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
                         "migration",
                         GUINT_TO_POINTER(0x1c5), test_texture_prefix_migration);
-    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/unsupported",
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture-prefix/handles",
                         GUINT_TO_POINTER(0x1c4),
-                        test_texture_prefix_unsupported);
+                        test_texture_prefix_handles);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture-cleanup-prefix/"
-                        "unsupported",
+                        "handles",
                         GUINT_TO_POINTER(0x1c5),
-                        test_texture_prefix_unsupported);
+                        test_texture_prefix_handles);
     qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/widths",
                    test_texture_8x8_widths);
     qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/reset",

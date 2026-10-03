@@ -21,6 +21,7 @@
 #include "hw/misc/sgi-command-port.h"
 #include "hw/misc/sgi-kona-dma.h"
 #include "hw/misc/sgi-kona-ports.h"
+#include "hw/misc/sgi-kona-texture.h"
 #include "system/memory.h"
 #include "ui/sgi-renderer.h"
 #include "qemu/units.h"
@@ -684,6 +685,13 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_LIST_DEFAULT    (1 * MiB)
 #define SGI_KONA_LIST_MAX        (64 * MiB)
 
+typedef struct SGIKonaTextureUpload {
+    uint32_t header[20];
+    uint32_t count;
+    uint32_t *pixels;
+    bool complete;
+} SGIKonaTextureUpload;
+
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
@@ -886,6 +894,14 @@ struct SGIKonaState {
     SGIGLContext gl[SGI_KONA_CONTEXTS];
     SGIKonaGLWindow gl_window[SGI_KONA_CONTEXTS];
     SGIKonaGLPipe gl_pipe[SGI_KONA_CONTEXTS];
+    SGIKonaTextureState textures;
+    SGIKonaTextureUpload texture_upload;
+    uint32_t texture_bind[5];
+    uint32_t texture_record[22];
+    uint32_t texture_transform[8];
+    bool texture_bind_valid;
+    bool texture_record_valid;
+    bool texture_state_used;
     /*
      * Each entry's attribute stack (sgi_kona_gl_push_attrib()): entry i's
      * copies at gl_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH] on, how many it
