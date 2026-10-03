@@ -558,11 +558,16 @@ static void test_texture_sampler(void)
             bool supported = filters[min] && mag < 2;
 
             p = original;
+            if (min >= 3) {
+                p.base_level = 0;
+            }
+            SGIKonaTextureParams before = p;
+
             bind[2] = (min << 2) | (mag << 5) | 3;
             g_assert_cmpint(sgi_kona_gl_texture_sampler(bind, record, &p),
                             ==, supported);
             if (!supported) {
-                g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+                g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
                 continue;
             }
             g_assert_cmphex(p.min_filter, ==, filters[min]);
@@ -570,7 +575,7 @@ static void test_texture_sampler(void)
                             mag ? SGI_GL_LINEAR : SGI_GL_NEAREST);
             g_assert_cmphex(p.wrap_s, ==, SGI_GL_REPEAT);
             g_assert_cmphex(p.wrap_t, ==, SGI_GL_REPEAT);
-            g_assert_cmpuint(p.base_level, ==, 2);
+            g_assert_cmpuint(p.base_level, ==, min >= 3 ? 0 : 2);
             g_assert_cmpuint(p.max_level, ==, 5);
             g_assert_cmpfloat(p.post_scale[0], ==, 0.5);
             g_assert_cmpfloat(p.post_bias[2], ==, 0.25);
@@ -581,6 +586,7 @@ static void test_texture_sampler(void)
     bind[2] = 4 << 2;
     record[2] = 96 | (288 << 10);
     p = original;
+    p.base_level = 0;
     g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
     g_assert_cmpfloat(p.min_lod, ==, 0.5);
     g_assert_cmpfloat(p.max_lod, ==, 3.5);
@@ -593,17 +599,33 @@ static void test_texture_sampler(void)
     bind[3] = 0;
     for (unsigned lo = 1; lo < 64; lo++) {
         p = original;
+        p.base_level = 0;
+        SGIKonaTextureParams before = p;
+
         record[2] = lo | (256 << 10);
         g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
-        g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+        g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
     }
     record[2] = 320 | (256 << 10);
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
     record[2] = 256 << 10;
     for (unsigned axis = 0; axis <= 8; axis += 8) {
-        record[1] = 0x00101010 ^ (1 << axis);
+        record[1] = 0x00101010 & ~(0xffu << axis);
         g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
     }
+    record[1] = 0x00ff8020;
+    p = original;
+    p.base_level = 0;
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmpfloat(p.lod_scale_s, ==, 2);
+    g_assert_cmpfloat(p.lod_scale_t, ==, 8);
+    record[1] = 0x0000ff01;
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmpfloat(p.lod_scale_s, ==, 1.0 / 16);
+    g_assert_cmpfloat(p.lod_scale_t, ==, 255.0 / 16);
+    p = original;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
 }
 
 static void test_texture_dimensions(void)

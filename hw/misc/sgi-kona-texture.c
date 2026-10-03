@@ -19,6 +19,7 @@ void sgi_kona_texture_defaults(SGIKonaTextureParams *p)
         .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
         .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
         .post_scale = { 1, 1, 1, 1 },
+        .lod_scale_s = 1, .lod_scale_t = 1,
     };
 }
 
@@ -215,7 +216,7 @@ bool sgi_kona_texture_subimage(SGIKonaTextureState *s, uint32_t handle,
 
 static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
 {
-    return a[16] == b[16] && a[17] == b[17] &&
+    return a[9] == b[9] && a[16] == b[16] && a[17] == b[17] &&
            a[18] == b[18] && a[19] == b[19];
 }
 
@@ -345,6 +346,8 @@ static bool texture_params(const SGIKonaTextureParams *p)
         (p->mag_filter != SGI_GL_NEAREST && p->mag_filter != SGI_GL_LINEAR) ||
         !texture_wrap(p->wrap_s) || !texture_wrap(p->wrap_t) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
+        !isfinite(p->lod_scale_s) || !isfinite(p->lod_scale_t) ||
+        p->lod_scale_s <= 0 || p->lod_scale_t <= 0 ||
         p->min_lod > p->max_lod) {
         return false;
     }
@@ -507,6 +510,8 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .min_filter = o->params.min_filter, .mag_filter = o->params.mag_filter,
         .wrap_s = o->params.wrap_s, .wrap_t = o->params.wrap_t,
         .pyramid = &o->pyramid,
+        .lod_scale_s = o->params.lod_scale_s,
+        .lod_scale_t = o->params.lod_scale_t,
         .post_filter = texture_post_filter, .opaque = o,
     };
     memcpy(o->image.border_color, o->params.border_color,
@@ -539,9 +544,14 @@ static void texture_params_save(QEMUFile *f, const SGIKonaTextureParams *p)
         wide.d = p->post_bias[k];
         qemu_put_be64(f, wide.u);
     }
+    wide.d = p->lod_scale_s;
+    qemu_put_be64(f, wide.u);
+    wide.d = p->lod_scale_t;
+    qemu_put_be64(f, wide.u);
 }
 
-static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p)
+static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p,
+                                uint32_t version)
 {
     union { float f; uint32_t u; } single;
     union { double d; uint64_t u; } wide;
@@ -566,6 +576,13 @@ static bool texture_params_load(QEMUFile *f, SGIKonaTextureParams *p)
         wide.u = qemu_get_be64(f);
         p->post_bias[k] = wide.d;
     }
+    p->lod_scale_s = p->lod_scale_t = 1;
+    if (version >= 4) {
+        wide.u = qemu_get_be64(f);
+        p->lod_scale_s = wide.d;
+        wide.u = qemu_get_be64(f);
+        p->lod_scale_t = wide.d;
+    }
     return !qemu_file_get_error(f) && texture_params(p);
 }
 
@@ -577,7 +594,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 3);
+    qemu_put_be32(f, 4);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -640,7 +657,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 3) || bound > 1 ||
+    if ((version < 1 || version > 4) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -653,7 +670,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
             goto invalid;
         }
         o = texture_object(&tmp, id, true);
-        if (!o || !texture_params_load(f, &o->params)) {
+        if (!o || !texture_params_load(f, &o->params, version)) {
             goto invalid;
         }
         for (uint32_t k = 0; k < levels; k++) {
