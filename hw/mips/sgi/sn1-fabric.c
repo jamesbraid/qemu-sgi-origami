@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Directly cabled Bedrock endpoints, independent of processor population. */
+/* Cabled Bedrock endpoints, independent of processor population. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/bswap.h"
 #include "qemu/module.h"
 #include "hw/mips/sgi/net-cable.h"
+#include "hw/misc/sgi-sn1-router.h"
 #include "system/address-spaces.h"
 #include "sn1-fabric.h"
 
@@ -58,11 +59,80 @@ SN1FabricEndpoint *sn1_fabric_peer(SN1FabricEndpoint *endpoint)
     if (!endpoint->bedrock->net_cable ||
         !sgi_net_cable_neighbor(endpoint->bedrock->net_cable,
                                 OBJECT(endpoint->bedrock), 0, &peer, &index) ||
+        index != 0 || !object_dynamic_cast(peer, TYPE_SGI_BEDROCK) ||
+        !peer->parent ||
         !object_dynamic_cast(peer->parent, TYPE_SGI_SN1_FABRIC)) {
         return NULL;
     }
     fc = SGI_SN1_FABRIC_GET_CLASS(peer->parent);
-    return fc->endpoint(peer->parent);
+    SN1FabricEndpoint *target = fc->endpoint(peer->parent);
+
+    return target && target->bedrock == SGI_BEDROCK(peer) ? target : NULL;
+}
+
+bool sn1_fabric_routed(SN1FabricEndpoint *endpoint)
+{
+    Object *peer;
+    unsigned index;
+
+    /* Keep transaction dispatch selected even while the cable is down. */
+    return endpoint->bedrock->net_cable &&
+        sgi_net_cable_other_end(endpoint->bedrock->net_cable,
+            OBJECT(endpoint->bedrock), 0, &peer, &index) &&
+        object_dynamic_cast(peer, TYPE_SGI_SN1_ROUTER);
+}
+
+static SN1FabricEndpoint *sn1_fabric_route(SN1FabricEndpoint *endpoint,
+                                          unsigned number)
+{
+    struct {
+        Object *router;
+        unsigned ingress;
+        uint8_t turn;
+    } visited[SGI_NET_PORT_MAX_HOPS];
+    Object *peer;
+    unsigned ingress;
+    uint8_t turn = endpoint->bedrock->ni.regs.local_route[number] & 15;
+    unsigned hops = 0;
+
+    if (!sgi_net_cable_neighbor(endpoint->bedrock->net_cable,
+            OBJECT(endpoint->bedrock), 0, &peer, &ingress)) {
+        return NULL;
+    }
+    while (object_dynamic_cast(peer, TYPE_SGI_SN1_ROUTER)) {
+        unsigned output;
+        uint8_t next_turn;
+
+        if (hops == ARRAY_SIZE(visited)) {
+            return NULL;
+        }
+        for (unsigned i = 0; i < hops; i++) {
+            if (visited[i].router == peer && visited[i].ingress == ingress &&
+                visited[i].turn == turn) {
+                return NULL;
+            }
+        }
+        visited[hops].router = peer;
+        visited[hops].ingress = ingress;
+        visited[hops++].turn = turn;
+        if (!sgi_sn1_router_route(SGI_SN1_ROUTER(peer), ingress, turn,
+                number, &output, &next_turn) ||
+            !sgi_sn1_router_port_neighbor(SGI_SN1_ROUTER(peer), output,
+                &peer, &ingress)) {
+            return NULL;
+        }
+        turn = next_turn;
+    }
+    if (ingress != 0 || !object_dynamic_cast(peer, TYPE_SGI_BEDROCK) ||
+        !peer->parent ||
+        !object_dynamic_cast(peer->parent, TYPE_SGI_SN1_FABRIC)) {
+        return NULL;
+    }
+    SN1FabricEndpoint *target =
+        SGI_SN1_FABRIC_GET_CLASS(peer->parent)->endpoint(peer->parent);
+
+    return target && target->bedrock == SGI_BEDROCK(peer) && target->ready &&
+        sgi_bedrock_node_number(target->bedrock) == number ? target : NULL;
 }
 
 SN1FabricEndpoint *sn1_fabric_claimant(SN1FabricEndpoint *endpoint,
@@ -70,6 +140,9 @@ SN1FabricEndpoint *sn1_fabric_claimant(SN1FabricEndpoint *endpoint,
 {
     SN1FabricEndpoint *peer = sn1_fabric_peer(endpoint);
 
+    if (sn1_fabric_routed(endpoint)) {
+        return sn1_fabric_resolve_named(endpoint, number);
+    }
     if (number == sn1_fabric_number(endpoint)) {
         return endpoint;
     }
@@ -85,7 +158,8 @@ SN1FabricEndpoint *sn1_fabric_resolve_named(SN1FabricEndpoint *endpoint,
     SN1FabricEndpoint *peer = sn1_fabric_peer(endpoint);
     unsigned own = sn1_fabric_number(endpoint);
 
-    if (sgi_bedrock_node_number(endpoint->bedrock) > 0x7f ||
+    if (number > 0x7f ||
+        sgi_bedrock_node_number(endpoint->bedrock) > 0x7f ||
         (peer && sgi_bedrock_node_number(peer->bedrock) > 0x7f)) {
         return NULL;
     }
@@ -95,6 +169,9 @@ SN1FabricEndpoint *sn1_fabric_resolve_named(SN1FabricEndpoint *endpoint,
     }
     if (own == number) {
         return endpoint;
+    }
+    if (sn1_fabric_routed(endpoint)) {
+        return sn1_fabric_route(endpoint, number);
     }
     return peer && peer->ready && sn1_fabric_number(peer) == number ?
            peer : NULL;

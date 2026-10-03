@@ -29,10 +29,14 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     size_t nodes = QAPI_LIST_LENGTH(t->nodes);
     size_t modules = QAPI_LIST_LENGTH(t->modules);
     size_t controllers = QAPI_LIST_LENGTH(t->controllers);
+    size_t routers = QAPI_LIST_LENGTH(t->routers);
+    const SGIModelRouterList *router;
+    g_autofree bool *router_ports = g_new0(bool, MAX(routers * 8, 1));
     g_autofree bool *assigned = g_new0(bool, MAX(peers, 1));
     g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
 
-    if (!peers && !t->io_assemblies && !t->l1_management) {
+    if (!peers && !t->io_assemblies && !t->l1_management &&
+        !(t->generation == SGI_MODEL_GENERATION_SN1 && routers)) {
         const SGIModelModuleList *module;
 
         for (module = t->modules; module; module = module->next) {
@@ -51,10 +55,38 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         }
         return true;
     }
-    if (!peers || t->generation != SGI_MODEL_GENERATION_SN1 || t->routers ||
+    if (!peers || t->generation != SGI_MODEL_GENERATION_SN1 ||
+        (routers && nodes < 2) ||
         QAPI_LIST_LENGTH(t->io_assemblies) != peers || !t->l1_management ||
         QAPI_LIST_LENGTH(t->l1_management->owners) != controllers) {
         goto unsupported;
+    }
+    for (router = t->routers; router; router = router->next) {
+        const SGIModelRouter *r = router->value;
+        const SGIModelModule *module;
+        const SGIModelController *controller;
+
+        if (r->part != 0x3017 || r->revision != 1 || r->chip_inputs ||
+            r->module_index >= modules) {
+            goto unsupported;
+        }
+        module = SGI_MODEL_NTH(t->modules, r->module_index);
+        if (module->nodes || module->io_peers ||
+            module->controller_index < 0 ||
+            module->controller_index >= controllers) {
+            goto unsupported;
+        }
+        controller = SGI_MODEL_NTH(t->controllers, module->controller_index);
+        if (controller->kind != SGI_MODEL_CONTROLLER_KIND_L1 ||
+            controller->module_index != r->module_index || controller->l1) {
+            goto unsupported;
+        }
+        for (const SGIModelRouterList *other = t->routers; other != router;
+             other = other->next) {
+            if (other->value->module_index == r->module_index) {
+                goto unsupported;
+            }
+        }
     }
     for (entry = t->io_assemblies; entry; entry = entry->next) {
         const SGIModelIoAssembly *a = entry->value;
@@ -146,31 +178,45 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
         assigned[a->peer_index] = true;
     }
     for (link = t->cables; link; link = link->next) {
-        const SGIModelLinkEnd *first, *second;
+        const SGIModelLinkEnd *ends[2];
 
         if (QAPI_LIST_LENGTH(link->value->ends) != 2) {
             goto unsupported;
         }
-        first = link->value->ends->value;
-        second = link->value->ends->next->value;
-        if (first->kind == SGI_MODEL_LINK_END_KIND_IO_PEER) {
-            const SGIModelLinkEnd *swap = first;
-            first = second;
-            second = swap;
-        }
-        if (first->kind != SGI_MODEL_LINK_END_KIND_NODE ||
-            first->index >= nodes ||
-            first->port || second->port) {
-            goto unsupported;
-        }
-        if (second->kind == SGI_MODEL_LINK_END_KIND_IO_PEER) {
-            if (second->index >= peers || connected[second->index]) {
+        ends[0] = link->value->ends->value;
+        ends[1] = link->value->ends->next->value;
+        for (unsigned side = 0; side < 2; side++) {
+            const SGIModelLinkEnd *end = ends[side];
+            const SGIModelLinkEnd *other = ends[side ^ 1];
+
+            switch (end->kind) {
+            case SGI_MODEL_LINK_END_KIND_NODE:
+                if (end->index >= nodes || end->port) {
+                    goto unsupported;
+                }
+                break;
+            case SGI_MODEL_LINK_END_KIND_IO_PEER:
+                if (end->index >= peers || end->port || connected[end->index] ||
+                    (other->kind != SGI_MODEL_LINK_END_KIND_NODE &&
+                     other->kind != SGI_MODEL_LINK_END_KIND_ROUTER)) {
+                    goto unsupported;
+                }
+                if (other->kind == SGI_MODEL_LINK_END_KIND_ROUTER &&
+                    (other->port < 2 || other->port > 5)) {
+                    goto unsupported;
+                }
+                connected[end->index] = true;
+                break;
+            case SGI_MODEL_LINK_END_KIND_ROUTER:
+                if (end->index >= routers || end->port < 1 || end->port > 8 ||
+                    router_ports[end->index * 8 + end->port - 1]) {
+                    goto unsupported;
+                }
+                router_ports[end->index * 8 + end->port - 1] = true;
+                break;
+            default:
                 goto unsupported;
             }
-            connected[second->index] = true;
-        } else if (second->kind != SGI_MODEL_LINK_END_KIND_NODE ||
-                   second->index >= nodes) {
-            goto unsupported;
         }
     }
     for (size_t i = 0; i < peers; i++) {

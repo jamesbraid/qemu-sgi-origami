@@ -240,6 +240,13 @@ def _fabric_links(model: dict, components: dict[str, dict],
                 port = 0
             else:
                 port = _integer(attachment, "fabric_port", f"router '{cid}' fabric endpoint", 8)
+                count = components[cid]["router_asic"]["port_count"]
+                if not 1 <= port <= count:
+                    raise CompileError(f"router '{cid}' fabric port is out of range")
+                if (model["machine"]["generation"] == "SN1"
+                        and any(vertices[a["component"]][0] == "IO_PEER" for a in real)
+                        and not 2 <= port <= 5):
+                    raise CompileError("Origin 300 PCI expansion requires router ports 2-5")
             key = (vertex_kind, index, port)
             if key in occupied and not per_row:
                 raise CompileError(f"fabric endpoint {key} is attached twice")
@@ -2706,12 +2713,19 @@ def _compile_router(model: dict, entry: dict, router_index: int) -> dict:
     if not isinstance(router_asic, dict):
         raise CompileError(f"router '{router['id']}' has no router_asic block")
     identity = router.get("identity") or {}
+    ports = _integer(router_asic, "port_count", f"router '{router['id']}'", 8)
+    part = num(_required(identity, "part", f"router '{router['id']}'"))
+    if model["machine"]["generation"] == "SN1":
+        if ports != 8 or part != 0x3017:
+            raise CompileError("SN1 routers require eight ports and part 0x3017")
+    elif ports != 6:
+        raise CompileError("SN0 routers require six ports")
     return {
         "id": router["id"],
         "module_index": entry["module_index"],
         "slot": entry["slot"],
-        "port_count": _integer(router_asic, "port_count", f"router '{router['id']}'", 8),
-        "part": num(_required(identity, "part", f"router '{router['id']}'")),
+        "port_count": ports,
+        "part": part,
         "revision": _integer(
             identity, "hardware_revision", f"router '{router['id']}'", 8),
         "chip_inputs": _integer(

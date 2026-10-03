@@ -6530,6 +6530,197 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
     g_unlink(target_compute);
 }
 
+#define ROUTED_TOPOLOGY \
+    "origin300,topology=origin300-numalink-pci-expansion-experiment"
+
+static uint64_t routed_uart_read(void *opaque, uint64_t offset)
+{
+    return expansion_vector(opaque, 0x240 + offset, false, 0);
+}
+
+static void routed_uart_write(void *opaque, uint64_t offset, uint64_t value)
+{
+    expansion_vector(opaque, 0x240 + offset, true, value);
+}
+
+static bool routed_reject_lifecycle_event(QTestState *qts, const char *name,
+                                         QDict *event, void *opaque)
+{
+    g_assert_cmpstr(name, !=, "RESET");
+    g_assert_cmpstr(name, !=, "SHUTDOWN");
+    g_assert_cmpstr(name, !=, "STOP");
+    g_assert_cmpstr(name, !=, "RESUME");
+    return false;
+}
+
+static void routed_compute_sentinels(QTestState *qts, bool seed)
+{
+    const uint64_t address = EXPANSION_LB_LOCAL + 0x6813f8;
+
+    for (unsigned node = 0; node < 2; node++) {
+        uint8_t bytes[8];
+        const uint64_t value = 3 + node;
+        g_autofree char *path = g_strdup_printf("/machine/node%u/l1", node);
+        g_autofree char *display = qom_get_str(qts, path, "display-line-2");
+
+        if (seed) {
+            stq_be_p(bytes, value);
+            g_assert_true(qtest_memwrite_cpu(qts, node * 2, address,
+                                             bytes, sizeof(bytes)));
+        }
+        g_assert_true(qtest_memread_cpu(qts, node * 2, address,
+                                        bytes, sizeof(bytes)));
+        g_assert_cmphex(ldq_be_p(bytes), ==, value);
+        g_assert_cmpuint(qom_get_uint(qts, path, "debug-switches"), ==, 0x123);
+        g_assert_cmpstr(display, ==, "Powered Up");
+    }
+}
+
+static void routed_lifecycle_refusals(QTestState *qts, const SGIL1TestIO *io)
+{
+    static const uint16_t commands[] = {
+        0x1002, 0x1003, 0x100b, 0x100c, 0x2001,
+        0x2005, 0x2006, 0x2007, 0x2008,
+    };
+    uint8_t registration[13] = { 0x13 }, reply[32];
+    const uint64_t scratch = UINT64_C(0x123456789abcdef0);
+
+    qtest_qmp_set_event_callback(qts, routed_reject_lifecycle_event, NULL);
+    expansion_vector(qts, 0x100, true, scratch);
+    routed_compute_sentinels(qts, true);
+    stl_be_p(registration + 1, (0x54u << 12) | 6);
+    stw_be_p(registration + 5, 0x1007);
+    registration[7] = 1;
+    registration[8] = 0;
+    stl_be_p(registration + 9, 8);
+    sgi_l1_test_send_io(io, registration, sizeof(registration), false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(io, reply, sizeof(reply)),
+                         ==, 6);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
+        uint8_t request[8] = { 0x13 };
+        const uint8_t expected[] = { 0x33, 0xff, 0xff, 0xff, 0x9b, 0 };
+        g_autoptr(QDict) status = NULL;
+
+        stl_be_p(request + 1, (0x54u << 12) | 6);
+        stw_be_p(request + 5, commands[i]);
+        sgi_l1_test_send_io(io, request, sizeof(request), false);
+        g_assert_cmpuint(sgi_l1_test_receive_io(io, reply, sizeof(reply)),
+                         ==, 6);
+        g_assert_cmpmem(reply, 6, expected, sizeof(expected));
+        g_assert_cmpuint(qom_get_uint(qts, "/machine/module3/l1",
+                                      "event-subchannel"), ==, 8);
+        g_assert_cmphex(expansion_vector(qts, 0x100, false, 0), ==, scratch);
+        routed_compute_sentinels(qts, false);
+        stw_be_p(request + 5, 0x000e);
+        sgi_l1_test_send_io(io, request, sizeof(request), false);
+        g_assert_cmpuint(sgi_l1_test_receive_io(io, reply, sizeof(reply)),
+                         ==, 11);
+        g_assert_cmphex(reply[10], ==, 0);
+        status = qtest_qmp(qts, "{'execute':'query-status'}");
+        g_assert_true(qdict_haskey(status, "return"));
+        g_assert_false(qdict_get_bool(qdict_get_qdict(status, "return"),
+                                      "running"));
+    }
+    /* Reboot only the router L1 through the same vector UART. */
+    stw_be_p(registration + 5, 0x4002);
+    registration[7] = 0;
+    sgi_l1_test_send_io(io, registration, 8, false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(io, reply, sizeof(reply)), ==, 6);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmphex(expansion_vector(qts, 0x100, false, 0), ==, scratch);
+    routed_compute_sentinels(qts, false);
+}
+
+static void test_routed_composer(const void *data)
+{
+    static const char *paths[] = {
+        "/machine/module2/l1", "/machine/node0/l1",
+        "/machine/module3/l1", "/machine/node1/l1",
+    };
+    static const unsigned bays[] = { 3, 1, 20, 2 };
+    static const char *serials[] = { "EXP", "BASE-A", "ROUTER", "BASE-B" };
+    bool targeted = GPOINTER_TO_INT(data);
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    const char *options = targeted ?
+        ",controller-brick-serial.0=0=EXP,controller-brick-serial.1=1=BASE-A,"
+        "controller-brick-serial.2=2=ROUTER,"
+        "controller-brick-serial.3=3=BASE-B" :
+        "";
+    QTestState *qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING "%s "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-global sgi-l1.debug-switches=0x123 "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-bridge-dma-test,id=routed-pci,"
+        "bus=expansion0-u1-head-e.0,addr=1 "
+        "-nodefaults -display none %s", options, prom, image,
+        targeted ? "-global sgi-l1.brick-serial=GLOBAL" : "");
+    SGIL1TestIO io = { qts, routed_uart_read, routed_uart_write };
+    uint8_t request[8] = { 0x13 }, reply[32];
+    g_autofree char *type = qom_child_type(qts, "/machine/module3", "router");
+    g_autofree char *peer = qom_get_str(qts, "/machine/module3/l1", "peer");
+    uint32_t coordinate, raw;
+    g_autofree char *name = NULL;
+
+    g_assert_cmpstr(type, ==, "sgi-sn1-router");
+    g_assert_cmpstr(peer, ==, "");
+    for (unsigned i = 0; i < G_N_ELEMENTS(paths); i++) {
+        g_autofree char *serial = qom_get_str(qts, paths[i], "brick-serial");
+        g_autofree char *synthetic = g_strdup_printf("model-module-%u", i);
+        g_assert_cmpstr(serial, ==, targeted ? serials[i] : synthetic);
+        g_assert_cmpuint(qom_get_uint(qts, paths[i], "bay"), ==, bays[i]);
+    }
+    stl_be_p(request + 1, (0x54u << 12) | 6);
+    stw_be_p(request + 5, 3);
+    sgi_l1_test_send_io(&io, request, sizeof(request), false);
+    g_assert_cmpuint(sgi_l1_test_receive_io(&io, reply, sizeof(reply)), ==, 16);
+    g_assert_cmphex(reply[0], ==, 0x33);
+    g_assert_cmphex(ldl_be_p(reply + 1), ==, 0);
+    coordinate = ldl_be_p(reply + 7);
+    raw = ldl_be_p(reply + 12);
+    g_assert_cmphex(coordinate, ==, 0x54);
+    g_assert_cmphex(raw, ==, 0x52);
+    name = g_strdup_printf("%03u%c%02u", coordinate >> 6,
+                           g_ascii_tolower(raw), coordinate & 0x3f);
+    g_assert_cmpstr(name, ==, "001r20");
+    /* The same display letter cannot substitute for the selected raw type. */
+    g_assert_cmpint(g_ascii_tolower(0x72), ==, g_ascii_tolower(raw));
+    g_assert_cmphex(0x72, !=, raw);
+    routed_lifecycle_refusals(qts, &io);
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
+static void test_routed_serial_refusals(void)
+{
+    static const char *options[] = {
+        ",controller-brick-serial.0=0=SAME,controller-brick-serial.1=2=SAME",
+        "",
+    };
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    g_autofree char *drive = g_strdup_printf(
+        "if=none,id=cfg,file=%s,format=raw", image);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(options); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            ROUTED_TOPOLOGY "," STORAGE_BINDING "%s", options[i]);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machine, "-cpu", "R14000",
+            "-smp", "4", "-m", "1G", "-bios", prom, "-drive", drive,
+            "-global", i ? "sgi-l1.brick-serial=SAME" :
+                           "sgi-l1.brick-serial=UNUSED",
+            "-nodefaults", "-display", "none", NULL,
+        };
+        assert_qemu_rejects(args, "share brick serial");
+    }
+    g_unlink(image);
+    g_unlink(prom);
+}
+
 static void test_expansion_controller_serial(const void *data)
 {
     static const struct {
@@ -7819,6 +8010,12 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_expansion_cpu_board_load);
     qtest_add_data_func("sn/builder/expansion/cpu-board-load",
                         NULL, test_expansion_cpu_board_load);
+    qtest_add_data_func("sn/builder/routed/composer-synthetic", NULL,
+                        test_routed_composer);
+    qtest_add_data_func("sn/builder/routed/composer-targeted",
+                        GINT_TO_POINTER(1), test_routed_composer);
+    qtest_add_func("sn/builder/routed/serial-refusals",
+                   test_routed_serial_refusals);
     qtest_add_data_func("sn/builder/expansion/controller-serial/override",
                         NULL, test_expansion_controller_serial);
     qtest_add_data_func("sn/builder/expansion/controller-serial/refusals",

@@ -686,6 +686,7 @@ static void test_profile_migration(gconstpointer opaque)
     unsigned selection = GPOINTER_TO_UINT(opaque);
     static const char *const profiles[] = {
         "ip34", "unknown", "ip45", "ip35", "ip37", "pci-expansion",
+        "router",
     };
     const char *source = profiles[selection == G_N_ELEMENTS(profiles) ? 2 :
                                   selection % G_N_ELEMENTS(profiles)];
@@ -2020,21 +2021,32 @@ static bool reject_expansion_lifecycle_event(QTestState *s, const char *name,
     return false;
 }
 
-static void check_expansion_lifecycle_refusal(const char *pin)
+static void check_noncompute_lifecycle_refusal(const char *pin,
+                                               const char *profile,
+                                               uint8_t identity)
 {
     int fd;
-    QTestState *s = console_start(&fd, ",brick-type=pci-expansion", "");
+    g_autofree char *props = g_strdup_printf(",brick-type=%s", profile);
+    QTestState *s = console_start(&fd, props, "");
     uint8_t reply[131], args[5], request[128];
-    const unsigned codes[] = { 0x2001, 0x2005, 0x2006, 0x2007, 0x2008 };
+    const unsigned codes[] = {
+        0x1002, 0x1003, 0x100b, 0x100c,
+        0x2001, 0x2005, 0x2006, 0x2007, 0x2008,
+    };
     const char *commands[] = {
         "power up", "power down", "pwr u", "pwr d", "* pwr d",
         "reset", "rst", "* reset", "softreset", "softrst", "nmi",
-        "select", "sel subchannel 1",
+        "select", "sel subchannel 1", "* power up", "* power down",
+        "* pwr u", "* rst", "* softreset", "* softrst", "* nmi",
+        "* select", "* sel subchannel 1",
     };
     const uint8_t unsupported[] = { 0x30, 0xff, 0xff, 0xff, 0x9b, 0 };
     const uint8_t no_processors[] = { 0x30, 0xff, 0xff, 0xff, 0x94, 0 };
-    const char *warning = "INFO: compute service is unsupported on "
-                          "expansion profile.\r\n";
+    const char *label = !strcmp(profile, "pci-expansion") ?
+                        "expansion" : profile;
+    g_autofree char *message = g_strdup_printf(
+        "INFO: compute service is unsupported on %s profile.", label);
+    g_autofree char *warning = g_strconcat(message, "\r\n", NULL);
 
     qtest_irq_intercept_out_named(s, L1, pin);
     qtest_qmp_set_event_callback(s, reject_expansion_lifecycle_event, NULL);
@@ -2043,9 +2055,23 @@ static void check_expansion_lifecycle_refusal(const char *pin)
     console_expect(fd, PROMPT);
     g_assert_cmpuint(general(s, 0x10, NULL, 0, 0, reply), ==, 6);
     g_assert_cmpmem(reply, 6, no_processors, 6);
+    integer(args, 8);
+    g_assert_cmpuint(general(s, 0x1007, args, sizeof(args), 1, reply), ==, 6);
     for (unsigned i = 0; i < G_N_ELEMENTS(codes); i++) {
-        g_assert_cmpuint(general(s, codes[i], NULL, 0, 0, reply), ==, 6);
-        g_assert_cmpmem(reply, 6, unsupported, 6);
+        uint8_t command[] = {
+            3 + i, 0x0f, 0xff, 0xf0, 6, codes[i] >> 8, codes[i], 0,
+        };
+        uint8_t expected[] = { 0x20 | (3 + i), 0xff, 0xff, 0xff, 0x9b, 0 };
+        g_autoptr(QDict) event = NULL;
+
+        send_frame(s, command, sizeof(command), false);
+        g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
+        g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+        event = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':'event-subchannel'}}", L1);
+        g_assert_cmpuint(qdict_get_int(event, "return"), ==, 8);
+        g_assert_cmpuint(general(s, 0x000e, NULL, 0, 0, reply), ==, 11);
+        g_assert_cmphex(reply[10], ==, 0);
         assert_expansion_idle(s);
     }
     integer(args, 1);
@@ -2066,8 +2092,7 @@ static void check_expansion_lifecycle_refusal(const char *pin)
         g_assert_cmphex(reply[4], ==, 0xff);
         g_assert_cmphex(reply[5], ==, 1);
         g_assert_cmphex(reply[6], ==, 1);
-        g_assert_cmpstr((char *)reply + 7, ==,
-            "INFO: compute service is unsupported on expansion profile.");
+        g_assert_cmpstr((char *)reply + 7, ==, message);
         assert_expansion_idle(s);
     }
     /* Ctrl-D cannot enter a processor console. */
@@ -2097,7 +2122,8 @@ static void check_expansion_lifecycle_refusal(const char *pin)
     qtest_qmp_set_event_callback(s, NULL, NULL);
     qtest_system_reset(s);
     assert_expansion_idle(s);
-    expect_expansion_identity(s);
+    g_assert_cmpuint(general(s, 3, NULL, 0, 0, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, identity);
     qtest_quit(s);
     close(fd);
 }
@@ -2107,8 +2133,114 @@ static void test_expansion_lifecycle_refusal(void)
     const char *pins[] = { "node-power", "node-reset", "soft-reset", "nmi" };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(pins); i++) {
-        check_expansion_lifecycle_refusal(pins[i]);
+        check_noncompute_lifecycle_refusal(pins[i], "pci-expansion", 0x25);
     }
+}
+
+static void test_router_lifecycle_refusal(void)
+{
+    const char *pins[] = { "node-power", "node-reset", "soft-reset", "nmi" };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(pins); i++) {
+        check_noncompute_lifecycle_refusal(pins[i], "router", 0x52);
+    }
+}
+
+/* A controller restart must not reset a sibling parser or either UART. */
+static void test_router_reboot_isolation(void)
+{
+    const uint64_t other_base = 0x12000000;
+    const uint8_t query[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3, 0 };
+    const uint8_t reboot[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x40, 2, 0 };
+    const uint8_t success[] = { 0x30, 0, 0, 0, 0, 0 };
+    uint8_t reply[131], args[5];
+    uint16_t crc = 0xffff;
+    int fd;
+    QTestState *s = console_start(&fd, ",brick-type=router",
+        "-device sgi-l1,id=other,brick-type=ip45,debug-switches=0x123 "
+        "-device sgi-l1-uart,id=other-uart,controller=other");
+    g_autoptr(QDict) value = NULL;
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/other-uart", 0, other_base);
+    qtest_irq_intercept_out_named(s, L1, "node-reset");
+    qtest_qmp_set_event_callback(s, reject_expansion_lifecycle_event, NULL);
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    integer(args, 8);
+    g_assert_cmpuint(general(s, 0x1007, args, sizeof(args), 1, reply), ==, 6);
+    {
+        const uint8_t display[] = {
+            0x10, 0x0f, 0xff, 0xf0, 6, 0x10, 5, 1, 1, 'k', 'e', 'e', 'p', 0,
+        };
+        sgi_l1_test_send(s, other_base, display, sizeof(display), false);
+        g_assert_cmpuint(sgi_l1_test_receive(s, other_base, reply,
+                                           sizeof(reply)), ==, 6);
+    }
+    /* Stop inside the sibling request and finish it after the local reboot. */
+    qtest_writeq(s, other_base, 0x7e);
+    for (unsigned i = 0; i < 4; i++) {
+        sgi_l1_test_put(s, other_base, query[i]);
+    }
+    qtest_writeq(s, BASE + 0x18, 0x80);
+    qtest_writeq(s, BASE, 13);
+    qtest_writeq(s, BASE + 8, 0x42);
+    qtest_writeq(s, BASE + 0x18, 3);
+    send_frame(s, query, sizeof(query), false);
+    send_frame(s, reboot, sizeof(reboot), false);
+    g_assert_cmpuint(receive(s, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x52);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(success));
+    g_assert_cmpmem(reply, sizeof(success), success, sizeof(success));
+    assert_expansion_idle(s);
+    qtest_writeq(s, BASE + 0x18, 0x80);
+    g_assert_cmphex(qtest_readq(s, BASE), ==, 13);
+    g_assert_cmphex(qtest_readq(s, BASE + 8), ==, 0x42);
+    qtest_writeq(s, BASE + 0x18, 3);
+    value = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                        "{'path':%s,'property':'event-subchannel'}}", L1);
+    g_assert_cmpuint(qdict_get_int(value, "return"), ==, 8);
+    qobject_unref(value);
+    value = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                        "{'path':'/machine/peripheral/other',"
+                        "'property':'debug-switches'}}");
+    g_assert_cmphex(qdict_get_int(value, "return"), ==, 0x123);
+    qobject_unref(value);
+    value = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                        "{'path':'/machine/peripheral/other',"
+                        "'property':'display-line-2'}}");
+    g_assert_cmpstr(qdict_get_str(value, "return"), ==, "keep");
+    for (unsigned i = 0; i < sizeof(query); i++) {
+        crc = fcs(crc, query[i]);
+        if (i >= 4) {
+            sgi_l1_test_put(s, other_base, query[i]);
+        }
+    }
+    crc = ~crc;
+    sgi_l1_test_put(s, other_base, crc);
+    sgi_l1_test_put(s, other_base, crc >> 8);
+    qtest_writeq(s, other_base, 0x7e);
+    g_assert_cmpuint(sgi_l1_test_receive(s, other_base, reply,
+                                       sizeof(reply)), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x34);
+    /* The operator reboot clears only this controller's partial UART frame. */
+    qtest_writeq(s, BASE, 0x7e);
+    for (unsigned i = 0; i < 4; i++) {
+        put(s, query[i]);
+    }
+    console_send(fd, "reboot_l1\r\r");
+    console_expect(fd, PROMPT);
+    for (unsigned i = 4; i < sizeof(query); i++) {
+        put(s, query[i]);
+    }
+    put(s, crc);
+    put(s, crc >> 8);
+    qtest_writeq(s, BASE, 0x7e);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    g_assert_cmpuint(general(s, 3, NULL, 0, 0, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x52);
+    assert_expansion_idle(s);
+    qtest_quit(s);
+    close(fd);
 }
 
 static void raw_bytes(QTestState *s, const uint8_t *bytes, size_t n)
@@ -5245,6 +5377,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/query-routing/migration", test_query_migration);
     qtest_add_func("sn1/l1/query-routing/migration-mismatch",
                    test_query_migration_mismatch);
+    qtest_add_func("sn1/l1/router/reboot-isolation",
+                   test_router_reboot_isolation);
+    qtest_add_func("sn1/l1/router/lifecycle-refusal",
+                   test_router_lifecycle_refusal);
     qtest_add_func("sn1/l1/expansion/lifecycle-refusal",
                    test_expansion_lifecycle_refusal);
     qtest_add_func("sn1/l1/expansion/records", test_expansion_records);
@@ -5260,10 +5396,12 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(4), test_profile_migration);
     qtest_add_data_func("sn1/l1/profile-migration/pci-expansion",
                         GUINT_TO_POINTER(5), test_profile_migration);
-    qtest_add_data_func("sn1/l1/profile-migration/ip45-to-unknown",
+    qtest_add_data_func("sn1/l1/profile-migration/router",
                         GUINT_TO_POINTER(6), test_profile_migration);
-    qtest_add_data_func("sn1/l1/profile-migration/unknown-to-ip45",
+    qtest_add_data_func("sn1/l1/profile-migration/ip45-to-unknown",
                         GUINT_TO_POINTER(7), test_profile_migration);
+    qtest_add_data_func("sn1/l1/profile-migration/unknown-to-ip45",
+                        GUINT_TO_POINTER(8), test_profile_migration);
     qtest_add_func("sn1/l1/port-speed/migration",
                    test_port_speed_migration);
     qtest_add_func("sn1/l1/port-speed", test_port_speed);

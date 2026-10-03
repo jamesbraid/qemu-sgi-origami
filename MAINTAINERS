@@ -1565,6 +1565,7 @@ F: tests/qtest/sgi-pci-expansion-ni-fixture.c
 F: tests/qtest/sgi-pci-expansion-ni-test.c
 F: tests/qtest/sgi-mgras-*-test.c
 F: tests/qtest/sgi-pic-test.c
+F: tests/qtest/sgi-sn1-router-test.c
 F: tests/qtest/sgi-replay-test.c
 F: tests/qtest/sgi-migration-roundtrip-test.c
 F: tests/data/sgi-replay/

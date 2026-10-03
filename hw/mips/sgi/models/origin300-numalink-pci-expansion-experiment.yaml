@@ -1,0 +1,199 @@
+# SPDX-License-Identifier: BSD-3-Clause
+configuration_version: 1
+layers:
+- layers/architectures/sn1.yaml
+- layers/assemblies/ip45.yaml
+- layers/products/origin300-numalink-pci-expansion-experiment.yaml
+module_instances:
+- model: layers/modules/origin300-base.yaml
+  prefix: master-
+  parent: master-module
+  adopt_roots: true
+  observed_hardware:
+    mode: projected
+    sources:
+    - 'boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled
+      pair''s PROM hinv, module 001c01 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets
+      14 and 15'
+    - 'boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled
+      pair, module 001c01 node and IO-8 at xtalk 14 and 15'
+    note: Transfers published matching Origin 300 component observations into this explicit routed experiment.
+      It does not establish this selected cabling as observed hardware.
+- model: layers/modules/origin300-base.yaml
+  prefix: slave-
+  parent: slave-module
+  adopt_roots: true
+  observed_hardware:
+    mode: projected
+    sources:
+    - 'boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: a direct-cabled
+      pair''s PROM hinv, module 001c02 with four 500 MHz R14000s, 2 MB caches, and bridges at widgets
+      14 and 15'
+    - 'boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a direct-cabled
+      pair, module 001c02 node and IO-8 at xtalk 14 and 15'
+    note: Transfers published matching Origin 300 component observations into this explicit routed experiment.
+      It does not establish this selected cabling as observed hardware.
+- model: layers/modules/origin300-pci-expansion-experiment.yaml
+  prefix: expansion-
+  parent: rack
+  bus_bindings:
+    upstream-numalink: expansion-cable
+connector_population:
+- component: master-xio-connector
+  occupancy: empty
+  reason: This experiment uses the NUMAlink connector and fits no graphics enclosure.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
+    uses ports 2-5'
+- component: slave-xio-connector
+  occupancy: empty
+  reason: This experiment uses the NUMAlink connector and fits no graphics enclosure.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
+    uses ports 2-5'
+- component: master-link-connector
+  occupancy: cabled
+  peer: router-port-1
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-1
+  occupancy: cabled
+  peer: master-link-connector
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: slave-link-connector
+  occupancy: cabled
+  peer: router-port-6
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-6
+  occupancy: cabled
+  peer: slave-link-connector
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: expansion-link-port
+  occupancy: cabled
+  peer: router-port-4
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-4
+  occupancy: cabled
+  peer: expansion-link-port
+  reason: Explicit cable selection for the routed experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-2
+  occupancy: empty
+  reason: No cable is selected for this experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-3
+  occupancy: empty
+  reason: No cable is selected for this experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-5
+  occupancy: empty
+  reason: No cable is selected for this experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-7
+  occupancy: empty
+  reason: No cable is selected for this experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: router-port-8
+  occupancy: empty
+  reason: No cable is selected for this experiment.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+- component: expansion-pci-1-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-1-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-2-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-2-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-3-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-3-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-4-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-4-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-5-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-5-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-6-slot-1
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'
+- component: expansion-pci-6-slot-2
+  occupancy: empty
+  reason: The static profile selects no PCI card. Runtime device arguments may attach an adapter.
+  provenance: derived
+  sources:
+  - 'docs/datasheets/origin300-pci-expansion-module.md: six buses and two slots per bus'

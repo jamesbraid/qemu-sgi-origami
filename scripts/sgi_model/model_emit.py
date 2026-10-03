@@ -149,8 +149,7 @@ def _io_peer(raw: dict) -> dict:
 
 
 
-# A Router's port count is fixed by the chip (six ports on every fitted
-# Router this catalogue names) and unread by the builder already; dropped.
+# The compiler checks port count against the selected router family.
 def _router(raw: dict) -> dict:
     return {
         "id": raw["id"],

@@ -208,8 +208,9 @@ static void sn1_node_place_claims(SN1NodeState *node)
         }
         sn1_fabric_place_view(&node->endpoint, node->claim[view]);
         if (view < SN1_NODE_FABRIC_VIEW) {
-            bool typed = peer && peer->ready && peer->isolated_route &&
-                         sn1_fabric_number(peer) != own;
+            bool typed = sn1_fabric_routed(&node->endpoint) ||
+                (peer && peer->ready && peer->isolated_route &&
+                 sn1_fabric_number(peer) != own);
 
             bool direct = typed &&
                 sn1_fabric_resolve_named(&node->endpoint, own) ==
@@ -272,7 +273,8 @@ void sn1_node_update_claims(SN1NodeState *node)
     SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
 
     sgi_bedrock_io_set_destination(&bedrock->io,
-        peer && peer->isolated_route ? sn1_fabric_destination_rw : NULL,
+        sn1_fabric_routed(&node->endpoint) || (peer && peer->isolated_route) ?
+            sn1_fabric_destination_rw : NULL,
         &node->endpoint);
     sn1_fabric_update_claims(&node->endpoint);
 }
@@ -349,7 +351,7 @@ static SGIBedrockIOState *sn1_node_io_claimant(void *opaque,
 
     SN1FabricEndpoint *peer = sn1_fabric_peer(&node->endpoint);
 
-    if (peer && peer->isolated_route) {
+    if (sn1_fabric_routed(&node->endpoint) || (peer && peer->isolated_route)) {
         target = sn1_fabric_resolve_named(&node->endpoint, number);
     }
     return target ? &target->bedrock->io : NULL;

@@ -614,6 +614,8 @@ def validate_connector_population(model: dict[str, Any]) -> None:
         raise ResolutionError("connector_population must be a list")
     components = {item["id"]: item for item in model.get("components", [])}
     selected: set[str] = set()
+    selections_by_id = {item.get("component"): item for item in selections
+                        if isinstance(item, dict) and isinstance(item.get("component"), str)}
     occupants: set[str] = set()
     buses: dict[str, set[str]] = {}
     for connection in model.get("connections", []):
@@ -621,9 +623,9 @@ def validate_connector_population(model: dict[str, Any]) -> None:
     for selection in selections:
         required = {"component", "occupancy", "reason", "provenance", "sources"}
         if (not isinstance(selection, dict) or not required <= selection.keys() or
-                selection.keys() - required - {"occupant"} or
+                selection.keys() - required - {"occupant", "peer"} or
                 not isinstance(selection["component"], str) or
-                selection["occupancy"] not in ("empty", "occupied") or
+                selection["occupancy"] not in ("empty", "occupied", "cabled") or
                 not isinstance(selection["reason"], str) or not selection["reason"] or
                 not isinstance(selection["provenance"], str) or not selection["provenance"] or
                 not isinstance(selection["sources"], list) or not selection["sources"] or
@@ -644,6 +646,27 @@ def validate_connector_population(model: dict[str, Any]) -> None:
         if known != "opaque" and known != occupancy:
             raise ResolutionError(f"connector population '{cid}' conflicts with inventory")
         occupant = selection.get("occupant")
+        if occupancy == "cabled":
+            peer = selection.get("peer")
+            target = components.get(peer) if isinstance(peer, str) else None
+            reciprocal = (selections_by_id.get(peer, {})
+                          if isinstance(peer, str) else {})
+            if (occupant is not None or not isinstance(peer, str) or peer == cid
+                    or target is None or target.get("kind") != "connector"
+                    or target["connector"]["interface"] != connector["connector"]["interface"]
+                    or reciprocal.get("occupancy") != "cabled"
+                    or reciprocal.get("peer") != cid):
+                raise ResolutionError(
+                    f"cabled connector '{cid}' needs a reciprocal matching peer")
+            shared = buses.get(cid, set()) & buses.get(peer, set())
+            if not any(bus["id"] in shared and bus.get("kind") == "fabric"
+                       and bus.get("link", {}).get("kind") == "cable"
+                       for bus in model.get("buses", [])):
+                raise ResolutionError(
+                    f"cabled connectors '{cid}' and '{peer}' share no cable bus")
+            continue
+        if "peer" in selection:
+            raise ResolutionError(f"connector '{cid}' peer requires cabled occupancy")
         if occupancy == "empty":
             if "occupant" in selection:
                 raise ResolutionError(f"empty connector '{cid}' cannot name an occupant")
@@ -696,7 +719,9 @@ def validate_synthetic_identities(model: dict[str, Any]) -> None:
     # connector's XIO bus attaches to.
     required = {cid for cid, item in components.items()
                 if item.get("kind") in {"node-asic", "router-asic", "pci-host-bridge"}
-                or item.get("hardware_kind") in {"ioc3", "xg", "hq4"}}
+                or item.get("hardware_kind") in {"ioc3", "xg", "hq4"}
+                or (item.get("kind") == "bus-controller"
+                    and item.get("hardware_kind") == "bedrock")}
     seen_components: set[str] = set()
     seen_serials: set[int] = set()
     for identity in identities:

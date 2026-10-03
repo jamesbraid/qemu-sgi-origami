@@ -3892,5 +3892,132 @@ class GoldenTests(unittest.TestCase):
                     )
 
 
+class Origin300RoutedContractTests(unittest.TestCase):
+    def model(self):
+        return _resolved("origin300-numalink-pci-expansion-experiment")
+
+    def test_selected_router_and_cables(self):
+        topology = compile_model(self.model())
+        self.assertEqual(topology["routers"][0]["part"], 0x3017)
+        self.assertEqual(topology["routers"][0]["port_count"], 8)
+        self.assertEqual(topology["routers"][0]["revision"], 1)
+        self.assertEqual(len(topology["nodes"]), 2)
+        self.assertEqual(len(topology["io_peers"]), 1)
+        links = topology["links"]
+        self.assertEqual(len(links), 3)
+        self.assertEqual({end["port"] for link in links for end in link["ends"]
+                          if end["kind"] == "ROUTER"}, {1, 4, 6})
+        self.assertEqual(len({c["module_index"] for c in topology["controllers"]}), 4)
+
+    def test_connector_annotations_do_not_hide_extra_link_endpoints(self):
+        from sgi_model.model_validation import check_widget_and_pci_uniqueness
+        model = self.model()
+        components = {c["id"]: c for c in model["components"]}
+        buses = {b["id"]: b for b in model["buses"]}
+        self.assertFalse(check_widget_and_pci_uniqueness(model, components, buses))
+        model["connections"].append({"component": "router-port-8",
+                                     "bus": "master-route", "role": "endpoint"})
+        problems = check_widget_and_pci_uniqueness(model, components, buses)
+        self.assertTrue(any("master-route" in p and "exactly two ports" in p
+                            for p in problems))
+
+    def test_cable_cannot_annotate_more_than_two_connector_ends(self):
+        from sgi_model.model_validation import check_widget_and_pci_uniqueness
+        model = self.model()
+        for cid, peer in [("router-port-7", "router-port-8"),
+                          ("router-port-8", "router-port-7")]:
+            selection = next(s for s in model["composition"]["connector_population"]
+                             if s["component"] == cid)
+            selection.update(occupancy="cabled", peer=peer)
+            model["connections"].append({"component": cid, "bus": "master-route",
+                                         "role": "endpoint"})
+        components = {c["id"]: c for c in model["components"]}
+        buses = {b["id"]: b for b in model["buses"]}
+        problems = check_widget_and_pci_uniqueness(model, components, buses)
+        self.assertTrue(any("master-route" in p and "exactly two ports" in p
+                            for p in problems))
+
+    def test_router_family_and_port_count_must_agree(self):
+        for part, ports in [(0xc002, 8), (0x3017, 6)]:
+            with self.subTest(part=part, ports=ports):
+                model = self.model()
+                router = next(c for c in model["components"] if c["id"] == "router-router")
+                router["identity"]["part"] = part
+                router["router_asic"]["port_count"] = ports
+                with self.assertRaisesRegex(CompileError, "eight ports and part"):
+                    compile_model(model)
+
+    def test_router_link_port_bounds_and_reuse(self):
+        for port, error in [(0, "out of range"), (9, "out of range"),
+                            (6, "attached twice")]:
+            with self.subTest(port=port):
+                model = self.model()
+                connection = next(c for c in model["connections"]
+                                  if c["component"] == "router-router"
+                                  and c["bus"] == "master-route")
+                connection["fabric_port"] = port
+                with self.assertRaisesRegex(CompileError, error):
+                    compile_model(model)
+
+    def test_expansion_refuses_base_only_router_ports(self):
+        for port in [1, 6, 7, 8]:
+            with self.subTest(port=port):
+                model = self.model()
+                connection = next(c for c in model["connections"]
+                                  if c["component"] == "router-router"
+                                  and c["bus"] == "expansion-cable")
+                connection["fabric_port"] = port
+                with self.assertRaisesRegex(CompileError, "ports 2-5"):
+                    compile_model(model)
+
+    def test_malformed_connector_ids_and_peers_are_refused(self):
+        from sgi_model.model_composition import validate_connector_population
+        from sgi_model.exceptions import ResolutionError
+        for field in ["component", "peer"]:
+            for value in [[], {}]:
+                with self.subTest(field=field, value=value):
+                    model = self.model()
+                    selection = next(
+                        s for s in model["composition"]["connector_population"]
+                        if s["component"] == "master-link-connector")
+                    selection[field] = value
+                    with self.assertRaises(ResolutionError):
+                        validate_connector_population(model)
+
+    def test_cable_peer_requires_reciprocal_selection(self):
+        from sgi_model.model_composition import validate_connector_population
+        from sgi_model.exceptions import ResolutionError
+        model = self.model()
+        selection = next(s for s in model["composition"]["connector_population"]
+                         if s["component"] == "master-link-connector")
+        selection["peer"] = "router-port-8"
+        with self.assertRaisesRegex(ResolutionError, "reciprocal"):
+            validate_connector_population(model)
+
+    def test_cable_peer_requires_same_cable_bus(self):
+        from sgi_model.model_composition import validate_connector_population
+        from sgi_model.exceptions import ResolutionError
+        model = self.model()
+        replacements = {"master-link-connector": "router-port-6",
+                        "router-port-6": "master-link-connector",
+                        "slave-link-connector": "router-port-1",
+                        "router-port-1": "slave-link-connector"}
+        for selection in model["composition"]["connector_population"]:
+            if selection["component"] in replacements:
+                selection["peer"] = replacements[selection["component"]]
+        with self.assertRaisesRegex(ResolutionError, "share no cable bus"):
+            validate_connector_population(model)
+
+    def test_cable_peer_cannot_replace_a_board_occupant(self):
+        from sgi_model.model_composition import validate_connector_population
+        from sgi_model.exceptions import ResolutionError
+        model = self.model()
+        selection = next(s for s in model["composition"]["connector_population"]
+                         if s["component"] == "master-link-connector")
+        selection["occupant"] = "slave-module"
+        with self.assertRaisesRegex(ResolutionError, "reciprocal"):
+            validate_connector_population(model)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,6 +61,7 @@
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-router.h"
+#include "hw/misc/sgi-sn1-router.h"
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -280,6 +281,7 @@ struct SGIMachineState {
     /* This machine's Routers, in descriptor order, so a cable's own
      * SGIModelLinkEnd index addresses them. */
     SGIRouterState **routers;
+    SGISN1RouterState **sn1_routers;
     unsigned int router_count;
     Clock *cpu_refclk;
     Clock *rt_refclk;
@@ -472,7 +474,7 @@ static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
     {
         "controller-brick-serial",
         offsetof(SGIMachineState, controller_brick_serial),
-        "Expansion L1 brick serial as controller-index=serial (1 to 32 bytes)",
+        "L1 brick serial as controller-index=serial (1 to 32 bytes)",
         true,
     },
 };
@@ -508,6 +510,30 @@ static void sgi_machine_set_identity_records(Object *obj, Visitor *v,
 static bool sgi_machine_has_identity_records(SGIMachineState *s)
 {
     return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
+}
+
+static void sgi_machine_set_module_serial(SGIMachineState *s,
+    unsigned owner, DeviceState *l1)
+{
+    const strList *entry;
+
+    for (entry = s->controller_brick_serial; entry; entry = entry->next) {
+        unsigned selected;
+        const char *payload;
+
+        /* The machine validated owner=serial before constructing devices. */
+        selected = strtoul(entry->value, NULL, 10);
+        payload = strchr(entry->value, '=') + 1;
+        if (selected == owner) {
+            qdev_prop_set_string(l1, "brick-serial", payload);
+        }
+    }
+    if (s->view && s->view->generation == SGI_MODEL_GENERATION_SN1 &&
+        s->view->routers && !SGI_L1(l1)->brick_serial) {
+        g_autofree char *serial = g_strdup_printf("model-module-%u", owner);
+
+        qdev_prop_set_string(l1, "brick-serial", serial);
+    }
 }
 
 /*
@@ -774,6 +800,22 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
     unsigned int nodes = MAX(s->num_nodes, 1);
     size_t i;
 
+    if (s->view && s->view->generation == SGI_MODEL_GENERATION_SN1 &&
+        s->view->routers) {
+        g_autofree const SGIModelNode **model_nodes = NULL;
+        g_autofree const SGIModelModule **modules = NULL;
+        size_t node_count, module_count;
+
+        model_nodes = sgi_model_node_array(s->view->nodes, &node_count);
+        modules = sgi_model_module_array(s->view->modules, &module_count);
+        if (node_index < node_count &&
+            model_nodes[node_index]->module_index < module_count) {
+            sgi_machine_set_module_serial(s,
+                modules[model_nodes[node_index]->module_index]->
+                    controller_index,
+                l1);
+        }
+    }
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         const SGIMachineIdentityRecords *records =
             &sgi_machine_identity_records[i];
@@ -874,7 +916,10 @@ static bool sgi_machine_validate_controller_inputs(SGIMachineState *s,
                                                &slot, &payload, errp)) {
                 return false;
             }
-            if (owner >= count || !sgi_machine_expansion_controller(t, owner)) {
+            if (owner >= count ||
+                (!sgi_machine_expansion_controller(t, owner) &&
+                 !(kind == 2 && t->generation == SGI_MODEL_GENERATION_SN1 &&
+                   t->routers))) {
                 error_setg(errp, "controller %u is not an expansion L1 owner",
                            owner);
                 return false;
@@ -1057,18 +1102,7 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
             return false;
         }
     }
-    for (entry = s->controller_brick_serial; entry; entry = entry->next) {
-        unsigned selected, slot;
-        const char *payload;
-
-        if (!sgi_machine_controller_input(entry->value, false, "owner=serial",
-                                           &selected, &slot, &payload, errp)) {
-            return false;
-        }
-        if (selected == owner) {
-            qdev_prop_set_string(l1, "brick-serial", payload);
-        }
-    }
+    sgi_machine_set_module_serial(s, owner, l1);
     return true;
 }
 
@@ -4385,7 +4419,7 @@ static void sgi_machine_build_fabric_links(SGIMachineState *s,
 typedef struct SGIMachineNetEnd {
     Object *port;
     unsigned int index;
-    const char *cable_property;
+    char cable_property[32];
 } SGIMachineNetEnd;
 
 /* Resolve cable wiring independently of terminal transaction callbacks. */
@@ -4397,6 +4431,17 @@ static bool sgi_machine_bedrock_net_end(
     SN1FabricEndpoint *endpoint;
 
     switch (end->kind) {
+    case SGI_MODEL_LINK_END_KIND_ROUTER:
+        if (!s->sn1_routers || end->index >= s->router_count ||
+            end->port < 1 || end->port > SGI_SN1_ROUTER_PORTS) {
+            error_setg(errp, "Bedrock cable names an absent router port");
+            return false;
+        }
+        net_end->port = OBJECT(s->sn1_routers[end->index]);
+        net_end->index = end->port;
+        snprintf(net_end->cable_property, sizeof(net_end->cable_property),
+                 "port%u-cable", end->port);
+        return true;
     case SGI_MODEL_LINK_END_KIND_NODE:
         if (end->index >= s->num_nodes) {
             error_setg(errp, "Bedrock cable names node %u out of range",
@@ -5021,7 +5066,75 @@ static uint32_t sgi_machine_io_origin_count(SGIMachineState *s,
             }
         }
     }
+    if (t->generation == SGI_MODEL_GENERATION_SN1 && t->routers) {
+        unsigned origins = 0;
+
+        for (unsigned node = 0; node < s->num_nodes; node++) {
+            origins += SN1_NODE(s->bedrock_nodes[node])->nr_cpus;
+        }
+        return origins;
+    }
     return 0;
+}
+
+static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
+    const SGIModelTopology *t, Error **errp)
+{
+    const SGIModelRouterList *entry;
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t module_count;
+    unsigned index = 0;
+
+    modules = sgi_model_module_array(t->modules, &module_count);
+    s->router_count = QAPI_LIST_LENGTH(t->routers);
+    s->sn1_routers = g_new0(SGISN1RouterState *, s->router_count);
+    for (entry = t->routers; entry; entry = entry->next, index++) {
+        const SGIModelRouter *record = entry->value;
+        const SGIModelModule *model_module = modules[record->module_index];
+        g_autofree char *name =
+            g_strdup_printf("module%u", record->module_index);
+        Object *module = object_resolve_path_component(OBJECT(s), name);
+        unsigned owner = model_module->controller_index;
+        DeviceState *l1, *uart, *router;
+
+        if (!module || owner >= s->controller_count || s->controllers[owner]) {
+            error_setg(errp, "SN1 router needs a unique module L1 controller");
+            return false;
+        }
+        l1 = qdev_new(TYPE_SGI_L1);
+        object_property_add_child(module, "l1", OBJECT(l1));
+        s->controllers[owner] = l1;
+        sgi_machine_set_module_serial(s, owner, l1);
+        qdev_prop_set_string(l1, "brick-type", "router");
+        qdev_prop_set_uint32(l1, "brick-type-code", 0x52);
+        qdev_prop_set_uint32(l1, "bay", model_module->initial_module_number);
+        if (!qdev_realize(l1, NULL, errp)) {
+            return false;
+        }
+        qemu_register_resettable(OBJECT(l1));
+        s->controller_reset_registered[owner] = true;
+        uart = qdev_new(TYPE_SGI_L1_UART);
+        object_property_add_child(module, "l1-uart", OBJECT(uart));
+        object_property_set_link(OBJECT(uart), "controller", OBJECT(l1),
+                                 &error_abort);
+        if (!sysbus_realize(SYS_BUS_DEVICE(uart), errp)) {
+            object_unref(OBJECT(uart));
+            return false;
+        }
+        router = qdev_new(TYPE_SGI_SN1_ROUTER);
+        object_property_add_child(module, "router", OBJECT(router));
+        qdev_prop_set_uint8(router, "chip-revision", record->revision);
+        object_property_set_link(OBJECT(router), "l1-uart", OBJECT(uart),
+                                 &error_abort);
+        object_unref(OBJECT(uart));
+        if (!sysbus_realize(SYS_BUS_DEVICE(router), errp)) {
+            object_unref(OBJECT(router));
+            return false;
+        }
+        s->sn1_routers[index] = SGI_SN1_ROUTER(router);
+        object_unref(OBJECT(router));
+    }
+    return true;
 }
 
 static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
@@ -5040,7 +5153,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         "chip1-e-port", "chip1-f-port", "chip2-e-port", "chip2-f-port",
     };
 
-    if (!t->io_assemblies) {
+    if (!t->io_assemblies && !t->routers) {
         return true;
     }
     modules = sgi_model_module_array(t->modules, &module_count);
@@ -5070,6 +5183,9 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         }
         s->controllers[owner] = SN1_NODE(s->bedrock_nodes[index])->l1;
         object_ref(OBJECT(s->controllers[owner]));
+    }
+    if (!sgi_machine_build_sn1_routers(s, t, errp)) {
+        return false;
     }
     for (entry = t->io_assemblies; entry; entry = entry->next) {
         const SGIModelIoAssembly *a = entry->value;
@@ -5255,6 +5371,22 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             error_setg(errp, "controller %u has no constructed L1 owner",
                        index);
             return false;
+        }
+    }
+    if (t->routers) {
+        for (index = 0; index < s->controller_count; index++) {
+            const char *serial = SGI_L1(s->controllers[index])->brick_serial;
+
+            for (unsigned other = 0; serial && other < index; other++) {
+                if (!g_strcmp0(serial,
+                        SGI_L1(s->controllers[other])->brick_serial)) {
+                    error_setg(errp, "controllers %u and %u share brick "
+                               "serial '%s'; use controller-brick-serial "
+                               "to assign distinct module identities",
+                               other, index, serial);
+                    return false;
+                }
+            }
         }
     }
     s->query_owners = g_new0(SGIL1QueryOwner, s->controller_count);
@@ -7960,7 +8092,9 @@ static void sgi_machine_instance_finalize(Object *obj)
     for (i = 0; i < s->controller_count; i++) {
         if (s->controller_reset_registered[i]) {
             qemu_unregister_resettable(OBJECT(s->controllers[i]));
-            qemu_unregister_resettable(OBJECT(s->controller_bics[i]));
+            if (s->controller_bics[i]) {
+                qemu_unregister_resettable(OBJECT(s->controller_bics[i]));
+            }
         }
         if (s->controller_bics[i]) {
             object_unref(OBJECT(s->controller_bics[i]));
@@ -7999,6 +8133,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->io_config);
     g_free(s->io_peers);
     g_free(s->routers);
+    g_free(s->sn1_routers);
     g_free(s->crossbars);
     g_free(s->io_boards);
     g_free(s->node_links);

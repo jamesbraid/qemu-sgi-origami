@@ -46,6 +46,7 @@ static const SGIL1ProductProfile l1_profiles[] = {
     { "ip35", 0x43, 2, 0, true },
     { "ip37", 0x33, 2, 0, true },
     { "pci-expansion", 0x25, 4, 0x0200, false },
+    { "router", 0x52, 0, 0, false },
 };
 
 /*
@@ -129,10 +130,14 @@ static const char *l1_designation(SGIL1State *s)
 
 static int l1_compute_unsupported(SGIL1State *s)
 {
+    const char *profile = !strcmp(s->profile->name, "pci-expansion") ?
+                          "expansion" : s->profile->name;
+
     qemu_log_mask(LOG_UNIMP,
-                  "sgi-l1: compute service unsupported on expansion profile\n");
-    l1_printf(s, "INFO: compute service is unsupported on expansion profile."
-              "\r\n");
+                  "sgi-l1: compute service unsupported on %s profile\n",
+                  profile);
+    l1_printf(s, "INFO: compute service is unsupported on %s profile.\r\n",
+              profile);
     return -1;
 }
 
@@ -1683,7 +1688,8 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
     if ((p[0] & 0xe0) == 0x40) {
         if (!s->profile->compute_services) {
             qemu_log_mask(LOG_UNIMP,
-                          "sgi-l1: expansion processor console unsupported\n");
+                          "sgi-l1: processor console unsupported on %s profile\n",
+                          s->profile->name);
             return;
         }
         /* Console output on any subchannel retargets the operator's input. */
@@ -1745,7 +1751,8 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
 
         if (!s->profile->compute_services) {
             qemu_log_mask(LOG_UNIMP,
-                          "sgi-l1: expansion console task unsupported\n");
+                          "sgi-l1: console task unsupported on %s profile\n",
+                          s->profile->name);
             l1_reply(s, channel, -101, 0, NULL, 0);
             return;
         }
@@ -1788,8 +1795,9 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
          command == 0x100c || command == 0x2001 || command == 0x2005 ||
          command == 0x2006 || command == 0x2007 || command == 0x2008)) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-l1: expansion compute request 0x%04x unsupported\n",
-                      command);
+                      "sgi-l1: compute request 0x%04x unsupported on "
+                      "%s profile\n",
+                      command, s->profile->name);
         l1_reply(s, channel, -101, 0, NULL, 0);
         return;
     }
@@ -2931,8 +2939,8 @@ fuel_mac_done:
         }
     }
     if (!s->profile) {
-        error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, unknown or "
-                   "pci-expansion");
+        error_setg(errp, "L1 brick-type must be ip34, ip45, ip35, ip37, "
+                   "unknown, pci-expansion or router");
         return;
     }
     if (s->bic_startup && strcmp(s->profile->name, "pci-expansion")) {

@@ -289,7 +289,8 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         return;
     case SGI_NET_PACKET_ERROR:
         s->vector_return = 0;
-        s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_ADDR_ERROR;
+        s->vector_status = reply | LB_VECTOR_VALID |
+            (packet.failure ? packet.failure : LB_VECTOR_ADDR_ERROR);
         return;
     case SGI_NET_PACKET_OK:
         if (packet.op == SGI_NET_PACKET_READ) {

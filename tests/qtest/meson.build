@@ -414,6 +414,8 @@ sn1_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK') ?
     ['sn1-bedrock-pi-test', 'sn1-bedrock-test', 'sn1-bedrock-link-test'] :
     []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN1_ROUTER_TEST') ?
+    ['sgi-sn1-router-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-address-map-test', 'sn1-cross-node-test',
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
