@@ -2326,6 +2326,132 @@ static uint32_t odsy_test_dma_word(QTestState *qts, uint32_t i)
     return odsy_test_object_texel(qts, ODSY_DMA_TEST_OBJECT, i % 16, i / 16);
 }
 
+static void test_command_fifo_dma_trace(void)
+{
+    const uint64_t table = 0xb80000, source = 0xb84000;
+    uint8_t pixels[4224], tbl[ODSY_DMA_TABLE_HEADER + 2 * 8] = { 0 };
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    uint64_t last = 0, kick = 0;
+    unsigned accesses = 0, chunks = 0, payload = 0;
+    bool read_seen = false, write_seen = false;
+    int fd = g_file_open_tmp("odyssey-dma-trace-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf(" -trace enable=sgi_odyssey_mmio"
+                            " -trace enable=sgi_odyssey_dma_chunk -D %s", path);
+    qts = board_start(args);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    for (unsigned i = 0; i < sizeof(pixels); i++) {
+        pixels[i] = i;
+    }
+    dma_object_header(tbl, 1, false);
+    stl_be_p(tbl + 8, 66);
+    stl_be_p(tbl + 12, (1u << 16) | 1056);
+    stl_be_p(tbl + 24, sizeof(pixels));
+    stq_be_p(tbl + ODSY_DMA_TABLE_HEADER,
+             ODSY_DMA_PTE(source, sizeof(pixels)));
+    qtest_memwrite(qts, table, tbl, sizeof(tbl));
+    qtest_memwrite(qts, source, pixels, sizeof(pixels));
+    reg_write(qts, ODSY_CONTROL, 11);
+    dma_descriptor(qts, ODSY_CMD_DMA_IMAGE, table);
+    g_assert_cmphex(odsy_test_dma_word(qts, 0), ==, 0x00010203);
+    g_assert_cmphex(reg_read(qts, ODSY_IDENTITY), ==, IDENTITY_DEFAULT);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        char *event = strstr(lines[i], "sgi_odyssey_mmio seq ");
+        uint64_t seq, addr, value;
+        unsigned size, write;
+
+        if (event) {
+            g_assert_cmpint(sscanf(event, "sgi_odyssey_mmio seq %" SCNu64
+                                   " offset 0x%" SCNx64 " size %u value 0x%"
+                                   SCNx64 " write=%u", &seq, &addr, &size,
+                                   &value, &write), ==, 5);
+            if (accesses++) {
+                g_assert_cmpuint(seq, ==, last + 1);
+            }
+            last = seq;
+            if (addr == ODSY_IDENTITY && !write) {
+                g_assert_cmpuint(size, ==, 4);
+                g_assert_cmphex(value, ==, IDENTITY_DEFAULT);
+                read_seen = true;
+            }
+            if (addr == ODSY_CONTROL && write) {
+                g_assert_cmpuint(size, ==, 4);
+                g_assert_cmphex(value, ==, 11);
+                write_seen = true;
+            }
+
+            if (addr == 0x110000 && size == 8 &&
+                value == UINT64_C(0x2e00000000000000) && write) {
+                kick = seq;
+                g_test_message("%s", event);
+            }
+            continue;
+        }
+        event = strstr(lines[i], "sgi_odyssey_dma_chunk seq ");
+        if (event) {
+            unsigned len;
+            int at = 0;
+            const char *hex;
+
+            g_assert_cmpint(sscanf(event, "sgi_odyssey_dma_chunk seq %" SCNu64
+                                   " addr 0x%" SCNx64 " len %u hex %n",
+                                   &seq, &addr, &len, &at), ==, 3);
+            g_assert_cmpuint(seq, ==, kick);
+            g_assert_cmpuint(seq, ==, last);
+            g_assert_cmpuint(len, <=, 4096);
+            hex = event + at;
+            g_assert_cmpuint(strlen(hex), ==, len * 2);
+            for (unsigned j = 0; j < len * 2; j++) {
+                g_assert_true(g_ascii_isdigit(hex[j]) ||
+                               (hex[j] >= 'a' && hex[j] <= 'f'));
+            }
+            if (addr >= source && addr < source + sizeof(pixels)) {
+                g_assert_cmpuint(addr, ==, source + payload);
+                for (unsigned j = 0; j < len; j++) {
+                    unsigned byte = (g_ascii_xdigit_value(hex[j * 2]) << 4) |
+                                     g_ascii_xdigit_value(hex[j * 2 + 1]);
+
+                    g_assert_cmpuint(byte, ==, pixels[payload + j]);
+                }
+                payload += len;
+            } else {
+                g_assert_cmpuint(addr, >=, table);
+                g_assert_cmpuint(addr + len, <=, table + sizeof(tbl));
+                for (unsigned j = 0; j < len; j++) {
+                    unsigned byte = (g_ascii_xdigit_value(hex[j * 2]) << 4) |
+                                     g_ascii_xdigit_value(hex[j * 2 + 1]);
+
+                    g_assert_cmpuint(byte, ==, tbl[addr - table + j]);
+                }
+            }
+            if (!chunks) {
+                g_test_message("%s", event);
+            }
+            chunks++;
+        }
+    }
+    g_assert_true(read_seen);
+    g_assert_true(write_seen);
+    g_assert_cmpuint(accesses, >=, 3);
+    /* Header, two entries, two payload pages. */
+    g_assert_cmpuint(chunks, ==, 5);
+    g_assert_cmpuint(payload, ==, sizeof(pixels));
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_command_fifo_dma_page_table(void)
 {
     QTestState *qts = board_start("");
@@ -13380,6 +13506,8 @@ int main(int argc, char **argv)
                    test_command_fifo_copyrect_prefix_is_a_plain_register);
     qtest_add_func("sn1/odyssey/command-fifo-host-write-sync",
                    test_command_fifo_host_write_sync);
+    qtest_add_func("sn1/odyssey/command-fifo-dma-trace",
+                   test_command_fifo_dma_trace);
     qtest_add_func("sn1/odyssey/command-fifo-dma-page-table",
                    test_command_fifo_dma_page_table);
     qtest_add_func("sn1/odyssey/command-fifo-dma-image",

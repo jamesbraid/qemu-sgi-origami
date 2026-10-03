@@ -292,6 +292,7 @@ struct SGIOdysseyState {
     uint32_t tex_linear_valid;
     bool tex_rect_reported;
     uint64_t dma_seq;
+    uint64_t trace_sequence; /* Monotonic for this device instance. */
 
     /*
      * The per-pixel drawable-id plane, one byte per framebuffer pixel. The
