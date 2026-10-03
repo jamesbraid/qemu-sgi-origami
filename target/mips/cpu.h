@@ -103,6 +103,45 @@ typedef struct MIPSCPUConfig {
     bool mtc0_entrylo_moves_64_bits;
     /* A partial LWR in 64-bit-register mode preserves GPR bits 63:32. */
     bool partial_lwr_preserves_upper;
+    /* Physical address mask covers full PABITS at reset without ELPA. */
+    bool pamask_full_at_reset;
+    /* Status.KSU = 3 is treated as User mode. */
+    bool ksu_3_is_user_mode;
+    /* Status.SX gates 64-bit addressing in supervisor mode. */
+    bool sx_gates_supervisor_64_bit;
+    /* Status.XX gates COP1X in user mode only. */
+    bool xx_gates_cop1x_user_only;
+    /* Status.XX gates MIPS IV non-COP1X instructions. */
+    bool xx_gates_mips4;
+    /*
+     * Single and word format floating-point results clear upper 32 bits
+     * when FR=1.
+     */
+    bool fp_single_result_clears_upper;
+    /* Floating-point L format requires MIPS III 64-bit operation mode. */
+    bool fp_l_format_requires_64bit_mode;
+    /* Floating-point ABS and NEG are arithmetic and validate operands. */
+    bool fp_abs_chs_are_arithmetic;
+    /* Undefined floating-point formats take Unimplemented Operation. */
+    bool fp_undefined_format_unimplemented;
+    /* Absent COP2 instructions use Status.CU2 to select exception type. */
+    bool cop2_absent_cu2_selects_exception;
+    /* EJTAG Debug and DEPC registers are undefined. */
+    bool no_ejtag;
+    /* WAIT instruction is undefined. */
+    bool no_wait;
+    /* SPECIAL2 MUL instruction is undefined. */
+    bool no_special2_mul;
+    /* MDMX major opcode is undefined. */
+    bool no_mdmx;
+    /* PREF and PREFX instructions use R10000 prefetch hint semantics. */
+    bool has_r10k_prefetch;
+    /* Branch-on-Coprocessor-0 encodings take Reserved Instruction. */
+    bool cop0_branches_reserved;
+    /* Raising Status.RE logs an unimplemented message. */
+    bool status_re_logs_unimp;
+    /* Writable bits in the Cause register. */
+    uint32_t cause_rw_bitmask;
 } MIPSCPUConfig;
 
 /* MSA Context */

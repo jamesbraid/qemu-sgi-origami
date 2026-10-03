@@ -206,7 +206,7 @@ static void mips_store_cause(CPUMIPSState *env, target_ulong val)
     if (env->insn_flags & ISA_MIPS_R6) {
         mask &= ~((1 << CP0Ca_WP) & val);
     }
-    if (env->insn_flags & INSN_R10K) {
+    if (env->cfg.cause_rw_bitmask) {
         /*
          * The R10000 has no IV or WP: its Cause bits 27:16 are reserved,
          * written as zeroes and returning zeroes (manual 14.11), and every
@@ -214,7 +214,7 @@ static void mips_store_cause(CPUMIPSState *env, target_ulong val)
          * latch would also move interrupt dispatch to a vector this
          * processor does not have.
          */
-        mask &= 0x00000300;
+        mask &= env->cfg.cause_rw_bitmask;
     }
 
     old = cp0_cause_update(env, mask, val & mask);
