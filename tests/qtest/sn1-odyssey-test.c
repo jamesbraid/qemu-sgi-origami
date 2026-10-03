@@ -3958,7 +3958,7 @@ static void test_command_fifo_image_raster_short_incomplete(void)
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
     cmd_push(qts, ODSY_IMAGE_HEADER_OP(1, 0x6b));
     cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
-    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_CI));
     cmd_push(qts, 0x00112233);
     g_assert_cmphex(odsy_test_pixel(qts, 71, 70), ==, 0x87654321);
     cmd_push(qts, ODSY_CMD_GL_END);
@@ -9584,6 +9584,36 @@ static void test_context_save_texture_coordinate_active_primitive(void)
     g_assert_cmpuint(count_substr(log, "context shadow store"), ==, 1);
 }
 
+static void test_texture_adapter_rgba12_byte_upload(void)
+{
+    const uint32_t row0[2] = { 0xff0000ff, 0x00ff00ff };
+    const uint32_t row1[2] = { 0x0000ffff, 0xffffffff };
+    QTestState *qts = board_start("");
+
+    upload_begin(qts, 0x180000, 2, 0x080024d0, 2, 2);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    user_cmd_push(qts, 0x0f00116b);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    push_user_words(qts, row0, ARRAY_SIZE(row0));
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    user_cmd_push(qts, 0x0f21116b);
+    user_cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    push_user_words(qts, row1, ARRAY_SIZE(row1));
+    upload_end(qts);
+
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 0), ==,
+                    row0[0]);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 0), ==,
+                    row0[1]);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 0, 1), ==,
+                    row1[0]);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x180000, 1, 1), ==,
+                    row1[1]);
+    qtest_quit(qts);
+}
+
 static void test_texture_adapter_nearest(void)
 {
     const uint32_t pixels[4] = {
@@ -12022,6 +12052,8 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_texture_rgba);
     qtest_add_func("sn1/odyssey/dma-texture-object",
                    test_dma_texture_object);
+    qtest_add_func("sn1/odyssey/texture-adapter/rgba12-byte-upload",
+                   test_texture_adapter_rgba12_byte_upload);
     qtest_add_func("sn1/odyssey/texture-adapter/nearest",
                    test_texture_adapter_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/explicit-level",
