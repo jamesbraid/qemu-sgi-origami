@@ -1277,6 +1277,28 @@ static inline void gen_save_pc(target_ulong pc)
     tcg_gen_movi_tl(cpu_PC, pc);
 }
 
+/* Count recovery follows execution order through a branch delay slot. */
+static void gen_save_count_next_pc(DisasContext *ctx)
+{
+    switch (ctx->hflags & MIPS_HFLAG_BMASK_BASE) {
+    case MIPS_HFLAG_BR:
+        tcg_gen_mov_tl(cpu_PC, btarget);
+        break;
+    case MIPS_HFLAG_BC:
+        tcg_gen_movcond_tl(TCG_COND_NE, cpu_PC, bcond, tcg_constant_tl(0),
+                           tcg_constant_tl(ctx->btarget),
+                           tcg_constant_tl(ctx->base.pc_next + 4));
+        break;
+    case MIPS_HFLAG_B:
+    case MIPS_HFLAG_BL:
+        gen_save_pc(ctx->btarget);
+        break;
+    default:
+        gen_save_pc(ctx->base.pc_next + 4);
+        break;
+    }
+}
+
 void save_cpu_state(DisasContext *ctx, int do_save_pc)
 {
     LOG_DISAS("hflags %08x saved %08x\n", ctx->hflags, ctx->saved_hflags);
@@ -6235,9 +6257,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             if (ctx->count_compare_adjacent_recovery) {
-                target_ulong next_pc = (ctx->hflags & MIPS_HFLAG_BMASK) ?
-                                       ctx->btarget : (ctx->base.pc_next + 4);
-                gen_save_pc(next_pc);
+                gen_save_count_next_pc(ctx);
             }
             gen_helper_mtc0_count(tcg_env, arg);
             register_name = "Count";
@@ -7704,9 +7724,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             if (ctx->count_compare_adjacent_recovery) {
-                target_ulong next_pc = (ctx->hflags & MIPS_HFLAG_BMASK) ?
-                                       ctx->btarget : (ctx->base.pc_next + 4);
-                gen_save_pc(next_pc);
+                gen_save_count_next_pc(ctx);
             }
             gen_helper_mtc0_count(tcg_env, arg);
             ctx->base.is_jmp = DISAS_STOP;
@@ -15410,6 +15428,17 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         ctx->opcode = translator_ldl_end(env, &ctx->base, ctx->base.pc_next,
                                          mo_endian(ctx));
         insn_bytes = 4;
+        if (ctx->count_compare_adjacent_recovery &&
+            ctx->base.num_insns == 1) {
+            uint32_t op = ctx->opcode & ~((uint32_t)0x1f << 16);
+
+            /* Count ends its TB, limiting recovery to this instruction. */
+            if (op != (OPC_MTC0 | (CP0_REGISTER_11 << 11)) &&
+                op != (OPC_DMTC0 | (CP0_REGISTER_11 << 11))) {
+                tcg_gen_st8_i32(tcg_constant_i32(0), tcg_env,
+                    offsetof(CPUMIPSState, timer_adjacent_pending));
+            }
+        }
         decode_opc(env, ctx);
     } else if (ctx->insn_flags & ASE_MICROMIPS) {
         ctx->opcode = translator_lduw_end(env, &ctx->base, ctx->base.pc_next,

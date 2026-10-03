@@ -1489,6 +1489,10 @@ static bool gh_intervening_insn;
 static bool gh_interrupt_after_count;
 static bool gh_wide_timer_moves;
 static bool gh_delay_slot_count;
+static int gh_count_branch;
+static bool gh_migrate_after_intervening;
+static bool gh_self_modify_compare;
+static uint64_t gh_self_modify_break_pc;
 static bool gh_peer_timer_writes;
 static bool gh_reset_between_writes;
 
@@ -1496,6 +1500,53 @@ static void emit_gh_timer_move(GuestImage *img, int rt, int rd)
 {
     emit(img, (gh_wide_timer_moves ? OPC_DMTC0 : OPC_MTC0) |
          (rt << 16) | (rd << 11));
+}
+
+static unsigned int count_match_compare_pos;
+
+static void build_count_match_interrupt(GuestImage *img)
+{
+    emit_mtc0(img, R_ZERO, CP0_COMPARE, 0);
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_lui(img, R_T4, STATUS_KEEP_HI);
+    emit_ori(img, R_T4, R_T4, STATUS_KEEP_LO);
+    emit_and(img, R_T3, R_T3, R_T4);
+    emit_ori(img, R_T3, R_T3, STATUS_IM7 | 1);
+    emit_mtc0(img, R_T3, CP0_STATUS, 0);
+    emit_addiu(img, R_T4, R_ZERO, -1);
+
+    /* Deliver the Count match before Compare can clear the standing line. */
+    emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+    count_match_compare_pos = img->pos;
+    emit_gh_timer_move(img, R_T4, CP0_COMPARE);
+    emit_done_and_halt(img);
+}
+
+static void test_count_match_interrupt(const void *data)
+{
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    gh_wide_timer_moves = GPOINTER_TO_INT(data);
+    qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
+                        build_count_match_interrupt);
+    for (unsigned int i = 0; i < 1000; i++) {
+        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC ||
+            state_word(qts, DONE_OFF) == DONE_MAGIC) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
+    g_assert_cmphex(state_word(qts, EXC_EPC_OFF), ==,
+                    0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                    count_match_compare_pos);
+    qtest_quit(qts);
 }
 
 static void emit_sn1_timer_preamble(GuestImage *img)
@@ -1548,9 +1599,53 @@ static void emit_gdb_timer_interrupt_handler(GuestImage *img)
     emit_done_and_halt(img);
 }
 
+static void emit_self_modify_compare(GuestImage *img)
+{
+    uint8_t code[64] = { 0 };
+    GuestImage payload = { .code = code };
+    uint64_t ram = SN1_STATE_GUEST + 0x2000;
+    unsigned int return_branch, continuation;
+    uint32_t compare = (gh_wide_timer_moves ? OPC_DMTC0 : OPC_MTC0) |
+                       (R_T4 << 16) | (CP0_COMPARE << 11);
+    uint32_t target;
+
+    emit_gh_timer_move(&payload, R_ZERO, CP0_COUNT);
+    /* Replace the next instruction, then return after other instructions. */
+    emit_sw(&payload, R_T6, R_T5, 0);
+    emit_sync(&payload);
+    return_branch = emit_beq_fwd(&payload, R_S0, R_ZERO);
+    emit_nop(&payload);
+    emit(&payload, (R_S2 << 21) | 0x08);
+    emit_nop(&payload);
+    patch_fwd(&payload, return_branch);
+    emit_ori(&payload, R_S0, R_ZERO, 1);
+    emit(&payload, (R_T5 << 21) | 0x08);
+    gh_self_modify_break_pc = ram + payload.pos;
+    emit_nop(&payload);
+
+    emit_li64(img, R_S1, ram);
+    emit_li64(img, R_T5, ram + 4);
+    emit_li_addr(img, R_T6, compare);
+    emit_ori(img, R_S0, R_ZERO, 0);
+    for (unsigned int i = 0; i < payload.pos; i += 4) {
+        emit_li_addr(img, R_T3, ldl_be_p(code + i));
+        emit_sw(img, R_T3, R_S1, i);
+    }
+    emit_sync(img);
+    continuation = img->pos;
+    emit_lui(img, R_S2, 0);
+    emit_ori(img, R_S2, R_S2, 0);
+    emit(img, (R_S1 << 21) | 0x08);
+    emit_nop(img);
+    target = IMAGE_KSEG1_BASE + img->pos;
+    stl_be_p(img->code + continuation, mips_lui(R_S2, target >> 16));
+    stl_be_p(img->code + continuation + 4,
+             OPC_ORI | (R_S2 << 21) | (R_S2 << 16) | (target & 0xffff));
+}
+
 static void build_gdb_peer_hold(GuestImage *img)
 {
-    unsigned int peer, loop;
+    unsigned int peer, loop, untaken = 0;
 
     peer = emit_bne_fwd(img, R_K0, R_ZERO);
     emit_nop(img);
@@ -1567,7 +1662,28 @@ static void build_gdb_peer_hold(GuestImage *img)
     emit_li(img, R_T3, GH_COMPARE);
     emit_mtc0(img, R_T3, CP0_COMPARE, 0);
     emit_li(img, R_T4, 1000);
-    if (gh_delay_slot_count) {
+    if (gh_self_modify_compare) {
+        emit_self_modify_compare(img);
+    } else if (gh_count_branch == 1) {
+        untaken = emit_beq_fwd(img, R_T4, R_ZERO);
+        gh_count_pos = img->pos;
+        emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+    } else if (gh_count_branch >= 2) {
+        unsigned int address = img->pos;
+        uint32_t target;
+
+        emit_lui(img, R_T5, 0);
+        emit_ori(img, R_T5, R_T5, 0);
+        emit(img, (R_T5 << 21) | ((gh_count_branch == 3 ? 31 : 0) << 11) |
+             (gh_count_branch == 3 ? 0x09 : 0x08));
+        gh_count_pos = img->pos;
+        emit_gh_timer_move(img, R_ZERO, CP0_COUNT);
+        emit_nop(img);
+        target = IMAGE_KSEG1_BASE + img->pos;
+        stl_be_p(img->code + address, mips_lui(R_T5, target >> 16));
+        stl_be_p(img->code + address + 4,
+                 OPC_ORI | (R_T5 << 21) | (R_T5 << 16) | (target & 0xffff));
+    } else if (gh_delay_slot_count) {
         unsigned int branch = emit_b_fwd(img);
 
         gh_count_pos = img->pos;
@@ -1582,7 +1698,15 @@ static void build_gdb_peer_hold(GuestImage *img)
     if (gh_intervening_insn) {
         emit_nop(img);
     }
-    emit_gh_timer_move(img, R_T4, CP0_COMPARE);
+    if (gh_migrate_after_intervening) {
+        gh_break_pos = img->pos;
+    }
+    if (!gh_self_modify_compare) {
+        emit_gh_timer_move(img, R_T4, CP0_COMPARE);
+    }
+    if (untaken) {
+        patch_fwd(img, untaken);
+    }
     emit_ehb(img);
     emit_mfc0(img, R_T3, CP0_COUNT, 0);
     emit_publish(img, R_T3, GH_COUNT_OFF);
@@ -1729,6 +1853,9 @@ static void test_gdb_peer_hold(const void *data)
     gh_interrupt_after_count = interrupt_vm;
     gh_wide_timer_moves = options & 2;
     gh_delay_slot_count = false;
+    gh_count_branch = 0;
+    gh_migrate_after_intervening = false;
+    gh_self_modify_compare = false;
     gh_peer_timer_writes = false;
     gh_reset_between_writes = false;
 
@@ -1960,6 +2087,7 @@ static void test_gdb_sn1_hold(const void *data)
     bool gdb_closed = false;
     uint32_t peer_count_before, peer_count_after;
     uint64_t elapsed_ticks = 0;
+    uint64_t break_pc;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1969,6 +2097,9 @@ static void test_gdb_sn1_hold(const void *data)
     gh_wide_timer_moves = options & 2;
     gh_interrupt_after_count = interrupt_vm;
     gh_delay_slot_count = options & 4;
+    gh_count_branch = (options >> 10) & 3;
+    gh_migrate_after_intervening = options & 512;
+    gh_self_modify_compare = options & 4096;
     gh_peer_timer_writes = options & 16;
     gh_reset_between_writes = reset_vm;
     dir = g_dir_make_tmp("sn1-gdb-hold-XXXXXX", NULL);
@@ -1983,6 +2114,8 @@ static void test_gdb_sn1_hold(const void *data)
     /* Origin 300 checks the entire flash image length at startup. */
     g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
     close(fd);
+    break_pc = gh_self_modify_compare ? gh_self_modify_break_pc :
+        (0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gh_break_pos);
 
     qts = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                       "-accel tcg,thread=multi -no-shutdown "
@@ -1994,9 +2127,10 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "?", reply, sizeof(reply));
     g_assert_true(reply[0] == 'T' || reply[0] == 'S');
     snprintf(command, sizeof(command), "Z0,%" PRIx64 ",4",
-             (uint64_t)(0xffffffff00000000ULL |
-                        IMAGE_KSEG1_BASE |
-                        ((options & 8) ? gh_count_pos : gh_break_pos)));
+             (options & 8) ?
+             (uint64_t)(0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
+                        gh_count_pos) :
+             break_pc);
     gdb_peer_command(gdb, command, reply, sizeof(reply));
     g_assert_cmpstr(reply, ==, "OK");
     gdb_peer_command(gdb, "vCont;c", NULL, 0);
@@ -2026,8 +2160,7 @@ static void test_gdb_sn1_hold(const void *data)
         g_assert_cmpstr(reply, ==, "OK");
         gdb_peer_command(gdb, "p25", reply, sizeof(reply));
         g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
-                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
-                        gh_break_pos);
+                        break_pc);
     }
     peer_before = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_before = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
@@ -2080,7 +2213,7 @@ static void test_gdb_sn1_hold(const void *data)
     g_assert_cmpstr(reply, ==, "OK");
     gdb_peer_command(gdb, "p25", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16), ==,
-                    0xffffffff00000000ULL | IMAGE_KSEG1_BASE | gh_break_pos);
+                    break_pc);
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
@@ -2183,8 +2316,7 @@ wait_gdb_sn1_done:
         g_assert_cmphex(sn1_timer_state_word(qts, GH_EXC_CAUSE_OFF) &
                         CAUSE_EXCCODE, ==, 0);
         g_assert_cmphex(sn1_timer_state_word(qts, GH_EXC_EPC_OFF), ==,
-                        0xffffffff00000000ULL | IMAGE_KSEG1_BASE |
-                        gh_break_pos);
+                        break_pc);
         g_assert_cmpuint(sn1_timer_state_word(qts, GH_LATE_COUNT_OFF), >,
                          1000);
         g_assert_cmphex(sn1_timer_state_word(qts, GH_LATE_CAUSE_OFF) &
@@ -2276,6 +2408,10 @@ int main(int argc, char **argv)
                         test_masked_interrupt_stays_off_the_lock);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
+    qtest_add_data_func("mttcg/timer/mtc0-count-match-delivers", NULL,
+                        test_count_match_interrupt);
+    qtest_add_data_func("mttcg/timer/dmtc0-count-match-delivers",
+                        GINT_TO_POINTER(1), test_count_match_interrupt);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-adjacent",
                         GINT_TO_POINTER(0), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-intervening",
@@ -2315,6 +2451,28 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(96), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-half-range-hold",
                             GINT_TO_POINTER(128), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-migrate-after-intervening",
+                            GINT_TO_POINTER(545), test_gdb_sn1_hold);
+        qtest_add_data_func(
+            "mttcg/timer/gdb-sn1-dmtc0-migrate-after-intervening",
+                            GINT_TO_POINTER(547), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-untaken-count-delay-slot",
+                            GINT_TO_POINTER(1024), test_gdb_sn1_hold);
+        qtest_add_data_func(
+            "mttcg/timer/gdb-sn1-dmtc0-untaken-count-delay-slot",
+                            GINT_TO_POINTER(1026), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-jr-count-delay-slot",
+                            GINT_TO_POINTER(2048), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-jr-count-delay-slot",
+                            GINT_TO_POINTER(2050), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-jalr-count-delay-slot",
+                            GINT_TO_POINTER(3072), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-jalr-count-delay-slot",
+                            GINT_TO_POINTER(3074), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-self-modified-compare",
+                            GINT_TO_POINTER(4097), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-dmtc0-self-modified-compare",
+                            GINT_TO_POINTER(4099), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-reset-between-writes",
                             GINT_TO_POINTER(256), test_gdb_sn1_hold);
     }
