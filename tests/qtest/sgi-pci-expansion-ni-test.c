@@ -124,6 +124,77 @@ static void test_pio(void)
     qtest_quit(qts);
 }
 
+#define ROUTER UINT64_C(0x40000000)
+#define NI_LOCAL UINT64_C(0x681000)
+
+static QTestState *routed_start(const char *extra)
+{
+    g_autofree char *args = g_strdup_printf(
+        "-global sgi-pci-expansion-ni-fixture.routed=true %s", extra);
+    QTestState *qts = start(args);
+
+    qtest_sysbus_mmio_map(qts, PATH, 5, ROUTER);
+    return qts;
+}
+
+static void test_routed_processor(void)
+{
+    QTestState *qts = routed_start("");
+    uint64_t revision = qtest_readq(qts, COMPUTE + 0x600000);
+
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    /* Ingress one plus turn three selects output four. */
+    qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 3);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, REQUESTER(0) + COMPUTE_HUB + 0x600000),
+                    ==, revision);
+    result(qts, 0, MEMTX_OK);
+    /* VC bit four is stored separately from the carried turn. */
+    qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 0x13);
+    qtest_readq(qts, REQUESTER(1) + BIC_HUB + 0x600000);
+    result(qts, 1, MEMTX_OK);
+    qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 8);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
+static void test_routed_two_hops(void)
+{
+    QTestState *qts = routed_start(
+        "-global sgi-pci-expansion-ni-fixture.routed-pair=true");
+    const uint64_t second = UINT64_C(0x50000000);
+
+    qtest_sysbus_mmio_map(qts, PATH, 6, second);
+    qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 3);
+    /* The first router's output-four bank carries the next turn. */
+    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 5);
+    qtest_writeq(qts, ROUTER + 0x10200 + 7 * 8, 0);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, ROUTER + 0x10200 + 7 * 8, 7);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 0);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    /* Both zero turns now send traffic repeatedly across the same cable. */
+    qtest_writeq(qts, second + 0x10a00 + 7 * 8, 0);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_writeq(qts, ROUTER + 0x20a00 + 7 * 8, 5);
+    qtest_writeq(qts, second + 0x10, UINT64_C(1) << 8);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_writeq(qts, second + 0x10,
+                 (UINT64_C(1) << 8) | (UINT64_C(1) << 12));
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static uint64_t card_bar(unsigned index)
 {
     return head(0, index) + (card_device == 1 ? 0x400000 : 0x600000);
@@ -227,6 +298,82 @@ static void test_live_number(void)
     g_assert_cmphex(qtest_readl(qts, head(1, 0) + 4), ==, 0x2d002049);
     result(qts, 1, MEMTX_OK);
     qtest_quit(qts);
+}
+
+static void routed_program(QTestState *qts)
+{
+    /* Compute enters port one; BIC enters port four. */
+    qtest_writeq(qts, COMPUTE + NI_LOCAL + 7 * 8, 3);
+    qtest_writeq(qts, REQUESTER(0) + BIC_HUB + NI_LOCAL + 3 * 8, 5);
+    g_assert_cmphex(qtest_readl(qts, STATUS), ==, MEMTX_OK);
+}
+
+static void test_routed_dma(void)
+{
+    QTestState *qts = routed_start("");
+    uint64_t address = UINT64_C(0xa080000000000000) + NODE(3) + 0x8000;
+    uint64_t payload = UINT64_C(0x123456789abcdef0);
+
+    g_test_message("program initial forward and return routes");
+    routed_program(qts);
+    configure_card(qts, 0);
+    dma(qts, 0, address, payload, true, MEMTX_OK);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+    dma(qts, 0, address, payload, false, MEMTX_OK);
+    qtest_writeq(qts, COMPUTE + 0x400118, ~(UINT64_C(1) << 0xe));
+    dma(qts, 0, address, payload ^ 1, true, MEMTX_ACCESS_ERROR);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+    qtest_writeq(qts, COMPUTE + 0x400118, UINT64_MAX);
+    qtest_writeq(qts, REQUESTER(0) + BIC_HUB + NI_LOCAL + 3 * 8, 4);
+    dma(qts, 0, address, payload ^ 1, true, MEMTX_DECODE_ERROR);
+    g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, payload);
+    qtest_writeq(qts, REQUESTER(0) + BIC_HUB + NI_LOCAL + 3 * 8, 5);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+        "{'path':'" PATH "/route-cable','property':'down','value':true}}");
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+        "{'path':'" PATH "/route-cable','property':'down','value':false}}");
+    dma(qts, 0, address, payload ^ 1, true, MEMTX_OK);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_DECODE_ERROR);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + NI_LOCAL + 7 * 8), ==, 0);
+    g_test_message("reprogram routes after system reset");
+    routed_program(qts);
+    qtest_readq(qts, REQUESTER(0) + BIC_HUB + 0x600000);
+    result(qts, 0, MEMTX_OK);
+    qtest_quit(qts);
+}
+
+static void test_routed_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("routed-ni-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = routed_start("");
+    QTestState *to = routed_start("-incoming defer");
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    routed_program(from);
+    configure_card(from, 0);
+    dma(from, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
+        UINT64_C(0x123456789abcdef0), true, MEMTX_OK);
+    qtest_writeq(from, ROUTER + 0x20a00 + 7 * 8, 6);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(qtest_readq(to, ROUTER + 0x20a00 + 7 * 8), ==, 6);
+    dma(to, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
+        UINT64_C(0x123456789abcdef0), false, MEMTX_OK);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    rmdir(dir);
 }
 
 static void test_denied(void)
@@ -336,6 +483,24 @@ static void test_interrupts(void)
     dma(qts, 0, UINT64_C(0xa080000000000000) + NODE(3) + 0x8000,
         0x12345678, true, MEMTX_OK);
     g_assert_cmphex(qtest_readq(qts, RAM + 0x8000), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_routed_interrupt(void)
+{
+    QTestState *qts = routed_start("");
+
+    routed_program(qts);
+    configure_irq(qts, 0, 16);
+    pin(qts, 0, true);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==,
+                    UINT64_C(1) << 16);
+    pin(qts, 0, false);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    qtest_writeq(qts, COMPUTE + 0x400118, ~(UINT64_C(1) << 0xe));
+    pin(qts, 0, true);
+    g_assert_cmphex(qtest_readq(qts, COMPUTE + 0x98), ==, 0);
+    pin(qts, 0, false);
     qtest_quit(qts);
 }
 
@@ -3366,6 +3531,16 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/pci-expansion-ni/intx-migration-mismatch",
                    test_intx_migration_mismatch);
     qtest_add_func("/sgi/pci-expansion-ni/teardown", test_teardown);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/dma-disconnect-reset",
+                   test_routed_dma);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/migration",
+                   test_routed_migration);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/interrupt-permission",
+                   test_routed_interrupt);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/two-hops-loop-meta",
+                   test_routed_two_hops);
+    qtest_add_func("/sgi/pci-expansion-ni/routed/processor-route",
+                   test_routed_processor);
     qtest_add_func("/sgi/pci-expansion-ni/pio", test_pio);
     qtest_add_func("/sgi/pci-expansion-ni/dma", test_dma);
     qtest_add_func("/sgi/pci-expansion-ni/live-number", test_live_number);

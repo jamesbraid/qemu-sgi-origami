@@ -13,6 +13,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/misc/sgi-sn1-router.h"
 #include "hw/misc/sgi-l1.h"
 #include "migration/vmstate.h"
 #include "migration/qemu-file.h"
@@ -199,6 +200,14 @@ struct NIFixtureState {
     DeviceState *compute;
     DeviceState *chassis;
     DeviceState *cable;
+    DeviceState *route_chip;
+    DeviceState *route_chip_next;
+    DeviceState *route_middle_cable;
+    bool routed_pair;
+    MemoryRegion router_next_observation;
+    DeviceState *route_cable;
+    bool routed;
+    MemoryRegion router_observation;
     DeviceState *l1[2];
     DeviceState *uart[2];
     MemoryRegion uart_view[2];
@@ -890,6 +899,11 @@ static void fixture_build(DeviceState *dev, Error **errp)
     static const uint8_t ports[] = { 8, 9, 0xc, 0xd };
     unsigned i;
 
+    if ((s->routed && s->management) || (s->routed_pair && !s->routed)) {
+        error_setg(errp, "Routed fixture needs routed=true and "
+                   "management=false");
+        return;
+    }
     if (s->card_device < 1 || s->card_device > 2) {
         error_setg(errp, "Card device must be 1 or 2");
         return;
@@ -1045,18 +1059,77 @@ static void fixture_build(DeviceState *dev, Error **errp)
     s->power_views_initialized = true;
     bic_endpoint = SGI_SN1_FABRIC_GET_CLASS(s->chassis)->endpoint(
         OBJECT(s->chassis));
+    if (s->routed) {
+        s->route_chip = qdev_new(TYPE_SGI_SN1_ROUTER);
+        object_property_add_child(OBJECT(s), "route-chip",
+                                  OBJECT(s->route_chip));
+        if (!sysbus_realize(SYS_BUS_DEVICE(s->route_chip), errp)) {
+            return;
+        }
+    }
     if (s->connected) {
         s->cable = qdev_new(TYPE_SGI_NET_CABLE);
         object_property_add_child(OBJECT(s), "cable", OBJECT(s->cable));
         sgi_net_cable_set_end(SGI_NET_CABLE(s->cable), 0, OBJECT(compute), 0);
         sgi_net_cable_set_end(SGI_NET_CABLE(s->cable), 1,
-                             OBJECT(bic_endpoint->bedrock), 0);
+            s->routed ? OBJECT(s->route_chip) : OBJECT(bic_endpoint->bedrock),
+            s->routed ? 1 : 0);
         if (!qdev_realize(s->cable, NULL, errp) ||
             !object_property_set_link(OBJECT(compute), "net-cable",
                                       OBJECT(s->cable), errp) ||
-            !object_property_set_link(OBJECT(bic_endpoint->bedrock),
-                                      "net-cable", OBJECT(s->cable), errp)) {
+            !object_property_set_link(
+                s->routed ? OBJECT(s->route_chip) :
+                            OBJECT(bic_endpoint->bedrock),
+                s->routed ? "port1-cable" : "net-cable",
+                OBJECT(s->cable), errp)) {
             return;
+        }
+        if (s->routed_pair) {
+            s->route_chip_next = qdev_new(TYPE_SGI_SN1_ROUTER);
+            object_property_add_child(OBJECT(s), "route-chip-next",
+                                      OBJECT(s->route_chip_next));
+            if (!sysbus_realize(SYS_BUS_DEVICE(s->route_chip_next), errp)) {
+                return;
+            }
+            s->route_middle_cable = qdev_new(TYPE_SGI_NET_CABLE);
+            object_property_add_child(OBJECT(s), "route-middle-cable",
+                                      OBJECT(s->route_middle_cable));
+            sgi_net_cable_set_end(SGI_NET_CABLE(s->route_middle_cable), 0,
+                                 OBJECT(s->route_chip), 4);
+            sgi_net_cable_set_end(SGI_NET_CABLE(s->route_middle_cable), 1,
+                                 OBJECT(s->route_chip_next), 2);
+            if (!qdev_realize(s->route_middle_cable, NULL, errp) ||
+                !object_property_set_link(OBJECT(s->route_chip), "port4-cable",
+                                          OBJECT(s->route_middle_cable),
+                                          errp) ||
+                !object_property_set_link(OBJECT(s->route_chip_next),
+                                          "port2-cable",
+                                          OBJECT(s->route_middle_cable),
+                                          errp)) {
+                return;
+            }
+        }
+        if (s->routed) {
+            s->route_cable = qdev_new(TYPE_SGI_NET_CABLE);
+            object_property_add_child(OBJECT(s), "route-cable",
+                                      OBJECT(s->route_cable));
+            sgi_net_cable_set_end(SGI_NET_CABLE(s->route_cable), 0,
+                                 s->routed_pair ? OBJECT(s->route_chip_next) :
+                                                  OBJECT(s->route_chip),
+                                 s->routed_pair ? 7 : 4);
+            sgi_net_cable_set_end(SGI_NET_CABLE(s->route_cable), 1,
+                                 OBJECT(bic_endpoint->bedrock), 0);
+            if (!qdev_realize(s->route_cable, NULL, errp) ||
+                !object_property_set_link(
+                    s->routed_pair ? OBJECT(s->route_chip_next) :
+                                     OBJECT(s->route_chip),
+                    s->routed_pair ? "port7-cable" : "port4-cable",
+                    OBJECT(s->route_cable), errp) ||
+                !object_property_set_link(OBJECT(bic_endpoint->bedrock),
+                                          "net-cable",
+                                          OBJECT(s->route_cable), errp)) {
+                return;
+            }
         }
     }
     for (i = 0; i < 6; i++) {
@@ -1136,6 +1209,18 @@ static void fixture_build(DeviceState *dev, Error **errp)
             SYS_BUS_DEVICE(s->compute), 0), 0, SGI_BEDROCK_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->ram_observation);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->compute_observation);
+    if (s->routed) {
+        memory_region_init_alias(&s->router_observation, OBJECT(s),
+            "ni-fixture.router-observation", sysbus_mmio_get_region(
+                SYS_BUS_DEVICE(s->route_chip), 0), 0, 0x600008);
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->router_observation);
+        if (s->routed_pair) {
+            memory_region_init_alias(&s->router_next_observation, OBJECT(s),
+                "fixture.router-next", sysbus_mmio_get_region(
+                    SYS_BUS_DEVICE(s->route_chip_next), 0), 0, 0x600008);
+            sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->router_next_observation);
+        }
+    }
     if (s->management) {
         for (i = 0; i < 2; i++) {
             g_autofree char *controller = g_strdup_printf("l1%u", i);
@@ -1231,6 +1316,8 @@ static const Property fixture_properties[] = {
     DEFINE_PROP_BOOL("power", NIFixtureState, power, false),
     DEFINE_PROP_BOOL("initial-power", NIFixtureState, initial_power, true),
     DEFINE_PROP_BOOL("management", NIFixtureState, management, false),
+    DEFINE_PROP_BOOL("routed", NIFixtureState, routed, false),
+    DEFINE_PROP_BOOL("routed-pair", NIFixtureState, routed_pair, false),
     DEFINE_PROP_STRING("record0", NIFixtureState, record[0]),
     DEFINE_PROP_STRING("record1", NIFixtureState, record[1]),
     DEFINE_PROP_UINT64("identity0", NIFixtureState, owners[0].identity, 101),

@@ -1,0 +1,683 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: product
+  id: origin300-numalink-pci-expansion-experiment
+  requires:
+    assembly: ip45
+  topology:
+    min_nodes: 2
+    max_nodes: 2
+    supported_cpu_populations:
+    - - 2
+      - 2
+    - - 4
+      - 2
+    - - 2
+      - 4
+    - - 4
+      - 4
+    provenance: derived
+    sources:
+    - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
+      uses ports 2-5'
+    - '007-4365-002: two or four processors per Origin 300 base module'
+  population:
+    nodes: 2
+    cpus_per_node:
+    - 2
+    - 2
+    provenance: derived
+    sources:
+    - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports; expansion
+      uses ports 2-5'
+    - '007-4365-002: two or four processors per Origin 300 base module'
+  cpu_selection:
+    default:
+      clock_mhz: 500
+      cache_mib: 2
+    slots:
+    - cpu0
+    - cpu2
+    - cpu1
+    - cpu3
+  memory_kits_per_node:
+  - kit-512-at-banks-2-3
+  - kit-512-at-banks-2-3
+  data:
+    machine:
+      name: Origin 300 routed NUMAlink and PCI expansion experiment
+      model_role: emulation-target
+      notes: Two Origin 300 compute modules reach a PCI expansion module through an inferred eight-port
+        SN1 router. This selects explicit numbered cables and the reviewed router revision inference.
+        Router cold-zero storage and L1 identity type 0x52 are approximations. The router L1 refuses
+        compute lifecycle commands. USB/L2 transport, router main power and inter-module reset propagation
+        remain unsupported. Routes and node inventory are
+        not initialized for firmware. Construction support does not establish stock PROM or IRIX acceptance.
+      emulation:
+        bedrock_nodes:
+          master-bedrock:
+            board_id_word: 32769
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask:
+              mode: fixed
+              value: 12
+            provenance: derived
+            sources:
+            - hw/mips/sgi/sn1-node.c
+            - hw/mips/sgi/sn-machine.c
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+          slave-bedrock:
+            board_id_word: 32769
+            local_region: 0
+            initiator_region: 0
+            installed_bank_mask:
+              mode: fixed
+              value: 12
+            provenance: derived
+            sources:
+            - hw/mips/sgi/sn1-node.c
+            - hw/mips/sgi/sn-machine.c
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        l1_controllers:
+          master-l1:
+            reported_type: 52
+            revision:
+              major: 1
+              minor: 18
+              patch: 5
+            provenance: derived
+            sources:
+            - hw/mips/sgi/sn1-node.c
+            - hw/mips/sgi/sn-machine.c
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+          slave-l1:
+            reported_type: 52
+            revision:
+              major: 1
+              minor: 18
+              patch: 5
+            provenance: derived
+            sources:
+            - hw/mips/sgi/sn1-node.c
+            - hw/mips/sgi/sn-machine.c
+            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+        io_boards:
+          master-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            provenance: derived
+            sources:
+            - hw/mips/sgi/baseio.c
+            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
+              field remains explicit.
+          slave-xbridge-bridge-f:
+            ioc3_subsystem_id: 65535
+            mac_source: none
+            provenance: derived
+            sources:
+            - hw/mips/sgi/baseio.c
+            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem
+              field remains explicit.
+        system_timekeepers:
+          master-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources:
+            - openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
+            - docs/reviews/fuel-rtc-refinement-review-20261001.md
+            notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy.
+              Existing compatibility part, capacity and mapping assumptions are unchanged.
+          slave-xbridge-bridge-f:
+            kind: m48t35-compatible
+            year_base: 1968
+            initial_ip27_fixture: false
+            provenance: derived
+            sources:
+            - openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/dev/dsrtc.c lines 169 to 174
+            - docs/reviews/fuel-rtc-refinement-review-20261001.md
+            notes: IP35 software uses the 1968 year convention. Blank initial storage is emulator policy.
+              Existing compatibility part, capacity and mapping assumptions are unchanged.
+        machine_name: origin300
+        display_description: SGI Origin 300 (IP45), routed NUMAlink and PCI expansion experiment
+        profile: numalink-pci-expansion-experiment
+        lifecycle: implemented
+        emulator_constraints:
+          accepted_bank_sizes_mib:
+          - 512
+        firmware_payload:
+          argument: -bios
+          path: firmware/6.5.30/ip35prom.payload.bin
+          size: '0x1686a8'
+          sha256: 554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b
+          read_only: true
+          views:
+          - name: CPU reset view
+            address: '0x000_001fc00000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: local Hub-special boot view
+            address: '0x100_18000000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: bounded high local Hub-special boot view
+            address: '0x100_1fc00000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          - name: node-zero remote Hub-special boot view
+            address: '0x100_38000000'
+            payload_offset: '0x0'
+            size: '0x1686a8'
+          second_selection:
+            address: '0x100_1a000000'
+            size: '0x0080_0000'
+          provenance: derived
+          sources:
+          - 'docs/library/ip35-source-map.md: measured container, payload, load address, entry address
+            and ten trampolines'
+          - 'docs/library/origin300-evidence-matrix.md: real IP35 PROM copy from local LBOOT for the exact
+            payload length'
+          - 'docs/library/origin300-reset-alias-evidence.md: stock firmware preserves the high local LBOOT
+            address and offset'
+          - 'D-0024: bounded emulator carrier with the physical decoder left unresolved'
+          notes: 'The one-chassis product''s payload and views, carried by each chassis''s own node: both
+            servers run the same stock IP35 PROM, and each node''s flash answers at its own node''s window.
+            Emulator compatibility policy, as on one chassis; no fitted flash part or physical reset decoder
+            is claimed.'
+        initial_module_numbers:
+        - component: master-module
+          number: 1
+          reason: Synthetic distinct compute controller bay for this routed experiment.
+        - component: slave-module
+          number: 2
+          reason: Synthetic distinct compute controller bay for this routed experiment.
+        - component: router-enclosure
+          number: 20
+          reason: Synthetic router controller bay; distinct from the compute and expansion controllers.
+        - component: expansion-enclosure
+          number: 3
+          reason: Synthetic expansion controller bay for the existing functional startup experiment.
+        synthetic_identities:
+        - component: master-bedrock
+          serial: '0x0d0c0b0a0908'
+          reason: Stable synthetic node identity; the master keeps the one-chassis Origin 300's value.
+        - component: master-xbridge
+          serial: '0x0b0a090807'
+          reason: The master's IO-8 identity, the one-chassis Origin 300's value.
+        - component: master-ioc3
+          serial: '0x5e7000000002'
+          reason: The master's IOC3 identity, the one-chassis Origin 300's value.
+        - component: slave-bedrock
+          serial: '0x0d0c0b0a0909'
+          reason: Stable synthetic node identity for the slave chassis, one past the master's, as the
+            dual-module Origin 200 strides its second node. The captured pairs show distinct barcodes
+            per module; the values themselves are a model choice.
+        - component: slave-xbridge
+          serial: '0x0b0a090808'
+          reason: The slave's IO-8 identity, one past the master's.
+        - component: slave-ioc3
+          serial: '0x5e7000000003'
+          reason: The slave's IOC3 identity, one past the master's.
+        - component: expansion-bedrock
+          serial: '0x123456'
+          reason: Preserves the existing expansion experiment synthetic BIC identity.
+        - component: router-router
+          serial: '0x123457'
+          reason: Synthetic router descriptor identity; no physical barcode is claimed.
+        - component: expansion-u0
+          serial: '0x123458'
+          reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
+        - component: expansion-u1
+          serial: '0x123459'
+          reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
+        - component: expansion-u2
+          serial: '0x12345a'
+          reason: Synthetic installation identity only. No physical XBridge serial behavior is claimed.
+        initially_operational_crossbow_links:
+        - component: master-xbridge-crossbar
+          widgets:
+          - 14
+          - 15
+          reason: Static emulator startup health for the master XBridge's two PCI bridge heads, as on
+            one chassis.
+        - component: slave-xbridge-crossbar
+          widgets:
+          - 14
+          - 15
+          reason: Static emulator startup health for the slave XBridge's two PCI bridge heads, as on one
+            chassis.
+        io_assemblies:
+        - version: 1
+          kind: origin300-pci-expansion
+          peer: expansion-bedrock
+          module: expansion-enclosure
+          controller: expansion-l1
+          placement: 2
+          initial_node_number: 0
+          bedrock_revision: 2
+          xbridge_revision: 2
+          head_ports:
+          - 8
+          - 9
+          - 12
+          - 13
+          controller_profile: pci-expansion
+          controller_startup: bic-functional-experiment
+          configuration_storage: bedrock-flash-experiment
+          unconnected_uart: true
+          pending_register_experiment: true
+          main_power: functional-experiment
+          initial_main_power: true
+          power_command_issuer: master-l1
+          bic_identity: 49152
+          intx_map:
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+          - 1
+          - 5
+          - 1
+          - 5
+          - 2
+          - 6
+          - 2
+          - 6
+        l1_management:
+          owners:
+          - controller: master-l1
+            identity: 101
+          - controller: slave-l1
+            identity: 102
+          - controller: router-l1
+            identity: 103
+          - controller: expansion-l1
+            identity: 104
+          associations:
+          - from: 0
+            to: 3
+            reachable: true
+          - from: 3
+            to: 0
+            reachable: true
+          attachments:
+          - issuer: 0
+            owner: 3
+          - issuer: 3
+            owner: 0
+    evidence_policy: strict
+    components:
+    - id: rack
+      name: Origin 300 experimental rack
+      kind: chassis
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - id: master-module
+      name: Origin 300 compute module one
+      kind: module
+      provenance: vendor-document
+      sources:
+      - '007-4365-002 printed page 38: designate one server master and one slave; console on the master'
+      - 'boot-logs/openbsd-sgi-list/marc-139223952727384-origin-300-numalink-1.html lines 17 to 62: IP35
+        Node Board, Module 001c01 and Module 001c02'
+      parent: rack
+    - id: slave-module
+      name: Origin 300 compute module two
+      kind: module
+      provenance: vendor-document
+      sources:
+      - '007-4365-002 printed page 38: brick slot 02 on the slave''s L1 before connecting the servers'
+      - 'boot-logs/nekonomicon-thread-17314-origin300-8cpu-hinv-prom.html: IRIX hinv of a cabled pair,
+        modules 001c01 and 001c02 each with a node, four processors and IO-8 at xtalk 14 and 15; the 001c02
+        L1''s cfg v lists 001c01 as the attached C'
+      parent: rack
+    - id: router-enclosure
+      name: Experimental Origin 300 NUMAlink module
+      kind: module
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+      notes: One logical SN1 router and independent L1 are selected for the experiment. The physical internal
+        USB hub and rack L2 transport are unsupported.
+      parent: rack
+    - id: router-router
+      name: Eight-port SN1 router
+      kind: router-asic
+      hardware_kind: router
+      parent: router-enclosure
+      router_asic:
+        port_count: 8
+        role: router
+      identity:
+        part: '0x3017'
+        hardware_revision: 1
+        chip_inputs: 0
+      datasheet_contracts:
+      - docs/datasheets/sn1-router.md
+      provenance: derived
+      sources:
+      - 'docs/datasheets/sn1-router.md: public chip identity and reviewed revision-one inference'
+      notes: Chip revision one is an inference from the software-reported revision, not a measurement
+        of fitted silicon. Zero chip inputs are an emulator configuration policy.
+    - id: router-l1
+      name: Independent router L1 controller
+      kind: system-controller
+      hardware_kind: l1
+      parent: router-enclosure
+      system_controller:
+        kind: l1
+      provenance: derived
+      sources:
+      - 'docs/datasheets/sn1-router.md: reviewed generic L1 type 0x52 approximation'
+      notes: Explicit noncompute router controller profile through its own UART, with no firmware revision selected.
+      datasheet_contracts:
+      - docs/datasheets/sn1-router.md
+    - id: router-port-1
+      name: NUMAlink router port 1
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 1
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-2
+      name: NUMAlink router port 2
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 2
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-3
+      name: NUMAlink router port 3
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 3
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-4
+      name: NUMAlink router port 4
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 4
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-5
+      name: NUMAlink router port 5
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 5
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-6
+      name: NUMAlink router port 6
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 6
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-7
+      name: NUMAlink router port 7
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 7
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - id: router-port-8
+      name: NUMAlink router port 8
+      kind: connector
+      parent: router-enclosure
+      connector:
+        interface: NUMAlink 3
+        location: enclosure port 8
+        occupancy: opaque
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    buses:
+    - id: master-route
+      name: Experimental NUMAlink cable at router port 1
+      kind: fabric
+      master: router-router
+      link:
+        kind: cable
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - id: slave-route
+      name: Experimental NUMAlink cable at router port 6
+      kind: fabric
+      master: router-router
+      link:
+        kind: cable
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - id: expansion-cable
+      name: Experimental NUMAlink cable at router port 4
+      kind: fabric
+      master: router-router
+      link:
+        kind: cable
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - id: router-unconnected-port-2
+      name: Unconnected NUMAlink port 2
+      kind: fabric
+      master: router-router
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - id: router-unconnected-port-3
+      name: Unconnected NUMAlink port 3
+      kind: fabric
+      master: router-router
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - id: router-unconnected-port-5
+      name: Unconnected NUMAlink port 5
+      kind: fabric
+      master: router-router
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - id: router-unconnected-port-7
+      name: Unconnected NUMAlink port 7
+      kind: fabric
+      master: router-router
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - id: router-unconnected-port-8
+      name: Unconnected NUMAlink port 8
+      kind: fabric
+      master: router-router
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    connections:
+    - component: router-router
+      bus: master-route
+      role: master
+      fabric_port: 1
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - component: master-bedrock
+      bus: master-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - component: router-router
+      bus: slave-route
+      role: master
+      fabric_port: 6
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - component: slave-bedrock
+      bus: slave-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - component: router-router
+      bus: expansion-cable
+      role: master
+      fabric_port: 4
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: two base modules minimum; eight numbered ports;
+        expansion uses ports 2-5'
+    - component: master-link-connector
+      bus: master-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - component: router-port-1
+      bus: master-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      fabric_port: 1
+    - component: slave-link-connector
+      bus: slave-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - component: router-port-6
+      bus: slave-route
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      fabric_port: 6
+    - component: expansion-link-port
+      bus: expansion-cable
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+    - component: router-port-4
+      bus: expansion-cable
+      role: endpoint
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: numbered connectors and selected experimental cabling'
+      fabric_port: 4
+    - component: router-port-2
+      bus: router-unconnected-port-2
+      role: endpoint
+      fabric_port: 2
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - component: router-port-3
+      bus: router-unconnected-port-3
+      role: endpoint
+      fabric_port: 3
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - component: router-port-5
+      bus: router-unconnected-port-5
+      role: endpoint
+      fabric_port: 5
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - component: router-port-7
+      bus: router-unconnected-port-7
+      role: endpoint
+      fabric_port: 7
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'
+    - component: router-port-8
+      bus: router-unconnected-port-8
+      role: endpoint
+      fabric_port: 8
+      provenance: derived
+      sources:
+      - 'docs/datasheets/origin300-numalink-module.md: unused numbered ports remain unconnected'

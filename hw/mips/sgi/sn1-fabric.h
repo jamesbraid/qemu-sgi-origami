@@ -56,6 +56,7 @@ MemTxResult sn1_fabric_processor_rw(SN1FabricEndpoint *endpoint,
     MemTxAttrs attrs);
 MemTxResult sn1_fabric_destination_rw(void *opaque, const SGIXioSource *source,
     hwaddr address, void *buffer, size_t size, bool write);
+bool sn1_fabric_routed(SN1FabricEndpoint *endpoint);
 SN1FabricEndpoint *sn1_fabric_peer(SN1FabricEndpoint *endpoint);
 unsigned int sn1_fabric_number(SN1FabricEndpoint *endpoint);
 SN1FabricEndpoint *sn1_fabric_claimant(SN1FabricEndpoint *endpoint,

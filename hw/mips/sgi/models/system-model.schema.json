@@ -940,7 +940,7 @@
           "provenance": { "$ref": "#/$defs/fact-provenance" },
           "sources": { "$ref": "#/$defs/sources" },
           "evidence_gap": { "type": "string", "minLength": 1 },
-          "fabric_port": { "type": "integer", "minimum": 1, "maximum": 6, "description": "SN0 fabric link port on this component: a Router card port 1-6, or a Hub network-interface port. Valid only on a kind: fabric bus, and unique per (component, port) across all fabric buses. The Hub's own single network-interface port is implicit and needs no number." },
+          "fabric_port": { "type": "integer", "minimum": 1, "maximum": 8, "description": "Numbered fabric port on a router or its connector. The compiler checks the selected chip's port count. Valid only on a fabric bus and unique per component and port. Hub and Bedrock network interfaces use implicit port zero." },
           "widget": { "type": "integer", "minimum": 0, "maximum": 15, "description": "XIO widget number." },
           "xio": {
             "type": "object",
@@ -1150,14 +1150,15 @@
         },
         "connector_population": {
           "type": "array",
-          "description": "Explicit installation choices that preserve the inventory connector evidence. Occupied choices name an installed board attached through that connector.",
+          "description": "Explicit installation choices that preserve the inventory connector evidence. Occupied choices name a fitted board or module. Cabled choices name reciprocal peer connectors.",
           "items": {
             "type": "object",
             "required": ["component", "occupancy", "reason", "provenance", "sources"],
             "additionalProperties": false,
             "properties": {
               "component": { "$ref": "#/$defs/identifier" },
-              "occupancy": { "enum": ["empty", "occupied"] },
+              "occupancy": { "enum": ["empty", "occupied", "cabled"] },
+              "peer": { "$ref": "#/$defs/identifier" },
               "occupant": { "$ref": "#/$defs/identifier" },
               "reason": { "type": "string", "minLength": 1 },
               "provenance": { "$ref": "#/$defs/fact-provenance" },
@@ -1167,6 +1168,10 @@
               "if": { "properties": { "occupancy": { "const": "occupied" } } },
               "then": { "required": ["occupant"] },
               "else": { "not": { "required": ["occupant"] } }
+            }, {
+              "if": { "properties": { "occupancy": { "const": "cabled" } } },
+              "then": { "required": ["peer"] },
+              "else": { "not": { "required": ["peer"] } }
             }]
           }
         },

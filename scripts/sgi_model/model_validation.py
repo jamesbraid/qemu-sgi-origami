@@ -320,7 +320,28 @@ def check_widget_and_pci_uniqueness(
         if link is None:
             continue
         # The schema requires kind "fabric" whenever link is present.
-        count = connections_per_bus.get(bus["id"], 0)
+        attachments = [entry for entry in model["connections"]
+                       if entry.get("bus") == bus["id"]]
+        endpoints = [entry for entry in attachments
+                     if components.get(entry.get("component"), {}).get("kind")
+                     != "connector"]
+        annotations = [entry for entry in attachments if entry not in endpoints]
+        populations = {entry["component"]: entry for entry in
+                       model.get("composition", {}).get("connector_population", [])
+                       if isinstance(entry, dict)
+                       and isinstance(entry.get("component"), str)}
+        annotation_ids = {entry["component"] for entry in annotations}
+        cable_annotations = (link.get("kind") == "cable"
+                             and len(annotations) == 2
+                             and len(annotation_ids) == 2
+                             and all(
+                                 populations.get(cid, {}).get("occupancy") == "cabled"
+                                 and isinstance(populations.get(cid, {}).get("peer"), str)
+                                 and populations[cid]["peer"] in annotation_ids
+                                 and populations[cid]["peer"] != cid
+                                 for cid in annotation_ids))
+        count = (len(endpoints) if endpoints and cable_annotations
+                 else len(attachments))
         if count != 2:
             problems.append(
                 f"link bus '{bus['id']}' joins exactly two ports, got {count}"

@@ -55,6 +55,14 @@ typedef enum SGINetPacketResult {
     SGI_NET_PACKET_OK,
 } SGINetPacketResult;
 
+/* Zero preserves the existing refusal policy for other chip families. */
+typedef enum SGINetPacketFailure {
+    SGI_NET_PACKET_FAILURE_DEFAULT = 0,
+    SGI_NET_PACKET_FAILURE_ADDRESS = 4,
+    SGI_NET_PACKET_FAILURE_COMMAND = 5,
+    SGI_NET_PACKET_FAILURE_PROTECTION = 6,
+} SGINetPacketFailure;
+
 /*
  * A vector packet in flight. The launching Hub fills op/addr/data/vector and
  * zeroes the rest; each forwarding Router hop consumes one nybble of vector
@@ -74,6 +82,7 @@ typedef enum SGINetPacketResult {
  */
 typedef struct SGINetPacket {
     SGINetPacketOp op;
+    SGINetPacketFailure failure;
     /* The register address the request carries (bits 19:3). */
     hwaddr addr;
     /* Write or exchange data in; read or exchange data out. */
