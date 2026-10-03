@@ -10,6 +10,7 @@
 #include "sgi-migrate.h"
 #include "sgi-launch.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "qobject/qlist.h"
 
 #include <sys/socket.h>
@@ -44,6 +45,9 @@
 #define IOC3_ENET_MAC_CONTROL (IOC3 + 0x0f0)
 #define IOC3_ENET_INT_STATUS (IOC3 + 0x0f4)
 #define IOC3_ENET_INT_ENABLE (IOC3 + 0x0f8)
+#define IOC3_INT_STATUS (IOC3 + 0x1c)
+#define IOC3_INT_ENABLE_SET (IOC3 + 0x20)
+#define IOC3_KBC_KBD_RECEIVE (IOC3 + 0x0a0)
 #define IOC3_ENET_RX_RING_LO (IOC3 + 0x104)
 #define IOC3_ENET_RX_CONSUME (IOC3 + 0x10c)
 #define IOC3_ENET_RX_PRODUCE (IOC3 + 0x110)
@@ -62,6 +66,8 @@
 #define UART_A (IOC3 + 0x20178)
 #define UART_B (IOC3 + 0x20170)
 #define IOC3_SERIAL_IRQ (1u << 6)
+#define IOC3_INT_KEYBOARD (1u << 22)
+#define IOC3_KBC_RX_VALID_2 (1u << 31)
 #define RAD_BAR0 (BRIDGE + 0x700000)
 #define RAD_PCI_BAR0 0x13000000u
 #define RAD_PCI_ID 0x000510a9u
@@ -4068,6 +4074,56 @@ static void test_serial_a_interrupt_route(void)
     qtest_quit(qts);
 }
 
+static void test_keyboard_interrupt_route(void)
+{
+    QTestState *qts = octane_start();
+    g_autoptr(QDict) reply = NULL;
+    g_autoptr(GString) reply_text = NULL;
+    uint32_t receive;
+
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+    qtest_writel(qts, BRIDGE_REG(0x030), 8u << 16);
+    qtest_writel(qts, BRIDGE_REG(0x038), 0x80);
+    qtest_writel(qts, BRIDGE_REG(0x130 + 8 * 4), 16);
+    qtest_writel(qts, BRIDGE_REG(0x118), SUPERIO_PIN);
+    qtest_writeq(qts, HEART + 0x10000, UINT64_MAX);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    reply = qtest_qmp(qts,
+        "{'execute':'input-send-event','arguments':{'events':["
+        " {'type':'key','data':{'down':true,'key':"
+        " {'type':'qcode','data':'a'}}}]}}");
+    if (!qdict_haskey(reply, "return")) {
+        reply_text = qobject_to_json(QOBJECT(reply));
+        g_error("input-send-event failed: %s", reply_text->str);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, IOC3_INT_STATUS) & IOC3_INT_KEYBOARD,
+                    ==, IOC3_INT_KEYBOARD);
+    receive = qtest_readl(qts, IOC3_KBC_KBD_RECEIVE);
+    g_assert_cmphex(receive & IOC3_KBC_RX_VALID_2, ==,
+                    IOC3_KBC_RX_VALID_2);
+    g_assert_cmphex((receive >> 16) & 0xff, ==, 0x1c);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
+
+    qtest_writel(qts, IOC3_INT_ENABLE_SET, IOC3_INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==,
+                    SUPERIO_PIN);
+    qtest_writel(qts, BRIDGE_REG(0x108), SUPERIO_PIN);
+    g_assert_cmphex(qtest_readq(qts, HEART + 0x10030) & SUPERIO_VECTOR, ==,
+                    SUPERIO_VECTOR);
+    g_assert_cmphex(octane_cpu_cause(qts) & SUPERIO_CAUSE, ==,
+                    SUPERIO_CAUSE);
+
+    qtest_writel(qts, IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & SUPERIO_PIN, ==, 0);
+    qtest_writel(qts, BRIDGE_REG(0x108), SUPERIO_PIN);
+    qtest_writeq(qts, HEART + 0x10000, 0);
+    qtest_quit(qts);
+}
+
 static void test_reset_state(void)
 {
     QTestState *qts = octane_start();
@@ -4526,6 +4582,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/octane2/serial-b", GINT_TO_POINTER(1), test_serial_b);
     qtest_add_func("/octane/serial-a-interrupt-route",
                    test_serial_a_interrupt_route);
+    qtest_add_func("/octane/keyboard-interrupt-route",
+                   test_keyboard_interrupt_route);
     qtest_add_func("/octane/heart-interrupt-levels",
                    test_heart_interrupt_levels);
     qtest_add_func("/octane/reset-state", test_reset_state);
