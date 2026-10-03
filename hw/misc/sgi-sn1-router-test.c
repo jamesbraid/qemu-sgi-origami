@@ -75,7 +75,8 @@ static uint64_t test_route_value(Object *obj)
     unsigned output;
     uint8_t next;
 
-    if (s->ingress > SGI_SN1_ROUTER_PORTS || s->turn > UINT8_MAX ||
+    if (!s->router ||
+        s->ingress > SGI_SN1_ROUTER_PORTS || s->turn > UINT8_MAX ||
         s->destination > UINT8_MAX ||
         !sgi_sn1_router_route(s->router, s->ingress, s->turn,
                               s->destination, &output, &next)) {
