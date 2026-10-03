@@ -238,11 +238,10 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 /* Unknown command payloads remain unsupported. */
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
 /*
- * The payload buffer: the raster, descriptor and HQ headers accept up to
- * the limit above, and the OpenGL packets the model executes need up to
- * 16 words, for glLoadMatrixf and glMultMatrixf.
+ * The raster, descriptor, and HQ headers use the limit above. OpenGL matrix
+ * uploads need 16 words; captured stipple uploads need 32.
  */
-#define SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS 16
+#define SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS 32
 #define SGI_MGRAS_CMD_TOKEN_DISCARD UINT32_MAX
 #define SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS \
     DIV_ROUND_UP(UINT8_MAX, sizeof(uint32_t))
@@ -366,12 +365,17 @@ typedef struct SGIMgrasGLPixels {
  * first texel starts at, its log2 width and height and the kept format in
  * TL_MODE's layout and depth fields. Host-only, rebuilt for each draw.
  */
-/* Bounded software storage for the observed 2x2x{1,2} client uploads. */
-#define SGI_MGRAS_VOLUME_TEX_BYTES 4096u
+/* Software storage is bounded by the largest captured RGBA8 volume. */
+#define SGI_MGRAS_VOLUME_TEX_BASE_BYTES 4096u
+#define SGI_MGRAS_VOLUME_TEX_BYTES 65536u
+#define SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES 256u
+#define SGI_MGRAS_TEXTURE_COLOR_TABLE_BYTES \
+    (3u * SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES)
 
 typedef struct SGIMgrasTexView {
     const uint8_t *tram;
     const uint8_t *volume_data;
+    const uint8_t *volume_data_extra;
     uint64_t bit;
     uint32_t log2w, log2h;
     uint32_t mode;
@@ -413,8 +417,15 @@ typedef struct SGIMgrasTexture {
     uint64_t load_dma_bytes;
     uint32_t volume_base, volume_mode, volume_level;
     uint32_t volume_width, volume_height, volume_depth, volume_bytes;
-    /* Software slice bytes; physical TRAM placement is not established. */
-    uint8_t volume_data[SGI_MGRAS_VOLUME_TEX_BYTES];
+    /* Keep the version-11 field size stable; version 13 adds its tail. */
+    uint8_t volume_data[SGI_MGRAS_VOLUME_TEX_BASE_BYTES];
+    uint8_t volume_data_extra[SGI_MGRAS_VOLUME_TEX_BYTES -
+                              SGI_MGRAS_VOLUME_TEX_BASE_BYTES];
+    uint32_t color_table_selector, color_table_written;
+    uint32_t color_table_active, color_table_valid;
+    uint8_t color_table_data[SGI_MGRAS_TEXTURE_COLOR_TABLE_BYTES];
+    uint32_t color_table_rgba[SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES];
+    SGIGLTexColorTable color_table;
     /*
      * Host-only: the host bytes of a transfer, gathered row by row inside
      * the one port write that kicks it, so never migrated.
