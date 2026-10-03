@@ -18,4 +18,6 @@ bool sgi_sn1_router_port_neighbor(SGISN1RouterState *s, unsigned port,
 void sgi_sn1_router_set_changed(SGISN1RouterState *s,
     void (*changed)(void *), void *opaque);
 
+void sgi_sn1_router_lock_cables(SGISN1RouterState *s);
+
 #endif

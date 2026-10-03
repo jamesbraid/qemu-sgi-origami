@@ -137,6 +137,7 @@ struct SGIBedrockState {
      * request both consult the cable when they happen.
      */
     SGINetCableState *net_cable;
+    bool net_cable_locked;
 
     /*
      * Cached CPUState resolution per physical processor slot (0..3: A, B,
@@ -215,6 +216,8 @@ struct SGIBedrockState {
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
 
 /* The node number this Bedrock decodes by: the local block's latched one. */
+void sgi_bedrock_lock_net_cable(SGIBedrockState *s);
+
 uint8_t sgi_bedrock_node_number(SGIBedrockState *s);
 
 /*

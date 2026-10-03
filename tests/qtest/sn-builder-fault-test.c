@@ -37,6 +37,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
+#include "hw/mips/sgi/sn1-fabric.h"
+#include "hw/misc/sgi-sn1-router.h"
 #include "system/memory.h"
 #include "cpu.h"
 
@@ -1407,11 +1409,43 @@ static void bedrock_nasid_test_machine_reset(MachineState *machine,
     }
 }
 
+/* Stop after nodes and a router exist, before cable construction. */
+static void bedrock_nasid_test_stop_partial(Object *obj, bool value,
+                                           Error **errp)
+{
+    DeviceState *nodes[ARRAY_SIZE(bedrock_nasid_test_node)];
+    DeviceState *dev;
+    SGISN1RouterState *router;
+    SN1MemoryMappings *maps;
+
+    if (!value) {
+        return;
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(nodes); i++) {
+        if (!bedrock_nasid_test_node[i]) {
+            error_setg(errp, "partial mapping test needs activated nodes");
+            return;
+        }
+        nodes[i] = DEVICE(bedrock_nasid_test_node[i]);
+    }
+    dev = qdev_new(TYPE_SGI_SN1_ROUTER);
+    object_property_add_child(obj, "partial-router", OBJECT(dev));
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_abort);
+    router = SGI_SN1_ROUTER(dev);
+    maps = sn1_memory_mappings_new(nodes, ARRAY_SIZE(nodes), &router, 1);
+    object_unparent(OBJECT(router));
+    sn1_memory_mappings_stop(maps);
+    sn1_memory_mappings_stop(maps);
+    g_free(maps);
+}
+
 static void bedrock_nasid_test_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
     mc->desc = "two-node Bedrock addressing fixture, bypassing the builder";
+    object_class_property_add_bool(oc, "stop-partial-mappings", NULL,
+                                   bedrock_nasid_test_stop_partial);
     mc->init = bedrock_nasid_test_machine_init;
     mc->reset = bedrock_nasid_test_machine_reset;
     mc->valid_cpu_types = bedrock_test_r14000_cpu_types;
@@ -1704,6 +1738,192 @@ static const TypeInfo expansion_test_type = {
     .class_init = expansion_test_class_init,
 };
 
+/* QMP has no child-release command. Keep this operation test-only. */
+static bool routed_cleanup_activate;
+static void (*routed_cleanup_parent_init)(MachineState *machine);
+
+static void routed_cleanup_set_activate(Object *obj, bool value, Error **errp)
+{
+    routed_cleanup_activate = value;
+}
+
+static void routed_cleanup_init(MachineState *machine)
+{
+    if (routed_cleanup_activate) {
+        routed_cleanup_parent_init(machine);
+    }
+}
+
+static void routed_cleanup_release_child(Object *obj, const char *value,
+                                          Error **errp)
+{
+    Object *parent = g_str_equal(value, "router") ?
+        object_resolve_path_component(obj, "module3") : obj;
+    Object *child = parent ?
+        object_resolve_path_component(parent, value) : NULL;
+
+    if (!child || (!g_str_equal(value, "master-route") &&
+                   !g_str_equal(value, "slave-route") &&
+                   !g_str_equal(value, "expansion-cable") &&
+                   !g_str_equal(value, "router"))) {
+        error_setg(errp, "unsupported cleanup child '%s'", value);
+        return;
+    }
+    object_unparent(child);
+}
+
+static void routed_cleanup_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    routed_cleanup_parent_init = mc->init;
+    mc->init = routed_cleanup_init;
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   routed_cleanup_set_activate);
+    object_class_property_add_str(oc, "release-child", NULL,
+                                  routed_cleanup_release_child);
+}
+
+static const TypeInfo routed_cleanup_type = {
+    .name = MACHINE_TYPE_NAME("sn-builder-routed-cleanup-test"),
+    .parent = MACHINE_TYPE_NAME("origin300"),
+    .class_init = routed_cleanup_class_init,
+};
+
+/* Synthetic two-router chain; it makes no product-topology claim. */
+static bool routed_memory_activate;
+static void (*routed_memory_parent_init)(MachineState *machine);
+
+static void routed_memory_set_activate(Object *obj, bool value, Error **errp)
+{
+    routed_memory_activate = value;
+}
+
+static void routed_memory_init(MachineState *machine)
+{
+    if (routed_memory_activate) {
+        routed_memory_parent_init(machine);
+    }
+}
+
+static void routed_memory_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *source = sgi_model_find_topology(
+        "origin300-numalink-pci-expansion-experiment");
+    SGIModelTopology *t = g_memdup2(source, sizeof(*t));
+    SGIModelModuleList **module_tail = &t->modules;
+    SGIModelControllerList **controller_tail = &t->controllers;
+    SGIModelRouterList **router_tail = &t->routers;
+    SGIModelCableList **cable_tail = &t->cables;
+    SGIModelNodePopulationList **population_tail = &t->node_populations;
+    SGIModelL1Management *management =
+        g_memdup2(source->l1_management, sizeof(*management));
+    SGIModelL1OwnerList **owner_tail = &management->owners;
+    SGIModelModule *module = g_new0(SGIModelModule, 1);
+    SGIModelController *controller = g_new0(SGIModelController, 1);
+    SGIModelRouter *router =
+        g_memdup2(source->routers->value, sizeof(*router));
+    SGIModelL1Owner *owner = g_new0(SGIModelL1Owner, 1);
+    SGIModelCable *inter = g_new0(SGIModelCable, 1);
+    SGIModelLinkEndList **end_tail = &inter->ends;
+    static const unsigned routers[] = { 0, 1 };
+    static const unsigned cables[] = { 0, 1, 2, 3 };
+
+    t->name = (char *)"sn-builder-routed-memory-test";
+    t->modules = NULL;
+    t->controllers = NULL;
+    t->routers = NULL;
+    t->cables = NULL;
+    t->node_populations = NULL;
+    management->owners = NULL;
+    for (const SGIModelModuleList *entry = source->modules;
+         entry; entry = entry->next) {
+        QAPI_LIST_APPEND(module_tail, entry->value);
+    }
+    module->id = (char *)"synthetic-interior-router";
+    module->initial_module_number = 21;
+    module->controller_index = 4;
+    QAPI_LIST_APPEND(module_tail, module);
+    for (const SGIModelControllerList *entry = source->controllers;
+         entry; entry = entry->next) {
+        QAPI_LIST_APPEND(controller_tail, entry->value);
+    }
+    controller->id = (char *)"synthetic-interior-router-l1";
+    controller->module_index = 4;
+    controller->kind = SGI_MODEL_CONTROLLER_KIND_L1;
+    QAPI_LIST_APPEND(controller_tail, controller);
+    for (const SGIModelRouterList *entry = source->routers;
+         entry; entry = entry->next) {
+        QAPI_LIST_APPEND(router_tail, entry->value);
+    }
+    router->id = (char *)"synthetic-interior-router-chip";
+    router->module_index = 4;
+    router->serial = 0x12345678;
+    QAPI_LIST_APPEND(router_tail, router);
+    for (const SGIModelCableList *entry = source->cables;
+         entry; entry = entry->next) {
+        SGIModelCable *cable = g_memdup2(entry->value, sizeof(*cable));
+        SGIModelLinkEndList **tail = &cable->ends;
+
+        cable->ends = NULL;
+        for (const SGIModelLinkEndList *end = entry->value->ends;
+             end; end = end->next) {
+            SGIModelLinkEnd *endpoint =
+                g_memdup2(end->value, sizeof(*endpoint));
+
+            if (g_str_equal(cable->name, "slave-route") &&
+                endpoint->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
+                endpoint->index = 1;
+            }
+            QAPI_LIST_APPEND(tail, endpoint);
+        }
+        QAPI_LIST_APPEND(cable_tail, cable);
+    }
+    inter->name = (char *)"inter-router";
+    inter->kind = SGI_MODEL_CABLE_KIND_CABLE;
+    for (unsigned i = 0; i < 2; i++) {
+        SGIModelLinkEnd *endpoint = g_new0(SGIModelLinkEnd, 1);
+
+        endpoint->kind = SGI_MODEL_LINK_END_KIND_ROUTER;
+        endpoint->index = i;
+        endpoint->port = i ? 1 : 6;
+        QAPI_LIST_APPEND(end_tail, endpoint);
+    }
+    QAPI_LIST_APPEND(cable_tail, inter);
+    for (const SGIModelNodePopulationList *entry = source->node_populations;
+         entry; entry = entry->next) {
+        SGIModelNodePopulation *population =
+            g_memdup2(entry->value, sizeof(*population));
+
+        population->routers = uint32_list(routers, ARRAY_SIZE(routers));
+        population->cables = uint32_list(cables, ARRAY_SIZE(cables));
+        QAPI_LIST_APPEND(population_tail, population);
+    }
+    for (const SGIModelL1OwnerList *entry = source->l1_management->owners;
+         entry; entry = entry->next) {
+        QAPI_LIST_APPEND(owner_tail, entry->value);
+    }
+    owner->controller_index = 4;
+    owner->identity = 0x55;
+    QAPI_LIST_APPEND(owner_tail, owner);
+    t->l1_management = management;
+    smc->test_topology = t;
+    routed_memory_parent_init = mc->init;
+    mc->init = routed_memory_init;
+    mc->desc = "Synthetic routed memory two-router chain";
+    machine_class_allow_dynamic_sysbus_dev(mc, "sgi-board-test-fixture");
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   routed_memory_set_activate);
+}
+
+static const TypeInfo routed_memory_type = {
+    .name = MACHINE_TYPE_NAME("sn-builder-routed-memory-test"),
+    .parent = MACHINE_TYPE_NAME("origin300"),
+    .class_init = routed_memory_class_init,
+};
+
 static void sn_builder_fault_test_register_types(void)
 {
     /*
@@ -1833,6 +2053,8 @@ static void sn_builder_fault_test_register_types(void)
     type_register_static(&bedrock_nasid_test_type);
     type_register_static(&origin300_config_type);
     type_register_static(&expansion_test_type);
+    type_register_static(&routed_cleanup_type);
+    type_register_static(&routed_memory_type);
 }
 
 type_init(sn_builder_fault_test_register_types)

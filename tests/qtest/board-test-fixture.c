@@ -43,6 +43,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/core/boards.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -58,6 +59,10 @@
 #include "qom/object.h"
 #include "../../hw/mips/sgi/origin300-pci-expansion.h"
 #include "../../hw/mips/sgi/sn1-fabric.h"
+#include "../../hw/mips/sgi/sn1-node.h"
+#include "exec/cpu-common.h"
+#include "hw/misc/sgi-sn1-router.h"
+#include "system/address-spaces.h"
 
 #define TYPE_SGI_BOARD_TEST_FIXTURE "sgi-board-test-fixture"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBoardTestFixtureState, SGI_BOARD_TEST_FIXTURE)
@@ -93,6 +98,15 @@ struct SGIBoardTestFixtureState {
     MemoryRegion flash_select1;
     uint8_t *flash_select0_bytes;
     uint8_t *flash_select1_bytes;
+    SN1FabricProcessorView memory_callback;
+    AddressSpace memory_callback_as;
+    bool memory_callback_ready;
+    MemoryRegion memory_cpu_callback;
+    MemoryRegion *memory_cpu_root;
+    Object *memory_cpu_owner;
+    uint64_t memory_value;
+    MemTxResult memory_result;
+    bool memory_ram;
 };
 
 /* Test-only composition of two XBridge ports, with no graphics device. */
@@ -307,6 +321,19 @@ static void board_test_fixture_build(DeviceState *dev, Error **errp)
     memory_region_init(&s->sink, OBJECT(s), "sgi-board-test-fixture.sink",
                        1ULL << 52);
 
+    if (g_str_equal(s->board_type, "sn1-memory")) {
+        SN1NodeState *node = SN1_NODE(object_resolve_path("/machine/node1",
+                                                       NULL));
+
+        sn1_fabric_init_processor_view(&s->memory_callback, &node->endpoint,
+                                       0, 0, &s->sink);
+        memory_region_set_enabled(&s->memory_callback.region, true);
+        address_space_init(&s->memory_callback_as, &s->sink,
+                           "sn1-memory-callback-comparison");
+        s->memory_callback_ready = true;
+        return;
+    }
+
     if (g_str_equal(s->board_type, "xbridge-cascade") ||
         g_str_equal(s->board_type, "xbridge-cascade-empty") ||
         g_str_equal(s->board_type, "xbridge-cascade-projection")) {
@@ -441,12 +468,130 @@ static const VMStateDescription vmstate_board_test_fixture = {
     },
 };
 
+/* Expose transaction status as well as bytes; qtest memory commands omit it. */
+static void board_test_fixture_memory_request(Object *obj, const char *request,
+                                               Error **errp)
+{
+    SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(obj);
+    uint64_t address, value;
+    unsigned size, mode, cca;
+    uint8_t bytes[8];
+    MemTxAttrs attrs = { .requester_id = 16 };
+    AddressSpace *as;
+
+    if (!s->memory_callback_ready ||
+        sscanf(request, "%" SCNx64 " %u %" SCNx64 " %u %u",
+               &address, &size, &value, &mode, &cca) != 5 ||
+        !size || size > sizeof(bytes) || mode > 8 || cca > 7) {
+        error_setg(errp, "invalid sn1 memory comparison request");
+        return;
+    }
+    if (mode == 8) {
+        uint64_t page = address & ~UINT64_C(0xfff);
+
+        if (s->memory_cpu_root) {
+            error_setg(errp, "CPU callback page is already installed");
+            return;
+        }
+        as = cpu_get_address_space(qemu_get_cpu(2), 0);
+        s->memory_cpu_root = as->root;
+        s->memory_cpu_owner = memory_region_owner(as->root);
+        object_ref(s->memory_cpu_owner);
+        memory_region_init_alias(&s->memory_cpu_callback, obj,
+                                  "sn1-memory-cpu-callback",
+                                  &s->memory_callback.region, page, 0x1000);
+        memory_region_add_subregion_overlap(as->root, page,
+                                             &s->memory_cpu_callback, 2);
+        s->memory_result = MEMTX_OK;
+        return;
+    }
+    if (mode == 7) {
+        SN1NodeState *node = SN1_NODE(object_resolve_path("/machine/node0",
+                                                       NULL));
+
+        sgi_bedrock_md_name_line(&SGI_BEDROCK(node->bedrock)->md, address);
+        s->memory_result = MEMTX_OK;
+        return;
+    }
+    if (mode == 6) {
+        SGIBedrockState *bic = SGI_BEDROCK(object_resolve_path(
+            "/machine/module2/assembly/bic", NULL));
+
+        s->memory_result = sgi_bedrock_lb_hub_access(&bic->lb, address,
+                                                     &value, true);
+        if (s->memory_result == MEMTX_OK) {
+            s->memory_result = sgi_bedrock_lb_hub_access(&bic->lb, address,
+                                                         &value, false);
+            s->memory_value = value;
+        }
+        return;
+    }
+    if (mode >= 4) {
+        SGISN1RouterState *router = SGI_SN1_ROUTER(
+            object_resolve_path(mode == 4 ? "/machine/module3/router" :
+                                "/machine/module4/router", NULL));
+        SGINetPacket packet = { .addr = address, .data = value,
+                                .op = SGI_NET_PACKET_WRITE };
+
+        s->memory_result = sgi_sn1_router_access(router, 1, &packet);
+        return;
+    }
+    attrs.mips_cca = cca;
+    attrs.mips_uncached = cca == 2;
+    as = mode & 2 ? &s->memory_callback_as :
+        cpu_get_address_space(qemu_get_cpu(2), 0);
+    {
+        MemoryRegionSection section = memory_region_find(as->root, address,
+                                                         size);
+
+        s->memory_ram = section.mr && memory_region_is_ram(section.mr);
+        memory_region_unref(section.mr);
+    }
+    stq_be_p(bytes, value);
+    s->memory_result = address_space_rw(as, address, attrs, bytes, size,
+                                        mode & 1);
+    s->memory_value = ldq_be_p(bytes);
+}
+
+static char *board_test_fixture_memory_response(Object *obj, Error **errp)
+{
+    SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(obj);
+
+    return g_strdup_printf("%u %016" PRIx64 " %u",
+                           s->memory_result, s->memory_value, s->memory_ram);
+}
+
+static void board_test_fixture_unrealize(DeviceState *dev)
+{
+    SGIBoardTestFixtureState *s = SGI_BOARD_TEST_FIXTURE(dev);
+
+    if (s->memory_cpu_root) {
+        memory_region_del_subregion(s->memory_cpu_root,
+                                     &s->memory_cpu_callback);
+        object_unparent(OBJECT(&s->memory_cpu_callback));
+        s->memory_cpu_root = NULL;
+        object_unref(s->memory_cpu_owner);
+        s->memory_cpu_owner = NULL;
+    }
+    if (s->memory_callback_ready) {
+        address_space_destroy(&s->memory_callback_as);
+        memory_region_del_subregion(&s->sink, &s->memory_callback.region);
+        object_unparent(OBJECT(&s->memory_callback.region));
+        s->memory_callback_ready = false;
+    }
+}
+
 static void board_test_fixture_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->desc = "Board class construction test fixture";
     dc->realize = board_test_fixture_realize;
+    dc->unrealize = board_test_fixture_unrealize;
+    object_class_property_add_str(oc, "memory-request", NULL,
+                                 board_test_fixture_memory_request);
+    object_class_property_add_str(oc, "memory-response",
+                                 board_test_fixture_memory_response, NULL);
     dc->vmsd = &vmstate_board_test_fixture;
     dc->user_creatable = true;
     device_class_set_props(dc, board_test_fixture_properties);
@@ -459,9 +604,44 @@ static const TypeInfo board_test_fixture_type = {
     .class_init = board_test_fixture_class_init,
 };
 
+/* Keep the probe admission confined to an explicit test machine. */
+static bool memory_test_activate;
+static void (*memory_test_parent_init)(MachineState *machine);
+
+static void memory_test_set_activate(Object *obj, bool value, Error **errp)
+{
+    memory_test_activate = value;
+}
+
+static void memory_test_init(MachineState *machine)
+{
+    if (memory_test_activate) {
+        memory_test_parent_init(machine);
+    }
+}
+
+static void memory_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    memory_test_parent_init = mc->init;
+    mc->init = memory_test_init;
+    mc->desc = "Routed CPU memory test fixture";
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_BOARD_TEST_FIXTURE);
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   memory_test_set_activate);
+}
+
+static const TypeInfo memory_test_type = {
+    .name = MACHINE_TYPE_NAME("sn1-memory-test"),
+    .parent = MACHINE_TYPE_NAME("origin300"),
+    .class_init = memory_test_class_init,
+};
+
 static void board_test_fixture_register_types(void)
 {
     type_register_static(&board_test_fixture_type);
+    type_register_static(&memory_test_type);
 }
 
 type_init(board_test_fixture_register_types)

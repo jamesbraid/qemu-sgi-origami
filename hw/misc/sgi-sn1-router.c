@@ -26,6 +26,7 @@ struct SGISN1RouterState {
     DeviceState *uart;
     AddressSpace uart_as;
     bool uart_as_ready;
+    bool cables_locked;
     uint8_t revision;
     uint64_t protection;
     uint64_t global[2];
@@ -399,6 +400,27 @@ static void router_unrealize(DeviceState *dev)
     }
 }
 
+void sgi_sn1_router_lock_cables(SGISN1RouterState *s)
+{
+    s->cables_locked = true;
+}
+
+static void router_check_cable(const Object *obj, const char *name,
+                                Object *value, Error **errp)
+{
+    SGISN1RouterState *s = SGI_SN1_ROUTER((Object *)obj);
+    unsigned port;
+
+    if (sscanf(name, "port%u-cable", &port) != 1 ||
+        port < 1 || port > SGI_SN1_ROUTER_PORTS) {
+        error_setg(errp, "invalid router cable property");
+        return;
+    }
+    if (s->cables_locked && value != OBJECT(s->cable[port - 1])) {
+        error_setg(errp, "machine network attachments are fixed");
+    }
+}
+
 static void router_init(Object *obj)
 {
     SGISN1RouterState *s = SGI_SN1_ROUTER(obj);
@@ -410,7 +432,7 @@ static void router_init(Object *obj)
         g_autofree char *name = g_strdup_printf("port%u-cable", p);
 
         object_property_add_link(obj, name, TYPE_SGI_NET_CABLE,
-            (Object **)&s->cable[p - 1], object_property_allow_set_link, 0);
+            (Object **)&s->cable[p - 1], router_check_cable, 0);
     }
     object_property_add_link(obj, "l1-uart", TYPE_SGI_L1_UART,
         (Object **)&s->uart, qdev_prop_allow_set_link_before_realize,

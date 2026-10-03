@@ -332,6 +332,7 @@ static void sn1_node_number_changed(Notifier *notifier, void *data)
 
     sn1_node_set_requester_ids(node);
     sn1_node_update_claims(node);
+    sn1_memory_mappings_refresh(node->memory_mappings, NULL);
 }
 
 static void sn1_node_cable_changed(Notifier *notifier, void *data)
@@ -2542,13 +2543,15 @@ static void sn1_node_unrealize(DeviceState *dev)
 {
     SN1NodeState *node = SN1_NODE(dev);
 
+    sn1_memory_mappings_stop(node->memory_mappings);
+
     if (node->reset_router_ready) {
         memory_listener_unregister(&node->reset_memory_listener);
         memory_region_del_subregion(get_system_memory(),
                                     MEMORY_REGION(&node->reset_router));
         address_space_destroy(&node->reset_memory_as);
         address_space_destroy(&node->reset_prom_as);
-    }
+    } (sn1: map routed CPU RAM through destination MD)
     if (node->ni_boot_initialized) {
         address_space_destroy(&node->ni_boot_as);
     }
@@ -2726,6 +2729,7 @@ static void sn1_node_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sn1_node_properties);
     /* The machine wires a node's RAM and clock; -device cannot. */
     dc->user_creatable = false;
+    dc->hotpluggable = false;
     rc->phases.hold = sn1_node_reset_hold;
 }
 

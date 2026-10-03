@@ -7,6 +7,12 @@
 #include "hw/mips/sgi/net-cable.h"
 #include "hw/misc/sgi-sn1-router.h"
 #include "system/address-spaces.h"
+#include "system/cpus.h"
+#include "system/runstate.h"
+#include "system/tcg.h"
+#include "qemu/main-loop.h"
+#include "exec/cputlb.h"
+#include "sn1-node.h"
 #include "sn1-fabric.h"
 
 static const uint64_t sn1_node_space_base[SN1_FABRIC_SPACES] = {
@@ -442,3 +448,255 @@ static const TypeInfo sn1_fabric_types[] = {
 };
 
 DEFINE_TYPES(sn1_fabric_types)
+
+/* CPU mappings are derived from the fixed machine's live fabric state. */
+typedef struct SN1MemoryOrigin {
+    SN1MemoryMappings *maps;
+    SN1NodeState *node;
+    Notifier ni;
+} SN1MemoryOrigin;
+
+typedef struct SN1MemoryAlias {
+    MemoryRegion region;
+    SN1NodeState *origin;
+    SN1NodeState *target;
+    MemoryRegion *parent;
+} SN1MemoryAlias;
+
+typedef struct SN1MemoryCable {
+    SN1MemoryMappings *maps;
+    SGINetCableState *cable;
+    Notifier notifier;
+} SN1MemoryCable;
+
+struct SN1MemoryMappings {
+    SN1MemoryOrigin *origins;
+    unsigned num_nodes;
+    SGISN1RouterState **routers;
+    unsigned num_routers;
+    GPtrArray *aliases;
+    GPtrArray *cables;
+    VMChangeStateEntry *vm_handler;
+    bool stopped;
+};
+
+void sn1_memory_mappings_refresh(SN1MemoryMappings *maps, SN1NodeState *origin)
+{
+    if (!maps || maps->stopped) {
+        return;
+    }
+    assert(bql_locked());
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < maps->aliases->len; i++) {
+        SN1MemoryAlias *alias = g_ptr_array_index(maps->aliases, i);
+        unsigned number;
+        uint64_t size;
+        bool enabled;
+
+        if (origin && alias->origin != origin) {
+            continue;
+        }
+        number = sgi_bedrock_node_number(
+            SGI_BEDROCK(alias->target->bedrock));
+        size = MIN(memory_region_size(alias->target->ram),
+                   SN1_FABRIC_WINDOW_SIZE);
+        enabled = size && alias->origin->endpoint.ready &&
+            alias->target->endpoint.ready &&
+            sn1_fabric_routed(&alias->origin->endpoint) &&
+            sn1_fabric_resolve_named(&alias->origin->endpoint, number) ==
+                &alias->target->endpoint;
+        memory_region_set_size(&alias->region, size);
+        memory_region_set_address(&alias->region,
+                                  (uint64_t)number << SN1_FABRIC_ADDRESS_SHIFT);
+        memory_region_set_enabled(&alias->region, enabled);
+    }
+    memory_region_transaction_commit();
+}
+
+static void sn1_memory_ni_changed(Notifier *notifier, void *data)
+{
+    SN1MemoryOrigin *origin = container_of(notifier, SN1MemoryOrigin, ni);
+
+    sn1_memory_mappings_refresh(origin->maps, origin->node);
+}
+
+static void sn1_memory_router_changed(void *opaque)
+{
+    sn1_memory_mappings_refresh(opaque, NULL);
+}
+
+static void sn1_memory_cable_changed(Notifier *notifier, void *data)
+{
+    SN1MemoryCable *cable =
+        container_of(notifier, SN1MemoryCable, notifier);
+
+    sn1_memory_mappings_refresh(cable->maps, NULL);
+}
+
+static void sn1_memory_vm_changed(void *opaque, bool running, RunState state)
+{
+    if (running) {
+        sn1_memory_mappings_refresh(opaque, NULL);
+    }
+}
+
+SN1MemoryMappings *sn1_memory_mappings_new(DeviceState **nodes,
+    unsigned num_nodes, SGISN1RouterState **routers, unsigned num_routers)
+{
+    SN1MemoryMappings *maps = g_new0(SN1MemoryMappings, 1);
+
+    assert(bql_locked());
+    maps->num_nodes = num_nodes;
+    maps->origins = g_new0(SN1MemoryOrigin, num_nodes);
+    maps->routers = g_memdup2(routers, sizeof(*routers) * num_routers);
+    maps->num_routers = num_routers;
+    maps->aliases = g_ptr_array_new_with_free_func(g_free);
+    maps->cables = g_ptr_array_new_with_free_func(g_free);
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < num_nodes; i++) {
+        SN1MemoryOrigin *origin = &maps->origins[i];
+        SN1NodeState *node = SN1_NODE(nodes[i]);
+
+        origin->maps = maps;
+        origin->node = node;
+        object_ref(OBJECT(node));
+        origin->ni.notify = sn1_memory_ni_changed;
+        node->memory_mappings = maps;
+        sgi_bedrock_ni_add_change_notifier(&SGI_BEDROCK(node->bedrock)->ni,
+                                          &origin->ni);
+        for (unsigned j = 0; j < num_nodes; j++) {
+            SN1NodeState *target = SN1_NODE(nodes[j]);
+
+            if (node == target) {
+                continue;
+            }
+            for (unsigned cpu = 0; cpu < node->nr_cpus; cpu++) {
+                SN1MemoryAlias *alias = g_new0(SN1MemoryAlias, 1);
+                g_autofree char *name = g_strdup_printf(
+                    "sn1.node%u.cpu%u.to%u", i, cpu, j);
+
+                alias->origin = node;
+                alias->target = target;
+                alias->parent = &node->ni_processor[cpu][0].region;
+                memory_region_init_alias(&alias->region, OBJECT(node), name,
+                    &target->ni_target[0], 0,
+                    MIN(memory_region_size(target->ram),
+                        SN1_FABRIC_WINDOW_SIZE));
+                memory_region_set_enabled(&alias->region, false);
+                memory_region_add_subregion_overlap(alias->parent, 0,
+                                                      &alias->region, 0);
+                g_ptr_array_add(maps->aliases, alias);
+            }
+        }
+    }
+    memory_region_transaction_commit();
+    for (unsigned i = 0; i < num_routers; i++) {
+        object_ref(OBJECT(routers[i]));
+        sgi_sn1_router_set_changed(routers[i], sn1_memory_router_changed, maps);
+    }
+    maps->vm_handler = qemu_add_vm_change_state_handler(sn1_memory_vm_changed,
+                                                       maps);
+    return maps;
+}
+
+void sn1_memory_mappings_add_cable(SN1MemoryMappings *maps,
+                                  SGINetCableState *cable)
+{
+    SN1MemoryCable *entry;
+
+    assert(maps && !maps->stopped);
+    for (unsigned i = 0; i < maps->cables->len; i++) {
+        entry = g_ptr_array_index(maps->cables, i);
+        assert(entry->cable != cable);
+    }
+    entry = g_new0(SN1MemoryCable, 1);
+    entry->maps = maps;
+    entry->cable = cable;
+    object_ref(OBJECT(cable));
+    entry->notifier.notify = sn1_memory_cable_changed;
+    sgi_net_cable_add_change_notifier(cable, &entry->notifier);
+    g_ptr_array_add(maps->cables, entry);
+}
+
+static void sn1_memory_pause_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    cpu_pause(cpu);
+}
+
+static void sn1_memory_flush_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    tlb_flush(cpu);
+}
+
+void sn1_memory_mappings_stop(SN1MemoryMappings *maps)
+{
+    if (!maps || maps->stopped) {
+        return;
+    }
+    assert(bql_locked());
+    assert(!qemu_in_vcpu_thread());
+    maps->stopped = true;
+    qemu_del_vm_change_state_handler(maps->vm_handler);
+    for (unsigned i = 0; i < maps->num_nodes; i++) {
+        SN1NodeState *node = maps->origins[i].node;
+
+        notifier_remove(&maps->origins[i].ni);
+        node->memory_mappings = NULL;
+        for (unsigned cpu = 0; cpu < node->nr_cpus; cpu++) {
+            CPUState *cs = CPU(node->cpu[cpu]);
+
+            /* Failed realization can leave a CPU without an owning thread. */
+            if (cs && cs->created && !cs->stopped) {
+                run_on_cpu(cs, sn1_memory_pause_cpu, RUN_ON_CPU_NULL);
+            }
+        }
+    }
+    for (unsigned i = 0; i < maps->num_routers; i++) {
+        sgi_sn1_router_set_changed(maps->routers[i], NULL, NULL);
+    }
+    for (unsigned i = 0; i < maps->cables->len; i++) {
+        SN1MemoryCable *cable = g_ptr_array_index(maps->cables, i);
+
+        notifier_remove(&cable->notifier);
+    }
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < maps->aliases->len; i++) {
+        SN1MemoryAlias *alias = g_ptr_array_index(maps->aliases, i);
+
+        memory_region_del_subregion(alias->parent, &alias->region);
+    }
+    memory_region_transaction_commit();
+    for (unsigned i = 0; i < maps->num_nodes; i++) {
+        SN1NodeState *node = maps->origins[i].node;
+
+        for (unsigned cpu = 0; cpu < node->nr_cpus; cpu++) {
+            CPUState *cs = CPU(node->cpu[cpu]);
+
+            /* qtest has no TCG TLB; destroyed threads cannot run work. */
+            if (cs && tcg_enabled() && cs->tb_jmp_cache && cs->created) {
+                run_on_cpu(cs, sn1_memory_flush_cpu, RUN_ON_CPU_NULL);
+            }
+        }
+    }
+    for (unsigned i = 0; i < maps->aliases->len; i++) {
+        SN1MemoryAlias *alias = g_ptr_array_index(maps->aliases, i);
+
+        object_unparent(OBJECT(&alias->region));
+    }
+    /* Child properties can disappear before the machine finalizer runs. */
+    for (unsigned i = 0; i < maps->cables->len; i++) {
+        SN1MemoryCable *cable = g_ptr_array_index(maps->cables, i);
+
+        object_unref(OBJECT(cable->cable));
+    }
+    for (unsigned i = 0; i < maps->num_routers; i++) {
+        object_unref(OBJECT(maps->routers[i]));
+    }
+    for (unsigned i = 0; i < maps->num_nodes; i++) {
+        object_unref(OBJECT(maps->origins[i].node));
+    }
+    g_ptr_array_free(maps->aliases, true);
+    g_ptr_array_free(maps->cables, true);
+    g_free(maps->origins);
+    g_free(maps->routers);
+}

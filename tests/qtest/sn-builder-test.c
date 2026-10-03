@@ -6533,6 +6533,247 @@ static void test_expansion_composed_lifecycle(gconstpointer opaque)
 #define ROUTED_TOPOLOGY \
     "origin300,topology=origin300-numalink-pci-expansion-experiment"
 
+static void routed_set_bool(QTestState *qts, const char *path,
+                            const char *property, bool value)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':%s,"
+        "'value':%i}}", path, property, value);
+}
+
+static void routed_set_link(QTestState *qts, const char *path,
+                            const char *property, const char *value,
+                            bool reject)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,'property':%s,"
+        "'value':%s}}", path, property, value);
+
+    if (reject) {
+        g_assert_true(qdict_haskey(response, "error"));
+        g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(response,
+            "error"), "desc"), "machine network attachments are fixed"));
+    } else {
+        g_assert_true(qdict_haskey(response, "return"));
+    }
+}
+
+static void routed_memory_seed(QTestState *qts)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, UINT64_C(2) << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + 0x600000, bytes, 8));
+    for (unsigned cpu = 0; cpu < 4; cpu += 2) {
+        stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+        g_assert_true(qtest_memwrite_cpu(qts, cpu,
+            EXPANSION_LB_LOCAL + 0x780008, bytes, 8));
+    }
+    stq_be_p(bytes, 5);
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+        EXPANSION_LB_LOCAL + 0x681008, bytes, 8));
+    stq_be_p(bytes, 3);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        EXPANSION_LB_LOCAL + 0x681000, bytes, 8));
+    stq_be_p(bytes, UINT64_C(0x1122334455667788));
+    g_assert_true(qtest_memwrite_cpu(qts, 0, 0x400000, bytes, 8));
+}
+
+static void routed_memory_check(QTestState *qts, bool reachable)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 2, 0x400000, bytes, 8));
+    g_assert_cmphex(ldq_be_p(bytes), ==,
+                    reachable ? UINT64_C(0x1122334455667788) : 0);
+}
+
+static void test_routed_attachment_lock(void)
+{
+    static const struct {
+        const char *path;
+        const char *property;
+    } links[] = {
+        { "/machine/node0/bedrock", "net-cable" },
+        { "/machine/node1/bedrock", "net-cable" },
+        { "/machine/module3/router", "port1-cable" },
+        { "/machine/module3/router", "port8-cable" },
+    };
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts = qtest_initf(
+        "-M " ROUTED_TOPOLOGY "," STORAGE_BINDING " "
+        "-cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none", prom, image);
+
+    routed_memory_seed(qts);
+    routed_memory_check(qts, true);
+    for (unsigned i = 0; i < G_N_ELEMENTS(links); i++) {
+        g_autofree char *before = qom_get_str(qts, links[i].path,
+                                             links[i].property);
+        const char *other = g_str_equal(before, "/machine/master-route") ?
+            "/machine/slave-route" : "/machine/master-route";
+        g_autofree char *after = NULL;
+
+        routed_set_link(qts, links[i].path, links[i].property, before, false);
+        routed_set_link(qts, links[i].path, links[i].property, other, true);
+        routed_set_link(qts, links[i].path, links[i].property, "",
+                        before[0] != '\0');
+        after = qom_get_str(qts, links[i].path, links[i].property);
+        g_assert_cmpstr(after, ==, before);
+    }
+    /* Rejected replacement must preserve the original cable notification. */
+    for (unsigned i = 0; i < 2; i++) {
+        routed_set_bool(qts, "/machine/master-route", "down", true);
+        routed_memory_check(qts, false);
+        routed_set_bool(qts, "/machine/master-route", "down", false);
+        routed_memory_check(qts, true);
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
+static void test_routed_standalone_attachment(void)
+{
+    QTestState *qts = qtest_init(
+        "-M none -cpu R10000 -m 256M "
+        "-object memory-backend-ram,id=dma,size=2M "
+        "-device sgi-bedrock,id=a,revision=2,dma-memory=/objects/dma/dma[0] "
+        "-device sgi-sn1-router,id=r "
+        "-device sgi-net-cable,id=c,end0=/machine/peripheral/a,"
+        "end1=/machine/peripheral/r,end1-index=8 -S");
+    static const char *paths[] = {
+        "/machine/peripheral/a", "/machine/peripheral/r",
+    };
+    static const char *properties[] = { "net-cable", "port8-cable" };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(paths); i++) {
+        g_autofree char *value = NULL;
+
+        routed_set_link(qts, paths[i], properties[i],
+                        "/machine/peripheral/c", false);
+        value = qom_get_str(qts, paths[i], properties[i]);
+        g_assert_cmpstr(value, ==, "/machine/peripheral/c");
+        routed_set_link(qts, paths[i], properties[i], "", false);
+        g_clear_pointer(&value, g_free);
+        value = qom_get_str(qts, paths[i], properties[i]);
+        g_assert_cmpstr(value, ==, "");
+        routed_set_link(qts, paths[i], properties[i],
+                        "/machine/peripheral/c", false);
+    }
+    qtest_quit(qts);
+}
+
+static void test_routed_memory_cleanup(const void *data)
+{
+    unsigned mode = GPOINTER_TO_UINT(data);
+    bool tcg = mode & 1;
+    bool release_children = mode & 2;
+    g_autofree char *prom = expansion_prom();
+    g_autofree char *image = expansion_storage_image(16 * 1024 * 1024);
+    QTestState *qts;
+
+    if (tcg && !qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        g_unlink(image);
+        g_unlink(prom);
+        return;
+    }
+    if (tcg) {
+        const uint32_t code[] = {
+            0x400a6000, 0x354a0080, 0x408a6000, 0x000000c0,
+            0x3c089800, 0x0008403c, 0x3c090040, 0x01094025,
+            0x01000008, 0x00000000,
+        };
+        uint8_t bytes[sizeof(code)];
+        int fd = open(prom, O_WRONLY);
+
+        g_assert_cmpint(fd, >=, 0);
+        for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+            stl_be_p(bytes + 4 * i, code[i]);
+        }
+        g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
+        g_assert_cmpint(close(fd), ==, 0);
+    }
+    qts = qtest_initf(
+        "-M sn-builder-routed-cleanup-test,activate=on,"
+        "topology=origin300-numalink-pci-expansion-experiment,"
+        STORAGE_BINDING " -cpu R14000 -smp 4 -m 1G -S -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none %s", prom, image,
+        tcg ? "-accel tcg,thread=multi" : "");
+    routed_memory_seed(qts);
+    routed_memory_check(qts, true);
+    if (tcg) {
+        const uint32_t loop[] = { 0x3415cafe, 0x1000ffff, 0x00000000 };
+        uint8_t bytes[sizeof(loop)];
+        gint64 deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+        uint64_t value = 0;
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(loop); i++) {
+            stl_be_p(bytes + 4 * i, loop[i]);
+        }
+        g_assert_true(qtest_memwrite_cpu(qts, 0, 0x400000, bytes,
+                                        sizeof(bytes)));
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        do {
+            g_autofree char *registers = qtest_hmp(qts, "info registers 2");
+            const char *field = strstr(registers, "s5 ");
+
+            g_assert_nonnull(field);
+            g_assert_cmpint(sscanf(field + 3, "%" SCNx64, &value), ==, 1);
+            if (value == 0xcafe) {
+                break;
+            }
+            g_usleep(1000);
+        } while (g_get_monotonic_time() < deadline);
+        g_assert_cmphex(value, ==, 0xcafe);
+    }
+    if (release_children) {
+        static const char *children[] = {
+            "master-route", "slave-route", "expansion-cable", "router",
+        };
+
+        for (unsigned i = 0; i < G_N_ELEMENTS(children); i++) {
+            g_autofree char *type = NULL;
+
+            qtest_qmp_assert_success(qts,
+                "{'execute':'qom-set','arguments':{'path':'/machine',"
+                "'property':'release-child','value':%s}}", children[i]);
+            type = qom_child_type(qts, i == 3 ?
+                                  "/machine/module3" : "/machine", children[i]);
+            g_assert_null(type);
+        }
+    }
+    /* Let node unrealize stop live threads rather than issuing QMP stop. */
+    routed_set_bool(qts, "/machine/node0", "realized", false);
+    routed_set_bool(qts, "/machine/node0", "realized", false);
+    routed_set_bool(qts, "/machine/node1", "realized", false);
+    qtest_qmp_assert_success(qts, "{'execute':'query-status'}");
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(prom);
+}
+
+static void test_routed_partial_memory_cleanup(void)
+{
+    QTestState *qts = qtest_init(
+        "-M sn-builder-bedrock-nasid-test,activate=on -cpu R14000 "
+        "-smp 2 -nodefaults -display none");
+    uint64_t value;
+
+    routed_set_bool(qts, "/machine", "stop-partial-mappings", true);
+    g_assert_true(nasid_test_cpu_readq(qts, 0, NASID_TEST_BOARD_ID_LOCAL,
+                                      &value));
+    g_assert_cmphex(value, ==, NASID_TEST_BOARD_ID_VALUE);
+    routed_set_bool(qts, "/machine/node0", "realized", false);
+    routed_set_bool(qts, "/machine/node1", "realized", false);
+    qtest_quit(qts);
+}
+
 static uint64_t routed_uart_read(void *opaque, uint64_t offset)
 {
     return expansion_vector(opaque, 0x240 + offset, false, 0);
@@ -8282,6 +8523,20 @@ int main(int argc, char **argv)
                         test_routed_composer);
     qtest_add_data_func("sn/builder/routed/composer-targeted",
                         GINT_TO_POINTER(1), test_routed_composer);
+    qtest_add_func("sn/builder/routed/attachment-lock",
+                   test_routed_attachment_lock);
+    qtest_add_func("sn/builder/routed/standalone-attachment",
+                   test_routed_standalone_attachment);
+    qtest_add_func("sn/builder/routed/partial-memory-cleanup",
+                   test_routed_partial_memory_cleanup);
+    qtest_add_data_func("sn/builder/routed/memory-cleanup/qtest-node",
+                        GUINT_TO_POINTER(0), test_routed_memory_cleanup);
+    qtest_add_data_func("sn/builder/routed/memory-cleanup/tcg-node",
+                        GUINT_TO_POINTER(1), test_routed_memory_cleanup);
+    qtest_add_data_func("sn/builder/routed/memory-cleanup/qtest-children",
+                        GUINT_TO_POINTER(2), test_routed_memory_cleanup);
+    qtest_add_data_func("sn/builder/routed/memory-cleanup/tcg-children",
+                        GUINT_TO_POINTER(3), test_routed_memory_cleanup);
     qtest_add_func("sn/builder/routed/compute-dma",
                    test_routed_compute_dma);
     qtest_add_func("sn/builder/routed/serial-refusals",

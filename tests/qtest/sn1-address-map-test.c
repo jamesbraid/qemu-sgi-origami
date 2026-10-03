@@ -4789,6 +4789,799 @@ static char *create_mmio_execution_prom(bool remote)
     return path;
 }
 
+static void routed_memory_writeq(QTestState *qts, unsigned cpu,
+                                  uint64_t address, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, address, bytes, sizeof(bytes)));
+}
+
+typedef struct RoutedMemoryResult {
+    unsigned result;
+    uint64_t value;
+    unsigned ram;
+} RoutedMemoryResult;
+
+static RoutedMemoryResult routed_memory_request(QTestState *qts,
+    uint64_t address, unsigned size, uint64_t value, unsigned mode,
+    unsigned cca)
+{
+    RoutedMemoryResult result;
+    g_autofree char *request = g_strdup_printf(
+        "%" PRIx64 " %u %" PRIx64 " %u %u", address, size, value, mode, cca);
+    QDict *reply;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/probe',"
+        "'property':'memory-request','value':%s}}", request);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/probe',"
+        "'property':'memory-response'}}");
+    g_assert_cmpint(sscanf(qdict_get_str(reply, "return"),
+                          "%u %" SCNx64 " %u", &result.result,
+                          &result.value, &result.ram), ==, 3);
+    qobject_unref(reply);
+    return result;
+}
+
+static QTestState *routed_memory_start_machine(const char *prom,
+                                               const char *image,
+                                               const char *extra,
+                                               bool two_routers)
+{
+    QTestState *qts = qtest_initf(
+        "-M %s,activate=on,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=%s "
+        "-device sgi-board-test-fixture,id=probe,board-type=sn1-memory "
+        "-no-shutdown -nodefaults -display none -S %s",
+        two_routers ? "sn-builder-routed-memory-test" : "sn1-memory-test",
+        prom, image,
+        g_str_has_suffix(image, ".qcow2") ? "qcow2" : "raw", extra);
+
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_LB, UINT64_C(2) << 32);
+    for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
+        routed_memory_writeq(qts, cpu,
+            BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+            BEDROCK_MD_INSTALLED_SELECT2);
+    }
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_NI + 0x1010, 5);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
+    if (two_routers) {
+        routed_memory_request(qts, 0x30a10, 8, 5, 4, 5);
+        routed_memory_request(qts, 0x10200, 8, 3, 5, 5);
+    }
+    return qts;
+}
+
+static QTestState *routed_memory_start(const char *prom, const char *image,
+                                       const char *extra)
+{
+    return routed_memory_start_machine(prom, image, extra, false);
+}
+
+static void routed_memory_load64(uint32_t *code, unsigned *count,
+                                  unsigned reg, uint64_t value)
+{
+    code[(*count)++] = 0x3c000000 | (reg << 16) | (value >> 48);
+    code[(*count)++] = 0x34000000 | (reg << 21) | (reg << 16) |
+                      ((value >> 32) & 0xffff);
+    code[(*count)++] = (reg << 16) | (reg << 11) | (16 << 6) | 0x38;
+    code[(*count)++] = 0x34000000 | (reg << 21) | (reg << 16) |
+                      ((value >> 16) & 0xffff);
+    code[(*count)++] = (reg << 16) | (reg << 11) | (16 << 6) | 0x38;
+    code[(*count)++] = 0x34000000 | (reg << 21) | (reg << 16) |
+                      (value & 0xffff);
+}
+
+static char *create_routed_memory_refresh_prom(bool writer)
+{
+    char *path = create_mmio_execution_prom(true);
+    uint32_t code[96] = { 0 };
+    uint8_t bytes[sizeof(code)];
+    unsigned count = 0, consumer_poll, writer_start, writer_poll = 0, park;
+    int fd = open(path, O_WRONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    code[count++] = 0x15400000; /* nonzero PI slots park */
+    code[count++] = 0;
+    code[count++] = 0x12e00000; /* node zero runs the writer or parks */
+    code[count++] = 0;
+    routed_memory_load64(code, &count, 9,
+        UINT64_C(0x9200000000000000) |
+        (BEDROCK_LOCAL - SPACE_IO + BEDROCK_IO + IO_SCRATCH0 + 8));
+    consumer_poll = count;
+    code[count++] = 0xdd280000; /* ld t0, 0(t1) */
+    code[count++] = 0x1112fffe; /* beq t0, s2, poll */
+    code[count++] = 0;
+    code[count++] = 0x01009025; /* save command in s2 */
+    code[count++] = 0x0000a825; /* clear completion */
+    code[count++] = 0x02c00008; /* fetch the same cached virtual code */
+    code[count++] = 0;
+    writer_start = count;
+    if (writer) {
+        routed_memory_load64(code, &count, 12,
+            UINT64_C(0x9200000000000000) |
+            (BEDROCK_LOCAL - SPACE_IO + BEDROCK_IO + IO_SCRATCH0 + 8));
+        routed_memory_load64(code, &count, 13,
+            UINT64_C(0x9200000000000000) | (UINT64_C(2) << 33) |
+            (BEDROCK_NODE0 - SPACE_IO + BEDROCK_NI + 0x1000));
+        routed_memory_load64(code, &count, 14,
+            UINT64_C(0x9200000000000000) | (UINT64_C(2) << 33) |
+            (BEDROCK_NODE0 - SPACE_IO + BEDROCK_IO + IO_SCRATCH0 + 8));
+        writer_poll = count;
+        code[count++] = 0xdd880000; /* ld t0, 0(t4) */
+        code[count++] = 0x1113fffe; /* beq t0, s3, poll */
+        code[count++] = 0;
+        code[count++] = 0x01009825; /* writer consumes command */
+        code[count++] = 0xfda80000; /* sd t0, 0(t5): remote NI route */
+        code[count++] = 0x0000000f; /* sync before publishing acknowledgement */
+        code[count++] = 0xfdc80000; /* sd t0, 0(t6): consumer command */
+        code[count] = 0x10000000 | ((writer_poll - count - 1) & 0xffff);
+        count++;
+        code[count++] = 0;
+    }
+    park = count;
+    code[count++] = 0x3415dead;
+    code[count++] = 0x1000ffff;
+    code[count++] = 0;
+    code[0] |= (park - 1) & 0xffff;
+    code[2] |= ((writer ? writer_start : park) - 3) & 0xffff;
+    g_assert_cmpuint(consumer_poll, >, 2);
+    for (unsigned i = 0; i < count; i++) {
+        stl_be_p(bytes + i * 4, code[i]);
+    }
+    g_assert_cmpint(pwrite(fd, bytes, count * 4, 0x4bc), ==, count * 4);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void routed_memory_plant_loop(QTestState *qts)
+{
+    const uint32_t code[] = {
+        0x67de0001, /* count each invocation in s8 */
+        0x34111100, /* remote instruction marker */
+        0x34130040,
+        0x2673ffff, 0x1660fffe, 0,
+        0x3415cafe,
+        0x3c08bfc0, 0x350804bc, 0x01000008, 0,
+    };
+    uint8_t bytes[sizeof(code)];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(bytes + i * 4, code[i]);
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, 0, 0x400000, bytes, sizeof(bytes)));
+}
+
+static void test_routed_memory_cached_refusal(const void *data)
+{
+    unsigned mutation = GPOINTER_TO_UINT(data);
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(mutation == 5);
+    image = create_sized_flash_image(16 * MiB);
+    qts = routed_memory_start_machine(prom, image,
+                                      "-accel tcg,thread=multi", mutation >= 6);
+    routed_memory_plant_loop(qts);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s8"), ==, 1);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, 0x1100);
+    if (cpu_cause(qts, 2) & 0x7c) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers 2");
+
+        g_test_message("%s", registers);
+    }
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
+    switch (mutation) {
+    case 0:
+        routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 2);
+        break;
+    case 1:
+        routed_memory_request(qts, 0x10, 8, UINT64_C(1) << 8, 4, 5);
+        break;
+    case 2:
+    case 3:
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'down','value':true}}",
+            mutation == 2 ? "/machine/master-route" : "/machine/slave-route");
+        break;
+    case 4:
+        routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_LB,
+                              UINT64_C(4) << 32);
+        break;
+    case 6:
+        routed_memory_request(qts, 0x10200, 8, 0, 5, 5);
+        break;
+    case 7:
+        routed_memory_request(qts, 0x10, 8, UINT64_C(1) << 8, 5, 5);
+        break;
+    case 8:
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':'/machine/inter-router',"
+            "'property':'down','value':true}}");
+        break;
+    case 9:
+        routed_memory_request(qts, 0x10200, 8, 7, 5, 5);
+        break;
+    case 5:
+        /* CPU0 writes NI, syncs, then publishes through remote II scratch. */
+        routed_memory_writeq(qts, 0,
+            BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+        break;
+    }
+    if (mutation != 5) {
+        routed_memory_writeq(qts, 2,
+            BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (!(cpu_cause(qts, 2) & 0x7c) &&
+           cpu_gpr(qts, 2, "s8") == 1 && g_get_monotonic_time() < deadline) {
+        g_usleep(POLL_INTERVAL_US);
+    }
+    stop_vm(qts);
+    g_test_message("mutation%u: Cause 0x%" PRIx32 " invocations %" PRIu64,
+                   mutation, cpu_cause(qts, 2), cpu_gpr(qts, 2, "s8"));
+    g_assert_cmphex(cpu_gpr(qts, 2, "s2"), ==, 2);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s8"), ==, 1);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 6 << 2);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void routed_memory_repeat(QTestState *qts)
+{
+    routed_memory_writeq(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s8", 2);
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, 0x1100);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
+}
+
+static void routed_memory_snapshot_command(QTestState *qts,
+                                           const char *command,
+                                           const char *tag)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':%s,'arguments':{'job-id':'memory-snapshot','tag':%s,"
+        "'vmstate':'state-disk','devices':['state-disk']}}", command, tag);
+    qtest_qmp_job_wait(qts, "memory-snapshot");
+}
+
+static void test_routed_memory_snapshot(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *cfg = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    RoutedMemoryResult result;
+    int fd;
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg") || !have_qemu_img()) {
+        g_test_skip("TCG and qemu-img are required");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(false);
+    fd = g_file_open_tmp("sn1-memory-snapshot-XXXXXX.qcow2", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(mkimg(image, "qcow2", 16));
+    cfg = create_sized_flash_image(16 * MiB);
+    extra = g_strdup_printf("-accel tcg,thread=multi "
+                            "-drive if=none,id=state,node-name=state-disk,file=%s,format=qcow2",
+                            image);
+    qts = routed_memory_start(prom, cfg, extra);
+    routed_memory_plant_loop(qts);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    routed_memory_snapshot_command(qts, "snapshot-save", "routed-good");
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 2);
+    routed_memory_snapshot_command(qts, "snapshot-save", "routed-refused");
+    routed_memory_snapshot_command(qts, "snapshot-load", "routed-good");
+    result = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmpuint(result.ram, ==, 1);
+    g_assert_cmphex(result.value, ==, UINT64_C(0x67de000134111100));
+    routed_memory_repeat(qts);
+    routed_memory_snapshot_command(qts, "snapshot-load", "routed-refused");
+    result = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    routed_memory_writeq(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (!(cpu_cause(qts, 2) & 0x7c) &&
+           cpu_gpr(qts, 2, "s8") == 1 && g_get_monotonic_time() < deadline) {
+        g_usleep(POLL_INTERVAL_US);
+    }
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s8"), ==, 1);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 6 << 2);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(cfg), ==, 0);
+}
+
+static void test_routed_memory_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *from_image = NULL;
+    g_autofree char *to_image = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket_path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    RoutedMemoryResult result;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(false);
+    from_image = create_sized_flash_image(16 * MiB);
+    to_image = create_sized_flash_image(16 * MiB);
+    directory = g_dir_make_tmp("sn1-memory-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket_path = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket_path);
+    from = routed_memory_start(prom, from_image, "-accel tcg,thread=multi");
+    routed_memory_plant_loop(from);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    wait_for_cpu_gpr(from, 2, "s5", 0xcafe);
+    stop_vm(from);
+    to = routed_memory_start(prom, to_image,
+                             "-accel tcg,thread=multi -incoming defer");
+    routed_memory_writeq(to, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 2);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    result = routed_memory_request(to, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmpuint(result.ram, ==, 1);
+    g_assert_cmphex(result.value, ==, UINT64_C(0x67de000134111100));
+    g_assert_cmphex(cpu_gpr(to, 2, "s8"), ==, 1);
+    routed_memory_repeat(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(from_image), ==, 0);
+    g_assert_cmpint(g_unlink(to_image), ==, 0);
+    g_unlink(socket_path);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static void test_routed_memory_cpu_boundary(const void *data)
+{
+    unsigned test = GPOINTER_TO_UINT(data) & 0x7f;
+    bool callback_cpu = GPOINTER_TO_UINT(data) & 0x80;
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    const uint64_t end = 512 * MiB;
+    const uint64_t bank_end = 256 * MiB;
+    const uint64_t address[] = {
+        bank_end - 1, end - 1, end, bank_end - 8, end - 8, end, end - 4,
+    };
+    const unsigned exception[] = { 0, 7, 7, 0, 7, 7, 4 };
+    const uint64_t expected[] = {
+        0x88, 0, 0, UINT64_C(0x1122334455667788), 0, 0, 0,
+    };
+    uint32_t code[16];
+    uint8_t bytes[sizeof(code)];
+    unsigned count = 0;
+    QTestState *qts;
+    RoutedMemoryResult callback;
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(false);
+    image = create_sized_flash_image(16 * MiB);
+    qts = routed_memory_start(prom, image, "-accel tcg,thread=multi");
+    routed_memory_writeq(qts, 0, bank_end - 8, UINT64_C(0x1122334455667788));
+    if (callback_cpu) {
+        callback = routed_memory_request(qts, address[test], 8, 0, 8, 5);
+        g_assert_cmpuint(callback.result, ==, 0);
+    }
+    callback = routed_memory_request(qts, address[test], test < 3 ? 1 : 8,
+                                      0, 2, 5);
+    g_assert_cmpuint(callback.result, ==, exception[test] ? 2 : 0);
+    if (!exception[test]) {
+        g_assert_cmphex(callback.value >> (test < 3 ? 56 : 0), ==,
+                        expected[test]);
+    }
+    routed_memory_load64(code, &count, 9,
+                          UINT64_C(0xa800000000000000) | address[test]);
+    code[count++] = (test < 3 ? 0x90000000 : 0xdc000000) |
+                    (9 << 21) | (17 << 16); /* lbu or ld s1, 0(t1) */
+    code[count++] = 0x3415cafe;
+    code[count++] = 0x3c08bfc0;
+    code[count++] = 0x350804bc;
+    code[count++] = 0x01000008;
+    code[count++] = 0;
+    for (unsigned i = 0; i < count; i++) {
+        stl_be_p(bytes + i * 4, code[i]);
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, 0, 0x400000, bytes, count * 4));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (!(cpu_cause(qts, 2) & 0x7c) &&
+           cpu_gpr(qts, 2, "s5") != 0xcafe &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(POLL_INTERVAL_US);
+    }
+    stop_vm(qts);
+    g_test_message("%s CPU load at 0x%" PRIx64 ": Cause 0x%" PRIx32,
+                   callback_cpu ? "callback" : "alias", address[test],
+                   cpu_cause(qts, 2));
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, exception[test] << 2);
+    if (!exception[test]) {
+        g_assert_cmphex(cpu_gpr(qts, 2, "s5"), ==, 0xcafe);
+        g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, expected[test]);
+    } else {
+        g_assert_cmphex(cpu_gpr(qts, 2, "s5"), !=, 0xcafe);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_cached_md(const void *data)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    RoutedMemoryResult actual, callback;
+    uint8_t check = 0x13; /* Existing MD test's syndrome for data bit zero. */
+    const uint64_t watched = 0x400100;
+    const uint64_t carrier = UINT64_C(0x10140000000) + ((watched / 8) ^ 7);
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(false);
+    image = create_sized_flash_image(16 * MiB);
+    qts = routed_memory_start(prom, image, "-accel tcg,thread=multi");
+    routed_memory_plant_loop(qts);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, 0);
+    actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    callback = routed_memory_request(qts, 0x400000, 8, 0, 2, 5);
+    g_assert_cmpuint(actual.result, !=, 0);
+    g_assert_cmpuint(actual.result, ==, callback.result);
+    g_assert_cmphex(actual.value, ==, callback.value);
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+                          BEDROCK_MD_INSTALLED_SELECT2);
+    actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(actual.ram, ==, 1);
+    g_assert_cmphex(actual.value, ==, UINT64_C(0x67de000134111100));
+    routed_memory_writeq(qts, 0, watched, 0);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, carrier, &check, 1));
+    actual = routed_memory_request(qts, watched, 8, 0, 0, 5);
+    callback = routed_memory_request(qts, watched, 8, 0, 2, 5);
+    g_assert_cmpuint(actual.result, ==, 0);
+    g_assert_cmphex(actual.value, ==, 1);
+    g_assert_cmphex(actual.value, ==, callback.value);
+    g_assert_cmpuint(actual.ram, ==, 0);
+    actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(actual.ram, ==, 1);
+    routed_memory_repeat(qts);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_usleep(1100000);
+    stop_vm(qts);
+    actual = routed_memory_request(qts, watched, 8, 0, 0, 5);
+    g_assert_cmpuint(actual.ram, ==, 1);
+    /* Name a line as the public cache-instruction interface does. */
+    routed_memory_request(qts, 0x400000, 8, 0, 7, 5);
+    {
+        uint8_t directory[8];
+        uint64_t address = UINT64_C(0x101c0000000) +
+                           ((UINT64_C(0x400000) >> 3) & 0x3ffffff0);
+
+        g_assert_true(qtest_memread_cpu(qts, 0, address, directory, 8));
+    }
+    actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(actual.ram, ==, 0);
+    routed_memory_writeq(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 3);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s8", 3);
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
+    qtest_system_reset(qts);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                          UINT64_C(2) << 32);
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+                          BEDROCK_MD_INSTALLED_SELECT2);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
+    actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmpuint(actual.ram, ==, 1);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_cached_local_claim(const void *data)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint8_t marker[4];
+    RoutedMemoryResult result;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_refresh_prom(false);
+    image = create_sized_flash_image(16 * MiB);
+    qts = routed_memory_start(prom, image, "-accel tcg,thread=multi");
+    routed_memory_plant_loop(qts);
+    /* Same-offset local code differs from the remote code already cached. */
+    {
+        uint8_t code[44];
+
+        g_assert_true(qtest_memread_cpu(qts, 0, 0x400000, code, sizeof(code)));
+        g_assert_true(qtest_memwrite_cpu(qts, 2,
+            (UINT64_C(2) << 33) + 0x400000, code, sizeof(code)));
+    }
+    stl_be_p(marker, 0x34112200);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        (UINT64_C(2) << 33) + 0x400004, marker, sizeof(marker)));
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 2);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + PI_CACHED_ALIAS, 12);
+    result = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmphex(result.value, ==, UINT64_C(0x67de000134112200));
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
+    result = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmphex(result.value, ==, UINT64_C(0x67de000134112200));
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + PI_CACHED_ALIAS, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + PI_CACHED_ALIAS, 12);
+    result = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
+    g_assert_cmphex(result.value, ==, UINT64_C(0x67de000134112200));
+    routed_memory_writeq(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s8", 2);
+    wait_for_cpu_gpr(qts, 2, "s1", 0x2200);
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + PI_CACHED_ALIAS, 0);
+    routed_memory_writeq(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 3);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s8", 3);
+    wait_for_cpu_gpr(qts, 2, "s1", 0x1100);
+    wait_for_cpu_gpr(qts, 2, "s5", 0xcafe);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_boundaries(const void *data)
+{
+    g_autofree char *image = create_sized_flash_image(16 * MiB);
+    QTestState *qts = routed_memory_start(prom_path, image, "");
+    const uint64_t end = 512 * MiB;
+    const uint64_t addresses[] = {
+        end - 8, end - 7, end - 4, end - 1, end, end + 1,
+        (UINT64_C(1) << 33) - 8, (UINT64_C(1) << 33) - 1,
+        UINT64_C(1) << 33,
+    };
+    const uint64_t seed = UINT64_C(0x1122334455667788);
+    const uint64_t word = UINT64_C(0xa1b2c3d4e5f60718);
+
+    for (unsigned cca = 2; cca <= 5; cca += 3) {
+        for (unsigned a = 0; a < ARRAY_SIZE(addresses); a++) {
+            for (unsigned size = 1; size <= 8; size *= 2) {
+                RoutedMemoryResult actual, callback;
+                uint8_t alias_bytes[16], callback_bytes[16];
+
+                routed_memory_writeq(qts, 0, end - 16, seed);
+                routed_memory_writeq(qts, 0, end - 8, seed);
+                actual = routed_memory_request(qts, addresses[a], size,
+                                                word, 0, cca);
+                callback = routed_memory_request(qts, addresses[a], size,
+                                                  word, 2, cca);
+                g_test_message("read 0x%" PRIx64 " size%u CCA%u: "
+                               "alias %u/%016" PRIx64 " callback %u/%016"
+                               PRIx64, addresses[a], size, cca, actual.result,
+                               actual.value, callback.result, callback.value);
+                g_assert_cmpuint(actual.result, ==, callback.result);
+                g_assert_cmphex(actual.value, ==, callback.value);
+                actual = routed_memory_request(qts, addresses[a], size,
+                                                word, 1, cca);
+                g_assert_true(qtest_memread_cpu(qts, 0, end - 16,
+                                                alias_bytes, 16));
+                routed_memory_writeq(qts, 0, end - 16, seed);
+                routed_memory_writeq(qts, 0, end - 8, seed);
+                callback = routed_memory_request(qts, addresses[a], size,
+                                                  word, 3, cca);
+                g_assert_true(qtest_memread_cpu(qts, 0, end - 16,
+                                                callback_bytes, 16));
+                g_assert_cmpuint(actual.result, ==, callback.result);
+                g_assert_cmpmem(alias_bytes, 16, callback_bytes, 16);
+            }
+        }
+    }
+    /* The typed CPU path refuses bank two beyond the raw RAM extent. */
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+                          BEDROCK_MD_INSTALLED);
+    for (unsigned cca = 2; cca <= 5; cca += 3) {
+        for (unsigned size = 1; size <= 8; size *= 2) {
+            const uint64_t bank = UINT64_C(0x80000000);
+            RoutedMemoryResult actual, callback;
+
+            actual = routed_memory_request(qts, bank, size, word, 1, cca);
+            callback = routed_memory_request(qts, bank, size, word, 3, cca);
+            g_assert_cmpuint(actual.result, ==, callback.result);
+            actual = routed_memory_request(qts, bank, size, 0, 0, cca);
+            callback = routed_memory_request(qts, bank, size, 0, 2, cca);
+            g_assert_cmpuint(actual.result, !=, 0);
+            g_assert_cmpuint(actual.result, ==, callback.result);
+            g_assert_cmphex(actual.value, ==, callback.value);
+            g_assert_cmpuint(actual.ram, ==, 0);
+        }
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_numbers(const void *data)
+{
+    g_autofree char *image = create_sized_flash_image(16 * MiB);
+    QTestState *qts = routed_memory_start(prom_path, image, "");
+    const uint64_t address = 0x400000;
+    const uint64_t marker = UINT64_C(0x123456789abcdef0);
+    RoutedMemoryResult actual, callback;
+    const unsigned invalid[] = { 2, 128, 255 };
+
+    routed_memory_writeq(qts, 0, address, marker);
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+        routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_LB,
+                              (uint64_t)invalid[i] << 32);
+        actual = routed_memory_request(qts, address, 8, 0, 0, 5);
+        callback = routed_memory_request(qts, address, 8, 0, 2, 5);
+        g_assert_cmpuint(actual.result, !=, 0);
+        g_assert_cmpuint(actual.result, ==, callback.result);
+        g_assert_cmphex(actual.value, ==, callback.value);
+        g_assert_cmpuint(actual.ram, ==, 0);
+        routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_LB, 0);
+    }
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                          UINT64_C(128) << 32);
+    actual = routed_memory_request(qts, address, 8, 0, 0, 5);
+    callback = routed_memory_request(qts, address, 8, 0, 2, 5);
+    g_assert_cmpuint(actual.result, !=, 0);
+    g_assert_cmpuint(actual.result, ==, callback.result);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                          UINT64_C(2) << 32);
+    /* An unrelated I/O node number cannot replace the routed CPU target. */
+    const unsigned io_numbers[] = { 0, 2, 128, 255 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(io_numbers); i++) {
+        actual = routed_memory_request(qts, BEDROCK_LB, 8,
+                                        (uint64_t)io_numbers[i] << 32, 6, 5);
+        g_assert_cmpuint(actual.result, ==, 0);
+        g_assert_cmpuint((actual.value >> 32) & 0xff, ==, io_numbers[i]);
+        actual = routed_memory_request(qts, address, 8, 0, 0, 5);
+        callback = routed_memory_request(qts, address, 8, 0, 2, 5);
+        g_assert_cmpuint(actual.result, ==, callback.result);
+        g_assert_cmphex(actual.value, ==, callback.value);
+        g_assert_cmphex(actual.value, ==, marker);
+        g_assert_cmpuint(actual.ram, ==, 1);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static void test_routed_memory_notifications(const void *data)
+{
+    bool two_routers = GPOINTER_TO_UINT(data);
+    g_autofree char *image = create_sized_flash_image(16 * MiB);
+    QTestState *qts = routed_memory_start_machine(prom_path, image, "",
+                                                   two_routers);
+    const uint64_t page = 0x400000;
+    const uint64_t marker = UINT64_C(0x123456789abcdef0);
+    const char *cables[] = {
+        "master-route", "slave-route", "expansion-cable", "inter-router",
+    };
+    RoutedMemoryResult result;
+
+    routed_memory_writeq(qts, 0, page, marker);
+    result = routed_memory_request(qts, page, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+    g_assert_cmpuint(result.ram, ==, 1);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 2);
+    result = routed_memory_request(qts, page, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
+    routed_memory_request(qts, 0x10, 8, UINT64_C(1) << 8, 4, 5);
+    result = routed_memory_request(qts, page, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    routed_memory_request(qts, 0x10, 8, 0, 4, 5);
+    for (unsigned i = 0; i < ARRAY_SIZE(cables) - !two_routers; i++) {
+        g_autofree char *path = g_strdup_printf("/machine/%s", cables[i]);
+
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'down','value':true}}", path);
+        result = routed_memory_request(qts, page, 8, 0, 0, 5);
+        if (i == 2) {
+            g_assert_cmpuint(result.result, ==, 0);
+        } else {
+            g_assert_cmpuint(result.result, !=, 0);
+        }
+        g_assert_cmpuint(result.ram, ==, i == 2 ? 1 : 0);
+        qtest_qmp_assert_success(qts,
+            "{'execute':'qom-set','arguments':{'path':%s,"
+            "'property':'down','value':false}}", path);
+        result = routed_memory_request(qts, page, 8, 0, 0, 5);
+        g_assert_cmpuint(result.result, ==, 0);
+        g_assert_cmphex(result.value, ==, marker);
+        g_assert_cmpuint(result.ram, ==, 1);
+    }
+    /* A target renumber must remove the old address and place the new one. */
+    if (two_routers) {
+        routed_memory_request(qts, 0x10220, 8, 3, 5, 5);
+    }
+    routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_LB, UINT64_C(4) << 32);
+    routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1020, 3);
+    result = routed_memory_request(qts, page, 8, 0, 0, 5);
+    g_assert_cmpuint(result.result, !=, 0);
+    result = routed_memory_request(qts, (UINT64_C(4) << 33) + page,
+                                    8, 0, 0, 5);
+    g_assert_cmpuint(result.result, ==, 0);
+    g_assert_cmphex(result.value, ==, marker);
+    g_assert_cmpuint(result.ram, ==, 1);
+    qtest_system_reset(qts);
+    result = routed_memory_request(qts, (UINT64_C(4) << 33) + page,
+                                    8, 0, 0, 5);
+    g_assert_cmpuint(result.result, !=, 0);
+    g_assert_cmpuint(result.ram, ==, 0);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_routed_instruction_translation(const void *data)
 {
     bool remote = GPOINTER_TO_UINT(data);
@@ -4810,7 +5603,8 @@ static void test_routed_instruction_translation(const void *data)
     g_auto(GStrv) lines = NULL;
     g_autoptr(GError) error = NULL;
     uint8_t bytes[sizeof(code)];
-    unsigned loop_translations = 0, block_insns = 0, max_block_insns = 0;
+    unsigned loop_translations[2] = { 0 }, block_insns = 0;
+    unsigned max_block_insns[2] = { 0 }, block_page = 0;
     QTestState *qts;
     int fd;
 
@@ -4834,7 +5628,7 @@ static void test_routed_instruction_translation(const void *data)
         "-cpu R14000 -smp 4 -m 1G -bios %s "
         "-drive if=none,id=cfg,file=%s,format=raw "
         "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S "
-        "-d in_asm -dfilter 0xc000000010000000+0x40 -D %s",
+        "-d in_asm -dfilter 0xc000000010000000+0x1040 -D %s",
         prom, image, quoted);
     stq_be_p(bytes, UINT64_C(2) << 32);
     g_assert_true(qtest_memwrite_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
@@ -4845,11 +5639,27 @@ static void test_routed_instruction_translation(const void *data)
         stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
         g_assert_true(qtest_memwrite_cpu(qts, node * 2,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
-        for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
-            stl_be_p(bytes + 4 * i, code[i] | (i == 0 ? node * 2 : 0));
+        for (unsigned page = 0; page < 2; page++) {
+            for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+                uint32_t insn = code[i];
+
+                if (i == 0) {
+                    insn = (insn & ~0xffffU) |
+                           ((page + 1) * 0x1000 + 0x100 + node * 2);
+                } else if (!page && i == 6) {
+                    insn = 0x02208025; /* preserve the first page's marker */
+                } else if (!page && i == 7) {
+                    insn = 0x66c81000; /* next page in the same TLB entry */
+                } else if (!page && i == 8) {
+                    insn = 0x01000008;
+                } else if (!page && i == 9) {
+                    insn = 0;
+                }
+                stl_be_p(bytes + 4 * i, insn);
+            }
+            g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                base + MMIO_EXEC_RAM + page * 0x1000, bytes, sizeof(bytes)));
         }
-        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
-            base + MMIO_EXEC_RAM, bytes, sizeof(bytes)));
     }
     stq_be_p(bytes, 5);
     g_assert_true(qtest_memwrite_cpu(qts, 0,
@@ -4865,7 +5675,8 @@ static void test_routed_instruction_translation(const void *data)
         }
     }
     stop_vm(qts);
-    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, remote ? 0x1100 : 0x1102);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s0"), ==, remote ? 0x1100 : 0x1102);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, remote ? 0x2100 : 0x2102);
     g_assert_cmphex(cpu_gpr(qts, 2, "s3"), ==, 0);
     g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
     g_assert_cmphex(cpu_gpr(qts, 2, "s4"), ==,
@@ -4883,30 +5694,31 @@ static void test_routed_instruction_translation(const void *data)
         uint64_t pc;
 
         if (g_str_has_prefix(lines[i], "----------------")) {
-            max_block_insns = MAX(max_block_insns, block_insns);
+            max_block_insns[block_page] =
+                MAX(max_block_insns[block_page], block_insns);
             block_insns = 0;
         }
         if (sscanf(lines[i], "%" SCNx64 ":", &pc) == 1 &&
-            pc >= MMIO_EXEC_VIRTUAL && pc < MMIO_EXEC_VIRTUAL + 0x40) {
+            pc >= MMIO_EXEC_VIRTUAL && pc < MMIO_EXEC_VIRTUAL + 0x1040) {
+            block_page = (pc - MMIO_EXEC_VIRTUAL) / 0x1000;
             block_insns++;
-            if (pc == MMIO_EXEC_VIRTUAL + 12) {
-                loop_translations++;
+            if (pc == MMIO_EXEC_VIRTUAL + block_page * 0x1000 + 12) {
+                loop_translations[block_page]++;
             }
         }
     }
-    max_block_insns = MAX(max_block_insns, block_insns);
-    g_test_message("%s: loop translations %u, maximum block instructions %u",
-                   remote ? "remote" : "local", loop_translations,
-                   max_block_insns);
-    g_test_message("translation trace: %s", log);
-    if (remote) {
-        g_assert_cmpuint(loop_translations, >=, 64);
-        g_assert_cmpuint(max_block_insns, ==, 1);
-    } else {
-        g_assert_cmpuint(loop_translations, >, 0);
-        g_assert_cmpuint(loop_translations, <=, 2);
-        g_assert_cmpuint(max_block_insns, >, 1);
+    max_block_insns[block_page] =
+                MAX(max_block_insns[block_page], block_insns);
+    for (unsigned page = 0; page < 2; page++) {
+        g_test_message("%s page %u: loop translations %u, "
+                       "maximum block instructions %u", remote ? "remote" :
+                       "local", page, loop_translations[page],
+                       max_block_insns[page]);
+        g_assert_cmpuint(loop_translations[page], >, 0);
+        g_assert_cmpuint(loop_translations[page], <=, 2);
+        g_assert_cmpuint(max_block_insns[page], >, 1);
     }
+    g_test_message("translation trace: %s", log);
     g_assert_cmpint(g_unlink(prom), ==, 0);
     g_assert_cmpint(g_unlink(image), ==, 0);
     g_assert_cmpint(g_unlink(log_path), ==, 0);
@@ -5848,6 +6660,108 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn1/address-map/own-node-ii-handshake/routed-wrong-signature-control",
         GUINT_TO_POINTER(14), test_own_node_ii_handshake);
+    qtest_add_data_func("sn1/address-map/routed-memory/cached-refusal/ni",
+                       GUINT_TO_POINTER(0), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/router-protection",
+                       GUINT_TO_POINTER(1), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/master-cable",
+                       GUINT_TO_POINTER(2), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/slave-cable",
+                       GUINT_TO_POINTER(3), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/target-number",
+                       GUINT_TO_POINTER(4), test_routed_memory_cached_refusal);
+    qtest_add_data_func("sn1/address-map/routed-memory/cached-refusal/mttcg-ni",
+                       GUINT_TO_POINTER(5), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/interior-loop",
+                       GUINT_TO_POINTER(6), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/interior-protection",
+                       GUINT_TO_POINTER(7), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/interior-cable",
+                       GUINT_TO_POINTER(8), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-refusal/disconnected-port",
+                       GUINT_TO_POINTER(9), test_routed_memory_cached_refusal);
+    qtest_add_data_func("sn1/address-map/routed-memory/snapshot", NULL,
+                       test_routed_memory_snapshot);
+    qtest_add_data_func("sn1/address-map/routed-memory/migration", NULL,
+                       test_routed_memory_migration);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "last-bank-byte", GUINT_TO_POINTER(0),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "last-raw-byte", GUINT_TO_POINTER(1),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "past-raw-byte", GUINT_TO_POINTER(2),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "last-bank-word", GUINT_TO_POINTER(3),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "last-raw-word", GUINT_TO_POINTER(4),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "past-raw-word", GUINT_TO_POINTER(5),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/alias/"
+        "unaligned-raw-word", GUINT_TO_POINTER(6),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "last-bank-byte", GUINT_TO_POINTER(128),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "last-raw-byte", GUINT_TO_POINTER(129),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "past-raw-byte", GUINT_TO_POINTER(130),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "last-bank-word", GUINT_TO_POINTER(131),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "last-raw-word", GUINT_TO_POINTER(132),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "past-raw-word", GUINT_TO_POINTER(133),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cpu-boundary/callback/"
+        "unaligned-raw-word", GUINT_TO_POINTER(134),
+        test_routed_memory_cpu_boundary);
+    qtest_add_data_func("sn1/address-map/routed-memory/cached-md", NULL,
+                       test_routed_memory_cached_md);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/cached-local-claim", NULL,
+                       test_routed_memory_cached_local_claim);
+    qtest_add_data_func("sn1/address-map/routed-memory/boundaries", NULL,
+                       test_routed_memory_boundaries);
+    qtest_add_data_func("sn1/address-map/routed-memory/numbers", NULL,
+                       test_routed_memory_numbers);
+    qtest_add_data_func("sn1/address-map/routed-memory/notifications", NULL,
+                       test_routed_memory_notifications);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/notifications-two-routers",
+                       GUINT_TO_POINTER(1), test_routed_memory_notifications);
     qtest_add_data_func("sn1/address-map/routed-instruction-translation/local",
                         GUINT_TO_POINTER(0),
                         test_routed_instruction_translation);
