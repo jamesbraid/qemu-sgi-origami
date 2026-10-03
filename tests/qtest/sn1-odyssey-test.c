@@ -11991,6 +11991,130 @@ static void test_readback_gl_rgba16_scratch_copy(void)
     qtest_quit(qts);
 }
 
+/* Captured V12 copies fill one 128x64 object chunk before each short read. */
+static void test_readback_gl_rgba16_scratch_copy_chunks(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t sample_x[] = { 0, 17, 64, 127 };
+    const uint32_t sample_y[] = { 0, 23, 32, 63 };
+    const uint32_t chunk_y[] = { 64, 0, 64, 0 };
+    const uint32_t unsupported_tails[] = { 0xf802204a, 0xb802204b };
+    const uint64_t pte[] = {
+        ODSY_DMA_PTE(RB_PAGE_A, 0x8000),
+        ODSY_DMA_PTE(RB_PAGE_A + 0x8000, 0x8000),
+    };
+    const size_t payload = 128 * 64 * 8;
+    uint32_t hdr[8] = {
+        0x16a800, 0, 0x20, (64 << 16) | 128, 0x8002504b, 0, 0x400,
+        0xb3020000,
+    };
+    g_autofree uint8_t *expect = g_malloc(payload + 32);
+    uint32_t colours[ARRAY_SIZE(sample_x)];
+
+    cmd_push64(qts, 0x60b, (RB_ORIGIN_Y << 16) | RB_ORIGIN_X);
+    window_origin(qts, 17, 29);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x16a800);
+    user_cmd_push(qts, 0x20);
+    user_cmd_push(qts, 0x080024d0);
+    user_cmd_push(qts, 0);
+
+    for (unsigned chunk = 0; chunk < ARRAY_SIZE(chunk_y); chunk++) {
+        uint32_t copy_src = chunk_y[chunk] << 16;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(sample_x); i++) {
+            uint32_t x = RB_ORIGIN_X + sample_x[i];
+            uint32_t y = RB_ORIGIN_Y + chunk_y[chunk] + sample_y[i];
+
+            colours[i] = 0x10203040 + chunk * 0x10101000 + i * 0x01020304;
+            odsy_buffer_pixel_write(qts, 0, x, y, colours[i] ^ 0x00ffffff);
+            odsy_buffer_pixel_write(qts, 1, x, y, colours[i]);
+        }
+
+        cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+        cmd_push(qts, RB_READ_SENTINEL);
+        cmd_push(qts, copy_src);
+        cmd_push(qts, 0x80200050);
+        cmd_push(qts, (64 << 16) | 128);
+        cmd_push(qts, 0x12633042);
+        cmd_push(qts, 0x16a800);
+        cmd_push(qts, 0);
+        cmd_push(qts, 0xf802204b);
+
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-test-object-count"), ==,
+                         1);
+        for (unsigned i = 0; i < ARRAY_SIZE(sample_x); i++) {
+            g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800,
+                                                   sample_x[i], sample_y[i]),
+                            ==, colours[i]);
+        }
+
+        readback_guard(qts, RB_PAGE_A - 16, expect, payload + 32);
+        memset(expect + 16, 0, payload);
+        for (unsigned i = 0; i < ARRAY_SIZE(sample_x); i++) {
+            size_t at = 16 + sample_y[i] * 1024 + sample_x[i] * 8;
+
+            for (unsigned channel = 0; channel < 4; channel++) {
+                uint8_t byte =
+                    (uint8_t)(colours[i] >> (24 - channel * 8));
+
+                expect[at + channel * 2] = byte;
+                expect[at + channel * 2 + 1] = byte;
+            }
+        }
+        readback_run(qts, hdr, pte, ARRAY_SIZE(pte));
+        readback_expect(qts, RB_PAGE_A - 16, expect, payload + 32);
+        g_assert_true(readback_dma_done(qts));
+    }
+
+    odsy_buffer_pixel_write(qts, 1, RB_ORIGIN_X,
+                            RB_ORIGIN_Y + 128, 0x76543210);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+    cmd_push(qts, RB_READ_SENTINEL);
+    cmd_push(qts, 128 << 16);
+    cmd_push(qts, 0x80200050);
+    cmd_push(qts, 0x00010001);
+    cmd_push(qts, 0x12633042);
+    cmd_push(qts, 0x16a800);
+    cmd_push(qts, 511);
+    cmd_push(qts, 0xf802204b);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 511, 0), ==,
+                    0x76543210);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 127, 63), ==,
+                    colours[3]);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 0, 64), ==, 0);
+
+    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+    cmd_push(qts, RB_READ_SENTINEL);
+    cmd_push(qts, 128 << 16);
+    cmd_push(qts, 0x80200050);
+    cmd_push(qts, 0x00010001);
+    cmd_push(qts, 0x12633042);
+    cmd_push(qts, 0x16a800);
+    cmd_push(qts, 512);
+    cmd_push(qts, 0xf802204b);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 512, 0), ==, 0);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(unsupported_tails); i++) {
+        uint32_t tail = unsupported_tails[i];
+
+        cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+        cmd_push(qts, RB_READ_SENTINEL);
+        cmd_push(qts, 128 << 16);
+        cmd_push(qts, 0x80200050);
+        cmd_push(qts, 0x00010001);
+        cmd_push(qts, 0x12633042);
+        cmd_push(qts, 0x16a800);
+        cmd_push(qts, 510 - i);
+        cmd_push(qts, tail);
+    }
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 510, 0), ==, 0);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 509, 0), ==, 0);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 511, 0), ==,
+                    0x76543210);
+    qtest_quit(qts);
+}
+
 /* The V6 scratch read follows a drawable-to-object copy, then a DMA read. */
 static void test_readback_gl_rgba8_scratch_copy(void)
 {
@@ -12478,6 +12602,8 @@ int main(int argc, char **argv)
                    test_readback_gl_rgba16_object);
     qtest_add_func("sn1/odyssey/readback/gl-rgba16-scratch-copy",
                    test_readback_gl_rgba16_scratch_copy);
+    qtest_add_func("sn1/odyssey/readback/gl-rgba16-scratch-copy-chunks",
+                   test_readback_gl_rgba16_scratch_copy_chunks);
     qtest_add_func("sn1/odyssey/readback/gl-rgba8-scratch-copy",
                    test_readback_gl_rgba8_scratch_copy);
     qtest_add_func("sn1/odyssey/readback/index-follows-display-mode",
