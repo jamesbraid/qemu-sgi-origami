@@ -1948,6 +1948,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_TEXTURE_2D:
         c->cur.texture_2d = on;
         return;
+    case SGI_GL_TEXTURE_3D:
+        c->cur.texture_3d = on;
+        return;
     case SGI_GL_FOG:
         c->cur.fog = on;
         return;
@@ -2581,6 +2584,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         out[0] = c->cur.texture_2d;
         *n = 1;
         return true;
+    case SGI_GL_TEXTURE_3D:
+        out[0] = c->cur.texture_3d;
+        *n = 1;
+        return true;
     case SGI_GL_TEXTURE_ENV_MODE:
         out[0] = c->cur.texture_env_mode;
         *n = 1;
@@ -2985,6 +2992,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "color_logic_op", st->color_logic_op },
         { "fog", st->fog },
         { "texture_2d", st->texture_2d },
+        { "texture_3d", st->texture_3d },
         { "drawable.bound", st->drawable.bound },
         { "drawable.clip.empty", st->drawable.clip.empty },
         { "window_matrix_given", st->window_matrix_given },
@@ -3619,6 +3627,24 @@ static const VMStateDescription vmstate_sgi_gl_texture_env = {
     },
 };
 
+static bool sgi_gl_texture_3d_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, texture_3d);
+}
+
+static const VMStateDescription vmstate_sgi_gl_texture_3d = {
+    .name = "sgi-gl-draw-state/texture-3d",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_texture_3d_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(texture_3d, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_gl_draw_state = {
     .name = "sgi-gl-draw-state",
     .version_id = 1,
@@ -3651,6 +3677,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_colour_mask,
         &vmstate_sgi_gl_fog,
         &vmstate_sgi_gl_texture_env,
+        &vmstate_sgi_gl_texture_3d,
         &vmstate_sgi_gl_polygon_offset,
         &vmstate_sgi_gl_clip_planes,
         &vmstate_sgi_gl_window_matrix,
