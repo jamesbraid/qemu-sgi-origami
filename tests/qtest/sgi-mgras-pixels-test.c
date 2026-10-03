@@ -3558,6 +3558,28 @@ static void gl_client_read_row(QTestState *qts, uint32_t x, uint32_t y,
     gl_read_trigger(qts);
 }
 
+#define GL_READ_BUFFER_HDR 0x0000440c
+#define GL_BANKS_HDR       0x00009808
+
+static void gl_swap_buffers(QTestState *qts, uint32_t bank, uint32_t mask)
+{
+    gl_word(qts, GL_BANKS_HDR);
+    gl_word(qts, bank);
+    gl_word(qts, bank);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, mask);
+}
+
+static void gl_client_read_buffer(QTestState *qts, uint32_t first,
+                                  uint32_t second, uint32_t selector)
+{
+    gl_word(qts, GL_READ_BUFFER_HDR);
+    gl_word(qts, first);
+    gl_word(qts, second);
+    gl_word(qts, selector);
+}
+
 /*
  * The 0x7f08 and 0x7c08 records reach the raster engine's registers: the
  * X server's data-port read, set up by records rather than by direct
@@ -3962,6 +3984,83 @@ static void test_gl_readpixels_dma_captured_rectangles(void)
                         sizeof(poison) - 8 - count * 4);
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
+}
+
+static void gl_read_selected_pixel(QTestState *qts, uint32_t first,
+                                   uint32_t second, uint32_t selector,
+                                   uint32_t bytes_per_row,
+                                   uint8_t got[16])
+{
+    gl_client_read_buffer(qts, first, second, selector);
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 1, 1, 1, 1, 1, GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature_format(qts, 1, 1, 0x00400080);
+    gl_read_dma_descriptor(qts, 4, 1, bytes_per_row);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, GL_READ_CLOSE);
+    qtest_memread(qts, 0x30000, got, 16);
+}
+
+/* The captured selectors read the front and back buffers independently. */
+static void test_gl_readpixels_dma_client_buffer_selection(void)
+{
+    static const char *const boards[] = {
+        "si", "si-t", "ssi", "mxi", "esi", "esi-t", "essi", "emxi",
+    };
+    static const uint32_t red = 0xff0000ff;
+    static const uint32_t green = 0x00ff00ff;
+    static const uint8_t poison[16] = { [0 ... 15] = 0xa5 };
+    static const uint8_t want_red[4] = { 0xff, 0, 0, 0xff };
+    static const uint8_t want_green[4] = { 0, 0xff, 0, 0xff };
+
+    for (int i = 0; i < ARRAY_SIZE(boards); i++) {
+        g_autofree char *args = g_strdup_printf(
+            MACHINE_ARGS " -global sgi-mgras.board=%s "
+            "-global sgi-mgras.x-unimplemented-board=on", boards[i]);
+        QTestState *s = qtest_init(args);
+        uint8_t got[16];
+
+        g_test_message("client buffer reads on MGRAS board %s", boards[i]);
+        gl_pixels_context(s, 0);
+        gl_draw_buffer(s, 1);
+        gl_draw_rgba_row(s, 1, 1, &red, 1);
+        gl_draw_buffer(s, 2);
+        gl_draw_rgba_row(s, 1, 1, &green, 1);
+        gl_read_dma_map(s);
+
+        qtest_memwrite(s, 0x30000, poison, sizeof(poison));
+        gl_read_selected_pixel(s, 0, 1, 0x404, 4, got);
+        g_assert_cmpmem(got, 8, poison, 8);
+        g_assert_cmpmem(got + 8, 4, want_red, 4);
+        g_assert_cmpmem(got + 12, 4, poison + 12, 4);
+
+        qtest_memwrite(s, 0x30000, poison, sizeof(poison));
+        gl_read_selected_pixel(s, 1, 0, 0x405, 4, got);
+        g_assert_cmpmem(got + 8, 4, want_green, 4);
+
+        /* The captured first swap selects the prior back image for display. */
+        gl_swap_buffers(s, 0, 1u << 14);
+        qtest_memwrite(s, 0x30000, poison, sizeof(poison));
+        gl_read_selected_pixel(s, 0, 1, 0x404, 4, got);
+        g_assert_cmpmem(got + 8, 4, want_green, 4);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+        qtest_quit(s);
+    }
+}
+
+static void test_gl_readpixels_dma_rejects_short_one_pixel_descriptor(void)
+{
+    static const uint32_t red = 0xff0000ff;
+    static const uint8_t poison[16] = { [0 ... 15] = 0xa5 };
+    uint8_t got[16];
+
+    gl_pixels_context(qts, 0);
+    gl_draw_rgba_row(qts, 1, 1, &red, 1);
+    gl_read_dma_map(qts);
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_read_selected_pixel(qts, 0, 1, 0x404, 3, got);
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
 static void test_gl_readpixels_dma_area_exceeds_plane_width(void)
@@ -4972,6 +5071,11 @@ int main(int argc, char **argv)
                    test_gl_readpixels_dma_one_row_rectangular);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-captured-rectangles",
                    test_gl_readpixels_dma_captured_rectangles);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-readpixels-dma-client-buffer-selection",
+                   test_gl_readpixels_dma_client_buffer_selection);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-short-pixel",
+                   test_gl_readpixels_dma_rejects_short_one_pixel_descriptor);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-readpixels-dma-area-exceeds-plane-width",
                    test_gl_readpixels_dma_area_exceeds_plane_width);

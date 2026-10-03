@@ -2189,10 +2189,16 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
                                             uint32_t height)
 {
     bool back = s->gl_context[s->gl_current].client_read_bank == 1;
-    const uint32_t *color_plane = back ? s->back : s->front;
-    const uint8_t *alpha_plane = back ? s->back_alpha : s->front_alpha;
+    unsigned int bank = s->gl_banks[0] & 1;
+    const uint32_t *color_plane;
+    const uint8_t *alpha_plane;
     uint32_t bpr = width * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    /* The selector names logical front/back; the bank token places them. */
+    bank ^= !back;
+    color_plane = bank ? s->back : s->front;
+    alpha_plane = bank ? s->back_alpha : s->front_alpha;
 
     for (uint32_t row = 0; row < height; row++) {
         for (uint32_t col = 0; col < width; col++) {
