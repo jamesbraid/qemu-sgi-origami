@@ -1,0 +1,22 @@
+# MIPS R10000 instruction set extensions
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Reference: MIPS IV Instruction Set / R10000 User's Manual
+
+&pref           base hint offset
+&prefx          base index hint
+&movcf_s        fd fs cc tf
+&movzn_s        fd fs ft
+
+@pref           ...... base:5 hint:5 offset:s16         &pref
+@prefx          ...... base:5 index:5 hint:5 ..... ...... &prefx
+@movcf_s        ...... ..... cc:3 . tf:1 fs:5 fd:5 ...... &movcf_s
+@movzn_s        ...... ..... ft:5 fs:5 fd:5 ......       &movzn_s
+
+PREF            110011 ..... ..... ................     @pref
+PREFX           010011 ..... ..... ..... 00000 001111   @prefx
+
+MOVCF_S         010001 10000 ... 0 . ..... ..... 010001 @movcf_s
+MOVZ_S          010001 10000 ..... ..... ..... 010010   @movzn_s
+MOVN_S          010001 10000 ..... ..... ..... 010011   @movzn_s

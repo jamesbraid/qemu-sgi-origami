@@ -4,10 +4,9 @@
  * TCG generation where the R10000 family differs from the shared MIPS
  * decoder.
  *
- * Unlike the other vendor translate units this one has no decodetree
- * file: the R10000 defines no encodings of its own, it only refuses
- * encodings the shared decoder accepts, so everything here is a check
- * or a variant that decoder calls behind model configuration checks. Those call
+ * This file implements decodetree patterns for R10000-specific variants
+ * (such as PREF, PREFX, and upper-clearing single FP conditional moves)
+ * alongside translation checks and CP0 dispatch tables. Those call
  * sites carry no TARGET_MIPS64 guard, so this file builds for every
  * MIPS target even though only mips64 can create an R10000.
  */
@@ -424,4 +423,64 @@ void gen_prefx_r10k(DisasContext *ctx, int hint, int base, int index)
 
     gen_base_index_addr(ctx, addr, base, index);
     gen_prefetch_r10k(ctx, hint, addr);
+}
+
+/* Include the auto-generated decoder. */
+#include "decode-r10k.c.inc"
+
+static bool trans_PREF(DisasContext *ctx, arg_PREF *a)
+{
+    if (!ctx->has_r10k_prefetch) {
+        return false;
+    }
+    check_mips4_enabled(ctx);
+    gen_pref_r10k(ctx, a->hint, a->base, a->offset);
+    return true;
+}
+
+static bool trans_PREFX(DisasContext *ctx, arg_PREFX *a)
+{
+    if (!ctx->has_r10k_prefetch) {
+        return false;
+    }
+    check_cp1_enabled(ctx);
+    check_mips4_enabled(ctx);
+    gen_prefx_r10k(ctx, a->hint, a->base, a->index);
+    return true;
+}
+
+static bool trans_MOVCF_S(DisasContext *ctx, arg_MOVCF_S *a)
+{
+    if (!ctx->fp_single_result_clears_upper ||
+        !(ctx->hflags & MIPS_HFLAG_F64)) {
+        return false;
+    }
+    check_cp1_enabled(ctx);
+    check_mips4_enabled_fp(ctx);
+    gen_movcf_s_r10k(ctx, a->fs, a->fd, a->cc, a->tf);
+    return true;
+}
+
+static bool trans_MOVZ_S(DisasContext *ctx, arg_MOVZ_S *a)
+{
+    if (!ctx->fp_single_result_clears_upper ||
+        !(ctx->hflags & MIPS_HFLAG_F64)) {
+        return false;
+    }
+    check_cp1_enabled(ctx);
+    check_mips4_enabled_fp(ctx);
+    gen_movzn_s_r10k(ctx, a->fs, a->fd, a->ft, true);
+    return true;
+}
+
+static bool trans_MOVN_S(DisasContext *ctx, arg_MOVN_S *a)
+{
+    if (!ctx->fp_single_result_clears_upper ||
+        !(ctx->hflags & MIPS_HFLAG_F64)) {
+        return false;
+    }
+    check_cp1_enabled(ctx);
+    check_mips4_enabled_fp(ctx);
+    gen_movzn_s_r10k(ctx, a->fs, a->fd, a->ft, false);
+    return true;
 }
