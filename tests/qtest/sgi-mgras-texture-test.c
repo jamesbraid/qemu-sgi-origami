@@ -32,6 +32,8 @@
  */
 #define GL_VERTEX3I_HDR       0x3800000c
 #define GL_RASTER_POS3I_HDR   0x3800380c
+#define TEX_GL_TEX_COORD3F_HDR 0x2000080c
+#define TEX_GL_BEGIN_POINTS    0x00001600
 
 static void gl_vertex3i(QTestState *qts, int32_t x, int32_t y, int32_t z)
 {
@@ -198,21 +200,258 @@ static void test_gl_texture_load_draws_the_level(gconstpointer data)
     qtest_quit(t);
 }
 
+#define TEX_COLOR_TABLE_SELECTOR 0x15c
+#define TEX_COLOR_TABLE_DATA     0x15d
+#define TEX_COLOR_TABLE_MODE     0x0000e000
+#define TEX_COLOR_TABLE_ENTRIES  256
+
+static void tex_color_table_upload(QTestState *t, uint32_t count)
+{
+    uint32_t *pairs = g_new(uint32_t, 2 * (count + 1));
+
+    pairs[0] = TEX_COLOR_TABLE_SELECTOR;
+    pairs[1] = 0x90000000;
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t value;
+
+        if (i < TEX_COLOR_TABLE_ENTRIES) {
+            value = i ^ 0x3c;
+        } else if (i < 2 * TEX_COLOR_TABLE_ENTRIES) {
+            value = (i - TEX_COLOR_TABLE_ENTRIES + 0x57) & 0xff;
+        } else {
+            value = (i - 2 * TEX_COLOR_TABLE_ENTRIES) ^ 0xa5;
+        }
+        pairs[2 * (i + 1)] = TEX_COLOR_TABLE_DATA;
+        pairs[2 * (i + 1) + 1] = value;
+    }
+    tex_records(t, pairs, count + 1);
+    g_free(pairs);
+}
+
+static void tex_color_table_mode(QTestState *t, bool enabled)
+{
+    tex_record(t, TEX_TEXMODE1, TEX_TEXMODE1_ON |
+               (enabled ? TEX_COLOR_TABLE_MODE : 0));
+}
+
+static void test_gl_texture_color_table(gconstpointer data)
+{
+    QTestState *t = texture_board_start(data);
+    static const uint8_t texels[32] = {
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+    };
+
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_record(t, TEX_COLOR_TABLE_DATA, 0x33);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_upload(t, 3 * TEX_COLOR_TABLE_ENTRIES - 1);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+
+    tex_color_table_upload(t, 3 * TEX_COLOR_TABLE_ENTRIES);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+
+    tex_record(t, TEX_COLOR_TABLE_DATA, 0xaa);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+
+    tex_color_table_upload(t, 3 * TEX_COLOR_TABLE_ENTRIES);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x7cd765);
+
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    gl_alpha_func(t, GL_GREATER, 0x400);
+    gl_one(t, GL_ALPHA_TEST_HDR, 1);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x7cd765);
+    gl_one(t, GL_ALPHA_TEST_HDR, 0);
+
+    qtest_system_reset(t);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static uint8_t tex_color_table_byte(uint32_t i)
+{
+    if (i < TEX_COLOR_TABLE_ENTRIES) {
+        return i ^ 0x3c;
+    }
+    if (i < 2 * TEX_COLOR_TABLE_ENTRIES) {
+        return (i - TEX_COLOR_TABLE_ENTRIES + 0x57) & 0xff;
+    }
+    return (i - 2 * TEX_COLOR_TABLE_ENTRIES) ^ 0xa5;
+}
+
+static void tex_color_table_continue(QTestState *t, uint32_t offset,
+                                     uint32_t count)
+{
+    uint32_t *pairs = g_new(uint32_t, 2 * count);
+
+    for (uint32_t i = 0; i < count; i++) {
+        pairs[2 * i] = TEX_COLOR_TABLE_DATA;
+        pairs[2 * i + 1] = tex_color_table_byte(offset + i);
+    }
+    tex_records(t, pairs, count);
+    g_free(pairs);
+}
+
+#define TEX_COLOR_TABLE_MIGRATION_ARGS \
+    MIGRATION_ARGS " -global sgi-mgras.board=%s " \
+    "-global sgi-mgras.x-unimplemented-board=on"
+
+static void test_gl_texture_color_table_migration(gconstpointer data)
+{
+    static const uint8_t texels[32] = {
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-color-table-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    source_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS,
+                                  (char *)data);
+    from = tex_start(source_args);
+    dest_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS
+                                " -incoming %s", (char *)data, uri);
+    to = qtest_init(dest_args);
+
+    tex_load(from, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_upload(from, 384);
+    tex_color_table_mode(from, true);
+    tex_quad(from);
+    g_assert_cmphex(tex_texel_pixel(from, 0, 0), ==, 0x4080c0);
+    sgi_migrate_stopped(from, uri);
+
+    tex_color_table_continue(to, 384, 3 * TEX_COLOR_TABLE_ENTRIES - 384);
+    tex_bind(to, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(to, true);
+    tex_quad(to);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x7cd765);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_gl_texture_color_table_full_migration(gconstpointer data)
+{
+    static const uint8_t texels[32] = {
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-color-table-full-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    source_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS,
+                                  (char *)data);
+    from = tex_start(source_args);
+    dest_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS
+                                " -incoming %s", (char *)data, uri);
+    to = qtest_init(dest_args);
+
+    tex_load(from, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_upload(from, 3 * TEX_COLOR_TABLE_ENTRIES);
+    tex_color_table_mode(from, true);
+    sgi_migrate_stopped(from, uri);
+
+    tex_quad(to);
+    g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x7cd765);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_gl_texture_color_table_reset_partial(gconstpointer data)
+{
+    static const uint8_t texels[32] = {
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+    };
+    QTestState *t = texture_board_start(data);
+
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_upload(t, 384);
+    qtest_system_reset(t);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_color_table_continue(t, 384, 3 * TEX_COLOR_TABLE_ENTRIES - 384);
+    tex_load(t, TEX_TL_MODE_RGBA8, texels);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_color_table_mode(t, true);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==, 0x4080c0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 #define TEX_SPEC_2X2             0x110
 #define TEX_TXSIZE_2X2           0x1111
 #define TEX_TEXMODE2_VOLUME      0x800000
 #define TEX_MDDMA_PIXEL_ON       0x3c040045
 #define TEX_MDDMA_PIXEL_OFF      0x3c040044
 
-static void tex_volume_pixels(QTestState *t, bool enabled,
-                              uint32_t captured_size)
+static void tex_volume_pixels_data(QTestState *t, bool enabled,
+                                   uint32_t captured_size,
+                                   const uint8_t pixels[16],
+                                   uint32_t enabled_control,
+                                   uint32_t disabled_control)
 {
-    static const uint8_t pixels[16] = {
-        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
-        0x40, 0xbf, 0xbf, 0xff, 0xbf, 0xbf, 0xff, 0xff,
-    };
-
-    tex_record(t, 0x18a, enabled ? TEX_MDDMA_PIXEL_ON : TEX_MDDMA_PIXEL_OFF);
+    tex_record(t, 0x18a, enabled ? enabled_control : disabled_control);
     gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
     if (captured_size) {
         uint32_t box[9] = {
@@ -231,20 +470,38 @@ static void tex_volume_pixels(QTestState *t, bool enabled,
     gl_word(t, 1);
     gl_word(t, 0x4fc5);
     gl_word(t, 0x98);
-    gl_pixels_dma_on(t, 0, pixels, sizeof(pixels), 8, 2, 8, 0xa7);
-    tex_record(t, 0x18a, TEX_MDDMA_PIXEL_OFF);
+    gl_pixels_dma_on(t, 0, pixels, 16, 8, 2, 8, 0xa7);
+    tex_record(t, 0x18a, disabled_control);
     gl_pixels_fence(t);
 }
 
-static void tex_load_captured_volume(QTestState *t, const uint8_t *image,
-                                    uint32_t depth)
+static void tex_volume_pixels(QTestState *t, bool enabled,
+                              uint32_t captured_size)
 {
-    uint32_t bytes = 2 * 2 * depth * 4;
-    uint32_t box[6] = { 0, 0, 1, 1, 2 << 16 | 2, depth };
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
+        0x40, 0xbf, 0xbf, 0xff, 0xbf, 0xbf, 0xff, 0xff,
+    };
+
+    tex_volume_pixels_data(t, enabled, captured_size, pixels,
+                           TEX_MDDMA_PIXEL_ON, TEX_MDDMA_PIXEL_OFF);
+}
+
+static uint32_t tex_captured_volume_size(uint32_t depth)
+{
+    return 2 * 2 * depth * 4;
+}
+
+static void tex_begin_captured_volume(QTestState *t, uint32_t depth)
+{
+    uint32_t bytes = tex_captured_volume_size(depth);
+    /* Stock depth-two/four packets use 2,2 for this 2x2 rectangle. */
+    uint32_t edge = depth == 1 ? 1 : 2;
+    uint32_t box[6] = { 0, 0, edge, edge, 2 << 16 | 2, depth };
     uint32_t flags = depth == 1 ? 0x98 : 0x198;
 
     g_assert_cmpuint(depth, >=, 1);
-    g_assert_cmpuint(depth, <=, 2);
+    g_assert_true(depth == 1 || depth == 2 || depth == 4);
     tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
     tex_record(t, TEX_TL_SPEC, 0x120);
     gl_word(t, TEX_SAVE_RSS);
@@ -271,9 +528,27 @@ static void tex_load_captured_volume(QTestState *t, const uint8_t *image,
     gl_word(t, depth);
     gl_word(t, 0x511a);
     gl_word(t, flags);
-    gl_pixels_dma_on(t, 0, image, bytes, 8, 2 * depth, 8, 0xa7);
+}
+
+static void tex_finish_captured_volume(QTestState *t, const uint8_t *image,
+                                      uint32_t depth)
+{
+    uint32_t bytes = tex_captured_volume_size(depth);
+
+    if (depth == 4) {
+        gl_pixels_dma_on(t, 0, image, bytes, bytes, 1, bytes, 0xa7);
+    } else {
+        gl_pixels_dma_on(t, 0, image, bytes, 8, 2 * depth, 8, 0xa7);
+    }
     gl_word(t, TEX_LOAD_CLOSE);
     gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_load_captured_volume(QTestState *t, const uint8_t *image,
+                                     uint32_t depth)
+{
+    tex_begin_captured_volume(t, depth);
+    tex_finish_captured_volume(t, image, depth);
 }
 
 static void tex_load_pixel_endpoint(QTestState *t, const uint8_t *image)
@@ -320,6 +595,15 @@ static void tex_captured_two_slice_state(QTestState *t, bool enabled)
         TEX_TXSIZE, 0x81112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
     }, 3);
     tex_record(t, 0x18a, enabled ? 0x40445 : 0x40444);
+}
+
+static void tex_captured_four_slice_state(QTestState *t)
+{
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, 0x101112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    tex_record(t, 0x18a, 0x4040845);
 }
 
 static void tex_quad_volume_z(QTestState *t, float z)
@@ -519,6 +803,58 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
                                                 20 + 8 * y), ==, TEX_WHITE);
             }
         }
+        {
+            /* Synthetic bytes cover all slices; the capture gives row size. */
+            static const uint8_t four_slices[64] = {
+                0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+                0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+                0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+                0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+                0xff, 0x80, 0, 0xff, 0x80, 0, 0xff, 0xff,
+                0, 0x80, 0xff, 0xff, 0x80, 0x80, 0x80, 0xff,
+                0x20, 0x40, 0x60, 0xff, 0x60, 0x40, 0x20, 0xff,
+                0xa0, 0x80, 0x60, 0xff, 0x60, 0x80, 0xa0, 0xff,
+            };
+            static const uint32_t expected[4][4] = {
+                { 0xff0000, 0x00ff00, 0x0000ff, 0xffff00 },
+                { 0x00ffff, 0xff00ff, 0xffffff, 0x000000 },
+                { 0xff8000, 0x8000ff, 0x0080ff, 0x808080 },
+                { 0x204060, 0x604020, 0xa08060, 0x6080a0 },
+            };
+            static const uint8_t red_green[4][2] = {
+                { 64, 64 }, { 192, 64 }, { 64, 192 }, { 192, 192 },
+            };
+            uint8_t pixels[16];
+
+            tex_load_captured_volume(t, four_slices, 4);
+            tex_captured_four_slice_state(t);
+            for (int z = 0; z < 4; z++) {
+                /* Blue uses the four captured slice-centre values. */
+                for (int i = 0; i < 4; i++) {
+                    pixels[4 * i + 0] = red_green[i][0];
+                    pixels[4 * i + 1] = red_green[i][1];
+                    pixels[4 * i + 2] = 32 + z * 64;
+                    pixels[4 * i + 3] = 0xff;
+                }
+                tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                                       0x4040845, 0x4040844);
+                for (int i = 0; i < 4; i++) {
+                    g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                                    expected[z][i]);
+                }
+            }
+
+            /* A depth-two state is unrelated to the depth-four tuple. */
+            tex_records(t, (const uint32_t[]){ TEX_TXSIZE, 0x81112 }, 1);
+            tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                                   0x4040845, 0x4040844);
+            for (int i = 0; i < 4; i++) {
+                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                                pixels[4 * i] << 16 |
+                                pixels[4 * i + 1] << 8 |
+                                pixels[4 * i + 2]);
+            }
+        }
     }
     tex_check_ordinary_4x2(t);
 
@@ -538,6 +874,1030 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
     }
 
     tex_check_ordinary_4x2(t);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void tex_ordinary_volume_state(QTestState *t, uint32_t depth)
+{
+    uint32_t size = depth == 1 ? 0x1112 :
+                    depth == 2 ? 0x81112 : 0x101112;
+    uint32_t control = depth == 1 ? 0x3c000044 :
+                       depth == 2 ? 0x00000444 : 0x04000844;
+
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, size,
+        TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    tex_record(t, 0x18a, control);
+}
+
+static void tex_ordinary_point_color(QTestState *t, float r,
+                                     float red, float green, float blue)
+{
+    gl_color3f(t, red, green, blue);
+    gl_word(t, TEX_GL_BEGIN_POINTS);
+    gl_word(t, TEX_GL_TEX_COORD3F_HDR);
+    gl_float(t, 0);
+    gl_float(t, 0);
+    gl_float(t, r);
+    gl_vertex2f(t, 32, 32);
+    gl_word(t, GL_END_OF(TEX_GL_BEGIN_POINTS));
+}
+
+static void tex_ordinary_point(QTestState *t, float r)
+{
+    tex_ordinary_point_color(t, r, 1, 1, 1);
+}
+
+static void test_gl_texture_ordinary_volume_point(gconstpointer data)
+{
+    static const uint8_t one_slice[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint8_t two_slices[32] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+        0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t ordinary[32];
+
+    gl_transform_start(t);
+    tex_texels(ordinary);
+    tex_load(t, TEX_TL_MODE_RGBA8, ordinary);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
+                    ordinary[0] << 16 | ordinary[1] << 8 | ordinary[2]);
+
+    tex_load_captured_volume(t, one_slice, 1);
+    tex_ordinary_volume_state(t, 1);
+    tex_ordinary_point(t, 0.5f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0xff0000);
+
+    tex_load_captured_volume(t, two_slices, 2);
+    tex_ordinary_volume_state(t, 2);
+    tex_ordinary_point(t, 0.25f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0xff0000);
+    tex_ordinary_point(t, 0.75f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0x00ffff);
+
+    /* The ordinary tuple requires its captured DMA-control word. */
+    tex_record(t, 0x18a, 0x00000445);
+    tex_ordinary_point(t, 0.75f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+
+    /* A depth-one size word cannot select the uploaded depth-two volume. */
+    tex_ordinary_volume_state(t, 1);
+    tex_ordinary_point(t, 0.75f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+
+    {
+        static const uint8_t four_slices[64] = {
+            0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+            0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+            0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+            0xff, 0x80, 0, 0xff, 0x80, 0, 0xff, 0xff,
+            0, 0x80, 0xff, 0xff, 0x80, 0x80, 0x80, 0xff,
+            0x20, 0x40, 0x60, 0xff, 0x60, 0x40, 0x20, 0xff,
+            0xa0, 0x80, 0x60, 0xff, 0x60, 0x80, 0xa0, 0xff,
+        };
+        static const uint32_t expected[4] = {
+            0xff0000, 0x00ffff, 0xff8000, 0x204060,
+        };
+
+        tex_load_captured_volume(t, four_slices, 4);
+        tex_ordinary_volume_state(t, 4);
+        for (int z = 0; z < 4; z++) {
+            tex_ordinary_point(t, (z + 0.5f) / 4);
+            g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, expected[z]);
+        }
+
+        /* The depth-four draw requires its captured control word and enable. */
+        tex_record(t, 0x18a, 0x04000845);
+        tex_ordinary_point(t, 0.875f);
+        g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+        tex_ordinary_volume_state(t, 4);
+        tex_bind(t, 0, 0x815804);
+        tex_ordinary_point_color(t, 0.125f, 0, 1, 0);
+        g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0x00ff00);
+    }
+
+    tex_load(t, TEX_TL_MODE_RGBA8, ordinary);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    g_assert_cmphex(tex_texel_pixel(t, 0, 0), ==,
+                    ordinary[0] << 16 | ordinary[1] << 8 | ordinary[2]);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void tex_load_captured_rect_volume(QTestState *t, const uint8_t *image,
+                                          uint32_t width, uint32_t height,
+                                          uint32_t depth, bool bad_area)
+{
+    uint32_t spec = (ctz32(width) + 1) << 4 | ctz32(height) << 8;
+    uint32_t box[6] = { 0, 0, width, height, height << 16 | width, depth };
+    uint32_t bytes = width * height * depth * 4;
+
+    g_assert_true(width == 2 || width == 4 || width == 8 ||
+                  width == 16 || width == 32);
+    g_assert_true(height == 2 || height == 4 || height == 8 ||
+                  height == 16 || height == 32);
+    g_assert_true(depth == 2 || depth == 4 || depth == 8 ||
+                  depth == 16 || depth == 32 || depth == 64);
+    g_assert_true(depth <= 4 || (width == 8 && height == 8) ||
+                  (width == 32 && height == 32 && depth == 16) ||
+                  (width == 16 && height == 16 && depth == 64));
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, spec);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_pixels_program(t, GL_PIX_4UB, width * height * depth, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, (depth > 4 && width != 8 ? 0x40 : width * height) +
+             bad_area);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, width == 32 ? 5 : width == 16 ? 1 : 0);
+    gl_word(t, depth);
+    gl_word(t, 0x511a);
+    gl_word(t, 0x198);
+    gl_pixels_dma_on(t, 0, image, bytes, bytes, 1, bytes, 0xa7);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_ordinary_deep_volume_state(QTestState *t, uint32_t depth)
+{
+    static const struct {
+        uint32_t depth;
+        uint32_t txsize;
+        uint32_t control;
+    } tuples[] = {
+        { 8, 0x00183334, 0x08000ccc },
+        { 16, 0x00203334, 0x0c0010cc },
+        { 32, 0x00283334, 0x100014cc },
+        { 64, 0x00303334, 0x140018cc },
+    };
+    uint32_t txsize = 0, control = 0;
+
+    for (size_t i = 0; i < ARRAY_SIZE(tuples); i++) {
+        if (tuples[i].depth == depth) {
+            txsize = tuples[i].txsize;
+            control = tuples[i].control;
+            break;
+        }
+    }
+    g_assert_cmphex(txsize, !=, 0);
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, txsize,
+        TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x10008,
+    }, 3);
+    tex_record(t, 0x18a, control);
+}
+
+static uint32_t tex_deep_volume_pixel(uint32_t slice)
+{
+    return (0x10 + slice) << 16 | (0x20 + slice) << 8 | (0x30 + slice);
+}
+
+typedef struct TexBoundaryVolume {
+    uint32_t width, height, depth;
+    uint32_t txsize, clampsize, ordinary_control, pixel_control;
+} TexBoundaryVolume;
+
+static const TexBoundaryVolume tex_boundary_volumes[] = {
+    { 32, 32, 16, 0x00205556, 0x40020, 0x0c001154, 0x0c041155 },
+    { 16, 16, 64, 0x00304445, 0x20010, 0x14001910, 0x14041911 },
+};
+
+static void tex_boundary_volume_state(QTestState *t, size_t index)
+{
+    const TexBoundaryVolume *volume = &tex_boundary_volumes[index];
+
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, volume->txsize,
+        TEX_TXLOD, 1, TEX_TXCLAMPSIZE, volume->clampsize,
+    }, 3);
+    tex_record(t, 0x18a, volume->ordinary_control);
+}
+
+static void test_gl_texture_captured_boundary_volumes(gconstpointer data)
+{
+    QTestState *t = texture_board_start(data);
+
+    gl_transform_start(t);
+    for (size_t c = 0; c < ARRAY_SIZE(tex_boundary_volumes); c++) {
+        const TexBoundaryVolume *volume = &tex_boundary_volumes[c];
+        size_t bytes = (size_t)volume->width * volume->height *
+                       volume->depth * 4;
+        uint8_t *image = g_new(uint8_t, bytes);
+
+        g_assert_cmpuint(bytes, ==, 65536);
+        for (uint32_t z = 0; z < volume->depth; z++) {
+            for (uint32_t pixel = 0;
+                 pixel < volume->width * volume->height; pixel++) {
+                size_t offset = ((size_t)z * volume->width * volume->height +
+                                 pixel) * 4;
+
+                image[offset] = 0x10 + z;
+                image[offset + 1] = 0x20 + z;
+                image[offset + 2] = 0x30 + z;
+                image[offset + 3] = 0xff;
+            }
+        }
+
+        tex_load_captured_rect_volume(t, image, volume->width,
+                                      volume->height, volume->depth, true);
+        tex_boundary_volume_state(t, c);
+        tex_ordinary_point(t, (volume->depth - 0.5f) / volume->depth);
+        g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+
+        tex_load_captured_rect_volume(t, image, volume->width,
+                                      volume->height, volume->depth, false);
+        tex_boundary_volume_state(t, c);
+        for (uint32_t z = 0; z < volume->depth; z++) {
+            tex_ordinary_point(t, (z + 0.5f) / volume->depth);
+            g_assert_cmphex(gl_window_pixel(t, 32, 32), ==,
+                            tex_deep_volume_pixel(z));
+        }
+        g_free(image);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_captured_boundary_volumes_pixel(gconstpointer data)
+{
+    static const uint8_t coordinates[4][2] = {
+        { 16, 16 }, { 112, 16 }, { 16, 112 }, { 112, 112 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t pixels[16];
+
+    gl_transform_start(t);
+    for (size_t c = 0; c < ARRAY_SIZE(tex_boundary_volumes); c++) {
+        const TexBoundaryVolume *volume = &tex_boundary_volumes[c];
+        size_t bytes = (size_t)volume->width * volume->height *
+                       volume->depth * 4;
+        uint8_t *image = g_new(uint8_t, bytes);
+        uint32_t enabled = volume->pixel_control;
+        uint32_t disabled = enabled & ~1u;
+
+        for (uint32_t z = 0; z < volume->depth; z++) {
+            for (uint32_t y = 0; y < volume->height; y++) {
+                for (uint32_t x = 0; x < volume->width; x++) {
+                    size_t offset = ((size_t)z * volume->height + y) *
+                                    volume->width * 4 + x * 4;
+
+                    image[offset] = 0x10 + x;
+                    image[offset + 1] = 0x20 + y;
+                    image[offset + 2] = 0x30 + z;
+                    image[offset + 3] = 0xff;
+                }
+            }
+        }
+        tex_load_captured_rect_volume(t, image, volume->width,
+                                      volume->height, volume->depth, false);
+
+        for (uint32_t z = 0; z < volume->depth; z++) {
+            for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                pixels[4 * i] = coordinates[i][0];
+                pixels[4 * i + 1] = coordinates[i][1];
+                pixels[4 * i + 2] = (2 * z + 1) * 128 / volume->depth;
+                pixels[4 * i + 3] = 0xff;
+            }
+            tex_boundary_volume_state(t, c);
+            tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                                   enabled, disabled);
+            for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                uint32_t x = coordinates[i][0] * volume->width / 256;
+                uint32_t y = coordinates[i][1] * volume->height / 256;
+                uint32_t expected = (0x10 + x) << 16 |
+                                    (0x20 + y) << 8 | (0x30 + z);
+
+                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                                expected);
+            }
+        }
+        g_free(image);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_captured_deep_volume(gconstpointer data)
+{
+    static const uint32_t depths[] = { 8, 16, 32, 64 };
+    uint8_t malformed[8 * 8 * 8 * 4] = { 0 };
+    uint8_t control[2 * 2 * 4 * 4];
+    QTestState *t = texture_board_start(data);
+
+    gl_transform_start(t);
+    tex_load_captured_rect_volume(t, malformed, 8, 8, 8, true);
+    tex_ordinary_deep_volume_state(t, 8);
+    tex_ordinary_point(t, 7.5f / 8);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+
+    for (uint32_t z = 0; z < 4; z++) {
+        for (uint32_t pixel = 0; pixel < 2 * 2; pixel++) {
+            size_t offset = ((size_t)z * 2 * 2 + pixel) * 4;
+
+            control[offset] = 0x10 + z;
+            control[offset + 1] = 0x20 + z;
+            control[offset + 2] = 0x30 + z;
+            control[offset + 3] = 0xff;
+        }
+    }
+    tex_load_captured_volume(t, control, 4);
+    tex_ordinary_volume_state(t, 4);
+    for (uint32_t z = 0; z < 4; z++) {
+        tex_ordinary_point(t, (z + 0.5f) / 4);
+        g_assert_cmphex(gl_window_pixel(t, 32, 32), ==,
+                        tex_deep_volume_pixel(z));
+    }
+
+    for (size_t i = 0; i < ARRAY_SIZE(depths); i++) {
+        uint32_t depth = depths[i];
+        size_t bytes = 8 * 8 * depth * 4;
+        uint8_t *image = g_new(uint8_t, bytes);
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (uint32_t pixel = 0; pixel < 8 * 8; pixel++) {
+                size_t offset = ((size_t)z * 8 * 8 + pixel) * 4;
+
+                image[offset] = 0x10 + z;
+                image[offset + 1] = 0x20 + z;
+                image[offset + 2] = 0x30 + z;
+                image[offset + 3] = 0xff;
+            }
+        }
+        tex_load_captured_rect_volume(t, image, 8, 8, depth, false);
+        tex_ordinary_deep_volume_state(t, depth);
+        for (uint32_t z = 0; z < depth; z++) {
+            tex_ordinary_point(t, (z + 0.5f) / depth);
+            g_assert_cmphex(gl_window_pixel(t, 32, 32), ==,
+                            tex_deep_volume_pixel(z));
+        }
+        g_free(image);
+    }
+
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_captured_deep_volume_pixel(gconstpointer data)
+{
+    static const struct {
+        uint32_t depth;
+        uint32_t pixel_control;
+    } cases[] = {
+        { 8, 0x08040ccd }, { 16, 0x0c0410cd },
+        { 32, 0x100414cd }, { 64, 0x140418cd },
+    };
+    static const uint8_t coordinates[4][2] = {
+        { 32, 32 }, { 96, 32 }, { 32, 96 }, { 96, 96 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t *image = g_new(uint8_t, 8 * 8 * 64 * 4);
+    uint8_t pixels[16];
+
+    gl_transform_start(t);
+    for (size_t c = 0; c < ARRAY_SIZE(cases); c++) {
+        uint32_t depth = cases[c].depth;
+        uint32_t enabled = cases[c].pixel_control;
+        uint32_t disabled = enabled & ~1u;
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (uint32_t y = 0; y < 8; y++) {
+                for (uint32_t x = 0; x < 8; x++) {
+                    size_t offset = ((size_t)z * 8 * 8 + y * 8 + x) * 4;
+
+                    image[offset] = 16 + x * 20;
+                    image[offset + 1] = 24 + y * 24;
+                    image[offset + 2] = 32 + z;
+                    image[offset + 3] = 0xff;
+                }
+            }
+        }
+        tex_load_captured_rect_volume(t, image, 8, 8, depth, false);
+        tex_ordinary_deep_volume_state(t, depth);
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                pixels[4 * i] = coordinates[i][0];
+                pixels[4 * i + 1] = coordinates[i][1];
+                pixels[4 * i + 2] = (2 * z + 1) * 128 / depth;
+                pixels[4 * i + 3] = 0xff;
+            }
+            tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                                   enabled, disabled);
+            for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                uint32_t x = coordinates[i][0] * 8 / 256;
+                uint32_t y = coordinates[i][1] * 8 / 256;
+                uint32_t expected = (16 + 20 * x) << 16 |
+                                    (24 + 24 * y) << 8 | (32 + z);
+
+                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                                expected);
+            }
+        }
+
+        /* A different full control word must fall back to the source pixels. */
+        tex_ordinary_deep_volume_state(t, depth);
+        for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+            pixels[4 * i] = coordinates[i][0];
+            pixels[4 * i + 1] = coordinates[i][1];
+            pixels[4 * i + 2] = 32;
+            pixels[4 * i + 3] = 0xff;
+        }
+        tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                               enabled ^ 2u, disabled ^ 2u);
+        for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+            uint32_t source = pixels[4 * i] << 16 |
+                              pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
+
+            g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+        }
+
+        /* A different clamp extent must also leave the source pixels visible. */
+        tex_ordinary_deep_volume_state(t, depth);
+        tex_record(t, TEX_TXCLAMPSIZE, 0x10004);
+        tex_volume_pixels_data(t, true, 0x00020002, pixels, enabled,
+                               disabled);
+        for (size_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+            uint32_t source = pixels[4 * i] << 16 |
+                              pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
+
+            g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+        }
+    }
+    g_free(image);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void tex_load_captured_stock_volume(QTestState *t, const uint8_t *image,
+                                           uint32_t width, uint32_t height,
+                                           uint32_t box_x, uint32_t box_y)
+{
+    uint32_t spec = (ctz32(width) + 1) << 4 | ctz32(height) << 8;
+    uint32_t box[6] = { 0, 0, width, height, height << 16 | width, 4 };
+    uint32_t bytes = width * height * 4 * 4;
+
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, spec);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_pixels_program(t, GL_PIX_4UB, width * height * 4, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 0x40);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, box_x);
+    gl_word(t, box_y);
+    gl_word(t, 4);
+    gl_word(t, 0x511a);
+    gl_word(t, 0x198);
+    gl_pixels_dma_on(t, 0, image, bytes, bytes, 1, bytes, 0xa7);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_captured_rect_volume_state(QTestState *t, uint32_t width,
+                                           uint32_t height, uint32_t depth)
+{
+    uint32_t log2w = ctz32(width), log2h = ctz32(height);
+    uint32_t size = (ctz32(depth) << 19) |
+                    ((log2h << 4 | log2w) << 8) |
+                    (log2h << 4 | (log2w + 1));
+    uint32_t clamp = width << 13 | height;
+    uint32_t control;
+
+    if (width == 64 && (height == 16 || height == 64)) {
+        control = 0x844 + (log2w - 1) * 4 + (log2h - 1) * 0x40;
+        control |= 0x08800000;
+    } else {
+        control = (depth == 4 ? 0x44 : 0x444) +
+                  (log2w - 1) * 4 + (log2h - 1) * 0x40;
+        if (depth == 4) {
+            control |= 0x04000800;
+        }
+    }
+
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, size, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, clamp,
+    }, 3);
+    tex_record(t, 0x18a, control);
+}
+
+static void test_gl_texture_ordinary_rectangular_volume(void)
+{
+    static const struct {
+        uint32_t width, height, depth;
+    } shapes[] = {
+        { 4, 2, 2 }, { 2, 4, 2 }, { 8, 2, 2 }, { 2, 8, 2 },
+        { 8, 2, 4 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t ordinary[32];
+    uint8_t image[8 * 8 * 4 * 4];
+
+    gl_transform_start(t);
+    tex_texels(ordinary);
+    tex_load(t, TEX_TL_MODE_RGBA8, ordinary);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_quad(t);
+    for (size_t s = 0; s < ARRAY_SIZE(shapes); s++) {
+        uint32_t width = shapes[s].width, height = shapes[s].height;
+        uint32_t depth = shapes[s].depth;
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t x = 0; x < width; x++) {
+                    uint32_t index = ((z * height + y) * width + x) * 4;
+
+                    image[index] = 40 + x * 24;
+                    image[index + 1] = 16 + y * 32;
+                    image[index + 2] = 20 + z * 50;
+                    image[index + 3] = 0xff;
+                }
+            }
+        }
+        tex_load_captured_rect_volume(t, image, width, height, depth, false);
+        for (uint32_t z = 0; z < depth; z++) {
+            tex_captured_rect_volume_state(t, width, height, depth);
+            tex_quad_volume_z(t, (z + 0.5f) / depth);
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t x = 0; x < width; x++) {
+                    uint32_t px = 16 + (2 * x + 1) * 16 / width;
+                    uint32_t py = 16 + (2 * y + 1) * 8 / height;
+                    uint32_t expected = (40 + x * 24) << 16 |
+                                        (16 + y * 32) << 8 | (20 + z * 50);
+
+                    g_assert_cmphex(gl_window_pixel(t, px, py), ==,
+                                    expected);
+                }
+            }
+        }
+    }
+    /* A rectangle area that disagrees with the transfer stores no image. */
+    qtest_system_reset(t);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_load_captured_rect_volume(t, image, 4, 2, 2, true);
+    tex_captured_rect_volume_state(t, 4, 2, 2);
+    tex_ordinary_point(t, 0.25f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, TEX_WHITE);
+
+    /* Disabling texture state leaves the point's green color intact. */
+    tex_bind(t, 0, 0x815804);
+    tex_ordinary_point_color(t, 0.25f, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0x00ff00);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_captured_large_volumes(void)
+{
+    static const struct {
+        uint32_t width, height, box_x, box_y;
+    } shapes[] = {
+        { 16, 16, 1, 1 }, { 32, 16, 2, 2 },
+        { 8, 32, 1, 1 }, { 32, 8, 1, 1 }, { 16, 32, 2, 2 },
+        { 32, 32, 1, 5 }, { 64, 16, 1, 5 }, { 64, 64, 1, 0x15 },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64 * 64 * 4 * 4];
+
+    gl_transform_start(t);
+    for (size_t s = 0; s < ARRAY_SIZE(shapes); s++) {
+        uint32_t width = shapes[s].width, height = shapes[s].height;
+
+        for (uint32_t z = 0; z < 4; z++) {
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t x = 0; x < width; x++) {
+                    uint32_t i = ((z * height + y) * width + x) * 4;
+
+                    /* Keep filtering from moving the sampled color. */
+                    image[i] = 16;
+                    image[i + 1] = 32;
+                    image[i + 2] = 64 + z;
+                    image[i + 3] = 0xff;
+                }
+            }
+        }
+        tex_load_captured_stock_volume(t, image, width, height,
+                                       shapes[s].box_x, shapes[s].box_y);
+        tex_captured_rect_volume_state(t, width, height, 4);
+        tex_quad_volume_z(t, 0.875f);
+        g_assert_cmphex(gl_window_pixel(t, 32, 24), ==,
+                        16 << 16 | 32 << 8 | 67);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_ordinary_captured_large_volumes(gconstpointer data)
+{
+    static const struct {
+        uint32_t width, height, box_x, box_y, control;
+    } shapes[] = {
+        { 64, 16, 1, 5, 0x08800918 },
+        { 64, 64, 1, 0x15, 0x08800998 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t image[64 * 64 * 4 * 4];
+
+    gl_transform_start(t);
+    for (size_t s = 0; s < ARRAY_SIZE(shapes); s++) {
+        uint32_t width = shapes[s].width, height = shapes[s].height;
+        uint32_t log2w = ctz32(width), log2h = ctz32(height);
+        uint32_t size = (2u << 19) |
+                      ((log2h << 4 | log2w) << 8) |
+                      (log2h << 4 | (log2w + 1));
+
+        for (uint32_t z = 0; z < 4; z++) {
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t x = 0; x < width; x++) {
+                    uint32_t i = ((z * height + y) * width + x) * 4;
+
+                    image[i] = 16;
+                    image[i + 1] = 32;
+                    image[i + 2] = 64 + z;
+                    image[i + 3] = 0xff;
+                }
+            }
+        }
+        tex_load_captured_stock_volume(t, image, width, height,
+                                       shapes[s].box_x, shapes[s].box_y);
+        tex_bind(t, 0x40859, 0x815804);
+        tex_records(t, (const uint32_t[]){
+            TEX_TXSIZE, size, TEX_TXLOD, 1,
+            TEX_TXCLAMPSIZE, width << 13 | height,
+        }, 3);
+        tex_record(t, 0x18a, shapes[s].control);
+        tex_ordinary_point(t, 0.875f);
+        g_assert_cmphex(gl_window_pixel(t, 32, 32), ==, 0x102043);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_captured_volume_rejects_unknown_selector(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[16 * 16 * 4 * 4];
+
+    for (uint32_t z = 0; z < 4; z++) {
+        for (uint32_t i = 0; i < 16 * 16; i++) {
+            uint32_t offset = (z * 16 * 16 + i) * 4;
+
+            image[offset] = 16;
+            image[offset + 1] = 32;
+            image[offset + 2] = 64 + z;
+            image[offset + 3] = 0xff;
+        }
+    }
+    gl_transform_start(t);
+    /* The 16x16 capture uses (1,1); this unobserved selector must be refused. */
+    tex_load_captured_stock_volume(t, image, 16, 16, 2, 1);
+    tex_captured_rect_volume_state(t, 16, 16, 4);
+    tex_quad_volume_z(t, 0.875f);
+    g_assert_cmphex(gl_window_pixel(t, 32, 24), ==, TEX_WHITE);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_rectangular_volume_pixel_rgba(gconstpointer data)
+{
+    static const struct {
+        uint32_t width, height, depth, pixel_control;
+    } shapes[] = {
+        /*
+         * Captures 13173359/13173659 give 4x2x2 0x40449/0x40448;
+         * 13180584/13180890 give 2x8x2 0x404c5/0x404c4. The earlier
+         * 8x2x2 capture gives 0x4044d/0x4044c at 12988878/12989178,
+         * and 8x2x4 gives 0x404084d/0x404084c at 13261039/13261339.
+         */
+        { 4, 2, 2, 0x40449 }, { 2, 4, 2, 0x40485 },
+        { 8, 2, 2, 0x4044d }, { 2, 8, 2, 0x404c5 },
+        { 8, 2, 4, 0x404084d },
+        { 64, 16, 4, 0x08840919 }, { 64, 64, 4, 0x08840999 },
+    };
+    static const uint8_t coordinates[4][2] = {
+        { 64, 64 }, { 192, 64 }, { 64, 192 }, { 192, 192 },
+    };
+    QTestState *t = texture_board_start(data);
+    uint8_t image[64 * 64 * 4 * 4];
+    uint8_t pixels[16];
+
+    for (size_t s = 0; s < ARRAY_SIZE(shapes); s++) {
+        uint32_t width = shapes[s].width;
+        uint32_t height = shapes[s].height;
+        uint32_t depth = shapes[s].depth;
+        uint32_t enabled = shapes[s].pixel_control;
+        uint32_t disabled = enabled & ~1u;
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (uint32_t y = 0; y < height; y++) {
+                for (uint32_t x = 0; x < width; x++) {
+                    size_t index = ((z * height + y) * width + x) * 4;
+
+                    image[index] = 16 + 20 * x;
+                    image[index + 1] = 24 + 24 * y;
+                    image[index + 2] = width == 64 ? 32 + 64 * z
+                                                   : 32 + 40 * z;
+                    image[index + 3] = 0xff;
+                }
+            }
+        }
+        if (width == 64) {
+            tex_load_captured_stock_volume(t, image, width, height, 1,
+                                           height == 16 ? 5 : 0x15);
+        } else {
+            tex_load_captured_rect_volume(t, image, width, height, depth,
+                                          false);
+        }
+        tex_captured_rect_volume_state(t, width, height, depth);
+
+        for (uint32_t z = 0; z < depth; z++) {
+            for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                pixels[4 * i] = coordinates[i][0];
+                pixels[4 * i + 1] = coordinates[i][1];
+                pixels[4 * i + 2] = depth == 2 ? 64 + 128 * z : 32 + 64 * z;
+                pixels[4 * i + 3] = 0xff;
+            }
+            tex_volume_pixels_data(t, true, 0x00020002, pixels,
+                                   enabled, disabled);
+            for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+                uint32_t x = coordinates[i][0] * width / 256;
+                uint32_t y = coordinates[i][1] * height / 256;
+                uint32_t blue = width == 64 ? 32 + 64 * z : 32 + 40 * z;
+                uint32_t expected = ((16 + 20 * x) & 0xff) << 16 |
+                                    ((24 + 24 * y) & 0xff) << 8 | blue;
+
+                g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==,
+                                expected);
+            }
+        }
+    }
+
+    /* An unsupported texture class leaves the same pixel source visible. */
+    tex_captured_rect_volume_state(t, 8, 2, 4);
+    tex_bind(t, 0x40e59, 0x815804);
+    for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+        pixels[4 * i] = coordinates[i][0];
+        pixels[4 * i + 1] = coordinates[i][1];
+        pixels[4 * i + 2] = 224;
+        pixels[4 * i + 3] = 0xff;
+    }
+    tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040845,
+                           0x4040844);
+    for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+        uint32_t source = pixels[4 * i] << 16 |
+                          pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
+
+        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+    }
+
+    /* The complete raw pixel control must match the captured value. */
+    tex_captured_rect_volume_state(t, 8, 2, 4);
+    tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040847,
+                           0x4040846);
+    for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+        uint32_t source = pixels[4 * i] << 16 |
+                          pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
+
+        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+    }
+
+    /* A nonmatching clamp extent cannot select the stored volume. */
+    tex_captured_rect_volume_state(t, 8, 2, 4);
+    tex_record(t, TEX_TXCLAMPSIZE, 0x10004);
+    tex_volume_pixels_data(t, true, 0x00020002, pixels, 0x4040845,
+                           0x4040844);
+    for (uint32_t i = 0; i < ARRAY_SIZE(coordinates); i++) {
+        uint32_t source = pixels[4 * i] << 16 |
+                          pixels[4 * i + 1] << 8 | pixels[4 * i + 2];
+
+        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, source);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static const uint8_t tex_four_slice_migration_image[64] = {
+    0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+    0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    0, 0xff, 0xff, 0xff, 0xff, 0, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0xff,
+    0xff, 0x80, 0, 0xff, 0x80, 0, 0xff, 0xff,
+    0, 0x80, 0xff, 0xff, 0x80, 0x80, 0x80, 0xff,
+    0x20, 0x40, 0x60, 0xff, 0x60, 0x40, 0x20, 0xff,
+    0xa0, 0x80, 0x60, 0xff, 0x60, 0x80, 0xa0, 0xff,
+};
+
+#define TEX_VOLUME_MIGRATION_ARGS \
+    MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
+    "-global sgi-mgras.x-unimplemented-board=on"
+
+static void test_gl_texture_volume_depth4_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-volume-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
+    from = tex_start(source_args);
+    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
+                                uri);
+    to = qtest_init(dest_args);
+
+    /* Migrate after parsing the depth-four load packet, before its DMA. */
+    tex_begin_captured_volume(from, 4);
+    sgi_migrate_stopped(from, uri);
+    tex_finish_captured_volume(to, tex_four_slice_migration_image, 4);
+    tex_captured_four_slice_state(to);
+    tex_quad_volume_z(to, 0.875f);
+    {
+        static const uint32_t expected[4] = {
+            0x204060, 0x604020, 0xa08060, 0x6080a0,
+        };
+
+        for (int i = 0; i < 4; i++) {
+            g_assert_cmphex(gl_window_pixel(to, 24 + 16 * (i % 2),
+                                            20 + 8 * (i / 2)), ==,
+                            expected[i]);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_gl_texture_rectangular_volume_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t image[4 * 2 * 2 * 4];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-rect-volume-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
+    from = tex_start(source_args);
+    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
+                                uri);
+    to = qtest_init(dest_args);
+
+    for (uint32_t z = 0; z < 2; z++) {
+        for (uint32_t y = 0; y < 2; y++) {
+            for (uint32_t x = 0; x < 4; x++) {
+                uint32_t i = ((z * 2 + y) * 4 + x) * 4;
+
+                image[i] = 32 + x * 48;
+                image[i + 1] = 48 + y * 128;
+                image[i + 2] = 64 + z * 128;
+                image[i + 3] = 0xff;
+            }
+        }
+    }
+    gl_transform_start(from);
+    tex_load_captured_rect_volume(from, image, 4, 2, 2, false);
+    sgi_migrate_stopped(from, uri);
+
+    gl_clear_color(to, 0, 0, 0, 0);
+    gl_word(to, GL_CLEAR_COLOR_BUFFER);
+    for (uint32_t z = 0; z < 2; z++) {
+        tex_captured_rect_volume_state(to, 4, 2, 2);
+        tex_quad_volume_z(to, z ? 0.75f : 0.25f);
+        for (uint32_t y = 0; y < 2; y++) {
+            for (uint32_t x = 0; x < 4; x++) {
+                uint32_t px = 16 + (2 * x + 1) * 16 / 4;
+                uint32_t py = 16 + (2 * y + 1) * 8 / 2;
+                uint32_t expected = (32 + x * 48) << 16 |
+                                    (48 + y * 128) << 8 | (64 + z * 128);
+
+                g_assert_cmphex(gl_window_pixel(to, px, py), ==, expected);
+            }
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_gl_texture_captured_volume_64k_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree uint8_t *image = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-volume-64k-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
+    from = tex_start(source_args);
+    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
+                                uri);
+    to = qtest_init(dest_args);
+
+    image = g_malloc(64 * 64 * 4 * 4);
+    for (uint32_t z = 0; z < 4; z++) {
+        for (uint32_t i = 0; i < 64 * 64; i++) {
+            uint32_t offset = (z * 64 * 64 + i) * 4;
+
+            image[offset] = 16;
+            image[offset + 1] = 32;
+            image[offset + 2] = 64 + z;
+            image[offset + 3] = 0xff;
+        }
+    }
+    gl_transform_start(from);
+    tex_load_captured_stock_volume(from, image, 64, 64, 1, 0x15);
+    tex_captured_rect_volume_state(from, 64, 64, 4);
+    tex_quad_volume_z(from, 0.875f);
+    g_assert_cmphex(gl_window_pixel(from, 32, 24), ==, 0x102043);
+    sgi_migrate_stopped(from, uri);
+
+    tex_captured_rect_volume_state(to, 64, 64, 4);
+    tex_quad_volume_z(to, 0.875f);
+    g_assert_cmphex(gl_window_pixel(to, 32, 24), ==, 0x102043);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_gl_texture_volume_depth4_reset_load(void)
+{
+    QTestState *t = texture_board_start("si-t");
+
+    tex_begin_captured_volume(t, 4);
+    qtest_system_reset(t);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_captured_four_slice_state(t);
+    tex_quad_volume_z(t, 0.875f);
+    g_assert_cmphex(gl_window_pixel(t, 24, 20), ==, TEX_WHITE);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
 }
@@ -3029,6 +4389,50 @@ int main(int argc, char **argv)
                    test_gl_integer_and_texture_forms);
     qtest_add_data_func("sn0/origin2000/mgras/gl-texture-load-draws-the-level",
                         "si-t", test_gl_texture_load_draws_the_level);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-color-table/si-t",
+                        "si-t", test_gl_texture_color_table);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-color-table/esi-t",
+                        "esi-t", test_gl_texture_color_table);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-color-table/mxi",
+                        "mxi", test_gl_texture_color_table);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-texture-color-table/emxi",
+                        "emxi", test_gl_texture_color_table);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/migration/si-t",
+        "si-t", test_gl_texture_color_table_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/migration/esi-t",
+        "esi-t", test_gl_texture_color_table_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/migration/mxi",
+        "mxi", test_gl_texture_color_table_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/migration/emxi",
+        "emxi", test_gl_texture_color_table_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/si-t",
+        "si-t", test_gl_texture_color_table_full_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/esi-t",
+        "esi-t", test_gl_texture_color_table_full_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/mxi",
+        "mxi", test_gl_texture_color_table_full_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/full-migration/emxi",
+        "emxi", test_gl_texture_color_table_full_migration);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/si-t",
+        "si-t", test_gl_texture_color_table_reset_partial);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/esi-t",
+        "esi-t", test_gl_texture_color_table_reset_partial);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/mxi",
+        "mxi", test_gl_texture_color_table_reset_partial);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-color-table/reset-partial/emxi",
+        "emxi", test_gl_texture_color_table_reset_partial);
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
         "esi-t", test_gl_texture_load_draws_the_level);
@@ -3044,6 +4448,109 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-volume-pixel-rgba/emxi",
         "emxi", test_gl_texture_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/si-t",
+        "si-t", test_gl_texture_rectangular_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/esi-t",
+        "esi-t", test_gl_texture_rectangular_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/mxi",
+        "mxi", test_gl_texture_rectangular_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-pixel-rgba/emxi",
+        "emxi", test_gl_texture_rectangular_volume_pixel_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/si-t",
+        "si-t", test_gl_texture_captured_boundary_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/esi-t",
+        "esi-t", test_gl_texture_captured_boundary_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/mxi",
+        "mxi", test_gl_texture_captured_boundary_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes/emxi",
+        "emxi", test_gl_texture_captured_boundary_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/si-t",
+        "si-t", test_gl_texture_captured_boundary_volumes_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/esi-t",
+        "esi-t", test_gl_texture_captured_boundary_volumes_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/mxi",
+        "mxi", test_gl_texture_captured_boundary_volumes_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-boundary-volumes-pixel/emxi",
+        "emxi", test_gl_texture_captured_boundary_volumes_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/si-t",
+        "si-t", test_gl_texture_captured_deep_volume);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/esi-t",
+        "esi-t", test_gl_texture_captured_deep_volume);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/mxi",
+        "mxi", test_gl_texture_captured_deep_volume);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume/emxi",
+        "emxi", test_gl_texture_captured_deep_volume);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/si-t",
+        "si-t", test_gl_texture_captured_deep_volume_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/esi-t",
+        "esi-t", test_gl_texture_captured_deep_volume_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/mxi",
+        "mxi", test_gl_texture_captured_deep_volume_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-captured-deep-volume-pixel/emxi",
+        "emxi", test_gl_texture_captured_deep_volume_pixel);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/si-t",
+        "si-t", test_gl_texture_ordinary_volume_point);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/esi-t",
+        "esi-t", test_gl_texture_ordinary_volume_point);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/mxi",
+        "mxi", test_gl_texture_ordinary_volume_point);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-volume-point/emxi",
+        "emxi", test_gl_texture_ordinary_volume_point);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-rectangular-volume",
+        test_gl_texture_ordinary_rectangular_volume);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-captured-large-volumes",
+                   test_gl_texture_captured_large_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/si-t",
+        "si-t", test_gl_texture_ordinary_captured_large_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/esi-t",
+        "esi-t", test_gl_texture_ordinary_captured_large_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/mxi",
+        "mxi", test_gl_texture_ordinary_captured_large_volumes);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-ordinary-captured-large-volumes/emxi",
+        "emxi", test_gl_texture_ordinary_captured_large_volumes);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-captured-volume-unknown-selector",
+        test_gl_texture_captured_volume_rejects_unknown_selector);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-volume-depth4-migration",
+        test_gl_texture_volume_depth4_migration);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-rectangular-volume-migration",
+        test_gl_texture_rectangular_volume_migration);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-captured-volume-64k-migration",
+        test_gl_texture_captured_volume_64k_migration);
+    qtest_add_func("sn0/origin2000/mgras/gl-texture-volume-depth4-reset-load",
+                   test_gl_texture_volume_depth4_reset_load);
     qtest_add_data_func("sn0/origin2000/mgras/gl-texture-rgba4-truncates",
                         "si-t", test_gl_texture_rgba4_truncates);
     qtest_add_data_func(
