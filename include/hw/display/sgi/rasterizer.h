@@ -173,6 +173,9 @@ typedef struct SGIGLTexLevel {
     uint32_t border;
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
+    /* Border indices range from -1 through width/height, inclusive. */
+    bool (*read_border_texel)(void *opaque, uint32_t level,
+                              int32_t x, int32_t y, uint32_t *rgba);
     void *opaque;
 } SGIGLTexLevel;
 
@@ -207,6 +210,9 @@ typedef struct SGIGLTexImage {
      * are ignored. The sampler fields still apply to every selected level.
      */
     const SGIGLTexPyramid *pyramid;
+    /* Required for border == 1; called only outside the interior. */
+    bool (*read_border_texel)(void *opaque, int32_t x, int32_t y,
+                              uint32_t *rgba);
     /* Positive per-axis derivative factors; zero preserves identity. */
     double lod_scale_s, lod_scale_t;
     /* Expanded RGBA after filtering, before the texture environment. */

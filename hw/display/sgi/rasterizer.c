@@ -762,7 +762,8 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     if (!base) {
         goto incomplete;
     }
-    if (base->border ||
+    if (base->border > 1 ||
+        (base->border && !base->read_border_texel) ||
         sgi_soft_texture_internal_format(base->internal_format) !=
         base->base_format || !sgi_soft_texture_format(base->base_format) ||
         (r->st->texture_env_mode == SGI_GL_DECAL &&
@@ -784,7 +785,8 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         if (l->level < p->base_level || l->level > last) {
             continue;
         }
-        if (l->border || !sgi_soft_texture_format(l->base_format) ||
+        if (l->border > 1 || (l->border && !l->read_border_texel) ||
+            !sgi_soft_texture_format(l->base_format) ||
             sgi_soft_texture_internal_format(l->internal_format) !=
             l->base_format) {
             goto unsupported;
@@ -797,7 +799,8 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         if (!l || !l->read_texel ||
             l->width != MAX(1, base->width >> shift) ||
             l->height != MAX(1, base->height >> shift) ||
-            l->internal_format != base->internal_format) {
+            l->internal_format != base->internal_format ||
+            l->border != base->border) {
             goto incomplete;
         }
     }
@@ -849,7 +852,8 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         for (int k = 0; k < 4; k++) {
             border_finite &= isfinite(im->border_color[k]);
         }
-        if (im->border || !border_finite ||
+        if (im->border > 1 || (im->border && !im->read_border_texel) ||
+            !border_finite ||
             !sgi_soft_texture_format(im->base_format) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
             !sgi_soft_texture_wrap(im->wrap_t) ||
@@ -940,8 +944,25 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         y = (y % height + height) % height;
     }
     if (x < 0 || y < 0 || x >= width || y >= height) {
-        for (int k = 0; k < 4; k++) {
-            out[k] = MIN(MAX(im->border_color[k], 0), 1);
+        uint32_t border = level ? level->border : im->border;
+
+        if (!border) {
+            for (int k = 0; k < 4; k++) {
+                out[k] = MIN(MAX(im->border_color[k], 0), 1);
+            }
+            sgi_soft_texture_components(format, out);
+            return true;
+        }
+        /* A one-texel ring includes corners, with signed interior indices. */
+        bool read = x >= -1 && y >= -1 && x <= width && y <= height &&
+            (level ? level->read_border_texel &&
+                level->read_border_texel(level->opaque, level->level,
+                                         x, y, &rgba) :
+                im->read_border_texel &&
+                im->read_border_texel(im->opaque, x, y, &rgba));
+
+        if (!read) {
+            goto read_failure;
         }
     } else {
         bool read = level ?
@@ -949,16 +970,18 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
             im->read_texel(im->opaque, x, y, &rgba);
 
         if (!read) {
-            sgi_soft_texture_report(r, 1, "image-read failure, "
-                                    "fragment dropped");
-            return false;
+            goto read_failure;
         }
-        for (int k = 0; k < 4; k++) {
-            out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
-        }
+    }
+    for (int k = 0; k < 4; k++) {
+        out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
     }
     sgi_soft_texture_components(format, out);
     return true;
+
+read_failure:
+    sgi_soft_texture_report(r, 1, "image-read failure, fragment dropped");
+    return false;
 }
 
 /* Reduce finite coordinates before any float-to-integer conversion. */

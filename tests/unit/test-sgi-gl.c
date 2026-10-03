@@ -6037,6 +6037,81 @@ static void test_texture_errors(void)
     }
 }
 
+static bool texture_border_read(void *opaque, int32_t x, int32_t y,
+                                uint32_t *rgba)
+{
+    TexturePixels *p = opaque;
+
+    g_assert_cmpint(x, >=, -1);
+    g_assert_cmpint(x, <=, 2);
+    g_assert_cmpint(y, >=, -1);
+    g_assert_cmpint(y, <=, 2);
+    g_assert_true(x == -1 || x == 2 || y == -1 || y == 2);
+    p->reads++;
+    if (p->fail) {
+        return false;
+    }
+    *rgba = x == -1 && y == -1 ? 0x0000ffff :
+            x == -1 ? (y == 1 ? 0x00ff00ff : 0xff0000ff) :
+            y == -1 ? 0x00ff00ff : 0xffffffff;
+    return true;
+}
+
+static void test_texture_border_texels(void)
+{
+    const struct {
+        uint32_t wrap, filter;
+        float s, t;
+        uint32_t colour;
+    } cases[] = {
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, -2, 0.25f, 0xff0000 },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, -2, 0.75f, 0x00ff00 },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, -2, -2, 0x0000ff },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, 2, 2, 0xffffff },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_LINEAR, -2, 0.25f, 0xff0000 },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_LINEAR, 0, 0.25f, 0x800000 },
+        { SGI_GL_CLAMP, SGI_GL_LINEAR, -2, -2, 0x404040 },
+        { SGI_GL_CLAMP, SGI_GL_NEAREST, -2, -2, 0 },
+        { SGI_GL_CLAMP_TO_EDGE, SGI_GL_LINEAR, -2, -2, 0 },
+        { SGI_GL_REPEAT, SGI_GL_LINEAR, -0.25f, 0.25f, 0 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        TexturePixels pixels = { 0 };
+        SGIGLTexImage image = texture_image(&pixels);
+        FragScene f;
+
+        image.border = 1;
+        image.read_border_texel = texture_border_read;
+        image.wrap_s = image.wrap_t = cases[i].wrap;
+        image.min_filter = image.mag_filter = cases[i].filter;
+        /* Stored border texels must override this different constant. */
+        image.border_color[0] = image.border_color[2] = 1;
+        frag_init(&f);
+        f.rec.target.texture = &image;
+        enable(&f.c, SGI_GL_TEXTURE_2D, true);
+        texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+        texture_coord(&f, cases[i].s, cases[i].t, 0, 1);
+        frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+        frag_command(&f, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+        frag_command(&f, SGI_GL_OP_END, NULL, 0);
+        g_assert_cmphex(frag_pixel(&f, 32, 32), ==, cases[i].colour);
+        g_assert_cmpuint(pixels.reads, >, 0);
+    }
+}
+
+static void test_texture_border_read_failure(void)
+{
+    texture_error_init();
+    texture_error_image.border = 1;
+    texture_error_image.read_border_texel = texture_border_read;
+    texture_error_image.wrap_s = SGI_GL_CLAMP_TO_BORDER;
+    texture_error_pixels.fail = true;
+    texture_coord(&texture_error_scene, -1, 0.25f, 0, 1);
+    texture_error_assert("image-read failure", 0);
+    g_assert_cmpuint(texture_error_pixels.reads, >, 1);
+}
+
 static void test_texture_environment_without_image(void)
 {
     static const uint32_t modes[] = {
@@ -7495,6 +7570,46 @@ static void mipmap_point(MipmapFixture *f)
     frag_command(&f->scene, SGI_GL_OP_END, NULL, 0);
 }
 
+static bool mipmap_border_read(void *opaque, uint32_t level,
+                               int32_t x, int32_t y, uint32_t *rgba)
+{
+    MipmapRecordPixels *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    g_assert_cmpint(x, >=, -1);
+    g_assert_cmpint(x, <=, p->width);
+    g_assert_cmpint(y, >=, -1);
+    g_assert_cmpint(y, <=, p->height);
+    g_assert_true(x == -1 || x == p->width ||
+                  y == -1 || y == p->height);
+    p->reads++;
+    *rgba = p->pixels[0];
+    return !p->fail;
+}
+
+static void test_mipmap_border_texels(void)
+{
+    MipmapFixture f;
+
+    mipmap_init(&f, SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_NEAREST, 0.5, 0.5);
+    f.image.wrap_s = f.image.wrap_t = SGI_GL_CLAMP_TO_BORDER;
+    for (unsigned i = 0; i < 3; i++) {
+        f.levels[i].border = 1;
+        f.levels[i].read_border_texel = mipmap_border_read;
+    }
+    texture_coord(&f.scene, -1, 0.5f, 0, 1);
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, 0x808000);
+    g_assert_cmpuint(f.pixels[0].reads, >, 0);
+    g_assert_cmpuint(f.pixels[1].reads, >, 0);
+    g_assert_cmpuint(f.pixels[2].reads, ==, 0);
+
+    /* Different border widths make the relevant pyramid incomplete. */
+    f.levels[1].border = 0;
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, 0xff00ff);
+}
+
 /* Nonlinear mapping sees the trilinear result once, not each mip level. */
 static void test_mipmap_post_filter_order(void)
 {
@@ -8769,6 +8884,11 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-border/texels",
+                    test_texture_border_texels);
+    g_test_add_func("/sgi-gl/texture-border/read-failure",
+                    test_texture_border_read_failure);
+    g_test_add_func("/sgi-gl/texture-border/mipmap", test_mipmap_border_texels);
     g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
     g_test_add_func("/sgi-gl/mipmap-post-filter-order",
                     test_mipmap_post_filter_order);
