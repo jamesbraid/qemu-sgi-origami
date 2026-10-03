@@ -1781,6 +1781,15 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
     };
 }
 
+/* Keep captured enabled pixel draws bounded to their complete raw tuples. */
+static bool mgras_tex_captured_pixel_endpoint(const SGIMgrasTexture *t)
+{
+    return t->texmode1 == 0x40859 && t->texmode2 == 0x815804 &&
+           t->txlod == 1 && t->txclampsize == 0x4002 &&
+           ((t->txsize == 0x1112 && t->mddma_cntrl == 0x3c040045) ||
+            (t->txsize == 0x81112 && t->mddma_cntrl == 0x40445));
+}
+
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image)
 {
@@ -1794,11 +1803,16 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     /* The kept format the draw names, in TL_MODE's fields. */
     uint32_t mode = layout << 1 | depth << 5;
     uint32_t mip = t->texmode2 & MGRAS_TEXMODE2_MIP;
+    bool pixel_endpoint = mgras_tex_captured_pixel_endpoint(t);
     uint32_t min_filter;
 
     if (!mgras_tex_present(s) ||
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
         return NULL;
+    }
+    /* These tuples select the bounded logical-volume software view. */
+    if (pixel_endpoint) {
+        mip = 0;
     }
     /*
      * TXSIZE's two copies of the base size must agree, as every traced
@@ -1812,7 +1826,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
      * the second-slice payload used in tests is synthetic. Physical slice
      * placement remains unknown.
      */
-    if ((t->txsize & 0xffff) != (size << 8 | size) ||
+    if ((!pixel_endpoint && (t->txsize & 0xffff) != (size << 8 | size)) ||
         (!volume && depth_size != 1) || depth_size > 2 ||
         depth > MGRAS_TEX_DEPTH_12 ||
         (t->texmode1 & (MGRAS_TEXMODE1_SELECT | MGRAS_TEXMODE1_TABLE)) ||

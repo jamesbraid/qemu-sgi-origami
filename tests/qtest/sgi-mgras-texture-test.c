@@ -276,6 +276,52 @@ static void tex_load_captured_volume(QTestState *t, const uint8_t *image,
     gl_word(t, TEX_RESTORE_RSS);
 }
 
+static void tex_load_pixel_endpoint(QTestState *t, const uint8_t *image)
+{
+    static const uint32_t box[9] = {
+        0, 0, 1, 2, 0x00020002, 1, 1, 1, 0,
+    };
+
+    tex_record(t, TEX_TL_MODE, TEX_TL_MODE_RGBA8);
+    tex_record(t, TEX_TL_SPEC, 0x120);
+    gl_word(t, TEX_SAVE_RSS);
+    gl_word(t, 0xffffffff);
+    gl_word(t, 0x1400000);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 3);
+    gl_word(t, TEX_LOAD_OPEN);
+    gl_pixels_program(t, GL_PIX_4UB, 4, 0, 0, 1, 1, 1);
+    gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+    gl_word(t, TEX_PAIRS);
+    gl_word(t, 1);
+    gl_word(t, 2);
+    gl_word(t, GL_INLINE_BLOCK | 8);
+    gl_word(t, 0x159);
+    gl_word(t, 0xc00080);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 4);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0x511a);
+    gl_word(t, 0x98);
+    gl_pixels_dma_on(t, 0, image, 16, 8, 2, 8, 0xa7);
+    gl_word(t, TEX_LOAD_CLOSE);
+    gl_word(t, TEX_RESTORE_RSS);
+}
+
+static void tex_captured_two_slice_state(QTestState *t, bool enabled)
+{
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, 0x81112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    tex_record(t, 0x18a, enabled ? 0x40445 : 0x40444);
+}
+
 static void tex_quad_volume_z(QTestState *t, float z)
 {
     static const float v[4][4] = {
@@ -447,7 +493,50 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
                 }
             }
         }
+
+        /* The tuple is captured; the second slice has no captured DMA bytes. */
+        tex_captured_two_slice_state(t, true);
+        for (int z = 0; z < 2; z++) {
+            tex_quad_volume_z(t, z ? 0.75f : 0.25f);
+            for (int y = 0; y < 2; y++) {
+                for (int x = 0; x < 2; x++) {
+                    g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x,
+                                                    20 + 8 * y),
+                                    ==, slices[z][y * 2 + x]);
+                }
+            }
+            if (z == 0) {
+                tex_captured_two_slice_state(t, true);
+            }
+        }
+
+        /* Clearing captured MDDMA enable leaves the quad untextured. */
+        tex_captured_two_slice_state(t, false);
+        tex_quad_volume_z(t, 0.25f);
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, 24 + 16 * x,
+                                                20 + 8 * y), ==, TEX_WHITE);
+            }
+        }
     }
+    tex_check_ordinary_4x2(t);
+
+    tex_load_pixel_endpoint(t, image);
+    tex_bind(t, 0x40859, 0x815804);
+    tex_records(t, (const uint32_t[]){
+        TEX_TXSIZE, 0x1112, TEX_TXLOD, 1, TEX_TXCLAMPSIZE, 0x4002,
+    }, 3);
+    gl_clear_color(t, 0, 0, 0, 1);
+    gl_word(t, GL_CLEAR_COLOR_BUFFER);
+    tex_volume_pixels(t, true, 0x00020002);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            g_assert_cmphex(gl_window_pixel(t, x, y), ==,
+                            texels[y * 2 + x]);
+        }
+    }
+
     tex_check_ordinary_4x2(t);
     g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
     qtest_quit(t);
