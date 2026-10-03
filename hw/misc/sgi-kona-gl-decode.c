@@ -348,3 +348,51 @@ bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
     }
     return true;
 }
+
+/* Native min selectors group spatial and mipmap interpolation separately. */
+bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
+                                 const uint32_t record[22],
+                                 SGIKonaTextureParams *params)
+{
+    static const uint32_t min_filter[8] = {
+        SGI_GL_NEAREST, SGI_GL_LINEAR, 0,
+        SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST_MIPMAP_LINEAR,
+        SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_LINEAR_MIPMAP_LINEAR, 0,
+    };
+    SGIKonaTextureParams next = *params;
+    unsigned min = (bind[2] >> 2) & 7;
+    unsigned mag = (bind[2] >> 5) & 7;
+    unsigned lo = record[2] & 0x3ff;
+    unsigned hi = (record[2] >> 10) & 0x3ff;
+
+    /*
+     * Non-repeat S/T collapse three public clamp modes into the same bits.
+     * Their border storage is not established by this sampler record.
+     * Detail and sharpening mag selectors need their filter-curve tables.
+     */
+    if (!min_filter[min] || mag > 1 || (bind[3] & 0x7000)) {
+        return false;
+    }
+    next.min_filter = min_filter[min];
+    next.mag_filter = mag ? SGI_GL_LINEAR : SGI_GL_NEAREST;
+    next.wrap_s = next.wrap_t = SGI_GL_REPEAT;
+    if (min >= 3) {
+        /*
+         * Positive effective LOD bounds encode trunc(64 * (LOD + 1)).
+         * Zero is the lower-bound saturation. Other sub-64 bounds use a
+         * storage-dependent negative-LOD conversion we do not implement.
+         * Public base/max levels cannot be recovered from these bounds.
+         */
+        if ((record[2] & 0xfff00000) || (lo && lo < 64) || hi < 64 ||
+            ((record[1] >> 16) & 0xff) != 16) {
+            return false;
+        }
+        next.min_lod = lo ? lo / 64.0 - 1.0 : -1000.0;
+        next.max_lod = hi / 64.0 - 1.0;
+        if (next.min_lod > next.max_lod) {
+            return false;
+        }
+    }
+    *params = next;
+    return true;
+}
