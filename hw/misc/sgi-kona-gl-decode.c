@@ -445,6 +445,44 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     return true;
 }
 
+void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
+                                            uint32_t *width, uint32_t *height,
+                                            uint32_t *depth)
+{
+    sgi_kona_gl_texture_dimensions(bind, width, height);
+    *depth = 1u << ((bind[3] >> 8) & 15);
+}
+
+bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
+                                         const uint32_t *record, bool mipmapped,
+                                         SGIKonaTextureParams *params)
+{
+    SGIKonaTextureParams next = *params;
+    uint32_t ordinary[22] = { 0, 0x00101010 };
+    unsigned min = (bind[2] >> 2) & 7, mag = (bind[2] >> 5) & 7;
+
+    if ((bind[1] >> 28) != 3 || params->base_level || mag > 1 ||
+        (mipmapped ? min < 3 || min > 6 : min > 1 || min != mag)) {
+        return false;
+    }
+    if (mipmapped) {
+        memcpy(ordinary, record, 4 * sizeof(uint32_t));
+        next.lod_scale_r = ((record[1] >> 16) & 255) / 16.0;
+        if (next.lod_scale_r == 0) {
+            return false;
+        }
+    } else {
+        /* The short record omits LOD state; equal filters do not need it. */
+        next.lod_scale_r = 1;
+    }
+    next.wrap_r = SGI_GL_REPEAT;
+    if (!sgi_kona_gl_texture_sampler(bind, ordinary, &next)) {
+        return false;
+    }
+    *params = next;
+    return true;
+}
+
 bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
                                          uint32_t *internal)
 {

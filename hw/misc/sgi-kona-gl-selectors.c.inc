@@ -7,6 +7,24 @@
 
 static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
+        .selector = 0x17b,
+        .call = "volume mipmap binding",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 14,
+    },
+    {
+        .selector = 0x17c,
+        .call = "volume image binding",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
+        .selector = 0x179,
+        .call = "texture sampler record",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 22,
+    },
+    {
         .selector = 0x17d,
         .call = "texture detail binding",
         .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
