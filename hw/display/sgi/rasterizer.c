@@ -1163,10 +1163,11 @@ static bool sgi_soft_texture_select(uint32_t min, uint32_t mag,
 }
 
 /* Projective gradients precede wrapping; D is Q/W, not geometry W. */
-static bool sgi_soft_texture_derivatives(const double value[3],
-                                          const double dx[3],
-                                          const double dy[3],
+static bool sgi_soft_texture_derivatives(const double value[4],
+                                          const double dx[4],
+                                          const double dy[4],
                                           uint32_t ns, uint32_t nt,
+                                          uint32_t nr,
                                           double out[5])
 {
     double d = value[2], d2 = d * d;
@@ -1184,6 +1185,16 @@ static bool sgi_soft_texture_derivatives(const double value[3],
     }
     out[4] = MAX(hypot(ns * out[0], nt * out[2]),
                  hypot(ns * out[1], nt * out[3]));
+    if (nr) {
+        double drdx = (dx[3] * d - value[3] * dx[2]) / d2;
+        double drdy = (dy[3] * d - value[3] * dy[2]) / d2;
+
+        if (!isfinite(value[3] / d) || !isfinite(drdx) || !isfinite(drdy)) {
+            return false;
+        }
+        out[4] = MAX(hypot(hypot(ns * out[0], nt * out[2]), nr * drdx),
+                     hypot(hypot(ns * out[1], nt * out[3]), nr * drdy));
+    }
     return isfinite(out[4]);
 }
 
@@ -1803,19 +1814,22 @@ static bool sgi_soft_project(const SGISoftDraw *r, const SGIVolumeVertex *cv,
 }
 
 typedef struct SGISoftTexPlane {
-    double value[3], dx[3], dy[3];
+    /* S/W, T/W, Q/W and, for volumes, R/W. */
+    double value[4], dx[4], dy[4];
     double x, y;
 } SGISoftTexPlane;
 
-static void sgi_soft_texture_values(const SGISoftVertex *v, double value[3])
+static void sgi_soft_texture_values(const SGISoftVertex *v, bool volume,
+                                     double value[4])
 {
     value[0] = v->texcoord[0] * v->inv_w;
     value[1] = v->texcoord[1] * v->inv_w;
     value[2] = v->texcoord[3] * v->inv_w;
+    value[3] = volume ? v->texcoord[2] * v->inv_w : 0;
 }
 
 static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
-                                   SGISoftTexPlane *g)
+                                   bool volume, SGISoftTexPlane *g)
 {
     double scale = 1 << sub;
     double x1 = (v[1].x - v[0].x) / scale;
@@ -1823,7 +1837,7 @@ static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
     double x2 = (v[2].x - v[0].x) / scale;
     double y2 = (v[2].y - v[0].y) / scale;
     double area = x1 * y2 - x2 * y1;
-    double values[3][3];
+    double values[3][4];
 
     *g = (SGISoftTexPlane) { .x = v[0].x / scale, .y = v[0].y / scale };
     if (!area) {
@@ -1833,9 +1847,9 @@ static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
-        sgi_soft_texture_values(&v[i], values[i]);
+        sgi_soft_texture_values(&v[i], volume, values[i]);
     }
-    for (unsigned k = 0; k < 3; k++) {
+    for (unsigned k = 0; k < 4; k++) {
         double a = values[1][k] - values[0][k];
         double b = values[2][k] - values[0][k];
 
@@ -1852,19 +1866,20 @@ static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
 
 static bool sgi_soft_texture_line_gradient(const SGISoftVertex *a,
                                            const SGISoftVertex *b, unsigned sub,
-                                           double values[3], double delta[3],
+                                           bool volume,
+                                           double values[4], double delta[4],
                                            double *length)
 {
-    double end[3];
+    double end[4];
 
     *length = hypot((double)(b->x - a->x), (double)(b->y - a->y)) /
               (1 << sub);
     if (!isfinite(*length)) {
         return false;
     }
-    sgi_soft_texture_values(a, values);
-    sgi_soft_texture_values(b, end);
-    for (unsigned k = 0; k < 3; k++) {
+    sgi_soft_texture_values(a, volume, values);
+    sgi_soft_texture_values(b, volume, end);
+    for (unsigned k = 0; k < 4; k++) {
         delta[k] = end[k] - values[k];
         if (!isfinite(values[k]) || !isfinite(delta[k])) {
             return false;
@@ -1879,7 +1894,7 @@ static bool sgi_soft_texture_coefficients(const SGISoftDraw *r,
     SGISoftTexPlane g;
 
     if (!r->texture_base || sgi_soft_texture_plane(v, r->rules->subpixel_bits,
-                                                   &g)) {
+                                                r->texture->volume, &g)) {
         return true;
     }
     sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
@@ -1946,7 +1961,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         return;
     }
     if (r->texture_base &&
-        !sgi_soft_texture_plane(v, sub, &gradient)) {
+        !sgi_soft_texture_plane(v, sub, r->texture->volume, &gradient)) {
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
@@ -2060,16 +2075,18 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                               w2 * (v[2].index - v[0].index)) / sum;
             }
             if (r->texture_base) {
-                double value[3], out[5];
+                double value[4], out[5];
 
-                for (unsigned k = 0; k < 3; k++) {
+                for (unsigned k = 0; k < 4; k++) {
                     value[k] = gradient.value[k] +
                                (px + 0.5 - gradient.x) * gradient.dx[k] +
                                (py + 0.5 - gradient.y) * gradient.dy[k];
                 }
                 frag.texture_rho = sgi_soft_texture_derivatives(value,
                     gradient.dx, gradient.dy, r->texture_base->width,
-                    r->texture_base->height, out) ? out[4] : NAN;
+                    r->texture_base->height,
+                    r->texture->volume ? r->texture_base->depth : 0, out) ?
+                    out[4] : NAN;
             }
             sgi_soft_fragment(r, px, py, z, offset, &frag);
         }
@@ -2269,7 +2286,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
     bool visible;
     int step;
     double flat[4], len2;
-    double texture_value[3], texture_delta[3], texture_length;
+    double texture_value[4], texture_delta[4], texture_length;
     int major0, major1, bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
 
     visible = sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1);
@@ -2277,7 +2294,8 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
         return;
     }
     if (r->texture_base && !sgi_soft_texture_line_gradient(&a, &b, sub,
-            texture_value, texture_delta, &texture_length)) {
+            r->texture->volume, texture_value, texture_delta,
+            &texture_length)) {
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
@@ -2408,14 +2426,15 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                                    flat[k];
                 }
                 if (r->texture_base) {
-                    double value[3], out[5], zero[3] = { 0 };
+                    double value[4], out[5], zero[4] = { 0 };
 
-                    for (unsigned k = 0; k < 3; k++) {
+                    for (unsigned k = 0; k < 4; k++) {
                         value[k] = texture_value[k] + t * texture_delta[k];
                     }
                     frag.texture_rho = sgi_soft_texture_derivatives(value,
                         texture_delta, zero, r->texture_base->width,
-                        r->texture_base->height, out) ?
+                        r->texture_base->height,
+                        r->texture->volume ? r->texture_base->depth : 0, out) ?
                         out[4] / texture_length : NAN;
                 }
                 sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
@@ -2763,11 +2782,12 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
         }
         if (r->texture_base && mode == SGI_GL_LINE) {
             SGISoftVertex next;
-            double values[3], delta[3], length;
+            double values[4], delta[4], length;
 
             if (!sgi_soft_project(r, &poly[(i + 1) % n], &next) ||
                 !sgi_soft_texture_line_gradient(&current, &next,
-                    r->rules->subpixel_bits, values, delta, &length)) {
+                    r->rules->subpixel_bits, r->texture->volume,
+                    values, delta, &length)) {
                 sgi_soft_texture_report(r, 16,
                     "invalid primitive coefficients, primitive dropped");
                 goto out;
@@ -3191,7 +3211,11 @@ bool sgi_gl_texture_test_derivatives(const double value[3],
     const double dx[3], const double dy[3], uint32_t ns, uint32_t nt,
     double out[5])
 {
-    return sgi_soft_texture_derivatives(value, dx, dy, ns, nt, out);
+    double v[4] = { value[0], value[1], value[2], 0 };
+    double x[4] = { dx[0], dx[1], dx[2], 0 };
+    double y[4] = { dy[0], dy[1], dy[2], 0 };
+
+    return sgi_soft_texture_derivatives(v, x, y, ns, nt, 0, out);
 }
 
 bool sgi_gl_texture_test_select(uint32_t min, uint32_t mag,
@@ -3224,12 +3248,12 @@ bool sgi_gl_texture_test_plane(const int64_t xy[3][2], unsigned sub,
         v[i].inv_w = iw[i];
         memcpy(v[i].texcoord, coords[i], sizeof(v[i].texcoord));
     }
-    if (!sgi_soft_texture_plane(v, sub, &g)) {
+    if (!sgi_soft_texture_plane(v, sub, false, &g)) {
         return false;
     }
-    memcpy(value, g.value, sizeof(g.value));
-    memcpy(dx, g.dx, sizeof(g.dx));
-    memcpy(dy, g.dy, sizeof(g.dy));
+    memcpy(value, g.value, 3 * sizeof(*value));
+    memcpy(dx, g.dx, 3 * sizeof(*dx));
+    memcpy(dy, g.dy, 3 * sizeof(*dy));
     return true;
 }
 
