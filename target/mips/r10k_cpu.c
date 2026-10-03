@@ -311,9 +311,9 @@ void mips_r10k_cpu_realize(MIPSCPU *cpu)
         }
         alloc_size = MAX(capacity, R10K_SCACHE_SIZE);
         r10k->scache_size = capacity;
-        r10k->scache_taglo = g_new0(uint32_t, alloc_size / 128);
-        r10k->scache_taghi = g_new0(uint8_t, alloc_size / 128);
-        r10k->scache_mru = g_new0(uint8_t, alloc_size / 256);
+        r10k->scache_taglo = g_new0(uint32_t, alloc_size / 64);
+        r10k->scache_taghi = g_new0(uint8_t, alloc_size / 64);
+        r10k->scache_mru = g_new0(uint8_t, alloc_size / 128);
         r10k->scache_data = g_new0(uint64_t, alloc_size / 8);
         r10k->scache_ecc = g_new0(uint16_t, alloc_size / 16);
     }
@@ -332,11 +332,11 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
             uint32_t alloc_size = MAX(r10k->scache_size, R10K_SCACHE_SIZE);
 
             memset(r10k->scache_taglo, 0,
-                   (alloc_size / 128) * sizeof(uint32_t));
+                   (alloc_size / 64) * sizeof(uint32_t));
             memset(r10k->scache_taghi, 0,
-                   (alloc_size / 128) * sizeof(uint8_t));
+                   (alloc_size / 64) * sizeof(uint8_t));
             memset(r10k->scache_mru, 0,
-                   (alloc_size / 256) * sizeof(uint8_t));
+                   (alloc_size / 128) * sizeof(uint8_t));
             memset(r10k->scache_data, 0, alloc_size);
             memset(r10k->scache_ecc, 0,
                    (alloc_size / 16) * sizeof(uint16_t));

@@ -20,15 +20,15 @@ static size_t r10k_scache_field_limit(const R10KState *r10k,
                                       const VMStateField *field)
 {
     if (field->offset == offsetof(R10KState, scache_mru)) {
-        return r10k->scache_size / 256;
+        return r10k->scache_size / 128;
     }
     switch (field->size) {
     case 1:
-        return r10k->scache_size / 128;
+        return r10k->scache_size / 64;
     case 2:
         return r10k->scache_size / 16;
     case 4:
-        return r10k->scache_size / 128;
+        return r10k->scache_size / 64;
     case 8:
         return r10k->scache_size / 8;
     default:
@@ -42,13 +42,14 @@ static bool scache_sub_array_load(QEMUFile *f, void *pv, size_t size,
     const R10KState *r10k =
         (const R10KState *)((const char *)pv - field->offset);
     size_t limit = r10k_scache_field_limit(r10k, field);
+    int num = field->struct_version_id;
     int i;
 
     switch (field->size) {
     case 1: {
         uint8_t *arr = *(uint8_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint8_t val;
 
@@ -62,7 +63,7 @@ static bool scache_sub_array_load(QEMUFile *f, void *pv, size_t size,
     case 2: {
         uint16_t *arr = *(uint16_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint16_t val;
 
@@ -76,7 +77,7 @@ static bool scache_sub_array_load(QEMUFile *f, void *pv, size_t size,
     case 4: {
         uint32_t *arr = *(uint32_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint32_t val;
 
@@ -90,7 +91,7 @@ static bool scache_sub_array_load(QEMUFile *f, void *pv, size_t size,
     case 8: {
         uint64_t *arr = *(uint64_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint64_t val;
 
@@ -114,13 +115,14 @@ static bool scache_sub_array_save(QEMUFile *f, void *pv, size_t size,
     const R10KState *r10k =
         (const R10KState *)((const char *)pv - field->offset);
     size_t limit = r10k_scache_field_limit(r10k, field);
+    int num = field->struct_version_id;
     int i;
 
     switch (field->size) {
     case 1: {
         const uint8_t *arr = *(const uint8_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint8_t val = (arr && idx < limit) ? arr[idx] : 0;
 
@@ -131,7 +133,7 @@ static bool scache_sub_array_save(QEMUFile *f, void *pv, size_t size,
     case 2: {
         const uint16_t *arr = *(const uint16_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint16_t val = (arr && idx < limit) ? arr[idx] : 0;
 
@@ -142,7 +144,7 @@ static bool scache_sub_array_save(QEMUFile *f, void *pv, size_t size,
     case 4: {
         const uint32_t *arr = *(const uint32_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint32_t val = (arr && idx < limit) ? arr[idx] : 0;
 
@@ -153,7 +155,7 @@ static bool scache_sub_array_save(QEMUFile *f, void *pv, size_t size,
     case 8: {
         const uint64_t *arr = *(const uint64_t **)pv;
 
-        for (i = 0; i < field->num; i++) {
+        for (i = 0; i < num; i++) {
             size_t idx = field->start + i;
             uint64_t val = (arr && idx < limit) ? arr[idx] : 0;
 
@@ -174,12 +176,12 @@ static const VMStateInfo vmstate_info_scache_sub_array = {
 };
 
 #define VMSTATE_SCACHE_SUB_ARRAY(_field, _state, _start, _num, _type) { \
-    .name       = (stringify(_field)),                                  \
-    .num        = (_num),                                               \
-    .start      = (_start),                                             \
-    .info       = &vmstate_info_scache_sub_array,                       \
-    .size       = sizeof(_type),                                        \
-    .offset     = offsetof(_state, _field),                             \
+    .name              = (stringify(_field)),                           \
+    .struct_version_id = (_num),                                        \
+    .start             = (_start),                                      \
+    .info              = &vmstate_info_scache_sub_array,                \
+    .size              = sizeof(_type),                                 \
+    .offset            = offsetof(_state, _field),                      \
 }
 
 /*
