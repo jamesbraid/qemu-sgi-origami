@@ -11,7 +11,7 @@
 
 #include "hw/misc/sgi-kona-texture.h"
 
-#define SGI_KONA_GL_MAX_ARGS 8
+#define SGI_KONA_GL_MAX_ARGS 22
 
 typedef enum SGIKonaGLLayoutEvidence {
     /* The selector table records this layout as established. */
@@ -110,6 +110,14 @@ void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
 bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
+
+/* Volume records use fourteen mipmap words or four nonmipmap words. */
+bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
+                                         const uint32_t *record, bool mipmapped,
+                                         SGIKonaTextureParams *params);
+void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
+                                            uint32_t *width, uint32_t *height,
+                                            uint32_t *depth);
 
 /* Decode supported native internal-format table indexes transactionally. */
 bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,

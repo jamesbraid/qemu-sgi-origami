@@ -14,6 +14,9 @@ typedef struct Expected {
 } Expected;
 
 static const Expected subset[] = {
+    { 0x17b, SGI_KONA_GL_LAYOUT_ESTABLISHED, 14, 0 },
+    { 0x17c, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },
+    { 0x179, SGI_KONA_GL_LAYOUT_ESTABLISHED, 22, 0 },
     { 0x17d, SGI_KONA_GL_LAYOUT_ESTABLISHED, 6, 0 },
     { 0x0,   SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glBegin */
     { 0x1a,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0x4100 }, /* glClear */
@@ -733,6 +736,68 @@ static void test_texture_detail_sampler(void)
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
 }
 
+static void test_texture_volume_sampler(void)
+{
+    uint32_t bind[5] = { 7, 0x30000000, 0, 0x123 };
+    uint32_t record[14] = { 0, 0x00402010, 256 << 10 };
+    SGIKonaTextureParams original = {
+        .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
+        .wrap_r = SGI_GL_REPEAT, .lod_scale_r = 1,
+    }, p;
+    uint32_t width, height, depth;
+
+    sgi_kona_gl_texture_volume_dimensions(bind, &width, &height, &depth);
+    g_assert_cmpuint(width, ==, 8);
+    g_assert_cmpuint(height, ==, 4);
+    g_assert_cmpuint(depth, ==, 2);
+    for (unsigned min = 0; min < 8; min++) {
+        for (unsigned mag = 0; mag < 8; mag++) {
+            bool supported = min >= 3 && min <= 6 && mag < 2;
+
+            bind[2] = (min << 2) | (mag << 5);
+            p = original;
+            g_assert_cmpint(sgi_kona_gl_texture_volume_sampler(bind, record,
+                                                               true, &p),
+                            ==, supported);
+            if (!supported) {
+                g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+            } else {
+                g_assert_cmpfloat(p.lod_scale_s, ==, 1);
+                g_assert_cmpfloat(p.lod_scale_t, ==, 2);
+                g_assert_cmpfloat(p.lod_scale_r, ==, 4);
+                g_assert_cmphex(p.wrap_r, ==, SGI_GL_REPEAT);
+                g_assert_cmpfloat(p.max_lod, ==, 3);
+            }
+        }
+    }
+    for (unsigned min = 0; min < 2; min++) {
+        for (unsigned mag = 0; mag < 2; mag++) {
+            bind[2] = (min << 2) | (mag << 5);
+            p = original;
+            g_assert_cmpint(sgi_kona_gl_texture_volume_sampler(bind, record,
+                                                               false, &p),
+                            ==, min == mag);
+        }
+    }
+    bind[2] = 3 << 2;
+    for (unsigned bit = 12; bit <= 14; bit++) {
+        bind[3] = 1 << bit;
+        p = original;
+        g_assert_false(sgi_kona_gl_texture_volume_sampler(bind, record,
+                                                          true, &p));
+    }
+    bind[3] = 0;
+    record[1] &= 0xffff;
+    p = original;
+    g_assert_false(sgi_kona_gl_texture_volume_sampler(bind, record, true, &p));
+    record[1] = 0x00101010;
+    bind[1] = 0x20000000;
+    g_assert_false(sgi_kona_gl_texture_volume_sampler(bind, record, true, &p));
+    bind[1] = 0x30000000;
+    p.base_level = 1;
+    g_assert_false(sgi_kona_gl_texture_volume_sampler(bind, record, true, &p));
+}
+
 static void test_texture_negative_lod(void)
 {
     uint32_t bind[5] = { 0 };
@@ -1105,6 +1170,8 @@ int main(int argc, char **argv)
                     test_texture_sharpen_sampler);
     g_test_add_func("/sgi-kona-gl-decode/texture-detail-sampler",
                     test_texture_detail_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-volume-sampler",
+                    test_texture_volume_sampler);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
