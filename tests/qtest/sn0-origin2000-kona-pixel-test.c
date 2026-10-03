@@ -59,7 +59,7 @@
 #define PLANE_FRONT     0
 #define PLANE_FRONT_TAG 2
 #define TAG_DIRECT      0
-#define TAG_X_INDEX     2
+#define TAG_X_INDEX     3
 #define TAG_X_INDEX12   3
 
 #define X_MAP_WINDOW    0x2d00
@@ -110,7 +110,17 @@ static uint32_t kona_plane_word(QTestState *s, uint32_t plane, uint32_t x,
 }
 
 /* The front colour word at X coordinates (x, y), y down from the top. */
+/* Existing CI8 fixtures compare logical bytes; raw tests read the plane. */
 static uint32_t front_at(QTestState *s, uint32_t x, uint32_t y)
+{
+    uint32_t row = KONA_FB_HEIGHT - 1 - y;
+    uint32_t word = kona_plane_word(s, PLANE_FRONT, x, row);
+    uint32_t tag = kona_plane_word(s, PLANE_FRONT_TAG, x, row);
+
+    return tag == TAG_X_INDEX ? word >> 8 : word;
+}
+
+static uint32_t front_native_at(QTestState *s, uint32_t x, uint32_t y)
 {
     return kona_plane_word(s, PLANE_FRONT, x, KONA_FB_HEIGHT - 1 - y);
 }
@@ -1679,6 +1689,12 @@ static void test_copy_semantics(gconstpointer opaque)
                 uint32_t value = region && row == 0 && col == 0 ?
                                  result : color;
 
+                if (!rgb) {
+                    value <<= 8;
+                    if (region && row == 0 && col == 0) {
+                        value |= copy_expected(gx, 0, 0, 0xff, 8);
+                    }
+                }
                 for (unsigned byte = 0; byte < 4; byte++) {
                     words[pixel * 4 + byte] = value >> (8 * byte);
                 }
@@ -1827,8 +1843,13 @@ static void test_copy_overlap_semantics(gconstpointer opaque)
             size_t pixel = (KONA_FB_HEIGHT - 1 - 20 - y) *
                            KONA_FB_WIDTH + 10 + x;
 
+            uint32_t raw = rgb ? final[y][x] : final[y][x] << 8;
+
+            if (!rgb && x >= dx && x < dx + 3 && y >= dy && y < dy + 3) {
+                raw |= copy_expected(gx, 0, 0, 0xff, 8);
+            }
             for (unsigned byte = 0; byte < 4; byte++) {
-                words[pixel * 4 + byte] = final[y][x] >> (8 * byte);
+                words[pixel * 4 + byte] = raw >> (8 * byte);
             }
             tags[pixel] = rgb ? 0 : TAG_X_INDEX;
         }
@@ -2044,7 +2065,7 @@ static void test_write_index12(gconstpointer opaque)
               (uint32_t[]){ dma ? 0x10 : 0, 1, 1, 4, 4, 1, 0 }, 7);
     pixel_write(s, 10, 20);
     data_words(s, words, consumed);
-    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    g_assert_cmphex(front_native_at(s, 10, 20), ==, 0);
     if (migrate) {
         dir = g_dir_make_tmp("kona-index12-XXXXXX", &error);
         g_assert_no_error(error);
@@ -2058,10 +2079,10 @@ static void test_write_index12(gconstpointer opaque)
     } else {
         data_words(s, words + consumed, ARRAY_SIZE(words) - consumed);
     }
-    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    g_assert_cmphex(front_native_at(s, 10, 20), ==, 0);
     pixel_finish(s);
     for (unsigned k = 0; k < 4; k++) {
-        g_assert_cmphex(front_at(s, 10 + k, 20), ==, indices[k] << 4);
+        g_assert_cmphex(front_native_at(s, 10 + k, 20), ==, indices[k] << 4);
         g_assert_cmphex(front_tag_at(s, 10 + k, 20), ==, TAG_X_INDEX12);
     }
     {
@@ -2089,6 +2110,138 @@ static void test_write_index12(gconstpointer opaque)
     qtest_quit(from);
 }
 
+static void native_index_gc(QTestState *s, uint32_t value, uint32_t mask,
+                            unsigned gx, bool geometry)
+{
+    uint32_t gc[13] = { 0, 0, 0, 0, 0, 0,
+                       0x180c, 0x40001, 1, 0, 5, 1, 1 };
+
+    gc[0] = ((value & 0xfff0) << 4) | ((value & 15) << 3);
+    gc[4] = (mask >> 4) | ((mask & 15) << 20);
+    gc[9] = gx * 2;
+    if (geometry) {
+        gc[6] = 0xc;
+        gc[7] = 1;
+        gc[10] = 0;
+    }
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+}
+
+static void test_native_index_mixed(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    const uint32_t source = 0xabc0, dest = 0x1200, mask = 0x53af;
+    uint32_t expected = copy_expected(6, source, dest, mask, 16);
+    uint32_t did[] = { 0, 0, 0, 0, 0xf00fff, 0, 8, 1, 0, 6, 0, 1, 1 };
+
+    /* Eight-bit image input reaches the same native main-index plane. */
+    native_index_gc(s, 0, 0xffff, 3, false);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 1, 1, 0 }, 7);
+    pixel_write(s, 10, 20);
+    data_words(s, (uint32_t[]){ 0x12000000 }, 1);
+    if (mode == 1) {
+        dir = g_dir_make_tmp("kona-native-index-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    pixel_finish(s);
+    g_assert_cmphex(front_native_at(s, 10, 20), ==, dest);
+    g_assert_cmphex(front_tag_at(s, 10, 20), ==, TAG_X_INDEX);
+    native_index_gc(s, source, mask, 6, true);
+    x_command(s, 0x154, (uint32_t[]){ 0x000a0014, 0x000b0015 }, 2);
+    g_assert_cmphex(front_native_at(s, 10, 20), ==, expected);
+
+    native_index_gc(s, 0, 0xffff, 3, false);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, 1, 1, 0, 1, 1, 0 }, 7);
+    x_command(s, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 11, 20 }, 4);
+    g_assert_cmphex(front_native_at(s, 11, 20), ==, expected);
+
+    /* The display ID selects depth without changing the copied raw word. */
+    x_command(s, TOKEN_COLOR_MAP,
+              (uint32_t[]){ 0x2d00 + (expected >> 8), 1 }, 2);
+    data_words(s, (uint32_t[]){ 0x3ff00000 }, 1);
+    x_command(s, TOKEN_COLOR_MAP,
+              (uint32_t[]){ 0x3800 + (expected >> 4), 1 }, 2);
+    data_words(s, (uint32_t[]){ 0x000003ff }, 1);
+    x_command(s, 0x132, (uint32_t[]){ 0, (0x2d00 << 7) | (7 << 3) | 4 }, 2);
+    {
+        g_autofree uint8_t *frame = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(frame, 10, 20), ==, 0xff0000);
+        g_assert_cmphex(ppm_pixel(frame, 11, 20), ==, 0xff0000);
+    }
+    did[0] = 0x140; /* Raw DID 24 selects map 6. */
+    x_command(s, TOKEN_GC, did, ARRAY_SIZE(did));
+    x_command(s, 0x154, (uint32_t[]){ 0x000b0014, 0x000c0015 }, 2);
+    x_command(s, 0x132, (uint32_t[]){ 6, (0x3800 << 7) | (11 << 3) | 4 }, 2);
+    {
+        g_autofree uint8_t *frame = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(frame, 10, 20), ==, 0xff0000);
+        g_assert_cmphex(ppm_pixel(frame, 11, 20), ==, 0x0000ff);
+    }
+    g_assert_cmphex(front_native_at(s, 11, 20), ==, expected);
+    assert_in_step(s);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
+static void test_native_index_geometry_logic(void)
+{
+    const uint32_t source = 0x96a0, dest = 0x3c00, mask = 0x53af;
+
+    qtest_system_reset(qts);
+    for (unsigned gx = 0; gx < 16; gx++) {
+        native_index_gc(qts, dest, 0xffff, 3, true);
+        x_command(qts, 0x154, (uint32_t[]){ 0x000a0014, 0x000b0015 }, 2);
+        native_index_gc(qts, source, mask, gx, true);
+        x_command(qts, 0x154, (uint32_t[]){ 0x000a0014, 0x000b0015 }, 2);
+        g_assert_cmphex(front_native_at(qts, 10, 20), ==,
+                        copy_expected(gx, source, dest, mask, 16));
+        g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX);
+    }
+    assert_in_step(qts);
+}
+
+static void test_native_index_bitmap(gconstpointer opaque)
+{
+    bool opaque_bitmap = GPOINTER_TO_UINT(opaque);
+    uint32_t gc[] = { 0xfff0, 0xabc, 0, 0, 0xf00fff, 0,
+                     0x180c, 0x40001, 1, 6, 0, 1, 1 };
+
+    qtest_system_reset(qts);
+    if (opaque_bitmap) {
+        gc[0] = 0xabc0;
+        gc[1] = 0;
+        gc[2] = 0x1230;
+        gc[10] = 5;
+    }
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, opaque_bitmap ? 5 : 4, 1, 0, 2, 1, 0 }, 7);
+    pixel_write(qts, 10, 20);
+    data_words(qts, (uint32_t[]){ 0x80000000 }, 1);
+    pixel_finish(qts);
+    g_assert_cmphex(front_native_at(qts, 10, 20), ==, 0xabc0);
+    g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_native_at(qts, 11, 20), ==,
+                    opaque_bitmap ? 0x1230 : 0);
+    g_assert_cmphex(front_tag_at(qts, 11, 20), ==,
+                    opaque_bitmap ? TAG_X_INDEX : TAG_DIRECT);
+    assert_in_step(qts);
+}
+
 static void test_write_l16_refused(void)
 {
     uint32_t word = 0xabcd0000;
@@ -2101,7 +2254,7 @@ static void test_write_l16_refused(void)
     pixel_write(qts, 10, 20);
     data_words(qts, &word, 1);
     pixel_finish(qts);
-    g_assert_cmphex(front_at(qts, 10, 20), ==, 0x1230);
+    g_assert_cmphex(front_native_at(qts, 10, 20), ==, 0x1230);
     g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX12);
     assert_in_step(qts);
 }
@@ -2120,7 +2273,7 @@ static void test_write_index12_logic(void)
         pixel_write(qts, 10, 20);
         data_words(qts, &word, 1);
         pixel_finish(qts);
-        g_assert_cmphex(front_at(qts, 10, 20), ==,
+        g_assert_cmphex(front_native_at(qts, 10, 20), ==,
                         copy_expected(gx, source << 4, dest << 4,
                                        (mask << 4) | 15, 16));
         g_assert_cmphex(front_tag_at(qts, 10, 20), ==, TAG_X_INDEX12);
@@ -2604,6 +2757,19 @@ static void test_old_write_receiver(gconstpointer opaque)
         before[plane++] = g_strdup(qstring_get_str(
             qobject_to(QString, qlist_entry_obj(entry))));
     }
+    /* The historical byte words and tags convert to native index storage. */
+    for (unsigned x = 0; x < consumed * 4; x++) {
+        size_t old = (KONA_FB_HEIGHT - 1 - 80) * KONA_FB_WIDTH + 70 + x;
+
+        expected_words[old * 4 + 1] = pixels[x];
+        expected_tags[old] = TAG_X_INDEX;
+    }
+    g_free(before[0]);
+    g_free(before[2]);
+    before[0] = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                            expected_words, count * 4);
+    before[2] = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                            expected_tags, count);
     to = qtest_init(MACHINE_ARGS " -incoming defer");
     qtest_qmp_assert_success(to,
         "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }", uri);
@@ -2635,10 +2801,10 @@ static void test_old_write_receiver(gconstpointer opaque)
         size_t next = old + 20;
 
         if (x < consumed * 4) {
-            expected_words[old * 4] = pixels[x];
+            expected_words[old * 4 + 1] = pixels[x];
             expected_tags[old] = TAG_X_INDEX;
         }
-        expected_words[next * 4] = pixels[x];
+        expected_words[next * 4 + 1] = pixels[x];
         expected_tags[next] = TAG_X_INDEX;
     }
     for (plane = 0; plane < ARRAY_SIZE(before); plane++) {
@@ -2763,6 +2929,16 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(3), test_write_index12);
     qtest_add_data_func("sn0/origin2000/kona-pixel/index12/migrate-dma",
                         GUINT_TO_POINTER(4), test_write_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/native-index/mixed",
+                        GUINT_TO_POINTER(0), test_native_index_mixed);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/native-index/migrate-image",
+                        GUINT_TO_POINTER(1), test_native_index_mixed);
+    qtest_add_func("sn0/origin2000/kona-pixel/native-index/geometry-logic",
+                   test_native_index_geometry_logic);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/native-index/bitmap",
+                        GUINT_TO_POINTER(0), test_native_index_bitmap);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/native-index/opaque-bitmap",
+                        GUINT_TO_POINTER(1), test_native_index_bitmap);
     qtest_add_func("sn0/origin2000/kona-pixel/index12/l16-refused",
                    test_write_l16_refused);
     qtest_add_func("sn0/origin2000/kona-pixel/index12/logic",

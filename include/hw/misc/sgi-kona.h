@@ -598,12 +598,8 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_X_COLOR_MAP_ENTRIES 0x8000
 #define SGI_KONA_X_COLOR_MAP_WINDOW  0x2d00
 
-/*
- * The depth of the X server's colour-index window, which the GC's
- * foreground packing depends on. The depth travels in the window's format
- * word, which reaches no command, so the model fixes the stock greeter's 8.
- */
-#define SGI_KONA_X_INDEX_DEPTH 8
+/* Historical trace output projects native main indices to eight bits. */
+#define SGI_KONA_X_TRACE_INDEX_DEPTH 8
 
 /*
  * The most rectangles an X clip list may carry; the bound is the model's,
@@ -680,8 +676,8 @@ typedef enum SGIKonaBitmapState {
 #define SGI_KONA_TAG_COLOR_INDEX 1
 /* An X server pixel: an index into the X colour map, see sgi_kona_x_color(). */
 #define SGI_KONA_TAG_X_INDEX     2
-/* A native 12-bit main index, retained as its left-aligned 16-bit value. */
-#define SGI_KONA_TAG_X_INDEX12   3
+/* A main index in the native 16-bit representation, independent of depth. */
+#define SGI_KONA_TAG_X_INDEX16   3
 
 #define SGI_KONA_LIST_ROW_BYTES  4096
 #define SGI_KONA_LIST_DEFAULT    (1 * MiB)
