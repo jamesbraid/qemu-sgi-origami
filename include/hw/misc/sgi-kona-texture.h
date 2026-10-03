@@ -16,6 +16,8 @@ typedef struct SGIKonaTextureParams {
     double post_scale[4], post_bias[4];
     double lod_scale_s, lod_scale_t;
     uint32_t filter_curve_slot;
+    int32_t detail_level;
+    uint32_t detail_mode;
 } SGIKonaTextureParams;
 
 typedef struct SGIKonaTextureLevel {
@@ -38,12 +40,17 @@ typedef struct SGIKonaTextureObject {
     SGIKonaTextureParams params;
     SGIKonaTextureLevel levels[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexLevel view[SGI_GL_TEX_LEVELS_MAX];
+    SGIKonaTextureLevel native_view[SGI_GL_TEX_LEVELS_MAX];
+    SGIKonaTextureLevel detail_pixels;
+    SGIGLTexLevel detail_view;
     SGIGLTexPyramid pyramid;
     SGIGLTexImage image;
     const double *filter_curve;
     uint32_t native_width, native_height;
     uint32_t native_count, native_format;
     bool native_format_valid;
+    bool native_internal_valid;
+    uint32_t native_base_format, native_internal_format;
     bool native_table_valid;
     uint32_t native_table[SGI_KONA_TEXTURE_TABLE_LEVELS];
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
@@ -55,6 +62,8 @@ typedef struct SGIKonaTextureState {
     uint64_t bytes;
     GHashTable *objects;
     GHashTable *filter_curves;
+    bool detail_bound;
+    uint32_t detail_args[6];
 } SGIKonaTextureState;
 
 void sgi_kona_texture_init(SGIKonaTextureState *s);
@@ -83,6 +92,13 @@ bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
 bool sgi_kona_texture_native_format(SGIKonaTextureState *s, uint32_t handle,
                                    uint32_t storage_format);
+/* Logical destination format does not alter the retained upload components. */
+bool sgi_kona_texture_native_internal_format(SGIKonaTextureState *s,
+                                             uint32_t handle, uint32_t base,
+                                             uint32_t internal);
+/* Selector binding is independent of the primary image handle. */
+bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
+                                  const uint32_t args[6]);
 /* NULL params retain the object's sampler, including for an incomplete view. */
 bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
                           const SGIKonaTextureParams *params);

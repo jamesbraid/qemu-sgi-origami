@@ -29,6 +29,7 @@ void sgi_kona_texture_defaults(SGIKonaTextureParams *p)
         .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
         .post_scale = { 1, 1, 1, 1 },
         .lod_scale_s = 1, .lod_scale_t = 1,
+        .detail_mode = SGI_GL_MODULATE,
     };
 }
 
@@ -102,6 +103,8 @@ void sgi_kona_texture_reset(SGIKonaTextureState *s)
     g_hash_table_remove_all(s->filter_curves);
     s->bound = false;
     s->bound_handle = 0;
+    s->detail_bound = false;
+    memset(s->detail_args, 0, sizeof(s->detail_args));
     s->bytes = 0;
 }
 
@@ -424,6 +427,46 @@ bool sgi_kona_texture_native_format(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+bool sgi_kona_texture_native_internal_format(SGIKonaTextureState *s,
+                                             uint32_t handle, uint32_t base,
+                                             uint32_t internal)
+{
+    SGIKonaTextureObject *o;
+
+    if (!texture_format(base, internal)) {
+        return false;
+    }
+    o = texture_object(s, handle, true);
+    if (!o) {
+        return false;
+    }
+    o->native_base_format = base;
+    o->native_internal_format = internal;
+    o->native_internal_valid = true;
+    return true;
+}
+
+static bool texture_detail_args(const uint32_t args[6])
+{
+    uint32_t base, internal;
+
+    return args && (args[0] == UINT32_MAX ||
+        (args[1] < 31 && args[2] < 31 &&
+         texture_dimensions(1u << args[1], 1u << args[2]) &&
+         sgi_kona_gl_texture_internal_format(args[3], &base, &internal)));
+}
+
+bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
+                                  const uint32_t args[6])
+{
+    if (!texture_detail_args(args)) {
+        return false;
+    }
+    memcpy(s->detail_args, args, sizeof(s->detail_args));
+    s->detail_bound = args[0] != UINT32_MAX;
+    return true;
+}
+
 static bool texture_wrap(uint32_t wrap)
 {
     return wrap == SGI_GL_REPEAT || wrap == SGI_GL_CLAMP ||
@@ -438,7 +481,12 @@ static bool texture_params(const SGIKonaTextureParams *p)
         (p->mag_filter != SGI_GL_NEAREST && p->mag_filter != SGI_GL_LINEAR &&
          p->mag_filter != SGI_GL_LINEAR_SHARPEN_SGIS &&
          p->mag_filter != SGI_GL_LINEAR_SHARPEN_COLOR_SGIS &&
-         p->mag_filter != SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS) ||
+         p->mag_filter != SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS &&
+         p->mag_filter != SGI_GL_LINEAR_DETAIL_SGIS &&
+         p->mag_filter != SGI_GL_LINEAR_DETAIL_COLOR_SGIS &&
+         p->mag_filter != SGI_GL_LINEAR_DETAIL_ALPHA_SGIS) ||
+        p->detail_level > 0 ||
+        (p->detail_mode != SGI_GL_ADD && p->detail_mode != SGI_GL_MODULATE) ||
         p->filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
         !texture_wrap(p->wrap_s) || !texture_wrap(p->wrap_t) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
@@ -521,6 +569,9 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
         return false;
     }
     *rgba = l->pixels[(size_t)y * l->width + x];
+    if (l->base_format == SGI_GL_RGB) {
+        *rgba |= 0xff;
+    }
     return true;
 }
 
@@ -560,11 +611,18 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                           "sgi-kona: ambiguous native texture level %u "
                           "for handle 0x%x\n", level, o->handle);
         } else if (image) {
+            SGIKonaTextureLevel *view = &o->native_view[count];
+
+            *view = *image;
+            if (o->native_internal_valid) {
+                view->base_format = o->native_base_format;
+                view->internal_format = o->native_internal_format;
+            }
             o->view[count++] = (SGIGLTexLevel) {
-                .level = level, .width = image->width, .height = image->height,
-                .base_format = image->base_format,
-                .internal_format = image->internal_format,
-                .read_texel = texture_native_read, .opaque = image,
+                .level = level, .width = view->width, .height = view->height,
+                .base_format = view->base_format,
+                .internal_format = view->internal_format,
+                .read_texel = texture_native_read, .opaque = view,
             };
         }
     }
@@ -594,8 +652,65 @@ static bool texture_filter_weight(void *opaque, double lambda, double *weight)
     position = lambda >= 0 ? 63 : MIN(exp2(lambda) * 64, 63);
     node = floor(position);
     fraction = position - node;
-    *weight = -(o->filter_curve[node] * (1 - fraction) +
-                o->filter_curve[MIN(node + 1, 63)] * fraction);
+    *weight = o->filter_curve[node] * (1 - fraction) +
+              o->filter_curve[MIN(node + 1, 63)] * fraction;
+    *weight *= o->params.mag_filter == SGI_GL_LINEAR_DETAIL_SGIS ||
+               o->params.mag_filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS ||
+               o->params.mag_filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ?
+               0.5 : -1;
+    return true;
+}
+
+static bool texture_detail_view(SGIKonaTextureState *s,
+                                  SGIKonaTextureObject *primary)
+{
+    const uint32_t *args = s->detail_args;
+    SGIKonaTextureObject *o;
+    SGIKonaTextureLevel *image = NULL;
+    uint32_t base, internal, storage;
+
+    if (!s->detail_bound) {
+        return true;
+    }
+    if (!sgi_kona_gl_texture_internal_format(args[3], &base, &internal)) {
+        return false;
+    }
+    storage = base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ? 0xd :
+              base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30;
+    o = texture_object(s, args[0], false);
+    if (o) {
+        for (unsigned k = 0; k < o->native_count; k++) {
+            SGIKonaTextureNativeImage *n = &o->native[k];
+
+            if (n->header[18] == args[4] && n->header[19] == args[5] &&
+                n->header[9] == storage && n->covered == native_pixels(n) &&
+                n->image.width == (1u << args[1]) &&
+                n->image.height == (1u << args[2])) {
+                if (image) {
+                    qemu_log_mask(LOG_UNIMP,
+                                  "sgi-kona: ambiguous detail image "
+                                  "for handle 0x%x\n", args[0]);
+                    return false;
+                }
+                image = &n->image;
+            }
+        }
+    }
+    if (!image) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unresolved detail image for handle 0x%x\n",
+                      args[0]);
+        return false;
+    }
+    primary->detail_pixels = *image;
+    primary->detail_pixels.base_format = base;
+    primary->detail_pixels.internal_format = internal;
+    primary->detail_view = (SGIGLTexLevel) {
+        .width = image->width, .height = image->height,
+        .base_format = base, .internal_format = internal,
+        .read_texel = texture_native_read, .opaque = &primary->detail_pixels,
+    };
+    primary->image.detail_image = &primary->detail_view;
     return true;
 }
 
@@ -632,7 +747,15 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .lod_scale_t = o->params.lod_scale_t,
         .post_filter = texture_post_filter, .opaque = o,
         .read_filter_weight = texture_filter_weight,
+        .detail_level = o->params.detail_level,
+        .detail_mode = o->params.detail_mode,
     };
+    if ((o->params.mag_filter == SGI_GL_LINEAR_DETAIL_SGIS ||
+         o->params.mag_filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ||
+         o->params.mag_filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS) &&
+        !texture_detail_view(s, o)) {
+        o->image.mag_filter = UINT32_MAX;
+    }
     memcpy(o->image.border_color, o->params.border_color,
             sizeof(o->image.border_color));
     return &o->image;
@@ -713,7 +836,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 7);
+    qemu_put_be32(f, 8);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -762,6 +885,11 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be32(f, o->native_format_valid);
         qemu_put_be32(f, o->native_format);
         qemu_put_be32(f, o->params.filter_curve_slot);
+        qemu_put_be32(f, o->native_internal_valid);
+        qemu_put_be32(f, o->native_base_format);
+        qemu_put_be32(f, o->native_internal_format);
+        qemu_put_be32(f, o->params.detail_level);
+        qemu_put_be32(f, o->params.detail_mode);
     }
     qemu_put_be32(f, g_hash_table_size(s->filter_curves));
     g_hash_table_iter_init(&iter, s->filter_curves);
@@ -772,6 +900,10 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         for (unsigned k = 0; k < ARRAY_SIZE(curve->words); k++) {
             qemu_put_be32(f, curve->words[k]);
         }
+    }
+    qemu_put_be32(f, s->detail_bound);
+    for (unsigned k = 0; k < ARRAY_SIZE(s->detail_args); k++) {
+        qemu_put_be32(f, s->detail_args[k]);
     }
     if (qemu_file_get_error(f)) {
         error_setg(errp, "KONA texture state could not be saved");
@@ -790,7 +922,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 7) || bound > 1 ||
+    if ((version < 1 || version > 8) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -961,6 +1093,21 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 goto invalid;
             }
         }
+        if (version >= 8) {
+            uint32_t valid = qemu_get_be32(f);
+
+            o->native_base_format = qemu_get_be32(f);
+            o->native_internal_format = qemu_get_be32(f);
+            o->params.detail_level = qemu_get_be32(f);
+            o->params.detail_mode = qemu_get_be32(f);
+            if (valid > 1 ||
+                (valid && !texture_format(o->native_base_format,
+                                          o->native_internal_format)) ||
+                !texture_params(&o->params)) {
+                goto invalid;
+            }
+            o->native_internal_valid = valid;
+        }
     }
     if (version >= 6) {
         uint32_t curves = qemu_get_be32(f);
@@ -983,6 +1130,19 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 goto invalid;
             }
         }
+    }
+    if (version >= 8) {
+        uint32_t valid = qemu_get_be32(f);
+
+        for (unsigned k = 0; k < ARRAY_SIZE(tmp.detail_args); k++) {
+            tmp.detail_args[k] = qemu_get_be32(f);
+        }
+        if (valid > 1 || (valid &&
+            (tmp.detail_args[0] == UINT32_MAX ||
+             !texture_detail_args(tmp.detail_args)))) {
+            goto invalid;
+        }
+        tmp.detail_bound = valid;
     }
     if (qemu_file_get_error(f) ||
         (bound && !texture_object(&tmp, handle, false))) {
