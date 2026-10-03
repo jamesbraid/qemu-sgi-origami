@@ -152,6 +152,7 @@ void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft,
                         cond, tcg_constant_i64(0), t_fs, t_fd);
 }
 
+#ifndef CONFIG_USER_ONLY
 /*
  * The implementation-dependent coprocessor 0 registers the R10000 family
  * carries, split out of the shared MFC0/MTC0/DMFC0/DMTC0 decoders: the
@@ -326,6 +327,7 @@ static R10KCp0Result gen_cacherr_mfc0(DisasContext *ctx, TCGv arg, int sel,
     }
     return R10K_CP0_DONE;
 }
+#endif /* !CONFIG_USER_ONLY */
 
 static R10KCp0Result gen_cacherr_mtc0(DisasContext *ctx, TCGv arg, int sel,
                                       bool is_64, const char **register_name)
