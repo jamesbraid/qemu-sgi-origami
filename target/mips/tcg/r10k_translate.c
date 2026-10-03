@@ -193,7 +193,7 @@ static inline void gen_r10k_mfc0_load64_r10k(TCGv arg, target_ulong off,
     if (low32_only) {
         gen_move_low32(arg, tmp);
     } else {
-        tcg_gen_mov_tl(arg, tmp);
+        tcg_gen_trunc_i64_tl(arg, tmp);
     }
 }
 
