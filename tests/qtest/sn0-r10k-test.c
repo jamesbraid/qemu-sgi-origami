@@ -1089,6 +1089,73 @@ static void emit_ori(GuestImage *img, int rt, int rs, uint16_t imm)
     emit(img, OPC_ORI | (rs << 21) | (rt << 16) | imm);
 }
 
+
+static void emit_li64(GuestImage *img, int rt, uint64_t value)
+{
+    emit_ori(img, rt, R_ZERO, value >> 48);
+    for (int shift = 32; shift >= 0; shift -= 16) {
+        emit(img, OPC_SPECIAL | (rt << 16) | (rt << 11) | (16 << 6) | 0x38);
+        emit_ori(img, rt, rt, value >> shift);
+    }
+}
+
+static void test_unmapped_cpu_relative_destination(void)
+{
+    g_autofree char *path = NULL;
+    uint8_t image[IMAGE_SIZE] = { 0 };
+    uint8_t source[8] = { 0 };
+    uint8_t dest[16] = { 0 };
+    GuestImage img = { .code = image };
+    QTestState *qts;
+    int fd = g_file_open_tmp("r10k-cpu-relative-XXXXXX", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_ori(&img, R_T0, R_T0, 0x80);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    for (int i = 0; i < 4; i++) {
+        emit_nop(&img);
+    }
+    emit_li64(&img, R_T0, 0x9200000001000020ULL);
+    emit_ld(&img, R_T1, R_T0, 0);
+    emit(&img, OPC_SPECIAL | (R_T1 << 16) | (R_T1 << 11) | (3 << 6));
+    emit_lui(&img, R_S0, 0xa018);
+    emit(&img, OPC_SPECIAL | (R_S0 << 21) | (R_T1 << 16) |
+               (R_S0 << 11) | 0x2d);
+    emit_li64(&img, R_T0, 0x9000000000020000ULL);
+    emit_jr(&img, R_T0);
+    emit_nop(&img);
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==, sizeof(image));
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M -smp 2 -cpu R10000 "
+                      "-bios %s -accel tcg,thread=single -S "
+                      "-icount shift=2,align=off,sleep=off "
+                      "-no-reboot -no-shutdown", path);
+    unlink(path);
+
+    /* The source is shared; the low Hub-local destination swaps bit 16. */
+    stl_be_p(source, mips_branch(OPC_BEQ, R_ZERO, R_ZERO,
+                                (0x1000 - 0x20004) / 4));
+    qtest_memwrite(qts, 0x20000, source, sizeof(source));
+    for (int cpu = 0; cpu < 2; cpu++) {
+        stl_be_p(dest, mips_addiu(R_T2, R_ZERO, cpu + 1));
+        stl_be_p(dest + 4, mips_sd(R_T2, R_S0, 0));
+        stl_be_p(dest + 8, mips_branch(OPC_BEQ, R_ZERO, R_ZERO, -1));
+        qtest_memwrite(qts, 0x1000 + cpu * 0x10000, dest, sizeof(dest));
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (int i = 0; i < POLL_TRIES; i++) {
+        if (qtest_readq(qts, 0x180000) && qtest_readq(qts, 0x180008)) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmpuint(qtest_readq(qts, 0x180000), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, 0x180008), ==, 2);
+    qtest_quit(qts);
+}
+
 static void emit_fault_handler(GuestImage *img, uint16_t vec_id)
 {
     emit_lui(img, R_T2, STATE_KSEG1_HI);
@@ -1692,6 +1759,8 @@ int main(int argc, char **argv)
     g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
     qtest_add_func("/sn0/tcg/indirect-and-unmapped-chaining",
                    test_indirect_and_unmapped_chaining);
+    qtest_add_func("/sn0/tcg/unmapped-cpu-relative-destination",
+                   test_unmapped_cpu_relative_destination);
     qtest_add_func("/sn0/tcg/prefetch-hints",
                    test_r10k_prefetch_hints);
     qtest_add_func("/sn0/tcg/tlb-interleaved",
