@@ -7903,6 +7903,88 @@ static void mipmap_init(MipmapFixture *f, uint32_t min, uint32_t mag,
     texture_coord(&f->scene, 0.5f, 0.5f, 0, 1);
 }
 
+static bool texture_filter_weight(void *opaque, double lambda, double *weight)
+{
+    double *value = opaque;
+
+    g_assert_cmpfloat(lambda, ==, -2);
+    *weight = *value;
+    return *value != -99;
+}
+
+static void test_texture_sharpen(void)
+{
+    const uint32_t modes[] = {
+        SGI_GL_LINEAR_SHARPEN_SGIS, SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS,
+        SGI_GL_LINEAR_SHARPEN_COLOR_SGIS,
+    };
+    const float coord[4] = { 0.375, 0.375, 0, 1 };
+    const float color[4] = { 1, 1, 1, 1 };
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        for (unsigned custom = 0; custom < 2; custom++) {
+            MipmapFixture f;
+            float out[4];
+            double weight = 2;
+
+            mipmap_init(&f, SGI_GL_LINEAR, modes[m], -2, -2);
+            f.image.opaque = &weight;
+            f.image.read_filter_weight = custom ? texture_filter_weight : NULL;
+            for (unsigned j = 0; j < 16; j++) {
+                f.pixels[0].pixels[j] = 0x80604080;
+            }
+            for (unsigned j = 0; j < 4; j++) {
+                f.pixels[1].pixels[j] = 0x402080c0;
+            }
+            g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                          &f.image, coord, color, out));
+            for (unsigned k = 0; k < 4; k++) {
+                const double a[] = { 128, 96, 64, 128 };
+                const double b[] = { 64, 32, 128, 192 };
+                bool selected = m == 0 || (m == 1 ? k == 3 : k != 3);
+                double expected = a[k] / 255;
+
+                if (selected) {
+                    expected = MIN(MAX(expected + (custom ? 2 : .5) *
+                                   (a[k] - b[k]) / 255, 0), 1);
+                }
+                g_assert_cmpfloat_with_epsilon(out[k], expected, 0.000001);
+            }
+            for (unsigned fallback = 0; fallback < 4; fallback++) {
+                f.pyramid.count = fallback == 0 ? 1 : 3;
+                f.pyramid.max_level = fallback == 1 ? 0 : 2;
+                f.levels[1].internal_format = fallback == 2 ? SGI_GL_RGB :
+                                                                    SGI_GL_RGBA;
+                f.levels[1].width = fallback == 3 ? 1 : 2;
+                g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                              &f.image, coord, color, out));
+                g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255,
+                                                0.000001);
+            }
+            f.pyramid.count = 3;
+            f.pyramid.max_level = 2;
+            f.levels[1].internal_format = SGI_GL_RGBA;
+            f.levels[1].width = 2;
+            f.pixels[1].fail = true;
+            for (unsigned k = 0; k < 4; k++) {
+                out[k] = .123f;
+            }
+            g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                           &f.image, coord, color, out));
+            g_assert_cmpfloat(out[0], ==, .123f);
+            f.pixels[1].fail = false;
+            f.image.read_filter_weight = texture_filter_weight;
+            for (unsigned bad = 0; bad < 2; bad++) {
+                weight = bad ? NAN : -99;
+                g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                               &f.image, coord, color, out));
+                g_assert_cmpfloat(out[0], ==, .123f);
+            }
+            sgi_gl_cleanup(&f.scene.c);
+        }
+    }
+}
+
 static void mipmap_point(MipmapFixture *f)
 {
     frag_command(&f->scene, SGI_GL_OP_COLOR4F,
@@ -8576,6 +8658,39 @@ static void test_mipmap_projective_triangle(void)
 
 #ifdef SGI_GL_TEXTURE_TEST
 #include "tests/unit/sgi-gl-texture-test.h"
+
+static void test_texture_enhanced_cutoff(void)
+{
+    const uint32_t min[] = {
+        SGI_GL_NEAREST, SGI_GL_LINEAR, SGI_GL_NEAREST_MIPMAP_NEAREST,
+        SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_NEAREST_MIPMAP_LINEAR,
+        SGI_GL_LINEAR_MIPMAP_LINEAR,
+    };
+    SGIGLTexPyramid p = { .base_level = 0, .min_lod = -8, .max_lod = 8 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(min); i++) {
+        double cutoff = i == 2 || i == 3 ? .5 : 0;
+        uint32_t out[3];
+        double numeric[2];
+
+        g_assert_true(sgi_gl_texture_test_select(min[i],
+                      SGI_GL_LINEAR_SHARPEN_SGIS, &p, 2,
+                      exp2(cutoff - .001), out, numeric));
+        g_assert_cmpuint(out[2], ==, SGI_GL_LINEAR_SHARPEN_SGIS);
+        g_assert_true(sgi_gl_texture_test_select(min[i],
+                      SGI_GL_LINEAR_SHARPEN_SGIS, &p, 2,
+                      exp2(cutoff + .001), out, numeric));
+        g_assert_cmpuint(out[2], !=, SGI_GL_LINEAR_SHARPEN_SGIS);
+        p.min_lod = p.max_lod = cutoff;
+        g_assert_true(sgi_gl_texture_test_select(min[i],
+                      SGI_GL_LINEAR_SHARPEN_SGIS, &p, 2, 0, out, numeric));
+        g_assert_cmpuint(out[2], ==, SGI_GL_LINEAR_SHARPEN_SGIS);
+        p.min_lod = -8;
+        p.max_lod = 8;
+    }
+}
+
+
 
 static void mipmap_close(double actual, double expected)
 {
@@ -9708,6 +9823,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-post-filter",
                     test_texture_3d_post_filter);
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
+    g_test_add_func("/sgi-gl/texture-sharpen", test_texture_sharpen);
+    g_test_add_func("/sgi-gl/texture-enhanced-cutoff",
+                    test_texture_enhanced_cutoff);
     g_test_add_func("/sgi-gl/texture-volume-border/faces-corners",
                     test_texture_volume_border);
     g_test_add_func("/sgi-gl/texture-volume-border/one-slice",

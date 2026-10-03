@@ -234,6 +234,8 @@ typedef struct SGIGLTexImage {
                                  int32_t z, uint32_t *rgba);
     /* Positive volume R derivative factor; zero preserves identity. */
     double lod_scale_r;
+    /* NULL selects the public default curve; lambda is already clamped. */
+    bool (*read_filter_weight)(void *opaque, double lambda, double *weight);
 } SGIGLTexImage;
 
 /*
