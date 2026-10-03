@@ -70,7 +70,16 @@ static void test_hq_query_flag_only_from_query(void)
 #define GL_RE_COUNT_HDR       0x00008c04
 #define GL_BANKS_HDR          0x00009808
 #define GL_DEPTH_EQUAL        2
+#define GL_BEGIN_POINTS       0x00001600
+#define GL_BEGIN_LINES        0x00001700
+#define GL_BEGIN_LINE_STRIP   0x00001800
+#define GL_BEGIN_LINE_LOOP    0x00001900
+#define GL_BEGIN_TRIANGLES    0x00001a00
+#define GL_BEGIN_TRI_STRIP    0x00001b00
+#define GL_BEGIN_TRI_FAN      0x00001c00
 #define GL_BEGIN_QUADS        0x00001d00
+#define GL_BEGIN_QUAD_STRIP   0x00001e00
+#define GL_BEGIN_POLYGON      0x00001f00
 #define GL_END_QUADS          0x00002700
 #define GL_RENDER_SELECT      0x0000cb04
 #define GL_RENDER             0x0000c900
@@ -78,6 +87,9 @@ static void test_hq_query_flag_only_from_query(void)
 #define GL_LOAD_NAME          0x0000c504
 #define GL_PUSH_NAME          0x0000c704
 #define GL_SELECTION_SELECTOR 0x00000cec
+#define GL_POINT_MODE        0x1b00
+#define GL_CCW               0x901
+#define GL_CULL_OFF          0x00007300
 
 static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
 {
@@ -156,6 +168,250 @@ static void gl_selection_quad(QTestState *qts, float z)
     gl_vertex3f(qts, 0.5f, 0.5f, z);
     gl_vertex3f(qts, -0.5f, 0.5f, z);
     gl_word(qts, GL_END_QUADS);
+}
+
+typedef struct GLSelectionPrimitive {
+    uint32_t begin;
+    unsigned count;
+    float xy[4][2];
+} GLSelectionPrimitive;
+
+static const GLSelectionPrimitive gl_selection_primitives[] = {
+    { GL_BEGIN_POINTS, 1, { { 0, 0 } } },
+    { GL_BEGIN_LINES, 2, { { -0.5f, 0 }, { 0.5f, 0 } } },
+    { GL_BEGIN_LINE_STRIP, 3,
+      { { -0.5f, -0.5f }, { 0, 0.5f }, { 0.5f, -0.5f } } },
+    { GL_BEGIN_LINE_LOOP, 3,
+      { { -0.5f, -0.5f }, { 0, 0.5f }, { 0.5f, -0.5f } } },
+    { GL_BEGIN_TRIANGLES, 3,
+      { { -0.5f, -0.5f }, { 0, 0.5f }, { 0.5f, -0.5f } } },
+    { GL_BEGIN_TRI_STRIP, 4,
+      { { -0.5f, -0.5f }, { -0.5f, 0.5f },
+        { 0.5f, -0.5f }, { 0.5f, 0.5f } } },
+    { GL_BEGIN_TRI_FAN, 4,
+      { { 0, 0 }, { -0.5f, -0.5f }, { 0, 0.5f }, { 0.5f, -0.5f } } },
+    { GL_BEGIN_QUADS, 4,
+      { { -0.5f, -0.5f }, { 0.5f, -0.5f },
+        { 0.5f, 0.5f }, { -0.5f, 0.5f } } },
+    { GL_BEGIN_QUAD_STRIP, 4,
+      { { -0.5f, -0.5f }, { 0.5f, -0.5f },
+        { -0.5f, 0.5f }, { 0.5f, 0.5f } } },
+    { GL_BEGIN_POLYGON, 4,
+      { { -0.5f, -0.5f }, { 0.5f, -0.5f },
+        { 0.5f, 0.5f }, { -0.5f, 0.5f } } },
+};
+
+static void gl_selection_primitive(QTestState *qts,
+                                   const GLSelectionPrimitive *primitive,
+                                   float z, float x_offset)
+{
+    gl_word(qts, primitive->begin);
+    for (unsigned i = 0; i < primitive->count; i++) {
+        gl_vertex3f(qts, primitive->xy[i][0] + x_offset,
+                    primitive->xy[i][1], z);
+    }
+    gl_word(qts, GL_END_OF(primitive->begin));
+}
+
+static void test_gl_selection_supports_primitives(void)
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(gl_selection_primitives); i++) {
+        const GLSelectionPrimitive *primitive = &gl_selection_primitives[i];
+
+        gl_scene_start(qts, GL_FLAT);
+        gl_depth_range(qts, 0.25f, 0.75f);
+        gl_word(qts, GL_RENDER_SELECT);
+        gl_word(qts, 0);
+        gl_word(qts, GL_INIT_NAMES);
+        gl_word(qts, GL_PUSH_NAME);
+        gl_word(qts, 100 + i);
+        gl_clear_color(qts, 1, 0, 0, 1);
+        gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+        gl_selection_primitive(qts, primitive, -0.5f, 0);
+        /* Same-name primitives coalesce and accumulate post-clip depths. */
+        gl_selection_primitive(qts, primitive, 0.5f, 0);
+        gl_word(qts, GL_LOAD_NAME);
+        gl_word(qts, 200 + i);
+        /* Every vertex lies outside the right clip plane. */
+        gl_selection_primitive(qts, primitive, 0, 2);
+        gl_word(qts, GL_RENDER);
+
+        g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1),
+                        ==, 5);
+        g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+        g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                        gl_bits(0.375f));
+        g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                        gl_bits(0.625f));
+        g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==,
+                        100 + i);
+        /* Selection draws and clears leave the window's color plane intact. */
+        g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+    }
+}
+
+static void test_gl_selection_depth_uses_clipped_vertices(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_depth_range(qts, 0, 1);
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_INIT_NAMES);
+    gl_word(qts, GL_PUSH_NAME);
+    gl_word(qts, 88);
+
+    /* The first endpoint is outside the near clip plane. */
+    gl_word(qts, GL_BEGIN_LINES);
+    gl_vertex3f(qts, -0.5f, 0, -2);
+    gl_vertex3f(qts, 0.5f, 0, 0);
+    gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
+    /* The last triangle vertex is beyond the far clip plane. */
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -0.5f, -0.5f, 0);
+    gl_vertex3f(qts, 0.5f, -0.5f, 0);
+    gl_vertex3f(qts, 0, 0.5f, 2);
+    gl_word(qts, GL_END_OF(GL_BEGIN_TRIANGLES));
+    gl_word(qts, GL_RENDER);
+
+    /* The same name yields one record; unclipped z values must not escape. */
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    5);
+    g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                    gl_bits(0));
+    g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                    gl_bits(1));
+    g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==, 88);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+}
+
+static void test_gl_selection_polygon_mode_does_not_change_hits(void)
+{
+    static const uint32_t modes[] = { GL_POINT_MODE, GL_LINE_MODE };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        gl_scene_start(qts, GL_FLAT);
+        gl_depth_range(qts, 0.25f, 0.75f);
+        gl_polygon_mode(qts, GL_FRONT_AND_BACK, modes[i]);
+        gl_word(qts, GL_RENDER_SELECT);
+        gl_word(qts, 0);
+        gl_word(qts, GL_INIT_NAMES);
+        gl_word(qts, GL_PUSH_NAME);
+        gl_word(qts, 101);
+        gl_selection_quad(qts, 0);
+        gl_word(qts, GL_RENDER);
+
+        g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1),
+                        ==, 5);
+        g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+        g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                        gl_bits(0.5f));
+        g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                        gl_bits(0.5f));
+        g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==, 101);
+        g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+    }
+}
+
+static void gl_selection_clockwise_triangle(QTestState *qts)
+{
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex3f(qts, -0.5f, -0.5f, 0);
+    gl_vertex3f(qts, 0, 0.5f, 0);
+    gl_vertex3f(qts, 0.5f, -0.5f, 0);
+    gl_word(qts, GL_END_OF(GL_BEGIN_TRIANGLES));
+}
+
+static void test_gl_selection_respects_polygon_culling(void)
+{
+    static const struct {
+        bool cull;
+        uint32_t front_face;
+        uint32_t expected_words;
+    } cases[] = {
+        { true, GL_CCW, 0 },
+        { false, GL_CCW, 5 },
+        { true, GL_CW, 5 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        gl_scene_start(qts, GL_FLAT);
+        gl_depth_range(qts, 0.25f, 0.75f);
+        gl_one(qts, GL_CULL_FACE_HDR, GL_BACK_FACE);
+        gl_one(qts, GL_FRONT_FACE_HDR, cases[i].front_face);
+        gl_word(qts, cases[i].cull ? GL_CULL_ON : GL_CULL_OFF);
+        gl_word(qts, GL_RENDER_SELECT);
+        gl_word(qts, 0);
+        gl_word(qts, GL_INIT_NAMES);
+        gl_word(qts, GL_PUSH_NAME);
+        gl_word(qts, 102);
+        gl_selection_clockwise_triangle(qts);
+        gl_word(qts, GL_RENDER);
+
+        g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1),
+                        ==, cases[i].expected_words);
+        if (cases[i].expected_words) {
+            g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+            g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                            gl_bits(0.5f));
+            g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                            gl_bits(0.5f));
+            g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==,
+                            102);
+        }
+        g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+    }
+}
+
+static void test_gl_selection_preserves_strip_winding(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_depth_range(qts, 0.25f, 0.75f);
+    gl_one(qts, GL_CULL_FACE_HDR, GL_BACK_FACE);
+    gl_one(qts, GL_FRONT_FACE_HDR, GL_CW);
+    gl_word(qts, GL_CULL_ON);
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_INIT_NAMES);
+    gl_word(qts, GL_PUSH_NAME);
+    gl_word(qts, 103);
+
+    /* Both triangles are clockwise after strip winding alternation. */
+    gl_word(qts, GL_BEGIN_TRI_STRIP);
+    gl_vertex3f(qts, -0.75f, -0.5f, -0.5f);
+    gl_vertex3f(qts, -0.75f, 0.5f, -0.5f);
+    gl_vertex3f(qts, 0.75f, -0.5f, -0.5f);
+    gl_vertex3f(qts, 0.75f, 0.5f, 0.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_TRI_STRIP));
+    gl_word(qts, GL_LOAD_NAME);
+    gl_word(qts, 104);
+
+    /* Adjacent quads use successive lower/upper vertex pairs. */
+    gl_word(qts, GL_BEGIN_QUAD_STRIP);
+    gl_vertex3f(qts, -0.75f, -0.5f, -0.5f);
+    gl_vertex3f(qts, -0.75f, 0.5f, -0.5f);
+    gl_vertex3f(qts, -0.25f, -0.5f, -0.5f);
+    gl_vertex3f(qts, -0.25f, 0.5f, -0.5f);
+    gl_vertex3f(qts, 0.75f, -0.5f, 0.5f);
+    gl_vertex3f(qts, 0.75f, 0.5f, 0.5f);
+    gl_word(qts, GL_END_OF(GL_BEGIN_QUAD_STRIP));
+    gl_word(qts, GL_RENDER);
+
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    10);
+    g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                    gl_bits(0.375f));
+    g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                    gl_bits(0.625f));
+    g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==, 103);
+    g_assert_cmphex(gl_selection_query(qts, 6, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(qts, 7, UINT32_MAX, 0), ==,
+                    gl_bits(0.375f));
+    g_assert_cmphex(gl_selection_query(qts, 8, UINT32_MAX, 0), ==,
+                    gl_bits(0.625f));
+    g_assert_cmphex(gl_selection_query(qts, 9, UINT32_MAX, 0), ==, 104);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
 }
 
 static void test_gl_selection_records_overlapping_named_quads(void)
@@ -2151,6 +2407,20 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-selection-clipped-quad-has-no-hit",
                    test_gl_selection_clipped_quad_has_no_hit);
+    qtest_add_func("sn0/origin2000/mgras/gl-selection-supports-primitives",
+                   test_gl_selection_supports_primitives);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-depth-uses-clipped-vertices",
+                   test_gl_selection_depth_uses_clipped_vertices);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-polygon-mode-does-not-change-hits",
+                   test_gl_selection_polygon_mode_does_not_change_hits);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-respects-polygon-culling",
+                   test_gl_selection_respects_polygon_culling);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-preserves-strip-winding",
+                   test_gl_selection_preserves_strip_winding);
     qtest_add_func("sn0/origin2000/mgras/gl-selection-state-migrates",
                    test_gl_selection_state_migrates);
     qtest_add_func("sn0/origin2000/mgras/"
