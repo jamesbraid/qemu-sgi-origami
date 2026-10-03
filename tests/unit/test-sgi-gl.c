@@ -7750,6 +7750,51 @@ static void test_texture_volume_pyramid(void)
     g_assert_cmpuint(f.pixels[1].reads, ==, 1);
 }
 
+static void texture_volume_vertex(FragScene *f, float x, float y, float r)
+{
+    texture_coord(f, 0.25f, 0.25f, r, 1);
+    frag_command(f, SGI_GL_OP_VERTEX2F,
+                 (uint32_t[]) { bits(x), bits(y) }, 2);
+}
+
+/* Constant S/T must not conceal R minification on triangles or lines. */
+static void test_texture_volume_footprint(gconstpointer opaque)
+{
+    uint32_t mode = GPOINTER_TO_UINT(opaque);
+
+    for (unsigned volume = 0; volume < 2; volume++) {
+        for (unsigned minify = 0; minify < 2; minify++) {
+            MipmapFixture f;
+            float span = minify ? 4 : 0.25f;
+
+            mipmap_init(&f, SGI_GL_LINEAR, SGI_GL_NEAREST, -1000, 1000);
+            f.pyramid.base_level = 1;
+            f.image.volume = volume;
+            f.image.wrap_r = SGI_GL_REPEAT;
+            f.levels[1].depth = 2;
+            f.levels[1].read_texel_3d = mipmap_volume_read;
+            for (unsigned i = 0; i < 8; i++) {
+                f.pixels[1].pixels[i] = i < 4 ? 0xff0000ff : 0x0000ffff;
+            }
+            frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                         (uint32_t[]) { mode }, 1);
+            /* Window vertices span four pixels; sample one pixel from start. */
+            texture_volume_vertex(&f.scene, -0.484375f, -0.484375f, 0.125f);
+            texture_volume_vertex(&f.scene, -0.359375f, -0.484375f,
+                                  0.125f + span);
+            if (mode == SGI_GL_TRIANGLES) {
+                texture_volume_vertex(&f.scene, -0.484375f, -0.359375f, 0.125f);
+            }
+            frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+            g_assert_cmphex(frag_pixel(&f.scene, 17,
+                                     mode == SGI_GL_TRIANGLES ? 17 : 16), ==,
+                            volume && minify ? 0xbf0040 : 0xff0000);
+            g_assert_cmpuint(f.pixels[1].reads, >, 0);
+            g_assert_cmpuint(f.pixels[0].reads + f.pixels[2].reads, ==, 0);
+        }
+    }
+}
+
 /* Fixed bounds make the discrete lambda boundary exact, independent of log2. */
 static void test_mipmap_filter_boundaries(void)
 {
@@ -8896,6 +8941,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
     g_test_add_func("/sgi-gl/texture-volume-pyramid",
                     test_texture_volume_pyramid);
+    g_test_add_data_func("/sgi-gl/texture-volume-triangle-footprint",
+                        GUINT_TO_POINTER(SGI_GL_TRIANGLES),
+                        test_texture_volume_footprint);
+    g_test_add_data_func("/sgi-gl/texture-volume-line-footprint",
+                        GUINT_TO_POINTER(SGI_GL_LINES),
+                        test_texture_volume_footprint);
     g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
     g_test_add_func("/sgi-gl/texture-post-filter-precision",
                     test_texture_post_filter_precision);
