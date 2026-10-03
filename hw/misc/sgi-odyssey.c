@@ -134,6 +134,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qemu/atomic.h"
+#include "qemu/cutils.h"
 #include "qemu/log.h"
 #include "qemu/rcu.h"
 #include "qemu/units.h"
@@ -2141,6 +2142,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIOdysseyState *s = opaque;
     uint64_t value = 0;
+    uint64_t sequence = s->trace_sequence++;
 
     switch (odyssey_reg(addr, size)) {
     case ODSY_IDENTITY:
@@ -2261,7 +2263,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
         odyssey_unimplemented(s, addr, size, false);
         break;
     }
-    trace_sgi_odyssey_mmio(addr, size, value, false);
+    trace_sgi_odyssey_mmio(sequence, addr, size, value, false);
     return value;
 }
 
@@ -2875,13 +2877,23 @@ static void odyssey_publish(void *opaque, const SGICompletion *c)
 /*
  * A run of guest bytes the DMA engine read, handed to the family's replay
  * trace at the device address before any composition (dma_address is NULL here,
- * so the two are the same), tagged with the submitting sequence. The family
+ * so the two are the same), tagged with the consuming MMIO sequence. The family
  * owns the trace event; an external analyser reads it.
  */
 static void odyssey_dma_chunk(void *opaque, uint64_t seq, uint64_t addr,
                               const uint8_t *bytes, uint32_t len)
 {
-    trace_sgi_odyssey_dma_chunk(seq, addr, len);
+    SGIOdysseyState *s = opaque;
+    g_autofree char *hex = NULL;
+
+    if (!trace_event_get_state_backends(TRACE_SGI_ODYSSEY_DMA_CHUNK)) {
+        return;
+    }
+    assert(len <= SGI_DMA_CHUNK_MAX);
+    hex = g_malloc(len * 2 + 1);
+    qemu_hexdump_to_buffer(hex, len * 2 + 1, bytes, len);
+    /* Chunks belong to the MMIO write that caused the actual RAM read. */
+    trace_sgi_odyssey_dma_chunk(s->trace_sequence - 1, addr, len, hex);
 }
 
 /* The top eight bits of a lookup-RAM entry's ten-bit channels, as RGB. */
@@ -8668,7 +8680,7 @@ static void odyssey_selftest_track(SGIOdysseyState *s, hwaddr port,
 static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
                                    uint64_t value, unsigned size)
 {
-    trace_sgi_odyssey_mmio(addr, size, value, true);
+    trace_sgi_odyssey_mmio(s->trace_sequence++, addr, size, value, true);
 
     if (addr == ODSY_BACKEND_SELECT && (size == 8 || size == 4)) {
         odyssey_backend_write(s, value, size);
