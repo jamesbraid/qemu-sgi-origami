@@ -306,7 +306,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  * Textures: a texel load, 0x174 and 20 header words with the image rows
  * after them, closed by 0x176 and the texture's memory handle; the binds
  * 0x1d5 or 0x106 with five words, 0x179 with 22, and 0x178 with the
- * handle; the post-texture scale and bias 0xed with four words.
+ * handle; the detail image 0x17d with six words; the post-texture scale
+ * and bias 0xed with four words.
  */
 #define SGI_KONA_CMD_GL_TEX_PREFIX  0x1c4
 #define SGI_KONA_CMD_GL_TEX_CLEANUP_PREFIX 0x1c5
@@ -314,6 +315,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_TEX_LOAD_ID 0x176
 #define SGI_KONA_CMD_GL_TEX_BIND_ID 0x178
 #define SGI_KONA_CMD_GL_TEX_BIND_2D 0x179
+#define SGI_KONA_CMD_GL_TEX_DETAIL  0x17d
 #define SGI_KONA_CMD_GL_TEX_BIND    0x1d5
 #define SGI_KONA_CMD_GL_TEX_BIND_LINEAR 0x106
 #define SGI_KONA_CMD_GL_TEX_POST_SCALE 0xed
