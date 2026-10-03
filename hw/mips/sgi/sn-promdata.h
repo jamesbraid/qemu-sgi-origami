@@ -90,6 +90,8 @@ struct SNPromDataState {
     MIPSCPU *cpu;
     SNPromDataPoll *poll;
     hwaddr node_base;
+    hwaddr (*live_node_base)(void *opaque);
+    void *node_opaque;
     hwaddr node_memory_size;
     hwaddr flash_offset;
     hwaddr flash_size;

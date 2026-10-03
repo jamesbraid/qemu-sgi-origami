@@ -45,6 +45,8 @@ static bool sn_promdata_local_phys(SNPromDataState *s, uint64_t vaddr,
 {
     TranslateForDebugResult r;
     uint64_t phys;
+    hwaddr node_base = s->live_node_base ?
+        s->live_node_base(s->node_opaque) : s->node_base;
 
     if (!cpu_translate_for_debug(CPU(s->cpu), vaddr, &r)) {
         return false;
@@ -54,8 +56,8 @@ static bool sn_promdata_local_phys(SNPromDataState *s, uint64_t vaddr,
      * uncached-attribute window above the address, then the node.
      */
     phys = r.physaddr & ((1ULL << MIPS_UNCACHED_WINDOW_SHIFT) - 1);
-    if (phys - s->node_base < s->node_memory_size) {
-        phys -= s->node_base;
+    if (phys - node_base < s->node_memory_size) {
+        phys -= node_base;
     }
     *local = phys;
     return true;

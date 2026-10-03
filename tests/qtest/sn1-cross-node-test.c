@@ -728,6 +728,201 @@ static void test_prom_copy_range_leaves_at_handoff(void)
     qtest_quit(qts);
 }
 
+
+#define COPY_PROBE_MARKER UINT64_C(0x6c6c6c6c)
+#define COPY_OTHER_MARKER UINT64_C(0x7d7d7d7d)
+#define COPY_PROBE_READBACK (HANDOFF_FLAGS + 0x20)
+#define COPY_PROBE_MAPPING (HANDOFF_FLAGS + 0x28)
+#define COPY_PROBE_MASK (HANDOFF_FLAGS + 0x30)
+#define COPY_PROBE_ASID (HANDOFF_FLAGS + 0x38)
+#define COPY_PROBE_RELEASE (HANDOFF_FLAGS + 0x40)
+
+/* Keep FPR 0 set until the mapped copy clears it itself. */
+static char *create_copy_probe_prom(void)
+{
+    char *path = create_handoff_prom();
+    uint8_t nop[4] = { 0 };
+    uint8_t jump[4];
+    const uint32_t select_cpu[] = {
+        0x3c089200, 0x0008403c, 0x3c090100, 0x01094025,
+        0xdd0a0020, /* local PI_CPU_NUMBER */
+        0x15400005, 0x00000000, /* park every nonzero slot */
+        0x3c08a030, 0x8d090000, 0x1000ffbf, 0x00000000,
+        0x1000ffff, 0x00000000,
+    };
+    int fd = open(path, O_WRONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(pwrite(fd, nop, sizeof(nop), 0x44c), ==, sizeof(nop));
+    stl_be_p(jump, 0x3c08a1a1); /* bootstrap in the reader-local copy */
+    g_assert_cmpint(pwrite(fd, jump, sizeof(jump), 0x450), ==, sizeof(jump));
+    stl_be_p(jump, 0x10000038); /* select a processor after enabling KX */
+    g_assert_cmpint(pwrite(fd, jump, sizeof(jump), 0x41c), ==, sizeof(jump));
+    g_assert_cmpint(pwrite(fd, nop, sizeof(nop), 0x420), ==, sizeof(nop));
+    for (unsigned int i = 0; i < ARRAY_SIZE(select_cpu); i++) {
+        stl_be_p(jump, select_cpu[i]);
+        g_assert_cmpint(pwrite(fd, jump, sizeof(jump), 0x500 + 4 * i),
+                        ==, sizeof(jump));
+    }
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void write_copy_probe(QTestState *qts, uint64_t base, uint32_t marker)
+{
+    const uint32_t code[] = {
+        0x44800000, /* mtc1 zero, f0 */
+        0x3c0ba800, 0x000b583c, 0x3c0c0010, 0x016c5825,
+        0x3c0d0000 | (marker >> 16),
+        0x35ad0000 | (marker & 0xffff),
+        0xad6d0000, /* sw t5, 0(t3): cached private window */
+        marker == COPY_OTHER_MARKER ? 0x340e0000 : 0x8d6e0000,
+        /* A released node-zero read can fault in the remote case. */
+        0xad0e0020, /* report readback */
+        0xad0d0010, /* report distinct code marker */
+        0x8d090040, 0x1120fffe, 0x00000000, /* wait for release */
+        0x01e00008, 0x00000000,
+    };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(code); i++) {
+        qtest_writel(qts, base + PROM_RAM_COPY + 4 * i, code[i]);
+    }
+}
+
+static void test_prom_copy_live_node(gconstpointer opaque)
+{
+    unsigned int named = GPOINTER_TO_UINT(opaque);
+    unsigned int own = named == 3 ? 2 : named;
+    unsigned int other = named == 3 ? 3 : 0;
+    uint32_t marker = named == 3 ? COPY_OTHER_MARKER : COPY_PROBE_MARKER;
+    uint64_t entrylo = (NODE(named) + PROM_RAM_COPY) / 64 + 0x1e;
+    g_autofree char *prom = NULL;
+    g_autofree char *quoted = NULL;
+    QTestState *qts;
+    uint64_t value = 0;
+    const uint32_t bootstrap[] = {
+        0x3c08a030, 0x34090001, 0xad090018, /* ready, still own local RAM */
+        0x3c08a1a1,
+        0x8d0a1000, 0x1140fffe, 0x00000000, /* wait in local copy */
+        0x3c0b0000 | (entrylo >> 16),
+        0x356b0000 | (entrylo & 0xffff),
+        0x408b1000, /* EntryLo0 */
+        0x656c4000, 0x408c1800, /* EntryLo1: next 1 MiB page */
+        0x3c0c001f, 0x358ce000, 0x408c2800, /* PageMask 0x1fe000 */
+        0x3c0dc000, 0x000d683c, 0x3c0e1000, 0x01ae6825,
+        0x65ae0004, 0x40ae5000, /* EntryHi, ASID 4 */
+        0x40800000, 0x000000c0, 0x42000002, 0x000000c0,
+        0x3c089600, 0x0008403c,
+        0x34090000 | own, 0x0009487c, /* node at bit 33 */
+        0x01094025, 0x3c090030, 0x01094025, /* own uncached flags */
+        0xfd0b0028, 0xfd0c0030, 0xfd0e0038, /* expose TLB inputs */
+        0x3c090010, 0x0109782f, 0x65ef0200, /* own release text */
+        0x400a6000, 0x240bfffb, 0x014b5024, 0x408a6000, /* clear ERL */
+        0x000000c0, 0x01a00008, 0x00000000,
+    };
+    const uint32_t release[] = {
+        0x3c0ba800, 0x000b583c, 0x3c0c0010, 0x016c5825,
+        0x340d0042, 0xad6d0000, /* outside copy: write reaches backing RAM */
+        0x34090001, 0xad090048, 0x1000ffff, 0x00000000,
+    };
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_copy_probe_prom();
+    quoted = g_shell_quote(prom);
+    qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
+                      "-no-shutdown -S", quoted);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, HANDOFF_NODE_TAG, 0);
+    qtest_writeq(qts, PROM_DATA_WINDOW, WORD0);
+    write_copy_probe(qts, 0, COPY_OTHER_MARKER);
+    set_node_number(qts, 1, 1);
+    qtest_writeq(qts, NODE(1) + HANDOFF_NODE_TAG, UINT64_C(1) << 32);
+    qtest_writeq(qts, NODE(1) + PROM_DATA_WINDOW, WORD1);
+    write_copy_probe(qts, NODE(1), COPY_PROBE_MARKER);
+    for (unsigned int i = 0; i < ARRAY_SIZE(bootstrap); i++) {
+        qtest_writel(qts, NODE(1) + PROM_RAM_COPY + 0x10000 + 4 * i,
+                     bootstrap[i]);
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(release); i++) {
+        qtest_writel(qts, NODE(1) + HANDOFF_CODE + 0x200 + 4 * i, release[i]);
+    }
+    set_node_number(qts, 1, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    for (unsigned int tries = 0; tries < 500; tries++) {
+        if (cpu_readq(qts, 2, HANDOFF_READY, &value) && value >> 32 == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(value >> 32, ==, 1);
+    {
+        g_autoptr(QDict) sibling = qtest_qmp(qts,
+            "{'execute':'human-monitor-command', 'arguments':"
+            "{'command-line':'info registers', 'cpu-index':3}}");
+        g_assert_nonnull(strstr(qdict_get_str(sibling, "return"),
+                               "pc=0xffffffffbfc0052c"));
+    }
+    set_node_number(qts, 0, other);
+    set_node_number(qts, 1, own);
+    g_assert_cmphex(peer_access(qts, LB_REVISION, false, 0) &
+                    REVISION_NODE_MASK,
+                    ==, (uint64_t)own << REVISION_NODE_SHIFT);
+    g_assert_cmphex(qtest_readl(qts, NODE(own) + PROM_RAM_COPY), ==,
+                    0x44800000);
+    qtest_writel(qts, NODE(own) + PROM_RAM_COPY + 0x11000, 1);
+    for (unsigned int tries = 0; tries < 500; tries++) {
+        if (qtest_readl(qts, NODE(own) + HANDOFF_DONE) == marker) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    if (qtest_readl(qts, NODE(own) + HANDOFF_DONE) != marker) {
+        g_autoptr(QDict) regs = qtest_qmp(qts,
+            "{'execute':'human-monitor-command', 'arguments':"
+            "{'command-line':'info registers', 'cpu-index':2}}");
+        g_test_message("%s", qdict_get_str(regs, "return"));
+    }
+    g_assert_cmphex(qtest_readl(qts, NODE(own) + HANDOFF_DONE), ==, marker);
+    g_assert_cmphex(qtest_readq(qts, NODE(own) + COPY_PROBE_MAPPING), ==,
+                    entrylo);
+    g_assert_cmphex(qtest_readq(qts, NODE(own) + COPY_PROBE_MASK), ==,
+                    0x1fe000);
+    g_assert_cmphex(qtest_readq(qts, NODE(own) + COPY_PROBE_ASID), ==,
+                    UINT64_C(0xc000000010000004));
+    g_test_message("named=%u own=%u readback=0x%x backing-own=0x%" PRIx64
+                   " backing-other=0x%" PRIx64, named, own,
+                   qtest_readl(qts, NODE(own) + COPY_PROBE_READBACK),
+                   qtest_readq(qts, NODE(own) + PROM_DATA_WINDOW),
+                   qtest_readq(qts, NODE(other) + PROM_DATA_WINDOW));
+    g_assert_cmphex(qtest_readl(qts, NODE(own) + COPY_PROBE_READBACK), ==,
+                    named == 3 ? 0 : marker);
+    g_assert_cmphex(qtest_readq(qts, NODE(other) + PROM_DATA_WINDOW), ==,
+                    WORD0);
+    g_assert_cmphex(qtest_readq(qts, NODE(own) + PROM_DATA_WINDOW), ==,
+                    named == 3 ? (uint64_t)marker << 32 | WORD1 : WORD1);
+    if (named == 3) {
+        qtest_quit(qts);
+        g_unlink(prom);
+        return;
+    }
+    qtest_writeq(qts, NODE(own) + COPY_PROBE_RELEASE, UINT64_C(1) << 32);
+    for (unsigned int tries = 0; tries < 500; tries++) {
+        if (qtest_readl(qts, NODE(own) + HANDOFF_FLAGS + 0x48) == 1) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, NODE(own) + HANDOFF_FLAGS + 0x48), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, NODE(own) + PROM_DATA_WINDOW), ==,
+                    UINT64_C(0x42) << 32 | WORD1);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 /*
  * The directory records a processor on another node by that node's number:
  * a pointer is the node number above three device bits (MD_PTR_NODE_SHFT in
@@ -899,6 +1094,12 @@ int main(int argc, char **argv)
                    test_l1_uart_local_form_is_the_readers);
     qtest_add_func("sn1/cross-node/prom-copy-range-leaves-at-handoff",
                    test_prom_copy_range_leaves_at_handoff);
+    qtest_add_data_func("sn1/cross-node/prom-copy-placement-number",
+                       GUINT_TO_POINTER(1), test_prom_copy_live_node);
+    qtest_add_data_func("sn1/cross-node/prom-copy-live-number",
+                       GUINT_TO_POINTER(2), test_prom_copy_live_node);
+    qtest_add_data_func("sn1/cross-node/prom-copy-other-number",
+                       GUINT_TO_POINTER(3), test_prom_copy_live_node);
     qtest_add_func("sn1/cross-node/remote-interrupt-reaches-the-peer",
                    test_remote_interrupt_reaches_the_peer);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
