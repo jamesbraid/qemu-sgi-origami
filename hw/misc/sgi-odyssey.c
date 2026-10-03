@@ -6259,6 +6259,84 @@ done:
     sgi_scanout_invalidate_all(&s->scanout);
 }
 
+static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason);
+
+/*
+ * The local draw-sentinel SHORT adapter: stage the bounded payload first so
+ * a failed source read cannot leave a partially painted rectangle.
+ */
+static void odyssey_dma_draw_sentinel_short(SGIOdysseyState *s,
+                                             const SGIDMABus *bus,
+                                             uint64_t table, uint64_t seq,
+                                             const uint32_t *hdr)
+{
+    OdysseyDMAEntry e[ODSY_DMA_MAX_PAGES];
+    uint32_t x = hdr[ODSY_DMA_HDR_ORIGIN] & 0xffff;
+    uint32_t y = hdr[ODSY_DMA_HDR_ORIGIN] >> 16;
+    uint32_t w = hdr[ODSY_DMA_HDR_SIZE] & 0xffff;
+    uint32_t h = hdr[ODSY_DMA_HDR_SIZE] >> 16 ?: 0x10000;
+    uint32_t rowbytes = hdr[ODSY_DMA_HDR_ROWBYTES] & ODSY_DMA_ROWBYTES_MASK;
+    uint64_t payload_len = 0, pos = 0;
+    g_autofree uint8_t *payload = NULL;
+    int n;
+
+    if (hdr[ODSY_DMA_HDR_FORMAT] != 0x02635000 ||
+        hdr[ODSY_DMA_HDR_CONTROL] != 0x7a02006b ||
+        hdr[ODSY_DMA_HDR_SKIP] != 0) {
+        if (odyssey_dma_report(s, ODSY_DMA_REPORT_UPLOAD_SENTINEL)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA upload to sentinel "
+                          "0x%x with format 0x%x and control 0x%x is not "
+                          "modeled\n", hdr[ODSY_DMA_HDR_DEST],
+                          hdr[ODSY_DMA_HDR_FORMAT],
+                          hdr[ODSY_DMA_HDR_CONTROL]);
+        }
+        return;
+    }
+
+    n = odyssey_dma_entries(bus, table, seq, e);
+    if (n < 0) {
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        payload_len += e[i].len;
+    }
+    if (!w || !h || rowbytes != (uint64_t)w * 8 ||
+        payload_len != (uint64_t)rowbytes * h) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-odyssey: draw-sentinel DMA "
+                      "header at 0x%" PRIx64 " disagrees with its payload\n",
+                      table);
+        return;
+    }
+
+    payload = g_malloc(payload_len);
+    for (int i = 0; i < n; i++) {
+        if (!sgi_dma_read(bus, e[i].addr, payload + pos, e[i].len, true,
+                          seq)) {
+            return;
+        }
+        pos += e[i].len;
+    }
+
+    for (uint32_t r = 0; r < h; r++) {
+        for (uint32_t c = 0; c < w; c++) {
+            const uint8_t *src = payload + (uint64_t)r * rowbytes + c * 8;
+            uint32_t rgba, red = lduw_be_p(src), green = lduw_be_p(src + 2);
+            uint32_t blue = lduw_be_p(src + 4), alpha = lduw_be_p(src + 6);
+            int64_t px = (int64_t)x + c + s->win_origin[0];
+            int64_t py = (int64_t)y + h - 1 - r + s->win_origin[1];
+
+            rgba = odyssey_pack_pixel(
+                (red * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                (green * 255 + UINT16_MAX / 2) / UINT16_MAX,
+                (blue * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            rgba = (rgba & ~0xffu) |
+                   ((alpha * 255 + UINT16_MAX / 2) / UINT16_MAX);
+            odyssey_paint_pixel(s, px, py, rgba);
+        }
+    }
+    sgi_scanout_invalidate_all(&s->scanout);
+}
+
 /* True the first time reason (ODSY_DMA_REPORT_*) comes up: report it then. */
 static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason)
 {
@@ -6711,9 +6789,9 @@ static void odyssey_dma_from_board(SGIOdysseyState *s, const SGIDMABus *bus,
  * too large for the FIFO (docs/analysis/odyssey-gl-texturing.md) -- whose
  * row length is word 2's (16-pixel units), created when no 0x1017 named it
  * first. A zero word 0 names no buffer and is refused. An upload to a
- * sentinel (GL's DMA image write, never captured) is reported and not
- * performed: its packing is not established. The 0xe03 opcode, which only
- * the diagnostic region path emits, is reported and not performed.
+ * sentinel (GL's DMA image write) is accepted only by the experimental
+ * draw-sentinel SHORT adapter. The 0xe03 opcode, which only the diagnostic
+ * region path emits, is reported and not performed.
  */
 static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
 {
@@ -6744,7 +6822,9 @@ static void odyssey_dma_descriptor(SGIOdysseyState *s, bool readback)
     } else if (hdr[ODSY_DMA_HDR_CONTROL] & ODSY_DMA_TO_HOST) {
         odyssey_dma_from_board(s, &bus, table, seq, hdr);
     } else if (hdr[ODSY_DMA_HDR_DEST] & ODSY_DMA_SENTINEL) {
-        if (odyssey_dma_report(s, ODSY_DMA_REPORT_UPLOAD_SENTINEL)) {
+        if (hdr[ODSY_DMA_HDR_DEST] == ODSY_DMA_SENTINEL_DRAW) {
+            odyssey_dma_draw_sentinel_short(s, &bus, table, seq, hdr);
+        } else if (odyssey_dma_report(s, ODSY_DMA_REPORT_UPLOAD_SENTINEL)) {
             qemu_log_mask(LOG_UNIMP, "sgi-odyssey: DMA upload to sentinel "
                           "0x%x with word 4 0x%x is not modeled\n",
                           hdr[ODSY_DMA_HDR_DEST], hdr[ODSY_DMA_HDR_FORMAT]);
