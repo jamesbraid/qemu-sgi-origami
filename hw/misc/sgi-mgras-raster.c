@@ -2184,19 +2184,22 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
                                             uint32_t width,
                                             uint32_t height)
 {
+    bool back = s->gl_context[s->gl_current].client_read_bank == 1;
+    const uint32_t *color_plane = back ? s->back : s->front;
+    const uint8_t *alpha_plane = back ? s->back_alpha : s->front_alpha;
     uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
 
     for (uint32_t pixel = 0; pixel < width * height; pixel++) {
         uint32_t y = d->y - pixel / width;
-        uint32_t color = s->front[y * s->width + d->x + pixel % width];
+        uint32_t index = y * s->width + d->x + pixel % width;
+        uint32_t color = color_plane[index];
         uint8_t *p = bytes + pixel * d->guest_bpp;
 
         p[0] = color >> 16;
         p[1] = color >> 8;
         p[2] = color;
-        /* 0xff is a local approximation; no alpha plane exists. */
-        p[3] = 0xff;
+        p[3] = alpha_plane[index];
     }
     if (!sgi_dma_map_copy(&d->map, d->offset, bytes, bpr, true)) {
         return SGI_FAIL_BOUNDS;
@@ -2400,6 +2403,9 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     }
 
     s->gl_context[s->gl_current].client_read_kicked = 1;
+    if (s->gl_context[s->gl_current].client_read_bank > 1) {
+        goto rejected;
+    }
     xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
     xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
     x0 = xy0 >> 16;

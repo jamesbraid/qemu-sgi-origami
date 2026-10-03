@@ -1455,8 +1455,12 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     }
     memset(s->front, 0, s->width * s->height * sizeof(*s->front));
     memset(s->back, 0, s->width * s->height * sizeof(*s->back));
+    memset(s->front_alpha, 0, s->front_count * sizeof(*s->front_alpha));
+    memset(s->back_alpha, 0, s->back_count * sizeof(*s->back_alpha));
     for (int i = 0; i < 2 && s->slot[i]; i++) {
         memset(s->slot[i], 0, s->slot_count * sizeof(*s->slot[i]));
+        memset(s->slot_alpha[i], 0,
+               s->slot_count * sizeof(*s->slot_alpha[i]));
     }
     memset(s->depth, 0, s->width * s->height * sizeof(*s->depth));
     memset(s->format, 0, s->width * s->height);
@@ -1690,11 +1694,15 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     }
     s->depth = g_new0(uint32_t, s->width * s->height);
     s->front_count = s->back_count = s->width * s->height;
+    s->front_alpha = g_new0(uint8_t, s->front_count);
+    s->back_alpha = g_new0(uint8_t, s->back_count);
     s->depth_count = s->width * s->height;
     if (s->board->re_count == 2) {
         s->slot_count = s->width * s->height;
         s->slot[0] = g_new0(uint32_t, s->slot_count);
         s->slot[1] = g_new0(uint32_t, s->slot_count);
+        s->slot_alpha[0] = g_new0(uint8_t, s->slot_count);
+        s->slot_alpha[1] = g_new0(uint8_t, s->slot_count);
     }
     s->format = g_new0(uint8_t, s->width * s->height);
     s->back_format = g_new0(uint8_t, s->width * s->height);
@@ -1786,6 +1794,10 @@ static void mgras_unrealize(DeviceState *dev)
     g_free(s->slot[0]);
     g_free(s->slot[1]);
     s->slot[0] = s->slot[1] = NULL;
+    g_free(s->front_alpha);
+    g_free(s->back_alpha);
+    g_free(s->slot_alpha[0]);
+    g_free(s->slot_alpha[1]);
     g_free(s->depth); g_free(s->format);
     g_free(s->back_format);
     g_free(s->overlay);
@@ -1818,6 +1830,17 @@ static int mgras_pre_load(void *opaque)
 static int mgras_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
+
+    if (version_id < 33) {
+        memset(s->front_alpha, 0xff,
+               s->front_count * sizeof(*s->front_alpha));
+        memset(s->back_alpha, 0xff,
+               s->back_count * sizeof(*s->back_alpha));
+        for (int i = 0; i < 2 && s->slot_alpha[i]; i++) {
+            memset(s->slot_alpha[i], 0xff,
+                   s->slot_count * sizeof(*s->slot_alpha[i]));
+        }
+    }
 
     if (s->ge_active_slot >= ARRAY_SIZE(s->ge) ||
         s->ge_write_ptr[0] > s->ge_words[0] ||
@@ -1861,6 +1884,13 @@ static bool mgras_slots_needed(void *opaque)
     return s->slot_count != 0;
 }
 
+static bool mgras_alpha_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->front_alpha && s->back_alpha;
+}
+
 static bool mgras_slot_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
@@ -1871,7 +1901,7 @@ static bool mgras_slot_count_valid(void *opaque, int version_id)
 /* Only a two-RE board has the slots, so a one-RE stream carries none. */
 static const VMStateDescription vmstate_sgi_mgras_slots = {
     .name = TYPE_SGI_MGRAS "/slots",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .needed = mgras_slots_needed,
     .fields = (const VMStateField[]) {
@@ -1882,6 +1912,24 @@ static const VMStateDescription vmstate_sgi_mgras_slots = {
                               vmstate_info_uint32, uint32_t),
         VMSTATE_VARRAY_UINT32(slot[1], SGIMgrasState, slot_count, 0,
                               vmstate_info_uint32, uint32_t),
+        VMSTATE_VARRAY_UINT32(slot_alpha[0], SGIMgrasState, slot_count, 2,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_VARRAY_UINT32(slot_alpha[1], SGIMgrasState, slot_count, 2,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_alpha = {
+    .name = TYPE_SGI_MGRAS "/alpha",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_alpha_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VARRAY_UINT32(front_alpha, SGIMgrasState, front_count, 0,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_VARRAY_UINT32(back_alpha, SGIMgrasState, back_count, 0,
+                              vmstate_info_uint8, uint8_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2078,7 +2126,7 @@ static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
 };
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 32, .minimum_version_id = 32,
+    .name = TYPE_SGI_MGRAS, .version_id = 33, .minimum_version_id = 32,
     .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
@@ -2275,6 +2323,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_mgras_timing,
         &vmstate_sgi_mgras_slots,
+        &vmstate_sgi_mgras_alpha,
         &vmstate_sgi_mgras_nic,
         &vmstate_sgi_mgras_dma_map_forward,
         &vmstate_sgi_mgras_gl_contexts,

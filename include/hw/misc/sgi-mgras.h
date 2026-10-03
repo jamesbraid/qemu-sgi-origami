@@ -439,6 +439,7 @@ typedef struct SGIMgrasGLContext {
     SGIGLContext *gl;
     uint32_t client_read_bracket;
     uint32_t client_read_kicked;
+    uint32_t client_read_bank;
     /*
      * The four words the last 0xef08 or 0xee08 put where the 0x3ba to
      * 0x3bd queries read them (hw/misc/sgi-mgras-gl.c).
@@ -627,6 +628,8 @@ struct SGIMgrasState {
      */
     uint32_t *front;
     uint32_t *back;
+    uint8_t *front_alpha;
+    uint8_t *back_alpha;
     uint32_t front_count;
     uint32_t back_count;
     /*
@@ -638,6 +641,7 @@ struct SGIMgrasState {
      * deep window's pixel from a shallow one; slot 3 is never scanned out.
      */
     uint32_t *slot[2];
+    uint8_t *slot_alpha[2];
     uint32_t slot_count;
     /*
      * The same two banks as board memory: front and back point into its

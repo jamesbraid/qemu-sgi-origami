@@ -615,6 +615,7 @@ enum {
 #define MGRAS_GL_RSS_PAIRS_OP    0x7f
 #define MGRAS_GL_READ_OPEN       0x00009600
 #define MGRAS_GL_READ_CLOSE      0x00009700
+#define MGRAS_GL_READ_BUFFER     0x0000440c
 #define MGRAS_GL_READ_SETUP      0x0000db04
 /*
  * The RE count shifted right once: a context setup sends it right after the
@@ -1033,6 +1034,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_READ_OPEN:
     case MGRAS_GL_READ_CLOSE:
     case MGRAS_GL_READ_SETUP:
+    case MGRAS_GL_READ_BUFFER:
     case MGRAS_GL_READ_PIO:
     case MGRAS_GL_READ_DMA_DONE:
         return true;
@@ -1233,6 +1235,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
         memset(&s->gl_context[i].parser, 0, sizeof(s->gl_context[i].parser));
         s->gl_context[i].client_read_bracket = 0;
         s->gl_context[i].client_read_kicked = 0;
+        s->gl_context[i].client_read_bank = 0;
         memset(s->gl_context[i].readback, 0,
                sizeof(s->gl_context[i].readback));
         memset(s->gl_context[i].clip_query, 0,
@@ -2402,11 +2405,12 @@ const VMStateDescription vmstate_sgi_mgras_gl_readback = {
 
 static const VMStateDescription vmstate_sgi_mgras_gl_context_client_read = {
     .name = TYPE_SGI_MGRAS "/gl-context-client-read",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(client_read_bracket, SGIMgrasGLContext),
         VMSTATE_UINT32(client_read_kicked, SGIMgrasGLContext),
+        VMSTATE_UINT32_V(client_read_bank, SGIMgrasGLContext, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2417,7 +2421,8 @@ static bool mgras_gl_client_read_needed(void *opaque)
 
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
         if (s->gl_context[i].client_read_bracket ||
-            s->gl_context[i].client_read_kicked) {
+            s->gl_context[i].client_read_kicked ||
+            s->gl_context[i].client_read_bank) {
             return true;
         }
     }
@@ -2736,6 +2741,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
                                         p->payload_count) ||
             s->gl_context[i].client_read_bracket > 1 ||
             s->gl_context[i].client_read_kicked > 1 ||
+            s->gl_context[i].client_read_bank > 2 ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
@@ -2800,6 +2806,29 @@ static void mgras_gl_store_colour(void *opaque, SGIColourTarget target,
     mgras_gl_put(opaque, target, x, y, colour);
 }
 
+static void mgras_gl_store_rgba(void *opaque, SGIColourTarget target,
+                                int x, int y,
+                                const SGIRasterColour *colour)
+{
+    SGIMgrasState *s = opaque;
+    unsigned int idx = (s->height - 1 - y) * s->width + x;
+    uint32_t rgb = colour->component[0] << 16 |
+                   colour->component[1] << 8 | colour->component[2];
+
+    mgras_gl_put(s, target, x, y, rgb);
+    if (target & 1) {
+        s->front_alpha[idx] = colour->component[3];
+    }
+    if (target & 2) {
+        s->back_alpha[idx] = colour->component[3];
+    }
+    for (int i = 0; i < 2; i++) {
+        if (target & (4u << i)) {
+            s->slot_alpha[i][idx] = colour->component[3];
+        }
+    }
+}
+
 /*
  * The stored pixel of the first bank in target: a direct colour's 24
  * bits, or a CI8 pixel's index.
@@ -2817,6 +2846,34 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
         return s->back[idx] & 0xffffff;
     }
     return s->slot[target & 4 ? 0 : 1][idx] & 0xffffff;
+}
+
+static bool mgras_gl_load_rgba(void *opaque, SGIColourTarget target,
+                               int x, int y, SGIRasterColour *colour)
+{
+    SGIMgrasState *s = opaque;
+    unsigned int idx = (s->height - 1 - y) * s->width + x;
+    uint32_t rgb;
+
+    if (target & 1) {
+        rgb = s->front[idx];
+        colour->component[3] = s->front_alpha[idx];
+    } else if (target & 2) {
+        rgb = s->back[idx];
+        colour->component[3] = s->back_alpha[idx];
+    } else if (target & 4) {
+        rgb = s->slot[0][idx];
+        colour->component[3] = s->slot_alpha[0][idx];
+    } else if (target & 8) {
+        rgb = s->slot[1][idx];
+        colour->component[3] = s->slot_alpha[1][idx];
+    } else {
+        return false;
+    }
+    colour->component[0] = (rgb >> 16) & 0xff;
+    colour->component[1] = (rgb >> 8) & 0xff;
+    colour->component[2] = rgb & 0xff;
+    return true;
 }
 
 /*
@@ -2930,6 +2987,7 @@ static void mgras_gl_store_stencil(void *opaque, int x, int y,
 static const SGIRasterRules mgras_gl_raster_rules = {
     .subpixel_bits = 8,
     .color_bits = 8,
+    .alpha_bits = 8,
     .depth_bits = 24,
     .stencil_bits = 8,
     .rounding = SGI_ROUND_HALF_AWAY,
@@ -2944,6 +3002,8 @@ static const SGIRasterRules mgras_gl_raster_rules = {
 static const SGIRasterTarget mgras_gl_target = {
     .store_colour = mgras_gl_store_colour,
     .load_colour = mgras_gl_load_colour,
+    .store_rgba = mgras_gl_store_rgba,
+    .load_rgba = mgras_gl_load_rgba,
     .store_index = mgras_gl_store_index,
     .load_depth = mgras_gl_load_depth,
     .store_depth = mgras_gl_store_depth,
@@ -4795,6 +4855,20 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     case MGRAS_GL_SAVE_TEXMODE:
     case MGRAS_GL_RESTORE_TEXMODE:
     case MGRAS_GL_READ_SETUP:
+        return;
+    case MGRAS_GL_READ_BUFFER:
+        if (payload[0] == 0 && payload[2] == 0x404 &&
+            payload[1] <= 1) {
+            s->gl_context[s->gl_current].client_read_bank = 0;
+        } else if (payload[0] == 1 && payload[1] == 0 &&
+                   payload[2] == 0x405) {
+            s->gl_context[s->gl_current].client_read_bank = 1;
+        } else {
+            s->gl_context[s->gl_current].client_read_bank = 2;
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported client read "
+                          "buffer tuple %u, %u, 0x%x\n", payload[0],
+                          payload[1], payload[2]);
+        }
         return;
     case MGRAS_GL_READ_OPEN:
         s->gl_context[s->gl_current].client_read_bracket = 1;

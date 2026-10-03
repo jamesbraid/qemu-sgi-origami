@@ -209,6 +209,15 @@ static void mgras_visual_clear_and_select_front(QTestState *qts)
     mgras_visual_read_map(qts);
 }
 
+static void mgras_visual_select_read_buffer(QTestState *qts, uint32_t first,
+                                            uint32_t second, uint32_t mode)
+{
+    gl_word(qts, 0x0000440c);
+    gl_word(qts, first);
+    gl_word(qts, second);
+    gl_word(qts, mode);
+}
+
 static void test_gl_clear_captured_readpixels_1x1(void)
 {
     static const uint8_t poison[12] = {
@@ -226,6 +235,177 @@ static void test_gl_clear_captured_readpixels_1x1(void)
     g_assert_cmpmem(got, 4, poison, 4);
     g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
     g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+static void test_gl_clear_captured_readpixels_alpha_zero(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t red[4] = { 0xff, 0x00, 0x00, 0x00 };
+    uint8_t got[12];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_clear_color(qts, 1, 0, 0, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+static void test_gl_clear_captured_readpixels_back_buffer(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t green[4] = { 0x00, 0xff, 0x00, 0xff };
+    uint8_t got[12];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 1, 0, 0, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_draw_buffer(qts, 2);
+    gl_clear_color(qts, 0, 1, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    mgras_visual_select_read_buffer(qts, 1, 0, 0x405);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(green), green, sizeof(green));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+static void test_gl_clear_captured_readpixels_alpha_masks(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t rgb_only[4] = { 0x00, 0xff, 0x00, 0xff };
+    static const uint8_t alpha_only[4] = { 0x00, 0xff, 0x00, 0x00 };
+    uint8_t got[12];
+
+    mgras_visual_clear_and_select_front(qts);
+    gl_one(qts, GL_COLOR_MASK_HDR, 0x7);
+    gl_clear_color(qts, 0, 1, 0, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got + 4, sizeof(rgb_only), rgb_only, sizeof(rgb_only));
+
+    gl_one(qts, GL_COLOR_MASK_HDR, 0x8);
+    gl_clear_color(qts, 1, 0, 0, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got + 4, sizeof(alpha_only), alpha_only,
+                    sizeof(alpha_only));
+}
+
+static void test_gl_clear_captured_readpixels_reset_alpha(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t black[4] = { 0, 0, 0, 0 };
+    uint8_t got[12];
+
+    mgras_visual_clear_and_select_front(qts);
+    mgras_reset();
+    mgras_enter_visual_context(qts);
+    gl_viewport(qts, 0, 0, 8, 8);
+    gl_draw_buffer(qts, 1);
+    mgras_visual_select_read_buffer(qts, 0, 0, 0x404);
+    mgras_visual_read_map(qts);
+    qtest_memwrite(qts, 0x30d4c, poison, sizeof(poison));
+    mgras_visual_read_pixels(qts, 1, false, true);
+    qtest_memread(qts, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(black), black, sizeof(black));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+}
+
+static void test_gl_clear_captured_readpixels_alpha_migration(void)
+{
+    static const uint8_t poison[12] = {
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+        0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
+    };
+    static const uint8_t red[4] = { 0xff, 0, 0, 0 };
+    static const uint8_t green[4] = { 0, 0xff, 0, 0xff };
+    g_autofree char *dir = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *cmdline = NULL;
+    g_autofree char *ret = NULL;
+    GError *err = NULL;
+    QTestState *s;
+    uint8_t got[12];
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+    dir = g_dir_make_tmp("sn0-mgras-alpha-snapshot-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_strdup_printf("%s/state.qcow2", dir);
+    g_assert_true(mkimg(path, "qcow2", 128));
+    cmdline = g_strdup_printf(MACHINE_ARGS
+                              " -drive file=%s,format=qcow2,if=none", path);
+    s = qtest_init(cmdline);
+    mgras_enter_visual_context(s);
+    gl_viewport(s, 0, 0, 8, 8);
+    gl_scissor(s, 0, 0, 8, 8);
+    gl_one(s, GL_SCISSOR_TEST_HDR, 0);
+    gl_draw_buffer(s, 1);
+    gl_clear_color(s, 1, 0, 0, 0);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    gl_draw_buffer(s, 2);
+    gl_clear_color(s, 0, 1, 0, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    mgras_visual_read_map(s);
+    mgras_visual_select_read_buffer(s, 1, 0, 0x405);
+    ret = qtest_hmp(s, "savevm alpha");
+    g_assert_cmpstr(ret, ==, "");
+    g_clear_pointer(&ret, g_free);
+
+    gl_draw_buffer(s, 1);
+    gl_clear_color(s, 0, 0, 1, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    gl_draw_buffer(s, 2);
+    gl_clear_color(s, 1, 1, 1, 0);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    ret = qtest_hmp(s, "loadvm alpha");
+    g_assert_cmpstr(ret, ==, "");
+    g_clear_pointer(&ret, g_free);
+    mgras_visual_read_map(s);
+
+    qtest_memwrite(s, 0x30d4c, poison, sizeof(got));
+    mgras_visual_read_pixels(s, 1, false, true);
+    qtest_memread(s, 0x30d4c, got, sizeof(got));
+    /* The DMA descriptor writes RGBA at 0x30d50; 0x30d4c is the guard. */
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(green), green, sizeof(green));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+    mgras_visual_select_read_buffer(s, 0, 1, 0x404);
+    qtest_memwrite(s, 0x30d4c, poison, sizeof(got));
+    mgras_visual_read_pixels(s, 1, false, true);
+    qtest_memread(s, 0x30d4c, got, sizeof(got));
+    g_assert_cmpmem(got, 4, poison, 4);
+    g_assert_cmpmem(got + 4, sizeof(red), red, sizeof(red));
+    g_assert_cmpmem(got + 8, 4, poison + 8, 4);
+    qtest_quit(s);
+    g_assert_cmpint(unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 static void test_gl_clear_captured_readpixels_2x2(void)
@@ -2207,6 +2387,7 @@ static void test_gl_stencil_clear_keeps_depth(void)
     g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
 }
 #define GL_Q_BLEND            0xc4a
+#define GL_DST_ALPHA          0x304
 #define GL_ONE_MINUS_SRC_ALPHA 0x303
 #define GL_CONSTANT_COLOR     0x8001
 #define GL_FUNC_REVERSE_SUBTRACT 0x800b
@@ -2250,6 +2431,23 @@ static void test_gl_blend_mixes_with_the_window(void)
     g_assert_cmphex(gl_query(qts, GL_Q_BLEND, 1), ==, 0);
     gl_fill_window(qts, 0, 0, 1);
     g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x0000ff);
+}
+
+static void test_gl_blend_uses_destination_alpha(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_one(qts, GL_BLEND_HDR, 1);
+    gl_blend(qts, GL_DST_ALPHA, 0, GL_FUNC_ADD);
+
+    gl_clear_color(qts, 1, 0, 0, 0);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_fill_window(qts, 0, 1, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0x00ff00);
 }
 
 /*
@@ -3290,6 +3488,21 @@ int main(int argc, char **argv)
                    test_gl_clear_captured_wid15_mode404);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-1x1",
                    test_gl_clear_captured_readpixels_1x1);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "alpha-zero",
+                   test_gl_clear_captured_readpixels_alpha_zero);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "back-buffer",
+                   test_gl_clear_captured_readpixels_back_buffer);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "alpha-masks",
+                   test_gl_clear_captured_readpixels_alpha_masks);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "reset-alpha",
+                   test_gl_clear_captured_readpixels_reset_alpha);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
+                   "alpha-migration",
+                   test_gl_clear_captured_readpixels_alpha_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-2x2",
                    test_gl_clear_captured_readpixels_2x2);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
@@ -3416,6 +3629,8 @@ int main(int argc, char **argv)
                    test_gl_stencil_clear_keeps_depth);
     qtest_add_func("sn0/origin2000/mgras/gl-blend-mixes-with-the-window",
                    test_gl_blend_mixes_with_the_window);
+    qtest_add_func("sn0/origin2000/mgras/gl-blend-uses-destination-alpha",
+                   test_gl_blend_uses_destination_alpha);
     qtest_add_func("sn0/origin2000/mgras/gl-logic-op-combines-with-the-window",
                    test_gl_logic_op_combines_with_the_window);
     qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-keeps-channels",
