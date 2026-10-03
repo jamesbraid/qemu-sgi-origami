@@ -1661,8 +1661,8 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
  * (mgras_raster_dma_run_read()). Approximated: whether reading 0x02d1c0
  * advances the transfer and 0x02c1c4 only returns the latched half, as
  * the model has it, or the reverse, is unknown; software always reads the
- * pair in that order. Unknown: the one-byte form and any XFRMODE but
- * 0x8000, which the model logs and reads as zero. The discriminating tests
+ * pair in that order. Unknown: the one-byte form and other server XFRMODE
+ * values, which the model logs and reads as zero. The discriminating tests
  * are pio-read-returns-the-box, pio-read-rows-start-a-unit and the replay
  * fixture pio-read-oglsnoop.
  */
@@ -1691,6 +1691,8 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 #define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
 #define MGRAS_XFRMODE_CAPTURED_XIMAGE_READ 0x4008a
 #define MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW 0x10080
+/* Captured on a 2x1 XImage read with matching size and counters. */
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_MODE_80 0x80
 
 static void mgras_pio_read_start(SGIMgrasState *s, bool client)
 {
@@ -1722,6 +1724,7 @@ static void mgras_pio_read_start(SGIMgrasState *s, bool client)
         y1 = low;
     } else if (mode != MGRAS_XFRMODE_PIO_READ &&
                !((mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_READ ||
+                  mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_MODE_80 ||
                   mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW) &&
                  size == 0x00010002 &&
                  s->rss[MGRAS_RSS_XFRCOUNTERS] == size)) {
