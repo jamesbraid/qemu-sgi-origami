@@ -396,7 +396,9 @@ performance setup and suite explicitly:
 
 The inputs are the checksum-pinned IP27 PROM and ``irix/6.5.30/root.qcow2``
 listed above. Guest writes use snapshot mode. The quick, slow and thorough
-setups exclude the performance suite. An unset asset root skips the test.
+setups exclude the performance suite. The performance setup fixes
+``MALLOC_PERTURB_`` at zero instead of Meson's random allocator perturbation.
+An unset asset root skips the test.
 Require its named JUnit case with ``scripts/check-sgi-test-results.py`` when
 a skip would invalidate the experiment.
 

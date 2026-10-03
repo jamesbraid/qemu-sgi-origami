@@ -19,7 +19,8 @@ add_test_setup('thorough', exclude_suites: ['performance'],
 
 add_test_setup('performance', exclude_suites: ['slow', 'thorough'],
                env: ['QEMU_TEST_ALLOW_SLOW=1',
-                     'QEMU_TEST_ALLOW_LARGE_STORAGE=1'])
+                     'QEMU_TEST_ALLOW_LARGE_STORAGE=1',
+                     'MALLOC_PERTURB_=0'])
 
 meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
 
