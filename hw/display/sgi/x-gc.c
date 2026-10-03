@@ -83,8 +83,8 @@ static SGIXGCStatus decode_did(const uint32_t *w, SGIXGC *gc)
     return SGI_X_GC_OK;
 }
 
-SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
-                            SGIXGC *gc)
+static SGIXGCStatus decode(const uint32_t words[SGI_X_GC_WORDS],
+                           SGIXGC *gc, bool native_index)
 {
     const uint32_t *w = words;
     uint32_t plane = w[6] & 0x3c;
@@ -115,8 +115,8 @@ SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
     switch (w[6]) {
     case 0xc:
     case 0x180c:
-        gc->target = SGI_X_GC_MAIN_CI8;
-        gc->width_mask = 0xff;
+        gc->target = native_index ? SGI_X_GC_MAIN_INDEX16 : SGI_X_GC_MAIN_CI8;
+        gc->width_mask = native_index ? 0xffff : 0xff;
         break;
     case 4:
     case 0x2804:
@@ -153,6 +153,7 @@ SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
         return SGI_X_GC_BAD_FIELDS;
     }
     if (gc->target == SGI_X_GC_MAIN_CI8 ||
+        gc->target == SGI_X_GC_MAIN_INDEX16 ||
         gc->target == SGI_X_GC_MAIN_RGB8) {
         bool rgb = gc->target == SGI_X_GC_MAIN_RGB8;
 
@@ -230,6 +231,21 @@ SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
         }
     }
     return SGI_X_GC_OK;
+}
+
+SGIXGCStatus sgi_x_gc_decode(const uint32_t words[SGI_X_GC_WORDS],
+                            SGIXGC *gc)
+{
+    return decode(words, gc, false);
+}
+
+SGIXGCStatus sgi_x_gc_decode_main_index(const uint32_t words[SGI_X_GC_WORDS],
+                                       SGIXGC *gc)
+{
+    SGIXGCStatus status = decode(words, gc, true);
+
+    return status == SGI_X_GC_OK && gc->target != SGI_X_GC_MAIN_INDEX16 ?
+           SGI_X_GC_BAD_FIELDS : status;
 }
 
 bool sgi_x_gc_noop(const SGIXGC *gc)
