@@ -309,6 +309,38 @@ static void test_gl_clear_captured_front_buffer_pixel(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 260, 260), ==, 0xff0000);
 }
 
+/*
+ * The RGB8/alpha8 capture clears this small window with draw-buffer triple
+ * 1,1,0, then tags screen rows 256-263, columns 256-263 as WID 15. It selects
+ * XMAP entry 15 (index byte 0x3c) and writes main mode 0x404. The qtest helper
+ * supplies register 4's frame-table base synthetically: the capture writes
+ * the table contents but does not show that register selection.
+ */
+static void test_gl_clear_captured_wid15_mode404(void)
+{
+    mgras_reset();
+    mgras_enter_visual_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeb(qts, REG_XMAP_INDEX, 15 << 2);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x404);
+    mgras_tag_wid(qts, 256, 256, 263, 263, 15);
+
+    gl_viewport(qts, 0, 0, 8, 8);
+    gl_scissor(qts, 0, 0, 8, 8);
+    gl_one(qts, GL_SCISSOR_TEST_HDR, 0);
+    gl_draw_buffer(qts, 1);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 260, 259), ==, 0xff0000);
+    g_assert_cmphex(mgras_test_format(qts, 260, 259), ==,
+                    MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 264, 259), ==, 0);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 260, 260), ==, 0xff0000);
+}
+
 
 /*
  * An inline data block's header has bit 31 set and a 20-bit byte length.
@@ -3254,6 +3286,8 @@ int main(int argc, char **argv)
                    test_gl_clear_fills_the_window);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-small-window",
                    test_gl_clear_captured_front_buffer_pixel);
+    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-wid15-mode404",
+                   test_gl_clear_captured_wid15_mode404);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-1x1",
                    test_gl_clear_captured_readpixels_1x1);
     qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-2x2",
