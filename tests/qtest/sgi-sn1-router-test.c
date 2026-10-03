@@ -71,6 +71,124 @@ static void test_registers(void)
     qtest_quit(s);
 }
 
+static void test_inactive_barrier_storage(void)
+{
+    QTestState *s = qtest_init(ARGS);
+    const uint64_t parameter_mask = (UINT64_C(1) << 30) - 1;
+
+    for (unsigned p = 0; p < 8; p++) {
+        uint64_t count = BASE + 0x8000 + 8 * (p + 1);
+
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0);
+        g_assert_cmpuint(get(s, "result"), ==, 2);
+        g_assert_cmphex(qtest_readq(s, count), ==, 0);
+        g_assert_cmpuint(get(s, "result"), ==, 2);
+        qtest_writeq(s, BASE + bank[p], UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, parameter_mask);
+        qtest_writeq(s, BASE + bank[p], 0x1234000 + p);
+        qtest_writeq(s, count, p + 1);
+    }
+    for (unsigned p = 0; p < 8; p++) {
+        uint64_t count = BASE + 0x8000 + 8 * (p + 1);
+
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0x1234000 + p);
+        g_assert_cmphex(qtest_readq(s, count), ==, p + 1);
+        qtest_writeq(s, count, 0);
+        g_assert_cmphex(qtest_readq(s, count), ==, 0);
+        qtest_writeq(s, count, 63);
+        g_assert_cmphex(qtest_readq(s, count), ==, 63);
+        for (unsigned bit = 6; bit < 64; bit++) {
+            qtest_writeq(s, count, (UINT64_C(1) << bit) | 7);
+            g_assert_cmpuint(get(s, "failure"), ==, 5);
+            g_assert_cmphex(qtest_readq(s, count), ==, 63);
+        }
+        qtest_writeq(s, count, (UINT64_MAX & ~UINT64_C(63)) | 9);
+        g_assert_cmpuint(get(s, "failure"), ==, 5);
+        g_assert_cmphex(qtest_readq(s, count), ==, 63);
+        qtest_readq(s, count + 1);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readl(s, count);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeq(s, count + 1, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writel(s, count, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        g_assert_cmphex(qtest_readq(s, count), ==, 63);
+        qtest_readq(s, BASE + bank[p] + 1);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readl(s, BASE + bank[p]);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeq(s, BASE + bank[p] + 1, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writel(s, BASE + bank[p], 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0x1234000 + p);
+    }
+    for (unsigned context = 0; context <= 10; context++) {
+        if (context >= 1 && context <= 8) {
+            continue;
+        }
+        qtest_readq(s, BASE + 0x8000 + 8 * context);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeq(s, BASE + 0x8000 + 8 * context, 1);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+    }
+    qtest_quit(s);
+}
+
+static void test_inactive_barrier_no_effects(void)
+{
+    QTestState *s = qtest_init(ARGS " -device sgi-sn1-router,id=peer "
+        "-device sgi-net-cable,id=c,end0=r,end0-index=8,"
+        "end1=peer,end1-index=7");
+    uint64_t status;
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/r','property':'port8-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/peer','property':'port7-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    status = qtest_readq(s, BASE);
+    g_assert_true(status & (UINT64_C(1) << 51));
+    for (unsigned i = 0; i < 5; i++) {
+        qtest_writeq(s, BASE + 0x100 + 8 * i, i < 3 ? 0x1200 + i : 1);
+    }
+    set(s, "vector", 8);
+    qtest_writeq(s, BASE + 0x100, 0x5678);
+    set(s, "vector", 0);
+    qtest_writeq(s, BASE + bank[3] + 0x200 + 5 * 8, 2);
+    set(s, "destination", 5);
+    set(s, "turn", 3);
+    for (unsigned bit = 28; bit <= 29; bit++) {
+        for (unsigned p = 0; p < 8; p++) {
+            uint64_t count = BASE + 0x8000 + 8 * (p + 1);
+
+            qtest_writeq(s, count, p + 1);
+            qtest_writeq(s, BASE + bank[p], UINT64_C(1) << bit);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==,
+                            UINT64_C(1) << bit);
+            g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 8), ==, 0);
+            g_assert_cmphex(qtest_readq(s, count), ==, p + 1);
+            g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+            for (unsigned i = 0; i < 5; i++) {
+                g_assert_cmphex(qtest_readq(s, BASE + 0x100 + 8 * i), ==,
+                                i < 3 ? 0x1200 + i : 1);
+            }
+            qtest_writeq(s, count, (UINT64_C(1) << 26) | 17);
+            g_assert_cmpuint(get(s, "failure"), ==, 5);
+            g_assert_cmphex(qtest_readq(s, count), ==, p + 1);
+            set(s, "vector", 8);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0x5678);
+            g_assert_cmpuint(get(s, "result"), ==, 2);
+            g_assert_cmphex(get(s, "reply"), ==, 1);
+            set(s, "vector", 0);
+        }
+    }
+    qtest_quit(s);
+}
+
 static void test_position(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -208,11 +326,19 @@ static void test_reset(void)
     qtest_writeq(s, BASE + 0x100, UINT64_MAX);
     qtest_writeq(s, BASE + bank[7] + 0x200, 7);
     qtest_readq(s, BASE + 0x518);
+    for (unsigned p = 0; p < 8; p++) {
+        qtest_writeq(s, BASE + bank[p], UINT64_MAX);
+        qtest_writeq(s, BASE + 0x8000 + 8 * (p + 1), 63 - p);
+    }
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
     g_assert_cmphex(qtest_readq(s, BASE + bank[7] + 0x200), ==, 0);
     g_assert_cmphex(qtest_readq(s, BASE + 0x518), ==, 0);
     g_assert_cmphex((qtest_readq(s, BASE) >> 28) & 15, ==, 1);
+    for (unsigned p = 0; p < 8; p++) {
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x8000 + 8 * (p + 1)), ==, 0);
+    }
     qtest_quit(s);
 }
 
@@ -230,6 +356,8 @@ static void test_migration(void)
     for (unsigned p = 0; p < 8; p++) {
         qtest_writeq(from, BASE + bank[p] + 0x200, p);
         qtest_writeq(from, BASE + bank[p] + 0x100, 7 - p);
+        qtest_writeq(from, BASE + bank[p], 0x31234000 + p);
+        qtest_writeq(from, BASE + 0x8000 + 8 * (p + 1), 63 - p);
     }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -243,6 +371,9 @@ static void test_migration(void)
     for (unsigned p = 0; p < 8; p++) {
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x200), ==, p);
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x100), ==, 7 - p);
+        g_assert_cmphex(qtest_readq(to, BASE + bank[p]), ==, 0x31234000 + p);
+        g_assert_cmphex(qtest_readq(to, BASE + 0x8000 + 8 * (p + 1)), ==,
+                        63 - p);
     }
     qtest_quit(from);
     qtest_quit(to);
@@ -311,6 +442,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
+    qtest_add_func("/sgi/sn1-router/inactive-barrier-storage",
+                   test_inactive_barrier_storage);
+    qtest_add_func("/sgi/sn1-router/inactive-barrier-no-effects",
+                   test_inactive_barrier_no_effects);
     qtest_add_func("/sgi/sn1-router/position", test_position);
     qtest_add_func("/sgi/sn1-router/routing", test_routing);
     qtest_add_func("/sgi/sn1-router/vector-links", test_vector_links);
