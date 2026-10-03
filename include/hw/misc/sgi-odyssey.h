@@ -287,6 +287,9 @@ struct SGIOdysseyState {
     uint32_t tex_lod[4];
     uint32_t tex_coord[2];
     uint32_t tex_coord_r;
+    /* Effective object-space linear planes from public API controls. */
+    uint32_t tex_linear_plane[2][4];
+    uint32_t tex_linear_valid;
     bool tex_rect_reported;
     uint64_t dma_seq;
 
@@ -548,6 +551,7 @@ struct SGIOdysseyState {
     bool gl_program_mem_reported;
     bool gl_two_sided_logged;
     bool gl_texgen_logged;
+    uint32_t gl_linear_texgen; /* Derived from the retained program list. */
     bool gl_clip_logged;
     bool gl_texture_stage_logged;
     bool gl_block_logged;

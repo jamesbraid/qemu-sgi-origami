@@ -10191,6 +10191,114 @@ static void test_texture_adapter_binding_filters_matrix(void)
     qtest_quit(qts);
 }
 
+/* Change only the discriminated generation fragment, not a whole program. */
+static void texture_linear_program(QTestState *qts, unsigned axes)
+{
+    const uint32_t words[] = {
+        0x28008000, 0x60008033,
+        0x28008001, 0x60008000 | (axes == 1 ? 0x4d :
+                                  axes == 2 ? 0x57 : 0x6b),
+        0x28008002, axes == 3 ? 0x60008077 : 0x6000806c,
+        0x28008003, axes == 3 ? 0x608080c5 : 0x60008077,
+        0x28008004, 0x608080c5,
+        0x33008000, 0x290080f3, 0x2a008100, 0x2c00810c,
+    };
+    const uint32_t disabled[] = {
+        0x28008000, 0x6080809a, 0x28008001, 0x60008203,
+        0x28008002, 0x608080c5,
+        0x33008000, 0x290080f3, 0x2a008100, 0x2c00810c,
+    };
+
+    push_user_words(qts, axes ? words : disabled,
+                     axes ? ARRAY_SIZE(words) : ARRAY_SIZE(disabled));
+}
+
+static void test_texture_adapter_linear_st(void)
+{
+    const uint32_t pixels[4] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    const uint32_t planes[] = {
+        0x31008100, 0x908091bb, 0x3c800000, 0, 0, 0xbf000000,
+        0x31008104, 0x908091bb, 0, 0x3c800000, 0, 0xbf000000,
+    };
+    const uint32_t translated[16] = {
+        ODSY_F_ONE, 0, 0, 0x3f000000,
+        0, ODSY_F_ONE, 0, 0,
+        0, 0, ODSY_F_ONE, 0,
+        0, 0, 0, ODSY_F_ONE,
+    };
+    const uint32_t eye_s[] = {
+        0x31008100, 0x908091bb, 0x3c800000, 0, 0, 0xbe800000,
+    };
+    const uint32_t changed[] = {
+        0x31008100, 0x908091bb, 0x3c000000, 0, 0, 0,
+        0x31008104, 0x908091bb, 0, 0x3c000000, 0, 0,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-linear-st-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_adapter_upload(from, 0x180000, pixels);
+    texture_adapter_window(from);
+    texture_adapter_bind(from, 0x180000, 0x13000000, 1);
+    push_user_words(from, planes, ARRAY_SIZE(planes));
+    texture_linear_program(from, 3);
+    for (unsigned i = 0; i < 4; i++) {
+        texture_adapter_point(from, 48 + 32 * (i & 1),
+                               48 + 32 * (i >> 1), 0, 0);
+        g_assert_cmphex(odsy_test_pixel(from, 48 + 32 * (i & 1),
+                                        48 + 32 * (i >> 1)), ==, pixels[i]);
+    }
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    texture_adapter_point(to, 81, 80, 0, 0);
+    g_assert_cmphex(odsy_test_pixel(to, 81, 80), ==, pixels[3]);
+    texture_linear_program(to, 1);
+    texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[1]);
+    texture_linear_program(to, 2);
+    texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[2]);
+    texture_linear_program(to, 0);
+    texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[0]);
+    texture_linear_program(to, 3);
+    user_cmd_push(to, ODSY_GL_MATRIX_SELECT_TEXTURE);
+    user_cmd_push(to, ODSY_GL_MATRIX_LOAD);
+    push_user_words(to, translated, ARRAY_SIZE(translated));
+    texture_adapter_point(to, 49, 48, 0, 0);
+    g_assert_cmphex(odsy_test_pixel(to, 49, 48), ==, pixels[1]);
+    texture_adapter_window(to);
+    push_user_words(to, eye_s, ARRAY_SIZE(eye_s));
+    texture_adapter_point(to, 48, 48, 0, 0);
+    g_assert_cmphex(odsy_test_pixel(to, 48, 48), ==, pixels[1]);
+    push_user_words(to, changed, ARRAY_SIZE(changed));
+    texture_adapter_point(to, 80, 80, 0, 0);
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[3]);
+    qtest_system_reset(to);
+    texture_adapter_upload(to, 0x180000, pixels);
+    texture_adapter_window(to);
+    texture_adapter_bind(to, 0x180000, 0x13000000, 1);
+    /* Reloading a program cannot reuse planes from before reset. */
+    texture_linear_program(to, 3);
+    texture_adapter_point(to, 80, 80, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(to, 80, 80), ==, pixels[0]);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_texture_adapter_components_environment(void)
 {
     const uint32_t pixels[4] = {
@@ -13499,6 +13607,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_binding_filters_matrix);
     qtest_add_func("sn1/odyssey/texture-adapter/components-environment",
                    test_texture_adapter_components_environment);
+    qtest_add_func("sn1/odyssey/texture-adapter/linear-st",
+                   test_texture_adapter_linear_st);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table",
                    test_texture_adapter_colour_table);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table-rgb-basis",
