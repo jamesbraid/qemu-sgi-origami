@@ -190,6 +190,7 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 extern const VMStateDescription vmstate_mips_cpu;
 
 /* r10k_cpu.c: family properties and lifecycle, also used in linux-user. */
+void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data);
 void mips_r10k_cpu_init(MIPSCPU *cpu);
 bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp);
 void mips_r10k_cpu_realize(MIPSCPU *cpu);

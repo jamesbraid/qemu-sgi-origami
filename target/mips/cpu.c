@@ -869,6 +869,7 @@ static void mips_cpu_cpudef_class_init(ObjectClass *oc, const void *data)
 {
     MIPSCPUClass *mcc = MIPS_CPU_CLASS(oc);
     mcc->cpu_def = data;
+    mips_r10k_cpu_class_init(oc, data);
 }
 
 static void mips_register_cpudef_type(const struct mips_def_t *def)
