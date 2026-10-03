@@ -4067,12 +4067,14 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                    OdysseyTextureChain *chain,
                                    const SGIGLTexImage **resolved)
 {
-    uint32_t width = s->tex_sampler[1], height = s->tex_sampler[2];
+    uint32_t width_word = s->tex_sampler[1], height_word = s->tex_sampler[2];
+    uint32_t width = width_word, height = height_word;
     uint32_t depth = s->tex_sampler[3];
     uint32_t word = s->tex_sampler[4], components = word & 0x0f800000;
     bool three_d = s->tex_mode & ODSY_TEX_MODE_3D;
     uint32_t ws = (word >> 12) & 3, wt = (word >> 10) & 3;
     bool clamp = ws == 2 || wt == 2;
+    bool border = ws == 3 || wt == 3;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
     uint32_t first = s->tex_level0 & 0x3f, count, terminal;
     int32_t lo = sextract32(s->tex_lod[2], 0, 14);
@@ -4085,6 +4087,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     uint64_t end;
 
     *resolved = NULL;
+    if (border) {
+        width &= 0xffff;
+        height &= 0xffff;
+    }
     if (odyssey_gl_index_mode(s)) {
         goto unsupported;
     }
@@ -4119,11 +4125,18 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         s->tex_sampler[0] != (0x08000000 | (ctz32(width) << 10) |
                               (ctz32(height) << 5) |
                               (three_d ? ctz32(depth) : 0)) ||
-        s->tex_sampler[5] || s->tex_sampler[6] || ws > 2 || wt > 2 ||
-        (clamp && (ws != 2 || wt != 2 ||
-                   (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
-                                   ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
-                   image->base_format != SGI_GL_RGBA || filter)) ||
+        ws > 3 || wt > 3 ||
+        (!border && (s->tex_sampler[5] || s->tex_sampler[6])) ||
+        (border && (ws != 3 || wt != 3 ||
+                    width_word != (0x00fc0000 | width) ||
+                    height_word != (0x00fc0000 | height) ||
+                    ((s->tex_sampler[5] | s->tex_sampler[6]) &
+                     0xff000000))) ||
+        ((clamp || border) &&
+         ((clamp && (ws != 2 || wt != 2)) ||
+          (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                          ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
+          image->base_format != SGI_GL_RGBA || filter)) ||
         (min != 0 && min != 0x20 && min != 0x40 && min != 0x60 &&
          min != 0x80 && min != 0xa0) ||
         word != (0x10000000 | components | (ws << 12) | (wt << 10) | filter) ||
@@ -4145,10 +4158,20 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     }
     image->width = width;
     image->height = height;
-    image->wrap_s = ws == 2 ? SGI_GL_CLAMP :
+    image->wrap_s = border ? SGI_GL_CLAMP_TO_BORDER :
+                    ws == 2 ? SGI_GL_CLAMP :
                     ws ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
-    image->wrap_t = wt == 2 ? SGI_GL_CLAMP :
+    image->wrap_t = border ? SGI_GL_CLAMP_TO_BORDER :
+                    wt == 2 ? SGI_GL_CLAMP :
                     wt ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
+    if (border) {
+        image->border_color[0] = ((s->tex_sampler[5] >> 12) & 0xfff) /
+                                 4095.0f;
+        image->border_color[1] = (s->tex_sampler[5] & 0xfff) / 4095.0f;
+        image->border_color[2] = ((s->tex_sampler[6] >> 12) & 0xfff) /
+                                 4095.0f;
+        image->border_color[3] = (s->tex_sampler[6] & 0xfff) / 4095.0f;
+    }
     image->mag_filter = filter & 2 ? SGI_GL_LINEAR : SGI_GL_NEAREST;
     image->min_filter = min_filters[min >> 5];
 
