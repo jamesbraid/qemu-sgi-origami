@@ -5576,6 +5576,46 @@ static uint32_t texture_rgb(double r, double g, double b)
            (uint32_t)floor(b * 255 + 0.5);
 }
 
+/* Direct draw producers have the same environment clamp as context commands. */
+static void test_texture_environment_clamp(void)
+{
+    const double l = 128.0 / 255;
+    TexturePixels pixels = { .pixel = {
+        0x80808080, 0x80808080, 0x80808080, 0x80808080 } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+
+    for (unsigned format = 0; format < 2; format++) {
+        image.base_format = format ? SGI_GL_INTENSITY : SGI_GL_RGBA;
+        for (unsigned alpha_check = 0; alpha_check < 3; alpha_check++) {
+            double alpha = format ? 0.8 * (1 - l) + l : 0.8 * l;
+
+            frag_init(&f);
+            f.rec.target.texture = &image;
+            enable(&f.c, SGI_GL_TEXTURE_2D, true);
+            texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_BLEND, 0, 0, 0);
+            f.c.cur.texture_env_color[0] = -1;
+            f.c.cur.texture_env_color[1] = 2;
+            f.c.cur.texture_env_color[2] = 0.5;
+            f.c.cur.texture_env_color[3] = 2;
+            texture_coord(&f, 0.25f, 0.25f, 0, 1);
+            if (alpha_check) {
+                float ref = floor(alpha * 255 + 0.5) / 255;
+
+                ref += alpha_check == 1 ? -1.0 / 255 : 1.0 / 255;
+                enable(&f.c, SGI_GL_ALPHA_TEST, true);
+                frag_command(&f, SGI_GL_OP_ALPHA_FUNC,
+                             (uint32_t[]) { SGI_GL_NEVER_ENUM + SGI_GL_GREATER,
+                                            bits(ref) }, 2);
+            }
+            frag_quad(&f, 0.25f, 0.5f, 0.75f, 0.8f);
+            g_assert_cmphex(frag_pixel(&f, 16, 16), ==, alpha_check == 2 ? 0 :
+                           texture_rgb(0.25 * (1 - l), 0.5 * (1 - l) + l,
+                                       0.75 * (1 - l) + 0.5 * l));
+        }
+    }
+}
+
 /* Different unused channels expose accidental generic-RGBA environments. */
 static void test_texture_environment(void)
 {
@@ -8636,6 +8676,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
+    g_test_add_func("/sgi-gl/texture-environment-clamp",
+                    test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
     g_test_add_func("/sgi-gl/texture-errors", test_texture_errors);

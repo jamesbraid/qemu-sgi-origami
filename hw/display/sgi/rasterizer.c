@@ -1183,7 +1183,7 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
             frag->rgba[k] = alpha && format != SGI_GL_INTENSITY ?
                 frag->rgba[k] * texel[k] :
                 frag->rgba[k] * (1 - texel[k]) +
-                st->texture_env_color[k] * texel[k];
+                MIN(MAX(st->texture_env_color[k], 0), 1) * texel[k];
             break;
         }
     }
