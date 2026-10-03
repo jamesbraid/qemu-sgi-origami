@@ -3245,6 +3245,9 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
     } else if (name == 0xb73) {
         native[0] = s->gl_pipe[i].returns.clear_depth;
         n = 1;
+    } else if (name == 0xbb0) {
+        native[0] = s->gl_attrib_depth[i];
+        n = 1;
     } else if (name == 0xc02) {
         if (sgi_kona_gl_read_bank(s, i, &out[0]) < 0) {
             goto unsupported;
