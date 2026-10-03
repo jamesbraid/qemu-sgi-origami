@@ -40,6 +40,9 @@
  * x-test-wid and x-test-overlay values the pixel verbs read.  @width and
  * @height bound those verbs' coordinates.  @trace is the -trace arguments
  * that record the head's register accesses into SGI_REPLAY_TRACE.
+ * @console, when set, is the qdev id of the device whose console the
+ * screendump verb reads; NULL reads console 0, which is the head only
+ * when the machine builds no other display first.
  */
 typedef struct ReplayHead {
     const char *codename;
@@ -50,6 +53,7 @@ typedef struct ReplayHead {
     uint32_t width;
     uint32_t height;
     const char *trace;
+    const char *console;
 } ReplayHead;
 
 static const ReplayHead replay_heads[] = {
@@ -70,6 +74,28 @@ static const ReplayHead replay_heads[] = {
         .height = 1024,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
+    },
+    {
+        /*
+         * InfiniteReality as the KONA qtests build it: one pipe fitted at
+         * the empty slot IO4, crossbow0's widget 11, whose small window
+         * is 16 MiB.
+         */
+        .codename = "sgi-kona",
+        .machine = "-M origin2000 -smp 8 -m 256M "
+                   "-device sgi-kona,id=kona0,slot=io4",
+        .mmio_base = SPACE_IO + (11ULL << 24),
+        .mmio_size = 16 * MiB,
+        .qom_path = "/machine/module0/kona0",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_kona_pio_read "
+                 "-trace enable=sgi_kona_pio_write",
+        /*
+         * Named, so the screendump reads this head whatever display the
+         * machine builds first.
+         */
+        .console = "kona0",
     },
 };
 
@@ -107,11 +133,17 @@ static const ReplayHead *find_head(const char *codename)
 #define INVALID_DMA_EXTRA "invalid-dma-extra.replay"
 #define INVALID_DMA_HEX_MISMATCH \
     "invalid-dma-hex-mismatch.replay"
+#define KONA_MAINTENANCE_MENU "maintenance-menu.replay"
+
+static char *replay_family_fixture_path(const char *family, const char *name)
+{
+    return g_test_build_filename(G_TEST_DIST, "..", "data", family, name,
+                                 NULL);
+}
 
 static char *replay_fixture_path(const char *name)
 {
-    return g_test_build_filename(G_TEST_DIST, "..", "data", "mgras", name,
-                                 NULL);
+    return replay_family_fixture_path("mgras", name);
 }
 
 static uint64_t parse_number(const char *path, unsigned int line,
@@ -353,8 +385,9 @@ static void replay_pixels(QTestState *qts, const ReplayHead *head,
  * bytes depend on the zlib the build links, and a PPM's depend only on the
  * pixels.
  */
-static void replay_screendump(QTestState *qts, const char *path,
-                              unsigned int line, char **words)
+static void replay_screendump(QTestState *qts, const ReplayHead *head,
+                              const char *path, unsigned int line,
+                              char **words)
 {
     g_autofree char *dir = NULL;
     g_autofree char *reference = NULL;
@@ -384,9 +417,15 @@ static void replay_screendump(QTestState *qts, const char *path,
         g_error("cannot create screendump file: %s", error->message);
     }
     close(fd);
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'screendump', 'arguments': {'filename': %s, "
-        "'format': 'ppm'}}", dump);
+    if (head->console) {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s, "
+            "'format': 'ppm', 'device': %s}}", dump, head->console);
+    } else {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s, "
+            "'format': 'ppm'}}", dump);
+    }
     if (!g_file_get_contents(dump, &actual, &actual_len, &error)) {
         g_error("cannot read screendump %s: %s", dump, error->message);
     }
@@ -543,7 +582,7 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "overlay")) {
         replay_plane(qts, head, path, line, words, "x-test-overlay");
     } else if (!strcmp(words[0], "screendump")) {
-        replay_screendump(qts, path, line, words);
+        replay_screendump(qts, head, path, line, words);
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -633,7 +672,11 @@ static void run_replay(const char *path,
         save_uri = g_strdup_printf("file:%s", checkpoint_save);
         sgi_migrate_stopped(qts, save_uri);
     }
-    if (screendump && *screendump) {
+    if (screendump && *screendump && head->console) {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s, "
+            "'device': %s}}", screendump, head->console);
+    } else if (screendump && *screendump) {
         qtest_qmp_assert_success(qts,
             "{'execute': 'screendump', 'arguments': {'filename': %s}}",
             screendump);
@@ -1233,6 +1276,19 @@ static void test_invalid_no_head(void)
                         "'head CODENAME'*");
 }
 
+/*
+ * The IO6 PROM drawing its graphical System Maintenance Menu on
+ * InfiniteReality: a captured boot's register accesses, its screendump
+ * compared byte for byte at the end. See the fixture's own comments.
+ */
+static void test_kona_maintenance_menu(void)
+{
+    g_autofree char *path = replay_family_fixture_path(
+        "kona", KONA_MAINTENANCE_MENU);
+
+    run_replay(path, NULL);
+}
+
 static void test_invalid_unknown_head(void)
 {
     test_invalid_header("sgi-replay 2\nhead sgi-nonesuch\n",
@@ -1286,6 +1342,8 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
+    qtest_add_func("sgi-replay/kona/maintenance-menu",
+                   test_kona_maintenance_menu);
     qtest_add_func("sgi-replay/screendump-record", test_screendump_record);
     qtest_add_func("sgi-replay/screendump-record-mismatch",
                    test_screendump_record_mismatch);

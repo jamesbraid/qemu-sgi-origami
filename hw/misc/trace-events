@@ -15,6 +15,152 @@ sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsig
 # sgi-kona.c
 sgi_kona_pio_read(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
 sgi_kona_pio_write(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
+# A completed textport bitmap blit (command 0xa), traced separately because
+# its own header/payload words never reach trace_sgi_command_port_packet:
+# sgi_kona_textport_push() intercepts and consumes them itself, in front of
+# the generic command-port framer.
+sgi_kona_bitmap_blit(uint32_t width, uint32_t height, int32_t xorigin, int32_t yorigin, int32_t xadvance, int32_t yadvance) "width %u height %u xorigin %d yorigin %d xadvance %d yadvance %d"
+# The XG map RAM (widget +0x100000-+0x1fffff): one line for the first
+# access and each power-of-two access-count milestone after it, not one
+# per entry -- kona_mapram_init()'s own attach-time sweep alone touches
+# up to 262,144 entries twice.
+sgi_kona_mapram_access(int cpu, uint64_t offset, bool write, uint32_t accesses) "cpu %d offset 0x%" PRIx64 " write=%d accesses %u"
+# An access whose index falls inside the physical map RAM window but at
+# or beyond the +0x64 field's own selected entry count.
+sgi_kona_mapram_beyond_count(int cpu, uint64_t offset, uint32_t index, uint32_t count) "cpu %d offset 0x%" PRIx64 " index %u count %u"
+# The firmware load through the indirect port at +0x8003e8/+0x8003f0/+0x8003f8.
+# sgi_kona_load_section fires once per recorded section when internal address
+# 0x200050 goes from 1 to 0, with the SHA-256 of that section's stored words.
+sgi_kona_icu_control(uint32_t old, uint32_t value) "0x%x -> 0x%x"
+sgi_kona_internal_write_dropped(uint32_t addr, uint32_t value) "internal 0x%08x value 0x%08x outside the backed ranges"
+sgi_kona_load_record(uint32_t sections, uint32_t recorded) "sections %u recorded %u"
+sgi_kona_load_section(uint32_t index, uint32_t addr, uint32_t words, const char *sha256) "section %u addr 0x%08x words %u sha256 %s"
+sgi_kona_loader_register(uint64_t offset, uint32_t value) "offset 0x%" PRIx64 " value 0x%x"
+# Kernel commands framed on the +0xc10000 port, and the reason page 0x1f1
+# registers (mapped: translated through the XG map RAM).
+sgi_kona_kernel_command(uint32_t token, uint32_t a0, uint32_t a1, uint32_t a2, unsigned int argc) "token 0x%x args 0x%x 0x%x 0x%x argc %u"
+sgi_kona_reason_page(uint64_t addr, bool mapped) "addr 0x%" PRIx64 " mapped=%d"
+sgi_kona_reason_post(uint32_t token, uint32_t reason, uint64_t page) "token 0x%x reason 0x%x page 0x%" PRIx64
+sgi_kona_reason_no_page(uint32_t token, uint32_t reason) "token 0x%x reason 0x%x with no reason page registered; nothing posted"
+sgi_kona_ge_interrupt(uint64_t fabric_addr, uint8_t vector) "fabric 0x%" PRIx64 " vector 0x%x"
+# The general status vector, sent for the cause bits (the video bit so far).
+sgi_kona_general_interrupt(uint64_t fabric_addr, uint8_t vector) "fabric 0x%" PRIx64 " vector 0x%x"
+# A retrace request (0x1e7) queued as a swap record with the context current
+# when it arrived, and the tag a retrace honoured.
+sgi_kona_retrace_request(uint32_t tag, int slot) "tag 0x%x context %d"
+sgi_kona_retrace_done(uint32_t tag) "tag 0x%x"
+# Graphics credits returned to the board's node for counted processor stores.
+sgi_kona_pi_credits(uint32_t widget, uint32_t credits) "widget 0x%x credits %u"
+# A context deactivate (0x1fc) and the outgoing context index it names.
+sgi_kona_context_deactivate(uint32_t index) "outgoing context %u"
+# A context made current by 0x1fd or 0x1f9, keyed by its save area's device
+# address, with the return page it answers on; the page a first activation's
+# 0x1f2 gives it; and the save-area words the model leaves at a deactivate.
+sgi_kona_context_activate(uint32_t token, uint64_t save_area, int slot, bool page_valid, uint64_t page) "token 0x%x save area 0x%" PRIx64 " slot %d return page valid=%d 0x%" PRIx64
+sgi_kona_context_return_page(int slot, uint64_t page) "slot %d return page 0x%" PRIx64
+sgi_kona_context_save(int slot, uint64_t addr, uint32_t word0, uint32_t word2) "slot %d save area 0x%" PRIx64 " word 0 0x%x word 2 0x%x"
+# The return-data page 0x1f2 registers, each write the model makes to host
+# memory, in order, and each answer completed on the return page.
+sgi_kona_return_page(uint64_t addr, bool mapped) "addr 0x%" PRIx64 " mapped=%d"
+sgi_kona_host_write(uint64_t addr, uint32_t len) "addr 0x%" PRIx64 " len 0x%x"
+sgi_kona_return_post(uint32_t token, uint64_t page) "token 0x%x page 0x%" PRIx64
+# A command framed whole whose display state the model does not keep.
+sgi_kona_command_unmodelled(uint32_t token, unsigned int argc) "token 0x%x argc %u consumed, not modelled"
+# A pool region the kernel places (0x1e4), offset and size in granules;
+# size 0 frees it.
+sgi_kona_kernel_mem_region(uint32_t pool_class, uint32_t key, uint32_t offset, uint32_t size) "class %u key %u offset 0x%x size 0x%x"
+# The X server's graphics context (fg_h, its word 0, and the colour index
+# the model decodes from it), each X box as sent and each X rect with the
+# position added, both before clipping, and a run of data-token words:
+# taken, or dropped when a token other than an X box or rect ends it.
+sgi_kona_x_gc(uint32_t fg_h, uint32_t index) "fg_h 0x%x index 0x%x"
+sgi_kona_x_box(int x1, int y1, int x2, int y2, uint32_t index) "(%d, %d) to (%d, %d) index 0x%x"
+sgi_kona_x_rect(int64_t x, int64_t y, uint32_t width, uint32_t height, uint32_t index) "(%" PRId64 ", %" PRId64 ") width %u height %u index 0x%x"
+sgi_kona_x_box_data(uint32_t token, unsigned int words) "token 0x%x words %u"
+sgi_kona_x_box_data_dropped(uint32_t words, uint32_t next) "%u box words dropped before 0x%x"
+# The X load position, recorded only; an X load clip ending a clip list,
+# with the list's count and the last rectangle; and the words of a clip
+# list dropped when a token other than X load clip ends it.
+sgi_kona_x_position(int32_t x, int32_t y, uint32_t w, uint32_t h) "x %d y %d width %u height %u"
+sgi_kona_x_clip(uint32_t count, int32_t x1, int32_t y1, int32_t x2, int32_t y2) "rectangles %u last (%d, %d) to (%d, %d)"
+sgi_kona_x_clip_run_dropped(uint32_t words, uint32_t next) "%u clip list words dropped before 0x%x"
+# An X stipple store opened with its entry and size, and completed,
+# stored=0 when the entry keeps no pattern; a rotate; and a load.
+sgi_kona_x_stipple_store(uint32_t entry, uint32_t width, uint32_t height) "entry 0x%x width %u height %u"
+sgi_kona_x_stipple_stored(uint32_t entry, bool stored) "entry 0x%x stored=%d"
+sgi_kona_x_stipple_rotate(uint32_t entry, int32_t x, int32_t y) "entry 0x%x origin (%d, %d)"
+sgi_kona_x_stipple_load(uint32_t entry) "entry 0x%x"
+# One X span: its start and width.
+sgi_kona_x_span(int x, int y, uint32_t width, uint32_t index) "(%d, %d) width %u index 0x%x"
+# An X load scissor: its box as sent.
+sgi_kona_x_scissor(int32_t x, int32_t y, uint32_t w, uint32_t h) "x %d y %d width %u height %u"
+# The X pixel setup as sent, a pixel write opened (bits per pixel 0 when
+# its data cannot be framed; words on the command page), its data
+# complete, and its finish, open=0 when no write was open.
+sgi_kona_x_pixel_setup(uint32_t mode, uint32_t src, uint32_t dst, uint32_t shift, uint32_t width, uint32_t height, uint32_t pad) "mode 0x%x packing %u %u shift 0x%x width %u height %u pad %u"
+sgi_kona_x_pixel_write(int32_t x, int32_t y, uint32_t bpp, uint32_t words) "(%d, %d) bpp %u words %u"
+# A one-bit write's colours: the index a set bit paints, and whether a
+# clear bit paints and which index.
+sgi_kona_x_pixel_bitmap(uint32_t packing, uint32_t set, bool opaque, uint32_t clear) "packing %u set 0x%x opaque=%d clear 0x%x"
+sgi_kona_x_pixel_write_done(uint32_t words) "words %u"
+sgi_kona_x_pixel_finish(bool open) "open=%d"
+sgi_kona_x_image_dma(uint64_t io, uint32_t lines, uint32_t per_line, uint32_t words) "io 0x%" PRIx64 " lines %u of 0x%x bytes into a write awaiting %u words"
+# An X pixel copy: source, destination and the setup's size.
+sgi_kona_x_pixel_copy(int32_t sx, int32_t sy, int32_t dx, int32_t dy, uint32_t width, uint32_t height) "(%d, %d) to (%d, %d) width %u height %u"
+# An X cursor load opened, with its slot word.
+sgi_kona_x_cursor(uint32_t slot) "slot 0x%x"
+# A GL texture table opened, with its slot word.
+sgi_kona_gl_tex_table(uint32_t slot) "slot 0x%x"
+sgi_kona_gl_packed(uint32_t selector, uint32_t high) "selector 0x%x data 0x%x"
+sgi_kona_gl_data(uint32_t token, uint32_t words) "token 0x%x data words %u"
+sgi_kona_gl_reply(uint32_t token, uint32_t what, uint64_t bytes) "token 0x%x 0x%x reply bytes 0x%" PRIx64
+# The GL client's buffer or read-buffer configuration: its level, RGB
+# component size, index size and double-buffer words.
+sgi_kona_gl_buffer_config(uint32_t token, uint32_t level, uint32_t rgb, uint32_t index, uint32_t dbl) "token 0x%x level %u rgb %u index %u double %u"
+# A GL context's window from a 0x1f3 or 0x1ee: its lower-left pixel in
+# plane coordinates and its size.
+sgi_kona_gl_window(uint32_t token, int slot, int32_t x, int32_t y, uint32_t width, uint32_t height) "token 0x%x slot %d (%d, %d) width %u height %u"
+# A GL drawing or state command handed to the current context.
+sgi_kona_gl_command(uint32_t token, int slot) "token 0x%x slot %d"
+# A double-buffered GL context's buffer swap, and the bank its window now shows.
+sgi_kona_gl_swap(int slot, uint32_t bank) "slot %d displays bank %u"
+# An X colour-map load opened with its start address and entry count, and
+# completed, with the count of entries past the model's table.
+sgi_kona_color_map(uint32_t start, uint32_t count) "start %u count %u"
+sgi_kona_color_map_done(uint32_t start, uint32_t count, uint32_t outside) "start 0x%x count %u outside %u"
+# An X gamma load opened with its gamma-RAM start address and entry count,
+# and completed, with the count of entries whose address the model's
+# table does not cover.
+sgi_kona_gamma_load(uint32_t start, uint32_t count) "start 0x%x count %u"
+sgi_kona_gamma_load_done(uint32_t start, uint32_t count, uint32_t outside) "start 0x%x count %u outside %u"
+# A command-page word the model drops: an unexpected word where a token or
+# the textport's sync word belongs, an unsupported textport selector, or a
+# store it cannot place. offset is the command-page offset, 0 for words
+# that arrive through the plain-word path.
+sgi_kona_word_dropped(uint32_t offset, uint32_t value, const char *why) "offset 0x%x value 0x%x %s"
+# A video command (token 0x1a6) framed whole: its number, name, first data
+# word and the checksum it carried, a checksum that does not match, and
+# the reply a Get posts on the return page. A command whose data length the
+# table does not give is framed by searching for its checksum: the data
+# words that search found, or the search given up.
+sgi_kona_video_command(uint32_t command, const char *name, uint32_t data, uint32_t checksum) "command 0x%x %s data 0x%x checksum 0x%x"
+sgi_kona_video_checksum_mismatch(uint32_t command, uint32_t got, uint32_t expected) "command 0x%x checksum 0x%x expected 0x%x; acted on anyway"
+sgi_kona_video_reply(uint32_t command, uint32_t id, uint32_t bytes) "command 0x%x reply id %u data bytes %u"
+sgi_kona_video_search(uint32_t command, uint32_t words) "command 0x%x framed by its checksum after %u data words"
+sgi_kona_video_search_abandoned(uint32_t command, uint32_t words) "command 0x%x no checksum within %u data words; closed"
+
+# sgi-kona-dma.c
+# A completed DMA transfer: addr and length are the buffer's device address
+# and bytes (see include/hw/misc/sgi-kona-dma.h), fb_offset is the
+# qtest-only x-test-dma-fb-offset destination, or for the list plane the
+# pipe-memory address, and reverse the qtest-only x-test-dma-reverse
+# direction.
+sgi_kona_dma_transfer(uint64_t addr, uint32_t length, uint32_t fb_offset, bool reverse) "addr 0x%" PRIx64 " length 0x%x fb_offset %u reverse=%d"
+# A completion the head published: its sequence number, kind, cookie and
+# payload (see sgi_kona_publish()).
+sgi_kona_completion(uint64_t seq, int kind, uint64_t cookie, uint64_t payload) "seq %" PRIu64 " kind %d cookie 0x%" PRIx64 " payload 0x%" PRIx64
+# The DMA pool 0x1ed names, and whether it is whole pages the model keeps.
+sgi_kona_dma_pool(uint64_t base, uint32_t len, bool registered) "base 0x%" PRIx64 " length 0x%x registered=%d"
 
 # sgi-mgras-raster.c
 # One event per contiguous run of guest-memory bytes a host-to-screen DMA

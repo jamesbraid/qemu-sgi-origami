@@ -224,6 +224,7 @@ hw/misc/sgi-hub-test.c
 hw/misc/sgi-hub.c
 hw/misc/sgi-ioc3.c
 hw/misc/sgi-iommu-notifier-test.c
+hw/misc/sgi-kona-dma.c
 hw/misc/sgi-kona-gl-decode.c
 hw/misc/sgi-kona-gl-selectors.c.inc
 hw/misc/sgi-kona-ports.c
@@ -296,6 +297,7 @@ include/hw/misc/sgi-command-port.h
 include/hw/misc/sgi-elsc.h
 include/hw/misc/sgi-hub.h
 include/hw/misc/sgi-ioc3.h
+include/hw/misc/sgi-kona-dma.h
 include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
 include/hw/misc/sgi-kona.h
@@ -655,7 +657,20 @@ tests/qtest/sn0-mscsi-test.c
 tests/qtest/sn0-mttcg-test.c
 tests/qtest/sn0-onyx2-test.c
 tests/qtest/sn0-origin2000-flash-fixture.c
+tests/qtest/sn0-origin2000-kona-3d-test.c
+tests/qtest/sn0-origin2000-kona-bringup-test.c
+tests/qtest/sn0-origin2000-kona-context-test.c
+tests/qtest/sn0-origin2000-kona-dma-test.c
+tests/qtest/sn0-origin2000-kona-fill-test.c
+tests/qtest/sn0-origin2000-kona-gl-test.c
+tests/qtest/sn0-origin2000-kona-glyph-test.c
+tests/qtest/sn0-origin2000-kona-pi-credit-test.c
+tests/qtest/sn0-origin2000-kona-pixel-test.c
+tests/qtest/sn0-origin2000-kona-scanout-test.c
 tests/qtest/sn0-origin2000-kona-test.c
+tests/qtest/sn0-origin2000-kona-textport-test.c
+tests/qtest/sn0-origin2000-kona-video-test.c
+tests/qtest/sn0-origin2000-kona-xdma-test.c
 tests/qtest/sn0-origin2000-mgras-test.c
 tests/qtest/sn0-origin2000-pflash-test.c
 tests/qtest/sn0-origin2000-test.c

@@ -344,6 +344,7 @@ config SGI_MGRAS
 
 config SGI_KONA
     bool
+    select SGI_DISPLAY
     select SGI_XIO_BOARD
     select ONEWIRE
     select SGI_BRIDGE

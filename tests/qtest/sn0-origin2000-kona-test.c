@@ -53,7 +53,10 @@
  */
 #define REG_LOW_WINDOW_WRITE KONA_REG(0x00007c)
 #define REG_CREDIT           KONA_REG(0x800208)
+#define REG_CREDIT_CONFIG    KONA_REG(0x800210)
+#define REG_DMA_FIFO_PUSH    KONA_REG(0x80007c)
 #define REG_RESET_ARG        KONA_REG(0x800220)
+#define REG_INT_ENABLE       KONA_REG(0x800230)
 #define REG_INT_CAUSE        KONA_REG(0x800238)
 #define REG_MAILBOX          KONA_REG(0x800240)
 #define REG_RESET_STROBE     KONA_REG(0x800300)
@@ -62,12 +65,23 @@
 #define REG_EEPROM_DATA      KONA_REG(0x8003f0)
 #define REG_TEXTPORT         KONA_REG(0xc10000)
 
+/*
+ * The XG map RAM window (established). KONA_MAPRAM_ENTRIES
+ * matches SGI_KONA_MAPRAM_ENTRIES in include/hw/misc/sgi-kona.h: the
+ * model's own +0x64 size code stays at 0, which the driver's own
+ * N<<15 with N=0 meaning 8 resolves to 262,144 entries.
+ */
+#define REG_MAPRAM_BASE      KONA_REG(0x100000)
+#define KONA_MAPRAM_ENTRIES  0x40000
+#define MAPRAM_ENTRY(i)      (REG_MAPRAM_BASE + 4 * (uint64_t)(i))
+
 #define KONA_INT_CAUSE_MAILBOX (1u << 4)
 #define KONA_EEPROM_CHECKED_ADDR  0x87ff1c
 #define KONA_EEPROM_CHECKED_VALUE 2
 
 #define MACHINE_ARGS \
-    "-M origin2000 -device sgi-kona,id=kona0,slot=io4"
+    "-M origin2000,nodes=1 -smp 1 -m 64M " \
+    "-device sgi-kona,id=kona0,slot=io4"
 
 /*
  * origin2000's default topology is the full four-node/multi-CPU module
@@ -78,7 +92,7 @@
  * way sn0-origin2000-mgras-test.c's own MIGRATION_ARGS does, for the same
  * machine type and the same reason.
  */
-#define MIGRATION_ARGS MACHINE_ARGS " -smp 8 -m 256M"
+#define MIGRATION_ARGS MACHINE_ARGS
 
 #define KONA_QOM_PATH "/machine/module0/kona0"
 
@@ -544,8 +558,72 @@ static void test_probe_reads_documented_reset_state(void)
 static void test_credit_register_reads_fixed_zero(void)
 {
     kona_reset();
-    /* The command port's own credit hook is left NULL. */
+    /* Nothing is held after reset, so both readers proceed. */
     g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+}
+
+/*
+ * The credit register counts the port words the model holds, in bits
+ * 10:1 (mask 0x7fe), and returns them when the packet is consumed: a
+ * colour-map load with its selector and two of four words in reads 6,
+ * zero once complete; a kernel 0x1f1 with its token and one of three
+ * words reads 4; a DMA packet with its selector and three of six words
+ * on the push register reads 8. Each drops to zero, the value both the
+ * PROM's and the driver's waits proceed on, once its last word arrives.
+ * Bit 0 is never set. A model that read a fixed zero fails the first
+ * mid-packet read.
+ */
+static void test_credit_follows_consumption(void)
+{
+    kona_reset();
+
+    qtest_writel(qts, REG_TEXTPORT, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+    qtest_writel(qts, REG_TEXTPORT, 0x3);
+    qtest_writel(qts, REG_TEXTPORT, 7);
+    qtest_writel(qts, REG_TEXTPORT, 0x40);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 3 << 1);
+    qtest_writel(qts, REG_TEXTPORT, 0x80);
+    qtest_writel(qts, REG_TEXTPORT, 0xc0);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+
+    qtest_writel(qts, REG_TEXTPORT, 0x1f1);
+    qtest_writel(qts, REG_TEXTPORT, 0x10000000);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 2 << 1);
+    qtest_writel(qts, REG_TEXTPORT, 0x9000);
+    qtest_writel(qts, REG_TEXTPORT, 0x4000);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 0x1eb);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 0x9);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 0x9004);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 4);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 4 << 1);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 4);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 0);
+    qtest_writel(qts, REG_DMA_FIFO_PUSH, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+}
+
+/*
+ * The driver's one write of 0x700 to +0x800210 is kept and read back and
+ * changes nothing the credit register says: zero at rest, and the same
+ * held count mid-packet as before the write. Before, the offset fell to
+ * the unknown-register path and read zero.
+ */
+static void test_credit_config_stored(void)
+{
+    kona_reset();
+    qtest_writel(qts, REG_CREDIT_CONFIG, 0x700);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT_CONFIG), ==, 0x700);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+    qtest_writel(qts, REG_TEXTPORT, 1);
+    qtest_writel(qts, REG_TEXTPORT, 0x9);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 1 << 1);
+    qtest_writel(qts, REG_TEXTPORT, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT) & ~0x7feu, ==, 0);
+    kona_reset();
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT_CONFIG), ==, 0);
 }
 
 static void test_low_window_write_is_plain_storage(void)
@@ -571,6 +649,91 @@ static void test_reset_and_eeprom_control_registers_are_plain_storage(void)
 
     qtest_writel(qts, REG_EEPROM_ENABLE, 1);
     g_assert_cmphex(qtest_readl(qts, REG_EEPROM_ENABLE), ==, 1);
+}
+
+/*
+ * A fresh instance logging the -d categories in `debug` to its own file,
+ * for a case that has to show which "sgi-kona: unimplemented" lines an
+ * access raised. `extra_props` is appended to the sgi-kona device's own
+ * properties. The caller quits the instance and reads the log with
+ * kona_unimp_log_read(), which also unlinks the file.
+ */
+static QTestState *kona_init_with_unimp_log(const char *extra_props,
+                                            const char *debug, char **log)
+{
+    int fd;
+
+    *log = g_strdup_printf("%s/sn0-kona-unimp-XXXXXX.log", g_get_tmp_dir());
+    fd = g_mkstemp(*log);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    return qtest_initf(MACHINE_ARGS "%s -d %s -D %s",
+                       extra_props, debug, *log);
+}
+
+static char *kona_unimp_log_read(const char *log)
+{
+    char *found = NULL;
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpint(g_unlink(log), ==, 0);
+    return found;
+}
+
+static void kona_assert_offset_not_unimplemented(const char *found,
+                                                 uint32_t offset)
+{
+    g_autofree char *read = g_strdup_printf(
+        "sgi-kona: unimplemented read of offset 0x%" PRIx32 "\n", offset);
+    g_autofree char *write = g_strdup_printf(
+        "sgi-kona: unimplemented write of offset 0x%" PRIx32 " ", offset);
+
+    g_assert_null(strstr(found, read));
+    g_assert_null(strstr(found, write));
+}
+
+/*
+ * The kernel driver's own KONAinitialize, reached through the kernel
+ * operations table ahead of kona_mapram_init(): strobes REG_RESET_STROBE
+ * (write 1, read, write 0, read), then writes 0x100 to REG_INT_ENABLE and
+ * 0x8000 to REG_RESET_ARG. Each write must be accepted without an
+ * unimplemented-offset log.
+ *
+ * The readbacks alone cannot show that: REG_INT_ENABLE used to fall to
+ * the unimplemented-offset default, which also reads zero, and the other
+ * two registers already echoed their writes. So this runs its own
+ * instance with -d unimp and checks the log names none of the three
+ * offsets. One deliberately unimplemented read at the end proves the log
+ * would have caught one.
+ */
+static void test_konainitialize_register_sequence_is_accepted(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_with_unimp_log("", "unimp", &log);
+
+    qtest_writel(s, REG_RESET_STROBE, 1);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 1);
+    qtest_writel(s, REG_RESET_STROBE, 0);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_STROBE), ==, 0);
+
+    qtest_writel(s, REG_INT_ENABLE, 0x100);
+    g_assert_cmphex(qtest_readl(s, REG_INT_ENABLE), ==, 0);
+
+    qtest_writel(s, REG_RESET_ARG, 0x8000);
+    g_assert_cmphex(qtest_readl(s, REG_RESET_ARG), ==, 0x8000);
+
+    qtest_readl(s, KONA_REG(0x300000));
+    qtest_quit(s);
+
+    found = kona_unimp_log_read(log);
+    g_assert_nonnull(strstr(found,
+                            "sgi-kona: unimplemented read of offset "
+                            "0x300000\n"));
+    kona_assert_offset_not_unimplemented(found, 0x800300);
+    kona_assert_offset_not_unimplemented(found, 0x800230);
+    kona_assert_offset_not_unimplemented(found, 0x800220);
 }
 
 static void test_eeprom_data_answers_checked_address_and_zero_elsewhere(void)
@@ -635,22 +798,56 @@ static void test_textport_graphics_info_mailbox_protocol(void)
 }
 
 /*
- * Set color (0x2) then point (0x6), the selectors exercised by this
- * rendering check. Each point uses a coordinate no earlier case touches.
+ * Load colormap (0x3), select colour (0x2), then point (0x6): the chain a
+ * real captured boot trace exercises before every glyph stroke. Command 2
+ * selects a colormap index, not a packed colour -- established from that
+ * trace, whose command-2 argument values run 0-255, the identical domain
+ * command 3's own index argument uses. Command 3 stores index, then
+ * R/G/B each pre-scaled <<2 by the sender. Each point uses a coordinate
+ * no earlier case in this file touches.
  */
-static void test_textport_set_color_and_point_render_pixels(void)
+static void test_textport_colormap_and_point_render_pixels(void)
 {
     kona_reset();
 
-    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00ff0000 }, 1);
+    kona_textport_push(qts, 0x3, (uint32_t[]){ 1, 0xff << 2, 0, 0 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
     kona_textport_push(qts, 0x6, (uint32_t[]){ 100, 50 }, 2);
     g_assert_cmphex(kona_test_pixel(qts, 100, 50), ==, 0x00ff0000);
 
-    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x0000ff00 }, 1);
+    kona_textport_push(qts, 0x3, (uint32_t[]){ 2, 0, 0xff << 2, 0 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 2 }, 1);
     kona_textport_push(qts, 0x6, (uint32_t[]){ 200, 150 }, 2);
     g_assert_cmphex(kona_test_pixel(qts, 200, 150), ==, 0x0000ff00);
     /* The first point's own color is untouched by the second. */
     g_assert_cmphex(kona_test_pixel(qts, 100, 50), ==, 0x00ff0000);
+}
+
+/*
+ * Filled rectangle (0x5): inclusive on every side -- see
+ * sgi_kona_fill_rect()'s own comment for the sender-code and
+ * captured-trace evidence. A rectangle from (10,20) to (12,22) covers
+ * exactly a 3x3 pixel block; one step outside each edge stays untouched.
+ */
+static void test_textport_fill_rect_renders_inclusive_rectangle(void)
+{
+    kona_reset();
+
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0x1f << 2, 0x2f << 2, 0x3f << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(qts, 0x5, (uint32_t[]){ 10, 20, 12, 22 }, 4);
+
+    g_assert_cmphex(kona_test_pixel(qts, 10, 20), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 12, 20), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 10, 22), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 12, 22), ==, 0x001f2f3f);
+    g_assert_cmphex(kona_test_pixel(qts, 11, 21), ==, 0x001f2f3f);
+
+    g_assert_cmphex(kona_test_pixel(qts, 9, 20), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 13, 20), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 10, 19), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 10, 23), ==, 0);
 }
 
 /*
@@ -676,18 +873,30 @@ static void test_textport_screen_size_is_traced_only(void)
 }
 
 /*
- * Bitmap/glyph blit (0xa): six header words (x, y, width, height, then
- * two unconfirmed fields), then a packed 1-bpp payload, one bit per
- * pixel, MSB-first, row-major -- hw/misc/sgi-kona.c's own
- * sgi_kona_bitmap_blit(). A 4x2 bitmap needs one payload word; only its
- * top byte (0xa5 = 1010 0101) is meaningful; second row is (0,1,0,1).
+ * Bitmap/glyph blit (0xa): six header words -- width, height, x origin,
+ * y origin, x advance, y advance -- then a packed 1-bpp payload, one bit
+ * per pixel, MSB-first, row-major -- hw/misc/sgi-kona.c's own
+ * sgi_kona_bitmap_blit(). All six header fields are established (see
+ * that function's own comment, from the IO6 PROM's kona_tp_bitmap).
+ * Placement is
+ * relative to the textport's own raster position (command 4), not
+ * absolute: pixel (c, r) of the payload lands at
+ * (raster_x - xorigin + c, raster_y - yorigin + r), and a completed
+ * blit advances the raster position by (xadvance, yadvance) -- the
+ * "position once, then a run of blits that each advance it" shape
+ * gui_draw_string's own entry documents for a text label. A 4x2 bitmap
+ * needs one payload word; only its top byte (0xa5 = 1010 0101) is
+ * meaningful; second row is (0,1,0,1).
  */
 static void test_textport_bitmap_blit_renders_payload(void)
 {
     kona_reset();
 
-    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00abcdef }, 1);
-    kona_textport_push(qts, 0xa, (uint32_t[]){ 300, 400, 4, 2, 0, 0 }, 6);
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0xab << 2, 0xcd << 2, 0xef << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(qts, 0x4, (uint32_t[]){ 300, 400 }, 2);
+    kona_textport_push(qts, 0xa, (uint32_t[]){ 4, 2, 0, 0, 5, 0 }, 6);
     qtest_writel(qts, REG_TEXTPORT, 0xa5000000);
 
     g_assert_cmphex(kona_test_pixel(qts, 300, 400), ==, 0x00abcdef);
@@ -698,29 +907,78 @@ static void test_textport_bitmap_blit_renders_payload(void)
     g_assert_cmphex(kona_test_pixel(qts, 301, 401), ==, 0x00abcdef);
     g_assert_cmphex(kona_test_pixel(qts, 302, 401), ==, 0);
     g_assert_cmphex(kona_test_pixel(qts, 303, 401), ==, 0x00abcdef);
+
+    /*
+     * That blit's own xadvance (5) moved the raster position to
+     * (305, 400) with no further selector-4 push: a second blit lands
+     * relative to the advanced position, matching how a text label's
+     * glyphs chain from one raster-position push.
+     */
+    kona_textport_push(qts, 0xa, (uint32_t[]){ 4, 2, 0, 0, 0, 0 }, 6);
+    qtest_writel(qts, REG_TEXTPORT, 0xa5000000);
+
+    g_assert_cmphex(kona_test_pixel(qts, 305, 400), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 307, 400), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 306, 401), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 308, 401), ==, 0x00abcdef);
 }
 
 /*
- * Selectors 1, 3, 4, 5 and 7 are framed and traced here. This test does
- * not assert their rendering, blanking, or cursor effects.
+ * A command argument value equal to SGI_KONA_BITMAP_SELECTOR (0xa) must
+ * not be misread as a fresh bitmap-blit start when it falls mid-packet:
+ * sgi_kona_textport_push() only intercepts 0xa between packets, when the
+ * generic framer is not already framing one. Found by tracing a real
+ * boot, where command 3's own r/g/b arguments routinely carry the value
+ * 0xa. Proven the same way as the reserved-selector case below: a probe
+ * completing correctly right after shows the port stayed synchronized
+ * instead of getting stuck waiting for a bitmap header that never comes.
+ */
+static void test_textport_bitmap_value_mid_packet_not_misframed(void)
+{
+    uint32_t reply;
+    bool more_pending;
+
+    kona_reset();
+
+    kona_textport_push(qts, 0x3, (uint32_t[]){ 1, 0xa, 0xa, 0xa }, 4);
+
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+    reply = kona_mailbox_drain_one(qts, &more_pending);
+    g_assert_cmphex(reply, ==, 0x1234abcd);
+    g_assert_false(more_pending);
+}
+
+/*
+ * Selector 4 stores the textport's raster position for a following
+ * bitmap blit and draws nothing itself; the drawing side is covered by
+ * test_textport_bitmap_blit_renders_payload()'s advance case above.
+ * Selectors 1 and 7 have a known argument shape but no known rendering,
+ * blanking or cursor role, and which command number, if any, the
+ * driver's unblank routine sends is unknown, so neither may be assumed
+ * to carry it. This test proves all three draw no pixel of their own,
+ * including selector 4 at a raster position distinct from the reset
+ * default. Selectors 2, 3, 5 and 6 (colour select, colour map load,
+ * filled rectangle, point) have their own rendering tests.
  */
 static void test_textport_reserved_selectors_have_no_render_effect(void)
 {
     static const uint32_t args1[1] = { 0 };
     static const uint32_t args2[2] = { 0, 0 };
-    static const uint32_t args4[4] = { 0, 0, 0, 0 };
+    static const uint32_t raster_args[2] = { 500, 500 };
 
     kona_reset();
 
     g_assert_cmphex(kona_test_pixel(qts, 900, 900), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 500, 500), ==, 0);
 
     kona_textport_push(qts, 0x1, args1, 1);
-    kona_textport_push(qts, 0x3, args4, 4);
-    kona_textport_push(qts, 0x4, args2, 2);
-    kona_textport_push(qts, 0x5, args4, 4);
+    kona_textport_push(qts, 0x4, raster_args, 2);
     kona_textport_push(qts, 0x7, args2, 2);
 
     g_assert_cmphex(kona_test_pixel(qts, 900, 900), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 500, 500), ==, 0);
 
     /*
      * The port is left ready for a fresh sync-prefixed command, not stuck
@@ -762,7 +1020,7 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
     uint32_t control_before;
 
     kona_reset();
-    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x100000)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x300000)), ==, 0);
 
     /*
      * Compare against whatever WIDGET_CONTROL reads back after
@@ -772,9 +1030,238 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
      * separately).
      */
     control_before = qtest_readl(qts, REG_WIDGET_CONTROL);
-    qtest_writel(qts, KONA_REG(0x100000), 0x12345678);
-    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x100000)), ==, 0);
+    qtest_writel(qts, KONA_REG(0x300000), 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x300000)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, control_before);
+}
+
+/*
+ * The XG map RAM: kona_mapram_init()'s own per-entry probe -- write
+ * 0x10000000|i, read back, expect an exact match -- run over a
+ * representative sample plus the table's own first and last entry
+ * (test_mapram_full_window_sweep() below replays this over every
+ * entry). Each sampled entry is written and checked before its
+ * neighbour is touched, and entry 1 is re-checked at the end, so a
+ * stride bug that only shows up once two entries alias the same word
+ * cannot hide behind whichever entry was written most recently.
+ */
+static void test_mapram_stride_sample(void)
+{
+    static const uint32_t sample[] = { 0, 1, 0x7fff, 0x8000, 0x3ffff };
+    unsigned int i;
+
+    kona_reset();
+    for (i = 0; i < G_N_ELEMENTS(sample); i++) {
+        uint32_t index = sample[i];
+
+        qtest_writel(qts, MAPRAM_ENTRY(index), 0x10000000 | index);
+        g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(index)), ==,
+                        0x10000000 | index);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(1)), ==, 0x10000001);
+}
+
+/*
+ * Every one of the 32 bits an entry holds round-trips, not only the
+ * low bits kona_mapram_init()'s own 0x10000000|i pattern exercises:
+ * kona_mapram_map()'s own ordinary-mapping encoding (established) sets
+ * bit 28 in neither operand, so a second write with it set, plus
+ * every other bit up to bit 27, proves the model stores the whole word
+ * rather than truncating to whatever subset the init loop alone needs.
+ */
+static void test_mapram_stores_full_32_bits(void)
+{
+    kona_reset();
+
+    qtest_writel(qts, MAPRAM_ENTRY(0x3ffff), 0x10000000 | 0x3ffff);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0x3ffff)), ==,
+                    0x10000000 | 0x3ffff);
+
+    qtest_writel(qts, MAPRAM_ENTRY(0), 0x20000000 | 0x0fffffff);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0)), ==,
+                    0x20000000 | 0x0fffffff);
+}
+
+/*
+ * The window's own bounds: the last offset below it and the first
+ * offset past it both fall to the unimplemented-offset default case
+ * (test_unknown_offset_reads_zero_and_accepts_writes()'s own
+ * discriminator -- a write does not persist), while the table's own
+ * last entry, right at the upper edge, takes the write like any other
+ * entry.
+ */
+static void test_mapram_bounds_fall_through_to_unimplemented(void)
+{
+    kona_reset();
+
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0xffffc)), ==, 0);
+    qtest_writel(qts, KONA_REG(0xffffc), 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0xffffc)), ==, 0);
+
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x200000)), ==, 0);
+    qtest_writel(qts, KONA_REG(0x200000), 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, KONA_REG(0x200000)), ==, 0);
+
+    qtest_writel(qts, MAPRAM_ENTRY(KONA_MAPRAM_ENTRIES - 1), 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(KONA_MAPRAM_ENTRIES - 1)),
+                    ==, 0x12345678);
+}
+
+static void test_mapram_reset_clears_table(void)
+{
+    kona_reset();
+
+    qtest_writel(qts, MAPRAM_ENTRY(0), 0x10000000);
+    qtest_writel(qts, MAPRAM_ENTRY(0x3ffff), 0x1003ffff);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0)), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0x3ffff)), !=, 0);
+
+    qtest_system_reset(qts);
+
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(0x3ffff)), ==, 0);
+}
+
+/*
+ * A nonzero size code in SGI_KONA_PROBE's bits [5:3] shrinks the active
+ * table: N = 1 selects 1 << 15 entries, where the default N = 0 selects
+ * the whole window (the driver's own N << 15 with 0 meaning 8). The last
+ * entry below the count stores like any other; the first entry at
+ * the count, though still inside the physical window, falls to the
+ * unimplemented-offset path: it reads zero, keeps no write, and both
+ * accesses leave a beyond-count trace and a LOG_UNIMP line.
+ */
+static void test_mapram_size_code_limits_entry_count(void)
+{
+    const uint32_t count = 1 << 15;
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    g_autofree char *beyond = NULL;
+    QTestState *s = kona_init_with_unimp_log(
+        ",probe-value=0x8", "unimp,trace:sgi_kona_mapram_beyond_count", &log);
+
+    g_assert_cmphex(qtest_readl(s, REG_PROBE), ==, 0x8);
+
+    qtest_writel(s, MAPRAM_ENTRY(count - 1), 0x10000000 | (count - 1));
+    g_assert_cmphex(qtest_readl(s, MAPRAM_ENTRY(count - 1)), ==,
+                    0x10000000 | (count - 1));
+
+    qtest_writel(s, MAPRAM_ENTRY(count), 0x10000000 | count);
+    g_assert_cmphex(qtest_readl(s, MAPRAM_ENTRY(count)), ==, 0);
+    qtest_quit(s);
+
+    found = kona_unimp_log_read(log);
+    beyond = g_strdup_printf("index %u count %u", count, count);
+    g_assert_nonnull(strstr(found, beyond));
+    g_assert_nonnull(strstr(found,
+                            "sgi-kona: unimplemented write of offset "
+                            "0x120000 "));
+    g_assert_nonnull(strstr(found,
+                            "sgi-kona: unimplemented read of offset "
+                            "0x120000\n"));
+    kona_assert_offset_not_unimplemented(found, 0x11fffc);
+}
+
+/*
+ * kona_mapram_map()'s own ordinary-mapping encoding: 0x20000000 |
+ * ((paddr >> 14) << 2), with a page-size code in bits [30:29]
+ * (established formula, inferred field names). The model does
+ * not interpret this value; it is plain storage exactly like the init
+ * loop's own pattern, so this only proves the driver's real
+ * construction round-trips, rather than an arbitrary bit pattern.
+ */
+static void test_mapram_ordinary_mapping_write_read_back(void)
+{
+    uint64_t paddr = 0x40028000;
+    uint32_t value = 0x20000000 | ((uint32_t)(paddr >> 14) << 2);
+
+    kona_reset();
+    qtest_writel(qts, MAPRAM_ENTRY(5), value);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(5)), ==, value);
+}
+
+/*
+ * kona_mapram_init()'s own attach-time probe, replayed over the whole
+ * table instead of a sample: write 0x10000000|i to every entry, then
+ * read every entry back and expect an exact match throughout -- the
+ * actual discriminator the driver's init loop applies before it ever
+ * logs "IR: Bad XG MAPRAM entry found during kona_mapram_init!"
+ * (established).
+ *
+ * A plain qtest_writel()/qtest_readl() loop over all
+ * SGI_KONA_MAPRAM_ENTRIES entries measured around 8.7s (one
+ * control-socket round trip per access, 2 accesses per entry) --
+ * further from "a few seconds" than this suite's other cases run.
+ * qtest_memwrite()/qtest_memread() instead build and check the whole
+ * table in two round trips regardless of size, measured here at well
+ * under a second, at the cost of handling the device's own big-endian
+ * byte order by hand: confirmed empirically (with a throwaway
+ * instrumented case, not by reasoning about qtest's internals alone)
+ * that these calls copy the raw byte buffer with no endian conversion
+ * of their own, unlike qtest_writel()/qtest_readl()'s own per-word
+ * handling -- so GUINT32_TO_BE()/GUINT32_FROM_BE() do that conversion
+ * on the host side here instead.
+ */
+static void test_mapram_full_window_sweep(void)
+{
+    uint32_t *wbuf = g_new(uint32_t, KONA_MAPRAM_ENTRIES);
+    uint32_t *rbuf = g_new(uint32_t, KONA_MAPRAM_ENTRIES);
+    uint32_t i;
+
+    for (i = 0; i < KONA_MAPRAM_ENTRIES; i++) {
+        wbuf[i] = GUINT32_TO_BE(0x10000000 | i);
+    }
+
+    kona_reset();
+    qtest_memwrite(qts, REG_MAPRAM_BASE, wbuf,
+                   KONA_MAPRAM_ENTRIES * sizeof(uint32_t));
+    qtest_memread(qts, REG_MAPRAM_BASE, rbuf,
+                  KONA_MAPRAM_ENTRIES * sizeof(uint32_t));
+
+    for (i = 0; i < KONA_MAPRAM_ENTRIES; i++) {
+        g_assert_cmphex(GUINT32_FROM_BE(rbuf[i]), ==, 0x10000000 | i);
+    }
+
+    g_free(wbuf);
+    g_free(rbuf);
+}
+
+/*
+ * The framebuffer pixel array's own migration test is the closest precedent
+ * for a large migrated array: draw through the textport, migrate, read back
+ * on the destination (test_migration() above). The map RAM table gets the
+ * same treatment here -- two written entries plus one left untouched, so the
+ * destination is checked against a real value in one case and against
+ * migrated zero, not stale host memory, in the other.
+ */
+static void test_mapram_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-mapram-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MIGRATION_ARGS);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    qtest_writel(from, MAPRAM_ENTRY(0), 0x10000000);
+    qtest_writel(from, MAPRAM_ENTRY(0x3ffff), 0x1003ffff);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0)), ==, 0x10000000);
+    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0x3ffff)), ==, 0x1003ffff);
+    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(1)), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
 }
 
 /*
@@ -1045,8 +1532,8 @@ static void test_board_part_invalid_is_rejected(void)
 /*
  * REG_NIC (+0x9c) is the kernel driver's own offset onto the identical
  * one-wire chain REG_ONEWIRE (+0x98) carries, established by
- * kona_attach()'s call into nic_xg_vertex_info() and the disassembly
- * trace into nic.o's generic one-wire NIC driver -- not a second,
+ * kona_attach()'s call into nic_xg_vertex_info() and on into nic.o's
+ * generic one-wire NIC driver -- not a second,
  * independent chain. The most direct proof is register-level: a slot
  * issued through one offset must read back through the other with no
  * further pulse, since both drive and observe the identical onewire_reg
@@ -1225,7 +1712,9 @@ static void test_reset_clears_increment2_state(void)
     qtest_writel(qts, REG_EEPROM_ENABLE, 1);
     qtest_writel(qts, REG_EEPROM_ADDR, KONA_EEPROM_CHECKED_ADDR);
 
-    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00c0ffee }, 1);
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0xc0 << 2, 0xff << 2, 0xee << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
     kona_textport_push(qts, 0x6, (uint32_t[]){ 700, 700 }, 2);
     g_assert_cmphex(kona_test_pixel(qts, 700, 700), ==, 0x00c0ffee);
 
@@ -1276,10 +1765,10 @@ static void test_reset_clears_increment2_state(void)
 
     qtest_writel(qts, REG_TEXTPORT, 1);
     qtest_writel(qts, REG_TEXTPORT, 0xa);
-    qtest_writel(qts, REG_TEXTPORT, 500);
-    qtest_writel(qts, REG_TEXTPORT, 500);
     qtest_writel(qts, REG_TEXTPORT, 8);
     qtest_writel(qts, REG_TEXTPORT, 8);
+    qtest_writel(qts, REG_TEXTPORT, 500);
+    qtest_writel(qts, REG_TEXTPORT, 500);
     qtest_writel(qts, REG_TEXTPORT, 0);
     qtest_writel(qts, REG_TEXTPORT, 0);
     qtest_writel(qts, REG_TEXTPORT, 0xffffffff);
@@ -1300,6 +1789,36 @@ static void test_reset_clears_increment2_state(void)
     reply = kona_mailbox_drain_one(qts, &more_pending);
     g_assert_cmphex(reply, ==, 0x1234abcd);
     g_assert_false(more_pending);
+
+    /*
+     * Phase 3: the raster position itself (command 4). Dirty it to a
+     * value distinct from its documented reset default and prove it
+     * live with a discriminating draw (a 1x1 bitmap with zero origin
+     * lands exactly at the raster position) before reset, then prove it
+     * cleared with the same draw after -- landing at the origin only if
+     * raster_x/raster_y themselves went back to zero, not merely if the
+     * bitmap interceptor's own framing state (already proven above) did.
+     */
+    kona_reset();
+
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0xa0 << 2, 0xb0 << 2, 0xc0 << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(qts, 0x4, (uint32_t[]){ 200, 200 }, 2);
+    kona_textport_push(qts, 0xa, (uint32_t[]){ 1, 1, 0, 0, 0, 0 }, 6);
+    qtest_writel(qts, REG_TEXTPORT, 0x80000000);
+    g_assert_cmphex(kona_test_pixel(qts, 200, 200), ==, 0x00a0b0c0);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(kona_test_pixel(qts, 200, 200), ==, 0);
+
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0xa0 << 2, 0xb0 << 2, 0xc0 << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(qts, 0xa, (uint32_t[]){ 1, 1, 0, 0, 0, 0 }, 6);
+    qtest_writel(qts, REG_TEXTPORT, 0x80000000);
+    g_assert_cmphex(kona_test_pixel(qts, 0, 0), ==, 0x00a0b0c0);
+    g_assert_cmphex(kona_test_pixel(qts, 200, 200), ==, 0);
 }
 
 /*
@@ -1324,18 +1843,117 @@ static void test_migration(void)
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
-    kona_textport_push(from, 0x2, (uint32_t[]){ 0x00c0ffee }, 1);
+    kona_textport_push(from, 0x3,
+                       (uint32_t[]){ 1, 0xc0 << 2, 0xff << 2, 0xee << 2 }, 4);
+    kona_textport_push(from, 0x2, (uint32_t[]){ 1 }, 1);
     kona_textport_push(from, 0x6, (uint32_t[]){ 640, 480 }, 2);
     g_assert_cmphex(kona_test_pixel(from, 640, 480), ==, 0x00c0ffee);
+
+    /*
+     * The raster position itself (command 4) must cross the migration
+     * boundary too, not only the pixel array and colour map above: draw
+     * one 1x1 bitmap on the source that leaves the raster position
+     * advanced by its own header's xadvance, then migrate. A second 1x1
+     * bitmap on the destination, with no further selector-4 push, lands
+     * at the advanced position only if raster_x/raster_y themselves
+     * migrated.
+     */
+    kona_textport_push(from, 0x4, (uint32_t[]){ 300, 200 }, 2);
+    kona_textport_push(from, 0xa, (uint32_t[]){ 1, 1, 0, 0, 5, 0 }, 6);
+    qtest_writel(from, REG_TEXTPORT, 0x80000000);
+    g_assert_cmphex(kona_test_pixel(from, 300, 200), ==, 0x00c0ffee);
 
     sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(kona_test_pixel(to, 640, 480), ==, 0x00c0ffee);
     /* An untouched coordinate migrates as zero, not stale host memory. */
     g_assert_cmphex(kona_test_pixel(to, 641, 480), ==, 0);
+    g_assert_cmphex(kona_test_pixel(to, 300, 200), ==, 0x00c0ffee);
+
+    kona_textport_push(to, 0xa, (uint32_t[]){ 1, 1, 0, 0, 0, 0 }, 6);
+    qtest_writel(to, REG_TEXTPORT, 0x80000000);
+    g_assert_cmphex(kona_test_pixel(to, 305, 200), ==, 0x00c0ffee);
 
     qtest_quit(to);
     qtest_quit(from);
+}
+
+/*
+ * A v1 source predates raster_x/raster_y entirely: both the fields and
+ * the command-4 handler that sets them arrived in this same series (see
+ * "hw/misc/sgi-kona: place bitmap blits relative to the raster
+ * position"), while vmstate_sgi_kona has carried version_id 1 since the
+ * device's introduction. A v1 stream therefore has no bytes for either
+ * field. Confirms the destination's post_load leaves them at
+ * sgi_kona_reset_hold()'s own (0, 0) default -- matching what a v1
+ * source's absence of the concept always implied -- rather than reading
+ * stray bytes from whatever vmstate_sgi_kona placed next in a v1 stream,
+ * which would misplace every bitmap blit issued after migrating an old
+ * guest onto this code.
+ *
+ * Skipped unless a v1 reference binary is available; build one from
+ * commit 12a129769c (this series' immediate parent, the last commit
+ * before raster_x/raster_y existed anywhere in the device) and point
+ * QTEST_QEMU_BINARY_KONA_V1 at its qemu-system-mips64. See
+ * sn0-migration-test.c's QTEST_QEMU_BINARY_IOC3_V15 and
+ * sn0-origin2000-mgras-test.c's QTEST_QEMU_BINARY_MGRAS_V9 for the same
+ * pattern.
+ */
+static void test_migration_from_v1_no_raster_position(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V1")) {
+        g_test_skip("QTEST_QEMU_BINARY_KONA_V1 is not set");
+        return;
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-kona-v1-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V1", MIGRATION_ARGS,
+                          NULL, true);
+    kona_textport_push(from, 0x3,
+                       (uint32_t[]){ 1, 0xc0 << 2, 0xff << 2, 0xee << 2 }, 4);
+    kona_textport_push(from, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(from, 0x6, (uint32_t[]){ 640, 480 }, 2);
+    g_assert_cmphex(kona_test_pixel(from, 640, 480), ==, 0x00c0ffee);
+
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(kona_test_pixel(to, 640, 480), ==, 0x00c0ffee);
+
+    /*
+     * No selector-4 raster-position-set was ever issued on `to`: this
+     * draws with whatever raster_x/raster_y the migration itself left
+     * behind. Landing at (0, 0) proves post_load left the gated fields
+     * at their reset default rather than misreading a v1 stream that
+     * never had them.
+     */
+    kona_textport_push(to, 0xa, (uint32_t[]){ 1, 1, 0, 0, 0, 0 }, 6);
+    qtest_writel(to, REG_TEXTPORT, 0x80000000);
+    g_assert_cmphex(kona_test_pixel(to, 0, 0), ==, 0x00c0ffee);
+
+    /*
+     * A v1 stream predates the XG map RAM table even more thoroughly
+     * than raster_x/raster_y (gated at version 2): map_ram is gated at
+     * version 3, so a v1 stream has no bytes for it either. Confirms
+     * post_load leaves the table at sgi_kona_reset_hold()'s own
+     * all-zero default rather than misparsing stray v1 bytes as table
+     * contents.
+     */
+    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0)), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 int main(int argc, char **argv)
@@ -1386,11 +2004,18 @@ int main(int argc, char **argv)
                    test_reset_clears_increment2_state);
     qtest_add_func("sn0/origin2000/kona/credit-register-reads-fixed-zero",
                    test_credit_register_reads_fixed_zero);
+    qtest_add_func("sn0/origin2000/kona/credit-follows-consumption",
+                   test_credit_follows_consumption);
+    qtest_add_func("sn0/origin2000/kona/credit-config-stored",
+                   test_credit_config_stored);
     qtest_add_func("sn0/origin2000/kona/low-window-write-is-plain-storage",
                    test_low_window_write_is_plain_storage);
     qtest_add_func("sn0/origin2000/kona/"
                    "reset-and-eeprom-control-registers-are-plain-storage",
                    test_reset_and_eeprom_control_registers_are_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "konainitialize-register-sequence-is-accepted",
+                   test_konainitialize_register_sequence_is_accepted);
     qtest_add_func("sn0/origin2000/kona/"
                    "eeprom-data-answers-checked-address-and-zero-elsewhere",
                    test_eeprom_data_answers_checked_address_and_zero_elsewhere);
@@ -1400,12 +2025,18 @@ int main(int argc, char **argv)
                    "textport-graphics-info-mailbox-protocol",
                    test_textport_graphics_info_mailbox_protocol);
     qtest_add_func("sn0/origin2000/kona/"
-                   "textport-set-color-and-point-render-pixels",
-                   test_textport_set_color_and_point_render_pixels);
+                   "textport-colormap-and-point-render-pixels",
+                   test_textport_colormap_and_point_render_pixels);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-fill-rect-renders-inclusive-rectangle",
+                   test_textport_fill_rect_renders_inclusive_rectangle);
     qtest_add_func("sn0/origin2000/kona/textport-screen-size-is-traced-only",
                    test_textport_screen_size_is_traced_only);
     qtest_add_func("sn0/origin2000/kona/textport-bitmap-blit-renders-payload",
                    test_textport_bitmap_blit_renders_payload);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-bitmap-selector-value-mid-packet-is-not-misframed",
+                   test_textport_bitmap_value_mid_packet_not_misframed);
     qtest_add_func("sn0/origin2000/kona/"
                    "textport-reserved-selectors-have-no-render-effect",
                    test_textport_reserved_selectors_have_no_render_effect);
@@ -1413,6 +2044,27 @@ int main(int argc, char **argv)
                    "textport-unknown-selector-resynchronizes",
                    test_textport_unknown_selector_resynchronizes);
     qtest_add_func("sn0/origin2000/kona/migration", test_migration);
+    qtest_add_func("sn0/origin2000/kona/migration-from-v1-no-raster-position",
+                   test_migration_from_v1_no_raster_position);
+    qtest_add_func("sn0/origin2000/kona/mapram-stride-sample",
+                   test_mapram_stride_sample);
+    qtest_add_func("sn0/origin2000/kona/mapram-stores-full-32-bits",
+                   test_mapram_stores_full_32_bits);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "mapram-bounds-fall-through-to-unimplemented",
+                   test_mapram_bounds_fall_through_to_unimplemented);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "mapram-size-code-limits-entry-count",
+                   test_mapram_size_code_limits_entry_count);
+    qtest_add_func("sn0/origin2000/kona/mapram-reset-clears-table",
+                   test_mapram_reset_clears_table);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "mapram-ordinary-mapping-write-read-back",
+                   test_mapram_ordinary_mapping_write_read_back);
+    qtest_add_func("sn0/origin2000/kona/mapram-full-window-sweep",
+                   test_mapram_full_window_sweep);
+    qtest_add_func("sn0/origin2000/kona/mapram-migration",
+                   test_mapram_migration);
 
     ret = g_test_run();
     qtest_quit(qts);
