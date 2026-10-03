@@ -14,6 +14,7 @@ typedef struct Expected {
 } Expected;
 
 static const Expected subset[] = {
+    { 0x17d, SGI_KONA_GL_LAYOUT_ESTABLISHED, 6, 0 },
     { 0x0,   SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glBegin */
     { 0x1a,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0x4100 }, /* glClear */
     { 0x1b,  SGI_KONA_GL_LAYOUT_INFERRED,    4, 0 },     /* glClearAccum */
@@ -556,7 +557,7 @@ static void test_texture_sampler(void)
     for (unsigned min = 0; min < 8; min++) {
         for (unsigned mag = 0; mag < 8; mag++) {
             bool supported = filters[min] &&
-                             (mag < 2 || (mag == 5 && min >= 3));
+                             (mag < 2 || (mag >= 3 && mag <= 5 && min >= 3));
 
             p = original;
             if (min >= 3) {
@@ -574,6 +575,7 @@ static void test_texture_sampler(void)
             g_assert_cmphex(p.min_filter, ==, filters[min]);
             g_assert_cmphex(p.mag_filter, ==,
                             mag == 5 ? SGI_GL_LINEAR_SHARPEN_SGIS :
+                            mag >= 3 ? SGI_GL_LINEAR_DETAIL_SGIS :
                             mag ? SGI_GL_LINEAR : SGI_GL_NEAREST);
             g_assert_cmphex(p.wrap_s, ==, SGI_GL_REPEAT);
             g_assert_cmphex(p.wrap_t, ==, SGI_GL_REPEAT);
@@ -677,6 +679,54 @@ static void test_texture_sharpen_sampler(void)
     record[2] = 256 << 10;
     bind[2] |= 0x0c000000;
     p = original;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    bind[2] &= ~0x0c000000;
+    p.base_level = 1;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+}
+
+static void test_texture_detail_sampler(void)
+{
+    const uint32_t modes[] = {
+        SGI_GL_LINEAR_DETAIL_SGIS, SGI_GL_LINEAR_DETAIL_COLOR_SGIS,
+        SGI_GL_LINEAR_DETAIL_ALPHA_SGIS,
+    };
+    const uint32_t channels[] = { 0, 0x04000000, 0x08000000 };
+    uint32_t bind[5] = { 7, 4095, 0 };
+    uint32_t record[22] = { 0, 0x00101010, 256 << 10 };
+    SGIKonaTextureParams original = { .max_level = 5 };
+
+    for (unsigned mag = 3; mag <= 4; mag++) {
+        for (unsigned channel = 0; channel < ARRAY_SIZE(modes); channel++) {
+            for (unsigned level = 0; level <= 4; level++) {
+                SGIKonaTextureParams p = original;
+
+                bind[2] = (3 << 2) | (mag << 5) | channels[channel] |
+                          (level << 21);
+                g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+                g_assert_cmphex(p.mag_filter, ==, modes[channel]);
+                g_assert_cmphex(p.detail_mode, ==,
+                                mag == 3 ? SGI_GL_ADD : SGI_GL_MODULATE);
+                g_assert_cmpint(p.detail_level, ==, -(int)level);
+                g_assert_cmpuint(p.filter_curve_slot, ==, 4095);
+            }
+        }
+    }
+    for (unsigned level = 5; level <= 7; level++) {
+        SGIKonaTextureParams p = original;
+
+        bind[2] = (3 << 2) | (3 << 5) | (level << 21);
+        g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+        g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+    }
+    bind[2] = (3 << 2) | (3 << 5);
+    record[2] = 32 | (256 << 10);
+    SGIKonaTextureParams p = original;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    record[2] = 32 << 10;
+    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    record[2] = 256 << 10;
+    bind[2] |= 0x0c000000;
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
     bind[2] &= ~0x0c000000;
     p.base_level = 1;
@@ -803,6 +853,59 @@ static void test_texture_pixel_conversion(void)
     }
 }
 
+static void test_texture_internal_format(void)
+{
+    static const struct {
+        uint32_t index, base, internal;
+    } cases[] = {
+        { 0, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
+        { 1, SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
+        { 2, SGI_GL_RGBA, SGI_GL_RGBA },
+        { 3, SGI_GL_LUMINANCE, 0x8042 },
+        { 6, SGI_GL_LUMINANCE, 0x803f },
+        { 7, SGI_GL_ALPHA, 0x803b },
+        { 9, SGI_GL_LUMINANCE_ALPHA, 0x8043 },
+        { 10, SGI_GL_LUMINANCE, 0x8040 },
+        { 11, SGI_GL_ALPHA, 0x803c },
+        { 13, SGI_GL_LUMINANCE_ALPHA, 0x8044 },
+        { 14, SGI_GL_LUMINANCE_ALPHA, 0x8045 },
+        { 15, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE },
+        { 16, SGI_GL_LUMINANCE, 0x8041 },
+        { 17, SGI_GL_ALPHA, SGI_GL_ALPHA },
+        { 18, SGI_GL_ALPHA, 0x803d },
+        { 21, SGI_GL_LUMINANCE_ALPHA, SGI_GL_LUMINANCE_ALPHA },
+        { 23, SGI_GL_ALPHA, 0x803e },
+        { 33, SGI_GL_RGB, 0x8051 },
+        { 34, SGI_GL_RGBA, 0x8058 },
+        { 37, SGI_GL_RGB, SGI_GL_RGB },
+        { 38, SGI_GL_RGB, SGI_GL_RGB },
+        { 41, SGI_GL_RGBA, SGI_GL_RGBA },
+    };
+    uint32_t base, internal;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_assert_true(sgi_kona_gl_texture_internal_format(cases[i].index,
+                                                          &base, &internal));
+        g_assert_cmphex(base, ==, cases[i].base);
+        g_assert_cmphex(internal, ==, cases[i].internal);
+    }
+    for (uint32_t index = 0; index < 4096; index++) {
+        bool supported = false;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+            supported |= cases[i].index == index;
+        }
+        base = internal = 0xdeadbeef;
+        g_assert_cmpint(sgi_kona_gl_texture_internal_format(index, &base,
+                                                            &internal),
+                        ==, supported);
+        if (!supported) {
+            g_assert_cmphex(base, ==, 0xdeadbeef);
+            g_assert_cmphex(internal, ==, 0xdeadbeef);
+        }
+    }
+}
+
 static void test_texture_integer_conversion(void)
 {
     static const struct {
@@ -919,10 +1022,14 @@ int main(int argc, char **argv)
                     test_texture_dimensions);
     g_test_add_func("/sgi-kona-gl-decode/texture-sharpen-sampler",
                     test_texture_sharpen_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-detail-sampler",
+                    test_texture_detail_sampler);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
                     test_texture_pixel_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-internal-format",
+                    test_texture_internal_format);
     g_test_add_func("/sgi-kona-gl-decode/texture-integer-conversion",
                     test_texture_integer_conversion);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/values",

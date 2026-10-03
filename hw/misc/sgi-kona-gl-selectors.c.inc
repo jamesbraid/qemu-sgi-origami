@@ -7,6 +7,12 @@
 
 static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
+        .selector = 0x17d,
+        .call = "texture detail binding",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 6,
+    },
+    {
         /*
          * Unresolved. A lone zero word then one computed store. Dozens of
          * other emitters push a literal zero as an argument, and glBegin's
