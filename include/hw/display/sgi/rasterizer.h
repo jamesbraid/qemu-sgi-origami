@@ -173,6 +173,9 @@ typedef struct SGIGLTexLevel {
     uint32_t border;
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
+    /* Border indices range from -1 through width/height, inclusive. */
+    bool (*read_border_texel)(void *opaque, uint32_t level,
+                              int32_t x, int32_t y, uint32_t *rgba);
     bool (*read_texel_3d)(void *opaque, uint32_t level, uint32_t x,
                           uint32_t y, uint32_t z, uint32_t *rgba);
     void *opaque;
@@ -189,8 +192,9 @@ typedef struct SGIGLTexPyramid {
  * One family-owned level-zero image and its texture object's sampler.
  * volume selects 3D sampling, including when depth is one; otherwise depth
  * and wrap_r are ignored. Dimensions count interior texels; row zero has the
- * lowest T and slice zero the lowest R. The selected callback gets in-range
- * interior indices and returns canonical RRGGBBAA bytes.
+ * lowest T and slice zero the lowest R. Interior callbacks get in-range
+ * indices; stored-border callbacks get signed indices. Both return canonical
+ * RRGGBBAA bytes.
  * The family validates storage and guest addressing. It owns object state,
  * binding and migration, rebuilding this borrowed descriptor after load.
  * Image and descriptor stay immutable through each synchronous draw; the
@@ -215,6 +219,9 @@ typedef struct SGIGLTexImage {
      * selected level. Volume pyramids support only a non-mipmapped base level.
      */
     const SGIGLTexPyramid *pyramid;
+    /* Required for border == 1; called only outside the interior. */
+    bool (*read_border_texel)(void *opaque, int32_t x, int32_t y,
+                              uint32_t *rgba);
     /* Expanded RGBA after filtering, before the texture environment. */
     void (*post_filter)(void *opaque, double rgba[4]);
 } SGIGLTexImage;
