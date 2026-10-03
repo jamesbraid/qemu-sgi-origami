@@ -7,6 +7,7 @@
 #include "io/channel-buffer.h"
 #include "../migration/qemu-file.h"
 #include "hw/misc/sgi-kona-texture.h"
+#include "hw/misc/sgi-kona-gl-decode.h"
 
 static const uint32_t red[] = { 0xff0000ff };
 static const uint32_t green[] = { 0x00ff00ff };
@@ -674,6 +675,74 @@ static void test_native_sampling(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+static void test_native_negative_lod(void)
+{
+    SGIKonaTextureState s;
+    SGIKonaTextureParams p;
+    SGIGLContext c;
+    SGIGLDrawable drawable = {
+        .bound = true, .clip = { .n = 1, .r[0] = { 1, 1, 1, 1 } },
+    };
+    uint32_t colour;
+    SGIRasterRules rules = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .evidence = "unit test",
+    };
+    SGIRasterTarget target = {
+        .store_colour = store_colour, .opaque = &colour,
+    };
+    float vertices[3][SGI_GL_VERTEX_FLOATS] = {
+        { [0] = -1, [1] = -1, [3] = 1 },
+        { [0] = 3, [1] = -1, [3] = 1, [SGI_GL_V_TEXCOORD] = 8 },
+        { [0] = -1, [1] = 3, [3] = 1, [SGI_GL_V_TEXCOORD + 1] = 8 },
+    };
+    SGIGLDraw draw = {
+        .mode = SGI_GL_TRIANGLES, .count = 3,
+        .vertices = &vertices[0][0], .state = &c.cur,
+    };
+    uint32_t bind[5] = { 7, 0, 3 << 2, 0, 0 };
+    uint32_t record[22] = { 0, 0x00101010, 32 << 10 };
+    const uint32_t pixels[] = { 0xff0000ff, 0xff0000ff,
+                                0xff0000ff, 0xff0000ff };
+
+    sgi_kona_texture_init(&s);
+    sgi_gl_init(&c, 0);
+    sgi_gl_set_drawable(&c, &drawable);
+    c.cur.viewport[2] = c.cur.viewport[3] = 2;
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    for (unsigned v = 0; v < 3; v++) {
+        for (unsigned k = 4; k < 8; k++) {
+            vertices[v][k] = 1;
+        }
+        vertices[v][SGI_GL_V_TEXCOORD + 3] = 1;
+    }
+    g_assert_true(sgi_kona_texture_upload(&s, 7, 0, 2, 2,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, pixels));
+    g_assert_true(sgi_kona_texture_upload(&s, 7, 1, 1, 1,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, green));
+    sgi_kona_texture_defaults(&p);
+    /* Negative upper bounds force magnification despite a large footprint. */
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_true(sgi_kona_texture_bind(&s, 7, &p));
+    target.texture = sgi_kona_texture_resolve(&s);
+    colour = 0xdeadbeef;
+    sgi_soft_draw(&rules, &target, &draw);
+    g_assert_cmphex(colour, ==, 0xff0000);
+    record[2] = 256 << 10;
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_true(sgi_kona_texture_bind(&s, 7, &p));
+    target.texture = sgi_kona_texture_resolve(&s);
+    colour = 0xdeadbeef;
+    sgi_soft_draw(&rules, &target, &draw);
+    g_assert_cmphex(colour, ==, 0x00ff00);
+    sgi_gl_cleanup(&c);
+    sgi_kona_texture_cleanup(&s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -689,5 +758,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-migration",
                     test_native_migration);
     g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
+    g_test_add_func("/sgi/kona/texture/native-negative-lod",
+                    test_native_negative_lod);
     return g_test_run();
 }

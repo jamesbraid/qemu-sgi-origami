@@ -225,6 +225,7 @@ if have_system
                     '../../hw/display/sgi/board-memory.c',
                     migration, io],
     'test-sgi-kona-texture': ['../../hw/misc/sgi-kona-texture.c',
+                              '../../hw/misc/sgi-kona-gl-decode.c',
                               '../../hw/display/sgi/gl-context.c',
                               '../../hw/display/sgi/x-gc.c',
                               '../../hw/display/sgi/rasterizer.c',
