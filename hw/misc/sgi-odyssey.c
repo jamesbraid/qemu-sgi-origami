@@ -1268,6 +1268,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_TEX_MODE 0x0405        /* 1 operand */
 #define ODSY_TEX_MODE_1D (1u << 3)
 #define ODSY_TEX_MODE_2D (1u << 4)
+#define ODSY_TEX_MODE_3D (1u << 5)
 #define ODSY_REG_TEX_SAMPLER 0x1c16     /* 7 operands */
 #define ODSY_REG_TEX_ENV 0x141b         /* 5 operands */
 #define ODSY_REG_TEX_LEVEL 0x0e80       /* 3 operands, 0x0e80 .. 0x0ebf */
@@ -1275,6 +1276,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_TEX_LOD 0x1013        /* 4 operands */
 #define ODSY_GL_TEXCOORD_1F 0xc380c41f  /* 1 operand: s */
 #define ODSY_GL_TEXCOORD_2F 0xc380c821  /* 2 operands: s, t */
+#define ODSY_GL_TEXCOORD_3F 0xc380cc23  /* 3 operands: s, t, r */
 #define ODSY_GL_TEXCOORD_SHAPE 0xffffff00
 #define ODSY_GL_TEXCOORD_TAG 0xc380c800
 #define ODSY_GL_TEX_RECT 0x8f80b968     /* 14 operands */
@@ -2658,7 +2660,12 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
                         &normal[1], odyssey_cmd_arity(normal[0]));
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_EDGE, 0, edge, NULL, 0);
     odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
-                        ODSY_GL_TEXCOORD_2F, s->tex_coord, 2);
+                        s->tex_mode & ODSY_TEX_MODE_3D ?
+                        ODSY_GL_TEXCOORD_3F : ODSY_GL_TEXCOORD_2F,
+                        s->tex_mode & ODSY_TEX_MODE_3D ?
+                        (uint32_t[3]) { s->tex_coord[0], s->tex_coord[1],
+                                       s->tex_coord_r } : s->tex_coord,
+                        s->tex_mode & ODSY_TEX_MODE_3D ? 3 : 2);
     for (i = 0; i < 4; i++) {
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_MATERIAL + i, 0,
                             material[i],
@@ -3966,10 +3973,17 @@ typedef struct OdysseyTexture {
     uint32_t words;
 } OdysseyTexture;
 
+typedef struct OdysseyTextureVolume {
+    SGIOdysseyState *s;
+    uint32_t base, stride_units, level_word2;
+    uint32_t width, height, depth, base_format, words;
+} OdysseyTextureVolume;
+
 typedef struct OdysseyTextureChain {
     OdysseyTexture storage[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexLevel levels[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexPyramid pyramid;
+    OdysseyTextureVolume volume;
 } OdysseyTextureChain;
 
 static void odyssey_gl_transpose(const uint32_t *rows, float m[16]);
@@ -3998,6 +4012,37 @@ static bool odyssey_texture_read(void *opaque, uint32_t x, uint32_t y,
     return true;
 }
 
+static bool odyssey_texture_read_3d(void *opaque, uint32_t x, uint32_t y,
+                                    uint32_t z, uint32_t *rgba)
+{
+    const OdysseyTextureVolume *volume = opaque;
+    SGIOdysseyState *s = volume->s;
+    uint64_t slice_offset, base;
+    int object;
+    OdysseyTexture texture;
+
+    if (x >= volume->width || y >= volume->height || z >= volume->depth ||
+        umul64_overflow(volume->stride_units, volume->level_word2,
+                        &slice_offset) ||
+        umul64_overflow(slice_offset, 64, &slice_offset) ||
+        umul64_overflow(z, slice_offset, &slice_offset) ||
+        uadd64_overflow(volume->base, slice_offset, &base) ||
+        base > UINT32_MAX) {
+        return false;
+    }
+    object = odyssey_object_find(s, base);
+    if (object < 0) {
+        return false;
+    }
+    texture = (OdysseyTexture) {
+        .s = s, .offset = s->obj_offset[object],
+        .stride = s->obj_width[object], .width = volume->width,
+        .height = volume->height, .base_format = volume->base_format,
+        .words = volume->words,
+    };
+    return odyssey_texture_read(&texture, x, y, rgba);
+}
+
 static bool odyssey_texture_read_level(void *opaque, uint32_t level,
                                        uint32_t x, uint32_t y, uint32_t *rgba)
 {
@@ -4013,7 +4058,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                    const SGIGLTexImage **resolved)
 {
     uint32_t width = s->tex_sampler[1], height = s->tex_sampler[2];
+    uint32_t depth = s->tex_sampler[3];
     uint32_t word = s->tex_sampler[4], components = word & 0x0f800000;
+    bool three_d = s->tex_mode & ODSY_TEX_MODE_3D;
     uint32_t ws = (word >> 12) & 3, wt = (word >> 10) & 3;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
     uint32_t first = s->tex_level0 & 0x3f, count, terminal;
@@ -4051,10 +4098,14 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     }
     if (!width || !height || width > INT32_MAX || height > INT32_MAX ||
         !is_power_of_2(width) || !is_power_of_2(height) ||
+        (three_d && (!depth || depth > SGI_ODYSSEY_OBJECTS ||
+                     !is_power_of_2(depth) ||
+                     (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D)))) ||
+        (!three_d && depth != 1) ||
         s->tex_sampler[0] != (0x08000000 | (ctz32(width) << 10) |
-                              (ctz32(height) << 5)) ||
-        s->tex_sampler[3] != 1 || s->tex_sampler[5] || s->tex_sampler[6] ||
-        ws > 1 || wt > 1 ||
+                              (ctz32(height) << 5) |
+                              (three_d ? ctz32(depth) : 0)) ||
+        s->tex_sampler[5] || s->tex_sampler[6] || ws > 1 || wt > 1 ||
         (min != 0 && min != 0x20 && min != 0x40 && min != 0x60 &&
          min != 0x80 && min != 0xa0) ||
         word != (0x10000000 | components | (ws << 12) | (wt << 10) | filter) ||
@@ -4079,6 +4130,58 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     image->wrap_t = wt ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
     image->mag_filter = filter & 2 ? SGI_GL_LINEAR : SGI_GL_NEAREST;
     image->min_filter = min_filters[min >> 5];
+
+    if (three_d) {
+        uint32_t *entry = &s->tex_levels[first * 3];
+        uint32_t stride_units = entry[1] & 0xfff;
+        uint32_t expected_units = ((width + 15) / 16 + 1) & ~1u;
+        uint32_t base = entry[0] & 0x1fffffffu;
+        uint64_t slice_stride;
+
+        if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
+            s->tex_sampler[4] != 0x13000000 || s->tex_env[0] != 1 ||
+            entry[1] != (0x41100000 | stride_units) ||
+            entry[2] == 0 || stride_units != expected_units || !base ||
+            s->obj_count > SGI_ODYSSEY_OBJECTS ||
+            umul64_overflow(stride_units, entry[2], &slice_stride) ||
+            umul64_overflow(slice_stride, 64, &slice_stride)) {
+            goto unsupported;
+        }
+        for (uint32_t z = 0; z < depth; z++) {
+            uint64_t offset, slice_base, storage_end;
+            int object;
+
+            if (umul64_overflow(z, slice_stride, &offset) ||
+                uadd64_overflow(base, offset, &slice_base) ||
+                slice_base > UINT32_MAX) {
+                goto unsupported;
+            }
+            object = odyssey_object_find(s, slice_base);
+            if (object < 0 || s->obj_width[object] != stride_units * 16 ||
+                s->obj_rows[object] < height ||
+                umul64_overflow(height - 1, s->obj_width[object],
+                                &storage_end) ||
+                uadd64_overflow(storage_end, s->obj_offset[object],
+                                &storage_end) ||
+                uadd64_overflow(storage_end, width, &storage_end) ||
+                storage_end > s->obj_used ||
+                storage_end > s->obj_mem.bytes_len / 4) {
+                goto unsupported;
+            }
+        }
+        chain->volume = (OdysseyTextureVolume) {
+            .s = s, .base = base, .stride_units = stride_units,
+            .level_word2 = entry[2], .width = width, .height = height,
+            .depth = depth, .base_format = image->base_format,
+            .words = s->obj_used,
+        };
+        image->depth = depth;
+        image->wrap_r = SGI_GL_REPEAT;
+        image->read_texel_3d = odyssey_texture_read_3d;
+        image->opaque = &chain->volume;
+        *resolved = image;
+        return true;
+    }
 
     terminal = MAX((s->tex_sampler[0] >> 10) & 31,
                    (s->tex_sampler[0] >> 5) & 31);
@@ -4156,13 +4259,15 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
         SGI_GL_REPLACE, SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL,
         SGI_GL_BLEND,
     };
-    uint32_t strq[4] = { s->tex_coord[0], s->tex_coord[1], 0, ODSY_F32_ONE };
+    uint32_t strq[4] = { s->tex_coord[0], s->tex_coord[1],
+                         s->tex_coord_r, ODSY_F32_ONE };
     bool one_d = (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D)) ==
                  ODSY_TEX_MODE_1D;
     float matrix[16];
 
     s->gl_ctx.cur.texture_2d = !!(s->tex_mode &
                                   (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D));
+    s->gl_ctx.cur.texture_3d = !!(s->tex_mode & ODSY_TEX_MODE_3D);
     /* Excluded environments are rejected by the family before rasterization. */
     s->gl_ctx.cur.texture_env_mode = SGI_GL_REPLACE;
     if (s->tex_env[0] < ARRAY_SIZE(environments)) {
@@ -4196,11 +4301,11 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     OdysseyTextureChain texture;
     SGIGLDrawResult result;
 
-    if (d->state->texture_2d &&
+    if ((d->state->texture_2d || d->state->texture_3d) &&
         !odyssey_texture_setup(s, &image, &texture, &t.texture)) {
         return SGI_GL_DRAW_OK;
     }
-    if (state.texture_2d && s->tex_env[0] == 4) {
+    if ((state.texture_2d || state.texture_3d) && s->tex_env[0] == 4) {
         /* The family words pack two normalized 12-bit components each. */
         state.texture_env_color[0] = ((s->tex_env[1] >> 12) & 0xfff) /
                                      4095.0f;
@@ -7064,6 +7169,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
                3 * sizeof(uint32_t));
         return;
     }
+    if (tag == ODSY_GL_TEXCOORD_3F) {
+        memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
+        s->tex_coord_r = s->cmd_operand[2];
+        return;
+    }
     if ((tag & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG &&
         tag != ODSY_GL_TEXCOORD_2F) {
         /* The 3f, 4f and integer forms: consumed, not kept. */
@@ -7164,7 +7274,8 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
             s->gl_integer_prim = true;
         }
         if (s->gl_begin_open && !s->image_active &&
-            (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D))) {
+            (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                            ODSY_TEX_MODE_3D))) {
             if (!s->gl_in_prim) {
                 uint32_t mode = s->gl_primitive;
 
@@ -7536,9 +7647,11 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_GL_TEXCOORD_1F:
         s->tex_coord[0] = s->cmd_operand[0];
         s->tex_coord[1] = 0;
+        s->tex_coord_r = 0;
         break;
     case ODSY_GL_TEXCOORD_2F:
         memcpy(s->tex_coord, s->cmd_operand, sizeof(s->tex_coord));
+        s->tex_coord_r = 0;
         break;
     case ODSY_GL_TEX_RECT:
         if (!odyssey_texture_build_level(s) && !s->tex_rect_reported) {
@@ -7884,6 +7997,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         return;
     }
     if (word == ODSY_GL_TEXCOORD_1F ||
+        word == ODSY_GL_TEXCOORD_3F ||
         (word & ODSY_GL_TEXCOORD_SHAPE) == ODSY_GL_TEXCOORD_TAG ||
         word == ODSY_GL_TEX_RECT) {
         odyssey_cmd_start(s, word, odyssey_cmd_arity(word));
@@ -8652,6 +8766,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->tex_lod[2] = 0x3100;
     s->tex_lod[3] = 0x0f00;
     memset(s->tex_coord, 0, sizeof(s->tex_coord));
+    s->tex_coord_r = 0;
     s->tex_rect_reported = false;
     memset(s->gl_vertex_x, 0, sizeof(s->gl_vertex_x));
     memset(s->gl_vertex_y, 0, sizeof(s->gl_vertex_y));
@@ -9476,7 +9591,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 33,
+    .version_id = 34,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -9629,6 +9744,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_V(tex_level0, SGIOdysseyState, 22),
         VMSTATE_UINT32_ARRAY_V(tex_lod, SGIOdysseyState, 4, 31),
         VMSTATE_UINT32_ARRAY_V(tex_coord, SGIOdysseyState, 2, 22),
+        VMSTATE_UINT32_V(tex_coord_r, SGIOdysseyState, 34),
         /* The colour-mode words (v24). */
         VMSTATE_UINT32_ARRAY_V(colour_mode, SGIOdysseyState, 2, 24),
         /* Program memory and the per-context windows (v25). */

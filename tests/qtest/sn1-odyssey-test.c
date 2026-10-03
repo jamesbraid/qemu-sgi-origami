@@ -8966,6 +8966,62 @@ static void texture_adapter_point_rgba(QTestState *qts, int x, int y,
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+static void texture_adapter_upload_3d_slice(QTestState *qts, uint32_t base,
+                                             const uint32_t *pixels,
+                                             uint32_t width, uint32_t height)
+{
+    uint32_t count = width * height;
+
+    upload_begin(qts, base, 2, 0x080024d0, width, height);
+    upload_first_header(qts, 0x4b);
+    for (uint32_t offset = 0; offset < count; ) {
+        uint32_t burst = MIN(16, count - offset);
+
+        user_cmd_push(qts, ODSY_IMAGE_BURST(burst, ODSY_IMAGE_FMT_RGB));
+        push_user_words(qts, &pixels[offset], burst);
+        offset += burst;
+    }
+    upload_end(qts);
+}
+
+static void texture_adapter_bind_3d(QTestState *qts, uint32_t base,
+                                    uint32_t height, uint32_t depth,
+                                    uint32_t stride_units, uint32_t level_word2)
+{
+    uint32_t sampler[7] = {
+        0x08000000 | (ctz32(2) << 10) | (ctz32(height) << 5) | ctz32(depth),
+        2, height, depth, 0x13000000, 0, 0,
+    };
+    uint32_t level[3] = { base, 0x41100000 | stride_units, level_word2 };
+    const uint32_t env[5] = { 1, 0, 0, 0, 0 };
+    const uint32_t words[] = {
+        0x00010405, 0x20,
+        0x00011c16,
+        sampler[0], sampler[1], sampler[2], sampler[3],
+        sampler[4], sampler[5], sampler[6],
+        0x0001141b, env[0], env[1], env[2], env[3], env[4],
+        0x00010e80, level[0], level[1], level[2],
+        0x00010406, 0,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void texture_adapter_point_3d(QTestState *qts, int x, int y,
+                                     float s, float t, float r)
+{
+    const uint32_t words[] = {
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, 0,
+        ODSY_CMD_GL_BEGIN, 0,
+        0xc380cc23, bitmap_rect_float(s), bitmap_rect_float(t),
+        bitmap_rect_float(r),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x + 0.5f),
+        bitmap_rect_float(y + 0.5f), ODSY_CMD_GL_END,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
 static void texture_adapter_upload_scalar(QTestState *qts, uint32_t base)
 {
     upload_begin(qts, base, 2, 0x080024d0, 2, 2);
@@ -9767,6 +9823,169 @@ static void test_texture_adapter_scalar_components(void)
                              (const uint32_t[5]) { 3, 0, 0, 0, 0 });
     texture_adapter_point(qts, 17, 10, 0.75f, 0.25f);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x12345678);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_level_zero_3d(void)
+{
+    const uint32_t slice_colours[4] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    QTestState *qts = board_start("");
+
+    for (unsigned volume = 0; volume < 2; volume++) {
+        uint32_t height = volume ? 32 : 2;
+        uint32_t level_word2 = volume ? 2 : 1;
+        uint32_t spacing = volume ? 0x100 : 0x80;
+
+        for (unsigned z = 0; z < 4; z++) {
+            uint32_t pixels[64];
+
+            for (unsigned i = 0; i < 2 * height; i++) {
+                pixels[i] = slice_colours[z];
+            }
+            texture_adapter_upload_3d_slice(qts, 0x190000 + z * spacing,
+                                             pixels, 2, height);
+            g_assert_cmphex(odsy_test_object_texel(qts,
+                                                   0x190000 + z * spacing,
+                                                   0, 0), ==, slice_colours[z]);
+        }
+        texture_adapter_window(qts);
+        texture_adapter_bind_3d(qts, 0x190000, height, 4, 2, level_word2);
+        for (unsigned z = 0; z < 4; z++) {
+            texture_adapter_point_3d(qts, 10 + z, 10,
+                                    0.25f, 0.25f, (z + 0.5f) / 4);
+            g_assert_cmphex(odsy_test_pixel(qts, 10 + z, 10), ==,
+                            slice_colours[z]);
+        }
+    }
+
+    /* Missing slices and invalid dimensions or stride drop the whole draw. */
+    {
+        const uint32_t pixel[4] = {
+            0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+        };
+        uint32_t sampler[7] = { 0x08000422, 2, 2, 4, 0x13000000, 0, 0 };
+        uint32_t level[3] = { 0x191000, 0x41100002, 1 };
+        const uint32_t env[5] = { 1, 0, 0, 0, 0 };
+
+        texture_adapter_upload_3d_slice(qts, 0x191000, pixel, 2, 2);
+        texture_adapter_upload_3d_slice(qts, 0x191080, pixel, 2, 2);
+        texture_adapter_upload_3d_slice(qts, 0x191180, pixel, 2, 2);
+        texture_adapter_window(qts);
+        texture_adapter_bind_3d(qts, 0x191000, 2, 4, 2, 1);
+        odsy_test_pixel_write(qts, 20, 10, ODSY_PLANE_YELLOW);
+        texture_adapter_point_3d(qts, 20, 10, 0.25f, 0.25f, 0.625f);
+        g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==,
+                        ODSY_PLANE_YELLOW);
+
+        sampler[1] = 3;
+        sampler[0] = 0x08000022;
+        user_cmd_push(qts, 0x00011c16);
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 21, 10, ODSY_PLANE_YELLOW);
+        texture_adapter_point_3d(qts, 21, 10, 0.25f, 0.25f, 0.125f);
+        g_assert_cmphex(odsy_test_pixel(qts, 21, 10), ==,
+                        ODSY_PLANE_YELLOW);
+
+        sampler[1] = 2;
+        sampler[0] = 0x08000422;
+        sampler[4] = 0x13000002;
+        user_cmd_push(qts, 0x00011c16);
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 22, 10, ODSY_PLANE_YELLOW);
+        texture_adapter_point_3d(qts, 22, 10, 0.25f, 0.25f, 0.125f);
+        g_assert_cmphex(odsy_test_pixel(qts, 22, 10), ==,
+                        ODSY_PLANE_YELLOW);
+
+        sampler[4] = 0x13000000;
+        user_cmd_push(qts, 0x00011c16);
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        level[1] = 0x41100004;
+        user_cmd_push(qts, 0x00010e80);
+        push_user_words(qts, level, ARRAY_SIZE(level));
+        user_cmd_push(qts, 0x0001141b);
+        push_user_words(qts, env, ARRAY_SIZE(env));
+        odsy_test_pixel_write(qts, 23, 10, ODSY_PLANE_YELLOW);
+        texture_adapter_point_3d(qts, 23, 10, 0.25f, 0.25f, 0.125f);
+        g_assert_cmphex(odsy_test_pixel(qts, 23, 10), ==,
+                        ODSY_PLANE_YELLOW);
+    }
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_3d_state_restore(void)
+{
+    const uint32_t colours[4] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    const uint64_t spacing = 0x80;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-texture-3d-state-XXXXXX", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (unsigned z = 0; z < ARRAY_SIZE(colours); z++) {
+        const uint32_t pixels[4] = {
+            colours[z], colours[z], colours[z], colours[z],
+        };
+
+        texture_adapter_upload_3d_slice(from, 0x1a0000 + z * spacing,
+                                         pixels, 2, 2);
+    }
+    texture_adapter_window(from);
+    texture_adapter_bind_3d(from, 0x1a0000, 2, 4, 2, 1);
+    texture_adapter_point_3d(from, 10, 10, 0.25f, 0.25f, 0.625f);
+    g_assert_cmphex(odsy_test_pixel(from, 10, 10), ==, colours[2]);
+
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    /* The family restores R with the object and sampler state. */
+    texture_adapter_current_point(to, 11, 10);
+    g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, colours[2]);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_context_save_texture_coordinate_3d(void)
+{
+    const uint64_t page = ODSY_SHADOW_PAGE;
+    const uint32_t coordinate[3] = { 0x3f000000, 0x3f400000, 0x3f200000 };
+    QTestState *qts = board_start("");
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    qtest_memset(qts, page, 0xa5, 4096);
+    qtest_writel(qts, page + 0x84, 0);
+    qtest_writel(qts, page + ODSY_CTX_SWITCH_DONE_OFFSET, 0);
+    user_cmd_push(qts, 0x00010405);
+    user_cmd_push(qts, 0x20);
+    user_cmd_push(qts, 0xc380cc23);
+    push_user_words(qts, coordinate, ARRAY_SIZE(coordinate));
+    texture_adapter_current_point(qts, 10, 10);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                 (UINT64_C(7) << 40) | (UINT64_C(1) << 16) | 1);
+
+    g_assert_cmphex(qtest_readl(qts, page + ODSY_CTX_SWITCH_DONE_OFFSET),
+                    ==, 1);
+    g_assert_cmphex(qtest_readl(qts, page + 0x140), ==, 0xc380cc23);
+    g_assert_cmphex(qtest_readl(qts, page + 0x400), ==, coordinate[0]);
+    g_assert_cmphex(qtest_readl(qts, page + 0x404), ==, coordinate[1]);
+    g_assert_cmphex(qtest_readl(qts, page + 0x408), ==, coordinate[2]);
     qtest_quit(qts);
 }
 
@@ -12072,6 +12291,12 @@ int main(int argc, char **argv)
                    test_texture_adapter_components_environment);
     qtest_add_func("sn1/odyssey/texture-adapter/scalar-components",
                    test_texture_adapter_scalar_components);
+    qtest_add_func("sn1/odyssey/texture-adapter/level-zero-3d",
+                   test_texture_adapter_level_zero_3d);
+    qtest_add_func("sn1/odyssey/texture-adapter/3d-state-restore",
+                   test_texture_adapter_3d_state_restore);
+    qtest_add_func("sn1/odyssey/context-save-texture-coordinate-3d",
+                   test_context_save_texture_coordinate_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/blend-environment",
                    test_texture_adapter_blend_environment);
     qtest_add_func("sn1/odyssey/texture-adapter/blend-state-restore",

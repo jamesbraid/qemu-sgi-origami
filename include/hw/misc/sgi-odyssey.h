@@ -267,8 +267,8 @@ struct SGIOdysseyState {
      * ODSY_REG_TEX_*): tex_mode 0x405, tex_sampler 0x1c16, tex_env 0x141b,
      * tex_levels the 0x0e80 table, three words an entry, tex_level0 0x406,
      * tex_lod the four 0x1013 words,
-     * tex_coord the last 0xc380c821 (s, t) as float bits, untransformed. Kept
-     * and migrated for the shared 2D texture sampler. The remaining flag
+     * tex_coord the last 0xc380c821 (s, t) as float bits, untransformed;
+     * tex_coord_r retains the 3D coordinate. The remaining flag
      * records the unsupported on-board mipmap rectangle report.
      */
     uint32_t tex_mode;
@@ -278,6 +278,7 @@ struct SGIOdysseyState {
     uint32_t tex_level0;
     uint32_t tex_lod[4];
     uint32_t tex_coord[2];
+    uint32_t tex_coord_r;
     bool tex_rect_reported;
     uint64_t dma_seq;
 
