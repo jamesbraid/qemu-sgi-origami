@@ -194,8 +194,21 @@ if have_block
   tests += {'test-crypto-pbkdf': [io]}
 endif
 
+if have_system and opengl.found() and gbm.found()
+  tests += {
+    'test-sgi-renderer-gl': ['../../hw/display/sgi/renderer-gl.c',
+                             '../../ui/sgi-renderer.c', '../../ui/egl-helpers.c',
+                             '../../ui/dmabuf.c', '../../util/drm.c',
+                             opengl, gbm, pixman],
+    'test-sgi-egl-display': ['../../ui/egl-helpers.c', '../../ui/egl-context.c',
+                             '../../ui/dmabuf.c',
+                             opengl, gbm, pixman],
+  }
+endif
+
 if have_system
   tests += {
+    'test-sgi-renderer': ['../../ui/sgi-renderer.c'],
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
     'test-sgi-bedrock-ni': ['../../hw/misc/sgi-bedrock-ni-regs.c'],
     'test-sgi-pi-gfx': ['../../hw/mips/sgi/pi-gfx.c'],

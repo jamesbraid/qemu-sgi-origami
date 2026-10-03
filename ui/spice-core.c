@@ -662,6 +662,10 @@ void qemu_spice_display_init_done(void)
         qemu_add_vm_change_state_handler(vm_change_state_handler, NULL);
 }
 
+#ifdef CONFIG_OPENGL
+static QemuEGLDisplayLease *spice_egl_session;
+#endif
+
 static void qemu_spice_init(void)
 {
     QemuOpts *opts = QTAILQ_FIRST(&qemu_spice_opts.head);
@@ -874,7 +878,8 @@ static void qemu_spice_init(void)
             exit(1);
 #endif
         }
-        egl_init(qemu_opt_get(opts, "rendernode"), DISPLAY_GL_MODE_ON, &error_fatal);
+        egl_init_session(qemu_opt_get(opts, "rendernode"), DISPLAY_GL_MODE_ON,
+                         &spice_egl_session, &error_fatal);
         spice_opengl = 1;
     }
 #endif
@@ -1023,6 +1028,10 @@ static void qemu_spice_cleanup(void)
     g_clear_pointer(&spice_server, spice_server_destroy);
     g_clear_pointer(&vm_change_entry, qemu_del_vm_change_state_handler);
     using_spice = 0;
+#ifdef CONFIG_OPENGL
+    egl_cleanup_session(spice_egl_session);
+    spice_egl_session = NULL;
+#endif
 }
 
 static struct QemuSpiceOps real_spice_ops = {

@@ -1574,6 +1574,10 @@ F: tests/unit/test-sgi-pi-gfx.c
 F: tests/unit/test-sgi-rad1-audio-pcm.c
 F: tests/unit/test-sgi-router.c
 F: tests/unit/test-sgi-scanout.c
+F: tests/unit/test-sgi-renderer*.c
+F: tests/unit/test-sgi-egl-display.c
+F: include/ui/sgi-renderer.h
+F: ui/sgi-renderer.c
 F: tests/unit/test-sgi-x-gc.c
 F: tests/unit/test-sn0-fabric-routed.c
 

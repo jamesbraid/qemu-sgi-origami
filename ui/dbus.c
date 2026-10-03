@@ -623,6 +623,10 @@ static const TypeInfo dbus_vc_type_info = {
     .class_init = dbus_vc_class_init,
 };
 
+#ifdef CONFIG_OPENGL
+static QemuEGLDisplayLease *dbus_egl_session;
+#endif
+
 static void
 early_dbus_init(DisplayOptions *opts)
 {
@@ -630,7 +634,8 @@ early_dbus_init(DisplayOptions *opts)
 
     if (mode != DISPLAY_GL_MODE_OFF) {
 #ifdef CONFIG_OPENGL
-        egl_init(opts->u.dbus.rendernode, mode, &error_fatal);
+        egl_init_session(opts->u.dbus.rendernode, mode,
+                         &dbus_egl_session, &error_fatal);
 #else
         error_report("dbus: GL rendering is not supported");
 #endif
@@ -684,6 +689,10 @@ dbus_cleanup(void)
     if (o) {
         object_unparent(o);
     }
+#ifdef CONFIG_OPENGL
+    egl_cleanup_session(dbus_egl_session);
+    dbus_egl_session = NULL;
+#endif
 }
 
 static QemuDisplay qemu_display_dbus = {
