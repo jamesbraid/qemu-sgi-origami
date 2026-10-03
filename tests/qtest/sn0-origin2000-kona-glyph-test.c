@@ -443,16 +443,15 @@ static void test_packing4_grammar_row(void)
     assert_in_step(qts);
 }
 
-/*
- * A box filled under a one-bit-form GC, fg_h 0xfff0 with word 1 0x230,
- * takes the foreground word 1 carries, index 0x23, not 0xfff0 read as a
- * solid fg_h, which would give index 0xf.
- */
+/* A bitmap-form source cannot be reinterpreted as a solid main colour. */
 static void test_bitmap_gc_fill_index(void)
 {
     qtest_system_reset(qts);
     load_bitmap_gc(qts, 0xfff0, 0x230, 0, 0);
     x_command(qts, TOKEN_BOX, (uint32_t[]){ XY(5, 5), XY(7, 7) }, 2);
+    g_assert_cmphex(front_at(qts, 5, 5), ==, 0);
+    g_assert_cmphex(front_at(qts, 6, 6), ==, 0);
+    fill_box(qts, 0x23, 5, 5, 7, 7);
     g_assert_cmphex(front_at(qts, 5, 5), ==, 0x23);
     g_assert_cmphex(front_at(qts, 6, 6), ==, 0x23);
     assert_in_step(qts);

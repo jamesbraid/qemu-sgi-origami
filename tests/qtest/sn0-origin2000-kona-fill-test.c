@@ -224,7 +224,7 @@ static void kona_command(QTestState *s, uint32_t token, const uint32_t *args,
 static void load_gc(QTestState *s, uint32_t index)
 {
     static const uint32_t rest[] = {
-        0, 0, 0, 0, 0xfc000, 8, 1, 0, 6, 0, 1, 1,
+        0x1ffe, 0, 0, 0xf00fff, 0, 0xc, 1, 1, 6, 0, 1, 1,
     };
 
     qtest_writel(s, REG_COMMAND_SLOT(TOKEN_GC), index << 12);
@@ -300,7 +300,7 @@ static void assert_box(QTestState *s, int x1, int y1, int x2, int y2,
 static void test_single_box(void)
 {
     static const uint32_t gc[] = {
-        0x10000, 0, 0, 0, 0, 0xfc000, 8, 1, 0, 6, 0, 1, 1,
+        0x10000, 0x1ffe, 0, 0, 0xf00fff, 0, 0xc, 1, 1, 6, 0, 1, 1,
     };
     g_autofree uint8_t *frame = NULL;
 
@@ -566,29 +566,36 @@ static void test_clipping(void)
     assert_in_step(qts);
 }
 
-/*
- * fg_h carries the colour index in the colour-index packing: the greeter
- * run's fg_h values 0x10000, 0x15000, 0x18000, 0x1d000 and 0x2f000 fill
- * with indices 0x10, 0x15, 0x18, 0x1d and 0x2f. Bits 6:3 of fg_h, where
- * the packing puts the low nibble of index << 8, are always zero at depth
- * 8; setting them must not change the index.
- */
+/* Canonical CI8 packing rejects a nonzero low byte before drawing. */
 static void test_gc_index_packing(void)
 {
     static const uint32_t fg_h[] = { 0x10000, 0x15000, 0x18000, 0x1d000,
                                      0x2f000, 0x2f078 };
-    static const uint32_t index[] = { 0x10, 0x15, 0x18, 0x1d, 0x2f, 0x2f };
+    static const uint32_t index[] = { 0x10, 0x15, 0x18, 0x1d, 0x2f, 0 };
 
     qtest_system_reset(qts);
     for (size_t i = 0; i < ARRAY_SIZE(fg_h); i++) {
-        qtest_writel(qts, REG_COMMAND_SLOT(TOKEN_GC), fg_h[i]);
-        for (unsigned w = 1; w < 13; w++) {
-            qtest_writel(qts, REG_COMMAND_DATA, 0);
-        }
+        uint32_t gc[13] = { fg_h[i], 0x1ffe, 0, 0, 0xf00fff, 0,
+                             0xc, 1, 1, 6, 0, 1, 1 };
+
+        kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
         kona_command(qts, TOKEN_BOX,
                      (uint32_t[]){ XY(10 * i, 0), XY(10 * i + 2, 2) }, 2);
-        assert_box(qts, 10 * i, 0, 10 * i + 2, 2, index[i]);
+        if (i + 1 == ARRAY_SIZE(fg_h)) {
+            g_assert_cmphex(front_at(qts, 10 * i, 0), ==, 0);
+            g_assert_cmphex(front_tag_at(qts, 10 * i, 0), ==, 0);
+        } else {
+            assert_box(qts, 10 * i, 0, 10 * i + 2, 2, index[i]);
+        }
     }
+    /* The all-zero synthetic GC is unsupported, with complete framing. */
+    kona_command(qts, TOKEN_GC, (uint32_t[13]) { 0 }, 13);
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(70, 0), XY(72, 2) }, 2);
+    g_assert_cmphex(front_at(qts, 70, 0), ==, 0);
+    g_assert_cmphex(front_tag_at(qts, 70, 0), ==, 0);
+    load_gc(qts, 0x2f);
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(70, 0), XY(72, 2) }, 2);
+    assert_box(qts, 70, 0, 72, 2, 0x2f);
     assert_in_step(qts);
 }
 
@@ -1434,8 +1441,8 @@ static void test_point_gc_refusal(void)
         unsigned word;
         uint32_t value;
     } rejected[] = {
-        { 9, 12 }, { 4, 0xf0000f }, { 6, 8 }, { 6, 0x8c },
-        { 6, 0x20c }, { 0, 0x100003c }, { 1, 0 }, { 5, 1 },
+        { 9, 13 }, { 4, 0xf0000e }, { 6, 8 }, { 6, 0x8c },
+        { 6, 0x20c }, { 0, 0x100003c }, { 1, 0x1000 }, { 5, 1 },
         { 7, 2 }, { 8, 2 }, { 10, 1 }, { 11, 2 }, { 12, 2 },
     };
     g_autofree char *log = NULL, *found = NULL;
@@ -1463,7 +1470,7 @@ static void test_point_gc_refusal(void)
     }
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "unsupported X point GC:"));
+    g_assert_nonnull(strstr(found, "unsupported X GC status "));
 }
 
 static void test_point_run_discard(void)
@@ -1542,7 +1549,8 @@ static void test_point_data_framing(gconstpointer opaque)
         kona_command(s, TOKEN_BOX,
                      (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
         assert_box(s, 10, 20, 12, 22, 0x55);
-        g_assert_cmphex(front_at(s, 0, 26), ==, 0);
+        g_assert_cmphex(front_at(s, 0, 26), ==,
+                        c->token == 0x14c || c->token == 0x14d ? 0x55 : 0);
         assert_in_step(s);
         qtest_quit(s);
         found = kona_log_read(log);
@@ -1606,6 +1614,530 @@ static void test_point_framing_migrates(void)
     g_rmdir(dir);
 }
 
+/* Independent X GX truth tables, indexed by (source bit, destination bit). */
+static uint8_t semantic_ci_result(unsigned gx, uint8_t source, uint8_t dest,
+                                   uint8_t mask)
+{
+    static const uint8_t truth[] = {
+        0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15,
+    };
+    uint8_t result = 0;
+
+    for (unsigned bit = 0; bit < 8; bit++) {
+        unsigned input = (((source >> bit) & 1) << 1) |
+                         ((dest >> bit) & 1);
+
+        result |= ((truth[gx] >> input) & 1) << bit;
+    }
+    return (result & mask) | (dest & ~mask);
+}
+
+static char *semantic_plane_digest(QTestState *s, unsigned plane)
+{
+    QDict *reply;
+    char *digest;
+
+    kona_qom_set_uint(s, "x-test-plane", plane);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'x-test-plane-digest'}}", KONA_QOM_PATH);
+    digest = g_strdup(qdict_get_str(reply, "return"));
+    qobject_unref(reply);
+    return digest;
+}
+
+static void semantic_rgb_gc(uint32_t *gc, uint32_t rgb, uint32_t mask,
+                              unsigned gx)
+{
+    uint64_t color = 0x1ffe;
+    uint32_t fields[3];
+
+    for (unsigned i = 0; i < 3; i++) {
+        unsigned byte = (rgb >> (8 * i)) & 0xff;
+        unsigned mask_byte = (mask >> (8 * i)) & 0xff;
+
+        color |= (uint64_t)((byte << 4) | (byte >> 4)) << (14 + 13 * i);
+        fields[i] = (mask_byte << 4) | (mask_byte >> 4);
+    }
+    memset(gc, 0, 13 * sizeof(*gc));
+    gc[0] = color >> 32;
+    gc[1] = color;
+    gc[3] = 0x1ffe;
+    gc[4] = fields[2] | (fields[1] << 12);
+    gc[5] = 0xfff000 | fields[0];
+    gc[6] = 4;
+    gc[7] = 1;
+    gc[8] = 1;
+    gc[9] = gx * 2;
+}
+
+static void test_semantic_ci_logic(gconstpointer opaque)
+{
+    unsigned test = GPOINTER_TO_UINT(opaque);
+    unsigned gx = (test >> 8) & 15;
+    bool rgb = test & 0x10000;
+    uint8_t mask = test & 0xff;
+    const size_t pixels = (size_t)KONA_FB_WIDTH * KONA_FB_HEIGHT;
+    g_autofree uint8_t *expected_words = g_malloc0(pixels * 4);
+    g_autofree uint8_t *expected_tags = g_malloc0(pixels);
+    g_autofree char *word_digest = NULL, *tag_digest = NULL;
+    uint32_t gc[13] = {
+        0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+    char *before[7] = { NULL };
+    uint32_t source = rgb ? 0x963ca5 : 0x96;
+    uint32_t dest = rgb ? 0x5a81c3 : 0xa5;
+    uint32_t logical_mask = rgb ? (mask == 0xff ? 0xffffff :
+                                  mask ? 0x53a56c : 0) : mask;
+    uint32_t result = 0;
+
+    for (unsigned byte = 0; byte < (rgb ? 3 : 1); byte++) {
+        result |= (uint32_t)semantic_ci_result(gx, source >> (8 * byte),
+                                                dest >> (8 * byte),
+                                                logical_mask >> (8 * byte)) <<
+                  (8 * byte);
+    }
+
+    qtest_system_reset(qts);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            before[plane] = semantic_plane_digest(qts, plane);
+        }
+    }
+    if (rgb) {
+        semantic_rgb_gc(gc, dest, 0xffffff, 3);
+    }
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    gc[0] = 0x96000;
+    gc[4] = 0xf0000f | ((uint32_t)mask << 4);
+    gc[9] = gx * 2;
+    if (rgb) {
+        semantic_rgb_gc(gc, source, logical_mask, gx);
+    }
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+
+    for (unsigned y = 20; y < 22; y++) {
+        for (unsigned x = 10; x < 12; x++) {
+            size_t pixel = (KONA_FB_HEIGHT - 1 - y) * KONA_FB_WIDTH + x;
+
+            uint32_t value = x == 10 && y == 20 ? result : dest;
+
+            for (unsigned byte = 0; byte < (rgb ? 3 : 1); byte++) {
+                expected_words[pixel * 4 + byte] = value >> (8 * byte);
+            }
+            expected_tags[pixel] = rgb ? 0 : TAG_X_INDEX;
+        }
+    }
+    word_digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                               expected_words, pixels * 4);
+    tag_digest = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                                              expected_tags, pixels);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+        const char *expected = plane == PLANE_FRONT ? word_digest :
+                              plane == PLANE_FRONT_TAG ? tag_digest :
+                              before[plane];
+
+        g_assert_cmpstr(actual, ==, expected);
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
+static void test_semantic_ci_refusal(void)
+{
+    uint32_t gc[13] = {
+        0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+    char *before[7];
+
+    qtest_system_reset(qts);
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(qts, plane);
+    }
+    /* The later destination has reset's incompatible direct tag. */
+    gc[0] = 0x96000;
+    gc[4] = 0xf0053f;
+    gc[9] = 12; /* GXxor. */
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 21) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    /* Refusal leaves framing ready for an ordinary full overwrite. */
+    gc[4] = 0xf00fff;
+    gc[9] = 6;
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 21) }, 2);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0x96);
+    g_assert_cmphex(front_at(qts, 11, 20), ==, 0x96);
+    g_assert_cmphex(front_tag_at(qts, 11, 20), ==, TAG_X_INDEX);
+    assert_in_step(qts);
+}
+
+static void test_semantic_shape_refusal(gconstpointer opaque)
+{
+    unsigned shape = GPOINTER_TO_UINT(opaque);
+    uint32_t gc[13] = { 0xa5000, 0, 0, 0, 0xf00fff, 0,
+                         0xc, 1, 1, 6, 0, 1, 1 };
+    char *before[11];
+
+    qtest_system_reset(qts);
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(qts, plane);
+    }
+    gc[0] = 0x96000;
+    gc[9] = 12;
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    /* A later direct-tagged destination refuses the entire shape packet. */
+    if (shape == 0) {
+        kona_command(qts, TOKEN_BOX6, (uint32_t[]){
+            XY(10, 20), XY(11, 21), XY(30, 40), XY(31, 41),
+            XY(-2, -2), XY(-1, -1), XY(-2, -2), XY(-1, -1),
+            XY(-2, -2), XY(-1, -1), XY(-2, -2), XY(-1, -1),
+        }, 12);
+    } else if (shape == 1) {
+        kona_command(qts, 0x14d, (uint32_t[]){
+            XY(10, 20), XY(30, 40), XY(-2, -2),
+            XY(-2, -2), XY(-2, -2), XY(-2, -2),
+        }, 6);
+    } else if (shape == 2) {
+        kona_command(qts, 0x157,
+                     (uint32_t[]){ 2, XY(10, 20), XY(30, 40), 1, 1 }, 5);
+    } else {
+        kona_command(qts, TOKEN_DATA2,
+                     (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+        kona_command(qts, TOKEN_BOX,
+                     (uint32_t[]){ XY(30, 40), XY(31, 41) }, 2);
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    gc[9] = 6;
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(30, 40), XY(31, 41) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 0, 30, KONA_FB_HEIGHT - 1 - 40),
+                    ==, 0x96);
+    assert_in_step(qts);
+}
+
+static void test_semantic_did(gconstpointer opaque)
+{
+    unsigned low = GPOINTER_TO_UINT(opaque);
+    uint32_t gc[13] = {
+        0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+    uint32_t did[13] = { 0, 0, 0, 0, 0, 0, 8, 1, 0, 6, 0, 1, 1 };
+    const uint32_t value = 0x5a96, mask = 0xa5c3;
+    char *before[7];
+
+    qtest_system_reset(qts);
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(qts, plane);
+    }
+    if (low) {
+        did[1] = ((value & 15) << 9) | ((value & 0xfff0) << 10);
+        did[5] = 0xfff00f;
+    } else {
+        did[0] = ((value & 15) << 3) | ((value & 0xfff0) << 4);
+        did[4] = 0xf00fff;
+    }
+    kona_command(qts, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 7, 10, KONA_FB_HEIGHT - 1 - 20), ==,
+                    value);
+    /* Clearing under an asymmetric raw mask is valid in either packing form. */
+    did[0] = did[1] = 0;
+    if (low) {
+        did[5] = ((mask & 0xfff) << 12) | (mask >> 12);
+    } else {
+        did[4] = ((mask >> 4) & 0xfff) | ((mask & 15) << 20);
+    }
+    kona_command(qts, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 7, 10, KONA_FB_HEIGHT - 1 - 20), ==,
+                    value & ~mask);
+    g_assert_cmphex(kona_plane_word(qts, 7, 11, KONA_FB_HEIGHT - 1 - 20), ==,
+                    value);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    for (unsigned invalid = 0; invalid < 2; invalid++) {
+        char *unchanged[11];
+        uint32_t refused[13] = { 8, 0x200, 0, 0, 0xf00fff, 0xfff00f,
+                                 8, 1, 0, 6, 0, 1, 1 };
+
+        if (invalid) {
+            refused[0] = 0x80;
+            refused[1] = refused[5] = 0;
+        }
+        for (unsigned plane = 0; plane < ARRAY_SIZE(unchanged); plane++) {
+            unchanged[plane] = semantic_plane_digest(qts, plane);
+        }
+        kona_command(qts, TOKEN_GC, refused, ARRAY_SIZE(refused));
+        kona_command(qts, TOKEN_BOX,
+                     (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+        for (unsigned plane = 0; plane < ARRAY_SIZE(unchanged); plane++) {
+            g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+            g_assert_cmpstr(actual, ==, unchanged[plane]);
+            g_free(unchanged[plane]);
+        }
+    }
+    load_gc(qts, 0x2f);
+    kona_command(qts, TOKEN_BOX,
+                 (uint32_t[]){ XY(30, 40), XY(31, 41) }, 2);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, 0x2f);
+    assert_in_step(qts);
+}
+
+static void test_semantic_did_map(void)
+{
+    uint32_t gc[13] = {
+        0x5a000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+    uint32_t did[13] = { 0x20, 0, 0, 0, 0xf00fff, 0,
+                         8, 1, 0, 6, 0, 1, 1 };
+    char *before[7];
+
+    qtest_system_reset(qts);
+    load_x_map(qts, X_MAP_WINDOW + 0x5a, (uint32_t[]){ ENTRY_RED }, 1);
+    load_x_map(qts, 0x2e00 + 0x5a, (uint32_t[]){ ENTRY_GREY_192 }, 1);
+    kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(qts, plane);
+    }
+    kona_command(qts, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xfe0000);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (7 << 3) | 4 }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    load_x_map(qts, 0x2e00 + 0x5a, (uint32_t[]){ 0x000003ff }, 1);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0x0000ff);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (11 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 1, (0x3fff << 7) | (7 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
+static void test_semantic_ancillary(void)
+{
+    uint32_t main_gc[13] = { 0x5a000, 0, 0, 0, 0xf00fff, 0,
+                              0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t overlay[13] = { 0xa5500 | (0xa << 3), 0, 0, 0,
+                              0xf00fff, 0, 0x2c, 1, 0, 6, 0, 1, 1 };
+    uint32_t popup[13] = { 3 << 3, 0, 0, 0, 0x300000, 0,
+                            0x20, 1, 0, 6, 0, 1, 1 };
+    char *before[7];
+    unsigned row = KONA_FB_HEIGHT - 1 - 20;
+
+    qtest_system_reset(qts);
+    load_x_map(qts, X_MAP_WINDOW + 0x5a, (uint32_t[]){ ENTRY_RED }, 1);
+    load_x_map(qts, 0x2e00 + 0x5a, (uint32_t[]){ ENTRY_GREY_192 }, 1);
+    load_x_map(qts, 0x2f00 + 3, (uint32_t[]){ 0x3ff }, 1);
+    kona_command(qts, TOKEN_GC, main_gc, ARRAY_SIZE(main_gc));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(qts, plane);
+    }
+    kona_command(qts, 0x132, (uint32_t[]){ 0x40,
+                 (0x2e00 << 7) | (7 << 3) }, 2);
+    kona_command(qts, 0x132, (uint32_t[]){ 0x3f,
+                 (0x2f00 << 7) | (1 << 3) }, 2);
+    kona_command(qts, TOKEN_GC, overlay, ARRAY_SIZE(overlay));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 8, 10, row), ==, 0xa55a);
+    g_assert_cmphex(kona_plane_word(qts, 9, 10, row), ==, 0);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    overlay[6] = 0x1830;
+    overlay[7] = 2;
+    overlay[10] = 5;
+    overlay[0] = 0x12300 | (4 << 3);
+    kona_command(qts, TOKEN_GC, overlay, ARRAY_SIZE(overlay));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 9, 10, row), ==, 0x1234);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    kona_command(qts, TOKEN_GC, popup, ARRAY_SIZE(popup));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_assert_cmphex(kona_plane_word(qts, 10, 10, row), ==, 3);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xff);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x3f, (0x2f00 << 7) | (7 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x3f, (0x3fff << 7) | (1 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x3f, (0x2f00 << 7) | (1 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xff);
+    popup[0] = 0;
+    kona_command(qts, TOKEN_GC, popup, ARRAY_SIZE(popup));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x40, (0x2e00 << 7) | (1 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x40, (0x3fff << 7) | (7 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x132,
+                 (uint32_t[]){ 0x40, (0x2e00 << 7) | (7 << 3) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xc0c0c0);
+    overlay[6] = 0x2c;
+    overlay[7] = 1;
+    overlay[10] = 0;
+    overlay[0] = 0;
+    kona_command(qts, TOKEN_GC, overlay, ARRAY_SIZE(overlay));
+    kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+    g_assert_cmphex(resolved_at(qts, 10, 20), ==, 0xfe0000);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
+static void test_semantic_desktop_diagnostics(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    uint32_t did[13] = { 0x20, 0, 0, 0, 0xf00fff, 0,
+                         8, 1, 0, 6, 0, 1, 1 };
+    unsigned reports = 0;
+    const char *cursor;
+
+    load_gc(s, 0x5a);
+    kona_command(s, TOKEN_BOX,
+                 (uint32_t[]){ XY(0, 0), XY(1280, 1024) }, 2);
+    kona_command(s, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(s, TOKEN_BOX,
+                 (uint32_t[]){ XY(0, 0), XY(1280, 1024) }, 2);
+    kona_command(s, 0x132,
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (11 << 3) }, 2);
+    for (unsigned pass = 0; pass < 2; pass++) {
+        g_autofree uint8_t *pixels = kona_screendump(s);
+
+        for (size_t i = 0; i < (size_t)1280 * 1024 * 3; i++) {
+            g_assert_cmpuint(pixels[i], ==, 0);
+        }
+        for (unsigned x = 0; x < 64; x++) {
+            g_assert_cmphex(resolved_at(s, x, 20), ==, 0);
+        }
+    }
+    /* A changed raw entry permits one fresh diagnostic. */
+    kona_command(s, 0x132,
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (12 << 3) }, 2);
+    for (unsigned x = 0; x < 64; x++) {
+        g_assert_cmphex(resolved_at(s, x, 20), ==, 0);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    cursor = found;
+    while ((cursor = strstr(cursor, "unsupported desktop map 1 raw="))) {
+        reports++;
+        cursor++;
+    }
+    g_assert_cmpuint(reports, ==, 2);
+}
+
+static void test_semantic_desktop_migration(gconstpointer opaque)
+{
+    unsigned variant = GPOINTER_TO_UINT(opaque);
+    bool present = variant != 0;
+    uint32_t map = variant == 4 ? 0 :
+                   variant == 2 ? (0x2e00 << 7) | (11 << 3) :
+                   variant == 3 ? (0x3fff << 7) | (7 << 3) :
+                                  (0x2e00 << 7) | (7 << 3);
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t did[13] = {
+        0x20, 0, 0, 0, 0xf00fff, 0, 8, 1, 0, 6, 0, 1, 1,
+    };
+    uint32_t main_gc[13] = { 0x5a000, 0, 0, 0, 0xf00fff, 0,
+                              0xc, 1, 1, 6, 0, 1, 1 };
+    char *before[11];
+
+    dir = g_dir_make_tmp("sn0-kona-desktop-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = qtest_init(MIGRATION_ARGS);
+    args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(args);
+    load_x_map(from, X_MAP_WINDOW + 0x5a, (uint32_t[]){ ENTRY_RED }, 1);
+    load_x_map(from, 0x2e00 + 0x5a, (uint32_t[]){ ENTRY_GREY_192 }, 1);
+    kona_command(from, TOKEN_GC, main_gc, ARRAY_SIZE(main_gc));
+    kona_command(from, TOKEN_BOX,
+                 (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    if (present) {
+        kona_command(from, 0x132,
+                     (uint32_t[]){ 1, map }, 2);
+        kona_command(from, TOKEN_GC, did, ARRAY_SIZE(did));
+        kona_command(from, TOKEN_BOX,
+                     (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    }
+    /* A reused destination has different nondefault ancillary pixels. */
+    kona_command(to, 0x132,
+                 (uint32_t[]){ 0, (0x3fff << 7) | (11 << 3) }, 2);
+    kona_command(to, 0x132,
+                 (uint32_t[]){ 1, (0x3fff << 7) | (11 << 3) }, 2);
+    did[0] = 0x12300;
+    kona_command(to, TOKEN_GC, did, ARRAY_SIZE(did));
+    kona_command(to, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = semantic_plane_digest(from, plane);
+    }
+    sgi_migrate_stopped(from, uri);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = semantic_plane_digest(to, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    g_assert_cmphex(resolved_at(to, 10, 20), ==,
+                    variant == 1 ? 0xc0c0c0 : present ? 0 : 0xfe0000);
+    qtest_system_reset(to);
+    g_assert_cmphex(kona_plane_word(to, 7, 10, KONA_FB_HEIGHT - 1 - 20), ==, 0);
+    assert_in_step(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     static const XFramingCase cases[] = {
@@ -1624,6 +2156,59 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
+    qtest_add_func("sn0/origin2000/kona-fill/semantic-ancillary/composition",
+                   test_semantic_ancillary);
+    qtest_add_func("sn0/origin2000/kona-fill/semantic-did/map",
+                   test_semantic_did_map);
+    qtest_add_func("sn0/origin2000/kona-fill/semantic-desktop/diagnostics",
+                   test_semantic_desktop_diagnostics);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
+                        "migration-installed-zero", GUINT_TO_POINTER(4),
+                        test_semantic_desktop_migration);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/migration",
+                        GUINT_TO_POINTER(1), test_semantic_desktop_migration);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
+                        "migration-omitted",
+                        GUINT_TO_POINTER(0), test_semantic_desktop_migration);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
+                        "migration-mode-unsupported", GUINT_TO_POINTER(2),
+                        test_semantic_desktop_migration);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-desktop/"
+                        "migration-range-unsupported", GUINT_TO_POINTER(3),
+                        test_semantic_desktop_migration);
+    for (unsigned shape = 0; shape < 4; shape++) {
+        static const char *names[] = { "boxes", "points", "spans", "run" };
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-fill/semantic-ci/refusal-%s", names[shape]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(shape),
+                            test_semantic_shape_refusal);
+    }
+    qtest_add_func("sn0/origin2000/kona-fill/semantic-ci/refusal",
+                   test_semantic_ci_refusal);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-did/high",
+                        GUINT_TO_POINTER(0), test_semantic_did);
+    qtest_add_data_func("sn0/origin2000/kona-fill/semantic-did/low",
+                        GUINT_TO_POINTER(1), test_semantic_did);
+    for (unsigned gx = 0; gx < 16; gx++) {
+        static const uint8_t masks[] = { 0xff, 0x53, 0 };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+            g_autofree char *name = g_strdup_printf(
+                "sn0/origin2000/kona-fill/semantic-ci/gx-%u-mask-%02x",
+                gx, masks[i]);
+
+            qtest_add_data_func(name, GUINT_TO_POINTER((gx << 8) | masks[i]),
+                                test_semantic_ci_logic);
+            g_clear_pointer(&name, g_free);
+            name = g_strdup_printf(
+                "sn0/origin2000/kona-fill/semantic-rgb/gx-%u-mask-%06x",
+                gx, masks[i] == 0xff ? 0xffffff : masks[i] ? 0x53a56c : 0);
+            qtest_add_data_func(name,
+                GUINT_TO_POINTER(0x10000 | (gx << 8) | masks[i]),
+                test_semantic_ci_logic);
+        }
+    }
     qtest_add_func("sn0/origin2000/kona-fill/cursor-reset-partial-image",
                    test_cursor_reset_partial_image);
     qtest_add_func("sn0/origin2000/kona-fill/cursor-migration",
