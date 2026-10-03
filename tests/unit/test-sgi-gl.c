@@ -8013,13 +8013,95 @@ static void test_texture_volume_pyramid(void)
         g_assert_cmpuint(f.pixels[1].reads, ==, 1);
         g_assert_cmpuint(f.pixels[0].reads + f.pixels[2].reads, ==, 0);
     }
-    /* A mip filter drops the draw rather than sampling a 2D pyramid. */
+    /* Missing volume levels disable texturing without using 2D callbacks. */
     f.image.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
     f.scene.rec.target.store_colour = counting_store_colour;
     counted_stores = 0;
     mipmap_point(&f);
-    g_assert_cmpuint(counted_stores, ==, 0);
+    g_assert_cmpuint(counted_stores, ==, 1);
     g_assert_cmpuint(f.pixels[1].reads, ==, 1);
+}
+
+static bool volume_mipmap_read(void *opaque, uint32_t level, uint32_t x,
+                               uint32_t y, uint32_t z, uint32_t *rgba)
+{
+    const SGIGLTexLevel *l = opaque;
+    static const uint32_t colours[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+
+    g_assert_cmpuint(level, ==, l->level);
+    g_assert_cmpuint(x, <, l->width);
+    g_assert_cmpuint(y, <, l->height);
+    g_assert_cmpuint(z, <, l->depth);
+    *rgba = colours[level];
+    return true;
+}
+
+static void test_texture_volume_mipmaps(void)
+{
+    SGIGLContext c;
+    SGIGLTexLevel levels[4];
+    SGIGLTexPyramid pyramid = {
+        .levels = levels, .count = 4, .max_level = 3,
+        .min_lod = 2.5, .max_lod = 2.5,
+    };
+    SGIGLTexImage image = {
+        .volume = true, .pyramid = &pyramid,
+        .min_filter = SGI_GL_LINEAR_MIPMAP_LINEAR,
+        .mag_filter = SGI_GL_NEAREST,
+        .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .wrap_r = SGI_GL_REPEAT,
+    };
+    const float coord[4] = { 0.5, 0.5, 0.75, 1 };
+    const float colour[4] = { 1, 1, 1, 1 };
+    float out[4] = { -1, -1, -1, -1 };
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    /* Depth determines the last level after S/T have reached one texel. */
+    for (unsigned i = 0; i < 4; i++) {
+        levels[i] = (SGIGLTexLevel) {
+            .level = i, .width = MAX(1, 2 >> i), .height = 1,
+            .depth = 8 >> i, .base_format = SGI_GL_RGBA,
+            .internal_format = SGI_GL_RGBA,
+            .read_texel_3d = volume_mipmap_read, .opaque = &levels[i],
+        };
+    }
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, 0.5f);
+    g_assert_cmpfloat(out[1], ==, 0.5f);
+    g_assert_cmpfloat(out[2], ==, 1);
+
+    image.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
+    pyramid.min_lod = pyramid.max_lod = 3;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    g_assert_cmpfloat(out[1], ==, 1);
+    g_assert_cmpfloat(out[2], ==, 1);
+
+    /* A bad or absent depth level must disable texturing transactionally. */
+    out[0] = -1;
+    levels[2].depth = 1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    levels[2].depth = 2;
+    pyramid.count = 3;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+
+    /* max_level bounds completeness even when deeper images are absent. */
+    pyramid.max_level = 2;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                            colour, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    g_assert_cmpfloat(out[1], ==, 0);
+    g_assert_cmpfloat(out[2], ==, 1);
 }
 
 static void texture_volume_vertex(FragScene *f, float x, float y, float r)
@@ -9330,6 +9412,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-post-filter",
                     test_texture_3d_post_filter);
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
+    g_test_add_func("/sgi-gl/texture-volume-mipmaps",
+                    test_texture_volume_mipmaps);
     g_test_add_func("/sgi-gl/texture-volume-pyramid",
                     test_texture_volume_pyramid);
     g_test_add_data_func("/sgi-gl/texture-volume-triangle-footprint",

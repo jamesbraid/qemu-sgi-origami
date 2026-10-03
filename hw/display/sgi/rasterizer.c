@@ -740,9 +740,6 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     for (unsigned k = 0; k < 4; k++) {
         border_finite &= isfinite(im->border_color[k]);
     }
-    if (im->volume && mipmap) {
-        goto unsupported;
-    }
     if (p->count > SGI_GL_TEX_LEVELS_MAX || (p->count && !p->levels) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         p->min_lod > p->max_lod || !border_finite ||
@@ -781,7 +778,13 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     }
     last = p->base_level;
     if (mipmap) {
-        uint32_t k = 31 - clz32(MAX(base->width, base->height));
+        uint32_t extent = MAX(base->width, base->height);
+        uint32_t k;
+
+        if (im->volume) {
+            extent = MAX(extent, base->depth);
+        }
+        k = 31 - clz32(extent);
         last = MIN((uint64_t)p->base_level + k, p->max_level);
     }
     /* Unsupported relevant forms cannot be concealed by missing images. */
@@ -803,7 +806,7 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         uint32_t shift = id - p->base_level;
 
         if (!l || (im->volume ? !l->read_texel_3d : !l->read_texel) ||
-            (im->volume && l->depth != base->depth) ||
+            (im->volume && l->depth != MAX(1, base->depth >> shift)) ||
             l->width != MAX(1, base->width >> shift) ||
             l->height != MAX(1, base->height >> shift) ||
             l->internal_format != base->internal_format ||
