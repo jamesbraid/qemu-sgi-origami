@@ -56,6 +56,7 @@ OBJECT_DECLARE_TYPE(SGIOdysseyState, SGIOdysseyClass, SGI_ODYSSEY)
 #define SGI_ODYSSEY_OBJECTS 64
 /* The texture level table's entries (0x0e80 .. 0x0ebf). */
 #define SGI_ODYSSEY_TEX_LEVELS 64
+#define SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES 256
 #define SGI_ODYSSEY_GL_ENTRIES 4
 #define SGI_ODYSSEY_GL_LIGHTS 8
 #define SGI_ODYSSEY_GL_LIGHT_COLOURS 25
@@ -273,6 +274,13 @@ struct SGIOdysseyState {
      */
     uint32_t tex_mode;
     uint32_t tex_sampler[7];
+    /*
+     * The two PIO colour-table planes used by the observed L8 sampler
+     * selectors. Each word retains both raw 12-bit fields; valid marks the
+     * sixteen uploaded 16-word blocks in each plane.
+     */
+    uint32_t tex_colour_table[2][SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES];
+    uint32_t tex_colour_table_valid[2];
     uint32_t tex_env[5];
     uint32_t tex_levels[SGI_ODYSSEY_TEX_LEVELS * 3];
     uint32_t tex_level0;

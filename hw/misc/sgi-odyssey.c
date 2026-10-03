@@ -1274,6 +1274,10 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_REG_TEX_LEVEL 0x0e80       /* 3 operands, 0x0e80 .. 0x0ebf */
 #define ODSY_REG_TEX_LEVEL0 0x0406      /* 1 operand */
 #define ODSY_REG_TEX_LOD 0x1013        /* 4 operands */
+#define ODSY_REG_TEX_COLOUR_TABLE0 0x3e00 /* 16 blocks of 16 words */
+#define ODSY_REG_TEX_COLOUR_TABLE1 0x3e10
+#define ODSY_TEX_COLOUR_TABLE_BLOCKS 16
+#define ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS 16
 #define ODSY_GL_TEXCOORD_1F 0xc380c41f  /* 1 operand: s */
 #define ODSY_GL_TEXCOORD_2F 0xc380c821  /* 2 operands: s, t */
 #define ODSY_GL_TEXCOORD_3F 0xc380cc23  /* 3 operands: s, t, r */
@@ -4021,10 +4025,14 @@ typedef struct OdysseyTextureVolume {
 } OdysseyTextureVolume;
 
 typedef struct OdysseyTextureChain {
+    /*
+     * Also supplies the state pointer for the post-filter callback. Keeping
+     * this first lets image.opaque serve both that callback and the 3D reader.
+     */
+    OdysseyTextureVolume volume;
     OdysseyTexture storage[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexLevel levels[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexPyramid pyramid;
-    OdysseyTextureVolume volume;
 } OdysseyTextureChain;
 
 static void odyssey_gl_transpose(const uint32_t *rows, float m[16]);
@@ -4093,6 +4101,29 @@ static bool odyssey_texture_read_level(void *opaque, uint32_t level,
            odyssey_texture_read(&chain->storage[level], x, y, rgba);
 }
 
+/*
+ * The observed L8 path filters its byte texels first, then uses each
+ * normalized RGB component as an independent 8-bit index. A half index
+ * rounds upward. The fourth table field is retained in raw state but has no
+ * established alpha meaning.
+ */
+static void odyssey_texture_colour_table(void *opaque, double rgba[4])
+{
+    const OdysseyTextureVolume *texture = opaque;
+    const SGIOdysseyState *s = texture->s;
+
+    for (unsigned channel = 0; channel < 3; channel++) {
+        uint32_t index = floor(MAX(0.0, MIN(rgba[channel], 1.0)) * 255.0 +
+                               0.5);
+        unsigned plane = channel == 2;
+        uint32_t word = s->tex_colour_table[plane][index];
+        uint32_t component = channel == 1 ? word & 0xfff :
+                                            (word >> 20) & 0xfff;
+
+        rgba[channel] = component / 4095.0;
+    }
+}
+
 /* Classify register state before looking up possibly incomplete storage. */
 static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                                    OdysseyTextureChain *chain,
@@ -4107,6 +4138,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     bool clamp = ws == 2 || wt == 2;
     bool border = ws == 3 || wt == 3;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
+    bool colour_table = word == 0x11500001 || word == 0x11500003;
+    bool colour_table_disabled = word == 0x11500000;
     uint32_t first = s->tex_level0 & 0x3f, count, terminal;
     int32_t lo = sextract32(s->tex_lod[2], 0, 14);
     int32_t hi = sextract32(s->tex_lod[3], 0, 14);
@@ -4170,12 +4203,24 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
           image->base_format != SGI_GL_RGBA || filter)) ||
         (min != 0 && min != 0x20 && min != 0x40 && min != 0x60 &&
          min != 0x80 && min != 0xa0) ||
-        word != (0x10000000 | components | (ws << 12) | (wt << 10) | filter) ||
+        (!colour_table && !colour_table_disabled &&
+         word != (0x10000000 | components | (ws << 12) | (wt << 10) |
+                  filter)) ||
         s->tex_lod[0] || s->tex_lod[1] ||
         (s->tex_lod[2] | s->tex_lod[3]) & ~0x3fffu ||
         lo < -15 * 256 || lo > 15 * 256 ||
         hi < -15 * 256 || hi > 15 * 256 ||
         (min >= 0x40 && lo > hi) ||
+        (colour_table &&
+         (image->base_format != SGI_GL_LUMINANCE || three_d ||
+          (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                          ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
+          s->tex_colour_table_valid[0] != 0xffff ||
+          s->tex_colour_table_valid[1] != 0xffff)) ||
+        (colour_table_disabled &&
+         (image->base_format != SGI_GL_LUMINANCE || three_d ||
+          (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                          ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D)) ||
         s->tex_env[0] < 1 || s->tex_env[0] > 4 ||
         (s->tex_env[0] == 3 &&
          (image->base_format == SGI_GL_ALPHA ||
@@ -4267,6 +4312,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         goto unsupported;
     }
     memset(chain, 0, sizeof(*chain));
+    chain->volume.s = s;
+    image->opaque = &chain->volume;
+    if (colour_table) {
+        image->post_filter = odyssey_texture_colour_table;
+    }
     for (uint32_t i = 0; i < count; i++) {
         uint32_t *entry = &s->tex_levels[(first + i) * 3];
         uint32_t level_width = MAX(1, width >> i);
@@ -7341,6 +7391,26 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         odyssey_gl_program_word(s, tag);
         return;
     }
+    if ((tag >= ODSY_REG_TEX_COLOUR_TABLE0 &&
+         tag < ODSY_REG_TEX_COLOUR_TABLE0 + ODSY_TEX_COLOUR_TABLE_BLOCKS) ||
+        (tag >= ODSY_REG_TEX_COLOUR_TABLE1 &&
+         tag < ODSY_REG_TEX_COLOUR_TABLE1 + ODSY_TEX_COLOUR_TABLE_BLOCKS)) {
+        unsigned plane = tag >= ODSY_REG_TEX_COLOUR_TABLE1;
+        unsigned first_tag = plane ? ODSY_REG_TEX_COLOUR_TABLE1 :
+                                     ODSY_REG_TEX_COLOUR_TABLE0;
+        unsigned block = tag - first_tag;
+
+        if (s->cmd_operand_count != ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS) {
+            odyssey_cmd_unimplemented(s, tag);
+            return;
+        }
+        memcpy(&s->tex_colour_table[plane]
+                                    [block * ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS],
+               s->cmd_operand,
+               ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS * sizeof(uint32_t));
+        s->tex_colour_table_valid[plane] |= 1u << block;
+        return;
+    }
     if (tag >= ODSY_REG_TEX_LEVEL &&
         tag < ODSY_REG_TEX_LEVEL + SGI_ODYSSEY_TEX_LEVELS) {
         memcpy(&s->tex_levels[(tag - ODSY_REG_TEX_LEVEL) * 3], s->cmd_operand,
@@ -8937,6 +9007,9 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->board_oob_reported = false;
     s->tex_mode = 0;
     memset(s->tex_sampler, 0, sizeof(s->tex_sampler));
+    memset(s->tex_colour_table, 0, sizeof(s->tex_colour_table));
+    memset(s->tex_colour_table_valid, 0,
+           sizeof(s->tex_colour_table_valid));
     memset(s->tex_env, 0, sizeof(s->tex_env));
     memset(s->tex_levels, 0, sizeof(s->tex_levels));
     s->tex_level0 = 0;
@@ -9728,6 +9801,11 @@ static int odyssey_post_load(void *opaque, int version_id)
         s->line_stipple[0] = s->line_stipple[1] = 0xffff;
         s->line_stipple[2] = 0;
     }
+    if (version_id < 35) {
+        memset(s->tex_colour_table, 0, sizeof(s->tex_colour_table));
+        memset(s->tex_colour_table_valid, 0,
+               sizeof(s->tex_colour_table_valid));
+    }
     if (version_id < 31) {
         s->tex_lod[0] = s->tex_lod[1] = 0;
         s->tex_lod[2] = 0x3100;
@@ -9769,7 +9847,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 34,
+    .version_id = 35,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -9916,6 +9994,9 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         /* The texture state words and coordinate (v22). */
         VMSTATE_UINT32_V(tex_mode, SGIOdysseyState, 22),
         VMSTATE_UINT32_ARRAY_V(tex_sampler, SGIOdysseyState, 7, 22),
+        VMSTATE_UINT32_2DARRAY_V(tex_colour_table, SGIOdysseyState,
+                                 2, SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES, 35),
+        VMSTATE_UINT32_ARRAY_V(tex_colour_table_valid, SGIOdysseyState, 2, 35),
         VMSTATE_UINT32_ARRAY_V(tex_env, SGIOdysseyState, 5, 22),
         VMSTATE_UINT32_ARRAY_V(tex_levels, SGIOdysseyState,
                                SGI_ODYSSEY_TEX_LEVELS * 3, 22),
