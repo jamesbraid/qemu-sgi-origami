@@ -26,9 +26,10 @@ void sgi_kona_texture_defaults(SGIKonaTextureParams *p)
         .min_filter = SGI_GL_NEAREST_MIPMAP_LINEAR,
         .mag_filter = SGI_GL_LINEAR,
         .wrap_s = SGI_GL_REPEAT, .wrap_t = SGI_GL_REPEAT,
+        .wrap_r = SGI_GL_REPEAT,
         .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
         .post_scale = { 1, 1, 1, 1 },
-        .lod_scale_s = 1, .lod_scale_t = 1,
+        .lod_scale_s = 1, .lod_scale_t = 1, .lod_scale_r = 1,
         .detail_mode = SGI_GL_MODULATE,
     };
 }
@@ -48,7 +49,7 @@ static uint64_t level_bytes(const SGIKonaTextureLevel *l)
 
 static uint64_t native_pixels(const SGIKonaTextureNativeImage *n)
 {
-    return (uint64_t)n->image.width * n->image.height;
+    return (uint64_t)n->image.width * n->image.height * n->image.depth;
 }
 
 static uint64_t native_coverage_bytes(const SGIKonaTextureNativeImage *n)
@@ -58,7 +59,7 @@ static uint64_t native_coverage_bytes(const SGIKonaTextureNativeImage *n)
 
 static uint64_t native_bytes(const SGIKonaTextureNativeImage *n)
 {
-    return level_bytes(&n->image) + native_coverage_bytes(n);
+    return native_pixels(n) * sizeof(uint32_t) + native_coverage_bytes(n);
 }
 
 static bool native_covered(const uint8_t *coverage, uint64_t pixel)
@@ -76,6 +77,12 @@ static bool native_dimensions(uint32_t width, uint32_t height)
 {
     return width && height && width <= INT32_MAX && height <= INT32_MAX &&
            (uint64_t)width * height <= SGI_KONA_TEXTURE_BYTES / 4;
+}
+
+static bool native_volume_dimensions(uint32_t w, uint32_t h, uint32_t d)
+{
+    return native_dimensions(w, h) && d && d <= INT32_MAX &&
+           (uint64_t)w * h * d <= SGI_KONA_TEXTURE_BYTES / 4;
 }
 
 static void texture_object_free(SGIKonaTextureObject *o)
@@ -265,7 +272,8 @@ bool sgi_kona_texture_subimage(SGIKonaTextureState *s, uint32_t handle,
 
 static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
 {
-    return a[9] == b[9] && a[16] == b[16] && a[17] == b[17] &&
+    return a[0] == b[0] && a[9] == b[9] &&
+           a[16] == b[16] && a[17] == b[17] &&
            a[18] == b[18] && a[19] == b[19];
 }
 
@@ -276,12 +284,15 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
 {
     SGIKonaTextureObject *o = texture_object(s, h[10], false);
     SGIKonaTextureNativeImage *n = NULL;
-    uint32_t width, height, *pixels;
+    uint32_t width, height, depth, *pixels;
+    bool volume = h[0] == SGI_GL_TEXTURE_3D;
     uint8_t *coverage;
     uint64_t old = 0, bytes, count, covered = 0;
 
-    if (h[0] != SGI_GL_TEXTURE_2D || !rgba || h[10] == UINT32_MAX ||
-        (h[17] & 0x60) || (h[18] && h[19]) ||
+    if ((!volume && h[0] != SGI_GL_TEXTURE_2D) ||
+        !rgba || h[10] == UINT32_MAX ||
+        (h[17] & 0x60) != (volume ? 0x40 : 0) ||
+        (!volume && h[18] && h[19]) ||
         !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
         (uint64_t)h[13] - h[11] + 1 != h[1] ||
         (uint64_t)h[14] - h[12] + 1 != h[2] ||
@@ -299,14 +310,17 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     if (!n && o && o->native_count == SGI_GL_TEX_LEVELS_MAX) {
         return false;
     }
-    if (h[13] == UINT32_MAX || h[14] == UINT32_MAX) {
+    if (h[13] == UINT32_MAX || h[14] == UINT32_MAX ||
+        (volume && h[15] == UINT32_MAX)) {
         return false;
     }
     width = MAX(n ? n->image.width : 0, h[13] + 1);
     height = MAX(n ? n->image.height : 0, h[14] + 1);
-    if (!native_dimensions(width, height) ||
+    depth = volume ? MAX(n ? n->image.depth : 0, h[15] + 1) : 1;
+    if (!native_volume_dimensions(width, height, depth) ||
         (o && o->native_width &&
-         (width > o->native_width || height > o->native_height)) ||
+         (width > o->native_width || height > o->native_height ||
+          (volume && o->native_depth && depth > o->native_depth))) ||
         (n && (n->image.base_format != base_format ||
                n->image.internal_format != internal_format))) {
         return false;
@@ -315,7 +329,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
         old = native_bytes(n);
         covered = n->covered;
     }
-    count = (uint64_t)width * height;
+    count = (uint64_t)width * height * depth;
     bytes = count * sizeof(*pixels) + (count + 7) / 8;
     if (bytes + (o ? 0 : TEXTURE_OBJECT_BYTES) >
         SGI_KONA_TEXTURE_BYTES - (s->bytes - old)) {
@@ -329,20 +343,25 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
         return false;
     }
     if (n) {
-        for (uint32_t y = 0; y < n->image.height; y++) {
-            memcpy(pixels + (size_t)y * width,
-                   n->image.pixels + (size_t)y * n->image.width,
-                   n->image.width * sizeof(*pixels));
-            for (uint32_t x = 0; x < n->image.width; x++) {
-                if (native_covered(n->coverage,
-                                   (uint64_t)y * n->image.width + x)) {
-                    native_cover(coverage, (uint64_t)y * width + x);
+        for (uint32_t z = 0; z < n->image.depth; z++) {
+            for (uint32_t y = 0; y < n->image.height; y++) {
+                uint64_t old_row = ((uint64_t)z * n->image.height + y) *
+                                   n->image.width;
+                uint64_t row = ((uint64_t)z * height + y) * width;
+
+                memcpy(pixels + row, n->image.pixels + old_row,
+                       n->image.width * sizeof(*pixels));
+                for (uint32_t x = 0; x < n->image.width; x++) {
+                    if (native_covered(n->coverage, old_row + x)) {
+                        native_cover(coverage, row + x);
+                    }
                 }
             }
         }
     }
     for (unsigned y = 0; y < h[2]; y++) {
-        uint64_t row = (uint64_t)(h[12] + y) * width + h[11];
+        uint32_t z = volume ? h[15] : 0;
+        uint64_t row = ((uint64_t)z * height + h[12] + y) * width + h[11];
 
         memcpy(pixels + row, rgba + (size_t)y * h[1],
                h[1] * sizeof(*pixels));
@@ -369,7 +388,8 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     n->covered = covered;
     memcpy(n->header, h, sizeof(n->header));
     n->image = (SGIKonaTextureLevel) {
-        .width = width, .height = height, .base_format = base_format,
+        .width = width, .height = height, .depth = depth,
+        .base_format = base_format,
         .internal_format = internal_format, .pixels = pixels,
     };
     s->bytes = s->bytes - old + bytes;
@@ -407,6 +427,27 @@ bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
     }
     o->native_width = width;
     o->native_height = height;
+    o->native_depth = 0;
+    return true;
+}
+
+bool sgi_kona_texture_native_volume_dimensions(SGIKonaTextureState *s,
+                                              uint32_t handle, uint32_t width,
+                                              uint32_t height, uint32_t depth)
+{
+    SGIKonaTextureObject *o;
+
+    if (!texture_dimensions(width, height) || !is_power_of_2(depth) ||
+        !native_volume_dimensions(width, height, depth)) {
+        return false;
+    }
+    o = texture_object(s, handle, true);
+    if (!o) {
+        return false;
+    }
+    o->native_width = width;
+    o->native_height = height;
+    o->native_depth = depth;
     return true;
 }
 
@@ -489,9 +530,11 @@ static bool texture_params(const SGIKonaTextureParams *p)
         (p->detail_mode != SGI_GL_ADD && p->detail_mode != SGI_GL_MODULATE) ||
         p->filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
         !texture_wrap(p->wrap_s) || !texture_wrap(p->wrap_t) ||
+        !texture_wrap(p->wrap_r) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         !isfinite(p->lod_scale_s) || !isfinite(p->lod_scale_t) ||
-        p->lod_scale_s <= 0 || p->lod_scale_t <= 0 ||
+        !isfinite(p->lod_scale_r) ||
+        p->lod_scale_s <= 0 || p->lod_scale_t <= 0 || p->lod_scale_r <= 0 ||
         p->min_lod > p->max_lod) {
         return false;
     }
@@ -575,11 +618,28 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
     return true;
 }
 
+static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
+                                   uint32_t y, uint32_t z, uint32_t *rgba)
+{
+    const SGIKonaTextureLevel *l = opaque;
+
+    if (x >= l->width || y >= l->height || z >= l->depth || !l->pixels) {
+        return false;
+    }
+    *rgba = l->pixels[((size_t)z * l->height + y) * l->width + x];
+    if (l->base_format == SGI_GL_RGB) {
+        *rgba |= 0xff;
+    }
+    return true;
+}
+
 static uint32_t texture_native_view(SGIKonaTextureObject *o)
 {
     unsigned count = 0;
+    bool volume = o->native_depth != 0;
+    unsigned limit = volume ? 10 : SGI_KONA_TEXTURE_TABLE_LEVELS;
 
-    for (unsigned level = 0; level < SGI_KONA_TEXTURE_TABLE_LEVELS; level++) {
+    for (unsigned level = 0; level < limit; level++) {
         SGIKonaTextureLevel *image = NULL;
         uint32_t descriptor = o->native_table[level];
         bool ambiguous = false;
@@ -587,9 +647,19 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
         for (unsigned k = 0; k < o->native_count; k++) {
             SGIKonaTextureNativeImage *n = &o->native[k];
             const uint32_t *h = n->header;
-            bool matches = level & 1 ?
-                (!h[18] && h[19] == descriptor) :
-                (!h[19] && h[18] == descriptor);
+            bool matches;
+
+            if (volume) {
+                matches = h[0] == SGI_GL_TEXTURE_3D &&
+                    ((h[17] >> 3) & 1) == (level & 1) &&
+                    h[18] == o->native_table[level & ~1u] &&
+                    h[19] == o->native_table[(level & ~1u) + 1] &&
+                    n->image.depth == MAX(1u, o->native_depth >> level);
+            } else {
+                matches = h[0] == SGI_GL_TEXTURE_2D && (level & 1 ?
+                    (!h[18] && h[19] == descriptor) :
+                    (!h[19] && h[18] == descriptor));
+            }
 
             matches = matches && n->covered == native_pixels(n) &&
                       texture_dimensions(n->image.width, n->image.height) &&
@@ -610,6 +680,9 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: ambiguous native texture level %u "
                           "for handle 0x%x\n", level, o->handle);
+            if (volume) {
+                return UINT32_MAX;
+            }
         } else if (image) {
             SGIKonaTextureLevel *view = &o->native_view[count];
 
@@ -620,9 +693,11 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             }
             o->view[count++] = (SGIGLTexLevel) {
                 .level = level, .width = view->width, .height = view->height,
+                .depth = view->depth,
                 .base_format = view->base_format,
                 .internal_format = view->internal_format,
-                .read_texel = texture_native_read, .opaque = view,
+                .read_texel = texture_native_read,
+                .read_texel_3d = texture_native_read_3d, .opaque = view,
             };
         }
     }
@@ -682,7 +757,8 @@ static bool texture_detail_view(SGIKonaTextureState *s,
         for (unsigned k = 0; k < o->native_count; k++) {
             SGIKonaTextureNativeImage *n = &o->native[k];
 
-            if (n->header[18] == args[4] && n->header[19] == args[5] &&
+            if (n->header[0] == SGI_GL_TEXTURE_2D &&
+                n->header[18] == args[4] && n->header[19] == args[5] &&
                 n->header[9] == storage && n->covered == native_pixels(n) &&
                 n->image.width == (1u << args[1]) &&
                 n->image.height == (1u << args[2])) {
@@ -742,9 +818,11 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
     o->image = (SGIGLTexImage) {
         .min_filter = o->params.min_filter, .mag_filter = o->params.mag_filter,
         .wrap_s = o->params.wrap_s, .wrap_t = o->params.wrap_t,
+        .wrap_r = o->params.wrap_r, .volume = o->native_depth != 0,
         .pyramid = &o->pyramid,
         .lod_scale_s = o->params.lod_scale_s,
         .lod_scale_t = o->params.lod_scale_t,
+        .lod_scale_r = o->params.lod_scale_r,
         .post_filter = texture_post_filter, .opaque = o,
         .read_filter_weight = texture_filter_weight,
         .detail_level = o->params.detail_level,
@@ -836,7 +914,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 8);
+    qemu_put_be32(f, 9);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -875,7 +953,8 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
             qemu_put_be32(f, l->height);
             qemu_put_be32(f, l->base_format);
             qemu_put_be32(f, l->internal_format);
-            for (uint64_t p = 0; p < (uint64_t)l->width * l->height; p++) {
+            qemu_put_be32(f, l->depth);
+            for (uint64_t p = 0; p < native_pixels(n); p++) {
                 qemu_put_be32(f, l->pixels[p]);
             }
             qemu_put_buffer(f, n->coverage, native_coverage_bytes(n));
@@ -890,6 +969,12 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be32(f, o->native_internal_format);
         qemu_put_be32(f, o->params.detail_level);
         qemu_put_be32(f, o->params.detail_mode);
+        qemu_put_be32(f, o->native_depth);
+        qemu_put_be32(f, o->params.wrap_r);
+        union { double d; uint64_t u; } scale_r = {
+            .d = o->params.lod_scale_r,
+        };
+        qemu_put_be64(f, scale_r.u);
     }
     qemu_put_be32(f, g_hash_table_size(s->filter_curves));
     g_hash_table_iter_init(&iter, s->filter_curves);
@@ -922,7 +1007,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 8) || bound > 1 ||
+    if ((version < 1 || version > 9) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -990,6 +1075,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 SGIKonaTextureLevel *l = &n->image;
                 uint32_t *h = n->header;
                 uint64_t bytes;
+                bool volume;
 
                 for (unsigned j = 0; j < ARRAY_SIZE(n->header); j++) {
                     h[j] = qemu_get_be32(f);
@@ -998,11 +1084,18 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 l->height = qemu_get_be32(f);
                 l->base_format = qemu_get_be32(f);
                 l->internal_format = qemu_get_be32(f);
-                if (!(version >= 5 ? native_dimensions(l->width, l->height) :
+                l->depth = version >= 9 ? qemu_get_be32(f) : 1;
+                volume = h[0] == SGI_GL_TEXTURE_3D;
+
+                if (!native_volume_dimensions(l->width, l->height, l->depth) ||
+                    (!volume && l->depth != 1) ||
+                    (volume && (version < 9 || h[15] >= l->depth)) ||
+                    !(version >= 5 ? native_dimensions(l->width, l->height) :
                       texture_dimensions(l->width, l->height)) ||
                     !texture_format(l->base_format, l->internal_format) ||
-                    h[0] != SGI_GL_TEXTURE_2D || h[10] != id ||
-                    (h[17] & 0x60) || (h[18] && h[19]) ||
+                    (!volume && h[0] != SGI_GL_TEXTURE_2D) || h[10] != id ||
+                    (h[17] & 0x60) != (volume ? 0x40 : 0) ||
+                    (!volume && h[18] && h[19]) ||
                     !h[1] || !h[2] || h[13] < h[11] || h[14] < h[12] ||
                     (uint64_t)h[13] - h[11] + 1 != h[1] ||
                     (uint64_t)h[14] - h[12] + 1 != h[2] ||
@@ -1019,7 +1112,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                     qemu_file_get_error(f)) {
                     goto invalid;
                 }
-                l->pixels = g_try_malloc(level_bytes(l));
+                l->pixels = g_try_malloc(native_pixels(n) * sizeof(*l->pixels));
                 n->coverage = g_try_malloc0(native_coverage_bytes(n));
                 if (!l->pixels || !n->coverage) {
                     g_free(l->pixels);
@@ -1055,9 +1148,12 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                         }
                     }
                     for (uint32_t y = h[12]; y <= h[14]; y++) {
+                        uint64_t row =
+                            ((uint64_t)(volume ? h[15] : 0) * l->height + y) *
+                            l->width;
+
                         for (uint32_t x = h[11]; x <= h[13]; x++) {
-                            if (!native_covered(n->coverage,
-                                                (uint64_t)y * l->width + x)) {
+                            if (!native_covered(n->coverage, row + x)) {
                                 goto invalid;
                             }
                         }
@@ -1107,6 +1203,21 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 goto invalid;
             }
             o->native_internal_valid = valid;
+        }
+        if (version >= 9) {
+            union { double d; uint64_t u; } scale_r;
+
+            o->native_depth = qemu_get_be32(f);
+            o->params.wrap_r = qemu_get_be32(f);
+            scale_r.u = qemu_get_be64(f);
+            o->params.lod_scale_r = scale_r.d;
+            if ((o->native_depth &&
+                 (!is_power_of_2(o->native_depth) ||
+                  !native_volume_dimensions(o->native_width, o->native_height,
+                                             o->native_depth))) ||
+                !texture_params(&o->params)) {
+                goto invalid;
+            }
         }
     }
     if (version >= 6) {
