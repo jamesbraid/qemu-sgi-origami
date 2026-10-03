@@ -1144,10 +1144,14 @@ static void test_buffer_config_after_activation(void)
     g_assert_nonnull(strstr(activated, "sgi_kona_gl_buffer_config token 0x1"
                                        " level 0 rgb 12 index 0 double 0\n"));
     g_assert_nonnull(strstr(activated, "token 0x2 argc 1 consumed"));
-    g_assert_nonnull(strstr(activated, "token 0x114 argc 1 consumed"));
+    g_assert_nonnull(strstr(activated, "token 0x114 args 0x3 0x0 0x0"
+                                       " argc 1\n"));
+    g_assert_nonnull(strstr(activated, "unknown read binding;"
+                                       " reads refused for this context"));
     g_assert_nonnull(strstr(activated, "sgi_kona_gl_buffer_config token 0x4"
                                        " level 0 rgb 12 index 0 double 0\n"));
-    g_assert_nonnull(strstr(activated, "token 0x4 argc 10 consumed"));
+    g_assert_nonnull(strstr(activated, "token 0x4 args 0x0 0xc 0x0"
+                                       " argc 10\n"));
     g_assert_null(strstr(activated, "token 0xc args"));
     g_assert_nonnull(strstr(activated, "token 0x177 args 0x77000000 0x0 0x0"
                                        " argc 1\n"));
