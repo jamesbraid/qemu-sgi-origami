@@ -1757,11 +1757,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 /*
  * A pixel burst is 0x00014000 | (words - words/16) << 10 | fmt: bit 14 set,
  * the arity in bits 13:10, and the format in the low bits, with bits 9:5
- * clear. fmt 0x11 carries one 0x00RRGGBB pixel per word (the account icons,
- * painted directly); fmt 0x10 packs four 8-bit colour indices per word,
- * leftmost in bits 31:24, each resolved through the colormap. Format 0x12
- * carries two RGBA16 words per pixel only with source code 0x6b; 0x14 remains
- * unsupported.
+ * clear. Format 0x11 carries one 0x00RRGGBB pixel per word for RGB
+ * sources, or one RRGGBBAA word for source code 0x6b. It also carries one
+ * 0x00RRGGBB word for the account icons. Format 0x10 packs four colour
+ * indices per word; format 0x12 carries two RGBA16 words per pixel for
+ * source 0x6b. Other formats remain unsupported.
  */
 #define ODSY_IMAGE_BURST_BASE 0x4000
 #define ODSY_IMAGE_BURST_FMT_MASK 0x1f
@@ -1787,7 +1787,7 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_IMAGE_CODE_RGB 0x49
 #define ODSY_IMAGE_CODE_RGBA 0x4b
 #define ODSY_IMAGE_CODE_XRGB 0x4c
-#define ODSY_IMAGE_CODE_RGBA16 0x6b
+#define ODSY_IMAGE_CODE_RGBA12 0x6b
 
 /* The transfer header's group length, bits 23:20, with 15 standing for 16. */
 #define ODSY_IMAGE_HEADER_GROUP_SHIFT 20
@@ -3577,6 +3577,7 @@ static bool odyssey_decode_pixel(SGIOdysseyState *s, uint32_t code,
         *rgba = odyssey_pack_pixel(b[1], b[2], b[3]);
         return true;
     case ODSY_IMAGE_CODE_RGBA:
+    case ODSY_IMAGE_CODE_RGBA12:
         *rgba = ldl_be_p(b);
         return true;
     case ODSY_IMAGE_CODE_RGB:
@@ -3601,6 +3602,7 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
     switch (code) {
     case ODSY_IMAGE_CODE_XRGB:
     case ODSY_IMAGE_CODE_RGBA:
+    case ODSY_IMAGE_CODE_RGBA12:
         return 4;
     case ODSY_IMAGE_CODE_RGB:
         return 3;
@@ -3630,14 +3632,20 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
  * unpainted rather than stamp black -- the field keeps the colour its fill
  * drew, and the black I-beam still lands as its own pattern quad.
  */
+static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
+{
+    return code == ODSY_IMAGE_CODE_RGBA12 ?
+           fmt == ODSY_IMAGE_FMT_RGB || fmt == ODSY_IMAGE_FMT_RGBA16 :
+           fmt != ODSY_IMAGE_FMT_RGBA16;
+}
+
 static void odyssey_image_burst_word(SGIOdysseyState *s, uint32_t word)
 {
     uint32_t code = s->image_code;
     unsigned int n = odyssey_pixel_bytes(code), i;
     uint8_t b[4];
 
-    if ((code == ODSY_IMAGE_CODE_RGBA16) !=
-        (s->image_fmt == ODSY_IMAGE_FMT_RGBA16)) {
+    if (!odyssey_image_pairing_supported(code, s->image_fmt)) {
         return;
     }
     if (s->image_fmt == ODSY_IMAGE_FMT_RGBA16) {
@@ -3721,7 +3729,7 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
         *fmt = f;
         return true;
     default:
-        /* fmt 0x12/0x14 exist in the DDX but are not modeled. */
+        /* Other documented pixel-burst formats remain unsupported. */
         return false;
     }
 }
@@ -7989,8 +7997,7 @@ static void odyssey_cmd_classify(SGIOdysseyState *s, uint32_t word)
         if (s->image_active && operands > 0 &&
             odyssey_image_burst_fmt(reg, &fmt)) {
             s->image_fmt = fmt;
-            if ((s->image_code == ODSY_IMAGE_CODE_RGBA16) !=
-                (fmt == ODSY_IMAGE_FMT_RGBA16)) {
+            if (!odyssey_image_pairing_supported(s->image_code, fmt)) {
                 odyssey_cmd_unimplemented(s, word);
             }
             s->cmd_state = ODSY_CMD_IMAGE_BURST;
