@@ -2482,17 +2482,19 @@ static void assert_stencil_value(QTestState *s, uint32_t value)
 
 static void test_stencil_comparison_order_and_mask(void)
 {
-    const uint32_t funcs[] = { 0x201, 0x204 };
-    const int32_t refs[] = { 2, 9 };
+    const uint32_t funcs[] = { 0x201, 0x204, 0x202, 0x202 };
+    const int32_t refs[] = { 2, 9, -1, 300 };
+    const uint32_t stored[] = { 5, 5, 0, 255 };
+    const uint32_t expected[] = { 2, 9, 0, 255 };
 
     gl_reset();
     stencil_setup(qts);
-    for (unsigned i = 0; i < 2; i++) {
-        stencil_clear(qts, 5, 255);
+    for (unsigned i = 0; i < G_N_ELEMENTS(funcs); i++) {
+        stencil_clear(qts, stored[i], 255);
         stencil_function(qts, funcs[i], refs[i], 255);
-        stencil_operations(qts, 0, 0, 0x1e01);
+        stencil_operations(qts, 0x150a, 0, 0x1e01);
         stencil_triangle(qts);
-        assert_stencil_value(qts, refs[i]);
+        assert_stencil_value(qts, expected[i]);
     }
     stencil_clear(qts, 0xa5, 255);
     kona_command(qts, 0x20, (uint32_t[]){ 0xf0 }, 1);
@@ -2527,30 +2529,6 @@ static void test_stencil_operation_range(void)
     }
 }
 
-static void test_stencil_outcome_operations(void)
-{
-    gl_reset();
-    stencil_setup(qts);
-    for (unsigned outcome = 0; outcome < 5; outcome++) {
-        stencil_config(qts, 8);
-        if (outcome == 4) {
-            kona_command(qts, 1,
-                         (uint32_t[]){ 0, 12, 0, 0, 0, 0, 0, 8, 0, 0 }, 10);
-        }
-        stencil_clear(qts, 40, 255);
-        stencil_function(qts, outcome == 0 ? 0x200 : 0x207, 99, 255);
-        kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
-        kona_command(qts, 0xce,
-                     (uint32_t[]){ outcome == 1 ? 0x200 : 0x207 }, 1);
-        if (outcome == 3) {
-            kona_command(qts, 0x25, (uint32_t[]){ 0xb71 }, 1);
-        }
-        stencil_operations(qts, 0, 0x1e02, 0x1e03);
-        stencil_triangle(qts);
-        assert_stencil_value(qts, outcome == 0 ? 0 : outcome == 1 ? 41 : 39);
-    }
-}
-
 static uint32_t stencil_colour_or_depth(QTestState *s, unsigned plane)
 {
     QDict *reply;
@@ -2572,6 +2550,36 @@ static uint32_t stencil_colour_or_depth(QTestState *s, unsigned plane)
     qobject_unref(reply);
     return value;
 }
+
+static void test_stencil_outcome_operations(void)
+{
+    gl_reset();
+    stencil_setup(qts);
+    for (unsigned outcome = 0; outcome < 5; outcome++) {
+        stencil_config(qts, 8);
+        if (outcome == 4) {
+            kona_command(qts, 1,
+                         (uint32_t[]){ 0, 12, 0, 0, 0, 0, 0, 8, 0, 0 }, 10);
+        }
+        kona_command_f(qts, 0x1d, (float[]){ 0, 0, 1, 1 }, 4);
+        kona_command(qts, 0x1a, (uint32_t[]){ 0x4100 }, 1);
+        stencil_clear(qts, 40, 255);
+        stencil_function(qts, outcome == 0 ? 0x200 : 0x207, 99, 255);
+        kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+        kona_command(qts, 0xce,
+                     (uint32_t[]){ outcome == 1 ? 0x200 : 0x207 }, 1);
+        if (outcome == 3) {
+            kona_command(qts, 0x25, (uint32_t[]){ 0xb71 }, 1);
+        }
+        stencil_operations(qts, 0, 0x1e02, 0x1e03);
+        stencil_triangle(qts);
+        assert_stencil_colour(qts, outcome < 2 ? 0x0000ff : 0xff0000);
+        g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==,
+                        outcome == 2 ? 0x800000 : 0xffffff);
+        assert_stencil_value(qts, outcome == 0 ? 0 : outcome == 1 ? 41 : 39);
+    }
+}
+
 
 static void test_stencil_only_clear(void)
 {
@@ -2599,12 +2607,17 @@ static void test_stencil_alpha_and_disabled_tests(void)
 {
     gl_reset();
     stencil_setup(qts);
+    kona_command(qts, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    kona_command(qts, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(qts, 0xce, (uint32_t[]){ 0x207 }, 1);
     stencil_clear(qts, 19, 255);
     stencil_function(qts, 0x207, 80, 255);
     stencil_operations(qts, 0, 0, 0x1e01);
     kona_command(qts, 0x24, (uint32_t[]){ 0xbc0 }, 1);
     kona_command(qts, 0xca, (uint32_t[]){ 0x200, F0 }, 2);
     stencil_triangle(qts);
+    assert_stencil_colour(qts, 0x0000ff);
+    g_assert_cmphex(stencil_colour_or_depth(qts, 5), ==, 0xffffff);
     assert_stencil_value(qts, 19);
     stencil_operations(qts, 0, 0, 0x1e01);
     kona_command(qts, 0x25, (uint32_t[]){ 0xb90 }, 1);
@@ -2840,12 +2853,16 @@ static void test_stencil_state_and_plane_migrate(void)
     kona_command(from, 0xc9, (uint32_t[]){ 0x400 }, 1);
     kona_command(from, 0xcc, (uint32_t[]){ 0x207, 0x1a }, 2);
     sgi_migrate_stopped(from, uri);
-    qtest_writel(to, REG_COMMAND, 255);
-    stencil_triangle(to);
-    assert_stencil_value(to, 0xa4);
-    kona_command(to, 0xc8, (uint32_t[]){ 0 }, 1);
-    stencil_triangle(to);
-    assert_stencil_value(to, 0xa5);
+    for (unsigned i = 0; i < 2; i++) {
+        QTestState *s = i ? to : from;
+
+        qtest_writel(s, REG_COMMAND, 255);
+        stencil_triangle(s);
+        assert_stencil_value(s, 0xa4);
+        kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+        stencil_triangle(s);
+        assert_stencil_value(s, 0xa5);
+    }
     assert_source_refused(to);
     return_context_deactivate(to);
     return_context_restore(to, SAVE_AREA);
