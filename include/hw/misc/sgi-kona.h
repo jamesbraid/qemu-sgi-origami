@@ -1166,6 +1166,8 @@ struct SGIKonaState {
      * guest state and not migrated, matching hw/misc/sgi-mgras.c's own
      * test_pixel_x/test_pixel_y precedent.
      */
+    /* Host-only access ordering, not migrated or reset with guest state. */
+    uint64_t trace_sequence;
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;
 

@@ -4535,6 +4535,7 @@ static void test_texture_native_dma(gconstpointer opaque)
     bool large = mode == 6 || mode == 11;
     bool migration = mode == 7 || mode == 8;
     bool reset = mode == 9;
+    bool trace = mode == 12;
     uint32_t width = mode == 11 ? 4096 : large ? 2048 : 2;
     uint32_t row_bytes = width * 3;
     uint32_t stride = mode == 10 ? 3 : contiguous ? 8 :
@@ -4545,7 +4546,10 @@ static void test_texture_native_dma(gconstpointer opaque)
     g_autofree uint8_t *source = g_malloc0(span);
     g_autofree char *dir = NULL, *uri = NULL;
     GError *err = NULL;
-    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+    g_autofree char *log = NULL;
+    QTestState *from = trace ? kona_init_logged(&log) :
+                              qtest_init(MACHINE_ARGS);
+    QTestState *to = NULL, *s = from;
     uint32_t h[20];
     uint32_t record[22] = { 0, 0x101010, 256u << 10 };
     uint32_t total = contiguous ? span : row_bytes * 2;
@@ -4624,6 +4628,39 @@ static void test_texture_native_dma(gconstpointer opaque)
         g_rmdir(dir);
     }
     qtest_quit(from);
+    if (trace) {
+        g_autofree char *contents = kona_log_read(log);
+        g_auto(GStrv) lines = g_strsplit(contents, "\n", -1);
+        const char *payload[] = { "4090e04190e0", "4290e04390e0" };
+        uint64_t kick = 0;
+        unsigned count = 0;
+
+        for (unsigned i = 0; lines[i]; i++) {
+            const char *event = strstr(lines[i], "sgi_kona_pio_write seq ");
+            uint64_t sequence, address;
+            unsigned len;
+            char hex[13];
+
+            if (event) {
+                g_assert_cmpint(sscanf(event, "sgi_kona_pio_write seq %"
+                                      SCNu64, &kick), ==, 1);
+            }
+            event = strstr(lines[i], "sgi_kona_dma_chunk seq ");
+            if (!event) {
+                continue;
+            }
+            g_assert_cmpuint(count, <, 2);
+            g_assert_cmpint(sscanf(event, "sgi_kona_dma_chunk seq %" SCNu64
+                                  " addr 0x%" SCNx64 " len %u hex %12s",
+                                  &sequence, &address, &len, hex), ==, 4);
+            g_assert_cmpuint(sequence, ==, kick);
+            g_assert_cmphex(address, ==, host + io + count * stride);
+            g_assert_cmpuint(len, ==, 6);
+            g_assert_cmpstr(hex, ==, payload[count]);
+            count++;
+        }
+        g_assert_cmpuint(count, ==, 2);
+    }
 }
 
 static void test_texture_captured(void)
@@ -5888,6 +5925,8 @@ int main(int argc, char **argv)
                    test_texture_native_draw);
     qtest_add_func("sn0/origin2000/kona-3d/texture/native-rows",
                    test_texture_native_rows);
+    qtest_add_data_func("sgi-kona-3d/texture/native-dma/trace-source",
+                        GUINT_TO_POINTER(12), test_texture_native_dma);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/native-migrate-rows",
                         GUINT_TO_POINTER(2), test_texture_native_migrates);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/"

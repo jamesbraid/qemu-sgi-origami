@@ -13,8 +13,9 @@ sgi_mgras_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size
 sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 
 # sgi-kona.c
-sgi_kona_pio_read(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
-sgi_kona_pio_write(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
+sgi_kona_pio_read(uint64_t sequence, int cpu, uint64_t offset, uint64_t value, unsigned int size) "seq %" PRIu64 " cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
+sgi_kona_pio_write(uint64_t sequence, int cpu, uint64_t offset, uint64_t value, unsigned int size) "seq %" PRIu64 " cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
+sgi_kona_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *hex) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u hex %s"
 # A completed textport bitmap blit (command 0xa), traced separately because
 # its own header/payload words never reach trace_sgi_command_port_packet:
 # sgi_kona_textport_push() intercepts and consumes them itself, in front of

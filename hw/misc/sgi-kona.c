@@ -23,6 +23,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/bswap.h"
+#include "qemu/cutils.h"
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
@@ -5906,7 +5907,7 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
         uint64_t index = device >> SGI_KONA_MAPRAM_PAGE_SHIFT;
         uint32_t entry = index < sgi_kona_mapram_entry_count(s) ?
                          s->map_ram[index] : 0;
-        uint32_t chunk = MIN(len, page - (device & (page - 1)));
+        uint32_t chunk = MIN(MIN(len, 4096), page - (device & (page - 1)));
         uint64_t host;
         hwaddr where;
 
@@ -5927,6 +5928,12 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
                           "sgi-kona: DMA read of %u bytes at host 0x%" PRIx64
                           " failed\n", chunk, host);
             return false;
+        }
+        if (trace_event_get_state_backends(TRACE_SGI_KONA_DMA_CHUNK)) {
+            char hex[4096 * 2 + 1];
+
+            qemu_hexdump_to_buffer(hex, sizeof(hex), buf, chunk);
+            trace_sgi_kona_dma_chunk(s->trace_sequence - 1, host, chunk, hex);
         }
         device += chunk;
         buf += chunk;
@@ -7208,7 +7215,6 @@ static uint64_t sgi_kona_read_word(void *opaque, hwaddr addr,
         break;
     }
 
-    trace_sgi_kona_pio_read(cpu, addr, value, size);
     return value;
 }
 
@@ -7217,8 +7223,6 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
 {
     SGIKonaState *s = opaque;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
-
-    trace_sgi_kona_pio_write(cpu, addr, value, size);
 
     switch (addr) {
     case SGI_KONA_WIDGET_CONTROL:
@@ -7429,12 +7433,20 @@ static void sgi_kona_log_split(hwaddr addr, bool write)
 
 static uint64_t sgi_kona_read(void *opaque, hwaddr addr, unsigned size)
 {
+    SGIKonaState *s = opaque;
+    int cpu = current_cpu ? current_cpu->cpu_index : -1;
+    uint64_t sequence = s->trace_sequence++;
+    uint64_t value;
+
     if (size != 8) {
-        return sgi_kona_read_word(opaque, addr, size);
+        value = sgi_kona_read_word(opaque, addr, size);
+    } else {
+        sgi_kona_log_split(addr, false);
+        value = (sgi_kona_read_word(opaque, addr, 4) << 32) |
+                sgi_kona_read_word(opaque, addr + 4, 4);
     }
-    sgi_kona_log_split(addr, false);
-    return (sgi_kona_read_word(opaque, addr, 4) << 32) |
-           sgi_kona_read_word(opaque, addr + 4, 4);
+    trace_sgi_kona_pio_read(sequence, cpu, addr, value, size);
+    return value;
 }
 
 /*
@@ -7448,15 +7460,14 @@ static void sgi_kona_write(void *opaque, hwaddr addr, uint64_t value,
     bool counted = sgi_kona_store_counted();
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
+    trace_sgi_kona_pio_write(s->trace_sequence++, cpu, addr, value, size);
+
     if (size != 8) {
         sgi_kona_write_word(opaque, addr, value, size);
     } else if (sgi_kona_doubleword_data(addr)) {
-        /* The raw width; each half then traces as a 4-byte store. */
-        trace_sgi_kona_pio_write(cpu, addr, value, size);
         sgi_kona_write_word(opaque, addr, value >> 32, 4);
         sgi_kona_write_word(opaque, addr, (uint32_t)value, 4);
     } else {
-        trace_sgi_kona_pio_write(cpu, addr, value, size);
         sgi_kona_log_split(addr, true);
         sgi_kona_write_word(opaque, addr, value >> 32, 4);
         sgi_kona_write_word(opaque, addr + 4, (uint32_t)value, 4);
