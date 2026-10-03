@@ -3624,6 +3624,140 @@ static void test_command_fifo_image_raster_rgb(void)
     qtest_quit(qts);
 }
 
+/* Decreasing box endpoints walk the same payload in the opposite directions. */
+static void test_command_fifo_image_raster_descending(void)
+{
+    QTestState *qts = board_start("");
+
+    image_begin(qts, 20, 20, 18, 18);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00112233);
+    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00778899);
+    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 19, 19), ==, 0x112233ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 18, 19), ==, 0x445566ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 19, 18), ==, 0x778899ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 18, 18), ==, 0xaabbccff);
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 20), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 17, 19), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* Mixed endpoint directions still advance X first, then Y. */
+static void test_command_fifo_image_raster_mixed_directions(void)
+{
+    QTestState *qts = board_start("");
+
+    image_begin(qts, 30, 30, 28, 32);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00112233);
+    cmd_push(qts, 0x00445566);
+    cmd_push(qts, 0x00778899);
+    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 29, 30), ==, 0x112233ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 28, 30), ==, 0x445566ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 29, 31), ==, 0x778899ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 28, 31), ==, 0xaabbccff);
+    g_assert_cmphex(odsy_test_pixel(qts, 30, 30), ==, 0);
+
+    image_begin(qts, 40, 40, 42, 38);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(4, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00ddeeff);
+    cmd_push(qts, 0x00123456);
+    cmd_push(qts, 0x00654321);
+    cmd_push(qts, 0x00abcdef);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 39), ==, 0xddeeffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 41, 39), ==, 0x123456ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 38), ==, 0x654321ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 41, 38), ==, 0xabcdefff);
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 40), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* An equal endpoint empties its axis without consuming the next image. */
+static void test_command_fifo_image_raster_empty_extent(void)
+{
+    QTestState *qts = board_start("");
+
+    image_begin(qts, 50, 50, 50, 52);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00112233);
+    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    image_begin(qts, 55, 55, 57, 55);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00778899);
+    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    image_begin(qts, 60, 60, 62, 61);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(2, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00778899);
+    cmd_push(qts, 0x00aabbcc);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 50, 50), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 50, 51), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 55, 55), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 56, 55), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 60, 60), ==, 0x778899ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 61, 60), ==, 0xaabbccff);
+
+    qtest_quit(qts);
+}
+
+/* A decreasing interval may start outside the screen and clip per pixel. */
+static void test_command_fifo_image_raster_clips_descending(void)
+{
+    QTestState *qts = board_start("");
+
+    image_begin(qts, 1281, 10, 1279, 11);
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER);
+    cmd_push(qts, ODSY_IMAGE_HEADER_OP(0, 0x4c));
+    cmd_push(qts, ODSY_CMD_IMAGE_HEADER_TAIL);
+    cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    cmd_push(qts, 0x00112233);
+    cmd_push(qts, 0x00445566);
+    cmd_push(qts, ODSY_CMD_GL_END);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 1279, 10), ==, 0x445566ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 1278, 10), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /*
  * The header's format code, not the burst tag, lays out the bytes
  * (docs/analysis/odyssey-gl-texturing.md, section 3): 0x4b one 0xRRGGBBAA
@@ -11384,6 +11518,14 @@ int main(int argc, char **argv)
                    test_command_fifo_pattern_quad_straddles_screen);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-rgb",
                    test_command_fifo_image_raster_rgb);
+    qtest_add_func("sn1/odyssey/command-fifo-image-raster-descending",
+                   test_command_fifo_image_raster_descending);
+    qtest_add_func("sn1/odyssey/command-fifo-image-raster-mixed-directions",
+                   test_command_fifo_image_raster_mixed_directions);
+    qtest_add_func("sn1/odyssey/command-fifo-image-raster-empty-extent",
+                   test_command_fifo_image_raster_empty_extent);
+    qtest_add_func("sn1/odyssey/command-fifo-image-raster-clips-descending",
+                   test_command_fifo_image_raster_clips_descending);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-formats",
                    test_command_fifo_image_raster_formats);
     qtest_add_func("sn1/odyssey/command-fifo-image-raster-colour-index",
