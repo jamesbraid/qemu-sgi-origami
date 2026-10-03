@@ -27,6 +27,8 @@ typedef struct SGIKonaTextureLevel {
 typedef struct SGIKonaTextureNativeImage {
     uint32_t header[20];
     SGIKonaTextureLevel image;
+    uint8_t *coverage;
+    uint64_t covered;
 } SGIKonaTextureNativeImage;
 
 typedef struct SGIKonaTextureObject {
@@ -37,7 +39,8 @@ typedef struct SGIKonaTextureObject {
     SGIGLTexPyramid pyramid;
     SGIGLTexImage image;
     uint32_t native_width, native_height;
-    uint32_t native_count;
+    uint32_t native_count, native_format;
+    bool native_format_valid;
     bool native_table_valid;
     uint32_t native_table[SGI_KONA_TEXTURE_TABLE_LEVELS];
     SGIKonaTextureNativeImage native[SGI_GL_TEX_LEVELS_MAX];
@@ -74,6 +77,8 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
                                   const uint32_t table[16]);
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
+bool sgi_kona_texture_native_format(SGIKonaTextureState *s, uint32_t handle,
+                                   uint32_t storage_format);
 /* NULL params retain the object's sampler, including for an incomplete view. */
 bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
                           const SGIKonaTextureParams *params);
