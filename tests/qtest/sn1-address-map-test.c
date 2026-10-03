@@ -4276,6 +4276,81 @@ static void test_cpu_number_read_is_per_cpu(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_routed_cpu_number_read_is_per_cpu(const void *data)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[8];
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_cpu_number_prom();
+    fd = g_file_open_tmp("sn1-routed-cpu-number-storage-XXXXXX", &image,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    for (unsigned renumber = 0; renumber < 2; renumber++) {
+        QTestState *qts = qtest_initf(
+            "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+            "expansion-storage.0=expansion-enclosure=cfg "
+            "-cpu R14000 -smp 4 -m 1G -bios %s "
+            "-drive if=none,id=cfg,file=%s,format=raw "
+            "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S -d guest_errors",
+            prom, image);
+
+        /* Live node numbers reset to zero independently of static placement. */
+        stq_be_p(bytes, (uint64_t)(1 + renumber) << 32);
+        g_assert_true(qtest_memwrite_cpu(qts, 2,
+            BEDROCK_LOCAL + BEDROCK_LB, bytes, sizeof(bytes)));
+        for (unsigned node = 0; node < 2; node++) {
+            uint64_t named = BEDROCK_NODE0 +
+                ((uint64_t)(node ? 1 + renumber : 0) << 33);
+
+            for (unsigned pi = 0; pi < 2; pi++) {
+                uint64_t address = named + pi * BEDROCK_PI1;
+                uint64_t value = 0x100 | (7 + 2 * node + pi);
+
+                stq_be_p(bytes, value);
+                g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                    address + PI_PENDING_MODIFY, bytes, sizeof(bytes)));
+                g_assert_true(qtest_memread_cpu(qts, node * 2,
+                    address + PI_CPU_NUMBER, bytes, sizeof(bytes)));
+                g_test_message("renumber %u node %u PI %u address 0x%" PRIx64
+                               " number 0x%" PRIx64, renumber, node, pi,
+                               address + PI_CPU_NUMBER, ldq_be_p(bytes));
+                g_assert_cmphex(ldq_be_p(bytes), ==, pi * 2);
+            }
+        }
+        qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+        for (unsigned cpu = 0; cpu < 4; cpu++) {
+            wait_for_cpu_gpr(qts, cpu, "s5", CPU_NUMBER_READY_MARKER);
+        }
+        stop_vm(qts);
+        for (unsigned cpu = 0; cpu < 4; cpu++) {
+            uint64_t slice = (cpu & 1) * 2;
+            uint64_t pending = UINT64_C(1) << (7 + cpu);
+
+            g_test_message("renumber %u CPU %u slice %" PRIu64
+                           " pending 0x%" PRIx64 " enable %" PRIu64,
+                           renumber, cpu, cpu_gpr(qts, cpu, "s3"),
+                           cpu_gpr(qts, cpu, "s4"),
+                           cpu_gpr(qts, cpu, "s6"));
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s3"), ==, slice);
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s4"), ==, pending);
+            g_assert_cmphex(cpu_gpr(qts, cpu, "s6"), ==, 1);
+        }
+        qtest_quit(qts);
+    }
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_cpu_enable_read_is_per_cpu(const void *data)
 {
     g_autofree char *path = NULL;
@@ -5065,6 +5140,8 @@ int main(int argc, char **argv)
                         test_boot_flash_nonraw_image);
     qtest_add_data_func("sn1/address-map/cpu-number-read-is-per-cpu", NULL,
                         test_cpu_number_read_is_per_cpu);
+    qtest_add_data_func("sn1/address-map/routed-cpu-number-read-is-per-cpu",
+                        NULL, test_routed_cpu_number_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-enable-read-is-per-cpu", NULL,
                         test_cpu_enable_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-c-enable-controls-bus", NULL,
