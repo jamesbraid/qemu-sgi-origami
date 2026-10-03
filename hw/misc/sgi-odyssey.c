@@ -3954,6 +3954,7 @@ static SGIRasterTarget odyssey_gl_target(SGIOdysseyState *s)
 typedef struct OdysseyTexture {
     SGIOdysseyState *s;
     uint32_t offset, stride, width, height;
+    uint32_t base_format;
     uint32_t words;
 } OdysseyTexture;
 
@@ -3983,6 +3984,9 @@ static bool odyssey_texture_read(void *opaque, uint32_t x, uint32_t y,
         return false;
     }
     *rgba = ldl_be_p(s->obj_mem.bytes + word * 4);
+    if (texture->base_format == SGI_GL_ALPHA) {
+        *rgba = (*rgba >> 24) & 0xff;
+    }
     return true;
 }
 
@@ -4022,6 +4026,12 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     case 0x01000000:
         image->base_format = SGI_GL_LUMINANCE;
         break;
+    case 0x00800000:
+        image->base_format = SGI_GL_ALPHA;
+        break;
+    case 0x02000000:
+        image->base_format = SGI_GL_INTENSITY;
+        break;
     case 0x02800000:
         image->base_format = SGI_GL_RGB;
         break;
@@ -4046,7 +4056,10 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         hi < -15 * 256 || hi > 15 * 256 ||
         (min >= 0x40 && lo > hi) ||
         s->tex_env[0] < 1 || s->tex_env[0] > 4 ||
-        (s->tex_env[0] == 3 && image->base_format == SGI_GL_LUMINANCE) ||
+        (s->tex_env[0] == 3 &&
+         (image->base_format == SGI_GL_ALPHA ||
+          image->base_format == SGI_GL_LUMINANCE ||
+          image->base_format == SGI_GL_INTENSITY)) ||
         (s->tex_env[0] == 4 &&
          (((s->tex_env[1] | s->tex_env[2]) & 0xff000000) ||
           s->tex_env[3] || s->tex_env[4]))) {
@@ -4106,7 +4119,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         chain->storage[i] = (OdysseyTexture) {
             .s = s, .offset = s->obj_offset[object],
             .stride = s->obj_width[object], .width = level_width,
-            .height = level_height, .words = s->obj_used,
+            .height = level_height, .base_format = image->base_format,
+            .words = s->obj_used,
         };
         chain->levels[i].read_texel = odyssey_texture_read_level;
     }
