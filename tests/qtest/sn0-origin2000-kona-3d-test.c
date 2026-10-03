@@ -2984,13 +2984,18 @@ static void test_stencil_invalid_state_enumerants(void)
     gl_reset();
     stencil_setup(qts);
     for (unsigned i = 0; i < G_N_ELEMENTS(invalid_func); i++) {
-        stencil_clear(qts, 17, 255);
-        stencil_function(qts, 0x202, 17, 255);
-        stencil_operations(qts, 0, 0, 0x1e01);
-        kona_command(qts, 0xcc,
-                     (uint32_t[]){ invalid_func[i], 99, 0 }, 3);
-        stencil_triangle(qts);
-        assert_stencil_value(qts, 17);
+        static const uint32_t stored[] = { 17, 16 };
+        static const uint32_t expected[] = { 17, 0 };
+
+        for (unsigned j = 0; j < G_N_ELEMENTS(stored); j++) {
+            stencil_clear(qts, stored[j], 255);
+            stencil_function(qts, 0x202, 17, 255);
+            stencil_operations(qts, 0, 0, 0x1e01);
+            kona_command(qts, 0xcc,
+                         (uint32_t[]){ invalid_func[i], 99, 0 }, 3);
+            stencil_triangle(qts);
+            assert_stencil_value(qts, expected[j]);
+        }
     }
     for (unsigned bad = 0; bad < 3; bad++) {
         for (unsigned outcome = 0; outcome < 3; outcome++) {
