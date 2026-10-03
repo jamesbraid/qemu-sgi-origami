@@ -1906,14 +1906,48 @@ static bool sgi_machine_instantiate_xio_card(
 }
 
 /*
+ * The Hub a KONA pipe's host-memory writes and interrupt packets are
+ * composed for: the first XIO attachment of the board's own node on the
+ * board's crossbar, which sgi_machine_index_xio_attachments() claims as
+ * that node's own Hub link (later attachments of the node are boards). A
+ * one-node topology has exactly one such Hub. On a multi-node crossbar the
+ * pipe posts to its own node's Hub. That is an approximation: the node the
+ * driver's reason page lives on is not yet taken from the address the
+ * driver registers.
+ */
+static unsigned int sgi_machine_kona_hub_widget(
+    const SGIModelTopology *t, const SGIModelXioAttachment *board)
+{
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    size_t attachment_count;
+    size_t i;
+
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments,
+                                                 &attachment_count);
+    for (i = 0; i < attachment_count; i++) {
+        const SGIModelXioAttachment *a = attachments[i];
+
+        if (a->node_index == board->node_index &&
+            a->crossbar_index == board->crossbar_index) {
+            return a->widget;
+        }
+    }
+    warn_report("topology '%s': no Hub attachment found for the KONA board's"
+                " node %u on crossbar %" PRId64 "; composing its packets"
+                " for widget 0",
+                t->name, board->node_index, board->crossbar_index);
+    return 0;
+}
+
+/*
  * The Origin 2000/Onyx2 InfiniteReality graphics pipe's KONA widget:
  * Crossbow-attached like the BaseIO card above, but an sgi-kona instance
- * carries no PCI function, IOC3 or onewire-serial property of its own --
- * increment 1 is identity only, so this function sets only what
- * sgi-xio-board's base class and sgi-kona's own "fabric" property
- * require. The onyx2 topologies fit one, the rack at IO3 and the deskside
- * at IO4; a `-device sgi-kona` reaches the same board without a catalogue
- * record.
+ * carries no PCI function, IOC3 or onewire-serial property of its own,
+ * so this function sets only what sgi-xio-board's base class requires,
+ * the pipe's identity parts and the Hub its packets go to. The onyx2
+ * topologies fit one, the rack at IO3 and the deskside at IO4; a
+ * `-device sgi-kona` reaches the same board without a catalogue record
+ * and names its Hub with fabric-hub-widget.
  */
 static bool sgi_machine_instantiate_kona(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -1943,6 +1977,12 @@ static bool sgi_machine_instantiate_kona(
         }
         qdev_prop_set_array(dev, "other-identity-parts", parts);
     }
+    /*
+     * The pipe's DMA transfers and reason-page writes name no destination
+     * widget of their own, so the board sends them to its node's Hub.
+     */
+    qdev_prop_set_uint32(dev, "fabric-hub-widget",
+                         sgi_machine_kona_hub_widget(t, attachment));
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 

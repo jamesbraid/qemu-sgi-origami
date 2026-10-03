@@ -142,6 +142,8 @@ static const ReplayHead replay_heads[] = {
         .qom_path = "/machine/module0/io3",
         .width = 1280,
         .height = 1024,
+        .display_pixel_property = "x-test-display-pixel",
+        .auxiliary_planes = true,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
     },
@@ -191,10 +193,17 @@ static const ReplayHead *find_head(const char *codename)
 #define INVALID_DMA_HEX_MISMATCH \
     "invalid-dma-hex-mismatch.replay"
 
+#define KONA_MAINTENANCE_MENU "maintenance-menu.replay"
+
+static char *replay_family_fixture_path(const char *family, const char *name)
+{
+    return g_test_build_filename(G_TEST_DIST, "..", "data", family, name,
+                                 NULL);
+}
+
 static char *replay_fixture_path(const char *name)
 {
-    return g_test_build_filename(G_TEST_DIST, "..", "data", "mgras", name,
-                                 NULL);
+    return replay_family_fixture_path("mgras", name);
 }
 
 static uint64_t parse_number(const char *path, unsigned int line,
@@ -641,7 +650,8 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "pixel")) {
         replay_pixel(qts, head, path, line, words, "x-test-pixel");
     } else if (!strcmp(words[0], "display-pixel")) {
-        replay_pixel(qts, head, path, line, words, "x-test-display-pixel");
+        replay_pixel(qts, head, path, line, words,
+                     head->display_pixel_property);
     } else if (!strcmp(words[0], "back-pixel")) {
         replay_pixel(qts, head, path, line, words, "x-test-back-pixel");
     } else if (!strcmp(words[0], "pixels")) {
@@ -1583,6 +1593,19 @@ static void test_invalid_no_head(void)
                         "'head CODENAME'*");
 }
 
+/*
+ * The IO6 PROM drawing its graphical System Maintenance Menu on
+ * InfiniteReality: a captured boot's register accesses, its screendump
+ * compared byte for byte at the end. See the fixture's own comments.
+ */
+static void test_kona_maintenance_menu(void)
+{
+    g_autofree char *path = replay_family_fixture_path(
+        "kona", KONA_MAINTENANCE_MENU);
+
+    run_replay(path, NULL);
+}
+
 static void test_invalid_unknown_head(void)
 {
     test_invalid_header("sgi-replay 2\nhead sgi-nonesuch\n",
@@ -1696,6 +1719,8 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
+    qtest_add_func("sgi-replay/kona/maintenance-menu",
+                   test_kona_maintenance_menu);
     qtest_add_func("sgi-replay/screendump-record", test_screendump_record);
     qtest_add_func("sgi-replay/screendump-record-mismatch",
                    test_screendump_record_mismatch);
