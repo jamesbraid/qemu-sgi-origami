@@ -101,6 +101,13 @@ uint8_t sgi_mgras_display_did(SGIMgrasState *s, bool overlay, unsigned int x,
     return did[x];
 }
 
+void sgi_mgras_display_did_line(SGIMgrasState *s, bool overlay,
+                                unsigned int y, uint8_t *did)
+{
+    mgras_did_line(s, overlay ? MGRAS_VC3_OVERLAY_DID_ENTRY :
+                   MGRAS_VC3_MAIN_DID_ENTRY, y, did);
+}
+
 /*
  * A nonzero overlay index covers the main planes when the pixel's WID has
  * its overlay enabled, resolved through the map that WID's overlay mode

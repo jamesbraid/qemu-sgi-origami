@@ -2166,28 +2166,32 @@ static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
     g_autofree uint8_t *bytes = g_malloc(bpr);
 
     for (int32_t row = 0; row < d->h; row++) {
+        uint8_t did[SGI_MGRAS_MAX_WIDTH];
         uint64_t pos = d->offset + (uint64_t)row * d->pitch;
         int32_t y = d->y + (reverse_y ? -row : row);
-        const uint32_t *stored = &s->front[y * s->width + d->x];
 
+        sgi_mgras_display_did_line(s, false, y, did);
         for (int32_t col = 0; col < d->w; col++) {
+            uint32_t index = y * s->width + d->x + col;
+            bool back = (s->xmap[0].buf_select[0] >> did[d->x + col]) & 1;
+            uint32_t stored = back ? s->back[index] : s->front[index];
             uint8_t *p = bytes + col * d->guest_bpp;
 
             if (d->guest_bpp == 1) {
-                p[0] = stored[col];
+                p[0] = stored;
             } else if (d->guest_bpp == 2) {
-                uint16_t rgb555 = ((stored[col] >> 19) & 0x1f) |
-                                  ((stored[col] >> 6) & 0x3e0) |
-                                  ((stored[col] << 7) & 0x7c00);
+                uint16_t rgb555 = ((stored >> 19) & 0x1f) |
+                                  ((stored >> 6) & 0x3e0) |
+                                  ((stored << 7) & 0x7c00);
 
                 /* The 15-bit visual stores red in the low five bits. */
                 p[0] = rgb555 >> 8;
                 p[1] = rgb555;
             } else {
                 p[0] = 0;
-                p[1] = stored[col];
-                p[2] = stored[col] >> 8;
-                p[3] = stored[col] >> 16;
+                p[1] = stored;
+                p[2] = stored >> 8;
+                p[3] = stored >> 16;
             }
         }
         if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, true)) {

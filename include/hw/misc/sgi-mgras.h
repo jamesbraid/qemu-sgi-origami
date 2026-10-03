@@ -502,6 +502,9 @@ typedef struct SGIMgrasGLSelection {
 /* General interrupt source 10: the swap command has been reached. */
 #define SGI_MGRAS_PENDING_SWAP 0x00000400
 
+void sgi_mgras_display_did_line(SGIMgrasState *s, bool overlay,
+                                unsigned int y, uint8_t *did);
+
 /* Latch general interrupt sources and update the interrupt lines. */
 void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
 
