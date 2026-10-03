@@ -204,7 +204,8 @@ static void test_gl_texture_load_draws_the_level(gconstpointer data)
 #define TEX_MDDMA_PIXEL_ON       0x3c040045
 #define TEX_MDDMA_PIXEL_OFF      0x3c040044
 
-static void tex_volume_pixels(QTestState *t, bool enabled)
+static void tex_volume_pixels(QTestState *t, bool enabled,
+                              uint32_t captured_size)
 {
     static const uint8_t pixels[16] = {
         0x40, 0x40, 0x00, 0xff, 0xbf, 0x40, 0x40, 0xff,
@@ -213,6 +214,13 @@ static void tex_volume_pixels(QTestState *t, bool enabled)
 
     tex_record(t, 0x18a, enabled ? TEX_MDDMA_PIXEL_ON : TEX_MDDMA_PIXEL_OFF);
     gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
+    if (captured_size) {
+        uint32_t box[9] = {
+            0, 0, 1, 2, captured_size, 1, 1, 1, 0,
+        };
+
+        gl_ge_load(t, GL_GE_ERAM, GL_GE_BOX, box, ARRAY_SIZE(box));
+    }
     gl_raster_pos2f(t, 0, 0);
     gl_word(t, GL_PIXELS_HDR);
     gl_word(t, 2);
@@ -348,14 +356,14 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
      */
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
     tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
-    tex_volume_pixels(t, false);
+    tex_volume_pixels(t, false, 0);
     for (int y = 0; y < 2; y++) {
         for (int x = 0; x < 2; x++) {
             g_assert_cmphex(gl_window_pixel(t, x, y), ==, input[y * 2 + x]);
         }
     }
 
-    tex_volume_pixels(t, true);
+    tex_volume_pixels(t, true, 0);
     for (int y = 0; y < 2; y++) {
         for (int x = 0; x < 2; x++) {
             g_assert_cmphex(gl_window_pixel(t, x, y), ==, texels[y * 2 + x]);
@@ -386,6 +394,41 @@ static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
                                                     20 + 8 * y), ==,
                                     slices[0][y * 2 + x]);
                 }
+            }
+        }
+
+        /*
+         * Exercise the captured enabled GL pixel draw with its exact GE
+         * box and an empty destination. A rejected draw leaves black.
+         */
+        tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8 | TEX_TEXMODE2_VOLUME);
+        tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+        gl_clear_color(t, 0, 0, 0, 1);
+        gl_word(t, GL_CLEAR_COLOR_BUFFER);
+        tex_volume_pixels(t, true, 0x00020002);
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, x, y), ==,
+                                texels[y * 2 + x]);
+            }
+        }
+
+        /* The exception requires both the captured size and enabled state. */
+        gl_clear_color(t, 0, 0, 0, 1);
+        gl_word(t, GL_CLEAR_COLOR_BUFFER);
+        tex_volume_pixels(t, false, 0x00020002);
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, x, y), ==, 0);
+            }
+        }
+
+        gl_clear_color(t, 0, 0, 0, 1);
+        gl_word(t, GL_CLEAR_COLOR_BUFFER);
+        tex_volume_pixels(t, true, 0x00030002);
+        for (int y = 0; y < 2; y++) {
+            for (int x = 0; x < 2; x++) {
+                g_assert_cmphex(gl_window_pixel(t, x, y), ==, 0);
             }
         }
 
