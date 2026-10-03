@@ -397,6 +397,7 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_TEX_LOAD_ID, 1 },
     { SGI_KONA_CMD_GL_TEX_BIND_ID, 1 },
     { SGI_KONA_CMD_GL_TEX_BIND_2D, 22 },
+    { SGI_KONA_CMD_GL_TEX_DETAIL, 6 },
     { SGI_KONA_CMD_GL_TEX_BIND, 5 },
     { SGI_KONA_CMD_GL_TEX_BIND_LINEAR, 5 },
     { SGI_KONA_CMD_GL_TEX_POST_SCALE, 4 },

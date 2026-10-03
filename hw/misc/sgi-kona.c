@@ -4105,8 +4105,8 @@ static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
     if (h[9] == 8 && !(h[17] & 1)) {
         return SGI_GL_LUMINANCE_ALPHA;
     }
-    /* The retained public probe establishes this RGBA upload profile. */
-    if (h[9] == 0x30 && (h[17] & 1) && h[3] == 5) {
+    /* Preserve source alpha until the binding selects RGB or RGBA. */
+    if (h[9] == 0x30 && (h[17] & 1) && (h[3] == 4 || h[3] == 5)) {
         return SGI_GL_RGBA;
     }
     return 0;
@@ -4305,7 +4305,8 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
 static void sgi_kona_gl_texture_bind(SGIKonaState *s)
 {
     SGIKonaTextureParams params;
-    uint32_t handle = s->texture_bind[0], width, height;
+    uint32_t handle = s->texture_bind[0], width, height, base, internal;
+    uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
 
     if (!s->texture_bind_valid || handle == UINT32_MAX) {
         sgi_kona_texture_bind(&s->textures, UINT32_MAX, NULL);
@@ -4313,6 +4314,10 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     }
     sgi_kona_texture_defaults(&params);
     if (!s->texture_record_valid ||
+        !sgi_kona_gl_texture_internal_format((s->texture_bind[1] >> 12) & 0xfff,
+                                             &base, &internal) ||
+        storage != (base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ?
+                    0xd : base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
         !sgi_kona_gl_texture_sampler(s->texture_bind, s->texture_record,
                                      &params) ||
         !sgi_kona_gl_texture_transform(s->texture_transform[1],
@@ -4325,8 +4330,9 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         return;
     }
     sgi_kona_gl_texture_dimensions(s->texture_bind, &width, &height);
-    if (!sgi_kona_texture_native_format(&s->textures, handle,
-                                        (s->texture_bind[2] >> 14) & 0x7f) ||
+    if (!sgi_kona_texture_native_format(&s->textures, handle, storage) ||
+        !sgi_kona_texture_native_internal_format(&s->textures, handle, base,
+                                                 internal) ||
         !sgi_kona_texture_native_dimensions(&s->textures, handle, width,
                                             height) ||
         !sgi_kona_texture_bind(&s->textures, handle, &params)) {
@@ -4582,6 +4588,14 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         if (s->texture_upload.count &&
             s->texture_upload.header[10] == args[0]) {
             sgi_kona_texture_upload_clear(s);
+        }
+        return;
+    case SGI_KONA_CMD_GL_TEX_DETAIL:
+        if (sgi_kona_texture_detail_bind(&s->textures, args)) {
+            s->texture_state_used = true;
+        } else {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: native detail texture binding"
+                          " refused; prior binding retained\n");
         }
         return;
     case SGI_KONA_CMD_GL_TEX_BIND_ID:
