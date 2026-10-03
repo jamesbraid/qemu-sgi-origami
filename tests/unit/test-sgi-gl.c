@@ -5446,6 +5446,7 @@ static void test_texture_coordinates(void)
 }
 
 typedef struct TexturePixels {
+    unsigned post_filter_calls;
     uint32_t pixel[4];
     unsigned reads;
     bool fail;
@@ -5526,6 +5527,43 @@ static uint32_t texture_rgb(double r, double g, double b)
     return ((uint32_t)floor(r * 255 + 0.5) << 16) |
            ((uint32_t)floor(g * 255 + 0.5) << 8) |
            (uint32_t)floor(b * 255 + 0.5);
+}
+
+static void texture_post_filter(void *opaque, double rgba[4])
+{
+    unsigned *calls = opaque;
+
+    (*calls)++;
+    rgba[0] *= rgba[0];
+    rgba[1] *= rgba[1];
+    rgba[2] = 1 - rgba[2];
+}
+
+/* Nonlinear mapping sees expanded, bilinearly sampled LUMINANCE once. */
+static void test_texture_post_filter(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x000000ff, 0xffffffff, 0xffffffff, 0x000000ff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+
+    image.base_format = SGI_GL_LUMINANCE;
+    image.min_filter = image.mag_filter = SGI_GL_LINEAR;
+    image.post_filter = texture_post_filter;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    texture_coord(&f, 0.5f, 0.5f, 0, 1);
+    frag_command(&f, SGI_GL_OP_COLOR4F,
+                 (uint32_t[]) { bits(1), bits(1), bits(1), bits(1) }, 4);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==,
+                    texture_rgb(0.25, 0.25, 0.5));
+    g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
 }
 
 /* Different unused channels expose accidental generic-RGBA environments. */
@@ -6136,6 +6174,44 @@ static void alpha_point(AlphaScene *s, unsigned r, unsigned g, unsigned b,
     frag_command(&s->f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
     wide_vertex(&s->f, 32.5, 32.5);
     frag_command(&s->f, SGI_GL_OP_END, NULL, 0);
+}
+
+static void texture_post_filter_precision(void *opaque, double rgba[4])
+{
+    TexturePixels *p = opaque;
+
+    p->post_filter_calls++;
+    rgba[0] = 1.0 / 4095;
+    rgba[1] = 3.0 / 4095;
+    rgba[2] = 2048.0 / 4095;
+}
+
+/* A 12-bit result must reach the environment before channel quantization. */
+static void test_texture_post_filter_precision(void)
+{
+    AlphaScene s;
+    TexturePixels pixels = { .pixel = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+
+    alpha_init(&s);
+    s.rules.color_bits = 10;
+    image.post_filter = texture_post_filter_precision;
+    s.f.rec.target.texture = &image;
+    enable(&s.f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&s.f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_BLEND, 0, 0, 0);
+    texture_env(&s.f, SGI_GL_TEXTURE_ENV_COLOR, 0, 0, 0, 0);
+    frag_command(&s.f, SGI_GL_OP_COLOR4F,
+                 (uint32_t[]) { bits(0.5), bits(0.5), bits(0.5), bits(1) }, 4);
+    frag_command(&s.f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&s.f, 32.5, 32.5);
+    frag_command(&s.f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 511);
+    g_assert_cmpuint(s.pixel[0].component[1], ==, 511);
+    g_assert_cmpuint(s.pixel[0].component[2], ==, 256);
+    g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
 }
 
 static void test_polygon_stipple_rgba_texture(void)
@@ -7280,6 +7356,7 @@ typedef struct MipmapRecordPixels {
 } MipmapRecordPixels;
 
 typedef struct MipmapFixture {
+    unsigned post_filter_calls;
     FragScene scene;
     MipmapRecordPixels pixels[4];
     SGIGLTexLevel levels[4];
@@ -7361,6 +7438,29 @@ static void mipmap_point(MipmapFixture *f)
                  (uint32_t[]) { SGI_GL_POINTS }, 1);
     frag_command(&f->scene, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
     frag_command(&f->scene, SGI_GL_OP_END, NULL, 0);
+}
+
+/* Nonlinear mapping sees the trilinear result once, not each mip level. */
+static void test_mipmap_post_filter_order(void)
+{
+    MipmapFixture f;
+
+    mipmap_init(&f, SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_NEAREST, 1.5, 1.5);
+    memset(f.pixels[1].pixels, 0x00, sizeof(f.pixels[1].pixels));
+    memset(f.pixels[2].pixels, 0xff, sizeof(f.pixels[2].pixels));
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==, 0x808080);
+    g_assert_cmpuint(f.post_filter_calls, ==, 0);
+
+    mipmap_init(&f, SGI_GL_LINEAR_MIPMAP_LINEAR, SGI_GL_NEAREST, 1.5, 1.5);
+    memset(f.pixels[1].pixels, 0x00, sizeof(f.pixels[1].pixels));
+    memset(f.pixels[2].pixels, 0xff, sizeof(f.pixels[2].pixels));
+    f.image.opaque = &f.post_filter_calls;
+    f.image.post_filter = texture_post_filter;
+    mipmap_point(&f);
+    g_assert_cmphex(frag_pixel(&f.scene, 32, 32), ==,
+                    texture_rgb(0.25, 0.25, 0.5));
+    g_assert_cmpuint(f.post_filter_calls, ==, 1);
 }
 
 /* Fixed bounds make the discrete lambda boundary exact, independent of log2. */
@@ -8500,6 +8600,11 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
+    g_test_add_func("/sgi-gl/texture-post-filter-precision",
+                    test_texture_post_filter_precision);
+    g_test_add_func("/sgi-gl/mipmap-post-filter-order",
+                    test_mipmap_post_filter_order);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
