@@ -25,6 +25,7 @@
 #include "qemu/log.h"
 #include "qemu/host-utils.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "hw/display/sgi/x-gc.h"
 
 /*
  * The drawable's window: its origin and the bounds of the pixels it owns,
@@ -517,40 +518,7 @@ static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
  */
 static uint32_t sgi_soft_logic_op(uint32_t op, uint32_t s, uint32_t d)
 {
-    switch (op - SGI_GL_CLEAR) {
-    case 0x0:
-        return 0;
-    case 0x1:
-        return s & d;
-    case 0x2:
-        return s & ~d;
-    case 0x4:
-        return ~s & d;
-    case 0x5:
-        return d;
-    case 0x6:
-        return s ^ d;
-    case 0x7:
-        return s | d;
-    case 0x8:
-        return ~(s | d);
-    case 0x9:
-        return ~(s ^ d);
-    case 0xa:
-        return ~d;
-    case 0xb:
-        return s | ~d;
-    case 0xc:
-        return ~s;
-    case 0xd:
-        return ~s | d;
-    case 0xe:
-        return ~(s & d);
-    case 0xf:
-        return UINT32_MAX;
-    default:
-        return s;
-    }
+    return sgi_x_logic_op(op - SGI_GL_CLEAR, s, d);
 }
 
 /* RGB retains its existing arithmetic; spatial alpha dithering is omitted. */
