@@ -232,6 +232,8 @@ typedef struct SGIGLTexImage {
     /* Required for a volume with border == 1, including depth one. */
     bool (*read_border_texel_3d)(void *opaque, int32_t x, int32_t y,
                                  int32_t z, uint32_t *rgba);
+    /* Positive volume R derivative factor; zero preserves identity. */
+    double lod_scale_r;
 } SGIGLTexImage;
 
 /*

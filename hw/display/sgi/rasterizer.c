@@ -868,7 +868,9 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         return false;
     }
     if (im && (!isfinite(im->lod_scale_s) || !isfinite(im->lod_scale_t) ||
-               im->lod_scale_s < 0 || im->lod_scale_t < 0)) {
+               im->lod_scale_s < 0 || im->lod_scale_t < 0 ||
+               (im->volume && (!isfinite(im->lod_scale_r) ||
+                               im->lod_scale_r < 0)))) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-gl: invalid derivative scales, draw dropped\n");
         return false;
@@ -1196,7 +1198,7 @@ static bool sgi_soft_texture_derivatives(const double value[4],
                                           const double dx[4],
                                           const double dy[4],
                                           double ns, double nt,
-                                          uint32_t nr,
+                                          double nr,
                                           double out[5])
 {
     double d = value[2], d2 = d * d;
@@ -2147,7 +2149,9 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                     sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
                     r->texture_base->height *
                     sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
-                    r->texture->volume ? r->texture_base->depth : 0, out) ?
+                    r->texture->volume ? r->texture_base->depth *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
+                    out) ?
                     out[4] : NAN;
             }
             sgi_soft_fragment(r, px, py, z, offset, &frag);
@@ -2498,7 +2502,9 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                         sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
                         r->texture_base->height *
                         sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
-                        r->texture->volume ? r->texture_base->depth : 0, out) ?
+                        r->texture->volume ? r->texture_base->depth *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
+                        out) ?
                         out[4] / texture_length : NAN;
                 }
                 sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
