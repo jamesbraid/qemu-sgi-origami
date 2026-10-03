@@ -2860,10 +2860,9 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, int i)
  * corner, rows bottom first, each row packed by the pack row length and
  * alignment 0x33 set (4.3.2). A pixel outside the window or the screen
  * reads 0; no alpha plane is modelled, so alpha is 1.0. The model packs
- * GL_RGBA, GL_RGB and GL_ABGR_EXT in GL_UNSIGNED_BYTE and logs any other
- * pair, answering with word 0 alone so the client does not wait forever.
- * A read larger than the page goes by DMA request 0x2710, which is not
- * modelled; what the page cannot hold is logged and dropped.
+ * GL_RGBA, GL_RGB and GL_ABGR_EXT in GL_UNSIGNED_BYTE. Unsupported pairs
+ * and reads larger than the page are logged and receive no reply. Large
+ * reads require DMA request 0x2710, which is not modelled.
  */
 static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
 {
@@ -2878,7 +2877,8 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
     int bank;
 
     if (i == SGI_KONA_CONTEXT_NONE) {
-        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 0, NULL, 0);
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels with no current"
+                      " context; no reply\n");
         return;
     }
     p = &s->gl_pipe[i];
@@ -2886,20 +2886,25 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
                            format != 0x8000)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " is not modelled; no"
-                      " pixels returned\n", format, type);
-        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 0, NULL, 0);
+                      " reply\n", format, type);
         return;
     }
     row = (uint64_t)(p->pack_row_length ? p->pack_row_length : w) * comps;
     stride = ROUND_UP(row, MAX(p->pack_alignment, 1));
-    len = h ? stride * (h - 1) + (uint64_t)w * comps : 0;
-    if (len > SGI_KONA_RETURN_PAGE_BYTES - start) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
-                      PRIu32 " needs 0x%" PRIx64 " bytes, more than the"
-                      " return page holds; the rest is dropped\n", w, h,
-                      len);
-        len = SGI_KONA_RETURN_PAGE_BYTES - start;
+    row = (uint64_t)w * comps;
+    if (!w || !h) {
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, start, NULL, 0);
+        return;
     }
+    /* Bound the last row before multiplying guest-controlled dimensions. */
+    if (row > SGI_KONA_RETURN_PAGE_BYTES - start ||
+        (h > 1 && stride > (SGI_KONA_RETURN_PAGE_BYTES - start - row) /
+                          (h - 1))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
+                      PRIu32 " exceeds the return page; no reply\n", w, h);
+        return;
+    }
+    len = stride * (h - 1) + row;
     data = g_malloc0(len);
     bank = sgi_kona_gl_read_bank(s, i);
     for (uint64_t r = 0; r < h; r++) {
@@ -2946,8 +2951,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
  * shared context, a float as its bits and an integer or enumerant as
  * itself, big-endian words; that each name's table type matches is
  * inferred, and settled for a name only by a trace of its reply. A name
- * the shared context does not keep is logged and answered with word 0
- * alone, so the client reads what the page held before.
+ * the shared context does not keep is logged and receives no reply.
  */
 static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
 {
@@ -2958,8 +2962,7 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
     if (s->context_current == SGI_KONA_CONTEXT_NONE ||
         !sgi_gl_get(&s->gl[s->context_current], name, out, &n)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glGet of 0x%" PRIx32 " is not"
-                      " answered; word 0 posted alone\n", name);
-        sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET, 0, NULL, 0);
+                      " answered; no reply\n", name);
         return;
     }
     for (unsigned k = 0; k < n; k++) {
@@ -3003,7 +3006,6 @@ static void sgi_kona_reply_material(uint8_t *w, const SGIGLMaterial *m)
 #define SGI_KONA_PUSH_FOG_WORDS      (0x144 / 4)
 #define SGI_KONA_PUSH_LIGHTING_WORDS (0xc0 / 4)
 #define SGI_KONA_PUSH_OFFSET_WORDS   4
-#define SGI_KONA_PUSH_TEXTURE_WORDS  121
 
 /*
  * 0xc9's reply for mask, from byte 4 of the return page: one section for
@@ -3025,10 +3027,10 @@ static void sgi_kona_reply_material(uint8_t *w, const SGIGLMaterial *m)
  *   0x8    the factor in word 1 and the units in word 3, the two words
  *          read
  *   0x10   the stipple's 32 rows, leftmost pixel in the high bit
- *   0x40000 the texture state, which no model state fills: zeros
  *
- * The 0x1000 section's length depends on a library word the model cannot
- * see, so it is not sent and is logged. Returns the reply's bytes.
+ * Texture (0x40000) and transform (0x1000) sections have no complete
+ * model reply and are refused before reaching this serializer.
+ * Returns the reply's bytes.
  */
 static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
                                        uint8_t *w, uint32_t room)
@@ -3086,13 +3088,6 @@ static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
         }
         used += 4 * SGI_KONA_GL_STIPPLE_ROWS;
     }
-    if (mask & 0x40000) {
-        used += 4 * SGI_KONA_PUSH_TEXTURE_WORDS;
-    }
-    if (mask & 0x1000) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib's transform"
-                      " section is not sent; its length is unknown\n");
-    }
     assert(used <= room);
     return used;
 }
@@ -3111,13 +3106,19 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
     uint8_t reply[4 * (SGI_KONA_PUSH_CURRENT_WORDS + SGI_KONA_PUSH_FOG_WORDS +
                        SGI_KONA_PUSH_LIGHTING_WORDS +
                        SGI_GL_LIGHTS * SGI_KONA_GL_POP_LIGHT_WORDS +
-                       SGI_KONA_PUSH_OFFSET_WORDS + SGI_KONA_GL_STIPPLE_ROWS +
-                       SGI_KONA_PUSH_TEXTURE_WORDS)];
+                       SGI_KONA_PUSH_OFFSET_WORDS + SGI_KONA_GL_STIPPLE_ROWS)];
     uint32_t len;
     uint32_t *depth;
 
     if (i == SGI_KONA_CONTEXT_NONE) {
-        sgi_kona_post_return(s, SGI_KONA_CMD_GL_PUSH_ATTRIB, 0, NULL, 0);
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib with no current"
+                      " context; no reply\n");
+        return;
+    }
+    if (mask & (0x40000 | 0x1000)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: glPushAttrib mask 0x%" PRIx32
+                      " requests unmodelled texture or transform data;"
+                      " no reply\n", mask);
         return;
     }
     len = sgi_kona_gl_push_reply(s, i, mask, reply, sizeof(reply));
