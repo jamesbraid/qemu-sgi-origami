@@ -11256,6 +11256,116 @@ static void test_buffers_transfers_follow_mask(void)
     qtest_quit(qts);
 }
 
+/* The native move emits both colour-plane copies in order. */
+static void captured_buffer_copy(QTestState *qts, uint32_t source_plane,
+                                 uint32_t dest_plane, uint32_t sy,
+                                 uint32_t dy)
+{
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_PREFIX_ARG);
+    cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+    cmd_push(qts, 0x00002000);
+    cmd_push(qts, (sy << 16) | 326);
+    cmd_push(qts, 0x80500050 | (source_plane << 12));
+    cmd_push(qts, (2u << 16) | 1);
+    cmd_push(qts, 0x80035004 | (source_plane << 24) |
+                  (dest_plane << 20));
+    cmd_push(qts, 0x00002000);
+    cmd_push(qts, (dy << 16) | 326);
+    cmd_push(qts, 0xf2034000 | (dest_plane << 20));
+}
+
+/*
+ * The two captured overlapping moves select buffer 0 then buffer 1. Each
+ * destination must use that pass's original source, in either vertical
+ * direction; the source and row beyond the destination remain unchanged.
+ */
+static void test_buffers_captured_copy_preserves_both_sources(void)
+{
+    static const struct {
+        uint32_t sy, dy;
+        uint32_t guard_y, untouched_source_y, untouched_source_index;
+        uint32_t colour[2][2];
+        uint32_t guard[2];
+    } cases[] = {
+        { 339, 340, 342, 339, 0, { { 0xff0000ff, 0x00ff00ff },
+                      { 0x0000ffff, 0xffff00ff } },
+          { 0xffffffff, 0x777777ff } },
+        { 401, 400, 399, 402, 1, { { 0x102030ff, 0x405060ff },
+                      { 0x708090ff, 0xa0b0c0ff } },
+          { 0xdeadbeff, 0xcafeb0ff } },
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    display_identity(qts, 1);
+    id_plane_write(qts, 1, 0xf8, 60, 70, 80, 150);
+    colour_destination(qts);
+
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_DEPTH_FLAT);
+    set_reg(qts, ODSY_REG_DEPTH_FUNC, ODSY_GL_FUNC_LESS);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE,
+                     ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+    push_triangle_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO,
+                     odsy_near_yellow);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned b = 0; b < 2; b++) {
+            odsy_buffer_pixel_write(qts, b, 326, cases[i].sy,
+                                    cases[i].colour[b][0]);
+            odsy_buffer_pixel_write(qts, b, 326, cases[i].sy + 1,
+                                    cases[i].colour[b][1]);
+            odsy_buffer_pixel_write(qts, b, 326, cases[i].guard_y,
+                                    cases[i].guard[b]);
+        }
+
+        captured_buffer_copy(qts, 0, 0, cases[i].sy, cases[i].dy);
+        captured_buffer_copy(qts, 4, 4, cases[i].sy, cases[i].dy);
+
+        for (unsigned b = 0; b < 2; b++) {
+            uint32_t untouched_source =
+                cases[i].colour[b][cases[i].untouched_source_index];
+
+            g_assert_cmphex(odsy_buffer_pixel(qts, b, 326,
+                                              cases[i].untouched_source_y), ==,
+                            untouched_source);
+            g_assert_cmphex(odsy_buffer_pixel(qts, b, 326, cases[i].dy), ==,
+                            cases[i].colour[b][0]);
+            g_assert_cmphex(odsy_buffer_pixel(qts, b, 326, cases[i].dy + 1),
+                            ==, cases[i].colour[b][1]);
+            g_assert_cmphex(odsy_buffer_pixel(qts, b, 326, cases[i].guard_y),
+                            ==, cases[i].guard[b]);
+        }
+    }
+
+    /* The two selector fields also route across buffers independently. */
+    odsy_buffer_pixel_write(qts, 0, 326, 601, 0x112233ff);
+    odsy_buffer_pixel_write(qts, 0, 326, 602, 0x445566ff);
+    odsy_buffer_pixel_write(qts, 1, 326, 601, 0x778899ff);
+    odsy_buffer_pixel_write(qts, 1, 326, 602, 0xaabbccff);
+    odsy_buffer_pixel_write(qts, 0, 326, 612, 0xdeadbeff);
+    odsy_buffer_pixel_write(qts, 1, 326, 612, 0xcafeb0ff);
+    captured_buffer_copy(qts, 0, 4, 601, 610);
+    captured_buffer_copy(qts, 4, 0, 601, 610);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 326, 610), ==, 0x778899ff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 326, 611), ==, 0xaabbccff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 326, 610), ==, 0x112233ff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 326, 611), ==, 0x445566ff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 326, 612), ==, 0xdeadbeff);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 1, 326, 612), ==, 0xcafeb0ff);
+
+    /* The copy leaves DID selection and the depth written by the triangle. */
+    g_assert_cmphex(odsy_test_display_pixel(qts, 326, 340), ==, 0xff0000);
+    draw_mask(qts, ODSY_DRAW_BUFFER0);
+    push_triangle_3f(qts, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE,
+                     odsy_far_cyan);
+    g_assert_cmphex(odsy_buffer_pixel(qts, 0, 326, 340), ==, 0xff0000ff);
+
+    qtest_quit(qts);
+}
+
 /*
  * Board-to-host transfers (hw/misc/sgi-odyssey.c, ODSY_DMA_TO_HOST; the
  * rules are the sanitized handoff of docs/reviews/odyssey-read-header-
@@ -12765,6 +12875,8 @@ int main(int argc, char **argv)
                    test_buffers_migration);
     qtest_add_func("sn1/odyssey/buffers-transfers-follow-mask",
                    test_buffers_transfers_follow_mask);
+    qtest_add_func("sn1/odyssey/buffers-captured-copy-preserves-both-sources",
+                   test_buffers_captured_copy_preserves_both_sources);
     qtest_add_func("sn1/odyssey/command-fifo-pattern-quad",
                    test_command_fifo_pattern_quad);
     qtest_add_func("sn1/odyssey/command-fifo-pattern-quad-straddles-screen",
