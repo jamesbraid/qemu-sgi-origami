@@ -76,4 +76,19 @@ const char *sgi_kona_gl_decode_result_name(SGIKonaGLDecodeResult result);
 /* The generated table, exposed for tests that walk every entry. */
 const SGIKonaGLSelectorInfo *sgi_kona_gl_selector_table(size_t *count);
 
+/* Native return metadata does not establish a supported state value. */
+typedef struct SGIKonaGLQueryInfo {
+    uint32_t pname;
+    uint8_t type;
+    uint8_t count;
+} SGIKonaGLQueryInfo;
+
+const SGIKonaGLQueryInfo *sgi_kona_gl_query_lookup(uint32_t pname);
+const SGIKonaGLQueryInfo *sgi_kona_gl_query_table(size_t *count);
+
+/* Values are native representation bits, not client getter conversions. */
+bool sgi_kona_gl_query_serialize(const SGIKonaGLQueryInfo *info,
+                                 const uint64_t *values, unsigned count,
+                                 uint8_t *out, size_t capacity, size_t *length);
+
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */
