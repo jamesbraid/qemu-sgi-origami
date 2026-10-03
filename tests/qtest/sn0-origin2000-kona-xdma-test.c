@@ -365,8 +365,8 @@ static void test_pad(void)
 }
 
 /*
- * A 4 by 2 TrueColor image, one word 0x00RRGGBB a pixel: the display
- * shows each word as its colour, direct, without the colour map.
+ * A native TrueColor image retains its known DMA payload framing. Its
+ * unreviewed conversion must leave canonical words and tags unchanged.
  */
 static void test_truecolour_image(void)
 {
@@ -389,9 +389,9 @@ static void test_truecolour_image(void)
     dma_packet(s, 0, 32, 32, 0, 0x100);
     assert_completed(s);
     kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
-    g_assert_cmphex(shown_at(s, 10, 10), ==, 0xff8000);
+    g_assert_cmphex(shown_at(s, 10, 10), ==, 0);
     for (unsigned k = 0; k < 8; k++) {
-        g_assert_cmphex(shown_at(s, 10 + k % 4, 10 + k / 4), ==, words[k]);
+        g_assert_cmphex(shown_at(s, 10 + k % 4, 10 + k / 4), ==, 0);
         g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 10 + k % 4,
                                  10 + k / 4), ==, TAG_DIRECT);
     }
@@ -553,9 +553,113 @@ static void test_packet_without_destination(void)
     g_assert_null(strstr(found, "sgi_kona_x_image_dma "));
 }
 
+/* The payload may finish before a later declared source read fails. */
+static void test_late_unmapped_discards_completed_payload(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    qtest_memwrite(s, BUFFER_PAGE, (uint8_t[]){ 0x11, 0x22, 0x33, 0x44 }, 4);
+    map_page(s, 0, BUFFER_PAGE);
+    x_image_open(s, gc_index8, (uint32_t[]){ 0x10, 0, 1, 8, 4, 1, 0 },
+                 70, 80);
+    dma_packet(s, 0, 8, 4, 0x3ffc, 0x100);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & CAUSE_MAILBOX, ==, 0);
+    kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, 70 + x, 80), ==, 0);
+        g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 70 + x, 80), ==,
+                        TAG_DIRECT);
+    }
+    x_image_open(s, gc_index8, (uint32_t[]){ 0x10, 0, 1, 8, 4, 1, 0 },
+                 90, 80);
+    dma_packet(s, 0, 4, 4, 0, 0x100);
+    assert_completed(s);
+    kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, 90 + x, 80), ==,
+                        0x11 * (x + 1));
+        g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 90 + x, 80), ==,
+                        TAG_X_INDEX);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "maps nothing"));
+}
+
+static void test_unaligned_count_refuses_completion(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    qtest_memwrite(s, BUFFER_PAGE, (uint8_t[]){ 0x11, 0x22, 0x33, 0x44 }, 4);
+    map_page(s, 0, BUFFER_PAGE);
+    x_image_open(s, gc_index8, (uint32_t[]){ 0x10, 0, 1, 8, 4, 1, 0 },
+                 70, 80);
+    dma_packet(s, 0, 3, 3, 0, 0x100);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & CAUSE_MAILBOX, ==, 0);
+    kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, 70 + x, 80), ==, 0);
+        g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 70 + x, 80), ==,
+                        TAG_DIRECT);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "not whole lines of whole words"));
+}
+
+static void test_chunked_extra_source(gconstpointer opaque)
+{
+    bool fail = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint8_t bytes[8192];
+    uint32_t io = fail ? 0x3000 : 0;
+
+    memset(bytes, 0xee, sizeof(bytes));
+    memcpy(bytes, (uint8_t[]){ 0x11, 0x22, 0x33, 0x44 }, 4);
+    qtest_memwrite(s, BUFFER_PAGE + io, bytes, sizeof(bytes));
+    map_page(s, 0, BUFFER_PAGE);
+    x_image_open(s, gc_index8, (uint32_t[]){ 0x10, 0, 1, 8, 4, 1, 0 },
+                 70, 80);
+    dma_packet(s, io, sizeof(bytes), sizeof(bytes), 0, 0x100);
+    if (fail) {
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & CAUSE_MAILBOX, ==, 0);
+    } else {
+        assert_completed(s);
+    }
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, 70 + x, 80), ==, 0);
+    }
+    kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    for (unsigned x = 0; x < 4; x++) {
+        g_assert_cmphex(plane_at(s, PLANE_FRONT, 70 + x, 80), ==,
+                       fail ? 0 : 0x11 * (x + 1));
+        g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 70 + x, 80), ==,
+                       fail ? TAG_DIRECT : TAG_X_INDEX);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, fail ? "maps nothing" :
+                           "carried 8188 bytes past its rows"));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("sn0/origin2000/kona-xdma/chunks/read-all-extras",
+        GUINT_TO_POINTER(0), test_chunked_extra_source);
+    qtest_add_data_func("sn0/origin2000/kona-xdma/chunks/late-extra-unmapped",
+        GUINT_TO_POINTER(1), test_chunked_extra_source);
+
+    qtest_add_func("sn0/origin2000/kona-xdma/late-unmapped-after-payload",
+                   test_late_unmapped_discards_completed_payload);
+    qtest_add_func("sn0/origin2000/kona-xdma/unaligned-count",
+                   test_unaligned_count_refuses_completion);
 
     qtest_add_func("sn0/origin2000/kona-xdma/index-image",
                    test_index_image_by_dma);

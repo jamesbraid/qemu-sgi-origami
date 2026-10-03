@@ -73,14 +73,16 @@ static void scene(QTestState *s)
 {
     command(s, 0x1fd, (uint32_t[]){ 0x10000340, 0x9000, 0x10000 }, 3);
     command(s, 0x1f2, (uint32_t[]){ 0x10000320, 0x9000, 0x4000 }, 3);
-    gc(s);
-    command(s, 0x136, (uint32_t[]){ 0, 0, 0, 0, 6, 2, 0 }, 7);
+    command(s, 0x129, (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0,
+            0xc, 1, 1, 6, 0, 1, 1 }, 13);
+    command(s, 0x136, (uint32_t[]){ 0, 0, 1, 8, 6, 2, 0 }, 7);
     command(s, 0x139, (uint32_t[]){ 454, 700 }, 2);
     for (unsigned r = 0; r < 2; r++) {
         qtest_writel(s, DATA, 0x000180ff);
         qtest_writel(s, DATA, 0x357e0000);
     }
     command(s, 0x13a, (uint32_t[]){ 0 }, 1);
+    gc(s);
     setup(s);
     control(s, FIXTURE_PREPARE, 0);
     g_assert_cmpuint(field(s, FIXTURE_FLAGS), ==, 3);
@@ -298,6 +300,62 @@ static void test_ready_failure(void)
     qtest_quit(s);
 }
 
+/* These inputs call the helper directly; framed packets reject them earlier. */
+static void test_dma_bounds(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL;
+    g_autofree char *text = NULL;
+    QTestState *s = start(&log);
+    uint64_t io = UINT64_MAX - 3;
+    uint64_t pitch = 8;
+    uint32_t lines = 1, bytes = 4;
+    bool success = false;
+
+    if (kind == 0) {
+        lines = 0;
+        success = true;
+    } else if (kind == 1) {
+        bytes = 0;
+        success = true;
+    } else if (kind == 2) {
+        bytes = 3;
+    } else if (kind == 3) {
+        io = 0;
+        pitch = UINT64_MAX;
+        lines = 3;
+    }
+    control(s, FIXTURE_DMA_IO, io);
+    control(s, FIXTURE_DMA_PITCH, pitch);
+    control(s, FIXTURE_DMA_RUN, ((uint64_t)lines << 32) | bytes);
+    g_assert_cmpuint(field(s, FIXTURE_DMA_RESULT), ==, success);
+    g_assert_cmpuint(field(s, FIXTURE_DMA_READS), ==, 0);
+    g_assert_cmpuint(field(s, FIXTURE_WRITE_REFUSED), ==, !success);
+    text = read_log(s, log);
+    g_assert_null(strstr(text, "maps nothing"));
+    if (!success) {
+        g_assert_nonnull(strstr(text, kind == 2 ? "line is not whole words" :
+                               "device address wraps"));
+    }
+}
+
+static void test_write_state_validation(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    QTestState *s = start(NULL);
+
+    command(s, 0x129, (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0,
+            0xc, 1, 1, 6, 0, 1, 1 }, 13);
+    command(s, 0x136, (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
+    command(s, 0x139, (uint32_t[]){ 70, 80 }, 2);
+    qtest_writel(s, DATA, 0x11223344);
+    control(s, FIXTURE_WRITE_MIGRATE, kind);
+    g_assert_cmpint((int64_t)field(s, FIXTURE_SAVE_RESULT), ==, 0);
+    g_assert_cmpint((int64_t)field(s, FIXTURE_RESULT), ==,
+                   kind ? -EINVAL : 0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     static const char *const ownership[] = {
@@ -306,6 +364,27 @@ int main(int argc, char **argv)
     };
 
     g_test_init(&argc, &argv, NULL);
+    for (unsigned kind = 0; kind < 5; kind++) {
+        static const char *const names[] = {
+            "zero-lines", "zero-bytes", "unaligned", "pitch-wrap", "end-wrap",
+        };
+        g_autofree char *path = g_strdup_printf("kona-write-defense/dma/%s",
+                                                names[kind]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(kind), test_dma_bounds);
+    }
+    for (unsigned kind = 0; kind < 8; kind++) {
+        static const char *const names[] = {
+            "valid", "packing", "stride", "count", "remaining",
+            "missing-validity", "unarrived-validity", "source-width",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "kona-write-defense/migration/%s", names[kind]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(kind),
+                            test_write_state_validation);
+    }
+
     qtest_add_data_func("kona-read-defense/unknown-tag",
         GUINT_TO_POINTER(FIXTURE_PIXEL_UNKNOWN_TAG), test_bad_source);
     qtest_add_data_func("kona-read-defense/large-index",

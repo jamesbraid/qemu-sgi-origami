@@ -27,6 +27,10 @@ struct KonaReadFixture {
     MemoryRegion *mapped_face;
     uint8_t bytes[FIXTURE_PAGE_BYTES];
     bool ready_fault;
+    uint64_t dma_io;
+    uint64_t dma_pitch;
+    uint64_t dma_reads;
+    bool dma_result;
     uint64_t payload_bytes;
     uint64_t payload_writes;
     uint64_t ready_writes;
@@ -57,6 +61,7 @@ static MemTxResult page_read(void *opaque, hwaddr offset, uint64_t *value,
 {
     KonaReadFixture *s = opaque;
 
+    s->dma_reads++;
     *value = 0;
     for (unsigned i = 0; i < size; i++) {
         *value = (*value << 8) | s->bytes[offset + i];
@@ -137,46 +142,13 @@ static void map_commands(KonaReadFixture *s, SGIKonaState *kona)
     memory_region_add_subregion(&s->commands, 0, s->mapped_face);
 }
 
-static void roundtrip(KonaReadFixture *s, unsigned request)
+static void roundtrip_state(KonaReadFixture *s)
 {
     SGIKonaState *k = s->source;
     const VMStateDescription *vmsd = DEVICE_GET_CLASS(k)->vmsd;
-    unsigned kind = request & 0xff;
-    unsigned flags = request >> 8;
-    int current = k->context_current;
     QIOChannelBuffer *output, *input;
     QEMUFile *file;
     Error *err = NULL;
-
-    assert(current >= 0 && current < SGI_KONA_CONTEXTS);
-    k->x_read_gc_valid = flags & 1;
-    k->x_read_setup_valid = flags & 2;
-    switch (kind) {
-    case FIXTURE_NO_CURRENT:
-        k->context_current = SGI_KONA_CONTEXT_NONE;
-        break;
-    case FIXTURE_INVALID_CURRENT:
-        k->context_current = SGI_KONA_CONTEXTS;
-        break;
-    case FIXTURE_INVALID_CONTEXT:
-        k->contexts[current].valid = false;
-        break;
-    case FIXTURE_INVALID_STORED_PAGE:
-        k->contexts[current].return_page_valid = false;
-        break;
-    case FIXTURE_INVALID_ACTIVE_PAGE:
-        k->return_page_valid = false;
-        break;
-    case FIXTURE_MISMATCHED_PAGE:
-    case FIXTURE_FALSE_MISMATCH:
-        k->return_page += FIXTURE_PAGE_BYTES;
-        break;
-    case FIXTURE_ABSENT_FLAGS:
-    case FIXTURE_VALID_STATE:
-        break;
-    default:
-        g_assert_not_reached();
-    }
 
     /* Failed loads never contaminate the next destination. */
     map_commands(s, k);
@@ -221,6 +193,46 @@ static void roundtrip(KonaReadFixture *s, unsigned request)
     } else {
         discard_destination(s);
     }
+}
+
+static void roundtrip(KonaReadFixture *s, unsigned request)
+{
+    SGIKonaState *k = s->source;
+    unsigned kind = request & 0xff;
+    unsigned flags = request >> 8;
+    int current = k->context_current;
+
+    assert(current >= 0 && current < SGI_KONA_CONTEXTS);
+    k->x_read_gc_valid = flags & 1;
+    k->x_read_setup_valid = flags & 2;
+    switch (kind) {
+    case FIXTURE_NO_CURRENT:
+        k->context_current = SGI_KONA_CONTEXT_NONE;
+        break;
+    case FIXTURE_INVALID_CURRENT:
+        k->context_current = SGI_KONA_CONTEXTS;
+        break;
+    case FIXTURE_INVALID_CONTEXT:
+        k->contexts[current].valid = false;
+        break;
+    case FIXTURE_INVALID_STORED_PAGE:
+        k->contexts[current].return_page_valid = false;
+        break;
+    case FIXTURE_INVALID_ACTIVE_PAGE:
+        k->return_page_valid = false;
+        break;
+    case FIXTURE_MISMATCHED_PAGE:
+    case FIXTURE_FALSE_MISMATCH:
+        k->return_page += FIXTURE_PAGE_BYTES;
+        break;
+    case FIXTURE_ABSENT_FLAGS:
+    case FIXTURE_VALID_STATE:
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    roundtrip_state(s);
 }
 
 typedef struct LayoutIdentity {
@@ -416,6 +428,9 @@ static uint64_t control_read(void *opaque, hwaddr offset, unsigned size)
     SGIKonaState *k = s->destination ? s->destination : s->source;
 
     switch (offset) {
+    case FIXTURE_DMA_RESULT: return s->dma_result;
+    case FIXTURE_DMA_READS: return s->dma_reads;
+    case FIXTURE_WRITE_REFUSED: return k->x_write_refused;
     case FIXTURE_RESULT: return (int64_t)s->result;
     case FIXTURE_ERROR: return s->load_error;
     case FIXTURE_SAVE_RESULT: return (int64_t)s->save_result;
@@ -453,6 +468,50 @@ static void control_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     }
     switch (offset) {
+    case FIXTURE_DMA_IO:
+        s->dma_io = value;
+        break;
+    case FIXTURE_DMA_PITCH:
+        s->dma_pitch = value;
+        break;
+    case FIXTURE_DMA_RUN:
+        s->dma_reads = 0;
+        s->dma_result = sgi_kona_x_image_dma(k, s->dma_io, value >> 32,
+                                             value, s->dma_pitch);
+        break;
+    case FIXTURE_WRITE_MIGRATE:
+        switch (value) {
+        case 0:
+            break;
+        case 1:
+            k->x_pixel_bpp = 16;
+            break;
+        case 2:
+            k->x_pixel_stride++;
+            break;
+        case 3:
+            k->x_pixel_words++;
+            break;
+        case 4:
+            k->x_pixel_remaining = k->x_pixel_words + 1;
+            break;
+        case 5:
+            sgi_plane_store(&k->x_write_mem,
+                sgi_board_memory_plane(&k->x_write_mem, 1), 70, 80, 0);
+            break;
+        case 6:
+            sgi_plane_store(&k->x_write_mem,
+                sgi_board_memory_plane(&k->x_write_mem, 1), 74, 80, 1);
+            break;
+        case 7:
+            sgi_plane_store(&k->x_write_mem,
+                sgi_board_memory_plane(&k->x_write_mem, 0), 70, 80, 0x100);
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        roundtrip_state(s);
+        break;
     case FIXTURE_PREPARE:
         memset(s->bytes, 0xa5, sizeof(s->bytes));
         memset(s->bytes, 0, 4);
@@ -510,7 +569,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->commands, OBJECT(s), "kona-test.commands",
                        SGI_KONA_APERTURE_SIZE);
     memory_region_init_io(&s->control, OBJECT(s), &control_ops, s,
-                          "kona-test.control", 256);
+                          "kona-test.control", 320);
     s->control.disable_reentrancy_guard = true;
     s->source = new_kona(s, 0, &err);
     if (!s->source) {
