@@ -834,6 +834,12 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
                       st->texture_env_mode);
         return false;
     }
+    if (im && (!isfinite(im->lod_scale_s) || !isfinite(im->lod_scale_t) ||
+               im->lod_scale_s < 0 || im->lod_scale_t < 0)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-gl: invalid derivative scales, draw dropped\n");
+        return false;
+    }
     if (im && im->pyramid) {
         return sgi_soft_texture_pyramid(r, im);
     }
@@ -1079,10 +1085,15 @@ static bool sgi_soft_texture_select(uint32_t min, uint32_t mag,
 }
 
 /* Projective gradients precede wrapping; D is Q/W, not geometry W. */
+static double sgi_soft_texture_lod_scale(double scale)
+{
+    return scale ? scale : 1.0;
+}
+
 static bool sgi_soft_texture_derivatives(const double value[3],
                                           const double dx[3],
                                           const double dy[3],
-                                          uint32_t ns, uint32_t nt,
+                                          double ns, double nt,
                                           double out[5])
 {
     double d = value[2], d2 = d * d;
@@ -1979,8 +1990,11 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                (py + 0.5 - gradient.y) * gradient.dy[k];
                 }
                 frag.texture_rho = sgi_soft_texture_derivatives(value,
-                    gradient.dx, gradient.dy, r->texture_base->width,
-                    r->texture_base->height, out) ? out[4] : NAN;
+                    gradient.dx, gradient.dy, r->texture_base->width *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                    r->texture_base->height *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
+                    out) ? out[4] : NAN;
             }
             sgi_soft_fragment(r, px, py, z, offset, &frag);
         }
@@ -2325,8 +2339,11 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                         value[k] = texture_value[k] + t * texture_delta[k];
                     }
                     frag.texture_rho = sgi_soft_texture_derivatives(value,
-                        texture_delta, zero, r->texture_base->width,
-                        r->texture_base->height, out) ?
+                        texture_delta, zero, r->texture_base->width *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                        r->texture_base->height *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
+                        out) ?
                         out[4] / texture_length : NAN;
                 }
                 sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
@@ -3103,6 +3120,15 @@ bool sgi_gl_texture_test_derivatives(const double value[3],
     double out[5])
 {
     return sgi_soft_texture_derivatives(value, dx, dy, ns, nt, out);
+}
+
+bool sgi_gl_texture_test_derivatives_scaled(const double value[3],
+    const double dx[3], const double dy[3], uint32_t ns, uint32_t nt,
+    double scale_s, double scale_t, double out[5])
+{
+    return sgi_soft_texture_derivatives(value, dx, dy,
+        ns * sgi_soft_texture_lod_scale(scale_s),
+        nt * sgi_soft_texture_lod_scale(scale_t), out);
 }
 
 bool sgi_gl_texture_test_select(uint32_t min, uint32_t mag,

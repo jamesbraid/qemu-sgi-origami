@@ -7709,6 +7709,31 @@ static void test_mipmap_numeric_derivatives(void)
     }
 }
 
+static void test_mipmap_numeric_axis_bias(void)
+{
+    const double value[] = { 0, 0, 1 };
+    const double dx[] = { 0.75, 2, 0 };
+    const double dy[] = { 0, 1, 0 };
+    double out[5];
+
+    /* Public per-axis bias scales gradients before the footprint norm. */
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 2, 1, out));
+    mipmap_close(out[4], sqrt(52));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 1, 2, out));
+    mipmap_close(out[4], sqrt(73));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 0.5, 2, out));
+    mipmap_close(out[4], sqrt(66.25));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 0, 0, out));
+    mipmap_close(out[4], 5);
+    g_assert_false(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                         4, 2, INFINITY, 1,
+                                                         out));
+}
+
 static void test_mipmap_numeric_selection(void)
 {
     MipmapFixture f;
@@ -8716,6 +8741,8 @@ int main(int argc, char **argv)
                     test_mipmap_format_pipeline);
     g_test_add_func("/sgi-gl/mipmap-numeric-derivatives",
                     test_mipmap_numeric_derivatives);
+    g_test_add_func("/sgi-gl/mipmap-numeric-axis-bias",
+                    test_mipmap_numeric_axis_bias);
     g_test_add_func("/sgi-gl/mipmap-numeric-selection",
                     test_mipmap_numeric_selection);
     g_test_add_func("/sgi-gl/mipmap-numeric-samples",

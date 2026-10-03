@@ -275,6 +275,8 @@ static void test_migration(void)
     sgi_kona_texture_defaults(&p);
     p.post_scale[0] = 0.5;
     p.post_bias[2] = 0.25;
+    p.lod_scale_s = 2;
+    p.lod_scale_t = 0.5;
     g_assert_true(sgi_kona_texture_bind(&src, 0xf2345678, &p));
     a = save(&src);
     g_assert_true(load(a, &dst));
@@ -282,6 +284,8 @@ static void test_migration(void)
         const SGIGLTexImage *im = sgi_kona_texture_resolve(&dst);
         double rgba[] = { 1, 0, 0, 1 };
 
+        g_assert_cmpfloat(im->lod_scale_s, ==, 2);
+        g_assert_cmpfloat(im->lod_scale_t, ==, 0.5);
         im->post_filter(im->opaque, rgba);
         g_assert_cmpfloat(rgba[0], ==, 0.5);
         g_assert_cmpfloat(rgba[2], ==, 0.25);
@@ -290,8 +294,8 @@ static void test_migration(void)
     g_assert_cmphex(texel(&dst, 0, 0), ==, red[0]);
     g_assert_cmphex(texel(&dst, 1, 0), ==, green[0]);
     bytes = dst.bytes;
-    /* First level width: header16 + object8 + sampler120 + level id4. */
-    stl_be_p(a->data + 148, UINT32_MAX);
+    /* First level width: header16 + object8 + sampler136 + level id4. */
+    stl_be_p(a->data + 164, UINT32_MAX);
     g_assert_false(load(a, &dst));
     g_assert_cmpuint(dst.bytes, ==, bytes);
     g_assert_cmphex(texel(&dst, 0, 0), ==, red[0]);
@@ -413,8 +417,8 @@ static void test_native_migration(void)
     g_assert_true(load(a, &dst));
     assert_image(&dst, red, 1, 1);
     g_assert_cmpuint(dst.bytes, ==, src.bytes);
-    /* Native width: header16 + object8 + sampler120 + map72 + header80. */
-    stl_be_p(a->data + 296, UINT32_MAX);
+    /* Native width: header16 + object8 + sampler136 + map72 + header80. */
+    stl_be_p(a->data + 312, UINT32_MAX);
     g_assert_false(load(a, &dst));
     assert_image(&dst, red, 1, 1);
     g_byte_array_unref(a);

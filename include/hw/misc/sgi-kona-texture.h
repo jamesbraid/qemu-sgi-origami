@@ -14,6 +14,7 @@ typedef struct SGIKonaTextureParams {
     uint32_t base_level, max_level;
     double min_lod, max_lod;
     double post_scale[4], post_bias[4];
+    double lod_scale_s, lod_scale_t;
 } SGIKonaTextureParams;
 
 typedef struct SGIKonaTextureLevel {
