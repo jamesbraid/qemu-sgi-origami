@@ -481,6 +481,127 @@ static uint64_t bte_memory_transfer(QTestState *qts, unsigned node,
     return bte_cpu_readq(qts, cpu, base + BTE_STATUS);
 }
 
+#define PI1_OFFSET UINT64_C(0x200000)
+#define PI_PENDING_MODIFY UINT64_C(0x90)
+#define PI_MASK0_A UINT64_C(0xa8)
+#define CPU_CAUSE_IRQ0 (1U << 10)
+
+static uint32_t interrupt_cpu_cause(QTestState *qts, unsigned cpu)
+{
+    g_autofree char *registers = qtest_hmp(qts, "info registers %u", cpu);
+    const char *field = strstr(registers, "Cause   0x");
+    uint32_t cause;
+
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field + strlen("Cause   0x"), "%" SCNx32,
+                           &cause), ==, 1);
+    return cause;
+}
+
+static void check_remote_pi_interrupt(QTestState *qts, bool connected)
+{
+    uint8_t bytes[8];
+
+    for (unsigned node = 0; node < 2; node++) {
+        unsigned target = 1 - node;
+        unsigned nasid = target ? 2 : 0;
+
+        for (unsigned pi = 0; pi < 2; pi++) {
+            uint64_t local = BEDROCK_LOCAL + pi * PI1_OFFSET;
+            uint64_t named = BEDROCK_NODE(nasid) + pi * PI1_OFFSET;
+            uint64_t bit = UINT64_C(1) << (20 + pi);
+            uint64_t set = 0x100 | (20 + pi);
+            unsigned cpu = target * 2 + pi;
+
+            bte_cpu_writeq(qts, target * 2, local + PI_MASK0_A, bit);
+            stq_be_p(bytes, set);
+            g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                named + PI_PENDING_MODIFY, bytes, sizeof(bytes)));
+            g_assert_cmphex(bte_cpu_readq(qts, target * 2,
+                local + PI_PENDING0), ==, connected ? bit : 0);
+            g_assert_cmphex(interrupt_cpu_cause(qts, cpu) & CPU_CAUSE_IRQ0,
+                            ==, connected ? CPU_CAUSE_IRQ0 : 0);
+            g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                local + PI_PENDING0), ==, 0);
+            g_assert_cmphex(interrupt_cpu_cause(qts, node * 2 + pi) &
+                            CPU_CAUSE_IRQ0, ==, 0);
+            if (connected) {
+                bte_cpu_writeq(qts, node * 2,
+                               named + PI_PENDING_MODIFY, 20 + pi);
+            }
+            g_assert_cmphex(bte_cpu_readq(qts, target * 2,
+                local + PI_PENDING0), ==, 0);
+            g_assert_cmphex(interrupt_cpu_cause(qts, cpu) & CPU_CAUSE_IRQ0,
+                            ==, 0);
+            stq_be_p(bytes, set);
+            g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                BEDROCK_NODE(3) + pi * PI1_OFFSET + PI_PENDING_MODIFY,
+                bytes, sizeof(bytes)));
+            g_assert_cmphex(bte_cpu_readq(qts, target * 2,
+                local + PI_PENDING0), ==, 0);
+            bte_cpu_writeq(qts, target * 2, local + PI_MASK0_A, 0);
+            g_test_message("CPU node%u -> node%u PI%u set/clear, "
+                           "Cause and absent node: route %s",
+                           node, target, pi, connected ? "up" : "down");
+        }
+    }
+}
+
+static void check_remote_bte_interrupt(QTestState *qts, bool connected)
+{
+    for (unsigned node = 0; node < 2; node++) {
+        unsigned target = 1 - node;
+        unsigned nasid = target ? 2 : 0;
+        uint64_t own = NODE(node ? 2 : 0);
+
+        for (unsigned engine = 0; engine < 2; engine++) {
+            uint64_t base = BEDROCK_NODE(node ? 2 : 0) + BTE0_HUB +
+                            engine * 0x10000;
+
+            for (unsigned pi = 0; pi < 2; pi++) {
+                uint64_t local = BEDROCK_LOCAL + pi * PI1_OFFSET;
+                uint64_t bit = UINT64_C(1) << (24 + pi);
+                unsigned cpu = target * 2 + pi;
+
+                bte_cpu_writeq(qts, target * 2, local + PI_MASK0_A, bit);
+                for (unsigned absent = 0; absent < 2; absent++) {
+                    unsigned destination = absent ? 3 : nasid;
+                    bool delivered = connected && !absent;
+
+                    bte_cpu_writeq(qts, node * 2, base + BTE_STATUS,
+                                   1 | BTE_BUSY);
+                    bte_cpu_writeq(qts, node * 2, base + BTE_DESTINATION,
+                                   own + 0x40000);
+                    bte_cpu_writeq(qts, node * 2, base + BTE_INTERRUPT,
+                        ((uint64_t)destination << 1) | pi |
+                        ((uint64_t)(24 + pi) << 16));
+                    bte_cpu_writeq(qts, node * 2, base + BTE_CONTROL,
+                                   BTE_ZERO_FILL);
+                    qtest_clock_step(qts, 1);
+                    qtest_clock_step(qts, 1);
+                    g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                        base + BTE_STATUS), ==, 0);
+                    g_assert_cmphex(bte_cpu_readq(qts, target * 2,
+                        local + PI_PENDING0), ==, delivered ? bit : 0);
+                    g_assert_cmphex(interrupt_cpu_cause(qts, cpu) &
+                        CPU_CAUSE_IRQ0, ==, delivered ? CPU_CAUSE_IRQ0 : 0);
+                    g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                        local + PI_PENDING0), ==, 0);
+                    bte_cpu_writeq(qts, target * 2,
+                                   local + PI_PENDING_MODIFY, 24 + pi);
+                    g_assert_cmphex(interrupt_cpu_cause(qts, cpu) &
+                                    CPU_CAUSE_IRQ0, ==, 0);
+                }
+                bte_cpu_writeq(qts, target * 2, local + PI_MASK0_A, 0);
+                g_test_message("BTE node%u engine%u -> node%u PI%u "
+                               "completion, Cause and absent node: route %s",
+                               node, engine, target, pi,
+                               connected ? "up" : "down");
+            }
+        }
+    }
+}
+
 static void test_bte_memory_route(const void *data)
 {
     const char *topology = data;
@@ -498,7 +619,8 @@ static void test_bte_memory_route(const void *data)
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf(
         "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
-        "-drive if=none,id=cfg,file=%s,format=raw -nodefaults -display none",
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-nodefaults -display none -d guest_errors",
         topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
         prom_path, image);
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
@@ -578,6 +700,8 @@ static void test_bte_memory_route(const void *data)
         memset(bytes, 0x80 + node, 128);
         g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
     }
+    check_remote_pi_interrupt(qts, true);
+    check_remote_bte_interrupt(qts, true);
     /* A missing target bank must refuse data, preserving backing RAM. */
     memset(bytes, 0x5a, sizeof(bytes));
     g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x20000,
@@ -598,6 +722,8 @@ static void test_bte_memory_route(const void *data)
     qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':{"
         "'path':%s,'property':'down','value':true}}",
         routed ? "/machine/master-route" : CABLE_PATH);
+    check_remote_pi_interrupt(qts, false);
+    check_remote_bte_interrupt(qts, false);
     for (unsigned named = 0; named < 2; named++) {
         g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
             NODE(2) + 0x20000, 0x30000, true, named),
