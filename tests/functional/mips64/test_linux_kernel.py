@@ -123,25 +123,19 @@ KERNEL_REL = os.path.join('linux-ip27', 'vmlinux')
 NETBOOT_BOOTFILE = 'vmlinux'
 NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
-# Per-boot FAILURE-detection budgets, not typical run time -- real
-# measurements, not guesses: a run of this exact test against real
-# provisioned assets (podman, this worktree mounted read-write and the asset
-# directory mounted read-only as QEMU_TEST_SGI_ASSET_DIR) reached
-# its exit sentinel in 52s at one CPU, 58s at two, and 310s at four, on a
-# host already busy running other work. Each of these times now covers a
-# real PROM power-on self-test and netboot on top of the kernel's own
-# boot, so it is well above tools/linux_topology.py's own default_timeout
-# (90s at one and two CPUs), which timed only a direct
-# -kernel load with no firmware in front of it. 240 at one and two CPUs
-# keeps roughly four times the measured figure, the same margin this
-# directory's own meson.build keeps for sn0_smp; 900 at four CPUs keeps
-# closer to three times, in line with the margin xframe_pci keeps over
-# its own measured boot. The meson timeout registered for this test
-# (mips64/meson.build) covers ALL three methods below run one after
-# another, so it carries a larger margin than the usual
-# single-BOOT_TIMEOUT-plus-a-bit this fork's other functional tests keep,
-# to stay safe even if every boot runs out its budget.
-BOOT_TIMEOUT_SECONDS = 240
+# Early measurements of this test reached the one-, two- and four-CPU
+# sentinels in 52s, 58s and 310s on a busy host. A recent debug_tcg run of
+# the one-CPU case took 296s from QEMU launch through sentinel and cleanup,
+# so that earlier one-CPU measurement no longer covers the slow host case.
+# These times include the real PROM power-on self-test and netboot before
+# the kernel boot. The one-CPU budget of 600s leaves about twice the recent
+# run time for host variation. The two-CPU budget remains four times its
+# measured run. The four-CPU budget of 900s keeps about three times its
+# measured run, in line with the margin xframe_pci keeps. The Meson timeout
+# registered for this test (mips64/meson.build) covers all three methods
+# running sequentially, with additional time for VM launch and shutdown.
+ONE_CPU_BOOT_TIMEOUT_SECONDS = 600
+TWO_CPU_BOOT_TIMEOUT_SECONDS = 240
 FOUR_CPU_BOOT_TIMEOUT_SECONDS = 900
 
 
@@ -222,8 +216,9 @@ class LinuxKernel(QemuSystemTest):
         vm.launch()
 
         log_path = self.log_file(f'{name}.log')
-        timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
-                   else BOOT_TIMEOUT_SECONDS) * _timeout_multiplier()
+        timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4 else
+                   TWO_CPU_BOOT_TIMEOUT_SECONDS if cpus == 2 else
+                   ONE_CPU_BOOT_TIMEOUT_SECONDS) * _timeout_multiplier()
         try:
             transcript, _reached = drive_console(
                 vm.console_socket, log_path, timeout, NETBOOT_STEPS,
