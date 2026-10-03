@@ -216,8 +216,8 @@ typedef struct SGIGLTexImage {
     /*
      * NULL selects the level-zero image fields. Otherwise dimensions, format,
      * border and read callbacks come from the selected level. Sampler fields,
-     * volume, opaque and post_filter apply to both interfaces. Volume pyramids
-     * support only a non-mipmapped base level.
+     * volume, opaque and post_filter apply to both interfaces. Volume levels
+     * halve all three interior dimensions.
      */
     const SGIGLTexPyramid *pyramid;
     /* Required for border == 1; called only outside the interior. */
