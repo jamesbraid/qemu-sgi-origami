@@ -4947,6 +4947,17 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_SPANS6:
         sgi_kona_x_spans(s, selector, args, argc);
         break;
+    case SGI_KONA_CMD_X_POINT:
+    case SGI_KONA_CMD_X_POINT6:
+    case SGI_KONA_CMD_X_DATA1:
+    case SGI_KONA_CMD_X_DATA3:
+        /*
+         * Consume every coordinate before considering another selector:
+         * its low bits can match a GL token. Point drawing and the joining
+         * of line-data runs are not modelled.
+         */
+        trace_sgi_kona_command_unmodelled(selector, argc);
+        break;
     case SGI_KONA_CMD_DISPLAY_MODE:
     case SGI_KONA_CMD_X_DID_MAP:
     case SGI_KONA_CMD_X_DID_CONFIG:

@@ -172,6 +172,14 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_STORE_STIPPLE, 3 },
     { SGI_KONA_CMD_X_ROTATE_STIPPLE, 3 },
     /*
+     * Point senders carry one or six words. Short line-data runs carry
+     * one or three.
+     */
+    { SGI_KONA_CMD_X_POINT, 1 },
+    { SGI_KONA_CMD_X_POINT6, 6 },
+    { SGI_KONA_CMD_X_DATA1, 1 },
+    { SGI_KONA_CMD_X_DATA3, 3 },
+    /*
      * The box routines' rectangles, two words each: X box6 carries six, X
      * box the last of a run, and the data tokens one to five before that X
      * box, or the rectangles before an X rect. Each count was read at the
