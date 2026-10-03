@@ -343,12 +343,16 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_LOAD_STIPPLE 0x13c
 #define SGI_KONA_CMD_X_STORE_STIPPLE 0x13d
 #define SGI_KONA_CMD_X_ROTATE_STIPPLE 0x13e
+#define SGI_KONA_CMD_X_DATA1        0x141
 #define SGI_KONA_CMD_X_DATA2        0x142
+#define SGI_KONA_CMD_X_DATA3        0x143
 #define SGI_KONA_CMD_X_DATA4        0x144
 #define SGI_KONA_CMD_X_BDATA4       0x145
 #define SGI_KONA_CMD_X_DATA6        0x147
 #define SGI_KONA_CMD_X_DATA8        0x149
 #define SGI_KONA_CMD_X_DATA10       0x14b
+#define SGI_KONA_CMD_X_POINT        0x14c
+#define SGI_KONA_CMD_X_POINT6       0x14d
 #define SGI_KONA_CMD_X_RECT         0x152
 #define SGI_KONA_CMD_X_RECT6        0x153
 #define SGI_KONA_CMD_X_BOX          0x154

@@ -427,10 +427,9 @@ static void test_data_run_ending_in_box(void)
 
 /*
  * A run of data tokens is drawn only by the X box or rect that ends it,
- * which says how its words read. X data2 then X data1's token, which the
- * model does not frame and drops as an unknown word, then an X box: only
- * the X box's own box is drawn. The same with X data1 stored in the
- * address form, its slot store logged and dropped. X data4 then a clip
+ * which says how its words read. X data2 then an unsupported X data1
+ * packet, then an X box: only the X box's own box is drawn. The same
+ * applies to X data1 stored in the address form. X data4 then a clip
  * load: the same. And a run with nothing after it has drawn nothing yet.
  */
 static void test_data_run_not_ending_in_box(void)
@@ -440,7 +439,7 @@ static void test_data_run_not_ending_in_box(void)
 
     kona_command(qts, TOKEN_DATA2, (uint32_t[]){ XY(10, 10), XY(20, 20) }, 2);
     g_assert_cmphex(front_at(qts, 15, 15), ==, 0);
-    qtest_writel(qts, REG_COMMAND, TOKEN_DATA1);
+    kona_command(qts, TOKEN_DATA1, (uint32_t[]){ XY(70, 70) }, 1);
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(50, 50), XY(52, 52) }, 2);
     g_assert_cmphex(front_at(qts, 15, 15), ==, 0);
     assert_box(qts, 50, 50, 52, 52, 0x77);
@@ -862,10 +861,10 @@ static void test_unexpected_offset_drops_clip_list(void)
     assert_clip_list_dropped_by(KONA_REG(0xc10004));
 }
 
-/* A slot store naming a token the model has no count for, 0x141. */
+/* An unrecognized slot token discards pending clip-list data. */
 static void test_unknown_token_drops_clip_list(void)
 {
-    assert_clip_list_dropped_by(REG_COMMAND_SLOT(TOKEN_DATA1));
+    assert_clip_list_dropped_by(REG_COMMAND_SLOT(0x140));
 }
 
 /*
@@ -965,8 +964,96 @@ static void test_migration_from_x_server_v1(void)
     g_rmdir(tmpfs);
 }
 
+typedef struct XFramingCase {
+    const char *name;
+    uint32_t token;
+    unsigned words;
+} XFramingCase;
+
+/* Selector-shaped coordinates must never become GL commands. */
+static void test_point_data_framing(gconstpointer opaque)
+{
+    const XFramingCase *c = opaque;
+
+    for (unsigned slot = 0; slot < 2; slot++) {
+        g_autofree char *log = NULL, *found = NULL, *packet = NULL;
+        QTestState *s = kona_init_logged(MACHINE_ARGS
+                                         " -trace enable=sgi_kona_*", &log);
+        uint32_t args[6] = { 0x1a };
+
+        args[c->words - 1] = 0x1a;
+        kona_command(s, 0x1fd,
+                     (uint32_t[]){ 0x10000340, 0x9000, 0x10000 }, 3);
+        load_gc(s, 0x55);
+        if (slot) {
+            qtest_writel(s, REG_COMMAND_SLOT(c->token), args[0]);
+            for (unsigned i = 1; i < c->words; i++) {
+                qtest_writel(s, REG_COMMAND_DATA, args[i]);
+            }
+        } else {
+            kona_command(s, c->token, args, c->words);
+        }
+        kona_command(s, TOKEN_BOX,
+                     (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+        assert_box(s, 10, 20, 12, 22, 0x55);
+        g_assert_cmphex(front_at(s, 0, 26), ==, 0);
+        assert_in_step(s);
+        qtest_quit(s);
+        found = kona_log_read(log);
+        packet = g_strdup_printf("sgi_kona_command_unmodelled token 0x%x"
+                                  " argc %u consumed", c->token, c->words);
+        g_assert_nonnull(strstr(found, packet));
+    }
+}
+
+/* The partial point packet migrates, and reset discards a later one. */
+static void test_point_framing_migrates(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-point-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = qtest_init(MIGRATION_ARGS);
+    dest = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest);
+    load_gc(from, 0x55);
+    qtest_writel(from, REG_COMMAND, 0x14d);
+    qtest_writel(from, REG_COMMAND, 0x1a);
+    qtest_writel(from, REG_COMMAND, 0);
+    qtest_writel(from, REG_COMMAND, 0);
+    g_assert_cmphex(qtest_readl(from, KONA_REG(0x800208)), ==, 8);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 8);
+    qtest_writel(to, REG_COMMAND, 0);
+    qtest_writel(to, REG_COMMAND, 0);
+    qtest_writel(to, REG_COMMAND, 0x1a);
+    g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 0);
+    kona_command(to, TOKEN_BOX,
+                 (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
+    assert_box(to, 10, 20, 12, 22, 0x55);
+
+    qtest_writel(to, REG_COMMAND, 0x14d);
+    qtest_writel(to, REG_COMMAND, 0x1a);
+    qtest_system_reset(to);
+    g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 0);
+    load_gc(to, 0x55);
+    kona_command(to, TOKEN_BOX,
+                 (uint32_t[]){ XY(30, 40), XY(32, 42) }, 2);
+    assert_box(to, 30, 40, 32, 42, 0x55);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
+    static const XFramingCase cases[] = {
+        { "point", 0x14c, 1 }, { "point6", 0x14d, 6 },
+        { "data1", 0x141, 1 }, { "data3", 0x143, 3 },
+    };
     int ret;
 
     g_test_init(&argc, &argv, NULL);
@@ -1009,6 +1096,14 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-fill/migration-from-x-server-v1",
                    test_migration_from_x_server_v1);
 
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-fill/frame-%s", cases[i].name);
+
+        qtest_add_data_func(name, &cases[i], test_point_data_framing);
+    }
+    qtest_add_func("sn0/origin2000/kona-fill/point-framing-migrates",
+                   test_point_framing_migrates);
     ret = g_test_run();
     qtest_quit(qts);
     return ret;

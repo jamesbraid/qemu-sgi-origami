@@ -242,7 +242,7 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1f3, 11 }, { 0x1ee, 3 }, { 0x1f4, 2 }, { 0x1ed, 3 },
     { 0x1e7, 1 }, { 0x1eb, 6 }, { 0x1c8, 2 },
     { 0x16d, 2 }, { 0x16e, 2 }, { 0x170, 1 }, { 0x171, 1 }, { 0x167, 4 },
-    { 0x16f, 3 },
+    { 0x16f, 3 }, { 0x14c, 1 }, { 0x14d, 6 }, { 0x141, 1 }, { 0x143, 3 },
 };
 
 /*
@@ -274,7 +274,7 @@ static void test_command_table_shape(void)
 static void test_command_excludes_uncounted_x_tokens(void)
 {
     static const uint32_t excluded[] = {
-        0x141, 0x143, 0x146, 0x148, 0x14a,
+        0x146, 0x148, 0x14a,
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(excluded); i++) {
