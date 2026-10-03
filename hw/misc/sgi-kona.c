@@ -4340,12 +4340,14 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         sgi_kona_gl_pop_lights_open(s, args[0]);
         return;
     case SGI_KONA_CMD_GL_TEX_PREFIX:
+    case SGI_KONA_CMD_GL_TEX_CLEANUP_PREFIX:
         /* Captured operands zero and one have no established meaning. */
         if (args[0] > 1) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported opaque texture "
-                          "prefix operand 0x%" PRIx32
+                          "%sprefix operand 0x%" PRIx32
                           "; consumed, no effects\n",
-                          args[0]);
+                          selector == SGI_KONA_CMD_GL_TEX_CLEANUP_PREFIX ?
+                          "cleanup " : "", args[0]);
         }
         trace_sgi_kona_command_unmodelled(selector, argc);
         return;
