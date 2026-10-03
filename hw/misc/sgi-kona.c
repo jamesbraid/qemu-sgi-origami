@@ -553,7 +553,7 @@ static void sgi_kona_mailbox_post(SGIKonaState *s, uint32_t word)
     s->int_cause |= SGI_KONA_INT_CAUSE_MAILBOX;
 }
 
-static void sgi_kona_raise_vector(SGIKonaState *s, bool general);
+static bool sgi_kona_raise_vector(SGIKonaState *s, bool general);
 
 static void sgi_kona_gl_swap(SGIKonaState *s, unsigned i);
 
@@ -594,21 +594,22 @@ static void sgi_kona_swap_published(SGIKonaState *s, const SGICompletion *c)
     }
 }
 
-/*
- * The scanout reached a retrace. If it honoured a retrace request, raise
- * the video bit, which kona_video_intr takes, and send the general
- * vector.
- */
+static void sgi_kona_video_deliver(SGIKonaState *s)
+{
+    if ((s->int_cause & s->int_enable & SGI_KONA_INT_CAUSE_VIDEO) &&
+        !s->video_delivered) {
+        s->video_delivered = sgi_kona_raise_vector(s, true);
+    }
+}
+
+/* Periodic and queued video work share one pending cause per field. */
 static void sgi_kona_retrace(void *opaque)
 {
     SGIKonaState *s = opaque;
 
-    if (!s->retrace_completed) {
-        return;
-    }
     s->retrace_completed = false;
     s->int_cause |= SGI_KONA_INT_CAUSE_VIDEO;
-    sgi_kona_raise_vector(s, true);
+    sgi_kona_video_deliver(s);
 }
 
 /*
@@ -1103,12 +1104,10 @@ static bool sgi_kona_fabric_compose(SGIKonaState *s, unsigned int widget,
  * (SGI_KONA_INT_VECTORS bits [16:9]) carries a posted reason; the general
  * vector (bits [7:0]) the cause bits. That both go to the one destination
  * the driver programs is inferred: kona_reset_adaptor writes one
- * destination and three vectors. Not gated on SGI_KONA_INT_ENABLE, which
- * the model has never interpreted: KONAstart writes 0xf7c there, which
- * includes the geometry-engine and video bits, and the driver applies it
- * to the general vector's cause in software.
+ * destination and three vectors. Only video delivery uses the mask;
+ * mailbox and geometry-engine delivery retain their existing rules.
  */
-static void sgi_kona_raise_vector(SGIKonaState *s, bool general)
+static bool sgi_kona_raise_vector(SGIKonaState *s, bool general)
 {
     uint8_t vector = general ?
                      s->int_vectors & SGI_KONA_INT_VECTORS_GENERAL_MASK :
@@ -1120,21 +1119,30 @@ static void sgi_kona_raise_vector(SGIKonaState *s, bool general)
     uint64_t address = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
                        s->int_dest_lower;
     hwaddr where;
+    MemTxResult result;
 
     if (!s->int_dest_upper && !s->int_dest_lower) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: %s interrupt with no"
                       " destination programmed; no packet sent\n", what);
-        return;
+        return false;
     }
     if (!sgi_kona_fabric_compose(s, widget, address, &where)) {
-        return;
+        return false;
     }
     if (general) {
         trace_sgi_kona_general_interrupt(where, vector);
     } else {
         trace_sgi_kona_ge_interrupt(where, vector);
     }
-    sgi_xio_send_interrupt(&s->fabric_as, where, vector, true);
+    result = sgi_xio_send_interrupt(&s->fabric_as, where, vector, true);
+
+    if (result != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: %s interrupt delivery failed (result %d)\n",
+                      what, result);
+        return false;
+    }
+    return true;
 }
 
 /*
@@ -1459,36 +1467,14 @@ static void sgi_kona_video_open(SGIKonaState *s, uint32_t command)
     s->video_tail_sum = 0;
 }
 
-/*
- * What the model answers each video Get with, as data words from word 3
- * of the return page; words past those listed, up to the command's reply
- * size in sgi_kona_video_commands[], are zero.
- *
- * Approximated: the values describe the one configuration the model
- * emulates, not a real pipe's answer. GetBoardConfig: display-generator
- * version 1, board mask 1 (channel 0 only), option mask 0, options code
- * 0 and flag 0; the X server treats an options code of 0x41 or more, or
- * the option bits 0x2 and 0x4, as fatal. GetChannelConfig: bit 0 of the
- * first word set, channel present, whose absence is fatal. Every other
- * reply of the table, whichever its basis, is answered zero at its
- * size: a generic answer, unsafe for these two alone, the others' fields
- * being unexamined against their readers.
- * So GetDGInterruptState's three zero words set neither bit 21 nor bit 20
- * of the second, and the X server takes its genlock flag from its own
- * default; QueryMonitorName's zero word 0 and zero name bytes give the
- * channel an empty monitor name and a zero word, which is what the X
- * server's copy does with a zero reply. Which values a real display
- * generator sends is unknown. The guest checks are a trace
- * with board mask 1 showing exactly one GetChannelConfig, with data 0,
- * after XServerVideoInit, one QueryMonitorName per channel, and an X
- * server log with no "Unexpected reply" or "Checksum mismatch" line.
- */
+/* Fixed single-channel model replies; unspecified words are zero. */
 static const struct {
     uint32_t command;
     uint32_t words[5];
 } sgi_kona_video_replies[] = {
     { SGI_KONA_VIDEO_GET_BOARD_CONFIG, { 1, 1, 0, 0, 0 } },
-    { SGI_KONA_VIDEO_GET_CHANNEL_CONFIG, { 1 } },
+    { SGI_KONA_VIDEO_GET_CHANNEL_CONFIG, { 0xf } },
+    { 0x15, { 0, 1023, 1280, 1024 } },
 };
 
 /*
@@ -1559,6 +1545,13 @@ static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
         return;
     }
     if (v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
+        if ((v->command == SGI_KONA_VIDEO_GET_CHANNEL_CONFIG ||
+             v->command == 0x15) && s->video_first != 0) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: unsupported video channel %u for 0x%x\n",
+                          s->video_first, v->command);
+            return;
+        }
         sgi_kona_video_reply(s, v);
     }
 }
@@ -5755,12 +5748,15 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         s->credit_config = value;
         break;
     case SGI_KONA_INT_ENABLE:
-        /* Stored for migration/introspection; never read back as-is. */
         s->int_enable = value;
+        sgi_kona_video_deliver(s);
         break;
     case SGI_KONA_INT_CAUSE:
         /* Write-1-to-clear, SGI_KONA_INT_CAUSE_GE included. */
         s->int_cause &= ~(uint32_t)value;
+        if (value & SGI_KONA_INT_CAUSE_VIDEO) {
+            s->video_delivered = false;
+        }
         /*
          * A completion word is acknowledged by this write alone: the
          * driver's DMA-write wait reads the mailbox once and writes
@@ -6324,6 +6320,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->int_vectors = 0;
     s->reset_arg = 0;
     s->int_enable = 0;
+    s->video_delivered = false;
     s->int_cause = 0;
     memset(s->mailbox_queue, 0, sizeof(s->mailbox_queue));
     s->mailbox_len = 0;
@@ -6829,11 +6826,12 @@ static bool sgi_kona_retrace_needed(void *opaque)
 
 static const VMStateDescription vmstate_sgi_kona_retrace = {
     .name = TYPE_SGI_KONA "/retrace",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .needed = sgi_kona_retrace_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(retrace_tag, SGIKonaState),
+        VMSTATE_BOOL_V(video_delivered, SGIKonaState, 2),
         VMSTATE_END_OF_LIST()
     },
 };

@@ -497,8 +497,8 @@ static void test_board_config_reply(void)
 }
 
 /*
- * GetChannelConfig answers id 7, a first data word of 1 (channel
- * present), eighteen zero words and the checksum 8, overwriting what an
+ * GetChannelConfig answers id 7, model status 0xf, eighteen zero words
+ * and checksum 0x16, overwriting what an
  * earlier answer left in words 2 onward.
  */
 static void test_channel_config_reply(void)
@@ -512,11 +512,11 @@ static void test_channel_config_reply(void)
                   GET_CHANNEL_CONFIG);
     g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
     g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 7);
-    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xf);
     for (unsigned w = 1; w < 19; w++) {
         g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * w), ==, 0);
     }
-    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * 19), ==, 8);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * 19), ==, 0x16);
     g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * 20), ==,
                     0x5a5a5a5a);
     qtest_quit(s);
@@ -527,6 +527,37 @@ static void test_channel_config_reply(void)
  * a checksum equal to the id, then word 0. GetOutputPedestal is the
  * smallest (one word); the rest follow the model's video command table.
  */
+static void test_resize_reply(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, "guest_errors,unimp",
+                                    &log);
+    static const uint32_t expected[] = { 0, 1023, 1280, 1024 };
+
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    kona_register_return_page(s, RETURN_PAGE);
+    video_command(s, 0x15, (uint32_t[]){ 0 }, 1, 0x15);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 8);
+    for (unsigned i = 0; i < 18; i++) {
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 12 + 4 * i), ==,
+                        i < 4 ? expected[i] : 0);
+    }
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 84), ==, 0xd07);
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    video_command(s, 0x15, (uint32_t[]){ 1 }, 1, 0x16);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x5a5a5a5a);
+    video_command(s, GET_CHANNEL_CONFIG, (uint32_t[]){ 1 }, 1,
+                  GET_CHANNEL_CONFIG + 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 0);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unsupported video channel 1"));
+}
+
 static void test_zero_data_replies(void)
 {
     static const struct {
@@ -534,7 +565,7 @@ static void test_zero_data_replies(void)
         uint32_t id;
         uint32_t bytes;
     } gets[] = {
-        { 0x26, 12, 4 }, { 0x15, 8, 72 }, { 0x20, 9, 4 }, { 0x3a, 16, 24 },
+        { 0x26, 12, 4 }, { 0x20, 9, 4 }, { 0x3a, 16, 24 },
         { 0x45, 20, 4 }, { 0x4a, 23, 20 }, { 0x4c, 24, 16 }, { 0x55, 28, 4 },
     };
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -1310,6 +1341,7 @@ int main(int argc, char **argv)
                    test_reset_clears_open_command);
     qtest_add_func("sn0/origin2000/kona-video/board-config-reply",
                    test_board_config_reply);
+    qtest_add_func("sn0/origin2000/kona-video/resize-reply", test_resize_reply);
     qtest_add_func("sn0/origin2000/kona-video/channel-config-reply",
                    test_channel_config_reply);
     qtest_add_func("sn0/origin2000/kona-video/zero-data-replies",

@@ -100,7 +100,7 @@
  * and unimplemented accesses to its own file. The caller quits it and
  * reads the log with kona_log_read(), which also removes the file.
  */
-static QTestState *kona_init_logged(char **log)
+static QTestState *kona_init_logged_args(const char *args, char **log)
 {
     int fd;
 
@@ -111,7 +111,12 @@ static QTestState *kona_init_logged(char **log)
     close(fd);
 
     return qtest_initf("%s -trace enable=sgi_kona_* -d guest_errors,unimp"
-                       " -D %s", MACHINE_ARGS, *log);
+                       " -D %s", args, *log);
+}
+
+static QTestState *kona_init_logged(char **log)
+{
+    return kona_init_logged_args(MACHINE_ARGS, log);
 }
 
 static char *kona_log_read(const char *log)
@@ -1153,8 +1158,8 @@ static void test_buffer_config_after_activation(void)
  * the tag register reads the tag and the video cause bit 0x8 rises, with
  * the general vector sent, which is what runs kona_video_intr and its
  * kona_swap_complete. Before the retrace neither has happened, and a
- * retrace with nothing to honour raises nothing. Two requests complete one
- * per retrace, in order. The clock starts at 0, so the first 20 ms step
+ * retrace without a request rearms the periodic cause. Two requests complete
+ * one per retrace, in order. The clock starts at 0, so the first 20 ms step
  * crosses the retrace at 16.7 ms and the next the one at 33.3 ms.
  */
 static void test_retrace_request_completes(void)
@@ -1166,6 +1171,7 @@ static void test_retrace_request_completes(void)
     qtest_writel(s, REG_INT_VECTORS, KERNEL_INT_VECTORS);
     qtest_writel(s, REG_INT_DEST_UPPER, KERNEL_INT_DEST_UPPER);
     qtest_writel(s, REG_INT_DEST_LOWER, KERNEL_INT_DEST_LOWER);
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
     context_a_with_filled_page(s);
     kona_command_kicked(s, 0x1e7, (uint32_t[]){ 5 }, 1);
     g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 0);
@@ -1177,12 +1183,15 @@ static void test_retrace_request_completes(void)
     qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_VIDEO);
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_VIDEO, ==, 0);
     qtest_clock_step(s, RETRACE_STEP_NS);
-    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_VIDEO, ==, 0);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_VIDEO, ==,
+                    INT_CAUSE_VIDEO);
 
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_VIDEO);
     kona_command_kicked(s, 0x1e7, (uint32_t[]){ 6 }, 1);
     kona_command_kicked(s, 0x1e7, (uint32_t[]){ 7 }, 1);
     qtest_clock_step(s, RETRACE_STEP_NS);
     g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 6);
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_VIDEO);
     qtest_clock_step(s, RETRACE_STEP_NS);
     g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 7);
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & ~INT_CAUSE_VIDEO, ==, 0);
@@ -1194,7 +1203,7 @@ static void test_retrace_request_completes(void)
                                    " context 0\n"));
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_general_interrupt "
                                               "fabric 0x9800001800090"
-                                              " vector 0x10\n"), ==, 3);
+                                              " vector 0x10\n"), ==, 4);
 }
 
 /*
@@ -1210,6 +1219,7 @@ static void test_retrace_request_without_context(void)
     g_autofree char *found = NULL;
     QTestState *s = kona_init_logged(&log);
 
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
     kona_command_kicked(s, 0x1e7, (uint32_t[]){ 9 }, 1);
     qtest_clock_step(s, RETRACE_STEP_NS);
     g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 9);
@@ -1223,9 +1233,122 @@ static void test_retrace_request_without_context(void)
                                    " programmed"));
 }
 
+static void assert_video_vectors(const char *log, unsigned expected)
+{
+    g_autofree char *found = NULL;
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_general_interrupt "),
+                     ==, expected);
+}
+
+static void test_periodic_video_mask(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    qtest_writel(s, REG_INT_VECTORS, KERNEL_INT_VECTORS);
+    qtest_writel(s, REG_INT_DEST_UPPER, KERNEL_INT_DEST_UPPER);
+    qtest_writel(s, REG_INT_DEST_LOWER, KERNEL_INT_DEST_LOWER);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, INT_CAUSE_VIDEO);
+    g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 0);
+    assert_video_vectors(log, 0);
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    assert_video_vectors(log, 1);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    assert_video_vectors(log, 1);
+    qtest_writel(s, KONA_REG(0x800230), 0);
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    assert_video_vectors(log, 1);
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_VIDEO);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    qtest_writel(s, REG_INT_CAUSE, INT_CAUSE_VIDEO);
+    assert_video_vectors(log, 2);
+    qtest_writel(s, KONA_REG(0x800230), 0);
+    kona_command_kicked(s, 0x1e7, (uint32_t[]){ 0x8765 }, 1);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    g_assert_cmphex(qtest_readl(s, REG_RETRACE_TAG), ==, 0x8765);
+    assert_video_vectors(log, 2);
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    assert_video_vectors(log, 3);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "sgi_kona_general_interrupt "),
+                     ==, 3);
+}
+
+static void test_video_retry_destination(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    assert_video_vectors(log, 0);
+    qtest_writel(s, REG_INT_VECTORS, KERNEL_INT_VECTORS);
+    qtest_writel(s, REG_INT_DEST_UPPER, KERNEL_INT_DEST_UPPER);
+    qtest_writel(s, REG_INT_DEST_LOWER, KERNEL_INT_DEST_LOWER);
+    qtest_writel(s, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    assert_video_vectors(log, 1);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    assert_video_vectors(log, 1);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    assert_video_vectors(log, 1);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "general interrupt with no destination"));
+}
+
+static void test_video_delivery_migrates(void)
+{
+    g_autofree char *dir = NULL, *uri = NULL, *dest = NULL;
+    g_autofree char *log_from = NULL, *log_to = NULL;
+    g_autofree char *found_from = NULL, *found_to = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-video-irq-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = kona_init_logged_args(MIGRATION_ARGS, &log_from);
+    dest = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = kona_init_logged_args(dest, &log_to);
+    qtest_writel(from, REG_INT_VECTORS, KERNEL_INT_VECTORS);
+    qtest_writel(from, REG_INT_DEST_UPPER, KERNEL_INT_DEST_UPPER);
+    qtest_writel(from, REG_INT_DEST_LOWER, KERNEL_INT_DEST_LOWER);
+    qtest_writel(from, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    kona_command_kicked(from, 0x1e7, (uint32_t[]){ 0x8765 }, 1);
+    qtest_clock_step(from, RETRACE_STEP_NS);
+    assert_video_vectors(log_from, 1);
+    sgi_migrate_stopped(from, uri);
+    g_assert_cmphex(qtest_readl(to, REG_RETRACE_TAG), ==, 0x8765);
+    qtest_writel(to, KONA_REG(0x800230), 0);
+    qtest_writel(to, KONA_REG(0x800230), INT_CAUSE_VIDEO);
+    qtest_clock_step(to, RETRACE_STEP_NS);
+    assert_video_vectors(log_to, 0);
+    qtest_writel(to, REG_INT_CAUSE, INT_CAUSE_VIDEO);
+    qtest_clock_step(to, RETRACE_STEP_NS);
+    assert_video_vectors(log_to, 1);
+    qtest_quit(to);
+    qtest_quit(from);
+    found_from = kona_log_read(log_from);
+    found_to = kona_log_read(log_to);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn0/origin2000/kona-context/video-retry-destination",
+                   test_video_retry_destination);
+    qtest_add_func("sn0/origin2000/kona-context/video-delivery-migrates",
+                   test_video_delivery_migrates);
+    qtest_add_func("sn0/origin2000/kona-context/periodic-video-mask",
+                   test_periodic_video_mask);
 
     qtest_add_func("sn0/origin2000/kona-context/swap-packets-framed",
                    test_swap_packets_framed);
