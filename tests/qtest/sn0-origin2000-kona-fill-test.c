@@ -150,7 +150,7 @@ static QTestState *kona_init_logged(const char *base_args, char **log)
     fd = g_mkstemp(*log);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
-    return qtest_initf("%s -d guest_errors -D %s", base_args, *log);
+    return qtest_initf("%s -d guest_errors,unimp -D %s", base_args, *log);
 }
 
 static char *kona_log_read(const char *log)
@@ -964,6 +964,143 @@ static void test_migration_from_x_server_v1(void)
     g_rmdir(tmpfs);
 }
 
+static void load_point_gc(QTestState *s, uint32_t index)
+{
+    uint32_t gc[] = {
+        index << 12, 0x1ffe, 0, 0, 0xf00fff, 0,
+        0xc, 1, 1, 6, 0, 1, 1,
+    };
+
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+}
+
+static void test_absolute_points(void)
+{
+    qtest_system_reset(qts);
+    load_point_gc(qts, 0x3c);
+    kona_command(qts, TOKEN_POSITION, (uint32_t[]){ 100, 50, 200, 200 }, 4);
+    kona_command(qts, 0x141, (uint32_t[]){ XY(10, 20) }, 1);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0);
+    kona_command(qts, 0x14c, (uint32_t[]){ XY(30, 40) }, 1);
+    g_assert_cmphex(front_at(qts, 10, 20), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 110, 70), ==, 0);
+    kona_command(qts, 0x143,
+                 (uint32_t[]){ XY(50, 60), XY(70, 80), XY(90, 100) }, 3);
+    g_assert_cmphex(front_at(qts, 50, 60), ==, 0);
+    kona_command(qts, 0x14d, (uint32_t[]){ XY(110, 120), XY(130, 140),
+                  XY(150, 160), XY(170, 180), XY(190, 200), XY(210, 220) }, 6);
+    for (unsigned i = 0; i < 9; i++) {
+        g_assert_cmphex(front_at(qts, 50 + 20 * i, 60 + 20 * i), ==, 0x3c);
+    }
+    kona_command(qts, 0x14d, (uint32_t[]){ XY(-1, 0), XY(0, -1),
+                  XY(1280, 0), XY(0, 1024), XY(-100, -100),
+                  XY(2000, 2000) }, 6);
+    g_assert_cmphex(front_at(qts, 0, 0), ==, 0);
+    assert_in_step(qts);
+}
+
+static void test_point_clipping(void)
+{
+    qtest_system_reset(qts);
+    load_point_gc(qts, 0x3c);
+    kona_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 10, 10, 20, 20 }, 5);
+    kona_command(qts, 0x12d, (uint32_t[]){ 12, 12, 6, 6 }, 4);
+    kona_command(qts, 0x13d, (uint32_t[]){ 5, 2, 1 }, 3);
+    qtest_writel(qts, REG_COMMAND, 0x80000000);
+    kona_command(qts, 0x13c, (uint32_t[]){ 5 }, 1);
+    kona_command(qts, 0x14d, (uint32_t[]){ XY(9, 14), XY(10, 14),
+                  XY(12, 14), XY(13, 14), XY(18, 14), XY(20, 14) }, 6);
+    g_assert_cmphex(front_at(qts, 9, 14), ==, 0);
+    g_assert_cmphex(front_at(qts, 10, 14), ==, 0);
+    g_assert_cmphex(front_at(qts, 12, 14), ==, 0x3c);
+    g_assert_cmphex(front_at(qts, 13, 14), ==, 0);
+    g_assert_cmphex(front_at(qts, 18, 14), ==, 0);
+    g_assert_cmphex(front_at(qts, 20, 14), ==, 0);
+}
+
+static void test_point_gc_refusal(void)
+{
+    static const struct {
+        unsigned word;
+        uint32_t value;
+    } rejected[] = {
+        { 9, 12 }, { 4, 0xf0000f }, { 6, 8 }, { 6, 0x8c },
+        { 6, 0x20c }, { 0, 0x100003c }, { 1, 0 }, { 5, 1 },
+        { 7, 2 }, { 8, 2 }, { 10, 1 }, { 11, 2 }, { 12, 2 },
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(rejected); i++) {
+        uint32_t gc[] = {
+            0x3c000, 0x1ffe, 0, 0, 0xf00fff, 0,
+            0xc, 1, 1, 6, 0, 1, 1,
+        };
+
+        qtest_system_reset(s);
+        load_gc(s, 0xa5);
+        kona_command(s, TOKEN_BOX, (uint32_t[]){ XY(10, 20), XY(11, 21) }, 2);
+        gc[rejected[i].word] = rejected[i].value;
+        kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+        kona_command(s, 0x141, (uint32_t[]){ XY(30, 40) }, 1);
+        kona_command(s, 0x14c, (uint32_t[]){ XY(10, 20) }, 1);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0xa5);
+        g_assert_cmphex(front_at(s, 30, 40), ==, 0);
+        load_point_gc(s, 0x3c);
+        kona_command(s, 0x14c, (uint32_t[]){ XY(10, 20) }, 1);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0x3c);
+        g_assert_cmphex(front_at(s, 30, 40), ==, 0);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unsupported X point GC:"));
+}
+
+static void test_point_run_discard(void)
+{
+    static const struct { uint32_t token; unsigned count; } unsupported[] = {
+        { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
+        { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 },
+        { 0x15f, 1 }, { 0x160, 6 }, { 0x161, 24 },
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    uint32_t words[24];
+
+    load_point_gc(s, 0x3c);
+    for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
+        for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
+            words[j] = 0x14c;
+        }
+        kona_command(s, 0x143,
+                     (uint32_t[]){ XY(10, 20), XY(30, 40), XY(50, 60) }, 3);
+        kona_command(s, unsupported[i].token, words, unsupported[i].count);
+        kona_command(s, TOKEN_BOX, (uint32_t[]){ XY(70, 80), XY(72, 82) }, 2);
+        assert_box(s, 70, 80, 72, 82, 0x3c);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+        g_assert_cmphex(front_at(s, 0, 332), ==, 0);
+        assert_in_step(s);
+    }
+    kona_command(s, 0x143,
+                 (uint32_t[]){ XY(10, 20), XY(30, 40), XY(50, 60) }, 3);
+    kona_command(s, TOKEN_BOX, (uint32_t[]){ XY(90, 100), XY(92, 102) }, 2);
+    g_assert_cmphex(front_at(s, 15, 25), ==, 0);
+    assert_box(s, 90, 100, 92, 102, 0x3c);
+    for (unsigned i = 0; i < 11; i++) {
+        kona_command(s, 0x143,
+                     (uint32_t[]){ XY(10, 20), XY(30, 40), XY(50, 60) }, 3);
+    }
+    kona_command(s, 0x14c, (uint32_t[]){ XY(110, 120) }, 1);
+    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    g_assert_cmphex(front_at(s, 110, 120), ==, 0x3c);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unsupported X drawing token"));
+    g_assert_nonnull(strstr(found, "X data run of 3 words dropped"));
+    g_assert_nonnull(strstr(found, "more than 32 box words"));
+}
+
 typedef struct XFramingCase {
     const char *name;
     uint32_t token;
@@ -979,7 +1116,7 @@ static void test_point_data_framing(gconstpointer opaque)
         g_autofree char *log = NULL, *found = NULL, *packet = NULL;
         QTestState *s = kona_init_logged(MACHINE_ARGS
                                          " -trace enable=sgi_kona_*", &log);
-        uint32_t args[6] = { 0x1a };
+        uint32_t args[24] = { 0x1a };
 
         args[c->words - 1] = 0x1a;
         kona_command(s, 0x1fd,
@@ -1000,8 +1137,8 @@ static void test_point_data_framing(gconstpointer opaque)
         assert_in_step(s);
         qtest_quit(s);
         found = kona_log_read(log);
-        packet = g_strdup_printf("sgi_kona_command_unmodelled token 0x%x"
-                                  " argc %u consumed", c->token, c->words);
+        packet = g_strdup_printf("sgi_kona_kernel_command token 0x%x",
+                                  c->token);
         g_assert_nonnull(strstr(found, packet));
     }
 }
@@ -1019,7 +1156,10 @@ static void test_point_framing_migrates(void)
     from = qtest_init(MIGRATION_ARGS);
     dest = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
     to = qtest_init(dest);
-    load_gc(from, 0x55);
+    load_point_gc(from, 0x55);
+    kona_command(from, 0x143,
+                 (uint32_t[]){ XY(50, 60), XY(70, 80), XY(90, 100) }, 3);
+    g_assert_cmphex(front_at(from, 50, 60), ==, 0);
     qtest_writel(from, REG_COMMAND, 0x14d);
     qtest_writel(from, REG_COMMAND, 0x1a);
     qtest_writel(from, REG_COMMAND, 0);
@@ -1031,15 +1171,24 @@ static void test_point_framing_migrates(void)
     qtest_writel(to, REG_COMMAND, 0);
     qtest_writel(to, REG_COMMAND, 0x1a);
     g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 0);
+    g_assert_cmphex(front_at(to, 50, 60), ==, 0x55);
+    g_assert_cmphex(front_at(to, 70, 80), ==, 0x55);
+    g_assert_cmphex(front_at(to, 90, 100), ==, 0x55);
+    g_assert_cmphex(front_at(to, 0, 26), ==, 0x55);
     kona_command(to, TOKEN_BOX,
                  (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
     assert_box(to, 10, 20, 12, 22, 0x55);
 
+    kona_command(to, 0x143,
+                 (uint32_t[]){ XY(50, 60), XY(70, 80), XY(90, 100) }, 3);
     qtest_writel(to, REG_COMMAND, 0x14d);
     qtest_writel(to, REG_COMMAND, 0x1a);
     qtest_system_reset(to);
     g_assert_cmphex(qtest_readl(to, KONA_REG(0x800208)), ==, 0);
-    load_gc(to, 0x55);
+    load_point_gc(to, 0x55);
+    kona_command(to, 0x14c, (uint32_t[]){ XY(110, 120) }, 1);
+    g_assert_cmphex(front_at(to, 50, 60), ==, 0);
+    g_assert_cmphex(front_at(to, 110, 120), ==, 0x55);
     kona_command(to, TOKEN_BOX,
                  (uint32_t[]){ XY(30, 40), XY(32, 42) }, 2);
     assert_box(to, 30, 40, 32, 42, 0x55);
@@ -1053,12 +1202,27 @@ int main(int argc, char **argv)
     static const XFramingCase cases[] = {
         { "point", 0x14c, 1 }, { "point6", 0x14d, 6 },
         { "data1", 0x141, 1 }, { "data3", 0x143, 3 },
+        { "point24", 0x14e, 24 }, { "relative-point", 0x14f, 1 },
+        { "relative-point6", 0x150, 6 }, { "segment", 0x159, 2 },
+        { "line", 0x15b, 1 }, { "line6", 0x15c, 7 },
+        { "relative-line", 0x15d, 2 }, { "relative-line6", 0x15e, 7 },
+        { "background-point", 0x15f, 1 },
+        { "background-point6", 0x160, 6 },
+        { "background-point24", 0x161, 24 },
     };
     int ret;
 
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
+    qtest_add_func("sn0/origin2000/kona-fill/absolute-points",
+                   test_absolute_points);
+    qtest_add_func("sn0/origin2000/kona-fill/point-clipping",
+                   test_point_clipping);
+    qtest_add_func("sn0/origin2000/kona-fill/point-gc-refusal",
+                   test_point_gc_refusal);
+    qtest_add_func("sn0/origin2000/kona-fill/point-run-discard",
+                   test_point_run_discard);
     qtest_add_func("sn0/origin2000/kona-fill/single-box", test_single_box);
     qtest_add_func("sn0/origin2000/kona-fill/first-box-covers-screen",
                    test_first_box_covers_screen);
