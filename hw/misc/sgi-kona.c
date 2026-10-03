@@ -4806,6 +4806,22 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         sgi_kona_register_reason_page(s, args[0], args[1]);
         break;
     case SGI_KONA_CMD_POST_REASON:
+        /*
+         * The destroy sends 0x103 only while its context is still the
+         * one the board holds. No context identifier accompanies it.
+         * Approximate removal of that window from the display table by
+         * releasing its bank selection, so X repaints in bank 0 show.
+         * Ordinary deactivation preserves the window for later restores.
+         */
+        if (args[0] == 0x103 && s->context_current != SGI_KONA_CONTEXT_NONE) {
+            unsigned i = s->context_current;
+
+            memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
+            sgi_kona_gl_set_drawable(s, i);
+            sgi_scanout_invalidate_all(&s->scanout);
+        }
+        sgi_kona_post_reason(s, selector, args[0]);
+        break;
     case SGI_KONA_CMD_CHECK_PIPE:
         sgi_kona_post_reason(s, selector, args[0]);
         break;

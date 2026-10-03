@@ -431,6 +431,100 @@ static void test_swap_exchanges_banks(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0x00ff00);
 }
 
+/* Paint one X pixel red in bank 0 under the GL window. */
+static void x_repaint(QTestState *s)
+{
+    const uint32_t top = FB_HEIGHT - 1 - 640;
+    const uint32_t gc[] = {
+        0xff000, 0, 0, 0, 0, 0xfc000, 8, 1, 0, 6, 0, 1, 1,
+    };
+
+    kona_command(s, 0x12a, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
+    kona_command(s, 0x12b, (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
+    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x12e), 0x2dff);
+    qtest_writel(s, KONA_REG(0xc1000c), 1);
+    qtest_writel(s, KONA_REG(0xc1000c), 0x3fc00000);
+    kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
+    kona_command(s, 0x154, (uint32_t[]){ (PROBE_X << 16) | top,
+                    ((PROBE_X + 1) << 16) | (top + 1) }, 2);
+}
+
+static void gl_show_bank1(QTestState *s)
+{
+    gl_make_current(s, true);
+    gl_place_window(s, PROBE_X, 640, PROBE_SIZE);
+    gl_clear(s, F1, F0, F1);
+    gl_swap(s, 1);
+    qtest_clock_step(s, RETRACE_STEP_NS);
+    g_assert_cmphex(shown_pixel(s, PROBE_X, 640), ==, 0xff00ff);
+}
+
+/* Only the destroy's exact reason releases the current window. */
+static void test_destroy_releases_window(void)
+{
+    gl_reset();
+    gl_show_bank1(qts);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x102 }, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
+
+    gl_reset();
+    gl_show_bank1(qts);
+    qtest_system_reset(qts);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xfe0000);
+}
+
+/* A switched-out context still owns its displayed window. */
+static void test_deactivate_keeps_window(void)
+{
+    gl_reset();
+    gl_show_bank1(qts);
+    kona_command_kicked(qts, 0x1fc, (uint32_t[]){ 1 }, 1);
+    x_repaint(qts);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+
+    /* With no context current, mop-up cannot identify this old window. */
+    kona_command_kicked(qts, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    g_assert_cmphex(shown_pixel(qts, PROBE_X, 640), ==, 0xff00ff);
+}
+
+/* A migration keeps the window's lifetime on either side of destroy. */
+static void test_destroy_window_migrates(gconstpointer opaque)
+{
+    bool destroy_first = GPOINTER_TO_INT(opaque);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-kona-destroy-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_args);
+    gl_show_bank1(from);
+    if (destroy_first) {
+        kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    }
+    sgi_migrate_stopped(from, uri);
+    if (!destroy_first) {
+        g_assert_cmphex(shown_pixel(to, PROBE_X, 640), ==, 0xff00ff);
+        kona_command_kicked(to, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    }
+    x_repaint(to);
+    g_assert_cmphex(shown_pixel(to, PROBE_X, 640), ==, 0xfe0000);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 /*
  * The probe's clear case: the 128-pixel window at X position 256, 256,
  * 640 rows up from the bottom line, cleared magenta.
@@ -590,6 +684,15 @@ int main(int argc, char **argv)
                    test_probe_clear_asymmetric);
     qtest_add_func("sn0/origin2000/kona-gl/migration-of-gl-state",
                    test_migration_of_gl_state);
+
+    qtest_add_func("sn0/origin2000/kona-gl/destroy-releases-window",
+                   test_destroy_releases_window);
+    qtest_add_func("sn0/origin2000/kona-gl/deactivate-keeps-window",
+                   test_deactivate_keeps_window);
+    qtest_add_data_func("sn0/origin2000/kona-gl/destroy-after-migration",
+                        GINT_TO_POINTER(false), test_destroy_window_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-gl/destroy-before-migration",
+                        GINT_TO_POINTER(true), test_destroy_window_migrates);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
