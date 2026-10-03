@@ -4450,6 +4450,290 @@ static void test_texture_refused(void)
     g_assert_null(strstr(found, "sgi_kona_gl_data token 0x174"));
 }
 
+static const uint32_t texture_8x8_headers[][20] = {
+    { 0xde1, 8, 8, 5, 1, 0, 0, 0, 0, 0x30,
+      0, 0, 0, 7, 7, 0, 0x33, 0x2181, 0, 0 },
+    { 0xde1, 8, 8, 5, 1, 0, 0, 0, 0, 0x30,
+      1, 0, 0, 7, 7, 0, 0x33, 0x2189, 0, 0 },
+};
+
+/* Literal independently checked RGBA words from the two public uploads. */
+static const uint32_t texture_8x8_sources[][64] = {
+    {
+        0xff0000ff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x00ff00ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x0000ffff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffff00ff,
+    },
+    {
+        0xff0000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0x00ff00ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x000000ff, 0xffffffff, 0x000000ff, 0xffffffff,
+        0x0000ffff, 0x000000ff, 0xffffffff, 0x000000ff,
+        0xffffffff, 0x000000ff, 0xffffffff, 0xffff00ff,
+    },
+};
+
+static char *renderer_plane_digest(QTestState *s, unsigned plane);
+
+static void texture_plane_digests(QTestState *s, char *digests[7])
+{
+    for (unsigned plane = 0; plane < 7; plane++) {
+        digests[plane] = renderer_plane_digest(s, plane);
+    }
+}
+
+static void texture_assert_planes(QTestState *s, char *digests[7])
+{
+    for (unsigned plane = 0; plane < 7; plane++) {
+        g_autofree char *after = renderer_plane_digest(s, plane);
+
+        g_assert_cmpstr(after, ==, digests[plane]);
+    }
+}
+
+static void texture_free_digests(char *digests[7])
+{
+    for (unsigned plane = 0; plane < 7; plane++) {
+        g_free(digests[plane]);
+    }
+}
+
+static void texture_canaries(QTestState *s, char *digests[7])
+{
+    gl_make_current_depth(s, 24);
+    gl_window_cleared(s, 0.25, 0.5, 0.75);
+    kona_command_d(s, 0x1f, (double[]){ 0.625 }, 1);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x100 }, 1);
+    stencil_config(s, 8);
+    stencil_clear(s, 0x5a, 255);
+    stencil_config(s, 0);
+    texture_plane_digests(s, digests);
+    prepare_refused_reply(s);
+}
+
+static void test_texture_8x8_captured(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    char *before[7];
+
+    texture_canaries(s, before);
+    for (unsigned image = 0; image < 2; image++) {
+        for (unsigned width = 0; width < 3; width++) {
+            prepare_refused_reply(s);
+            kona_command(s, 0x174, texture_8x8_headers[image], 20);
+            texture_words(s, texture_8x8_sources[image], 64, width);
+            assert_texture_staging(s, texture_8x8_sources[image], 64, 0);
+            assert_reply_unchanged(s);
+            texture_assert_planes(s, before);
+            kona_command(s, 0x176, (uint32_t[]){ image }, 1);
+            assert_reply_unchanged(s);
+            assert_native_query_word(s, 0xb92, 0x207, width != 0);
+        }
+    }
+    texture_free_digests(before);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found, "token 0x174 argc 64 consumed"),
+                     ==, 6);
+}
+
+static void test_texture_8x8_widths(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint32_t hostile[64];
+    char *before[7];
+
+    for (unsigned k = 0; k < 64; k++) {
+        hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
+    }
+    texture_canaries(s, before);
+    for (unsigned image = 0; image < 2; image++) {
+        for (unsigned width = 0; width < 3; width++) {
+            prepare_refused_reply(s);
+            kona_command(s, 0x174, texture_8x8_headers[image], 20);
+            texture_words(s, hostile, 63, width);
+            qtest_writeq(s, REG_COMMAND,
+                         ((uint64_t)hostile[63] << 32) | 0x174);
+            assert_texture_staging(s, hostile, 64, 0);
+            texture_words(s, texture_8x8_headers[1 - image], 20, width);
+            texture_words(s, hostile, 63, width);
+            qtest_writeq(s, REG_COMMAND,
+                         ((uint64_t)hostile[63] << 32) | 0x176);
+            qtest_writel(s, REG_COMMAND, 1 - image);
+            assert_texture_staging(s, hostile, 64, 0);
+            assert_reply_unchanged(s);
+            texture_assert_planes(s, before);
+            assert_native_query_word(s, 0xb92, 0x207, width != 0);
+        }
+    }
+    texture_free_digests(before);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+    g_assert_cmpuint(count_occurrences(found, "token 0x174 argc 64 consumed"),
+                     ==, 12);
+}
+
+static void test_texture_8x8_reset(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t hostile[64];
+
+    for (unsigned k = 0; k < 64; k++) {
+        hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
+    }
+    for (unsigned image = 0; image < 2; image++) {
+        for (unsigned split = 0; split < 84; split++) {
+            char *before[7];
+            unsigned pos = split < 20 ? 0 : split - 20;
+
+            texture_canaries(s, before);
+            kona_command(s, 0x174, texture_8x8_headers[image],
+                          split < 20 ? split : 20);
+            texture_words(s, hostile, pos, 2);
+            assert_texture_staging(s, hostile, pos, pos);
+            assert_reply_unchanged(s);
+            texture_assert_planes(s, before);
+            texture_free_digests(before);
+            qtest_system_reset(s);
+            gl_make_current(s);
+            assert_texture_staging(s, hostile, 0, 0);
+            assert_native_query_word(s, 0xb92, 0x207, false);
+            qtest_system_reset(s);
+        }
+    }
+    qtest_quit(s);
+}
+
+static void test_texture_8x8_migrates(void)
+{
+    uint32_t hostile[64];
+
+    for (unsigned k = 0; k < 64; k++) {
+        hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
+    }
+    for (unsigned image = 0; image < 2; image++) {
+        for (unsigned split = 0; split < 84; split++) {
+            unsigned pos = split < 20 ? 0 : split - 20;
+            g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+            g_autofree char *log = NULL, *found = NULL;
+            GError *err = NULL;
+            QTestState *from, *to;
+            char *before[7];
+
+            g_test_message("image %u, partial word %u", image, split);
+            dir = g_dir_make_tmp("sn0-kona-texture-8x8-XXXXXX", &err);
+            g_assert_no_error(err);
+            uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+            args = g_strdup_printf(" -incoming %s", uri);
+            from = qtest_init(MACHINE_ARGS);
+            to = kona_init_logged_args(&log, args);
+            texture_canaries(from, before);
+            kona_command(from, 0x174, texture_8x8_headers[image],
+                          split < 20 ? split : 20);
+            texture_words(from, hostile, pos, 2);
+            assert_texture_staging(from, hostile, pos, pos);
+            assert_reply_unchanged(from);
+            texture_assert_planes(from, before);
+            sgi_migrate_stopped(from, uri);
+            assert_texture_staging(to, hostile, pos, pos);
+            for (unsigned which = 0; which < 2; which++) {
+                QTestState *s = which ? from : to;
+
+                assert_reply_unchanged(s);
+                texture_assert_planes(s, before);
+                if (split < 20) {
+                    texture_words(s, texture_8x8_headers[image] + split,
+                                  20 - split, 2);
+                }
+                texture_words(s, hostile + pos, 63 - pos, 2);
+                qtest_writeq(s, REG_COMMAND,
+                             ((uint64_t)hostile[63] << 32) | 0x176);
+                qtest_writel(s, REG_COMMAND, image);
+                assert_texture_staging(s, hostile, 64, 0);
+                assert_reply_unchanged(s);
+                texture_assert_planes(s, before);
+                assert_native_query_word(s, 0xb92, 0x207, false);
+            }
+            texture_free_digests(before);
+            qtest_quit(to);
+            qtest_quit(from);
+            found = kona_log_read(log);
+            g_assert_false(log_shows_misframing(found));
+            g_assert_cmpuint(count_occurrences(found,
+                             "token 0x174 argc 64 consumed"), ==, 1);
+            g_rmdir(dir);
+        }
+    }
+}
+
+static void test_texture_8x8_refused(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+    uint32_t h[20];
+    char *before[7];
+
+    texture_canaries(s, before);
+    for (unsigned image = 0; image < 2; image++) {
+        for (unsigned field = 0; field < 24; field++) {
+            memcpy(h, texture_8x8_headers[image], sizeof(h));
+            if (field < 20) {
+                h[field] ^= 1;
+            } else if (field == 20) {
+                h[17] ^= 8; /* Unobserved word-ten/seventeen cross-product. */
+            } else if (field == 21) {
+                kona_command(s, 0x33, (uint32_t[]){ 0xcf5, 8 }, 2);
+            } else if (field == 22) {
+                kona_command(s, 0x33, (uint32_t[]){ 0xcf5, 4 }, 2);
+                kona_command(s, 0x33, (uint32_t[]){ 0xcf2, 2 }, 2);
+            } else {
+                kona_command(s, 0x33, (uint32_t[]){ 0xcf2, 0 }, 2);
+                return_context_deactivate(s);
+            }
+            prepare_refused_reply(s);
+            kona_command(s, 0x174, h, 20);
+            assert_texture_staging(s, NULL, 0, 0);
+            assert_reply_unchanged(s);
+            texture_assert_planes(s, before);
+        }
+        gl_make_current_depth(s, 24);
+    }
+    texture_free_digests(before);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found, "native texture header refused:"),
+                     ==, 48);
+    g_assert_null(strstr(found, "sgi_kona_gl_data token 0x174"));
+}
+
 static uint64_t renderer_counter(QTestState *s, const char *name)
 {
     QDict *reply = qtest_qmp(s,
@@ -4998,6 +5282,16 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-3d/depth-blend/"
                    "blend-without-alpha-plane",
                    test_blend_without_alpha_plane);
+    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/captured",
+                   test_texture_8x8_captured);
+    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/widths",
+                   test_texture_8x8_widths);
+    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/reset",
+                   test_texture_8x8_reset);
+    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/migration",
+                   test_texture_8x8_migrates);
+    qtest_add_func("sn0/origin2000/kona-3d/texture-8x8/refused",
+                   test_texture_8x8_refused);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/real-gl",
                         GUINT_TO_POINTER(1), test_renderer_fixture);
     qtest_add_data_func("sn0/origin2000/kona-3d/renderer/missing-provider",
