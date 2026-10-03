@@ -24,6 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qemu/bswap.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-migrate.h"
@@ -964,6 +965,381 @@ static void test_migration_from_x_server_v1(void)
     g_rmdir(tmpfs);
 }
 
+#define CURSOR_WORDS 260
+
+static void cursor_register(QTestState *s, uint32_t selector, uint32_t value)
+{
+    qtest_writel(s, KONA_REG(0x8003c0), selector);
+    qtest_writel(s, KONA_REG(0x8003d0), value);
+}
+
+static uint32_t cursor_position(int x, int y)
+{
+    return ((x + 32) & 0x1fff) | (((y + 32) & 0x1fff) << 13);
+}
+
+static void cursor_image(uint32_t *image)
+{
+    memset(image, 0, CURSOR_WORDS * sizeof(*image));
+    image[0] = 0xa0000000;
+    image[2] = 0x60000000;
+    image[63 * 4 + 1] = 1;
+    image[256] = 0x000003ff;
+    image[257] = 0x3ff00000;
+    image[258] = 0x000ffc00;
+    image[259] = 0x3fffffff;
+}
+
+static void cursor_load(QTestState *s, uint32_t offset, const uint32_t *image)
+{
+    qtest_writel(s, REG_COMMAND_SLOT(0x130), offset);
+    for (unsigned i = 0; i < CURSOR_WORDS; i++) {
+        qtest_writel(s, REG_COMMAND_DATA, image[i]);
+    }
+}
+
+static void test_loaded_cursor(void)
+{
+    uint32_t image[CURSOR_WORDS];
+    g_autofree uint8_t *pixels = NULL;
+
+    qtest_system_reset(qts);
+    load_gc(qts, 0x77);
+    load_x_map(qts, X_MAP_WINDOW + 0x77, (uint32_t[]){ ENTRY_GREY_192 }, 1);
+    kona_command(qts, TOKEN_BOX,
+                 (uint32_t[]){ XY(100, 50), XY(164, 114) }, 2);
+    cursor_image(image);
+    cursor_load(qts, 0, image);
+    cursor_register(qts, 0x100, 0);
+    cursor_register(qts, 0x101, 0);
+    cursor_register(qts, 0x102, cursor_position(100, 50));
+    cursor_register(qts, 0x103, 2);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff0000);
+    g_assert_cmphex(ppm_pixel(pixels, 101, 50), ==, 0x00ff00);
+    g_assert_cmphex(ppm_pixel(pixels, 102, 50), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel(pixels, 103, 50), ==, 0xc0c0c0);
+    g_assert_cmphex(front_at(qts, 100, 50), ==, 0x77);
+    cursor_register(qts, 0x103, 0);
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xc0c0c0);
+}
+
+static void test_cursor_edges(void)
+{
+    static const int positions[][2] = {
+        { -63, 0 }, { -32, 0 }, { -31, 0 }, { 0, 0 },
+        { 0, -63 }, { 0, -32 }, { 0, -31 },
+        { 1279, 0 }, { 0, 1023 }, { 1279, 1023 },
+        { -63, -63 }, { -63, 1023 }, { 1279, -63 },
+    };
+    uint32_t image[CURSOR_WORDS] = { 0 };
+
+    qtest_system_reset(qts);
+    for (unsigned row = 0; row < 64; row++) {
+        image[4 * row] = image[4 * row + 1] = 0xffffffff;
+    }
+    image[252] &= ~0x80000000;
+    image[254] = 0x80000000;
+    image[255] = 1;
+    image[256] = 0x000003ff;
+    image[257] = 0x3ff00000;
+    image[258] = 0x000ffc00;
+    cursor_load(qts, 0, image);
+    cursor_register(qts, 0x103, 2);
+    for (unsigned i = 0; i < ARRAY_SIZE(positions); i++) {
+        int x = positions[i][0], y = positions[i][1];
+        unsigned px = MAX(x, 0), py = MAX(y, 0);
+        uint32_t expected = (x == -63 && y == -63) ? 0xff :
+                            (x >= 0 && y == -63) ? 0xff00 : 0xff0000;
+        g_autofree uint8_t *pixels = NULL;
+
+        cursor_register(qts, 0x102, cursor_position(x, y));
+        pixels = kona_screendump(qts);
+        g_assert_cmphex(ppm_pixel(pixels, px, py), ==, expected);
+        g_assert_cmphex(front_at(qts, px, py), ==, 0);
+        cursor_register(qts, 0x103, 0);
+        g_clear_pointer(&pixels, g_free);
+        pixels = kona_screendump(qts);
+        g_assert_cmphex(ppm_pixel(pixels, px, py), ==, 0);
+        cursor_register(qts, 0x103, 2);
+    }
+}
+
+static void test_cursor_selection_recolor(void)
+{
+    uint32_t image[CURSOR_WORDS];
+    g_autofree uint8_t *pixels = NULL;
+
+    qtest_system_reset(qts);
+    cursor_image(image);
+    cursor_load(qts, 0, image);
+    image[257] = 0x000003ff;
+    cursor_load(qts, 260, image);
+    cursor_register(qts, 0x102, cursor_position(100, 50));
+    cursor_register(qts, 0x103, 2);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff0000);
+    cursor_register(qts, 0x101, 260);
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff);
+    kona_command(qts, 0x131, (uint32_t[]){ 260, 0x3ff00000, 0x000ffc00,
+                  0x000003ff, 0x3fffffff }, 5);
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff00);
+    g_assert_cmphex(ppm_pixel(pixels, 101, 50), ==, 0xff);
+    g_assert_cmphex(ppm_pixel(pixels, 102, 50), ==, 0xff0000);
+    cursor_register(qts, 0x101, 0);
+    cursor_register(qts, 0x102, cursor_position(200, 100));
+    g_clear_pointer(&pixels, g_free);
+    pixels = kona_screendump(qts);
+    g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+    g_assert_cmphex(ppm_pixel(pixels, 200, 100), ==, 0xff0000);
+    g_assert_cmphex(front_at(qts, 200, 100), ==, 0);
+}
+
+static void test_cursor_refusal_abort(void)
+{
+    static const struct { uint32_t selector, value; } refused[] = {
+        { 0x100, 1 }, { 0x101, 1 }, { 0x101, 64 * 260 },
+        { 0x101, 260 }, { 0x103, 1 }, { 0x103, 4 },
+        { 0x102, 0 },
+    };
+    uint32_t image[CURSOR_WORDS];
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+
+    cursor_image(image);
+    cursor_load(s, 0, image);
+    for (unsigned i = 0; i < ARRAY_SIZE(refused) + 4; i++) {
+        g_autofree uint8_t *pixels = NULL;
+
+        cursor_register(s, 0x100, 0);
+        cursor_register(s, 0x101, 0);
+        cursor_register(s, 0x102, cursor_position(100, 50));
+        cursor_register(s, 0x103, 2);
+        if (i < ARRAY_SIZE(refused)) {
+            cursor_register(s, refused[i].selector,
+                            i == 6 ? cursor_position(-64, 0) :
+                                     refused[i].value);
+        } else {
+            static const int out[][2] = {
+                { 0, -64 }, { 1280, 0 }, { 0, 1024 }, { 4000, 4000 },
+            };
+            unsigned n = i - ARRAY_SIZE(refused);
+
+            cursor_register(s, 0x102, cursor_position(out[n][0], out[n][1]));
+        }
+        pixels = kona_screendump(s);
+        g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+        g_assert_cmphex(ppm_pixel(pixels, 0, 0), ==, 0);
+    }
+    cursor_register(s, 0x100, 0);
+    cursor_register(s, 0x101, 0);
+    cursor_register(s, 0x102, cursor_position(100, 50));
+    cursor_register(s, 0x103, 2);
+    cursor_register(s, 0x80, 1);
+    cursor_register(s, 0xb00, 1);
+    cursor_register(s, 0xb02, 1);
+    cursor_register(s, 0xc00, 1);
+    cursor_register(s, 0xc02, 1);
+    kona_command(s, 0x131, (uint32_t[]){ 0x269c, 0, 0, 0, 0 }, 5);
+    cursor_load(s, 1, image);
+    qtest_writel(s, REG_COMMAND_SLOT(0x130), 0);
+    for (unsigned i = 0; i < 130; i++) {
+        qtest_writel(s, REG_COMMAND_DATA, 0);
+    }
+    qtest_writel(s, REG_COMMAND_SLOT(TOKEN_BOX), XY(500, 500));
+    qtest_writel(s, REG_COMMAND_DATA, XY(502, 502));
+    {
+        g_autofree uint8_t *pixels = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff0000);
+    }
+    qtest_writel(s, REG_COMMAND_SLOT(0x131), 0);
+    qtest_writel(s, REG_COMMAND_DATA, 0);
+    qtest_writel(s, REG_COMMAND_DATA, 0);
+    qtest_writel(s, REG_COMMAND_DATA, 0);
+    qtest_system_reset(s);
+    cursor_register(s, 0x102, cursor_position(100, 50));
+    cursor_register(s, 0x103, 2);
+    {
+        g_autofree uint8_t *pixels = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+    }
+    cursor_load(s, 0, image);
+    {
+        g_autofree uint8_t *pixels = kona_screendump(s);
+
+        g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0xff0000);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unsupported cursor channel"));
+    g_assert_nonnull(strstr(found, "invalid or unloaded cursor offset"));
+    g_assert_nonnull(strstr(found, "unsupported cursor position"));
+    g_assert_nonnull(strstr(found, "unsupported cursor mode"));
+    g_assert_nonnull(strstr(found, "unsupported cursor selector"));
+    g_assert_nonnull(strstr(found, "unsupported crosshair recolouring"));
+    g_assert_nonnull(strstr(found, "invalid cursor load offset"));
+    g_assert_nonnull(strstr(found, "partial command dropped"));
+}
+
+static void test_cursor_migration(void)
+{
+    for (unsigned partial = 0; partial < 3; partial++) {
+        g_autofree char *dir = NULL, *uri = NULL, *dest = NULL;
+        g_autofree uint8_t *before = NULL, *after = NULL;
+        GError *err = NULL;
+        QTestState *from, *to;
+        uint32_t image[CURSOR_WORDS];
+
+        dir = g_dir_make_tmp("sn0-kona-loaded-cursor-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        from = qtest_init(MIGRATION_ARGS);
+        dest = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+        to = qtest_init(dest);
+        cursor_image(image);
+        cursor_load(from, 0, image);
+        cursor_register(from, 0x102, cursor_position(1279, 1023));
+        cursor_register(from, 0x103, 2);
+        if (partial == 1) {
+            qtest_writel(from, REG_COMMAND_SLOT(0x130), 260);
+            for (unsigned i = 0; i < 130; i++) {
+                qtest_writel(from, REG_COMMAND_DATA, image[i]);
+            }
+        } else if (partial == 2) {
+            qtest_writel(from, REG_COMMAND_SLOT(0x131), 0);
+            qtest_writel(from, REG_COMMAND_DATA, 0x3ff00000);
+            qtest_writel(from, REG_COMMAND_DATA, 0x000003ff);
+            qtest_writel(from, REG_COMMAND_DATA, 0x000ffc00);
+        }
+        before = kona_screendump(from);
+        sgi_migrate_stopped(from, uri);
+        after = kona_screendump(to);
+        g_assert_cmpmem(before, KONA_FB_WIDTH * KONA_FB_HEIGHT * 3,
+                        after, KONA_FB_WIDTH * KONA_FB_HEIGHT * 3);
+        if (partial == 1) {
+            for (unsigned i = 130; i < CURSOR_WORDS; i++) {
+                qtest_writel(to, REG_COMMAND_DATA, image[i]);
+            }
+            cursor_register(to, 0x101, 260);
+            cursor_register(to, 0x102, cursor_position(100, 50));
+        } else if (partial == 2) {
+            qtest_writel(to, REG_COMMAND_DATA, 0x3fffffff);
+        }
+        g_clear_pointer(&after, g_free);
+        after = kona_screendump(to);
+        g_assert_cmphex(ppm_pixel(after, partial == 1 ? 100 : 1279,
+                                  partial == 1 ? 50 : 1023), ==,
+                        partial == 2 ? 0xff : 0xff0000);
+        if (partial == 1) {
+            cursor_register(to, 0x103, 0);
+        } else {
+            qtest_writel(to, KONA_REG(0x8003d0), 0);
+        }
+        g_clear_pointer(&after, g_free);
+        after = kona_screendump(to);
+        g_assert_cmphex(ppm_pixel(after, partial == 1 ? 100 : 1279,
+                                  partial == 1 ? 50 : 1023), ==, 0);
+        cursor_register(to, 0x103, 2);
+        assert_in_step(to);
+        qtest_system_reset(to);
+        cursor_register(to, 0x102, cursor_position(100, 50));
+        cursor_register(to, 0x103, 2);
+        g_clear_pointer(&after, g_free);
+        after = kona_screendump(to);
+        g_assert_cmphex(ppm_pixel(after, 100, 50), ==, 0);
+        qtest_quit(to);
+        qtest_quit(from);
+        g_rmdir(dir);
+    }
+}
+
+static void test_cursor_migration_refuses_bounds(void)
+{
+    static const char section[] = "sgi-kona/loaded-cursor";
+    g_autofree char *dir = NULL, *path = NULL, *quoted = NULL;
+    g_autofree char *outgoing = NULL, *incoming = NULL;
+    g_autofree char *data = NULL;
+    GError *err = NULL;
+    gsize size, fields = 0;
+    QTestState *from;
+
+    dir = g_dir_make_tmp("sn0-kona-cursor-bounds-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(dir, "state", NULL);
+    quoted = g_shell_quote(path);
+    outgoing = g_strdup_printf("exec:cat > %s", quoted);
+    incoming = g_strdup_printf("exec:cat %s", quoted);
+    from = qtest_init(MIGRATION_ARGS);
+    {
+        uint32_t image[CURSOR_WORDS];
+
+        cursor_image(image);
+        cursor_load(from, 0, image);
+        cursor_register(from, 0x102, cursor_position(100, 50));
+        cursor_register(from, 0x103, 2);
+    }
+    sgi_migrate_stopped(from, outgoing);
+    qtest_quit(from);
+    g_assert_true(g_file_get_contents(path, &data, &size, NULL));
+    for (gsize i = 0; i + sizeof(section) + 4 < size; i++) {
+        if (!memcmp(data + i, section, sizeof(section) - 1)) {
+            fields = i + sizeof(section) - 1 + 4;
+            break;
+        }
+    }
+    g_assert_cmpuint(fields, >, 0);
+    for (unsigned bad = 0; bad < 5; bad++) {
+        g_autofree char *corrupt = g_memdup2(data, size);
+        QTestState *to;
+        gsize length = size;
+
+        if (bad == 0) {
+            stl_be_p(corrupt + fields, 261);
+        } else if (bad == 1) {
+            stl_be_p(corrupt + fields + 4, 65);
+        } else if (bad == 2) {
+            corrupt[fields + 8 + 260 * 4 + 64 * 260 * 4] = 2;
+        } else if (bad == 3) {
+            stl_be_p(corrupt + fields, 260);
+        } else {
+            gsize start = fields - 4 - (sizeof(section) - 1) - 2;
+            gsize end = fields + 8 + 260 * 4 + 64 * 260 * 4 + 64 + 5 * 4;
+
+            g_assert_cmpuint(end, <, size);
+            memmove(corrupt + start, corrupt + end, size - end);
+            length -= end - start;
+        }
+        g_assert_true(g_file_set_contents(path, corrupt, length, NULL));
+        to = qtest_initf(MIGRATION_ARGS " -incoming defer");
+        if (bad < 4) {
+            qtest_set_expected_status(to, 1);
+        }
+        qtest_qmp_assert_success(to,
+            "{'execute': 'migrate-incoming', 'arguments': {'uri': %s}}",
+            incoming);
+        if (bad < 4) {
+            qtest_wait_qemu(to);
+        } else {
+            g_autofree uint8_t *pixels = NULL;
+
+            sgi_wait_migration_status(to, "completed", 30);
+            pixels = kona_screendump(to);
+            g_assert_cmphex(ppm_pixel(pixels, 100, 50), ==, 0);
+        }
+        qtest_quit(to);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
 static void load_point_gc(QTestState *s, uint32_t index)
 {
     uint32_t gc[] = {
@@ -1215,6 +1591,17 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
 
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-migration",
+                   test_cursor_migration);
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-migration-refuses-bounds",
+                   test_cursor_migration_refuses_bounds);
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-edges", test_cursor_edges);
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-selection-recolor",
+                   test_cursor_selection_recolor);
+    qtest_add_func("sn0/origin2000/kona-fill/cursor-refusal-abort",
+                   test_cursor_refusal_abort);
+    qtest_add_func("sn0/origin2000/kona-fill/loaded-cursor",
+                   test_loaded_cursor);
     qtest_add_func("sn0/origin2000/kona-fill/absolute-points",
                    test_absolute_points);
     qtest_add_func("sn0/origin2000/kona-fill/point-clipping",

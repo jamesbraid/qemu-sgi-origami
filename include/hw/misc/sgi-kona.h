@@ -918,6 +918,17 @@ struct SGIKonaState {
      * words: the count still to come. See sgi_kona_cursor_word().
      */
     uint32_t cursor_remaining;
+    bool cursor_state_loaded; /* migration subsection was present */
+    uint32_t cursor_stage_words;
+    uint32_t cursor_stage_entry;
+    uint32_t cursor_stage[260];
+    uint32_t cursor_images[64 * 260];
+    uint8_t cursor_valid[64];
+    uint32_t cursor_selector;
+    uint32_t cursor_channel;
+    uint32_t cursor_offset;
+    uint32_t cursor_position;
+    uint32_t cursor_mode;
 
     /*
      * A GL texture table (SGI_KONA_CMD_GL_TEX_TABLE) still taking its data

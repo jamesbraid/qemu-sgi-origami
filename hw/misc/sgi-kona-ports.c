@@ -150,6 +150,7 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
      * sgi-kona.c: 261 words exceed the framer's argument array.
      */
     { SGI_KONA_CMD_X_CURSOR, 1 },
+    { 0x131, 1 },
     { SGI_KONA_CMD_X_DID_MAP, 2 },     /* entry index, packed entry */
     { SGI_KONA_CMD_X_DID_CONFIG, 1 },  /* 1, or 0 from konDestroyWindow */
     { SGI_KONA_CMD_X_PIXEL_SETUP, SGI_KONA_X_PIXEL_SETUP_WORDS },

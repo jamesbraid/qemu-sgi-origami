@@ -130,21 +130,28 @@ static const SGIPlane *sgi_kona_plane(SGIKonaState *s, uint32_t id)
  * through it: (340, 20) to 213, 213, 213 grey and (270, 310) to 153, 153,
  * 153 grey. The shell's 192 grey is overdrawn and cannot serve.
  */
-static uint32_t sgi_kona_x_color(SGIKonaState *s, uint32_t index)
+static uint32_t sgi_kona_rgb10(uint32_t entry)
 {
-    uint64_t addr = (uint64_t)SGI_KONA_X_COLOR_MAP_WINDOW + index;
-    uint32_t entry, rgb = 0;
+    uint32_t rgb = 0;
 
-    if (addr >= SGI_KONA_X_COLOR_MAP_ENTRIES) {
-        return 0;
-    }
-    entry = s->x_color_map[addr];
     for (int shift = 20; shift >= 0; shift -= 10) {
         uint32_t c = (entry >> shift) & 0x3ff;
 
         rgb = (rgb << 8) | ((c * 255 + 511) / 1023);
     }
     return rgb;
+}
+
+static uint32_t sgi_kona_x_color(SGIKonaState *s, uint32_t index)
+{
+    uint64_t addr = (uint64_t)SGI_KONA_X_COLOR_MAP_WINDOW + index;
+    uint32_t entry;
+
+    if (addr >= SGI_KONA_X_COLOR_MAP_ENTRIES) {
+        return 0;
+    }
+    entry = s->x_color_map[addr];
+    return sgi_kona_rgb10(entry);
 }
 
 /* A colour bank's plane and the plane of its tags; bank 0 or 1. */
@@ -281,10 +288,8 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
 /*
  * Display line y for the shared scanout: each pixel resolved by its tag
  * from the bank shown there (see sgi_kona_displayed_bank()), with the
- * unused top byte of an x8r8g8b8 word cleared. No gamma or cursor stage
- * is modelled (the gamma table the X server loads is stored, not
- * applied), and the cursor stays absent: the scanout's host cursor is
- * never defined.
+ * unused top byte of an x8r8g8b8 word cleared. Gamma is not applied;
+ * the shared scanout composes the loaded cursor after resolving the row.
  */
 static void sgi_kona_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
@@ -1711,32 +1716,148 @@ static void sgi_kona_gamma_word(SGIKonaState *s, uint32_t word)
     }
 }
 
-/*
- * 0x130, X load cursor: a slot word, then 260 data words. kon_cursorLogo
- * sends slot 0; the second
- * sender, the routine at 0x526140, sends 260 times a cursor-private word,
- * inferred to be an offset into a cursor table (0x2698 in the run). The
- * model accepts any slot and traces it. The command port frames the slot
- * word; the data words are consumed here. The cursor image is not
- * modelled: nothing is drawn or stored.
- *
- * Approximated: the length is fixed at the senders' 260, because nothing
- * on the wire carries it; a cursor load of another size would misframe
- * every word after it. The discriminating guest test is the X server's
- * cursor loads framing as whole commands with nothing dropped after them.
- */
-static void sgi_kona_cursor_open(SGIKonaState *s, uint32_t slot)
+#define SGI_KONA_CURSOR_ENTRIES 64
+
+static bool sgi_kona_cursor_offset_valid(uint32_t offset)
 {
-    trace_sgi_kona_x_cursor(slot);
-    s->cursor_remaining = SGI_KONA_X_CURSOR_DATA_WORDS;
+    return offset % SGI_KONA_X_CURSOR_DATA_WORDS == 0 &&
+           offset / SGI_KONA_X_CURSOR_DATA_WORDS < SGI_KONA_CURSOR_ENTRIES;
 }
 
-/* A word on the command page while a cursor load takes its data. */
-static void sgi_kona_cursor_word(SGIKonaState *s)
+static int sgi_kona_cursor_coord(uint32_t value)
 {
+    int coord = value & 0x1fff;
+
+    return (coord >= 4096 ? coord - 8192 : coord) - 32;
+}
+
+static void sgi_kona_cursor_update(SGIKonaState *s)
+{
+    uint32_t argb[64 * 64];
+    unsigned entry = s->cursor_offset / SGI_KONA_X_CURSOR_DATA_WORDS;
+    int x = sgi_kona_cursor_coord(s->cursor_position);
+    int y = sgi_kona_cursor_coord(s->cursor_position >> 13);
+    bool on = s->cursor_mode == 2 && !s->cursor_channel &&
+              sgi_kona_cursor_offset_valid(s->cursor_offset) &&
+              s->cursor_valid[entry] && x >= -63 && x < SGI_KONA_FB_WIDTH &&
+              y >= -63 && y < SGI_KONA_FB_HEIGHT;
+
+    if (on) {
+        const uint32_t *image = s->cursor_images + entry * 260;
+        uint32_t colors[4] = { 0 };
+        static const unsigned color_word[] = { 0, 257, 258, 256 };
+
+        for (unsigned code = 1; code < 4; code++) {
+            colors[code] = 0xff000000 |
+                           sgi_kona_rgb10(image[color_word[code]]);
+        }
+        for (unsigned row = 0; row < 64; row++) {
+            for (unsigned col = 0; col < 64; col++) {
+                unsigned half = col / 32, shift = 31 - col % 32;
+                unsigned a = (image[4 * row + half] >> shift) & 1;
+                unsigned b = (image[4 * row + 2 + half] >> shift) & 1;
+
+                argb[row * 64 + col] = colors[a + 2 * b];
+            }
+        }
+        sgi_scanout_cursor_define(&s->scanout, 64, 64, 0, 0, argb);
+    }
+    sgi_scanout_cursor_move(&s->scanout, x, y, on);
+}
+
+static void sgi_kona_cursor_register(SGIKonaState *s, uint32_t value)
+{
+    switch (s->cursor_selector) {
+    case 0x100:
+        s->cursor_channel = value;
+        if (value) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: unsupported cursor channel %u\n",
+                          value);
+        }
+        break;
+    case 0x101:
+        s->cursor_offset = value;
+        if (!sgi_kona_cursor_offset_valid(value) ||
+            !s->cursor_valid[value / SGI_KONA_X_CURSOR_DATA_WORDS]) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: invalid or unloaded cursor offset 0x%x\n",
+                          value);
+        }
+        break;
+    case 0x102: {
+        int x = sgi_kona_cursor_coord(value);
+        int y = sgi_kona_cursor_coord(value >> 13);
+
+        s->cursor_position = value;
+        if (x < -63 || x >= SGI_KONA_FB_WIDTH ||
+            y < -63 || y >= SGI_KONA_FB_HEIGHT) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: unsupported cursor position %d,%d\n",
+                          x, y);
+        }
+        break;
+    }
+    case 0x103:
+        s->cursor_mode = value;
+        if (value != 0 && value != 2) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported cursor mode %u\n",
+                          value);
+        }
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported cursor selector 0x%x value 0x%x\n",
+                      s->cursor_selector, value);
+        return;
+    }
+    sgi_kona_cursor_update(s);
+}
+
+static void sgi_kona_cursor_open(SGIKonaState *s, uint32_t offset, bool recolor)
+{
+    trace_sgi_kona_x_cursor(offset);
+    s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
+    s->cursor_stage_words = recolor ? 4 : SGI_KONA_X_CURSOR_DATA_WORDS;
+    s->cursor_remaining = s->cursor_stage_words;
+    memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
+    if (recolor && offset == 0x269c) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported crosshair recolouring\n");
+    } else if (!sgi_kona_cursor_offset_valid(offset)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: invalid cursor load offset 0x%x\n",
+                      offset);
+    } else {
+        unsigned entry = offset / SGI_KONA_X_CURSOR_DATA_WORDS;
+
+        if (!recolor || s->cursor_valid[entry]) {
+            s->cursor_stage_entry = entry;
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-kona: recolour of unloaded cursor offset 0x%x\n",
+                          offset);
+        }
+    }
+}
+
+static void sgi_kona_cursor_word(SGIKonaState *s, uint32_t word)
+{
+    unsigned have = s->cursor_stage_words - s->cursor_remaining;
+
+    s->cursor_stage[have] = word;
     if (--s->cursor_remaining == 0) {
-        trace_sgi_kona_command_unmodelled(SGI_KONA_CMD_X_CURSOR,
-                                          1 + SGI_KONA_X_CURSOR_DATA_WORDS);
+        unsigned entry = s->cursor_stage_entry;
+
+        if (entry < SGI_KONA_CURSOR_ENTRIES) {
+            uint32_t *image = s->cursor_images + entry * 260;
+
+            memcpy(image + (s->cursor_stage_words == 4 ? 256 : 0),
+                   s->cursor_stage, s->cursor_stage_words * sizeof(*image));
+            s->cursor_valid[entry] = 1;
+            sgi_kona_cursor_update(s);
+        }
+        s->cursor_stage_words = 0;
+        memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
     }
 }
 
@@ -4925,7 +5046,10 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         sgi_kona_gamma_open(s, args[0], args[1]);
         break;
     case SGI_KONA_CMD_X_CURSOR:
-        sgi_kona_cursor_open(s, args[0]);
+        sgi_kona_cursor_open(s, args[0], false);
+        break;
+    case 0x131:
+        sgi_kona_cursor_open(s, args[0], true);
         break;
     case SGI_KONA_CMD_X_GC:
         sgi_kona_x_load_gc(s, args);
@@ -5089,7 +5213,7 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         return;
     }
     if (s->cursor_remaining) {
-        sgi_kona_cursor_word(s);
+        sgi_kona_cursor_word(s, word);
         return;
     }
     if (s->gl_tex_table_remaining) {
@@ -5389,6 +5513,8 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                       PRIu32 " words; partial command dropped\n", token,
                       offset, SGI_KONA_CMD_X_CURSOR, s->cursor_remaining);
         s->cursor_remaining = 0;
+        s->cursor_stage_words = 0;
+        memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
     }
     if (s->gl_tex_table_remaining) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -5796,6 +5922,12 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
     case SGI_KONA_EEPROM_ENABLE:
         s->eeprom_enable = value;
         break;
+    case 0x8003c0:
+        s->cursor_selector = value;
+        break;
+    case 0x8003d0:
+        sgi_kona_cursor_register(s, value);
+        break;
     case SGI_KONA_EEPROM_ADDR:
         s->eeprom_addr = value;
         s->load_section_open = false;
@@ -6128,6 +6260,7 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 
     sgi_kona_board_memory_init(s);
     sgi_scanout_init(&s->scanout, DEVICE(s), &sgi_kona_head_ops, s);
+    s->scanout.composite_cursor = true;
     sgi_scanout_set_mode(&s->scanout, &sgi_kona_scanout_mode);
     return true;
 }
@@ -6393,6 +6526,16 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->gamma_remaining = 0;
     s->gamma_outside = 0;
     s->cursor_remaining = 0;
+    s->cursor_stage_words = 0;
+    s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
+    memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
+    memset(s->cursor_images, 0, sizeof(s->cursor_images));
+    memset(s->cursor_valid, 0, sizeof(s->cursor_valid));
+    s->cursor_selector = 0;
+    s->cursor_channel = 0;
+    s->cursor_offset = 0;
+    s->cursor_position = 0;
+    s->cursor_mode = 0;
     s->gl_tex_table_remaining = 0;
     s->gl_token_high = 0;
     s->gl_data_token = 0;
@@ -6543,6 +6686,24 @@ static bool sgi_kona_arm_high_count_valid(void *opaque, int version_id)
  * memory carries its framebuffer in the main section instead of the
  * board memory subsection.
  */
+static int sgi_kona_cursor_pre_load(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    s->cursor_state_loaded = false;
+    s->cursor_stage_words = 0;
+    s->cursor_stage_entry = SGI_KONA_CURSOR_ENTRIES;
+    memset(s->cursor_stage, 0, sizeof(s->cursor_stage));
+    memset(s->cursor_images, 0, sizeof(s->cursor_images));
+    memset(s->cursor_valid, 0, sizeof(s->cursor_valid));
+    s->cursor_selector = 0;
+    s->cursor_channel = 0;
+    s->cursor_offset = 0;
+    s->cursor_position = 0;
+    s->cursor_mode = 0;
+    return 0;
+}
+
 static int sgi_kona_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
@@ -6568,6 +6729,23 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     if (s->color_map_remaining > s->color_map_count ||
         s->color_map_outside > s->color_map_count - s->color_map_remaining) {
         return -EINVAL;
+    }
+    if (!s->cursor_state_loaded) {
+        s->cursor_remaining = 0;
+    }
+    if (s->cursor_stage_words != 0 && s->cursor_stage_words != 4 &&
+        s->cursor_stage_words != SGI_KONA_X_CURSOR_DATA_WORDS) {
+        return -EINVAL;
+    }
+    if (s->cursor_stage_entry > SGI_KONA_CURSOR_ENTRIES ||
+        s->cursor_remaining > s->cursor_stage_words ||
+        (!s->cursor_remaining != !s->cursor_stage_words)) {
+        return -EINVAL;
+    }
+    for (unsigned i = 0; i < SGI_KONA_CURSOR_ENTRIES; i++) {
+        if (s->cursor_valid[i] > 1) {
+            return -EINVAL;
+        }
     }
     if (s->cursor_remaining > SGI_KONA_X_CURSOR_DATA_WORDS ||
         s->gl_tex_table_remaining > SGI_KONA_GL_TEX_TABLE_WORDS) {
@@ -6641,6 +6819,7 @@ static int sgi_kona_post_load(void *opaque, int version_id)
         sgi_kona_load_legacy_framebuffer(s);
     }
     sgi_scanout_invalidate_all(&s->scanout);
+    sgi_kona_cursor_update(s);
     return 0;
 }
 
@@ -7008,11 +7187,46 @@ static const VMStateDescription vmstate_sgi_kona_mailbox = {
     },
 };
 
+static bool sgi_kona_cursor_needed(void *opaque)
+{
+    return true;
+}
+
+static int sgi_kona_cursor_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    s->cursor_state_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_cursor = {
+    .name = TYPE_SGI_KONA "/loaded-cursor",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_cursor_needed,
+    .post_load = sgi_kona_cursor_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(cursor_stage_words, SGIKonaState),
+        VMSTATE_UINT32(cursor_stage_entry, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(cursor_stage, SGIKonaState, 260),
+        VMSTATE_UINT32_ARRAY(cursor_images, SGIKonaState, 64 * 260),
+        VMSTATE_UINT8_ARRAY(cursor_valid, SGIKonaState, 64),
+        VMSTATE_UINT32(cursor_selector, SGIKonaState),
+        VMSTATE_UINT32(cursor_channel, SGIKonaState),
+        VMSTATE_UINT32(cursor_offset, SGIKonaState),
+        VMSTATE_UINT32(cursor_position, SGIKonaState),
+        VMSTATE_UINT32(cursor_mode, SGIKonaState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona = {
     .name = TYPE_SGI_KONA,
     .version_id = 6,
     .minimum_version_id = 1,
     .pre_save = sgi_kona_pre_save,
+    .pre_load = sgi_kona_cursor_pre_load,
     .post_load = sgi_kona_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(widget_control, SGIKonaState),
@@ -7232,6 +7446,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_dma,
         &vmstate_sgi_kona_credit,
         &vmstate_sgi_kona_retrace,
+        &vmstate_sgi_kona_cursor,
         &vmstate_sgi_kona_mailbox,
         &vmstate_sgi_kona_gl_attrib,
         NULL
