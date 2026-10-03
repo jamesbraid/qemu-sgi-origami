@@ -26,6 +26,7 @@ static QTestState *start(char **log)
             "-trace enable=vmstate_load_state "
             "-trace enable=vmstate_load_state_fail "
             "-trace enable=vmstate_load_state_success "
+            "-trace enable=vmstate_load_field_error "
             "-d guest_errors,unimp -D %s",
             *log);
     }
@@ -201,6 +202,78 @@ static void test_migration_controls(gconstpointer opaque)
     }
 }
 
+static void assert_layout_loaded(QTestState *s, bool old)
+{
+    uint64_t old_size = field(s, FIXTURE_LAYOUT_OLD_SIZE);
+    uint64_t new_size = old_size + 1280 * 1024;
+
+    g_assert_cmpint((int64_t)field(s, FIXTURE_SAVE_RESULT), ==, 0);
+    g_assert_cmpint((int64_t)field(s, FIXTURE_RESULT), ==, 0);
+    g_assert_cmpuint(field(s, FIXTURE_ERROR), ==, 0);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_MATCH), ==, 1);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_MARKER), ==, 0);
+    g_assert_cmpint((int64_t)field(s, FIXTURE_LAYOUT_STREAM_ERROR), ==, 0);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_EOF_BYTES), ==, 0);
+    g_assert_cmpint((int64_t)field(s, FIXTURE_LAYOUT_EOF_ERROR), ==, -EIO);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_SIZE), ==,
+                     old ? old_size : new_size);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_PLANES), ==, old ? 6 : 7);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_SOURCE_SIZE), ==, new_size);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_SOURCE_PLANES), ==, 7);
+    g_assert_cmpuint(field(s, FIXTURE_LAYOUT_SOURCE_BYTES), ==, new_size);
+    g_test_message("%s layout: prefix matches, marker 0, EOF 0 bytes/-EIO, "
+                   "size %" PRIu64 ", planes %u, source restored",
+                   old ? "older" : "current", old ? old_size : new_size,
+                   old ? 6 : 7);
+}
+
+static void test_layout(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    bool old = kind != 0;
+    g_autofree char *log = NULL, *text = NULL, *mismatch = NULL;
+    QTestState *s = start(&log);
+    uint64_t old_size, new_size;
+
+    scene(s);
+    control(s, FIXTURE_LAYOUT_SAVE, old);
+    control(s, FIXTURE_LAYOUT_LOAD, old);
+    if ((int64_t)field(s, FIXTURE_RESULT) != 0) {
+        int64_t result = field(s, FIXTURE_RESULT);
+
+        text = read_log(s, log);
+        g_assert_cmpint(result, ==, 0);
+    }
+    assert_layout_loaded(s, old);
+    if (kind == 2) {
+        /* The exact bytes accepted above must refuse an intact new layout. */
+        old_size = field(s, FIXTURE_LAYOUT_OLD_SIZE);
+        new_size = old_size + 1280 * 1024;
+        control(s, FIXTURE_LAYOUT_LOAD, 0);
+        g_assert_cmpint((int64_t)field(s, FIXTURE_SAVE_RESULT), ==, 0);
+        g_assert_cmpint((int64_t)field(s, FIXTURE_RESULT), ==, -EINVAL);
+        g_assert_cmpuint(field(s, FIXTURE_ERROR), ==, 1);
+        g_assert_cmpuint(field(s, FIXTURE_LAYOUT_SIZE), ==, new_size);
+        g_assert_cmpuint(field(s, FIXTURE_LAYOUT_PLANES), ==, 7);
+        mismatch = g_strdup_printf("%" PRIx64 " != %" PRIx64,
+                                    new_size, old_size);
+        control(s, FIXTURE_LAYOUT_SAVE, 0);
+        control(s, FIXTURE_LAYOUT_LOAD, 0);
+        assert_layout_loaded(s, false);
+    }
+    text = read_log(s, log);
+    g_assert_nonnull(strstr(text, "vmstate_load_state sgi-board-memory"));
+    if (kind == 2) {
+        g_assert_nonnull(strstr(text, "Loading VM subsection "
+            "'sgi-kona/board-memory' in 'sgi-kona' failed:"));
+        g_assert_nonnull(strstr(text, mismatch));
+        g_assert_nonnull(strstr(text,
+            "vmstate_load_field_error field \"size\" load failed, ret = -22"));
+    } else {
+        g_assert_null(strstr(text, "vmstate_load_field_error"));
+    }
+}
+
 static void test_ready_failure(void)
 {
     g_autofree char *log = NULL, *text = NULL;
@@ -253,6 +326,11 @@ int main(int argc, char **argv)
         GUINT_TO_POINTER(FIXTURE_ABSENT_FLAGS), test_migration_controls);
     qtest_add_data_func("kona-read-defense/migration/valid",
         GUINT_TO_POINTER(FIXTURE_VALID_STATE), test_migration_controls);
+    qtest_add_data_func("kona-read-defense/layout/current", NULL, test_layout);
+    qtest_add_data_func("kona-read-defense/layout/older-control",
+        GUINT_TO_POINTER(1), test_layout);
+    qtest_add_data_func("kona-read-defense/layout/older-refused",
+        GUINT_TO_POINTER(2), test_layout);
     qtest_add_func("kona-read-defense/ready-failure", test_ready_failure);
     return g_test_run();
 }

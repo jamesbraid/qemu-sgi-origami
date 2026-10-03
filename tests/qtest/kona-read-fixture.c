@@ -38,6 +38,18 @@ struct KonaReadFixture {
     int save_result;
     int result;
     bool load_error;
+    uint8_t *layout_stream;
+    size_t layout_stream_len;
+    uint8_t *layout_prefix;
+    uint32_t layout_prefix_len;
+    uint64_t layout_old_size;
+    uint64_t layout_size;
+    uint32_t layout_planes;
+    bool layout_match;
+    int layout_marker;
+    int layout_stream_error;
+    size_t layout_eof_bytes;
+    int layout_eof_error;
 };
 
 static MemTxResult page_read(void *opaque, hwaddr offset, uint64_t *value,
@@ -211,6 +223,193 @@ static void roundtrip(KonaReadFixture *s, unsigned request)
     }
 }
 
+typedef struct LayoutIdentity {
+    uint64_t size;
+    uint32_t bytes_len;
+    uint32_t nplanes;
+} LayoutIdentity;
+
+static LayoutIdentity layout_project(SGIBoardMemory *mem, uint64_t old_size)
+{
+    LayoutIdentity saved = { mem->size, mem->bytes_len, mem->nplanes };
+
+    mem->size = old_size;
+    mem->bytes_len = old_size;
+    mem->nplanes = 6;
+    return saved;
+}
+
+static void layout_restore(SGIBoardMemory *mem, LayoutIdentity saved)
+{
+    mem->size = saved.size;
+    mem->bytes_len = saved.bytes_len;
+    mem->nplanes = saved.nplanes;
+}
+
+/* Bind the projection to the six-plane layout before stencil was appended. */
+static uint64_t layout_check(SGIKonaState *k)
+{
+    const uint64_t pixels = (uint64_t)SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT;
+    const uint64_t lengths[] = {
+        4 * pixels, 4 * pixels, pixels, pixels, k->list_memory_size,
+        4 * pixels, pixels,
+    };
+    const SGIPlaneFormat formats[] = {
+        SGI_PLANE_RGB24, SGI_PLANE_RGB24, SGI_PLANE_TAG, SGI_PLANE_TAG,
+        SGI_PLANE_RAW, SGI_PLANE_Z24, SGI_PLANE_S8,
+    };
+    const uint32_t indices[] = {
+        k->plane_front, k->plane_back, k->plane_front_tag, k->plane_back_tag,
+        k->plane_list, k->plane_depth, k->plane_stencil,
+    };
+    uint64_t base = 0, old_size = 14 * pixels + k->list_memory_size;
+
+    g_assert_cmpuint(k->mem.nplanes, ==, 7);
+    g_assert_cmpuint(k->mem.npages, ==, 0);
+    g_assert_cmpuint(k->mem.size, ==, old_size + pixels);
+    g_assert_cmpuint(k->mem.bytes_len, ==, k->mem.size);
+    for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+        const SGIPlane *p = sgi_board_memory_plane(&k->mem, indices[i]);
+        bool list = i == 4;
+        unsigned bpp = i == 0 || i == 1 || i == 5 ? 4 : 1;
+        SGIPacking packing = list ? SGI_PACK_BE_RED_LOW :
+            i < 2 ? SGI_PACK_LE_RED_HIGH : SGI_PACK_LE_RED_LOW;
+
+        g_assert_cmpuint(indices[i], ==, i);
+        g_assert_nonnull(p);
+        g_assert_cmpuint(p->base, ==, base);
+        g_assert_cmpuint(p->len, ==, lengths[i]);
+        g_assert_cmpuint(p->format, ==, formats[i]);
+        g_assert_cmpuint(p->packing, ==, packing);
+        g_assert_cmpuint(p->width, ==, list ?
+                         SGI_KONA_LIST_ROW_BYTES / 4 : SGI_KONA_FB_WIDTH);
+        g_assert_cmpuint(p->height, ==, list ?
+                         k->list_memory_size / SGI_KONA_LIST_ROW_BYTES :
+                         SGI_KONA_FB_HEIGHT);
+        g_assert_cmpuint(p->stride, ==, list ?
+                         SGI_KONA_LIST_ROW_BYTES : SGI_KONA_FB_WIDTH * bpp);
+        g_assert_cmpint(p->bottom_origin, ==, !list);
+        if (i == 6) {
+            g_assert_cmpuint(base, ==, old_size);
+        }
+        base += lengths[i];
+    }
+    g_assert_cmpuint(base, ==, k->mem.size);
+    for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+        g_assert_false(k->gl_pipe[i].draw_config_received);
+    }
+    g_assert_cmpuint(k->gl_data_remaining, ==, 0);
+    return old_size;
+}
+
+static void layout_save(KonaReadFixture *s, bool old)
+{
+    SGIKonaState *k = s->source;
+    const VMStateDescription *vmsd = DEVICE_GET_CLASS(k)->vmsd;
+    LayoutIdentity saved = { 0 };
+    QIOChannelBuffer *output;
+    QEMUFile *file;
+    Error *err = NULL;
+
+    map_commands(s, k);
+    discard_destination(s);
+    s->layout_old_size = layout_check(k);
+    k->mem.bytes[0] = 0x31;
+    k->mem.bytes[s->layout_old_size - 1] = 0x97;
+    k->mem.bytes[k->mem.size - 1] = 0xc5;
+    g_free(s->layout_stream);
+    g_free(s->layout_prefix);
+    s->layout_prefix_len = old ? s->layout_old_size : k->mem.bytes_len;
+    s->layout_prefix = g_memdup2(k->mem.bytes, s->layout_prefix_len);
+    output = qio_channel_buffer_new(4096);
+    file = qemu_file_new_output(QIO_CHANNEL(output));
+    if (old) {
+        saved = layout_project(&k->mem, s->layout_old_size);
+    }
+    s->save_result = vmstate_save_state(file, vmsd, k, NULL, &err);
+    if (old) {
+        layout_restore(&k->mem, saved);
+    }
+    qemu_put_byte(file, 0);
+    qemu_fflush(file);
+    if (!s->save_result) {
+        s->save_result = qemu_file_get_error(file);
+    }
+    /* Closing a QIOChannelBuffer frees its data, so retain bytes first. */
+    s->layout_stream_len = output->usage;
+    s->layout_stream = g_memdup2(output->data, output->usage);
+    qemu_fclose(file);
+    object_unref(OBJECT(output));
+    s->load_error = err != NULL;
+    if (err) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s\n", TYPE_KONA_READ_FIXTURE,
+                      error_get_pretty(err));
+        error_free(err);
+    }
+}
+
+static void layout_load(KonaReadFixture *s, bool old)
+{
+    const VMStateDescription *vmsd = DEVICE_GET_CLASS(s->source)->vmsd;
+    LayoutIdentity saved = { 0 };
+    QIOChannelBuffer *input;
+    QEMUFile *file;
+    Error *err = NULL;
+    uint8_t extra;
+
+    s->layout_match = false;
+    s->layout_marker = -1;
+    s->layout_stream_error = s->layout_eof_error = 0;
+    s->layout_eof_bytes = 1;
+    map_commands(s, s->source);
+    discard_destination(s);
+    s->destination = new_kona(s, 1, &err);
+    if (!s->destination) {
+        s->result = -EINVAL;
+        goto done;
+    }
+    g_assert_nonnull(s->layout_stream);
+    g_assert_cmpint(s->save_result, ==, 0);
+    layout_check(s->destination);
+    input = qio_channel_buffer_new(s->layout_stream_len);
+    memcpy(input->data, s->layout_stream, s->layout_stream_len);
+    input->usage = s->layout_stream_len;
+    file = qemu_file_new_input(QIO_CHANNEL(input));
+    if (old) {
+        saved = layout_project(&s->destination->mem, s->layout_old_size);
+    }
+    s->result = vmstate_load_state(file, vmsd, s->destination,
+                                   vmsd->version_id, &err);
+    s->layout_size = s->destination->mem.size;
+    s->layout_planes = s->destination->mem.nplanes;
+    if (old) {
+        layout_restore(&s->destination->mem, saved);
+    }
+    if (!s->result) {
+        s->layout_match = !memcmp(s->layout_prefix, s->destination->mem.bytes,
+                                  s->layout_prefix_len);
+        s->layout_stream_error = qemu_file_get_error(file);
+        s->layout_marker = qemu_get_byte(file);
+        if (!s->layout_stream_error) {
+            s->layout_stream_error = qemu_file_get_error(file);
+        }
+        /* The EOF error belongs to this deliberate probe, not the load. */
+        s->layout_eof_bytes = qemu_get_buffer(file, &extra, 1);
+        s->layout_eof_error = qemu_file_get_error(file);
+    }
+    qemu_fclose(file);
+    object_unref(OBJECT(input));
+ done:
+    s->load_error = err != NULL;
+    if (err) {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: %s\n", TYPE_KONA_READ_FIXTURE,
+                      error_get_pretty(err));
+        error_free(err);
+    }
+    /* Projected and partially loaded children never become command targets. */
+    discard_destination(s);
+}
+
 static uint64_t control_read(void *opaque, hwaddr offset, unsigned size)
 {
     KonaReadFixture *s = opaque;
@@ -220,6 +419,17 @@ static uint64_t control_read(void *opaque, hwaddr offset, unsigned size)
     case FIXTURE_RESULT: return (int64_t)s->result;
     case FIXTURE_ERROR: return s->load_error;
     case FIXTURE_SAVE_RESULT: return (int64_t)s->save_result;
+    case FIXTURE_LAYOUT_MATCH: return s->layout_match;
+    case FIXTURE_LAYOUT_MARKER: return (int64_t)s->layout_marker;
+    case FIXTURE_LAYOUT_EOF_BYTES: return s->layout_eof_bytes;
+    case FIXTURE_LAYOUT_EOF_ERROR: return (int64_t)s->layout_eof_error;
+    case FIXTURE_LAYOUT_STREAM_ERROR: return (int64_t)s->layout_stream_error;
+    case FIXTURE_LAYOUT_SIZE: return s->layout_size;
+    case FIXTURE_LAYOUT_PLANES: return s->layout_planes;
+    case FIXTURE_LAYOUT_OLD_SIZE: return s->layout_old_size;
+    case FIXTURE_LAYOUT_SOURCE_SIZE: return s->source->mem.size;
+    case FIXTURE_LAYOUT_SOURCE_PLANES: return s->source->mem.nplanes;
+    case FIXTURE_LAYOUT_SOURCE_BYTES: return s->source->mem.bytes_len;
     case FIXTURE_PAYLOAD_BYTES: return s->payload_bytes;
     case FIXTURE_PAYLOAD_WRITES: return s->payload_writes;
     case FIXTURE_READY_WRITES: return s->ready_writes;
@@ -266,6 +476,12 @@ static void control_write(void *opaque, hwaddr offset, uint64_t value,
     case FIXTURE_MIGRATE:
         roundtrip(s, value);
         break;
+    case FIXTURE_LAYOUT_SAVE:
+        layout_save(s, value != 0);
+        break;
+    case FIXTURE_LAYOUT_LOAD:
+        layout_load(s, value != 0);
+        break;
     }
 }
 
@@ -294,7 +510,7 @@ static void fixture_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->commands, OBJECT(s), "kona-test.commands",
                        SGI_KONA_APERTURE_SIZE);
     memory_region_init_io(&s->control, OBJECT(s), &control_ops, s,
-                          "kona-test.control", 128);
+                          "kona-test.control", 256);
     s->control.disable_reentrancy_guard = true;
     s->source = new_kona(s, 0, &err);
     if (!s->source) {
@@ -320,6 +536,8 @@ static void fixture_unrealize(DeviceState *dev)
     object_unparent(OBJECT(s->source));
     object_unref(OBJECT(s->source));
     s->source = NULL;
+    g_clear_pointer(&s->layout_stream, g_free);
+    g_clear_pointer(&s->layout_prefix, g_free);
 }
 
 static void fixture_class_init(ObjectClass *oc, const void *data)
