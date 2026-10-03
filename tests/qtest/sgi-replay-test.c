@@ -1281,6 +1281,56 @@ static void test_invalid_no_head(void)
  * InfiniteReality: a captured boot's register accesses, its screendump
  * compared byte for byte at the end. See the fixture's own comments.
  */
+static void test_kona_trace_ordering(void)
+{
+    const ReplayHead *head = find_head("sgi-kona");
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    unsigned count = 0;
+    uint64_t previous = 0;
+    int fd = g_file_open_tmp("sgi-kona-order-XXXXXX.trace", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf("%s %s -D %s", head->machine, head->trace, path);
+    qts = qtest_init(args);
+    /* One original access per event, including internally split doublewords. */
+    qtest_writeq(qts, head->mmio_base + 0x800328, 0x1122334455667788);
+    qtest_readq(qts, head->mmio_base + 0x800328);
+    qtest_writel(qts, head->mmio_base + 0x800328, 0x99aabbcc);
+    qtest_readl(qts, head->mmio_base + 0x800328);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *event = strstr(lines[i], "sgi_kona_pio_");
+        const char *seq;
+        uint64_t sequence;
+
+        if (!event) {
+            continue;
+        }
+        seq = strstr(event, "seq ");
+        g_assert_nonnull(seq);
+        g_assert_cmpint(sscanf(seq, "seq %" SCNu64, &sequence), ==, 1);
+        if (count) {
+            g_assert_cmpuint(sequence, ==, previous + 1);
+        }
+        g_assert_nonnull(strstr(event, count < 2 ? "size 8" : "size 4"));
+        g_assert_nonnull(strstr(event, count % 2 ? "pio_read" : "pio_write"));
+        previous = sequence;
+        count++;
+    }
+    g_assert_cmpuint(count, ==, 4);
+    unlink(path);
+}
+
 static void test_kona_maintenance_menu(void)
 {
     g_autofree char *path = replay_family_fixture_path(
@@ -1342,6 +1392,7 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
+    qtest_add_func("sgi-replay/kona/trace-ordering", test_kona_trace_ordering);
     qtest_add_func("sgi-replay/kona/maintenance-menu",
                    test_kona_maintenance_menu);
     qtest_add_func("sgi-replay/screendump-record", test_screendump_record);
