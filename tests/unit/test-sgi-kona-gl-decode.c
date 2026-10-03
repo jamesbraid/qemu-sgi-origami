@@ -244,6 +244,261 @@ static void test_result_names(void)
     g_assert_cmpstr(sgi_kona_gl_decode_result_name(99), ==, "invalid");
 }
 
+/* Independently specified by the cleared 159-entry return-wire contract. */
+static const SGIKonaGLQueryInfo expected_queries[] = {
+    { 0x0b10, 0x04, 1 },
+    { 0x0b11, 0x03, 1 },
+    { 0x0b14, 0x04, 6 },
+    { 0x0b20, 0x04, 1 },
+    { 0x0b21, 0x03, 1 },
+    { 0x0b24, 0x04, 1 },
+    { 0x0b25, 0x04, 1 },
+    { 0x0b26, 0x04, 1 },
+    { 0x0b40, 0x04, 2 },
+    { 0x0b41, 0x04, 1 },
+    { 0x0b42, 0x04, 1 },
+    { 0x0b44, 0x04, 1 },
+    { 0x0b45, 0x04, 1 },
+    { 0x0b46, 0x04, 1 },
+    { 0x0b50, 0x04, 1 },
+    { 0x0b51, 0x04, 1 },
+    { 0x0b52, 0x04, 1 },
+    { 0x0b53, 0x13, 4 },
+    { 0x0b54, 0x04, 1 },
+    { 0x0b55, 0x04, 1 },
+    { 0x0b56, 0x04, 1 },
+    { 0x0b57, 0x04, 1 },
+    { 0x0b60, 0x04, 1 },
+    { 0x0b61, 0x03, 1 },
+    { 0x0b62, 0x03, 1 },
+    { 0x0b63, 0x03, 1 },
+    { 0x0b64, 0x03, 1 },
+    { 0x0b65, 0x04, 1 },
+    { 0x0b66, 0x13, 4 },
+    { 0x0b70, 0x12, 2 },
+    { 0x0b71, 0x04, 1 },
+    { 0x0b72, 0x04, 1 },
+    { 0x0b73, 0x12, 1 },
+    { 0x0b74, 0x04, 1 },
+    { 0x0b80, 0x13, 4 },
+    { 0x0b90, 0x04, 1 },
+    { 0x0b91, 0x04, 1 },
+    { 0x0b92, 0x04, 1 },
+    { 0x0b93, 0x04, 1 },
+    { 0x0b94, 0x04, 1 },
+    { 0x0b95, 0x04, 1 },
+    { 0x0b96, 0x04, 1 },
+    { 0x0b97, 0x04, 1 },
+    { 0x0b98, 0x04, 1 },
+    { 0x0ba0, 0x04, 1 },
+    { 0x0ba1, 0x04, 1 },
+    { 0x0ba2, 0x04, 4 },
+    { 0x0ba3, 0x04, 1 },
+    { 0x0ba4, 0x04, 1 },
+    { 0x0ba5, 0x04, 1 },
+    { 0x0ba6, 0x03, 16 },
+    { 0x0ba7, 0x03, 16 },
+    { 0x0ba8, 0x03, 16 },
+    { 0x0bb0, 0x04, 1 },
+    { 0x0bc0, 0x04, 1 },
+    { 0x0bc1, 0x04, 1 },
+    { 0x0bc2, 0x13, 1 },
+    { 0x0bd0, 0x04, 1 },
+    { 0x0be0, 0x04, 1 },
+    { 0x0be1, 0x04, 1 },
+    { 0x0be2, 0x04, 1 },
+    { 0x0bf0, 0x04, 1 },
+    { 0x0bf1, 0x04, 1 },
+    { 0x0bf2, 0x04, 1 },
+    { 0x0c01, 0x04, 1 },
+    { 0x0c02, 0x04, 1 },
+    { 0x0c10, 0x04, 4 },
+    { 0x0c11, 0x04, 1 },
+    { 0x0c20, 0x03, 1 },
+    { 0x0c21, 0x04, 1 },
+    { 0x0c22, 0x13, 4 },
+    { 0x0c23, 0x04, 4 },
+    { 0x0c50, 0x04, 1 },
+    { 0x0c51, 0x04, 1 },
+    { 0x0c52, 0x04, 1 },
+    { 0x0c53, 0x04, 1 },
+    { 0x0c54, 0x04, 1 },
+    { 0x0c60, 0x04, 1 },
+    { 0x0c61, 0x04, 1 },
+    { 0x0c62, 0x04, 1 },
+    { 0x0c63, 0x04, 1 },
+    { 0x0cb0, 0x04, 1 },
+    { 0x0cb1, 0x04, 1 },
+    { 0x0cb2, 0x04, 1 },
+    { 0x0cb3, 0x04, 1 },
+    { 0x0cb4, 0x04, 1 },
+    { 0x0cb5, 0x04, 1 },
+    { 0x0cb6, 0x04, 1 },
+    { 0x0cb7, 0x04, 1 },
+    { 0x0cb8, 0x04, 1 },
+    { 0x0cb9, 0x04, 1 },
+    { 0x0d70, 0x04, 1 },
+    { 0x2a00, 0x04, 1 },
+    { 0x2a01, 0x04, 1 },
+    { 0x2a02, 0x04, 1 },
+    { 0x3000, 0x04, 1 },
+    { 0x3001, 0x04, 1 },
+    { 0x3002, 0x04, 1 },
+    { 0x3003, 0x04, 1 },
+    { 0x3004, 0x04, 1 },
+    { 0x3005, 0x04, 1 },
+    { 0x4000, 0x04, 1 },
+    { 0x4001, 0x04, 1 },
+    { 0x4002, 0x04, 1 },
+    { 0x4003, 0x04, 1 },
+    { 0x4004, 0x04, 1 },
+    { 0x4005, 0x04, 1 },
+    { 0x4006, 0x04, 1 },
+    { 0x4007, 0x04, 1 },
+    { 0x8005, 0x13, 4 },
+    { 0x8009, 0x04, 1 },
+    { 0x8010, 0x04, 1 },
+    { 0x8011, 0x04, 1 },
+    { 0x8012, 0x04, 1 },
+    { 0x8024, 0x04, 1 },
+    { 0x802e, 0x04, 1 },
+    { 0x8037, 0x04, 1 },
+    { 0x8038, 0x03, 1 },
+    { 0x8039, 0x03, 1 },
+    { 0x8094, 0x04, 1 },
+    { 0x809d, 0x04, 1 },
+    { 0x809e, 0x04, 1 },
+    { 0x809f, 0x04, 1 },
+    { 0x80a0, 0x04, 1 },
+    { 0x80aa, 0x03, 1 },
+    { 0x80ab, 0x04, 1 },
+    { 0x80ac, 0x04, 1 },
+    { 0x80b1, 0x03, 16 },
+    { 0x80b2, 0x04, 1 },
+    { 0x80b4, 0x03, 1 },
+    { 0x80b5, 0x03, 1 },
+    { 0x80b6, 0x03, 1 },
+    { 0x80b7, 0x03, 1 },
+    { 0x80b8, 0x03, 1 },
+    { 0x80b9, 0x03, 1 },
+    { 0x80ba, 0x03, 1 },
+    { 0x80bb, 0x03, 1 },
+    { 0x80bc, 0x04, 1 },
+    { 0x80d0, 0x04, 1 },
+    { 0x80d1, 0x04, 1 },
+    { 0x80d2, 0x04, 1 },
+    { 0x8126, 0x03, 1 },
+    { 0x8127, 0x03, 1 },
+    { 0x8128, 0x03, 1 },
+    { 0x8129, 0x03, 3 },
+    { 0x812b, 0x04, 1 },
+    { 0x8148, 0x00, 1 },
+    { 0x8149, 0x04, 1 },
+    { 0x814a, 0x03, 3 },
+    { 0x814b, 0x03, 3 },
+    { 0x817d, 0x04, 1 },
+    { 0x817e, 0x03, 4 },
+    { 0x8181, 0x04, 1 },
+    { 0x8183, 0x04, 1 },
+    { 0x8196, 0x04, 1 },
+    { 0x8198, 0x04, 1 },
+    { 0x8199, 0x03, 4 },
+    { 0x81c4, 0x04, 1 },
+    { 0x81c7, 0x04, 1 },
+};
+
+static void test_query_inventory(void)
+{
+    size_t count;
+    unsigned types[256] = { 0 };
+    const SGIKonaGLQueryInfo *table = sgi_kona_gl_query_table(&count);
+
+    g_assert_cmpuint(count, ==, 159);
+    for (unsigned i = 0; i < ARRAY_SIZE(expected_queries); i++) {
+        const SGIKonaGLQueryInfo *want = &expected_queries[i];
+        const SGIKonaGLQueryInfo *got = sgi_kona_gl_query_lookup(want->pname);
+
+        g_assert_nonnull(got);
+        g_assert_cmphex(got->type, ==, want->type);
+        g_assert_cmpuint(got->count, ==, want->count);
+        types[got->type]++;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        for (unsigned j = i + 1; j < count; j++) {
+            g_assert_cmphex(table[i].pname, !=, table[j].pname);
+        }
+    }
+    g_assert_cmpuint(types[0x04], ==, 120);
+    g_assert_cmpuint(types[0x03], ==, 30);
+    g_assert_cmpuint(types[0x13], ==, 6);
+    g_assert_cmpuint(types[0x12], ==, 2);
+    g_assert_cmpuint(types[0x00], ==, 1);
+    g_assert_null(sgi_kona_gl_query_lookup(0xd33));
+}
+
+static void test_query_native_bytes(void)
+{
+    static const uint64_t doubles[] = {
+        UINT64_C(0x3fd0000000000001), UINT64_C(0x3fe0000000000001),
+    };
+    static const uint8_t expected[] = {
+        0x3f, 0xd0, 0, 0, 0, 0, 0, 1,
+        0x3f, 0xe0, 0, 0, 0, 0, 0, 1,
+    };
+    uint8_t out[18];
+    size_t length;
+    const SGIKonaGLQueryInfo *info = sgi_kona_gl_query_lookup(0xb70);
+
+    memset(out, 0xa5, sizeof(out));
+    g_assert_true(sgi_kona_gl_query_serialize(info, doubles, 2,
+                                             out + 1, 16, &length));
+    g_assert_cmpuint(length, ==, 16);
+    g_assert_cmpmem(out + 1, 16, expected, sizeof(expected));
+    g_assert_cmphex(out[0], ==, 0xa5);
+    g_assert_cmphex(out[17], ==, 0xa5);
+    memset(out, 0xa5, sizeof(out));
+    g_assert_false(sgi_kona_gl_query_serialize(info, doubles, 2,
+                                              out, 15, &length));
+    for (unsigned i = 0; i < sizeof(out); i++) {
+        g_assert_cmphex(out[i], ==, 0xa5);
+    }
+    g_assert_false(sgi_kona_gl_query_serialize(info, doubles, 1,
+                                              out, sizeof(out), &length));
+    info = sgi_kona_gl_query_lookup(0x8148);
+    g_assert_true(sgi_kona_gl_query_serialize(info, (uint64_t[]){ 1 }, 1,
+                                             out + 1, 1, &length));
+    g_assert_cmpuint(length, ==, 1);
+    g_assert_cmphex(out[0], ==, 0xa5);
+    g_assert_cmphex(out[1], ==, 1);
+    g_assert_cmphex(out[2], ==, 0xa5);
+}
+
+static void test_query_word_bytes(void)
+{
+    static const uint64_t words[] = {
+        0x3f000001, 0xbf800002, 0x00000003, 0x7fffffff,
+    };
+    static const uint8_t expected[] = {
+        0x3f, 0, 0, 1, 0xbf, 0x80, 0, 2,
+        0, 0, 0, 3, 0x7f, 0xff, 0xff, 0xff,
+    };
+    static const uint32_t names[] = { 0xb53, 0xba2 };
+    uint8_t out[18];
+    size_t length;
+
+    for (unsigned k = 0; k < ARRAY_SIZE(names); k++) {
+        const SGIKonaGLQueryInfo *info = sgi_kona_gl_query_lookup(names[k]);
+
+        memset(out, 0xa5, sizeof(out));
+        g_assert_true(sgi_kona_gl_query_serialize(info, words, 4,
+                                                 out + 1, 16, &length));
+        g_assert_cmpuint(length, ==, 16);
+        g_assert_cmpmem(out + 1, 16, expected, sizeof(expected));
+        g_assert_cmphex(out[0], ==, 0xa5);
+        g_assert_cmphex(out[17], ==, 0xa5);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -259,5 +514,11 @@ int main(int argc, char **argv)
                     test_unexpected_literal_argument);
     g_test_add_func("/sgi-kona-gl-decode/stream", test_multi_command_stream);
     g_test_add_func("/sgi-kona-gl-decode/result-names", test_result_names);
+    g_test_add_func("/sgi-kona-gl-decode/query-inventory",
+                    test_query_inventory);
+    g_test_add_func("/sgi-kona-gl-decode/query-native-bytes",
+                    test_query_native_bytes);
+    g_test_add_func("/sgi-kona-gl-decode/query-word-bytes",
+                    test_query_word_bytes);
     return g_test_run();
 }
