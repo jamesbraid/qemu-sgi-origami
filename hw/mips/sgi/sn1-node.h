@@ -87,6 +87,7 @@ typedef struct SN1NodeState {
      */
     char *flash_node;
     bool last_node;
+    bool ni_route;
     bool promdata_filter;
     bool promdata_fast;
 

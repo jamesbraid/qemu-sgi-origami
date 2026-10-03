@@ -2184,7 +2184,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                        "bedrock-reset", 0));
 
     if (!node->ip53_assembly_validated &&
-        !sn1_node_create_ip45_xbridge(node, errp)) {
+        !sn1_node_create_ip45_xbridge(node, errp)) { (mips/sgi: route compute PCI DMA through Numalink)
         return false;
     }
 
