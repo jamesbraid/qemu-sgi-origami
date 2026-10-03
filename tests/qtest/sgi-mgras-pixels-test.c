@@ -4172,6 +4172,80 @@ static void test_gl_readpixels_dma_client_buffer_selection(void)
     }
 }
 
+static void test_dma_image_transfer_reads_screen_to_host_did_selection(void)
+{
+    static const uint32_t red[2] = { 0xff0000ff, 0xff0000ff };
+    static const uint32_t green[2] = { 0x00ff00ff, 0x00ff00ff };
+    static const uint8_t poison[16] = { [0 ... 15] = 0xa5 };
+    static const uint8_t want_red[4] = { 0xff, 0, 0, 0xff };
+    static const uint8_t want_green[4] = { 0, 0xff, 0, 0xff };
+    static const uint8_t selected[8] = {
+        0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff,
+    };
+    static const uint8_t front[8] = {
+        0x00, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00, 0xff,
+    };
+    uint8_t got[sizeof(poison)];
+
+    gl_pixels_context(qts, 0);
+    gl_draw_buffer(qts, 1);
+    gl_draw_rgba_row(qts, 1, 1, red, ARRAY_SIZE(red));
+    gl_draw_buffer(qts, 2);
+    gl_draw_rgba_row(qts, 1, 1, green, ARRAY_SIZE(green));
+    gl_read_dma_map(qts);
+
+    /* Verify both banks through the existing client-buffer selectors. */
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_read_selected_pixel(qts, 0, 1, 0x404, 4, got);
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, 4, want_red, sizeof(want_red));
+    g_assert_cmpmem(got + 12, 4, poison + 12, 4);
+
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_read_selected_pixel(qts, 1, 0, 0x405, 4, got);
+    g_assert_cmpmem(got, 8, poison, 8);
+    g_assert_cmpmem(got + 8, 4, want_green, sizeof(want_green));
+    g_assert_cmpmem(got + 12, 4, poison + 12, 4);
+
+    /* Pixel 257 has DID 1; the adjacent pixel keeps DID 14. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_tag_wid(qts, 256, 256, 383, 383, 14);
+    mgras_tag_wid(qts, 257, 382, 257, 382, 1);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 1u << 1);
+
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (257u << 16) | 641u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (258u << 16) | 641u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(selected), selected, sizeof(selected));
+    g_assert_cmpmem(got + sizeof(selected), sizeof(got) - sizeof(selected),
+                    poison + sizeof(selected),
+                    sizeof(poison) - sizeof(selected));
+
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 0);
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (258u << 16) | 641u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(front), front, sizeof(front));
+    g_assert_cmpmem(got + sizeof(front), sizeof(got) - sizeof(front),
+                    poison + sizeof(front),
+                    sizeof(poison) - sizeof(front));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_gl_readpixels_dma_rejects_short_one_pixel_descriptor(void)
 {
     static const uint32_t red = 0xff0000ff;
@@ -5104,6 +5178,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-reads-screen-to-host-did-selection",
+                   test_dma_image_transfer_reads_screen_to_host_did_selection);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-rgb555",
                    test_dma_image_transfer_reads_rgb555);
