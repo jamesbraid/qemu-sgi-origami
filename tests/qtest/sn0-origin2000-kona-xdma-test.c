@@ -57,7 +57,7 @@
 #define PLANE_FRONT     0
 #define PLANE_FRONT_TAG 2
 #define TAG_DIRECT      0
-#define TAG_X_INDEX     2
+#define TAG_X_INDEX     3
 
 /* A 16 KiB page of node 0's memory for a transfer's buffer. */
 #define BUFFER_PAGE     UINT64_C(0x400000)
@@ -99,7 +99,13 @@ static uint32_t plane_at(QTestState *s, uint32_t plane, uint32_t x,
     kona_qom_set_uint(s, "x-test-plane", plane);
     kona_qom_set_uint(s, "x-test-pixel-x", x);
     kona_qom_set_uint(s, "x-test-pixel-y", FB_HEIGHT - 1 - y);
-    return kona_qom_get_uint(s, "x-test-plane-word");
+    uint32_t word = kona_qom_get_uint(s, "x-test-plane-word");
+
+    if (plane == PLANE_FRONT &&
+        plane_at(s, PLANE_FRONT_TAG, x, y) == TAG_X_INDEX) {
+        return word >> 8;
+    }
+    return word;
 }
 
 /* What the display shows at X coordinates (x, y). */
@@ -365,8 +371,8 @@ static void test_pad(void)
 }
 
 /*
- * A native TrueColor image retains its known DMA payload framing. Its
- * unreviewed conversion must leave canonical words and tags unchanged.
+ * A native RGB8 image uses the established low 24 bits of each word.
+ * DMA completion stages it; finish publishes direct pixels.
  */
 static void test_truecolour_image(void)
 {
@@ -389,9 +395,9 @@ static void test_truecolour_image(void)
     dma_packet(s, 0, 32, 32, 0, 0x100);
     assert_completed(s);
     kona_command(s, 0x13a, (uint32_t[]){ 0 }, 1);
-    g_assert_cmphex(shown_at(s, 10, 10), ==, 0);
+    g_assert_cmphex(shown_at(s, 10, 10), ==, words[0]);
     for (unsigned k = 0; k < 8; k++) {
-        g_assert_cmphex(shown_at(s, 10 + k % 4, 10 + k / 4), ==, 0);
+        g_assert_cmphex(shown_at(s, 10 + k % 4, 10 + k / 4), ==, words[k]);
         g_assert_cmphex(plane_at(s, PLANE_FRONT_TAG, 10 + k % 4,
                                  10 + k / 4), ==, TAG_DIRECT);
     }
@@ -548,8 +554,8 @@ static void test_packet_without_destination(void)
     qtest_quit(s);
 
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "no list record and no X pixel write"
-                                   " waiting; no pixels or completion"));
+    g_assert_nonnull(strstr(found, "no list record and no X pixel or texture"
+                                   " write waiting; no pixels or completion"));
     g_assert_null(strstr(found, "sgi_kona_x_image_dma "));
 }
 

@@ -67,7 +67,7 @@
 /* Plane ids, in the order the model declares them. */
 #define PLANE_FRONT     0
 #define PLANE_FRONT_TAG 2
-#define TAG_X_INDEX     2
+#define TAG_X_INDEX     3
 
 /* The X colour map's window for X pixels, and two grammar entries. */
 #define X_MAP_WINDOW    0x2d00
@@ -124,9 +124,14 @@ static uint32_t kona_plane_word(QTestState *s, uint32_t plane, uint32_t x,
 }
 
 /* The front colour word at X coordinates (x, y), y down from the top. */
+/* Existing CI8 fixtures compare logical bytes; raw tests read the plane. */
 static uint32_t front_at(QTestState *s, uint32_t x, uint32_t y)
 {
-    return kona_plane_word(s, PLANE_FRONT, x, KONA_FB_HEIGHT - 1 - y);
+    uint32_t row = KONA_FB_HEIGHT - 1 - y;
+    uint32_t word = kona_plane_word(s, PLANE_FRONT, x, row);
+    uint32_t tag = kona_plane_word(s, PLANE_FRONT_TAG, x, row);
+
+    return tag == TAG_X_INDEX ? word >> 8 : word;
 }
 
 static uint32_t front_tag_at(QTestState *s, uint32_t x, uint32_t y)
@@ -566,12 +571,14 @@ static void test_clipping(void)
     assert_in_step(qts);
 }
 
-/* Canonical CI8 packing rejects a nonzero low byte before drawing. */
+/* Native packing retains every index bit, including below a CI8 value. */
 static void test_gc_index_packing(void)
 {
     static const uint32_t fg_h[] = { 0x10000, 0x15000, 0x18000, 0x1d000,
                                      0x2f000, 0x2f078 };
-    static const uint32_t index[] = { 0x10, 0x15, 0x18, 0x1d, 0x2f, 0 };
+    static const uint32_t index[] = { 0x10, 0x15, 0x18, 0x1d, 0x2f, 0x2f };
+    static const uint32_t raw[] = { 0x1000, 0x1500, 0x1800, 0x1d00,
+                                   0x2f00, 0x2f0f };
 
     qtest_system_reset(qts);
     for (size_t i = 0; i < ARRAY_SIZE(fg_h); i++) {
@@ -581,12 +588,9 @@ static void test_gc_index_packing(void)
         kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
         kona_command(qts, TOKEN_BOX,
                      (uint32_t[]){ XY(10 * i, 0), XY(10 * i + 2, 2) }, 2);
-        if (i + 1 == ARRAY_SIZE(fg_h)) {
-            g_assert_cmphex(front_at(qts, 10 * i, 0), ==, 0);
-            g_assert_cmphex(front_tag_at(qts, 10 * i, 0), ==, 0);
-        } else {
-            assert_box(qts, 10 * i, 0, 10 * i + 2, 2, index[i]);
-        }
+        assert_box(qts, 10 * i, 0, 10 * i + 2, 2, index[i]);
+        g_assert_cmphex(kona_plane_word(qts, PLANE_FRONT, 10 * i,
+                                        KONA_FB_HEIGHT - 1), ==, raw[i]);
     }
     /* The all-zero synthetic GC is unsupported, with complete framing. */
     kona_command(qts, TOKEN_GC, (uint32_t[13]) { 0 }, 13);
@@ -1725,7 +1729,13 @@ static void test_semantic_ci_logic(gconstpointer opaque)
 
             uint32_t value = x == 10 && y == 20 ? result : dest;
 
-            for (unsigned byte = 0; byte < (rgb ? 3 : 1); byte++) {
+            if (!rgb) {
+                value <<= 8;
+                if (x == 10 && y == 20) {
+                    value |= semantic_ci_result(gx, 0, 0, 0xff);
+                }
+            }
+            for (unsigned byte = 0; byte < 4; byte++) {
                 expected_words[pixel * 4 + byte] = value >> (8 * byte);
             }
             expected_tags[pixel] = rgb ? 0 : TAG_X_INDEX;
@@ -1831,7 +1841,7 @@ static void test_semantic_shape_refusal(gconstpointer opaque)
     kona_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
     kona_command(qts, TOKEN_BOX, (uint32_t[]){ XY(30, 40), XY(31, 41) }, 2);
     g_assert_cmphex(kona_plane_word(qts, 0, 30, KONA_FB_HEIGHT - 1 - 40),
-                    ==, 0x96);
+                    ==, 0x9600);
     assert_in_step(qts);
 }
 
@@ -2047,7 +2057,7 @@ static void test_semantic_desktop_diagnostics(void)
     kona_command(s, TOKEN_BOX,
                  (uint32_t[]){ XY(0, 0), XY(1280, 1024) }, 2);
     kona_command(s, 0x132,
-                 (uint32_t[]){ 1, (0x2e00 << 7) | (11 << 3) }, 2);
+                 (uint32_t[]){ 1, (0x2e00 << 7) | (10 << 3) }, 2);
     for (unsigned pass = 0; pass < 2; pass++) {
         g_autofree uint8_t *pixels = kona_screendump(s);
 

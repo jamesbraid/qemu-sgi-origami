@@ -63,7 +63,7 @@
 
 #define PLANE_FRONT     0
 #define PLANE_FRONT_TAG 2
-#define TAG_X_INDEX     2
+#define TAG_X_INDEX     3
 
 #define X_MAP_WINDOW    0x2d00
 
@@ -135,9 +135,14 @@ static uint32_t kona_plane_word(QTestState *s, uint32_t plane, uint32_t x,
 }
 
 /* The front colour word at X coordinates (x, y), y down from the top. */
+/* Existing CI8 fixtures compare logical bytes; raw tests read the plane. */
 static uint32_t front_at(QTestState *s, uint32_t x, uint32_t y)
 {
-    return kona_plane_word(s, PLANE_FRONT, x, KONA_FB_HEIGHT - 1 - y);
+    uint32_t row = KONA_FB_HEIGHT - 1 - y;
+    uint32_t word = kona_plane_word(s, PLANE_FRONT, x, row);
+    uint32_t tag = kona_plane_word(s, PLANE_FRONT_TAG, x, row);
+
+    return tag == TAG_X_INDEX ? word >> 8 : word;
 }
 
 static uint32_t front_tag_at(QTestState *s, uint32_t x, uint32_t y)
@@ -430,9 +435,9 @@ static void test_packing4_run_label_is_black(void)
  * 0xfff0, 0x230, 0, 0, then 0x136 0 with 4, 1, 0, 32, 1, 0 and 0x139 at
  * (10, 10) with 0x80000001 paints (10, 10) and (41, 10) with entry 0x2d23
  * and leaves (11, 10) unchanged. At depth 8 the index is bits 11:4 of
- * word 1. Word 1 0x203 has nonzero low bits and is outside the canonical
- * eight-bit subset, so it must leave the destination unchanged. The following
- * canonical word 0x200 paints index 0x20, not word 1's low byte zero.
+ * word 1. Word 1 0x203 retains raw index 0x2030, including the bits
+ * below an eight-bit value. The following word 0x200 replaces it with
+ * raw 0x2000; both have the same eight-bit index at scanout.
  */
 static void test_packing4_grammar_row(void)
 {
@@ -450,8 +455,11 @@ static void test_packing4_grammar_row(void)
 
     load_bitmap_gc(qts, 0xfff0, 0x203, 0, 0);
     pixel_write(qts, 10, 11, (uint32_t[]){ 0x80000000 }, 1);
+    g_assert_cmphex(kona_plane_word(qts, PLANE_FRONT, 10,
+                                    KONA_FB_HEIGHT - 1 - 11), ==, 0x2030);
     for (unsigned x = 10; x < 42; x++) {
-        g_assert_cmphex(front_at(qts, x, 11), ==, INDEX_GREY);
+        g_assert_cmphex(front_at(qts, x, 11), ==,
+                        x == 10 ? 0x20 : INDEX_GREY);
         g_assert_cmphex(front_tag_at(qts, x, 11), ==, TAG_X_INDEX);
     }
     load_bitmap_gc(qts, 0xfff0, 0x200, 0, 0);

@@ -180,7 +180,7 @@ static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
 }
 
 static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
-                                            int x, int y, bool index12)
+                                            int x, int y, bool native_index)
 {
     unsigned id = sgi_plane_load(&s->desktop_mem,
                      sgi_board_memory_plane(&s->desktop_mem, 0), x, y) >> 2;
@@ -194,11 +194,14 @@ static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
         return 0;
     }
     if (!s->desktop_map_valid[id]) {
-        return index12 ? 0 : sgi_kona_x_color(s, word);
+        return sgi_kona_x_color(s, native_index ? word >> 8 : word);
     }
-    return index12 ? sgi_kona_desktop_color(s, id, (word >> 4) & 0xfff,
-                                           11, 4096) :
-                     sgi_kona_desktop_color(s, id, word & 0xff, 7, 256);
+    if (native_index && ((s->desktop_map[id] >> 3) & 15) == 11) {
+        return sgi_kona_desktop_color(s, id, (word >> 4) & 0xfff, 11, 4096);
+    }
+    return sgi_kona_desktop_color(s, id,
+                                   native_index ? word >> 8 : word & 0xff,
+                                   7, 256);
 }
 
 /* A colour bank's plane and the plane of its tags; bank 0 or 1. */
@@ -310,7 +313,7 @@ static uint32_t sgi_kona_bank_read(SGIKonaState *s, unsigned bank, int x,
         return s->colormap[word & 0xff];
     case SGI_KONA_TAG_X_INDEX:
         return sgi_kona_desktop_index_color(s, word, x, y, false);
-    case SGI_KONA_TAG_X_INDEX12:
+    case SGI_KONA_TAG_X_INDEX16:
         return sgi_kona_desktop_index_color(s, word, x, y, true);
     default:
         return word;
@@ -4725,21 +4728,10 @@ static uint32_t sgi_kona_x_packed_index(uint32_t w1)
 {
     uint32_t v = ((w1 & 0xfff) << 4) | ((w1 >> 20) & 0xf);
 
-    return v >> (16 - SGI_KONA_X_INDEX_DEPTH);
+    return v >> (16 - SGI_KONA_X_TRACE_INDEX_DEPTH);
 }
 
-/*
- * The colour index a colour-index window's GC fills with. kon_loadGeomGC
- * packs v = index << (16 - depth) into fg_h as ((v & 0xf) << 3) |
- * ((v & 0xfff0) << 4) (established); at depth 8 that is index << 12. A GC
- * in the one-bit form carries its foreground in word 1, see
- * sgi_kona_x_packed_index().
- *
- * Approximated: no traced fill follows a one-bit-form GC, so what such a
- * fill paints is unknown. The model paints the foreground word 1 carries,
- * rather than decoding 0xfff0 as the solid form, which would give index
- * 0xf.
- */
+/* Preserve the historical trace projection without narrowing draw state. */
 static uint32_t sgi_kona_x_gc_index(const uint32_t *gc)
 {
     uint32_t fg_h = gc[0];
@@ -4748,27 +4740,12 @@ static uint32_t sgi_kona_x_gc_index(const uint32_t *gc)
     if (fg_h == SGI_KONA_X_GC_BITMAP_FG_H) {
         return sgi_kona_x_packed_index(gc[1]);
     }
-    return v >> (16 - SGI_KONA_X_INDEX_DEPTH);
+    return v >> (16 - SGI_KONA_X_TRACE_INDEX_DEPTH);
 }
 
 /*
- * 0x129, X load GC: fg_h, fg_l, bg_h, bg_l, wmask0, wmask1, cfg, op, addr,
- * bl, ifmt, colfmt, pixfmt, in that order (kon_loadGC's debug strings).
- * The model keeps all 13 and fills with the colour index
- * sgi_kona_x_gc_index() reads from them.
- *
- * Approximated: the model always reads fg_h in the colour-index form at
- * SGI_KONA_X_INDEX_DEPTH, or the one-bit form when fg_h is
- * SGI_KONA_X_GC_BITMAP_FG_H. The window's format word, which picks the
- * colour-index form over the two RGB forms, reaches no command; the stock
- * greeter's fills are colour-index at depth 8. fg_l is kept and not read:
- * the colour-index form's is 0x1ffe, and what the pipe makes of any other
- * value (the run also sent 0, 0x800 and 0x9000) is unknown, so a fill
- * with another fg_l still takes fg_h's index. Write masks, cfg and op,
- * whose bits are unknown, are not applied. The discriminating test is a
- * guest fill whose colour-map entry appears on the scanout: (340, 20) of
- * the greeter resolving to 213, 213, 213 grey and (270, 310) to 153, 153,
- * 153 grey.
+ * Retain all thirteen native GC words. The historical trace prints an
+ * eight-bit projection; drawing uses the full decoded index and mask.
  */
 static void sgi_kona_x_load_gc(SGIKonaState *s, const uint32_t *args)
 {
@@ -5117,7 +5094,8 @@ static bool sgi_kona_x_clip_contains(SGIKonaState *s, int64_t x, int64_t y)
 /* Complete GC diagnostics retain unsupported semantic fields. */
 static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
 {
-    SGIXGCStatus status = sgi_x_gc_decode(s->x_gc, gc);
+    SGIXGCStatus status = s->x_gc[6] == 0xc || s->x_gc[6] == 0x180c ?
+        sgi_x_gc_decode_main_index(s->x_gc, gc) : sgi_x_gc_decode(s->x_gc, gc);
 
     if (status == SGI_X_GC_OK && !gc->opaque_or_tiled) {
         return true;
@@ -5140,7 +5118,7 @@ static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
     SGIBoardMemory *memory = &s->mem;
     const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
     const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
-    uint32_t target_tag = SGI_KONA_TAG_X_INDEX;
+    uint32_t target_tag = SGI_KONA_TAG_X_INDEX16;
     SGIXGC gc;
     SGIKonaRect clip;
 
@@ -5158,7 +5136,7 @@ static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
         tag = NULL;
     } else if (gc.target == SGI_X_GC_MAIN_RGB8) {
         target_tag = SGI_KONA_TAG_DIRECT;
-    } else if (gc.target != SGI_X_GC_MAIN_CI8) {
+    } else if (gc.target != SGI_X_GC_MAIN_INDEX16) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: X fill target %u unsupported\n",
                       gc.target);
         return false;
@@ -5505,8 +5483,8 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
                 uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                if (tag != SGI_KONA_TAG_X_INDEX || word > 255) {
-                    reason = "source is not a normalized eight-bit X index";
+                if (tag != SGI_KONA_TAG_X_INDEX16 || word > 0xffff) {
+                    reason = "source is not a native main index";
                     goto refused;
                 }
             }
@@ -5516,7 +5494,7 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
             for (uint32_t c = 0; c < width; c++) {
                 data[r * pitch + c] = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
-                    SGI_KONA_FB_HEIGHT - 1 - y - r);
+                    SGI_KONA_FB_HEIGHT - 1 - y - r) >> 8;
             }
         }
         sgi_kona_post_return(s, SGI_KONA_CMD_X_PIXEL_READ, 8, data,
@@ -5577,7 +5555,7 @@ static uint32_t sgi_kona_x_pixel_bpp(uint32_t src_pack)
  *
  * Approximated: which words each sender fills is established, and what
  * the pipe paints from them is inferred from that alone; the pipe was not
- * observed. The depth is SGI_KONA_X_INDEX_DEPTH, as for the fills. The
+ * observed. This trace helper retains its historical eight-bit projection.
  * discriminating tests are the glyph qtests for one-bit glyph colour and
  * opaque mono images, and in the guest the greeter's button labels
  * appearing, black through entry 0x2d00 under the run's foreground of 0.
@@ -5585,7 +5563,7 @@ static uint32_t sgi_kona_x_pixel_bpp(uint32_t src_pack)
 static bool sgi_kona_x_bitmap_index(SGIKonaState *s, bool bit,
                                     uint32_t *index)
 {
-    uint32_t shift = 16 - SGI_KONA_X_INDEX_DEPTH;
+    uint32_t shift = 16 - SGI_KONA_X_TRACE_INDEX_DEPTH;
 
     if (s->x_pixel_setup[SGI_KONA_X_SETUP_SRC_PACK] ==
         SGI_KONA_X_PACK_OPAQUE_BITMAP) {
@@ -5672,23 +5650,26 @@ static bool sgi_kona_x_write_decode(SGIKonaState *s, SGIXGC *gc)
             return false;
         }
         if (pack == SGI_KONA_X_PACK_BITMAP) {
-            if (raw[0] != 0xfff0 || raw[1] & ~0xff0U || raw[2] || raw[3]) {
+            if (raw[0] != 0xfff0 || raw[1] & ~0xf00fffU ||
+                raw[2] || raw[3]) {
                 return false;
             }
-            raw[0] = sgi_kona_x_packed_index(raw[1]) << 12;
+            uint32_t value = ((raw[1] & 0xfff) << 4) | (raw[1] >> 20);
+
+            raw[0] = ((value & 0xfff0) << 4) | ((value & 15) << 3);
             raw[2] = 0;
         } else {
-            if ((raw[0] | raw[2]) & ~0xff00U || raw[1] || raw[3]) {
+            if ((raw[0] | raw[2]) & ~0xffffU || raw[1] || raw[3]) {
                 return false;
             }
-            raw[0] = (raw[0] >> 8) << 12;
-            raw[2] = (raw[2] >> 8) << 12;
+            raw[0] = ((raw[0] & 0xfff0) << 4) | ((raw[0] & 15) << 3);
+            raw[2] = ((raw[2] & 0xfff0) << 4) | ((raw[2] & 15) << 3);
         }
         raw[1] = raw[3] = 0;
         raw[10] = 5;
     }
-    return sgi_x_gc_decode(raw, gc) == SGI_X_GC_OK &&
-           gc->target == SGI_X_GC_MAIN_CI8 && !gc->opaque_or_tiled;
+    return sgi_x_gc_decode_main_index(raw, gc) == SGI_X_GC_OK &&
+           !gc->opaque_or_tiled;
 }
 
 static bool sgi_kona_x_write_contains(SGIKonaState *s, int64_t x, int64_t y)
@@ -5844,8 +5825,9 @@ static void sgi_kona_x_pixel_store(SGIKonaState *s, const SGIXGC *gc,
     /* X RGB pixels occupy the low 24 bits of each big-endian word. */
     if (gc->target == SGI_X_GC_MAIN_RGB8) {
         value &= 0xffffff;
-    } else if (gc->target == SGI_X_GC_MAIN_INDEX16) {
-        value = (value << 4) & 0xffff;
+    } else if (gc->target == SGI_X_GC_MAIN_INDEX16 &&
+               s->x_pixel_bpp != 1) {
+        value = (value << s->x_write_setup[SGI_KONA_X_SETUP_SHIFT]) & 0xffff;
     }
     sgi_plane_store(&s->x_write_mem, source, x, y, value);
     sgi_plane_store(&s->x_write_mem, valid, x, y, 1);
@@ -6133,7 +6115,7 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
         return;
     }
     rgb = gc.target == SGI_X_GC_MAIN_RGB8;
-    if ((!rgb && gc.target != SGI_X_GC_MAIN_CI8) ||
+    if ((!rgb && gc.target != SGI_X_GC_MAIN_INDEX16) ||
         gc.raw[10] != (rgb ? 8 : 5) ||
         setup[SGI_KONA_X_SETUP_MODE] != 1 ||
         setup[SGI_KONA_X_SETUP_SRC_PACK] != (rgb ? 2 : 1) ||
@@ -6148,7 +6130,7 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     if (sgi_x_gc_noop(&gc)) {
         return;
     }
-    target_tag = rgb ? SGI_KONA_TAG_DIRECT : SGI_KONA_TAG_X_INDEX;
+    target_tag = rgb ? SGI_KONA_TAG_DIRECT : SGI_KONA_TAG_X_INDEX16;
     sgi_kona_x_clip(s, &clip);
     i0 = MAX(MAX(0, -sx), clip.x1 - dx);
     i1 = MIN(MIN(w, SGI_KONA_FB_WIDTH - sx), clip.x2 - dx);
@@ -6240,8 +6222,7 @@ static void sgi_kona_x_write_commit(SGIKonaState *s)
         return;
     }
     target_tag = gc.target == SGI_X_GC_MAIN_RGB8 ? SGI_KONA_TAG_DIRECT :
-                 gc.target == SGI_X_GC_MAIN_INDEX16 ? SGI_KONA_TAG_X_INDEX12 :
-                                                    SGI_KONA_TAG_X_INDEX;
+                 SGI_KONA_TAG_X_INDEX16;
     sgi_kona_x_write_bounds(s, &r);
     if (r.x1 >= r.x2 || r.y1 >= r.y2) {
         return;
@@ -8506,6 +8487,26 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     if (s->legacy_framebuffer) {
         sgi_kona_load_legacy_framebuffer(s);
     }
+    for (unsigned bank = 0; bank < 2; bank++) {
+        const SGIPlane *color = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
+        const SGIPlane *tag = sgi_kona_plane(s,
+                                sgi_kona_bank_tag_plane(s, bank));
+
+        for (unsigned y = 0; y < color->height; y++) {
+            for (unsigned x = 0; x < color->width; x++) {
+                if (sgi_plane_load(&s->mem, tag, x, y) ==
+                    SGI_KONA_TAG_X_INDEX) {
+                    uint32_t value = sgi_plane_load(&s->mem, color, x, y);
+
+                    if (value > 255) {
+                        return -EINVAL;
+                    }
+                    sgi_plane_store(&s->mem, color, x, y, value << 8);
+                    sgi_plane_store(&s->mem, tag, x, y, SGI_KONA_TAG_X_INDEX16);
+                }
+            }
+        }
+    }
     sgi_scanout_invalidate_all(&s->scanout);
     sgi_kona_cursor_update(s);
     return 0;
@@ -8554,13 +8555,30 @@ static bool sgi_kona_x_write_needed(void *opaque)
 
 static int sgi_kona_x_write_post_load(void *opaque, int version_id)
 {
-    SGI_KONA(opaque)->x_write_snapshot = true;
+    SGIKonaState *s = opaque;
+
+    s->x_write_snapshot = true;
+    if (version_id < 2 && (s->x_write_setup[SGI_KONA_X_SETUP_SRC_PACK] == 0 ||
+                          s->x_write_setup[SGI_KONA_X_SETUP_SRC_PACK] >= 4)) {
+        const SGIPlane *source = sgi_board_memory_plane(&s->x_write_mem, 0);
+
+        for (unsigned y = 0; y < source->height; y++) {
+            for (unsigned x = 0; x < source->width; x++) {
+                uint32_t value = sgi_plane_load(&s->x_write_mem, source, x, y);
+
+                if (value > 255) {
+                    return -EINVAL;
+                }
+                sgi_plane_store(&s->x_write_mem, source, x, y, value << 8);
+            }
+        }
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_kona_x_write = {
     .name = TYPE_SGI_KONA "/desktop/write",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .needed = sgi_kona_x_write_needed,
     .post_load = sgi_kona_x_write_post_load,
@@ -8633,6 +8651,9 @@ DEFINE_VMSTATE_SGI_SCANOUT(vmstate_sgi_kona_scanout, TYPE_SGI_KONA "/scanout",
  *
  * Version 4 adds the upper half of the documented 32K palette. Older
  * sources load that half as zero; older destinations refuse version 4.
+ * Version 5 gives main indexed storage the native 16-bit representation.
+ * Historical byte tags and pending write sources are converted on load;
+ * older destinations refuse version 5.
  */
 static bool sgi_kona_x_server_needed(void *opaque)
 {
@@ -8652,7 +8673,7 @@ static int sgi_kona_x_server_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_x_server = {
     .name = TYPE_SGI_KONA "/x-server",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = sgi_kona_x_server_post_load,
     .needed = sgi_kona_x_server_needed,
