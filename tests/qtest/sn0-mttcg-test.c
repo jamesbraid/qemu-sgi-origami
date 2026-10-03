@@ -1178,6 +1178,8 @@ static void test_tlb_asid(const void *data)
 /* A quarter of the counter's range: far enough ahead to stay unreached. */
 #define MI_COMPARE_AHEAD    0x4000u
 
+static bool mi_wide_unmask;
+
 static void emit_status_passes(GuestImage *img, int status, unsigned int n)
 {
     unsigned int loop;
@@ -1248,7 +1250,11 @@ static void build_masked_interrupt(GuestImage *img)
 
     /* Unmasking must deliver it here, not at the next edge on the line. */
     emit_ori(img, R_S0, R_S0, STATUS_IM7);
-    emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    if (mi_wide_unmask) {
+        emit(img, OPC_DMTC0 | (R_S0 << 16) | (CP0_STATUS << 11));
+    } else {
+        emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    }
     emit_ehb(img);
     emit_spin(img);
 }
@@ -1302,6 +1308,8 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
         g_test_skip("TCG is unavailable");
         return;
     }
+
+    mi_wide_unmask = data && GPOINTER_TO_INT(data);
 
     qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
                         build_masked_interrupt);
@@ -2263,6 +2271,9 @@ int main(int argc, char **argv)
                         test_tlb_random_global);
     qtest_add_data_func("mttcg/interrupt/masked-line-stays-off-the-lock", NULL,
                         test_masked_interrupt_stays_off_the_lock);
+    qtest_add_data_func("mttcg/interrupt/unmask-by-dmtc0-delivers",
+                        GINT_TO_POINTER(1),
+                        test_masked_interrupt_stays_off_the_lock);
     qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
                         test_unmask_by_eret_delivers);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-adjacent",
@@ -2278,6 +2289,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(4), test_gdb_peer_hold);
     qtest_add_data_func("mttcg/timer/gdb-peer-hold-interrupt",
                         GINT_TO_POINTER(8), test_gdb_peer_hold);
+    qtest_add_data_func("mttcg/timer/gdb-peer-hold-migrate-interrupt",
+                        GINT_TO_POINTER(12), test_gdb_peer_hold);
     if (qtest_has_machine("origin300")) {
         qtest_add_func("mttcg/gdb/sn1-pc-write", test_gdb_sn1_pc_write);
         qtest_add_data_func("mttcg/timer/gdb-sn1-mtc0-adjacent",
@@ -2298,6 +2311,8 @@ int main(int argc, char **argv)
                             GINT_TO_POINTER(32), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-interrupt-between-writes",
                             GINT_TO_POINTER(64), test_gdb_sn1_hold);
+        qtest_add_data_func("mttcg/timer/gdb-sn1-migrate-interrupt",
+                            GINT_TO_POINTER(96), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-half-range-hold",
                             GINT_TO_POINTER(128), test_gdb_sn1_hold);
         qtest_add_data_func("mttcg/timer/gdb-sn1-reset-between-writes",
