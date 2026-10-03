@@ -690,6 +690,7 @@ typedef struct SGIKonaTextureUpload {
     uint32_t source_stride;
     uint32_t *pixels;
     bool complete;
+    bool swap_bytes; /* captured when the native header arrives */
 } SGIKonaTextureUpload;
 
 struct SGIKonaState {
