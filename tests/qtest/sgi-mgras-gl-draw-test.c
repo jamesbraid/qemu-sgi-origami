@@ -2696,6 +2696,212 @@ static void test_gl_clip_plane_clips_in_eye_space(void)
 #define GL_Q_POLYGON_MODE     0xc17
 #define GL_Q_LINE_STIPPLE     0xc46
 #define GL_FILL_MODE          0x1b02
+#define GL_POLYGON_STIPPLE_HDR 0x00006d04
+#define GL_POLYGON_STIPPLE_PACKET 0x00004e80
+
+static uint32_t gl_reverse32(uint32_t word)
+{
+    uint32_t reversed = 0;
+
+    for (unsigned bit = 0; bit < 32; bit++) {
+        reversed |= ((word >> bit) & 1) << (31 - bit);
+    }
+    return reversed;
+}
+
+static void gl_polygon_stipple(QTestState *s, const uint32_t rows[32])
+{
+    gl_word(s, GL_POLYGON_STIPPLE_PACKET);
+    for (unsigned row = 0; row < 32; row++) {
+        gl_word(s, gl_reverse32(rows[row]));
+    }
+}
+
+static void gl_solid_quad(QTestState *s)
+{
+    gl_word(s, GL_BEGIN_QUADS);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 32, 0);
+    gl_vertex2f(s, 32, 32);
+    gl_vertex2f(s, 0, 32);
+    gl_word(s, GL_END_OF(GL_BEGIN_QUADS));
+}
+
+static void test_gl_polygon_stipple_renders_patterns(void)
+{
+    uint32_t zero[32] = { 0 };
+    uint32_t full[32];
+    uint32_t alternating[32];
+    uint32_t sparse[32] = { 0 };
+    static const uint32_t samples[][2] = {
+        { 0, 0 }, { 1, 0 }, { 2, 0 }, { 3, 0 },
+        { 0, 1 }, { 1, 1 }, { 2, 1 }, { 3, 1 },
+        { 0, 2 }, { 1, 2 }, { 2, 2 }, { 3, 2 },
+        { 0, 3 }, { 1, 3 }, { 2, 3 }, { 3, 3 },
+        { 30, 30 }, { 31, 31 },
+    };
+    const uint32_t *patterns[] = { zero, full, alternating, sparse };
+    static const char *names[] = {
+        "zero", "full", "alternating", "sparse"
+    };
+
+    for (unsigned row = 0; row < 32; row++) {
+        full[row] = UINT32_MAX;
+        alternating[row] = row & 1 ? 0xaaaaaaaa : 0x55555555;
+    }
+    sparse[0] = 1u << 0;
+    sparse[1] = 1u << 1;
+    sparse[2] = 1u << 2;
+    sparse[31] = 1u << 31;
+
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+        g_assert_cmphex(gl_window_pixel(qts, samples[i][0],
+                                        samples[i][1]), ==, 0xffffff);
+    }
+
+    for (unsigned pattern = 0; pattern < ARRAY_SIZE(patterns); pattern++) {
+        g_test_message("polygon stipple pattern: %s", names[pattern]);
+        gl_width_clear(qts);
+        gl_polygon_stipple(qts, patterns[pattern]);
+        gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+        gl_solid_quad(qts);
+        for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+            uint32_t x = samples[i][0];
+            uint32_t y = samples[i][1];
+            bool expected = (patterns[pattern][y] >> x) & 1;
+
+            g_assert_cmphex(gl_window_pixel(qts, x, y), ==,
+                            expected ? 0xffffff : 0);
+        }
+    }
+
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 0);
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+        g_assert_cmphex(gl_window_pixel(qts, samples[i][0],
+                                        samples[i][1]), ==, 0xffffff);
+    }
+}
+
+static void test_gl_polygon_stipple_rejects_bad_packet_lengths(void)
+{
+    uint32_t zero[32] = { 0 };
+
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_stipple(qts, zero);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+
+    gl_word(qts, 0x00004e7c);
+    for (int i = 0; i < 31; i++) {
+        gl_word(qts, UINT32_MAX);
+    }
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+
+    gl_word(qts, 0x00004e84);
+    for (int i = 0; i < 33; i++) {
+        gl_word(qts, UINT32_MAX);
+    }
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+}
+
+static void test_gl_polygon_stipple_rejects_begin_end_upload(void)
+{
+    uint32_t zero[32] = { 0 };
+    uint32_t full[32];
+
+    memset(full, 0xff, sizeof(full));
+    gl_transform_start(qts);
+    gl_width_clear(qts);
+    gl_polygon_stipple(qts, zero);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_polygon_stipple(qts, full);
+    gl_vertex2f(qts, 0, 0);
+    gl_vertex2f(qts, 32, 0);
+    gl_vertex2f(qts, 32, 32);
+    gl_vertex2f(qts, 0, 32);
+    gl_word(qts, GL_END_OF(GL_BEGIN_QUADS));
+
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+}
+
+static void test_gl_polygon_stipple_is_context_local(void)
+{
+    uint32_t zero[32] = { 0 };
+
+    mgras_reset();
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_polygon_stipple(qts, zero);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    gl_one(qts, GL_MATRIX_MODE_HDR, GL_MODELVIEW);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0xffffff);
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0);
+
+    gl_transform_start(qts);
+    gl_one(qts, GL_POLYGON_STIPPLE_HDR, 1);
+    gl_width_clear(qts);
+    gl_solid_quad(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 0, 0), ==, 0xffffff);
+}
+
+static void test_gl_polygon_stipple_all_board_families(void)
+{
+    static const char *const boards[] = {
+        "si", "si-t", "ssi", "mxi", "esi", "esi-t", "essi", "emxi",
+    };
+    uint32_t sparse[32] = { 0 };
+
+    sparse[0] = 1u;
+    sparse[1] = 1u << 1;
+    sparse[2] = 1u << 2;
+    sparse[31] = 1u << 31;
+    for (int board = 0; board < ARRAY_SIZE(boards); board++) {
+        g_autofree char *args = g_strdup_printf(
+            MACHINE_ARGS " -global sgi-mgras.board=%s "
+            "-global sgi-mgras.x-unimplemented-board=on", boards[board]);
+        QTestState *s = qtest_init(args);
+
+        g_test_message("polygon stipple on MGRAS board %s", boards[board]);
+        gl_transform_start(s);
+        gl_width_clear(s);
+        gl_polygon_stipple(s, sparse);
+        gl_one(s, GL_POLYGON_STIPPLE_HDR, 1);
+        gl_solid_quad(s);
+        g_assert_cmphex(gl_window_pixel(s, 0, 0), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(s, 1, 0), ==, 0);
+        g_assert_cmphex(gl_window_pixel(s, 1, 1), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(s, 3, 3), ==, 0);
+        g_assert_cmphex(gl_window_pixel(s, 31, 31), ==, 0xffffff);
+        qtest_quit(s);
+    }
+}
 
 /*
  * The context setup's initial values answer as OpenGL's, not zero, which
@@ -3735,8 +3941,18 @@ int main(int argc, char **argv)
                     test_gl_native_stipple_empty_binding);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-applied",
                     test_gl_native_polygon_stipple_applied);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/renders-patterns",
+                   test_gl_polygon_stipple_renders_patterns);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/bad-lengths",
+                   test_gl_polygon_stipple_rejects_bad_packet_lengths);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/begin-end",
+                   test_gl_polygon_stipple_rejects_begin_end_upload);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/contexts",
+                   test_gl_polygon_stipple_is_context_local);
+    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/all-board-families",
+                   test_gl_polygon_stipple_all_board_families);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/facing",
-                    test_gl_native_polygon_facing);
+                   test_gl_native_polygon_facing);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/clipped-boundary",
                     test_gl_native_polygon_clipped_boundary);
     qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/deferred",

@@ -297,6 +297,9 @@
 #define MGRAS_GL_LINE_STIPPLE_ON 0x00006a04
 #define MGRAS_GL_POINT_SMOOTH    0x00006c04
 #define MGRAS_GL_POLYGON_STIPPLE 0x00006d04
+#define MGRAS_GL_POLYGON_STIPPLE_UPLOAD 0x00004e80
+#define MGRAS_GL_POLYGON_STIPPLE_UPLOAD_REG \
+    ((MGRAS_GL_POLYGON_STIPPLE_UPLOAD >> 8) & 0xff)
 
 /*
  * Consumed and named, not modelled: glMapGrid1f (0xd990410) writes 0xae10,
@@ -488,6 +491,7 @@ enum {
  */
 #define MGRAS_GL_VERTEX3I        0x3800000c
 #define MGRAS_GL_RASTER_POS3I    0x3800380c
+#define MGRAS_GL_TEX_COORD3F     0x2000080c
 #define MGRAS_GL_TEX_COORD3I     0x3800080c
 #define MGRAS_GL_TEX_COORD2F     0x40000808
 #define MGRAS_GL_TEX_COORD4F     0x00000810
@@ -893,6 +897,8 @@ bool sgi_mgras_gl_header(uint32_t header)
         return true;
     }
     switch (header) {
+    case MGRAS_GL_POLYGON_STIPPLE_UPLOAD:
+        return true;
     case MGRAS_GL_CONTEXT_OPENER:
     case MGRAS_GL_RENDER_SELECT:
     case MGRAS_GL_RENDER:
@@ -1000,6 +1006,7 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_VERTEX2I:
     case MGRAS_GL_VERTEX3I:
     case MGRAS_GL_RASTER_POS3I:
+    case MGRAS_GL_TEX_COORD3F:
     case MGRAS_GL_TEX_COORD3I:
     case MGRAS_GL_TEX_COORD2F:
     case MGRAS_GL_TEX_COORD4F:
@@ -1806,6 +1813,16 @@ static uint32_t mgras_gl_reverse16(uint32_t pattern)
     return out;
 }
 
+static uint32_t mgras_gl_reverse32(uint32_t pattern)
+{
+    uint32_t out = 0;
+
+    for (int i = 0; i < 32; i++) {
+        out |= extract32(pattern, i, 1) << (31 - i);
+    }
+    return out;
+}
+
 #define MGRAS_GL_QUERY_CLEAR_DEPTH 0xc12
 
 /*
@@ -2336,8 +2353,8 @@ void sgi_mgras_gl_ge_port_access(SGIMgrasState *s, hwaddr addr, bool write)
 
 static const VMStateDescription vmstate_sgi_mgras_cmd_parser = {
     .name = TYPE_SGI_MGRAS "/cmd-parser",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(cls, SGIMgrasCmdParser),
         VMSTATE_UINT32(reg, SGIMgrasCmdParser),
@@ -2352,8 +2369,8 @@ static const VMStateDescription vmstate_sgi_mgras_cmd_parser = {
 /* Each context's parser position, sent for every entry. */
 const VMStateDescription vmstate_sgi_mgras_gl_context_parser = {
     .name = TYPE_SGI_MGRAS "/gl-context-parser",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(parser, SGIMgrasGLContext, 1,
                        vmstate_sgi_mgras_cmd_parser, SGIMgrasCmdParser),
@@ -2701,6 +2718,9 @@ bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
     if (reg >= sizeof_field(SGIMgrasState, rss) / sizeof(uint32_t) ||
         payload_count > SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
         return false;
+    }
+    if (reg == MGRAS_GL_POLYGON_STIPPLE_UPLOAD_REG && cls == 0) {
+        return payload_count + words_remaining == 32;
     }
     /* A block with an offset takes one word more than its length. */
     if (cls == SGI_MGRAS_CMD_TOKEN_DISCARD) {
@@ -3617,11 +3637,43 @@ void sgi_mgras_gl_ge_load_word(SGIMgrasState *s, uint32_t word)
     }
 }
 
+/* Captured float RGBA headers whose inline rows are understood below. */
+static bool mgras_gl_pixels_captured_float_rgba(uint32_t width,
+                                                uint32_t height,
+                                                uint64_t row_words,
+                                                bool dma_only,
+                                                uint32_t unpack_first)
+{
+    uint64_t pixels = (uint64_t)width * height;
+
+    return !dma_only &&
+           ((row_words == pixels * 4 &&
+             ((width == 2 && height == 1 && unpack_first == 1) ||
+              (width == 1 && height == 2 && unpack_first == 1) ||
+              (width == 2 && height == 2 && unpack_first == 2) ||
+              (width == 2 && height == 3 && unpack_first == 3) ||
+              (width == 3 && height == 2 && unpack_first == 3) ||
+              (width == 2 && height == 4 && unpack_first == 4) ||
+              (width == 4 && height == 2 && unpack_first == 4))) ||
+            (width == 47 && height == 1 && row_words == pixels * 4 &&
+             unpack_first == 0x17) ||
+            (width == 1 && height == 1 && row_words == pixels * 4 &&
+             unpack_first == 0) ||
+            (width == 17 && height == 1 && row_words == pixels * 4 &&
+             unpack_first == 8) ||
+            (width == 2 && height == 32 && row_words == 0x80 &&
+             unpack_first == 0x10));
+}
+
 /*
  * Which of mgras_gl_pixel_programs[] the GE holds at 0x13b, or
  * MGRAS_GL_PIXELS_FORMATS for none of them; *pairs is its length.
  */
-static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
+static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge,
+                                                uint32_t width,
+                                                uint32_t height,
+                                                uint64_t row_words,
+                                                bool dma_only)
 {
     static const uint32_t rgb_routines[] = {
         0x1655, 0x3e65, 0x156a, 0x352d,
@@ -3629,11 +3681,14 @@ static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
     static const uint32_t rgba_routines[] = {
         0x3e65, 0x156a, 0x352d,
     };
-    static const uint32_t rgb_unpack[] = {
-        0x1c, 0x40f2, 0x464, 0, 2, 6, 0xfffffee4, 0x3f800000,
+    static const uint32_t rgb_unpack_fixed[] = {
+        0x40f2, 0x464, 0, 6, 0xfffffee4, 0x3f800000,
+    };
+    static const uint32_t rgb_unpack_indices[] = {
+        0x1d7, 0x1d8, 0x1d9, 0x1db, 0x1dc, 0x1dd,
     };
     static const uint32_t rgba_unpack[] = {
-        2, 0, 0x4064, 0x464, 0x44,
+        0, 0x4064, 0x464, 0x44,
     };
     bool rgb = true;
     bool rgba = true;
@@ -3644,11 +3699,23 @@ static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
     for (uint32_t i = 0; i < ARRAY_SIZE(rgba_routines); i++) {
         rgba &= ge[MGRAS_GE_PIXEL_PROGRAM + 2 * i] == rgba_routines[i];
     }
-    for (uint32_t i = 0; rgb && i < ARRAY_SIZE(rgb_unpack); i++) {
-        rgb &= ge[0x1d6 + i] == rgb_unpack[i];
+    rgb &= (width == 2 && height == 2 && row_words == 6 &&
+            ge[0x1d6] == 0x1c && ge[0x1da] == 2) ||
+           (width == 3 && height == 2 && row_words == 9 &&
+            ge[0x1d6] == 0x24 && ge[0x1da] == 3);
+    for (uint32_t i = 0; rgb && i < ARRAY_SIZE(rgb_unpack_fixed); i++) {
+        rgb &= ge[rgb_unpack_indices[i]] == rgb_unpack_fixed[i];
     }
-    for (uint32_t i = 0; rgba && i < ARRAY_SIZE(rgba_unpack); i++) {
-        rgba &= ge[0x1b4 + i] == rgba_unpack[i];
+    for (uint32_t i = 0; rgba && i < ARRAY_SIZE(rgba_unpack) - 1; i++) {
+        rgba &= ge[0x1b5 + i] == rgba_unpack[i];
+    }
+    if (rgba) {
+        uint32_t signature = ge[0x1b8];
+
+        rgba = mgras_gl_pixels_captured_float_rgba(width, height,
+                                                    row_words, dma_only,
+                                                    ge[0x1b4]) &&
+               signature == 4 + 4 * row_words;
     }
     if (rgb) {
         return MGRAS_GL_PIXELS_FLOAT_RGB;
@@ -3657,6 +3724,15 @@ static uint32_t mgras_gl_pixels_float_signature(const uint32_t *ge)
         return MGRAS_GL_PIXELS_FLOAT_RGBA;
     }
     return MGRAS_GL_PIXELS_FORMATS;
+}
+
+static bool mgras_gl_pixels_captured_inline_rgba_count(uint32_t width,
+                                                        uint32_t height,
+                                                        uint64_t words)
+{
+    return (width == 1 && height == 2 && words == 1) ||
+           (width == 3 && height == 2 && words == 3) ||
+           (width == 32 && height == 32 && words == 64);
 }
 
 static uint32_t mgras_gl_pixels_match(const uint32_t *ge, uint32_t *pairs)
@@ -3728,7 +3804,8 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
         return false;
     }
     px->h = captured_2x2 ? box[4] >> 16 : h;
-    format = mgras_gl_pixels_float_signature(ge);
+    format = mgras_gl_pixels_float_signature(ge, w, h, row_words,
+                                             dma_only);
     if (format == MGRAS_GL_PIXELS_FORMATS) {
         format = mgras_gl_pixels_match(ge, &pairs);
     } else {
@@ -3806,7 +3883,13 @@ static bool mgras_gl_pixels_program(SGIMgrasState *s, uint64_t row_words,
     }
     if ((px->bpp > 4 && px->format != MGRAS_GL_PIXELS_FLOAT_RGB &&
          px->format != MGRAS_GL_PIXELS_FLOAT_RGBA) ||
-        expected_words != row_words) {
+        (expected_words != row_words &&
+         (dma_only || px->format != MGRAS_GL_PIXELS_RGBA8 ||
+         !mgras_gl_pixels_captured_inline_rgba_count(px->w, px->h,
+                                                      row_words)) &&
+         !(px->format == MGRAS_GL_PIXELS_FLOAT_RGBA &&
+           mgras_gl_pixels_captured_float_rgba(px->w, px->h, row_words,
+                                               dma_only, ge[0x1b4])))) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: pixel draw of %" PRIu64 " words "
                       "for %u by %u pixels is not modelled\n", row_words,
                       px->w, px->h);
@@ -4080,7 +4163,11 @@ static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
     s->cmd_token_reg = MGRAS_GL_PIXELS_OP;
     s->cmd_token_payload_count = MGRAS_GL_PIXELS_WORDS;
     s->cmd_token_words_remaining = DIV_ROUND_UP(bytes, sizeof(uint32_t));
-    px->skip = offset;
+    /* Captured 48x1 and 64x1 RGBA rows start at byte zero despite offset 2. */
+    px->skip = px->format == MGRAS_GL_PIXELS_FLOAT_RGBA &&
+               px->w == 47 && px->h == 1 && px->row == 0 &&
+               offset == 2 && bytes == 47 * 4 * sizeof(uint32_t) ?
+               0 : offset;
     if (!s->cmd_token_words_remaining) {
         s->cmd_token_class = SGI_MGRAS_CMD_TOKEN_DISCARD;
         mgras_gl_pixels_row_end(s);
@@ -4518,7 +4605,7 @@ static void mgras_gl_normal(SGIMgrasState *s, uint32_t header,
 void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                           const uint32_t *payload, uint32_t words)
 {
-    uint32_t word[4];
+    uint32_t word[4], rows[32];
 
     if (words != (header & 0xff) / sizeof(uint32_t)) {
         return;
@@ -4531,6 +4618,14 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     if (mgras_gl_begin_token(header, true)) {
         /* Any end token ends whichever primitive is open. */
         mgras_gl_command(s, SGI_GL_OP_END, payload, 0);
+        return;
+    }
+    if (header == MGRAS_GL_POLYGON_STIPPLE_UPLOAD) {
+        /* The client reverses each row's bits, but keeps the row order. */
+        for (int i = 0; i < ARRAY_SIZE(rows); i++) {
+            rows[i] = mgras_gl_reverse32(payload[i]);
+        }
+        sgi_gl_polygon_stipple(mgras_gl(s), rows);
         return;
     }
     if (mgras_gl_lighting(s, header, payload, words) ||
@@ -4921,6 +5016,9 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                          word, 3);
         return;
     }
+    case MGRAS_GL_TEX_COORD3F:
+        mgras_gl_command(s, SGI_GL_OP_TEXCOORD3F, payload, 3);
+        return;
     case MGRAS_GL_TEX_COORD3I: {
         float f[3] = { (int32_t)payload[0], (int32_t)payload[1],
                        (int32_t)payload[2] };

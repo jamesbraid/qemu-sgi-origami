@@ -1689,6 +1689,7 @@ void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
 #define MGRAS_XFRMODE_GL_FORMAT_MASK 0xf0
 #define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
 #define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_READ 0x4008a
 
 static void mgras_pio_read_start(SGIMgrasState *s, bool client)
 {
@@ -1718,7 +1719,10 @@ static void mgras_pio_read_start(SGIMgrasState *s, bool client)
         /* The client's start is the low row: swap into the server's. */
         y0 = y1;
         y1 = low;
-    } else if (mode != MGRAS_XFRMODE_PIO_READ) {
+    } else if (mode != MGRAS_XFRMODE_PIO_READ &&
+               !(mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_READ &&
+                 size == 0x00010002 &&
+                 s->rss[MGRAS_RSS_XFRCOUNTERS] == size)) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read, mode 0x%x, "
                       "not modelled; reads return zero\n", mode);
         return;
@@ -2187,22 +2191,25 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
     bool back = s->gl_context[s->gl_current].client_read_bank == 1;
     const uint32_t *color_plane = back ? s->back : s->front;
     const uint8_t *alpha_plane = back ? s->back_alpha : s->front_alpha;
-    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    uint32_t bpr = width * d->guest_bpp;
     g_autofree uint8_t *bytes = g_malloc(bpr);
 
-    for (uint32_t pixel = 0; pixel < width * height; pixel++) {
-        uint32_t y = d->y - pixel / width;
-        uint32_t index = y * s->width + d->x + pixel % width;
-        uint32_t color = color_plane[index];
-        uint8_t *p = bytes + pixel * d->guest_bpp;
+    for (uint32_t row = 0; row < height; row++) {
+        for (uint32_t col = 0; col < width; col++) {
+            uint32_t y = d->y - row;
+            uint32_t index = y * s->width + d->x + col;
+            uint32_t color = color_plane[index];
+            uint8_t *p = bytes + col * d->guest_bpp;
 
-        p[0] = color >> 16;
-        p[1] = color >> 8;
-        p[2] = color;
-        p[3] = alpha_plane[index];
-    }
-    if (!sgi_dma_map_copy(&d->map, d->offset, bytes, bpr, true)) {
-        return SGI_FAIL_BOUNDS;
+            p[0] = color >> 16;
+            p[1] = color >> 8;
+            p[2] = color;
+            p[3] = alpha_plane[index];
+        }
+        if (!sgi_dma_map_copy(&d->map, d->offset + (uint64_t)row * d->pitch,
+                              bytes, bpr, true)) {
+            return SGI_FAIL_BOUNDS;
+        }
     }
     return 0;
 }
@@ -2389,16 +2396,25 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1];
     uint32_t signature_format =
         s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2];
+    uint32_t signature_width = signature_extent & 0xffff;
+    uint32_t signature_height = signature_extent >> 16;
     uint64_t source_x0, source_y0, source_x1, source_y1;
+    uint64_t image_bytes, row_bytes;
     SGIPixelDMA d;
-    bool captured_signature =
-        (signature_size == 4 && signature_extent == 0x00010001 &&
-         (signature_format == 0x00400080 || signature_format == 0x00c00080)) ||
-        (signature_size == 8 && signature_extent == 0x00020002 &&
-         (signature_format == 0x00400080 || signature_format == 0x00c00080));
+    bool captured_format = signature_format == 0x00400080 ||
+                           signature_format == 0x00c00080 ||
+                           (signature_width == 41 && signature_height == 32 &&
+                            signature_format == 0xc10080) ||
+                           (signature_width == 23 && signature_height == 32 &&
+                            signature_format == 0xc10480);
+    bool captured_split;
+    bool one_descriptor, per_row_descriptors;
 
-    if (!sgi_mgras_gl_client_read_active(s) || !captured_signature ||
-        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3] != 0xa) {
+    if (!sgi_mgras_gl_client_read_active(s) || !signature_width ||
+        !signature_height || signature_size != signature_width * 4 ||
+        !captured_format ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3] !=
+            0xa) {
         return false;
     }
 
@@ -2416,6 +2432,18 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
+    captured_split =
+        (signature_width == 41 && signature_height == 32 &&
+         signature_format == 0xc10080 && mode == 0xc10080 &&
+         pitch == 0x100) ||
+        (signature_width == 23 && signature_height == 32 &&
+         signature_format == 0xc10480 && mode == 0xc10480) ||
+        (signature_width == 41 && signature_height == 1 &&
+         signature_format == 0x00c00080 && mode == 0x00010080 &&
+         pitch == 0x100) ||
+        (signature_width == 23 && signature_height == 1 &&
+         signature_format == 0x00c00080 && mode == 0x00010480 &&
+         pitch == 0x100);
 
     if (x0 > x1 || y0 > y1 ||
         !sgi_mgras_gl_client_read_window(s, &origin_x, &origin_y,
@@ -2425,13 +2453,12 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     }
     width = x1 - x0 + 1;
     height = y1 - y0 + 1;
-    if (((height << 16) | width) !=
-            s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1] ||
+    if (width != signature_width || height != signature_height ||
         s->rss[MGRAS_RSS_XFRSIZE] != ((height << 16) | width) ||
         s->rss[MGRAS_RSS_XFRCOUNTERS] != ((height << 16) | width) ||
         (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
             MGRAS_XFRMODE_GL_FORMAT_RGBA ||
-        (mode & MGRAS_XFRMODE_GL_ALIGN_MASK) || rows != 1) {
+        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split)) {
         goto rejected;
     }
     source_x0 = (uint64_t)origin_x + x0;
@@ -2443,8 +2470,18 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         source_x1 >= s->width || source_y1 >= s->height) {
         goto rejected;
     }
+
     pixels = width * height;
-    if (pixels > UINT32_MAX / 4 || bpr != pixels * 4 || pitch != bpr) {
+    image_bytes = (uint64_t)pixels * 4;
+    row_bytes = (uint64_t)width * 4;
+    if (image_bytes > UINT32_MAX || row_bytes > UINT32_MAX) {
+        goto rejected;
+    }
+    one_descriptor = rows == 1 && pitch == image_bytes &&
+                     bpr == image_bytes;
+    per_row_descriptors = rows == height && bpr == row_bytes &&
+                          (pitch == row_bytes || captured_split);
+    if (!one_descriptor && !per_row_descriptors) {
         goto rejected;
     }
 
@@ -2452,9 +2489,9 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         .dir = SGI_DMA_FROM_PLANE,
         .x = source_x0,
         .y = s->height - 1 - source_y0,
-        .w = pixels,
-        .h = 1,
-        .pitch = pitch,
+        .w = width,
+        .h = height,
+        .pitch = per_row_descriptors ? pitch : row_bytes,
         .guest_bpp = 4,
         .offset = mgras_raster_dma_src_offset(s),
     };

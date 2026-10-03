@@ -1456,19 +1456,19 @@ static inline void gl_pixels_fence(QTestState *qts)
 }
 
 /*
- * The DMA form, as ipaste sends it: node 0's page list with entries for
- * pages 7 and 8, an image at page 7 of rows pitch bytes apart, and a kick
- * of slot 3 with bit 4 clear.
+ * The DMA form, as ipaste sends it: a node-local page list beginning at
+ * page 7, an image at page 7 of rows pitch bytes apart, and a kick of slot
+ * 3 with bit 4 clear.
  */
 #define GL_PIX_DMA_LIST       0x2000u
 #define GL_PIX_DMA_SRC        0x7000u
 #define GL_PIX_DMA_WIDGET     9u
 
 /*
- * The transfer's page list names pages 7 and 8 of node nasid, and the
- * image is written there; on a node other than 0 the same offset on node
- * 0 holds 0xee bytes, which is what a transfer that dropped the node
- * bits of a page address would read.
+ * The transfer's page list names consecutive pages of node nasid, and the
+ * image is written there; on a node other than 0 the same offset on node 0
+ * holds 0xee bytes, which is what a transfer that dropped the node bits of
+ * a page address would read.
  */
 static inline void gl_pixels_dma_on(QTestState *qts, unsigned int nasid,
                                     const uint8_t *image, uint32_t len,
@@ -1477,12 +1477,15 @@ static inline void gl_pixels_dma_on(QTestState *qts, unsigned int nasid,
 {
     static const uint8_t header[24] = { 0 };
     uint64_t node = (uint64_t)nasid << 20;
-    uint8_t list[16];
+    uint32_t pages = DIV_ROUND_UP(len, 4096);
+    g_autofree uint8_t *list = g_malloc0(pages * 8);
 
-    stq_be_p(list, node | 0x07);
-    stq_be_p(list + 8, node | 0x08);
+    g_assert_cmpuint(pages, >, 0);
+    for (uint32_t i = 0; i < pages; i++) {
+        stq_be_p(list + 8 * i, node | (0x07 + i));
+    }
     qtest_memwrite(qts, GL_PIX_DMA_LIST, header, sizeof(header));
-    qtest_memwrite(qts, GL_PIX_DMA_LIST + 0x18, list, sizeof(list));
+    qtest_memwrite(qts, GL_PIX_DMA_LIST + 0x18, list, pages * 8);
     if (nasid) {
         g_autofree uint8_t *decoy = g_malloc(len);
 
@@ -1493,7 +1496,8 @@ static inline void gl_pixels_dma_on(QTestState *qts, unsigned int nasid,
     /* DMA-map slot 3: registers 0x26/0x27, 0x33 and 0x4e. */
     qtest_writel(qts, MGRAS_REG(0x130400), 0x00482608);
     qtest_writeq(qts, MGRAS_REG(0x130400), GL_PIX_DMA_LIST + 0x18);
-    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483304 << 32) | 2);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                 ((uint64_t)0x00483304 << 32) | pages);
     qtest_writeq(qts, MGRAS_REG(0x130400),
                  ((uint64_t)0x00484e04 << 32) | (GL_PIX_DMA_WIDGET << 16));
     gl_word(qts, 0x00080004);
