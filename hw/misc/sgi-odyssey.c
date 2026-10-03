@@ -3494,18 +3494,24 @@ static int odyssey_image_object(SGIOdysseyState *s)
 
 /*
  * Lay one image pixel, as 0xRRGGBBAA, at the raster cursor in the selected
- * buffer (odyssey_image_object()) and advance it: left to right,
- * wrapping at the box's exclusive right edge back to its left edge one row
- * down, and stopping once the cursor passes the bottom edge. A cleared pixel
- * (paint false) still advances the cursor but leaves the framebuffer, so a
- * transparent index shows whatever was drawn underneath.
+ * buffer (odyssey_image_object()) and advance it. Each axis is a directed
+ * half-open interval: increasing endpoints visit [first, last), while
+ * decreasing endpoints visit [first - 1, last]. Payload advances along X,
+ * then along Y. A cleared pixel (paint false) still advances the cursor but
+ * leaves the framebuffer, so a transparent index shows what was drawn below.
  */
 static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
                               bool is_index)
 {
+    bool x_decreasing = s->image_x2 < s->image_x1;
+    bool y_decreasing = s->image_y2 < s->image_y1;
+    bool y_finished = y_decreasing ?
+        s->image_cur_y == UINT32_MAX || s->image_cur_y < s->image_y2 :
+        s->image_cur_y >= s->image_y2;
     int obj;
 
-    if (s->image_x2 <= s->image_x1 || s->image_cur_y >= s->image_y2) {
+    if (s->image_x2 == s->image_x1 || s->image_y2 == s->image_y1 ||
+        y_finished) {
         return;
     }
     obj = odyssey_image_object(s);
@@ -3517,9 +3523,19 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
         odyssey_paint_pixel(s, s->image_cur_x, s->image_cur_y,
                             is_index ? rgba : (rgba & ~0xffu) | 0xff);
     }
-    if (++s->image_cur_x >= s->image_x2) {
-        s->image_cur_x = s->image_x1;
-        s->image_cur_y++;
+    if ((x_decreasing && s->image_cur_x == s->image_x2) ||
+        (!x_decreasing && s->image_cur_x == s->image_x2 - 1)) {
+        s->image_cur_x = x_decreasing ? s->image_x1 - 1 : s->image_x1;
+        if (y_decreasing) {
+            s->image_cur_y = s->image_cur_y == s->image_y2 ? UINT32_MAX :
+                             s->image_cur_y - 1;
+        } else {
+            s->image_cur_y++;
+        }
+    } else if (x_decreasing) {
+        s->image_cur_x--;
+    } else {
+        s->image_cur_x++;
     }
     sgi_scanout_invalidate_all(&s->scanout);
 }
@@ -8012,8 +8028,10 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
             break;
         }
         if (++s->cmd_operand_index == s->cmd_operand_count) {
-            s->image_cur_x = s->image_x1;
-            s->image_cur_y = s->image_y1;
+            s->image_cur_x = s->image_x2 < s->image_x1 ?
+                             s->image_x1 - 1 : s->image_x1;
+            s->image_cur_y = s->image_y2 < s->image_y1 ?
+                             s->image_y1 - 1 : s->image_y1;
             s->cmd_state = ODSY_CMD_IDLE;
         }
         break;
