@@ -435,7 +435,11 @@ static bool texture_params(const SGIKonaTextureParams *p)
     if ((p->min_filter != SGI_GL_NEAREST && p->min_filter != SGI_GL_LINEAR &&
          (p->min_filter < SGI_GL_NEAREST_MIPMAP_NEAREST ||
           p->min_filter > SGI_GL_LINEAR_MIPMAP_LINEAR)) ||
-        (p->mag_filter != SGI_GL_NEAREST && p->mag_filter != SGI_GL_LINEAR) ||
+        (p->mag_filter != SGI_GL_NEAREST && p->mag_filter != SGI_GL_LINEAR &&
+         p->mag_filter != SGI_GL_LINEAR_SHARPEN_SGIS &&
+         p->mag_filter != SGI_GL_LINEAR_SHARPEN_COLOR_SGIS &&
+         p->mag_filter != SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS) ||
+        p->filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
         !texture_wrap(p->wrap_s) || !texture_wrap(p->wrap_t) ||
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         !isfinite(p->lod_scale_s) || !isfinite(p->lod_scale_t) ||
@@ -577,6 +581,24 @@ static void texture_post_filter(void *opaque, double rgba[4])
     }
 }
 
+static bool texture_filter_weight(void *opaque, double lambda, double *weight)
+{
+    const SGIKonaTextureObject *o = opaque;
+    double position, fraction;
+    unsigned node;
+
+    if (!o->filter_curve || !isfinite(lambda)) {
+        return false;
+    }
+    /* Model interpolation in rho; the physical receiver remains unknown. */
+    position = lambda >= 0 ? 63 : MIN(exp2(lambda) * 64, 63);
+    node = floor(position);
+    fraction = position - node;
+    *weight = -(o->filter_curve[node] * (1 - fraction) +
+                o->filter_curve[MIN(node + 1, 63)] * fraction);
+    return true;
+}
+
 const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
 {
     SGIKonaTextureObject *o = s->bound ?
@@ -601,6 +623,7 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .base_level = o->params.base_level, .max_level = o->params.max_level,
         .min_lod = o->params.min_lod, .max_lod = o->params.max_lod,
     };
+    o->filter_curve = sgi_kona_texture_curve(s, o->params.filter_curve_slot);
     o->image = (SGIGLTexImage) {
         .min_filter = o->params.min_filter, .mag_filter = o->params.mag_filter,
         .wrap_s = o->params.wrap_s, .wrap_t = o->params.wrap_t,
@@ -608,6 +631,7 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .lod_scale_s = o->params.lod_scale_s,
         .lod_scale_t = o->params.lod_scale_t,
         .post_filter = texture_post_filter, .opaque = o,
+        .read_filter_weight = texture_filter_weight,
     };
     memcpy(o->image.border_color, o->params.border_color,
             sizeof(o->image.border_color));
@@ -689,7 +713,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 6);
+    qemu_put_be32(f, 7);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -737,6 +761,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be32(f, o->native_height);
         qemu_put_be32(f, o->native_format_valid);
         qemu_put_be32(f, o->native_format);
+        qemu_put_be32(f, o->params.filter_curve_slot);
     }
     qemu_put_be32(f, g_hash_table_size(s->filter_curves));
     g_hash_table_iter_init(&iter, s->filter_curves);
@@ -765,7 +790,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 6) || bound > 1 ||
+    if ((version < 1 || version > 7) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -929,6 +954,12 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 goto invalid;
             }
             o->native_format_valid = valid;
+        }
+        if (version >= 7) {
+            o->params.filter_curve_slot = qemu_get_be32(f);
+            if (o->params.filter_curve_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS) {
+                goto invalid;
+            }
         }
     }
     if (version >= 6) {
