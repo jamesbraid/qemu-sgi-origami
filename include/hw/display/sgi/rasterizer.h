@@ -213,7 +213,7 @@ typedef struct SGIGLTexImage {
      * are ignored. The sampler fields still apply to every selected level.
      */
     const SGIGLTexPyramid *pyramid;
-    /* Optional transform: expanded RGBA after filtering, before composition. */
+    /* Expanded RGBA after filtering, before the texture environment. */
     void (*post_filter)(void *opaque, double rgba[4]);
 } SGIGLTexImage;
 

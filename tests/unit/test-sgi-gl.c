@@ -5679,6 +5679,11 @@ static uint32_t texture_rgb(double r, double g, double b)
            (uint32_t)floor(b * 255 + 0.5);
 }
 
+
+
+/* Nonlinear mapping sees expanded, bilinearly sampled LUMINANCE once. */
+
+
 /* Different unused channels expose accidental generic-RGBA environments. */
 static void test_texture_environment(void)
 {
@@ -6287,6 +6292,44 @@ static void alpha_point(AlphaScene *s, unsigned r, unsigned g, unsigned b,
     frag_command(&s->f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
     wide_vertex(&s->f, 32.5, 32.5);
     frag_command(&s->f, SGI_GL_OP_END, NULL, 0);
+}
+
+static void texture_post_filter_precision(void *opaque, double rgba[4])
+{
+    TexturePixels *p = opaque;
+
+    p->post_filter_calls++;
+    rgba[0] = 1.0 / 4095;
+    rgba[1] = 3.0 / 4095;
+    rgba[2] = 2048.0 / 4095;
+}
+
+/* A 12-bit result must reach the environment before channel quantization. */
+static void test_texture_post_filter_precision(void)
+{
+    AlphaScene s;
+    TexturePixels pixels = { .pixel = {
+        0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+
+    alpha_init(&s);
+    s.rules.color_bits = 10;
+    image.post_filter = texture_post_filter_precision;
+    s.f.rec.target.texture = &image;
+    enable(&s.f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&s.f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_BLEND, 0, 0, 0);
+    texture_env(&s.f, SGI_GL_TEXTURE_ENV_COLOR, 0, 0, 0, 0);
+    frag_command(&s.f, SGI_GL_OP_COLOR4F,
+                 (uint32_t[]) { bits(0.5), bits(0.5), bits(0.5), bits(1) }, 4);
+    frag_command(&s.f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&s.f, 32.5, 32.5);
+    frag_command(&s.f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[0], ==, 511);
+    g_assert_cmpuint(s.pixel[0].component[1], ==, 511);
+    g_assert_cmpuint(s.pixel[0].component[2], ==, 256);
+    g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
 }
 
 static void test_polygon_stipple_rgba_texture(void)
@@ -8677,8 +8720,9 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
-    g_test_add_func("/sgi-gl/texture-post-filter",
-                    test_texture_post_filter);
+    g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
+    g_test_add_func("/sgi-gl/texture-post-filter-precision",
+                    test_texture_post_filter_precision);
     g_test_add_func("/sgi-gl/texture-3d-sampling",
                     test_texture_3d_sampling);
     g_test_add_func("/sgi-gl/texture-3d-matrix", test_texture_3d_matrix);
