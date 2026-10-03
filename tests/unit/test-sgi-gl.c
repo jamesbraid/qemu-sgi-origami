@@ -3245,6 +3245,54 @@ static uint32_t frag_stencil_at(const FragScene *f, int x, int y)
     return f->p.stencil[planes_index(x, y)];
 }
 
+/* Shared clip-union semantics, independent of any family's packet format. */
+static void test_stencil_clear_clip_union(void)
+{
+    FragScene f;
+    SGIGLDrawable d = {
+        .bound = true,
+        .origin = { 3, 5 },
+        .clip = { .n = 2, .r = { { 7, 9, 17, 19 }, { 27, 13, 39, 29 } } },
+        .front = 0,
+        .back = 1,
+    };
+
+    frag_init(&f);
+    sgi_gl_set_drawable(&f.c, &d);
+    for (unsigned i = 0; i < W * H; i++) {
+        f.p.stencil[i] = 0xa5;
+        f.p.colour[0][i] = 0x123456;
+        f.p.colour[1][i] = 0x654321;
+        f.p.depth[i] = 0x345678;
+    }
+    frag_command(&f, SGI_GL_OP_VIEWPORT, (uint32_t[]){ 0, 0, 1, 1 }, 4);
+    frag_command(&f, SGI_GL_OP_SCISSOR, (uint32_t[]){ 5, 7, 27, 19 }, 4);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    enable(&f.c, SGI_GL_STENCIL_TEST, true);
+    frag_stencil(&f, 0x200, 0, 255, 0, 0, 0);
+    enable(&f.c, SGI_GL_DEPTH_TEST, true);
+    frag_command(&f, SGI_GL_OP_DEPTH_FUNC, (uint32_t[]){ 0x200 }, 1);
+    frag_command(&f, SGI_GL_OP_DRAW_BUFFERS, (uint32_t[]){ 0 }, 1);
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, (uint32_t[]){ 0x0f }, 1);
+    frag_command(&f, SGI_GL_OP_CLEAR_STENCIL, (uint32_t[]){ 0x13c }, 1);
+    frag_clear(&f, SGI_GL_STENCIL_BUFFER_BIT);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            bool owned = (x >= 7 && x <= 17 && y >= 9 && y <= 19) ||
+                         (x >= 27 && x <= 39 && y >= 13 && y <= 29);
+            bool scissored = x >= 8 && x <= 34 && y >= 12 && y <= 30;
+            unsigned i = planes_index(x, y);
+
+            g_assert_cmphex(f.p.stencil[i], ==,
+                            owned && scissored ? 0xac : 0xa5);
+            g_assert_cmphex(f.p.colour[0][i], ==, 0x123456);
+            g_assert_cmphex(f.p.colour[1][i], ==, 0x654321);
+            g_assert_cmphex(f.p.depth[i], ==, 0x345678);
+        }
+    }
+    sgi_gl_cleanup(&f.c);
+}
+
 /*
  * The stencil test (OpenGL 1.2.1, 4.1.5) and glClear's stencil buffer
  * (4.2.3), against an eight-bit stencil buffer:
@@ -8702,5 +8750,7 @@ int main(int argc, char **argv)
                     test_resume_primitive_refuses);
     g_test_add_func("/sgi-gl/resume-primitive-keeps-stipple-phase",
                     test_resume_primitive_keeps_stipple_phase);
+    g_test_add_func("/sgi-gl/stencil-clear-clip-union",
+                    test_stencil_clear_clip_union);
     return g_test_run();
 }
