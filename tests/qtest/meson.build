@@ -1,6 +1,7 @@
 slow_qtests = {
-  # Expansion routing, UART and scoped reset/migration exceed 120s.
-  'sgi-pci-expansion-ni-test': 240,
+  # The 117-case suite took 294.35s alone under debug_tcg on 2026-10-03.
+  # Allow three times that duration, rounded up.
+  'sgi-pci-expansion-ni-test': 900,
   'ahci-test': 150,
   'aspeed_smc-test': 360,
   'bios-tables-test' : 910,
