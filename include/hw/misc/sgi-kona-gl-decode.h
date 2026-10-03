@@ -99,7 +99,7 @@ bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
                                    double bias_rgba[4]);
 
 /*
- * Decode established repeat/ordinary-filter sampler fields. Level identity,
+ * Decode repeat, ordinary-filter and sharpening sampler fields. Level identity,
  * border colour and post-filter transforms remain with their owning records.
  * Unsupported encodings leave every parameter unchanged.
  */
@@ -111,12 +111,13 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
 
-/* Native unsigned-byte (1) and FLOAT (6) source formats; zero if unknown. */
+/* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 
 /*
- * Byte components occupy one word, first component in its high byte. FLOAT
- * components occupy one transport-decoded IEEE binary32 word each. Conversion
+ * Components occupy transport-decoded words, most significant bytes first.
+ * Integer inputs use OpenGL 1.2.1 table 2.6; FLOAT inputs use IEEE binary32.
+ * Conversion
  * produces full RRGGBBAA before destination-format conversion. Finite values
  * clamp to [0, 1] and round to eight bits for the current model storage
  * profile. Unsupported forms and nonfinite components leave rgba unchanged.
