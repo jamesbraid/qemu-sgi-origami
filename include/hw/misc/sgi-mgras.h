@@ -451,6 +451,29 @@ typedef struct SGIMgrasGLContext {
     SGIMgrasTexture tex;
 } SGIMgrasGLContext;
 
+#define SGI_MGRAS_GL_SELECTION_NAMES 32
+#define SGI_MGRAS_GL_SELECTION_HITS 32
+
+typedef struct SGIMgrasGLSelectionHit {
+    uint32_t name_count;
+    uint32_t depth_min;
+    uint32_t depth_max;
+    uint32_t names[SGI_MGRAS_GL_SELECTION_NAMES];
+} SGIMgrasGLSelectionHit;
+
+typedef struct SGIMgrasGLSelection {
+    bool active;
+    bool result_phase;
+    bool pending;
+    bool overflow;
+    uint32_t name_count;
+    uint32_t hit_count;
+    uint32_t depth_min;
+    uint32_t depth_max;
+    uint32_t names[SGI_MGRAS_GL_SELECTION_NAMES];
+    SGIMgrasGLSelectionHit hits[SGI_MGRAS_GL_SELECTION_HITS];
+} SGIMgrasGLSelection;
+
 /*
  * The GE parameter words the client's 0x80 and 0xcd packets load, by the
  * address each load names (hw/misc/sgi-mgras-gl.c). Every address the
@@ -724,6 +747,7 @@ struct SGIMgrasState {
      */
     SGIGLContext gl[SGI_MGRAS_GL_CONTEXTS];
     SGIMgrasGLContext gl_context[SGI_MGRAS_GL_CONTEXTS];
+    SGIMgrasGLSelection gl_selection[SGI_MGRAS_GL_CONTEXTS];
     uint32_t gl_slot[SGI_MGRAS_GL_CONTEXTS];
     uint64_t gl_selected[SGI_MGRAS_GL_CONTEXTS];
     uint64_t gl_selections;
