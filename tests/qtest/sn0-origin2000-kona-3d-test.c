@@ -2219,6 +2219,7 @@ static void test_read_destroyed_window_replaced(gconstpointer opaque)
 {
     bool migrate = GPOINTER_TO_INT(opaque);
     static const uint32_t config[10] = { 0, 12, 0, 1 };
+    static const uint32_t single[10] = { 0, 12 };
     g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
     GError *err = NULL;
     QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
@@ -2238,6 +2239,8 @@ static void test_read_destroyed_window_replaced(gconstpointer opaque)
     kona_command_kicked(from, 0x1e7, (uint32_t[]){ 1 }, 1);
     qtest_clock_step(from, 20000000);
     assert_read_colour(from, 0xff0000);
+    kona_command(from, 0x37, (uint32_t[]){ 0x405 }, 1);
+    assert_read_buffer(from, 0x405);
     kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
     assert_source_refused(from);
     place_read_window(from, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
@@ -2254,6 +2257,12 @@ static void test_read_destroyed_window_replaced(gconstpointer opaque)
     assert_read_colour(s, 0x0000ff);
     kona_command(s, 0x37, (uint32_t[]){ 0x404 }, 1);
     assert_read_colour(s, 0xff0000);
+    kona_command(s, 0x37, (uint32_t[]){ 0x405 }, 1);
+    kona_command(s, 1, single, 10);
+    assert_source_refused(s);
+    kona_command(s, 1, config, 10);
+    assert_read_buffer(s, 0x405);
+    assert_read_colour(s, 0x0000ff);
     if (to) {
         qtest_quit(to);
         g_rmdir(tmpfs);
@@ -2328,6 +2337,53 @@ static void test_read_placed_move_keeps_swap(void)
     assert_read_colour(qts, 0x0000ff);
     kona_command(qts, 0x37, (uint32_t[]){ 0x405 }, 1);
     assert_read_colour(qts, 0xff0000);
+}
+
+static void test_read_single_retired_replaced(gconstpointer opaque)
+{
+    bool migrate = GPOINTER_TO_INT(opaque);
+    static const uint32_t single[10] = { 0, 12 };
+    static const uint32_t doubled[10] = { 0, 12, 0, 1 };
+    g_autofree char *tmpfs = NULL, *uri = NULL, *dest_args = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    gl_make_current(from);
+    gl_window_cleared(from, 0, 0, 1);
+    assert_read_buffer(from, 0x404);
+    kona_command(from, 0x37, (uint32_t[]){ 0x400 }, 1);
+    kona_command_kicked(from, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    assert_source_refused(from);
+    if (migrate) {
+        tmpfs = g_dir_make_tmp("sn0-kona-single-retired-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        dest_args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        to = qtest_init(dest_args);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+        assert_source_refused(s);
+    }
+    place_read_window(s, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_read_buffer(s, 0x400);
+    assert_read_colour(s, 0x0000ff);
+    kona_command(s, 0x37, (uint32_t[]){ 0x405 }, 1);
+    assert_source_refused(s);
+    kona_command_kicked(s, 0x1f8, (uint32_t[]){ 0x103 }, 1);
+    place_read_window(s, PROBE_X, PROBE_Y, PROBE_SIZE, PROBE_SIZE);
+    assert_source_refused(s);
+    kona_command(s, 1, doubled, 10);
+    kona_command_f(s, 0x1d, (float[]){ 0, 1, 0, 1 }, 4);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    assert_read_buffer(s, 0x405);
+    assert_read_colour(s, 0x00ff00);
+    kona_command(s, 1, single, 10);
+    assert_source_refused(s);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(tmpfs);
+    }
+    qtest_quit(from);
 }
 
 int main(int argc, char **argv)
@@ -2476,6 +2532,13 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0x114), test_read_retired_state);
     qtest_add_func("sn0/origin2000/kona-3d/placed-move-keeps-swap",
                    test_read_placed_move_keeps_swap);
+
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-single-retired-replaced",
+                        GINT_TO_POINTER(false),
+                        test_read_single_retired_replaced);
+    qtest_add_data_func("sn0/origin2000/kona-3d/read-single-retired-migrates",
+                        GINT_TO_POINTER(true),
+                        test_read_single_retired_replaced);
 
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
