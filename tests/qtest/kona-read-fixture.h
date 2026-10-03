@@ -35,6 +35,14 @@
 #define FIXTURE_LAYOUT_SOURCE_PLANES 208
 #define FIXTURE_LAYOUT_SOURCE_BYTES 216
 
+#define FIXTURE_DMA_IO 224
+#define FIXTURE_DMA_PITCH 232
+#define FIXTURE_DMA_RUN 240
+#define FIXTURE_DMA_RESULT 248
+#define FIXTURE_DMA_READS 256
+#define FIXTURE_WRITE_REFUSED 264
+#define FIXTURE_WRITE_MIGRATE 272
+
 /* Pixel recovery restores the last byte of the fixed 6-by-2 scene. */
 enum {
     FIXTURE_PIXEL_VALID,

@@ -1046,6 +1046,22 @@ struct SGIKonaState {
     uint32_t x_pixel_remaining;
     uint32_t x_pixel_prev;
 
+    /* Pending source pixels stay separate from canonical board storage. */
+    SGIBoardMemory x_write_mem;
+    bool x_write_snapshot;
+    bool x_write_refused;
+    uint32_t x_write_gc[SGI_KONA_X_GC_WORDS];
+    uint32_t x_write_setup[SGI_KONA_X_PIXEL_SETUP_WORDS];
+    uint32_t x_write_clip_count;
+    uint32_t x_write_clip_rects[4 * SGI_KONA_X_CLIP_MAX_RECTS];
+    bool x_write_scissor_valid;
+    uint32_t x_write_scissor[SGI_KONA_X_SCISSOR_WORDS];
+    uint32_t x_write_stipple_width;
+    uint32_t x_write_stipple_height;
+    int64_t x_write_stipple_x;
+    int64_t x_write_stipple_y;
+    uint32_t x_write_stipple_rows[SGI_KONA_X_STIPPLE_MAX];
+
     /*
      * Stage 4: the kernel FIFO's framebuffer DMA engine. See
      * include/hw/misc/sgi-kona-dma.h for the wire format and its

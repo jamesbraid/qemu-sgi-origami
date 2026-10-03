@@ -276,6 +276,16 @@ static void load_bitmap_gc(QTestState *s, uint32_t w0, uint32_t w1,
               13);
 }
 
+/* Packing 5 carries direct sixteen-bit values and uses image format 5. */
+static void load_opaque_bitmap_gc(QTestState *s, uint32_t foreground,
+                                  uint32_t background)
+{
+    x_command(s, TOKEN_GC,
+              (uint32_t[]){ foreground << 8, 0, background << 8, 0,
+                            0xf00fff, 0, 0x180c, 0x40001, 1, 6, 5, 1, 1 },
+              13);
+}
+
 /* An X box of colour index `index`, [x1, x2) by [y1, y2). */
 static void fill_box(QTestState *s, uint32_t index, int x1, int y1, int x2,
                      int y2)
@@ -420,8 +430,9 @@ static void test_packing4_run_label_is_black(void)
  * 0xfff0, 0x230, 0, 0, then 0x136 0 with 4, 1, 0, 32, 1, 0 and 0x139 at
  * (10, 10) with 0x80000001 paints (10, 10) and (41, 10) with entry 0x2d23
  * and leaves (11, 10) unchanged. At depth 8 the index is bits 11:4 of
- * word 1, so a second GC with word 1 0x203 paints index 0x20, where a
- * model reading word 1's low byte would paint 3.
+ * word 1. Word 1 0x203 has nonzero low bits and is outside the canonical
+ * eight-bit subset, so it must leave the destination unchanged. The following
+ * canonical word 0x200 paints index 0x20, not word 1's low byte zero.
  */
 static void test_packing4_grammar_row(void)
 {
@@ -439,7 +450,15 @@ static void test_packing4_grammar_row(void)
 
     load_bitmap_gc(qts, 0xfff0, 0x203, 0, 0);
     pixel_write(qts, 10, 11, (uint32_t[]){ 0x80000000 }, 1);
+    for (unsigned x = 10; x < 42; x++) {
+        g_assert_cmphex(front_at(qts, x, 11), ==, INDEX_GREY);
+        g_assert_cmphex(front_tag_at(qts, x, 11), ==, TAG_X_INDEX);
+    }
+    load_bitmap_gc(qts, 0xfff0, 0x200, 0, 0);
+    pixel_write(qts, 10, 11, (uint32_t[]){ 0x80000000 }, 1);
     g_assert_cmphex(front_at(qts, 10, 11), ==, 0x20);
+    g_assert_cmphex(front_tag_at(qts, 10, 11), ==, TAG_X_INDEX);
+    g_assert_cmphex(front_at(qts, 11, 11), ==, INDEX_GREY);
     assert_in_step(qts);
 }
 
@@ -471,9 +490,16 @@ static void test_packing5_paints_both(void)
     load_entries(qts);
     fill_box(qts, INDEX_GREY, 0, 0, 64, 32);
     full_screen_clip(qts);
+    /* Opaque source packing cannot use the transparent loader's ifmt zero. */
     load_bitmap_gc(qts, 0x100, 0, 0x200, 0);
     x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 0, 5, 1, 0, 32, 1, 0 },
               7);
+    pixel_write(qts, 20, 5, (uint32_t[]){ 0x80000000 }, 1);
+    for (unsigned x = 20; x < 52; x++) {
+        g_assert_cmphex(front_at(qts, x, 5), ==, INDEX_GREY);
+        g_assert_cmphex(front_tag_at(qts, x, 5), ==, TAG_X_INDEX);
+    }
+    load_opaque_bitmap_gc(qts, INDEX_GREEN, INDEX_BLUE);
     pixel_write(qts, 20, 5, (uint32_t[]){ 0x80000000 }, 1);
 
     g_assert_cmphex(front_at(qts, 20, 5), ==, INDEX_GREEN);
@@ -499,7 +525,7 @@ static void test_bitmap_clipped(void)
     qtest_system_reset(qts);
     fill_box(qts, INDEX_GREY, 0, 0, 200, 32);
     x_command(qts, TOKEN_CLIP, (uint32_t[]){ 1, 100, 0, 104, 1024 }, 5);
-    load_bitmap_gc(qts, 0x100, 0, 0x200, 0);
+    load_opaque_bitmap_gc(qts, INDEX_GREEN, INDEX_BLUE);
     bitmap_setup(qts, 5, 32, 1);
     pixel_write(qts, 98, 3, (uint32_t[]){ 0xa0000000 }, 1);
     g_assert_cmphex(front_at(qts, 98, 3), ==, INDEX_GREY);
@@ -557,7 +583,7 @@ static void test_scissor_clips_writes_and_fills(void)
     fill_box(qts, INDEX_GREY, 240, 290, 280, 320);
     full_screen_clip(qts);
     x_command(qts, TOKEN_SCISSOR, (uint32_t[]){ 250, 300, 10, 5 }, 4);
-    load_bitmap_gc(qts, 0x100, 0, 0x200, 0);
+    load_opaque_bitmap_gc(qts, INDEX_GREEN, INDEX_BLUE);
     bitmap_setup(qts, 5, 32, 1);
     pixel_write(qts, 245, 302, (uint32_t[]){ 0xffffffff }, 1);
     pixel_write(qts, 245, 305, (uint32_t[]){ 0xffffffff }, 1);

@@ -7,10 +7,10 @@
  * write is x, then y, then height rows of ceil((pad + bpp * width) / 32)
  * big-endian words.
  *
- * Bits per pixel from the source-packing word (0, 1, 2 for 8, 16, 32, and
- * 4 for 1-bit glyph rows) is inferred; the model draws 8-bit pixels as X
- * colour-map indices, 32-bit ones as direct colour and keeps a 16-bit
- * pixel's low byte as an index. What 1-bit rows paint is
+ * Source packing defines the framed payload size. Eight-bit writes stage X
+ * indices until finish. Sixteen-bit and native RGB conversion remain
+ * unsupported and consume their known payload without drawing. What 1-bit
+ * rows paint is
  * sn0-origin2000-kona-glyph-test.c's subject; here they are checked for
  * framing only. These cases check that rule and the framing, not the
  * hardware. y counts down from the top display line, as for boxes.
@@ -23,6 +23,9 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "qobject/qlist.h"
+#include "qobject/qstring.h"
+#include "qapi/error.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
@@ -203,9 +206,24 @@ static void data_words(QTestState *s, const uint32_t *words, unsigned n)
     }
 }
 
+static void copy_rgb_gc(uint32_t *gc, uint32_t pixel, uint32_t mask,
+                         unsigned gx);
+
+static void seed_rgb(QTestState *s, unsigned x, unsigned y, uint32_t value)
+{
+    uint32_t gc[13];
+
+    copy_rgb_gc(gc, value, 0xffffff, 3);
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(s, 0x154,
+              (uint32_t[]){ (x << 16) | y, ((x + 1) << 16) | (y + 1) }, 2);
+}
+
 static void pixel_setup(QTestState *s, uint32_t mode, uint32_t src_pack,
                         uint32_t width, uint32_t height, uint32_t pad)
 {
+    x_command(s, TOKEN_GC, (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0,
+                0x180c, 0x40001, 1, 6, 5, 1, 1 }, 13);
     x_command(s, TOKEN_PIXEL_SETUP,
               (uint32_t[]){ mode, src_pack, 1, 8, width, height, pad }, 7);
 }
@@ -292,8 +310,7 @@ static void test_weave(void)
 
 /*
  * A 32-bit write, source packing 2: two rows of three words at (100, 200)
- * land as direct colour, the top byte kept in the plane and cleared on
- * the console.
+ * are consumed without drawing because native RGB conversion is unknown.
  */
 static void test_write_32bit(void)
 {
@@ -311,30 +328,26 @@ static void test_write_32bit(void)
 
     for (unsigned i = 0; i < 6; i++) {
         g_assert_cmphex(front_at(qts, 100 + i % 3, 200 + i / 3), ==,
-                        words[i]);
+                        0);
         g_assert_cmphex(front_tag_at(qts, 100 + i % 3, 200 + i / 3), ==,
                         TAG_DIRECT);
     }
     g_assert_cmphex(front_at(qts, 103, 200), ==, 0);
     frame = kona_screendump(qts);
-    g_assert_cmphex(ppm_pixel(frame, 101, 200), ==, 0x445566);
-    g_assert_cmphex(ppm_pixel(frame, 102, 201), ==, 0x010203);
+    g_assert_cmphex(ppm_pixel(frame, 101, 200), ==, 0);
+    g_assert_cmphex(ppm_pixel(frame, 102, 201), ==, 0);
     assert_in_step(qts);
 }
 
 /*
  * A 16-bit write, source packing 1: three pixels a row take two words,
- * the second's low half padding. Each pixel keeps its low byte as an X
- * index. Two rows, so a model that took one word a row would read the
- * second row's first word as padding and misplace it.
+ * the second's low half padding. The unsupported conversion refuses every
+ * pixel while consuming both rows and preserving following command framing.
  */
 static void test_write_16bit(void)
 {
     static const uint32_t words[] = {
         0xab12cd34, 0xef56dead, 0x01a102a2, 0x03a3beef,
-    };
-    static const uint32_t want[2][3] = {
-        { 0x12, 0x34, 0x56 }, { 0xa1, 0xa2, 0xa3 },
     };
 
     qtest_system_reset(qts);
@@ -345,9 +358,9 @@ static void test_write_16bit(void)
 
     for (unsigned r = 0; r < 2; r++) {
         for (unsigned c = 0; c < 3; c++) {
-            g_assert_cmphex(front_at(qts, 10 + c, 20 + r), ==, want[r][c]);
+            g_assert_cmphex(front_at(qts, 10 + c, 20 + r), ==, 0);
             g_assert_cmphex(front_tag_at(qts, 10 + c, 20 + r), ==,
-                            TAG_X_INDEX);
+                            TAG_DIRECT);
         }
         g_assert_cmphex(front_at(qts, 13, 20 + r), ==, 0);
     }
@@ -606,10 +619,7 @@ static void test_copy_refuses_mixed_tags(void)
     data_words(qts, (uint32_t[]){ 2, 5 }, 2);
     qtest_writel(qts, REG_COMMAND, 1);
     data_words(qts, (uint32_t[]){ 6, 300, KONA_FB_HEIGHT - 1 - 10 }, 3);
-    pixel_setup(qts, 0, 2, 1, 1, 0);
-    pixel_write(qts, 301, 10);
-    data_words(qts, (uint32_t[]){ 0x00abcdef }, 1);
-    pixel_finish(qts);
+    seed_rgb(qts, 301, 10, 0xabcdef);
     x_command(qts, TOKEN_COLOR_MAP,
               (uint32_t[]){ X_MAP_WINDOW + 5, 1, ENTRY_GREY_192 }, 3);
     pixel_setup(qts, 0, 0, 1, 1, 0);
@@ -1042,10 +1052,7 @@ static void test_read_wrong_tag(gconstpointer opaque)
         qtest_writel(qts, REG_COMMAND, 1023 - 719);
         g_assert_cmphex(front_tag_at(qts, 459, 719), ==, 1);
     } else {
-        pixel_setup(qts, 0, 2, 1, 1, 0);
-        pixel_write(qts, 459, 719);
-        data_words(qts, (uint32_t[]){ 0x12abcdef }, 1);
-        pixel_finish(qts);
+        seed_rgb(qts, 459, 719, 0xabcdef);
         g_assert_cmphex(front_tag_at(qts, 459, 719), ==, TAG_DIRECT);
     }
     read_setup(qts, 6, 20);
@@ -1935,12 +1942,487 @@ static void test_copy_setup_refusal(gconstpointer opaque)
     assert_in_step(qts);
 }
 
+static void assert_staged_planes(QTestState *s, char *const *before)
+{
+    for (unsigned plane = 0; plane < 11; plane++) {
+        g_autofree char *seen = copy_plane_digest(s, plane);
+
+        g_assert_cmpstr(seen, ==, before[plane]);
+    }
+}
+
+/* The existing mapped image-DMA packet, limited to this small fixture. */
+static void staged_dma_words(QTestState *s, const uint32_t *words, unsigned n)
+{
+    const uint64_t page = 0x400000;
+    uint8_t bytes[16];
+
+    g_assert_cmpuint(n, <=, sizeof(bytes) / 4);
+    for (unsigned k = 0; k < n; k++) {
+        for (unsigned b = 0; b < 4; b++) {
+            bytes[4 * k + b] = words[k] >> (24 - 8 * b);
+        }
+    }
+    qtest_memwrite(s, page, bytes, 4 * n);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000000 | (page >> 12));
+    qtest_writel(s, KONA_REG(0xc00108), 0x30000);
+    qtest_writel(s, REG_COMMAND, 0x1eb);
+    qtest_writel(s, KONA_REG(0xc00108), 0x10000);
+    qtest_writel(s, REG_COMMAND, 0);
+    qtest_writel(s, REG_COMMAND, 0x9000);
+    qtest_writel(s, REG_COMMAND, 4 * n);
+    qtest_writel(s, REG_COMMAND, 4 * n);
+    qtest_writel(s, REG_COMMAND, 0);
+    qtest_writel(s, REG_COMMAND, 0);
+    qtest_writel(s, KONA_REG(0xc00108), 0);
+}
+
+/* Offset zero remains a command port while the payload waits for DMA. */
+static void staged_live_state(QTestState *s)
+{
+    uint32_t gc[13];
+    static const uint32_t setup[] = { 0, 2, 2, 0, 1, 1, 0 };
+
+    copy_rgb_gc(gc, 0, 0xffffff, 3);
+    gc[6] = 0x2804;
+    gc[7] = 0x60001;
+    gc[10] = 8;
+    qtest_writel(s, REG_COMMAND, TOKEN_GC);
+    for (unsigned k = 0; k < ARRAY_SIZE(gc); k++) {
+        qtest_writel(s, REG_COMMAND, gc[k]);
+    }
+    qtest_writel(s, REG_COMMAND, TOKEN_PIXEL_SETUP);
+    for (unsigned k = 0; k < ARRAY_SIZE(setup); k++) {
+        qtest_writel(s, REG_COMMAND, setup[k]);
+    }
+}
+
+static void test_write_snapshot_migrates(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    bool completed = kind == 1;
+    bool dma = kind >= 2;
+    static const uint32_t words[] = {
+        0xfffa1b2c, 0x3fffffff, 0xfff0a0b0, 0xc0ffffff,
+    };
+    static const uint8_t pixels[2][3] = {
+        { 0xa1, 0xb2, 0xc3 }, { 0x0a, 0x0b, 0x0c },
+    };
+    unsigned consumed = completed ? 4 : 1;
+    char *before[11];
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("kona-write-snapshot-XXXXXX", &error);
+    g_assert_no_error(error);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = qtest_init(MACHINE_ARGS);
+    copy_canaries(from);
+    copy_semantic_gc(from, false, 0xff, 3);
+    x_command(from, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ dma ? 0x10 : 0, 0, 1, 8, 3, 2, 12 }, 7);
+    pixel_write(from, 70, 80);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(from, plane);
+    }
+    if (dma) {
+        staged_dma_words(from, words, consumed);
+    } else {
+        data_words(from, words, consumed);
+    }
+    assert_staged_planes(from, before);
+    if (kind == 3) {
+        staged_live_state(from);
+        assert_staged_planes(from, before);
+    }
+    if (completed) {
+        /* Live drawing state cannot reinterpret the retained operation. */
+        copy_semantic_gc(from, true, 0xffffff, 3);
+        x_command(from, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]){ 0, 2, 2, 0, 1, 1, 0 }, 7);
+    }
+    to = qtest_init(MACHINE_ARGS " -incoming defer");
+    copy_semantic_gc(to, false, 0xff, 3);
+    x_command(to, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 4, 1, 0 }, 7);
+    pixel_write(to, 5, 5);
+    data_words(to, (uint32_t[]){ 0xeeeeeeee }, 1);
+    qtest_qmp_assert_success(to,
+        "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }", uri);
+    sgi_migrate_stopped(from, uri);
+    assert_staged_planes(to, before);
+    if (dma) {
+        staged_dma_words(to, words + consumed, 4 - consumed);
+    } else {
+        data_words(to, words + consumed, 4 - consumed);
+    }
+    assert_staged_planes(to, before);
+    pixel_finish(to);
+    for (unsigned y = 0; y < 2; y++) {
+        for (unsigned x = 0; x < 3; x++) {
+            g_assert_cmphex(front_at(to, 70 + x, 80 + y), ==, pixels[y][x]);
+            g_assert_cmphex(front_tag_at(to, 70 + x, 80 + y), ==, TAG_X_INDEX);
+        }
+    }
+    g_assert_cmphex(front_at(to, 5, 5), ==, 0);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            g_autofree char *seen = copy_plane_digest(to, plane);
+
+            g_assert_cmpstr(seen, ==, before[plane]);
+        }
+        g_free(before[plane]);
+    }
+    assert_in_step(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+/* Payload arrival alone must never change canonical storage. */
+static void test_write_prepares_until_finish(void)
+{
+    char *before[11] = { NULL };
+    static const uint32_t words[] = { 0x11223344, 0x55667788 };
+    static const uint8_t pixels[] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    };
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    copy_semantic_gc(qts, false, 0xff, 3);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(qts, plane);
+    }
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
+    pixel_write(qts, 70, 80);
+    for (unsigned word = 0; word < ARRAY_SIZE(words); word++) {
+        data_words(qts, words + word, 1);
+        for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+            g_autofree char *seen = copy_plane_digest(qts, plane);
+
+            g_assert_cmpstr(seen, ==, before[plane]);
+        }
+    }
+    pixel_finish(qts);
+    for (unsigned x = 0; x < ARRAY_SIZE(pixels); x++) {
+        g_assert_cmphex(front_at(qts, 70 + x, 80), ==, pixels[x]);
+        g_assert_cmphex(front_tag_at(qts, 70 + x, 80), ==, TAG_X_INDEX);
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            g_autofree char *seen = copy_plane_digest(qts, plane);
+
+            g_assert_cmpstr(seen, ==, before[plane]);
+        }
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
+/* A late incompatible tag cannot allow earlier prepared pixels to leak. */
+static void test_write_late_destination(gconstpointer opaque)
+{
+    bool masked = GPOINTER_TO_UINT(opaque);
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    char *before[11];
+    static const uint32_t words[] = { 0x11223344, 0x55667788 };
+
+    copy_canaries(s);
+    read_write_pattern(s, 70, 80, 8, 1);
+    seed_rgb(s, 77, 80, 0xabcdef);
+    copy_semantic_gc(s, false, masked ? 0x53 : 0xff, masked ? 3 : 6);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(s, plane);
+    }
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
+    pixel_write(s, 70, 80);
+    data_words(s, words, ARRAY_SIZE(words));
+    assert_staged_planes(s, before);
+    pixel_finish(s);
+    assert_staged_planes(s, before);
+    copy_semantic_gc(s, false, 0xff, 3);
+    pixel_write(s, 70, 80);
+    data_words(s, words, ARRAY_SIZE(words));
+    pixel_finish(s);
+    for (unsigned x = 0; x < 8; x++) {
+        g_assert_cmphex(front_at(s, 70 + x, 80), ==, 0x11 * (x + 1));
+        g_assert_cmphex(front_tag_at(s, 70 + x, 80), ==, TAG_X_INDEX);
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            g_autofree char *seen = copy_plane_digest(s, plane);
+
+            g_assert_cmpstr(seen, ==, before[plane]);
+        }
+        g_free(before[plane]);
+    }
+    assert_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found,
+                           "X streamed write incompatible destination "
+                           "(77,80)"));
+}
+
+/* A slot interruption discards the source prefix before finish can commit. */
+static void test_write_interrupted(void)
+{
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
+    char *before[11];
+    static const uint32_t words[] = { 0x11223344, 0x55667788 };
+
+    copy_canaries(s);
+    pixel_setup(s, 0, 0, 8, 1, 0);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(s, plane);
+    }
+    pixel_write(s, 70, 80);
+    data_words(s, words, 1);
+    assert_staged_planes(s, before);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
+    assert_staged_planes(s, before);
+    pixel_finish(s);
+    assert_staged_planes(s, before);
+    pixel_write(s, 70, 80);
+    data_words(s, words, ARRAY_SIZE(words));
+    pixel_finish(s);
+    for (unsigned x = 0; x < 8; x++) {
+        g_assert_cmphex(front_at(s, 70 + x, 80), ==, 0x11 * (x + 1));
+        g_assert_cmphex(front_tag_at(s, 70 + x, 80), ==, TAG_X_INDEX);
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != PLANE_FRONT && plane != PLANE_FRONT_TAG) {
+            g_autofree char *seen = copy_plane_digest(s, plane);
+
+            g_assert_cmpstr(seen, ==, before[plane]);
+        }
+        g_free(before[plane]);
+    }
+    assert_in_step(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "partial command dropped"));
+}
+
+static void test_staged_bitmap(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    bool opaque_bitmap = kind < 2 || kind == 4 || kind == 5;
+    bool refused = kind != 0 && kind != 2;
+    uint32_t gc[13] = { 0x2300, 0, 0x4500, 0, 0xf00fff, 0,
+                        0x180c, 0x40001, 1, 6, 5, 1, 1 };
+    char *before[11];
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    if (!opaque_bitmap) {
+        gc[0] = 0xfff0;
+        gc[1] = 0x230;
+        gc[2] = 0;
+        gc[10] = 0;
+    }
+    if (kind == 1 || kind == 3) {
+        gc[10] = opaque_bitmap ? 0 : 5;
+    } else if (kind >= 4) {
+        unsigned field = kind == 4 ? 1 : kind == 6 ? 2 : 3;
+
+        gc[field] = 1;
+    }
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, opaque_bitmap ? 5 : 4, 1, 0, 4, 1, 0 }, 7);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(qts, plane);
+    }
+    pixel_write(qts, 70, 80);
+    data_words(qts, (uint32_t[]){ 0xa0000000 }, 1);
+    assert_staged_planes(qts, before);
+    pixel_finish(qts);
+    if (refused) {
+        assert_staged_planes(qts, before);
+        gc[10] = opaque_bitmap ? 5 : 0;
+        if (kind >= 4) {
+            gc[kind == 4 ? 1 : kind == 6 ? 2 : 3] = 0;
+        }
+        x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+        pixel_write(qts, 70, 80);
+        data_words(qts, (uint32_t[]){ 0xa0000000 }, 1);
+        assert_staged_planes(qts, before);
+        pixel_finish(qts);
+    }
+    {
+        for (unsigned x = 0; x < 4; x++) {
+            bool set = !(x & 1);
+
+            g_assert_cmphex(front_at(qts, 70 + x, 80), ==,
+                           set ? 0x23 : opaque_bitmap ? 0x45 : 0);
+            g_assert_cmphex(front_tag_at(qts, 70 + x, 80), ==,
+                           set || opaque_bitmap ? TAG_X_INDEX : TAG_DIRECT);
+        }
+        for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+            if (plane != 0 && plane != 2) {
+                g_autofree char *seen = copy_plane_digest(qts, plane);
+
+                g_assert_cmpstr(seen, ==, before[plane]);
+            }
+        }
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_free(before[plane]);
+    }
+    assert_in_step(qts);
+}
+
+/* Retained streams were generated by the incremental writer. */
+static void test_old_write_receiver(gconstpointer opaque)
+{
+    unsigned state = GPOINTER_TO_UINT(opaque);
+    static const char *const names[] = {
+        "no-pending", "empty-prefix", "written-prefix", "completed-payload",
+    };
+    static const uint32_t words[] = { 0x11223344, 0x55667788 };
+    static const uint8_t pixels[] = {
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+    };
+    g_autofree char *directory = g_test_build_filename(G_TEST_DIST, "..", "..",
+                                        ".cache", "kona-old-write", NULL);
+    g_autofree char *stream = g_strdup_printf("%s/%s.migration", directory,
+                                             names[state]);
+    g_autofree char *metadata = g_strdup_printf("%s/%s.json", directory,
+                                               names[state]);
+    g_autofree char *text = NULL;
+    g_autofree char *uri = g_strdup_printf("file:%s", stream);
+    g_autoptr(QDict) manifest = NULL;
+    QList *digests;
+    const QListEntry *entry;
+    char *before[11];
+    unsigned consumed = state ? state - 1 : 0, plane = 0;
+    size_t count = (size_t)KONA_FB_WIDTH * KONA_FB_HEIGHT;
+    g_autofree uint8_t *expected_words = g_malloc0(count * 4);
+    g_autofree uint8_t *expected_tags = g_malloc0(count);
+    QTestState *to;
+
+    if (!g_file_test(stream, G_FILE_TEST_IS_REGULAR)) {
+        g_test_skip("retained old-writer migration fixture is unavailable");
+        return;
+    }
+    g_assert_true(g_file_get_contents(metadata, &text, NULL, NULL));
+    manifest = qobject_to(QDict, qobject_from_json(text, &error_abort));
+    g_assert_nonnull(manifest);
+    digests = qdict_get_qlist(manifest, "plane_digests");
+    g_assert_cmpuint(qlist_size(digests), ==, 11);
+    QLIST_FOREACH_ENTRY(digests, entry) {
+        before[plane++] = g_strdup(qstring_get_str(
+            qobject_to(QString, qlist_entry_obj(entry))));
+    }
+    to = qtest_init(MACHINE_ARGS " -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    assert_staged_planes(to, before);
+    if (state) {
+        for (unsigned word = consumed; word < ARRAY_SIZE(words); word++) {
+            data_words(to, words + word, 1);
+            assert_staged_planes(to, before);
+        }
+        pixel_finish(to);
+        assert_staged_planes(to, before);
+    }
+    copy_semantic_gc(to, false, 0xff, 3);
+    x_command(to, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 0, 1, 8, 8, 1, 0 }, 7);
+    pixel_write(to, 90, 80);
+    data_words(to, words, ARRAY_SIZE(words));
+    assert_staged_planes(to, before);
+    pixel_finish(to);
+    for (unsigned x = 0; x < ARRAY_SIZE(pixels); x++) {
+        g_assert_cmphex(front_at(to, 70 + x, 80), ==,
+                       x < consumed * 4 ? pixels[x] : 0);
+        g_assert_cmphex(front_tag_at(to, 70 + x, 80), ==,
+                       x < consumed * 4 ? TAG_X_INDEX : TAG_DIRECT);
+        g_assert_cmphex(front_at(to, 90 + x, 80), ==, pixels[x]);
+        g_assert_cmphex(front_tag_at(to, 90 + x, 80), ==, TAG_X_INDEX);
+        size_t old = (KONA_FB_HEIGHT - 1 - 80) * KONA_FB_WIDTH + 70 + x;
+        size_t next = old + 20;
+
+        if (x < consumed * 4) {
+            expected_words[old * 4] = pixels[x];
+            expected_tags[old] = TAG_X_INDEX;
+        }
+        expected_words[next * 4] = pixels[x];
+        expected_tags[next] = TAG_X_INDEX;
+    }
+    for (plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *seen = copy_plane_digest(to, plane);
+        g_autofree char *expected = plane == 0 || plane == 2 ?
+            g_compute_checksum_for_data(G_CHECKSUM_SHA256,
+                plane == 0 ? expected_words : expected_tags,
+                count * (plane == 0 ? 4 : 1)) : g_strdup(before[plane]);
+
+        g_assert_cmpstr(seen, ==, expected);
+        g_free(before[plane]);
+    }
+    assert_in_step(to);
+    qtest_quit(to);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
+    for (unsigned kind = 0; kind < 8; kind++) {
+        static const char *const names[] = {
+            "opaque", "opaque-wrong-ifmt", "transparent",
+            "transparent-wrong-ifmt", "opaque-raw1", "opaque-raw3",
+            "transparent-raw2", "transparent-raw3",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/staged-bitmap/%s", names[kind]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(kind), test_staged_bitmap);
+    }
+
+    for (unsigned state = 0; state < 4; state++) {
+        static const char *const names[] = {
+            "no-pending", "empty-prefix", "written-prefix", "completed-payload",
+        };
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/old-write-receiver/%s", names[state]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(state),
+                            test_old_write_receiver);
+    }
+
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/migration/"
+                        "partial",
+                        GUINT_TO_POINTER(0), test_write_snapshot_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/migration/"
+                        "complete",
+                        GUINT_TO_POINTER(1), test_write_snapshot_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/late-xor",
+                        GUINT_TO_POINTER(0), test_write_late_destination);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/late-mask",
+                        GUINT_TO_POINTER(1), test_write_late_destination);
+    qtest_add_func("sn0/origin2000/kona-pixel/staged-write/interrupted",
+                   test_write_interrupted);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/migration/"
+                        "dma-partial", GUINT_TO_POINTER(2),
+                        test_write_snapshot_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/staged-write/migration/"
+                        "dma-live-state", GUINT_TO_POINTER(3),
+                        test_write_snapshot_migrates);
+    qtest_add_func("sn0/origin2000/kona-pixel/staged-write/until-finish",
+                   test_write_prepares_until_finish);
 
     for (unsigned rgb = 0; rgb < 2; rgb++) {
         for (unsigned gx = 0; gx < 16; gx++) {
