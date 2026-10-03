@@ -544,7 +544,7 @@ static void test_texture_sampler(void)
         SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_LINEAR_MIPMAP_LINEAR, 0,
     };
     uint32_t bind[5] = { 7, 0, 0, 0, 0 };
-    uint32_t record[22] = { 0, 16u << 16, 256u << 10 };
+    uint32_t record[22] = { 0, 0x00101010, 256u << 10 };
     SGIKonaTextureParams original = {
         .base_level = 2, .max_level = 5,
         .min_lod = -1000, .max_lod = 1000,
@@ -600,8 +600,24 @@ static void test_texture_sampler(void)
     record[2] = 320 | (256 << 10);
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
     record[2] = 256 << 10;
-    record[1] = 17 << 16;
-    g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    for (unsigned axis = 0; axis <= 8; axis += 8) {
+        record[1] = 0x00101010 ^ (1 << axis);
+        g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+    }
+}
+
+static void test_texture_dimensions(void)
+{
+    uint32_t bind[5] = { 0 }, width, height;
+
+    for (unsigned s = 0; s < 16; s++) {
+        for (unsigned t = 0; t < 16; t++) {
+            bind[3] = 0xffff0000 | s | (t << 4);
+            sgi_kona_gl_texture_dimensions(bind, &width, &height);
+            g_assert_cmpuint(width, ==, 1u << s);
+            g_assert_cmpuint(height, ==, 1u << t);
+        }
+    }
 }
 
 int main(int argc, char **argv)
@@ -629,5 +645,7 @@ int main(int argc, char **argv)
                     test_texture_transform);
     g_test_add_func("/sgi-kona-gl-decode/texture-sampler",
                     test_texture_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-dimensions",
+                    test_texture_dimensions);
     return g_test_run();
 }

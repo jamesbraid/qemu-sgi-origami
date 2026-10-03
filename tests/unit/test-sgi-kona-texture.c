@@ -427,6 +427,65 @@ static void test_native_migration(void)
     sgi_kona_texture_cleanup(&dst);
 }
 
+static void test_native_sampling(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    SGIGLContext c;
+    SGIGLDrawable d = {
+        .bound = true, .clip = { .n = 1, .r[0] = { 0, 0, 1, 1 } },
+    };
+    uint32_t table[16] = { 0 };
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_2D, [1] = 2, [2] = 2, [10] = 9,
+        [13] = 1, [14] = 1, [16] = 0x23, [17] = 0x2181,
+    };
+    const uint32_t pixels[] = { 0x00ff00ff, 0x00ff00ff,
+                                0x00ff00ff, 0x00ff00ff };
+    GByteArray *a;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    sgi_gl_init(&c, 0);
+    sgi_gl_set_drawable(&c, &d);
+    c.cur.viewport[2] = c.cur.viewport[3] = 2;
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = SGI_GL_NEAREST_MIPMAP_NEAREST;
+    p.mag_filter = SGI_GL_NEAREST;
+    p.min_lod = p.max_lod = 1;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, pixels,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    h[1] = h[2] = 1;
+    h[13] = h[14] = 0;
+    h[16] = 0x11;
+    h[17] ^= 8;
+    g_assert_true(sgi_kona_texture_native_upload(&src, h, red,
+                                                SGI_GL_RGBA, SGI_GL_RGBA));
+    g_assert_true(sgi_kona_texture_native_table(&src, 9, table));
+    g_assert_true(sgi_kona_texture_native_dimensions(&src, 9, 2, 2));
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    /* Bind dimensions distinguish mipmap levels sharing zero descriptors. */
+    g_assert_cmphex(draw(&src, &c), ==, 0xff0000);
+    p.post_scale[0] = 0.5;
+    p.post_bias[2] = 0.25;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    g_assert_cmphex(draw(&src, &c), ==, 0x800040);
+    g_assert_false(sgi_kona_texture_native_dimensions(&src, 9, 3, 2));
+    g_assert_cmphex(draw(&src, &c), ==, 0x800040);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
+    stl_be_p(a->data + a->len - 8, 3);
+    g_assert_false(load(a, &dst));
+    g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
+    g_byte_array_unref(a);
+    sgi_gl_cleanup(&c);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -438,5 +497,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native", test_native);
     g_test_add_func("/sgi/kona/texture/native-migration",
                     test_native_migration);
+    g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
     return g_test_run();
 }

@@ -314,6 +314,23 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
     return true;
 }
 
+bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
+                                       uint32_t width, uint32_t height)
+{
+    SGIKonaTextureObject *o;
+
+    if (!texture_dimensions(width, height)) {
+        return false;
+    }
+    o = texture_object(s, handle, true);
+    if (!o) {
+        return false;
+    }
+    o->native_width = width;
+    o->native_height = height;
+    return true;
+}
+
 static bool texture_wrap(uint32_t wrap)
 {
     return wrap == SGI_GL_REPEAT || wrap == SGI_GL_CLAMP ||
@@ -424,6 +441,10 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 (!h[18] && h[19] == descriptor) :
                 (!h[19] && h[18] == descriptor);
 
+            if (matches && o->native_width) {
+                matches = n->image.width == MAX(1u, o->native_width >> level) &&
+                          n->image.height == MAX(1u, o->native_height >> level);
+            }
             if (matches) {
                 if (image) {
                     ambiguous = true;
@@ -556,7 +577,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 2);
+    qemu_put_be32(f, 3);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -599,6 +620,8 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
                 qemu_put_be32(f, l->pixels[p]);
             }
         }
+        qemu_put_be32(f, o->native_width);
+        qemu_put_be32(f, o->native_height);
     }
     if (qemu_file_get_error(f)) {
         error_setg(errp, "KONA texture state could not be saved");
@@ -617,7 +640,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version != 1 && version != 2) || bound > 1 ||
+    if ((version < 1 || version > 3) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -666,7 +689,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                 }
             }
         }
-        if (version == 2) {
+        if (version >= 2) {
             uint32_t valid = qemu_get_be32(f), native_count;
 
             if (valid > 1) {
@@ -725,6 +748,14 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
                         goto invalid;
                     }
                 }
+            }
+        }
+        if (version >= 3) {
+            o->native_width = qemu_get_be32(f);
+            o->native_height = qemu_get_be32(f);
+            if ((o->native_width || o->native_height) &&
+                !texture_dimensions(o->native_width, o->native_height)) {
+                goto invalid;
             }
         }
     }
