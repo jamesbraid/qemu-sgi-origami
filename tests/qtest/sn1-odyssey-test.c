@@ -10781,6 +10781,87 @@ static void test_readback_gl_rgba8_object(void)
     qtest_quit(qts);
 }
 
+/* A native RGBA/UNSIGNED_SHORT read expands each stored channel to 16 bits. */
+static void test_readback_gl_rgba16_object(void)
+{
+    QTestState *qts = readback_start("");
+    uint32_t hdr[8] = {
+        0x16a800, 0, 0x20, 0x10001, 0x8002504b, 0, 4, 0x3201004b,
+    };
+    const uint64_t upload_pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 4) };
+    const uint64_t read_pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 8) };
+    static const struct {
+        uint8_t rgba[4];
+        uint8_t want[8];
+    } cases[] = {
+        { { 0xff, 0x00, 0xff, 0xff },
+          { 0xff, 0xff, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff } },
+        { { 0x12, 0x34, 0x56, 0x80 },
+          { 0x12, 0x12, 0x34, 0x34, 0x56, 0x56, 0x80, 0x80 } },
+    };
+    uint8_t expect[40];
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        qtest_memwrite(qts, RB_PAGE_A + 16, cases[i].rgba, 4);
+        readback_run(qts, hdr, upload_pte, 1);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        hdr[6] = 8;
+        hdr[7] = 0xb3020000;
+        readback_run(qts, hdr, read_pte, 1);
+        memcpy(&expect[16], cases[i].want, 8);
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+        g_assert_true(readback_dma_done(qts));
+        hdr[6] = 4;
+        hdr[7] = 0x3201004b;
+    }
+    qtest_quit(qts);
+}
+
+/* The same V12 copy reads the selected front or back drawable. */
+static void test_readback_gl_rgba16_scratch_copy(void)
+{
+    QTestState *qts = readback_start("");
+    const uint32_t hdr[8] = {
+        0x16a800, 0, 0x20, 0x10001, 0x8002504b, 0, 8, 0xb3020000,
+    };
+    const uint64_t pte[] = { ODSY_DMA_PTE(RB_PAGE_A + 16, 8) };
+    const uint8_t magenta16[8] = {
+        0xff, 0xff, 0, 0, 0xff, 0xff, 0xff, 0xff,
+    };
+    uint8_t expect[40];
+
+    cmd_push64(qts, 0x60b, (RB_ORIGIN_Y << 16) | RB_ORIGIN_X);
+    user_cmd_push(qts, ODSY_CMD_DEST_SELECT);
+    user_cmd_push(qts, 0x16a800);
+    user_cmd_push(qts, 0x20);
+    user_cmd_push(qts, 0x080024d0);
+    user_cmd_push(qts, 0);
+    for (unsigned front = 0; front < 2; front++) {
+        odsy_buffer_pixel_write(qts, 0, RB_ORIGIN_X + 64,
+                                RB_ORIGIN_Y + 63,
+                                front ? 0xff00ffffu : 0x00ff00ffu);
+        odsy_buffer_pixel_write(qts, 1, RB_ORIGIN_X + 64,
+                                RB_ORIGIN_Y + 63,
+                                front ? 0x00ff00ffu : 0xff00ffffu);
+        cmd_push(qts, ODSY_CMD_COPY_RECT_TRIGGER);
+        cmd_push(qts, RB_READ_SENTINEL);
+        cmd_push(qts, 0x003f0040);
+        cmd_push(qts, 0x80200050);
+        cmd_push(qts, 0x00010001);
+        cmd_push(qts, front ? 0x92633042 : 0x12633042);
+        cmd_push(qts, 0x16a800);
+        cmd_push(qts, 0);
+        cmd_push(qts, 0x3802204b);
+        g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 0, 0), ==,
+                        0xff00ffffu);
+        readback_guard(qts, RB_PAGE_A, expect, sizeof(expect));
+        readback_run(qts, hdr, pte, 1);
+        memcpy(&expect[16], magenta16, sizeof(magenta16));
+        readback_expect(qts, RB_PAGE_A, expect, sizeof(expect));
+    }
+    qtest_quit(qts);
+}
+
 /* The V6 scratch read follows a drawable-to-object copy, then a DMA read. */
 static void test_readback_gl_rgba8_scratch_copy(void)
 {
@@ -11014,7 +11095,7 @@ static void test_readback_failures(void)
         /* The draw sentinel with the read selector. */
         { RB_DRAW_SENTINEL, 0x003f0040, 0x10001, RB_GL_FRONT_RGBA, 4,
           0xf3010000, 4, NULL },
-        /* GL code 9 (RGBA, UNSIGNED_SHORT) is not modeled. */
+        /* GL code 9 needs eight bytes, so a four-byte read is refused. */
         { RB_READ_SENTINEL, 0x003f0040, 0x10001, 0x9003504b, 4, 0xf3010000,
           4, "DMA read with format byte 0x0, word 4 0x9003504b" },
         /* A GL source class other than 3. */
@@ -11258,6 +11339,10 @@ int main(int argc, char **argv)
                    test_readback_object_source);
     qtest_add_func("sn1/odyssey/readback/gl-rgba8-object",
                    test_readback_gl_rgba8_object);
+    qtest_add_func("sn1/odyssey/readback/gl-rgba16-object",
+                   test_readback_gl_rgba16_object);
+    qtest_add_func("sn1/odyssey/readback/gl-rgba16-scratch-copy",
+                   test_readback_gl_rgba16_scratch_copy);
     qtest_add_func("sn1/odyssey/readback/gl-rgba8-scratch-copy",
                    test_readback_gl_rgba8_scratch_copy);
     qtest_add_func("sn1/odyssey/readback/index-follows-display-mode",

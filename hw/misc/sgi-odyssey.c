@@ -3438,7 +3438,7 @@ static uint32_t odyssey_object_load(SGIOdysseyState *s, int i, uint32_t x,
                      (uint64_t)y * s->obj_width[i] + x) * 4);
 }
 
-/* Copy the captured V6 read-drawable rectangle into its scratch object. */
+/* Copy a recognized GL read-drawable rectangle into its scratch object. */
 static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
 {
     uint32_t w = s->copy_size & 0xffff;
@@ -3447,13 +3447,17 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
     uint32_t dy = s->copy_dst >> 16;
     int64_t sx = (s->copy_src & 0xffff) + (int64_t)s->read_origin[0];
     int64_t sy = (s->copy_src >> 16) + (int64_t)s->read_origin[1];
+    uint32_t fmt = s->cmd_operand[4];
+    uint32_t tail = s->cmd_operand[7];
+    bool rgba8 = fmt == 0x92233002 && tail == 0x3801210b;
+    bool rgba16 = (fmt & ~ODSY_DMA_FMT_FRONT) == 0x12633042 &&
+                  tail == 0x3802204b;
     int obj = odyssey_object_find(s, s->cmd_operand[5]);
 
     if (s->cmd_operand[0] != ODSY_DMA_SENTINEL_READ ||
         s->cmd_operand[2] != 0x80200050 ||
-        s->cmd_operand[4] != 0x92233002 ||
-        s->cmd_operand[5] != s->dest_base ||
-        s->cmd_operand[7] != 0x3801210b || obj < 0 || !w || !h ||
+        (!rgba8 && !rgba16) ||
+        s->cmd_operand[5] != s->dest_base || obj < 0 || !w || !h ||
         (uint64_t)dx + w > s->obj_width[obj] ||
         sx < 0 || sy < 0 ||
         sx + w > SGI_ODYSSEY_WIDTH ||
@@ -3465,9 +3469,10 @@ static bool odyssey_copy_rect_to_object(SGIOdysseyState *s)
         for (uint32_t x = 0; x < w; x++) {
             unsigned shown = (s->displayed_buffer >>
                               odyssey_main_id(s, sx + x, sy + y)) & 1;
+            unsigned source = fmt & ODSY_DMA_FMT_FRONT ? shown : !shown;
 
             odyssey_object_store(s, obj, dx + x, dy + y,
-                                 odyssey_buffer_load(s, shown, sx + x,
+                                 odyssey_buffer_load(s, source, sx + x,
                                                      sy + y));
         }
     }
@@ -6026,21 +6031,23 @@ static bool odyssey_dma_report(SGIOdysseyState *s, uint32_t reason)
 typedef struct OdysseyDMALayout {
     uint8_t code;
     uint8_t bytes;
-    uint8_t from[4];
+    uint8_t from[8];
 } OdysseyDMALayout;
 
 /*
  * GL reads from a 12-bit-a-channel RGBA window (source class 3), by
  * transfer code, as the library defines the host bytes. The model keeps
- * eight bits a channel, so a read returns them as stored. APPROXIMATION: how
- * the board narrows a 12-bit channel to eight bits is unknown; the stored
- * byte stands for the channel's high eight bits.
+ * eight bits a channel, so a byte read returns them as stored and a
+ * 16-bit read replicates each byte. APPROXIMATION: how the board narrows a
+ * 12-bit channel to eight bits is unknown; the stored byte stands for the
+ * channel's value at the model's precision.
  */
 static const OdysseyDMALayout odyssey_dma_gl_layouts[] = {
     { 1, 4, { 0, 1, 2, 3 } },   /* RGBA, UNSIGNED_BYTE: R, G, B, A */
     { 6, 4, { 3, 2, 1, 0 } },   /* A, B, G, R */
     { 2, 3, { 0, 1, 2 } },      /* RGB, UNSIGNED_BYTE */
     { 7, 3, { 2, 1, 0 } },      /* BGR, UNSIGNED_BYTE */
+    { 9, 8, { 0, 0, 1, 1, 2, 2, 3, 3 } }, /* RGBA, UNSIGNED_SHORT */
 };
 
 /* An eight-bit RGBA visual uses code 8 for RGBA/UNSIGNED_BYTE. */
