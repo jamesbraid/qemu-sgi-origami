@@ -1604,6 +1604,7 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
     }
     if (length == SGI_KONA_VIDEO_DATA_UNKNOWN &&
         s->video_have == SGI_KONA_VIDEO_SEARCH_MAX_WORDS) {
+        sgi_kona_x_read_invalidate(s);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: video command 0x%" PRIx32 " has no"
                       " checksum within %u data words; closed, nothing"
@@ -4572,6 +4573,7 @@ static void sgi_kona_x_box_data(SGIKonaState *s, uint32_t token,
 {
     trace_sgi_kona_x_box_data(token, argc);
     if (s->x_boxes_have + argc > SGI_KONA_X_BOX_RUN_WORDS) {
+        sgi_kona_x_read_invalidate(s);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: X data token 0x%" PRIx32 " makes a run of"
                       " more than %u box words; run dropped\n", token,
@@ -4891,6 +4893,9 @@ static void sgi_kona_x_pixel_write(SGIKonaState *s, const uint32_t *args)
     uint64_t stride = 0, words = 0;
 
     if (s->x_pixel_open) {
+        if (s->x_pixel_remaining) {
+            sgi_kona_x_read_invalidate(s);
+        }
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: X pixel write while another is open;"
                       " the open one ends\n");
@@ -5180,6 +5185,7 @@ static void sgi_kona_x_pixel_finish(SGIKonaState *s)
                       "sgi-kona: X pixel finish with no pixel write open\n");
     }
     if (sgi_kona_x_pixel_dma_waiting(s)) {
+        sgi_kona_x_read_invalidate(s);
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: X pixel finish with %" PRIu32 " words of"
                       " its DMA rows not arrived\n", s->x_pixel_remaining);
@@ -5636,6 +5642,7 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
             return;
         }
         if (s->bitmap_payload_expected > SGI_KONA_BITMAP_MAX_PAYLOAD_WORDS) {
+            sgi_kona_x_read_invalidate(s);
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-kona: bitmap blit %" PRIu32 "x%" PRIu32
                           " exceeds this model's payload bound; dropping\n",

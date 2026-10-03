@@ -1130,6 +1130,94 @@ static void test_read_pending_run_refused(void)
     read_supported(qts);
 }
 
+static void test_read_overflow_requires_reload(gconstpointer opaque)
+{
+    bool setup_first = GPOINTER_TO_INT(opaque);
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_supported(qts);
+    for (unsigned i = 0; i < 33; i++) {
+        x_command(qts, 0x141, (uint32_t[]){ 0x00010002 }, 1);
+    }
+    read_refused(qts, 454, 700);
+    if (setup_first) {
+        read_setup(qts, 6, 20);
+    } else {
+        read_gc(qts);
+    }
+    read_refused(qts, 454, 700);
+    if (setup_first) {
+        read_gc(qts);
+    } else {
+        read_setup(qts, 6, 20);
+    }
+    read_supported(qts);
+}
+
+static void test_read_bulk_abort_requires_reload(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+
+    qtest_system_reset(qts);
+    read_scene(qts);
+    read_supported(qts);
+    if (kind == 0) {
+        pixel_setup(qts, 0x10, 0, 4, 2, 0);
+        pixel_write(qts, 454, 700);
+        /* Plain framing avoids the generic slot-abort invalidation. */
+        qtest_writel(qts, REG_COMMAND_DATA, TOKEN_PIXEL_FINISH);
+        qtest_writel(qts, REG_COMMAND_DATA, 0);
+        read_setup(qts, 6, 20);
+    } else if (kind == 1) {
+        static const uint32_t header[] = { 65535, 65535, 0, 0, 0, 0 };
+
+        qtest_writel(qts, REG_COMMAND, 1);
+        qtest_writel(qts, REG_COMMAND, 0xa);
+        for (unsigned i = 0; i < ARRAY_SIZE(header); i++) {
+            qtest_writel(qts, REG_COMMAND, header[i]);
+        }
+    } else if (kind == 2) {
+        qtest_writel(qts, REG_COMMAND, 0x1a6);
+        qtest_writel(qts, REG_COMMAND, 1);
+        for (unsigned i = 0; i < 1024; i++) {
+            qtest_writel(qts, REG_COMMAND, 0);
+        }
+    } else {
+        static const uint32_t empty[] = { 0x10, 0, 0, 0, 0, 0, 0 };
+
+        pixel_setup(qts, 0x10, 0, 4, 2, 0);
+        pixel_write(qts, 454, 700);
+        qtest_writel(qts, REG_COMMAND_DATA, TOKEN_PIXEL_SETUP);
+        for (unsigned i = 0; i < ARRAY_SIZE(empty); i++) {
+            qtest_writel(qts, REG_COMMAND_DATA, empty[i]);
+        }
+        qtest_writel(qts, REG_COMMAND_DATA, TOKEN_PIXEL_WRITE);
+        qtest_writel(qts, REG_COMMAND_DATA, 0);
+        qtest_writel(qts, REG_COMMAND_DATA, 0);
+        qtest_writel(qts, REG_COMMAND_DATA, TOKEN_PIXEL_FINISH);
+        qtest_writel(qts, REG_COMMAND_DATA, 0);
+        read_setup(qts, 6, 20);
+    }
+    read_refused(qts, 454, 700);
+    read_setup(qts, 6, 20);
+    read_refused(qts, 454, 700);
+    read_gc(qts);
+    read_supported(qts);
+}
+
+static void test_read_empty_bitmap_retains_state(void)
+{
+    qtest_system_reset(qts);
+    read_scene(qts);
+    qtest_writel(qts, REG_COMMAND, 1);
+    qtest_writel(qts, REG_COMMAND, 0xa);
+    for (unsigned i = 0; i < 6; i++) {
+        qtest_writel(qts, REG_COMMAND, 0);
+    }
+    read_supported(qts);
+}
+
 static void test_read_state_migrates(gconstpointer opaque)
 {
     unsigned state = GPOINTER_TO_UINT(opaque);
@@ -1484,6 +1572,28 @@ int main(int argc, char **argv)
                         "sn0/origin2000/kona-pixel/read-mismatched-loads-migrate",
                         GINT_TO_POINTER(true),
                         test_read_mismatched_page_migrates);
+
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-overflow-gc-reload",
+                        GINT_TO_POINTER(false),
+                        test_read_overflow_requires_reload);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/read-overflow-setup-reload",
+                        GINT_TO_POINTER(true),
+                        test_read_overflow_requires_reload);
+
+    qtest_add_data_func(
+        "sn0/origin2000/kona-pixel/read-framing-abort/dma-finish",
+        GUINT_TO_POINTER(0), test_read_bulk_abort_requires_reload);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-pixel/read-framing-abort/bitmap-bound",
+        GUINT_TO_POINTER(1), test_read_bulk_abort_requires_reload);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-pixel/read-framing-abort/video-bound",
+        GUINT_TO_POINTER(2), test_read_bulk_abort_requires_reload);
+    qtest_add_data_func(
+        "sn0/origin2000/kona-pixel/read-framing-abort/dma-replace",
+        GUINT_TO_POINTER(3), test_read_bulk_abort_requires_reload);
+    qtest_add_func("sn0/origin2000/kona-pixel/read-empty-bitmap-retains-state",
+                   test_read_empty_bitmap_retains_state);
 
     ret = g_test_run();
     qtest_quit(qts);
