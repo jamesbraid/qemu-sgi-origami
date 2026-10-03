@@ -2393,7 +2393,7 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     SGIPixelDMA d;
     bool captured_signature =
         (signature_size == 4 && signature_extent == 0x00010001 &&
-         signature_format == 0x00400080) ||
+         (signature_format == 0x00400080 || signature_format == 0x00c00080)) ||
         (signature_size == 8 && signature_extent == 0x00020002 &&
          (signature_format == 0x00400080 || signature_format == 0x00c00080));
 
