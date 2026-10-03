@@ -1471,6 +1471,7 @@ typedef struct CPUArchState {
     MIPSCPUConfig cfg; /* Behaviours this processor selects */
     int tlb_last_match;
     int8_t tlb_hash[MIPS_TLB_HASH_SIZE];
+    uint64_t tlb_active_mask;
 
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;

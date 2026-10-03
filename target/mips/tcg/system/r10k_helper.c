@@ -587,7 +587,7 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
     target_ulong mask, VPN;
     uint16_t ASID;
     bool G, conflict = false, translating = false;
-    int i;
+    uint64_t scan_mask;
 
     /* 1k pages are not supported. */
     mask = env->CP0_PageMask | ~(TARGET_PAGE_MASK << 1);
@@ -595,13 +595,17 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
     ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
 
-    for (i = 0; i < env->tlb->nb_tlb; i++) {
+    scan_mask = env->tlb_active_mask;
+    if (idx < 64) {
+        scan_mask &= ~(1ULL << idx);
+    }
+
+    while (scan_mask) {
+        int i = ctz64(scan_mask);
+        scan_mask &= scan_mask - 1;
         r4k_tlb_t *tlb = &env->tlb->mmu.r4k.tlb[i];
         target_ulong both = mask | tlb->PageMask;
 
-        if (i == idx || tlb->EHINV) {
-            continue;
-        }
         if ((tlb->VPN & ~both) != (VPN & ~both)) {
             continue;
         }
@@ -619,6 +623,7 @@ void r10k_invalidate_conflicts(CPUMIPSState *env, int idx)
          */
         translating |= tlb->V0 || tlb->V1;
         tlb->EHINV = 1;
+        env->tlb_active_mask &= ~(1ULL << i);
         conflict = true;
     }
 
