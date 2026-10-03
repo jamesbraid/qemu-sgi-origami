@@ -4744,11 +4744,11 @@ static void test_remote_ram_cross_page_execution(const void *data)
 #define MMIO_EXEC_DONE UINT64_C(0xcafe)
 #define MMIO_EXEC_PARK UINT64_C(0xdead)
 
-static char *create_mmio_execution_prom(void)
+static char *create_mmio_execution_prom(bool remote)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
-    const uint32_t code[] = {
+    uint32_t code[] = {
         0x400a6000, 0x354a0080, 0x408a6000, 0x000000c0,
         0x3c089200, 0x0008403c, 0x3c090100, 0x01094025,
         0xdd0a0020, /* PI_CPU_NUMBER */
@@ -4771,6 +4771,9 @@ static char *create_mmio_execution_prom(void)
     char *path = NULL;
     int fd;
 
+    if (remote) {
+        code[19] = 0x00005825; /* node zero in EntryLo */
+    }
     stl_be_p(image, 0x100000ff);
     for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
         stl_be_p(image + offset, 0x1000ffff);
@@ -4784,6 +4787,129 @@ static char *create_mmio_execution_prom(void)
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     return path;
+}
+
+static void test_routed_instruction_translation(const void *data)
+{
+    bool remote = GPOINTER_TO_UINT(data);
+    const uint32_t code[] = {
+        0x34111100, /* replaced with the destination's instruction marker */
+        0x40341000, /* dmfc0 s4, EntryLo0 */
+        0x34130040, /* 64 iterations */
+        0x2673ffff, /* addiu s3, s3, -1 */
+        0x1660fffe, 0x00000000,
+        0x3415cafe, /* completion */
+        0x3c08bfc0, 0x350804bc, 0x01000008, 0x00000000,
+        /* Park in the PROM branch without changing the completion marker. */
+    };
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *log = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[sizeof(code)];
+    unsigned loop_translations = 0, block_insns = 0, max_block_insns = 0;
+    QTestState *qts;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_mmio_execution_prom(remote);
+    fd = g_file_open_tmp("sn1-fetch-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    fd = g_file_open_tmp("sn1-fetch-translation-XXXXXX.txt", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    qts = qtest_initf(
+        "-M origin300,topology=origin300-numalink-pci-expansion-experiment,"
+        "expansion-storage.0=expansion-enclosure=cfg "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S "
+        "-d in_asm -dfilter 0xc000000010000000+0x40 -D %s",
+        prom, image, quoted);
+    stq_be_p(bytes, UINT64_C(2) << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                                    bytes, 8));
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t base = (uint64_t)(node ? 2 : 0) << 33;
+
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
+        for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+            stl_be_p(bytes + 4 * i, code[i] | (i == 0 ? node * 2 : 0));
+        }
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            base + MMIO_EXEC_RAM, bytes, sizeof(bytes)));
+    }
+    stq_be_p(bytes, 5);
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+        BEDROCK_LOCAL + BEDROCK_NI + 0x1008, bytes, 8));
+    stq_be_p(bytes, 3);
+    g_assert_true(qtest_memwrite_cpu(qts, 2,
+        BEDROCK_LOCAL + BEDROCK_NI + 0x1000, bytes, 8));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 2, "s5", MMIO_EXEC_DONE);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        if (cpu != 2) {
+            wait_for_cpu_gpr(qts, cpu, "s5", MMIO_EXEC_PARK);
+        }
+    }
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s1"), ==, remote ? 0x1100 : 0x1102);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s3"), ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 2) & 0x7c, ==, 0);
+    g_assert_cmphex(cpu_gpr(qts, 2, "s4"), ==,
+                    ((uint64_t)(remote ? 0 : 2) << 27) | 0x1002e);
+    {
+        g_autofree char *regs = qtest_hmp(qts, "info registers 2");
+        g_test_message("%s instruction backing %s", remote ? "remote" : "local",
+                       regs);
+    }
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(log, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        uint64_t pc;
+
+        if (g_str_has_prefix(lines[i], "----------------")) {
+            max_block_insns = MAX(max_block_insns, block_insns);
+            block_insns = 0;
+        }
+        if (sscanf(lines[i], "%" SCNx64 ":", &pc) == 1 &&
+            pc >= MMIO_EXEC_VIRTUAL && pc < MMIO_EXEC_VIRTUAL + 0x40) {
+            block_insns++;
+            if (pc == MMIO_EXEC_VIRTUAL + 12) {
+                loop_translations++;
+            }
+        }
+    }
+    max_block_insns = MAX(max_block_insns, block_insns);
+    g_test_message("%s: loop translations %u, maximum block instructions %u",
+                   remote ? "remote" : "local", loop_translations,
+                   max_block_insns);
+    g_test_message("translation trace: %s", log);
+    if (remote) {
+        g_assert_cmpuint(loop_translations, >=, 64);
+        g_assert_cmpuint(max_block_insns, ==, 1);
+    } else {
+        g_assert_cmpuint(loop_translations, >, 0);
+        g_assert_cmpuint(loop_translations, <=, 2);
+        g_assert_cmpuint(max_block_insns, >, 1);
+    }
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 static void assert_mmio_execution_guards(QTestState *qts, unsigned own)
@@ -4833,7 +4959,7 @@ static void test_mmio_execution_state(const void *data)
         g_test_skip("TCG is unavailable");
         return;
     }
-    prom = create_mmio_execution_prom();
+    prom = create_mmio_execution_prom(false);
     fd = g_file_open_tmp("sn1-mmio-execution-storage-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
@@ -5722,6 +5848,12 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn1/address-map/own-node-ii-handshake/routed-wrong-signature-control",
         GUINT_TO_POINTER(14), test_own_node_ii_handshake);
+    qtest_add_data_func("sn1/address-map/routed-instruction-translation/local",
+                        GUINT_TO_POINTER(0),
+                        test_routed_instruction_translation);
+    qtest_add_data_func("sn1/address-map/routed-instruction-translation/remote",
+                        GUINT_TO_POINTER(1),
+                        test_routed_instruction_translation);
     qtest_add_data_func("sn1/address-map/routed-cpu-number-read-is-per-cpu",
                         NULL, test_routed_cpu_number_read_is_per_cpu);
     qtest_add_data_func(
