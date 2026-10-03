@@ -48,7 +48,8 @@ slow_qtests = {
   # three times that, rounded up. An earlier, unmethodical figure of 171s
   # alone at load 100 had set it to 360.
   'sgi-synthetic-serial-test': 200,
-  'sn-builder-test': 810,
+  # Routed cases expand the builder suite beyond its previous budget.
+  'sn-builder-test': 1650,
   'sn0-address-map-test': 110,
   'sn0-bridge-identity-test': 80,
   'sn0-bridge-test': 290,
