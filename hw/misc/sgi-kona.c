@@ -2740,28 +2740,43 @@ static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
     sgi_gl_command(&s->gl[i], &sink, &cmd);
 }
 
-/*
- * A GL texture table: 0x17e, a slot word, then SGI_KONA_GL_TEX_TABLE_WORDS
- * table words (established from bindTexTable and __glkon_datavn). The data
- * words arrive as sixteen doubleword stores and one word store; each
- * doubleword reaches the page as two words, high word first (see
- * sgi_kona_write()). The command port frames the slot word; the data words
- * are consumed here, since the table words are arbitrary bit patterns
- * that would otherwise open commands of their own. What the tables control
- * is unknown, so nothing is stored.
- */
+/* A slot and 33 transport words, published only after complete decoding. */
+static void sgi_kona_gl_tex_table_clear(SGIKonaState *s)
+{
+    s->gl_tex_table_remaining = 0;
+    s->gl_tex_table_slot = 0;
+    memset(s->gl_tex_table_words, 0, sizeof(s->gl_tex_table_words));
+    s->gl_tex_table_refused = false;
+}
+
 static void sgi_kona_gl_tex_table_open(SGIKonaState *s, uint32_t slot)
 {
+    sgi_kona_gl_tex_table_clear(s);
     trace_sgi_kona_gl_tex_table(slot);
+    s->gl_tex_table_slot = slot;
+    s->gl_tex_table_refused = slot >= SGI_KONA_TEXTURE_CURVE_SLOTS;
     s->gl_tex_table_remaining = SGI_KONA_GL_TEX_TABLE_WORDS;
 }
 
-/* A word on the command page while a texture table takes its data. */
-static void sgi_kona_gl_tex_table_word(SGIKonaState *s)
+/* Arbitrary coefficient words cannot be interpreted as command selectors. */
+static void sgi_kona_gl_tex_table_word(SGIKonaState *s, uint32_t word)
 {
+    unsigned index = SGI_KONA_GL_TEX_TABLE_WORDS - s->gl_tex_table_remaining;
+
+    s->gl_tex_table_words[index] = word;
     if (--s->gl_tex_table_remaining == 0) {
-        trace_sgi_kona_command_unmodelled(SGI_KONA_CMD_GL_TEX_TABLE,
-                                          1 + SGI_KONA_GL_TEX_TABLE_WORDS);
+        if (s->gl_tex_table_refused ||
+            !sgi_kona_texture_curve_upload(&s->textures, s->gl_tex_table_slot,
+                                            s->gl_tex_table_words)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: invalid texture filter table "
+                          "slot %u; stored coefficients unchanged\n",
+                          s->gl_tex_table_slot);
+            trace_sgi_kona_command_unmodelled(SGI_KONA_CMD_GL_TEX_TABLE,
+                                              1 + SGI_KONA_GL_TEX_TABLE_WORDS);
+        } else {
+            s->texture_state_used = true;
+        }
+        sgi_kona_gl_tex_table_clear(s);
     }
 }
 
@@ -6620,7 +6635,7 @@ static void sgi_kona_textport_push(SGIKonaState *s, uint32_t word)
         return;
     }
     if (s->gl_tex_table_remaining) {
-        sgi_kona_gl_tex_table_word(s);
+        sgi_kona_gl_tex_table_word(s, word);
         return;
     }
     if (s->gl_data_remaining) {
@@ -6934,7 +6949,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                       PRIu32 " words; partial command dropped\n", token,
                       offset, SGI_KONA_CMD_GL_TEX_TABLE,
                       s->gl_tex_table_remaining);
-        s->gl_tex_table_remaining = 0;
+        sgi_kona_gl_tex_table_clear(s);
     }
     if (s->gl_data_remaining) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7876,6 +7891,28 @@ static void sgi_kona_test_get_texture_pixel(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/* The existing test coordinates select a filter slot and coefficient. */
+static void sgi_kona_test_get_texture_curve(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    const double *curve = sgi_kona_texture_curve(&s->textures, s->test_pixel_x);
+    double value = curve && s->test_pixel_y < 64 ? curve[s->test_pixel_y] : 0;
+
+    visit_type_number(v, name, &value, errp);
+}
+
+static void sgi_kona_test_get_texture_curve_valid(Object *obj, Visitor *v,
+                                                  const char *name,
+                                                  void *opaque, Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+    bool valid = sgi_kona_texture_curve(&s->textures, s->test_pixel_x) != NULL;
+
+    visit_type_bool(v, name, &valid, errp);
+}
+
 static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
@@ -7898,6 +7935,11 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-texture-pixel", "uint32",
                         sgi_kona_test_get_texture_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-texture-curve", "number",
+                        sgi_kona_test_get_texture_curve, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-texture-curve-valid", "bool",
+                        sgi_kona_test_get_texture_curve_valid,
+                        NULL, NULL, NULL);
     object_property_add(obj, "x-test-pixel", "uint32",
                         sgi_kona_test_get_pixel, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-plane", &s->test_plane,
@@ -8098,7 +8140,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->cursor_offset = 0;
     s->cursor_position = 0;
     s->cursor_mode = 0;
-    s->gl_tex_table_remaining = 0;
+    sgi_kona_gl_tex_table_clear(s);
     s->gl_token_high = 0;
     s->gl_data_token = 0;
     s->gl_data_remaining = 0;
@@ -8945,6 +8987,15 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
 
+    if (version_id < 6) {
+        s->gl_tex_table_slot = 0;
+        memset(s->gl_tex_table_words, 0, sizeof(s->gl_tex_table_words));
+        /* Historical streams retained no slot or consumed prefix. */
+        s->gl_tex_table_refused = s->gl_tex_table_remaining != 0;
+    } else if (s->gl_tex_table_slot >= SGI_KONA_TEXTURE_CURVE_SLOTS &&
+               !s->gl_tex_table_refused) {
+        return -EINVAL;
+    }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
         const SGIKonaGLWindow *w = &s->gl_window[i];
         const SGIKonaGLPipe *p = &s->gl_pipe[i];
@@ -8965,7 +9016,7 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_contexts = {
     .name = TYPE_SGI_KONA "/contexts",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .needed = sgi_kona_contexts_needed,
     .post_load = sgi_kona_contexts_post_load,
@@ -8997,6 +9048,10 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                                5),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 5,
                              vmstate_sgi_kona_gl_pipe, SGIKonaGLPipe),
+        VMSTATE_UINT32_V(gl_tex_table_slot, SGIKonaState, 6),
+        VMSTATE_UINT32_ARRAY_V(gl_tex_table_words, SGIKonaState,
+                               SGI_KONA_GL_TEX_TABLE_WORDS, 6),
+        VMSTATE_BOOL_V(gl_tex_table_refused, SGIKonaState, 6),
         VMSTATE_END_OF_LIST()
     },
 };

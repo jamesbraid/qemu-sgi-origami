@@ -266,6 +266,160 @@ static void send_hostile(QTestState *s, uint32_t selector, uint32_t words,
     }
 }
 
+static void curve_select(QTestState *s, unsigned slot, unsigned coefficient)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-x','value':%u}}", slot);
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-pixel-y','value':%u}}", coefficient);
+}
+
+static bool curve_valid(QTestState *s, unsigned slot)
+{
+    QDict *reply;
+    bool valid;
+
+    curve_select(s, slot, 0);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-texture-curve-valid'}}");
+    valid = qdict_get_bool(reply, "return");
+    qobject_unref(reply);
+    return valid;
+}
+
+static double curve_value(QTestState *s, unsigned slot, unsigned coefficient)
+{
+    QDict *reply;
+    double value;
+
+    curve_select(s, slot, coefficient);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
+        "'property':'x-test-texture-curve'}}");
+    value = qdict_get_double(reply, "return");
+    qobject_unref(reply);
+    return value;
+}
+
+/* Four signed mantissas and two-bit exponents occupy each 40-bit group. */
+static void curve_fixture(uint32_t words[33], double values[64], unsigned seed)
+{
+    for (unsigned group = 0; group < 16; group++) {
+        uint64_t packed = 0;
+
+        for (unsigned j = 0; j < 4; j++) {
+            unsigned i = group * 4 + j;
+            int mantissa = (int)((i + seed) % 64) - 32;
+            unsigned exponent = (i + seed) % 4;
+            uint32_t code = ((uint32_t)(uint8_t)mantissa << 2) | exponent;
+
+            packed |= (uint64_t)code << (10 * j);
+            values[i] = mantissa * (1 << exponent) / 128.0;
+        }
+        words[group * 2] = packed;
+        words[group * 2 + 1] = packed >> 32;
+    }
+    words[32] = 0x17e; /* Transport padding cannot open another command. */
+}
+
+static void curve_assert(QTestState *s, unsigned slot, const double values[64])
+{
+    g_assert_true(curve_valid(s, slot));
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmpfloat(curve_value(s, slot, i), ==, values[i]);
+    }
+}
+
+static void curve_words(QTestState *s, const uint32_t *words, unsigned count)
+{
+    for (unsigned i = 0; i < count; i++) {
+        qtest_writel(s, REG_COMMAND, words[i]);
+    }
+}
+
+static void curve_open(QTestState *s, unsigned slot)
+{
+    kona_command(s, 0x17e, (uint32_t[]){ slot }, 1);
+}
+
+static void test_texture_curve_transport(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t words[33], replacement[33], other[33];
+    double values[64], next[64], separate[64];
+
+    gl_make_current(s);
+    curve_fixture(words, values, 0);
+    curve_fixture(replacement, next, 11);
+    curve_fixture(other, separate, 23);
+    curve_open(s, 7);
+    /* Sixteen doubleword stores carry coefficients, then one word padding. */
+    for (unsigned pair = 0; pair < 16; pair++) {
+        qtest_writeq(s, REG_COMMAND,
+                      ((uint64_t)words[2 * pair] << 32) | words[2 * pair + 1]);
+        g_assert_false(curve_valid(s, 7));
+    }
+    curve_words(s, words + 32, 1);
+    curve_assert(s, 7, values);
+    curve_open(s, 8);
+    curve_words(s, other, 33);
+    curve_open(s, 7);
+    curve_words(s, replacement, 33);
+    curve_assert(s, 7, next);
+    curve_assert(s, 8, separate);
+
+    /* A malformed reserved bit cannot replace the previously valid slot. */
+    words[1] |= 0x100;
+    curve_open(s, 7);
+    curve_words(s, words, 33);
+    curve_assert(s, 7, next);
+    curve_assert(s, 8, separate);
+    curve_open(s, 4096);
+    curve_words(s, replacement, 33);
+    g_assert_false(curve_valid(s, 4096));
+    curve_assert(s, 7, next);
+    assert_textport_in_step(s);
+    qtest_system_reset(s);
+    g_assert_false(curve_valid(s, 7));
+    g_assert_false(curve_valid(s, 8));
+    qtest_quit(s);
+}
+
+static void test_texture_curve_migration(gconstpointer opaque)
+{
+    unsigned consumed = GPOINTER_TO_UINT(opaque);
+    uint32_t words[33], replacement[33];
+    double values[64], next[64];
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("kona-curve-migration-XXXXXX",
+                                        &error);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    curve_fixture(words, values, 0);
+    curve_fixture(replacement, next, 11);
+    from = qtest_init(MACHINE_ARGS);
+    gl_make_current(from);
+    curve_open(from, 7);
+    curve_words(from, words, 33);
+    curve_open(from, 7);
+    curve_words(from, replacement, consumed);
+    curve_assert(from, 7, consumed == 33 ? next : values);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    curve_assert(to, 7, consumed == 33 ? next : values);
+    curve_words(to, replacement + consumed, 33 - consumed);
+    curve_assert(to, 7, next);
+    assert_textport_in_step(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 /*
  * After a context's first make-current, every GL command of the 3D
  * grammar with a fixed count frames whole, each with words that misframe
@@ -5892,6 +6046,16 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_func("sn0/origin2000/kona-3d/texture-curve/transport",
+                   test_texture_curve_transport);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-empty",
+                        GUINT_TO_POINTER(0), test_texture_curve_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-partial",
+                        GUINT_TO_POINTER(13), test_texture_curve_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-padding",
+                        GUINT_TO_POINTER(32), test_texture_curve_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture-curve/migrate-complete",
+                        GUINT_TO_POINTER(33), test_texture_curve_migration);
     qtest_add_func("sn0/origin2000/kona-3d/every-command-frames",
                    test_every_command_frames);
     qtest_add_func("sn0/origin2000/kona-3d/packed-forms-frame",
