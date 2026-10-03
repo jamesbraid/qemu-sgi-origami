@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "hw/misc/sgi-kona-texture.h"
+#include "hw/misc/sgi-kona-gl-decode.h"
 #include "qemu/bitops.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
@@ -10,6 +11,14 @@
 
 /* Reserve table bookkeeping as well as the fixed level descriptors. */
 #define TEXTURE_OBJECT_BYTES (sizeof(SGIKonaTextureObject) + 64)
+
+typedef struct SGIKonaTextureCurve {
+    uint32_t slot;
+    uint32_t words[32];
+    double values[64];
+} SGIKonaTextureCurve;
+
+#define TEXTURE_CURVE_BYTES (sizeof(SGIKonaTextureCurve) + 64)
 
 void sgi_kona_texture_defaults(SGIKonaTextureParams *p)
 {
@@ -27,6 +36,8 @@ void sgi_kona_texture_init(SGIKonaTextureState *s)
 {
     memset(s, 0, sizeof(*s));
     s->objects = g_hash_table_new(g_direct_hash, g_direct_equal);
+    s->filter_curves = g_hash_table_new_full(g_direct_hash, g_direct_equal,
+                                             NULL, g_free);
 }
 
 static uint64_t level_bytes(const SGIKonaTextureLevel *l)
@@ -88,6 +99,7 @@ void sgi_kona_texture_reset(SGIKonaTextureState *s)
         texture_object_free(value);
     }
     g_hash_table_remove_all(s->objects);
+    g_hash_table_remove_all(s->filter_curves);
     s->bound = false;
     s->bound_handle = 0;
     s->bytes = 0;
@@ -97,6 +109,7 @@ void sgi_kona_texture_cleanup(SGIKonaTextureState *s)
 {
     sgi_kona_texture_reset(s);
     g_clear_pointer(&s->objects, g_hash_table_destroy);
+    g_clear_pointer(&s->filter_curves, g_hash_table_destroy);
 }
 
 static SGIKonaTextureObject *texture_object(SGIKonaTextureState *s,
@@ -676,7 +689,7 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
     GHashTableIter iter;
     gpointer value;
 
-    qemu_put_be32(f, 5);
+    qemu_put_be32(f, 6);
     qemu_put_be32(f, g_hash_table_size(s->objects));
     qemu_put_be32(f, s->bound);
     qemu_put_be32(f, s->bound_handle);
@@ -725,6 +738,16 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be32(f, o->native_format_valid);
         qemu_put_be32(f, o->native_format);
     }
+    qemu_put_be32(f, g_hash_table_size(s->filter_curves));
+    g_hash_table_iter_init(&iter, s->filter_curves);
+    while (g_hash_table_iter_next(&iter, NULL, &value)) {
+        SGIKonaTextureCurve *curve = value;
+
+        qemu_put_be32(f, curve->slot);
+        for (unsigned k = 0; k < ARRAY_SIZE(curve->words); k++) {
+            qemu_put_be32(f, curve->words[k]);
+        }
+    }
     if (qemu_file_get_error(f)) {
         error_setg(errp, "KONA texture state could not be saved");
         return false;
@@ -742,7 +765,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     uint32_t bound = qemu_get_be32(f), handle = qemu_get_be32(f);
 
     sgi_kona_texture_init(&tmp);
-    if ((version < 1 || version > 5) || bound > 1 ||
+    if ((version < 1 || version > 6) || bound > 1 ||
         count > SGI_KONA_TEXTURE_BYTES / TEXTURE_OBJECT_BYTES) {
         goto invalid;
     }
@@ -908,6 +931,28 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
             o->native_format_valid = valid;
         }
     }
+    if (version >= 6) {
+        uint32_t curves = qemu_get_be32(f);
+
+        if (curves > SGI_KONA_TEXTURE_CURVE_SLOTS) {
+            goto invalid;
+        }
+        for (unsigned i = 0; i < curves; i++) {
+            uint32_t slot = qemu_get_be32(f), words[33] = { 0 };
+
+            if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
+                sgi_kona_texture_curve(&tmp, slot)) {
+                goto invalid;
+            }
+            for (unsigned j = 0; j < 32; j++) {
+                words[j] = qemu_get_be32(f);
+            }
+            if (qemu_file_get_error(f) ||
+                !sgi_kona_texture_curve_upload(&tmp, slot, words)) {
+                goto invalid;
+            }
+        }
+    }
     if (qemu_file_get_error(f) ||
         (bound && !texture_object(&tmp, handle, false))) {
         goto invalid;
@@ -930,3 +975,38 @@ const VMStateInfo vmstate_info_sgi_kona_texture = {
     .load = texture_load,
     .save = texture_save,
 };
+
+bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
+                                  const uint32_t words[33])
+{
+    SGIKonaTextureCurve next, *curve;
+
+    if (slot >= SGI_KONA_TEXTURE_CURVE_SLOTS ||
+        !sgi_kona_gl_texture_filter_curve(words, next.values)) {
+        return false;
+    }
+    next.slot = slot;
+    memcpy(next.words, words, sizeof(next.words));
+    curve = g_hash_table_lookup(s->filter_curves, GUINT_TO_POINTER(slot));
+    if (!curve) {
+        if (TEXTURE_CURVE_BYTES > SGI_KONA_TEXTURE_BYTES - s->bytes) {
+            return false;
+        }
+        curve = g_try_new(SGIKonaTextureCurve, 1);
+        if (!curve) {
+            return false;
+        }
+        g_hash_table_insert(s->filter_curves, GUINT_TO_POINTER(slot), curve);
+        s->bytes += TEXTURE_CURVE_BYTES;
+    }
+    *curve = next;
+    return true;
+}
+
+const double *sgi_kona_texture_curve(SGIKonaTextureState *s, uint32_t slot)
+{
+    const SGIKonaTextureCurve *curve =
+        g_hash_table_lookup(s->filter_curves, GUINT_TO_POINTER(slot));
+
+    return curve ? curve->values : NULL;
+}

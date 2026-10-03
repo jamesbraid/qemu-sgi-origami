@@ -23,6 +23,7 @@ typedef struct SGIKonaTextureLevel {
 } SGIKonaTextureLevel;
 
 #define SGI_KONA_TEXTURE_TABLE_LEVELS 16u
+#define SGI_KONA_TEXTURE_CURVE_SLOTS 4096u
 
 typedef struct SGIKonaTextureNativeImage {
     uint32_t header[20];
@@ -51,6 +52,7 @@ typedef struct SGIKonaTextureState {
     uint32_t bound_handle;
     uint64_t bytes;
     GHashTable *objects;
+    GHashTable *filter_curves;
 } SGIKonaTextureState;
 
 void sgi_kona_texture_init(SGIKonaTextureState *s);
@@ -82,6 +84,11 @@ bool sgi_kona_texture_native_format(SGIKonaTextureState *s, uint32_t handle,
 /* NULL params retain the object's sampler, including for an incomplete view. */
 bool sgi_kona_texture_bind(SGIKonaTextureState *s, uint32_t handle,
                           const SGIKonaTextureParams *params);
+/* Filter tables have device slot identity independent of image handles. */
+bool sgi_kona_texture_curve_upload(SGIKonaTextureState *s, uint32_t slot,
+                                  const uint32_t words[33]);
+/* Borrowed until the slot is updated or the texture state is reset. */
+const double *sgi_kona_texture_curve(SGIKonaTextureState *s, uint32_t slot);
 void sgi_kona_texture_delete(SGIKonaTextureState *s, uint32_t handle);
 /* Borrowed for one synchronous draw; updates/deletion must not overlap it. */
 const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s);

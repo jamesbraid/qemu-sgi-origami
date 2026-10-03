@@ -590,7 +590,7 @@ static void test_native_migration(void)
     assert_image(&dst, red, 1, 1);
     /* Version four had complete native images and no coverage/format fields. */
     g_byte_array_remove_range(a, 332, 1);
-    g_byte_array_set_size(a, a->len - 8);
+    g_byte_array_set_size(a, a->len - 12);
     stl_be_p(a->data, 4);
     g_assert_true(load(a, &dst));
     g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
@@ -666,7 +666,7 @@ static void test_native_sampling(void)
     a = save(&src);
     g_assert_true(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
-    stl_be_p(a->data + a->len - 16, 3);
+    stl_be_p(a->data + a->len - 20, 3);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
     g_byte_array_unref(a);
@@ -743,6 +743,114 @@ static void test_native_negative_lod(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+static void test_filter_curves(void)
+{
+    SGIKonaTextureState s;
+    uint32_t words[33] = { 0x9ffc0101, 0x80 };
+    const double *values;
+    uint64_t bytes;
+
+    sgi_kona_texture_init(&s);
+    g_assert_null(sgi_kona_texture_curve(&s, 0));
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 0, words));
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 4095, words));
+    values = sgi_kona_texture_curve(&s, 0);
+    g_assert_nonnull(values);
+    g_assert_cmpfloat(values[0], ==, 1);
+    g_assert_cmpfloat(values[1], ==, -0.5);
+    g_assert_cmpfloat(values[2], ==, 7.9375);
+    g_assert_cmpfloat(values[3], ==, -4);
+    bytes = s.bytes;
+    words[0] = 0x200;
+    words[1] = 0;
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 0, words));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&s, 0)[0], ==, -1);
+    g_assert_cmpfloat(sgi_kona_texture_curve(&s, 4095)[0], ==, 1);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    words[31] = 0x100;
+    g_assert_false(sgi_kona_texture_curve_upload(&s, 0, words));
+    g_assert_false(sgi_kona_texture_curve_upload(&s, 4096, words));
+    g_assert_false(sgi_kona_texture_curve_upload(&s, 0, NULL));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&s, 0)[0], ==, -1);
+    g_assert_cmpuint(s.bytes, ==, bytes);
+    sgi_kona_texture_reset(&s);
+    g_assert_null(sgi_kona_texture_curve(&s, 0));
+    g_assert_cmpuint(s.bytes, ==, 0);
+    sgi_kona_texture_cleanup(&s);
+}
+
+static void test_filter_curve_budget(void)
+{
+    SGIKonaTextureState s;
+    uint32_t words[33] = { 0 };
+    uint64_t first;
+
+    sgi_kona_texture_init(&s);
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 1, words));
+    first = s.bytes;
+    s.bytes = SGI_KONA_TEXTURE_BYTES;
+    g_assert_false(sgi_kona_texture_curve_upload(&s, 2, words));
+    /* Replacing an existing slot requires no additional budget. */
+    words[0] = 0x200;
+    g_assert_true(sgi_kona_texture_curve_upload(&s, 1, words));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&s, 1)[0], ==, -1);
+    g_assert_null(sgi_kona_texture_curve(&s, 2));
+    s.bytes = first;
+    sgi_kona_texture_cleanup(&s);
+}
+
+static void test_filter_curve_migration(void)
+{
+    SGIKonaTextureState src, dst;
+    uint32_t words[33] = { 0x9ffc0101, 0x80 };
+    GByteArray *a;
+    uint64_t bytes;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    g_assert_true(sgi_kona_texture_curve_upload(&src, 13, words));
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&dst, 13)[3], ==, -4);
+    g_assert_cmpuint(dst.bytes, ==, src.bytes);
+    bytes = dst.bytes;
+    /* Header16, count4, slot4; each subsequent entry has 32 packed words. */
+    stl_be_p(a->data + 28, 0x100);
+    g_assert_false(load(a, &dst));
+    g_assert_cmpfloat(sgi_kona_texture_curve(&dst, 13)[3], ==, -4);
+    g_assert_cmpuint(dst.bytes, ==, bytes);
+    g_byte_array_unref(a);
+    a = save(&src);
+    stl_be_p(a->data + 16, SGI_KONA_TEXTURE_CURVE_SLOTS + 1);
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    a = save(&src);
+    stl_be_p(a->data + 20, SGI_KONA_TEXTURE_CURVE_SLOTS);
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    a = save(&src);
+    g_byte_array_set_size(a, a->len - 1);
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    g_assert_true(sgi_kona_texture_curve_upload(&src, 14, words));
+    a = save(&src);
+    /* Duplicate slots cannot replace one another inside a migration stream. */
+    stl_be_p(a->data + 152, ldl_be_p(a->data + 20));
+    g_assert_false(load(a, &dst));
+    g_byte_array_unref(a);
+    sgi_kona_texture_reset(&src);
+    a = save(&src);
+    /* Version five has no curve count; loading it clears newer slot state. */
+    g_byte_array_set_size(a, a->len - 4);
+    stl_be_p(a->data, 5);
+    g_assert_true(load(a, &dst));
+    g_assert_null(sgi_kona_texture_curve(&dst, 13));
+    g_assert_cmpuint(dst.bytes, ==, 0);
+    g_byte_array_unref(a);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -760,5 +868,11 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi/kona/texture/native-sampling", test_native_sampling);
     g_test_add_func("/sgi/kona/texture/native-negative-lod",
                     test_native_negative_lod);
+    g_test_add_func("/sgi/kona/texture/filter-curves/storage",
+                    test_filter_curves);
+    g_test_add_func("/sgi/kona/texture/filter-curves/budget",
+                    test_filter_curve_budget);
+    g_test_add_func("/sgi/kona/texture/filter-curves/migration",
+                    test_filter_curve_migration);
     return g_test_run();
 }
