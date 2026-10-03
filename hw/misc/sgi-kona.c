@@ -5466,14 +5466,18 @@ static bool sgi_kona_x_read_hidden(SGIKonaState *s, int64_t x, int64_t y,
     return false;
 }
 
-/* Main eight-bit indices with padded rows and synchronous completion. */
+/* Public index values use tightly packed rows; source words stay native. */
 static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
 {
     const uint32_t *setup = s->x_pixel_setup;
     int64_t x = (int32_t)args[0], y = (int32_t)args[1];
     uint64_t width = setup[SGI_KONA_X_SETUP_WIDTH];
     uint64_t height = setup[SGI_KONA_X_SETUP_HEIGHT];
-    uint64_t pitch = ROUND_UP(width, 4);
+    unsigned bytes = setup[SGI_KONA_X_SETUP_DST_PACK] == 0 &&
+                     setup[SGI_KONA_X_SETUP_SHIFT] == 8 ? 1 :
+                     setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
+                     setup[SGI_KONA_X_SETUP_SHIFT] == 12 ? 2 : 0;
+    uint64_t pitch = width * bytes;
     int64_t plane_y;
     const char *reason;
     g_autofree uint8_t *data = NULL;
@@ -5490,8 +5494,7 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
         reason = "unsupported main-index GC";
     } else if (setup[SGI_KONA_X_SETUP_MODE] != 2 ||
                setup[SGI_KONA_X_SETUP_SRC_PACK] != 1 ||
-               setup[SGI_KONA_X_SETUP_DST_PACK] != 0 ||
-               setup[SGI_KONA_X_SETUP_SHIFT] != 8 ||
+               !bytes ||
                setup[SGI_KONA_X_SETUP_PAD] != 0) {
         reason = "unsupported indexed-read setup";
     } else if ((int32_t)width <= 0 || (int32_t)height <= 0 ||
@@ -5526,9 +5529,16 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
         data = g_malloc0(pitch * height);
         for (uint32_t r = 0; r < height; r++) {
             for (uint32_t c = 0; c < width; c++) {
-                data[r * pitch + c] = sgi_plane_load(&s->mem,
+                uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
-                    SGI_KONA_FB_HEIGHT - 1 - y - r) >> 8;
+                    SGI_KONA_FB_HEIGHT - 1 - y - r);
+
+                if (bytes == 2) {
+                    /* Physical halfword extraction remains inferred. */
+                    stw_be_p(data + r * pitch + c * 2, (word >> 4) & 0xfff);
+                } else {
+                    data[r * pitch + c] = word >> 8;
+                }
             }
         }
         sgi_kona_post_return(s, SGI_KONA_CMD_X_PIXEL_READ, 8, data,

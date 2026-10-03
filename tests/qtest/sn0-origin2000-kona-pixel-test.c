@@ -895,7 +895,7 @@ static void read_write_pattern(QTestState *s, int x, int y,
 static void read_assert_pattern(QTestState *s, uint64_t page,
                                 unsigned width, unsigned height)
 {
-    unsigned pitch = (width + 3) & ~3;
+    unsigned pitch = width;
     unsigned len = pitch * height;
     g_autofree uint8_t *got = g_malloc(len);
 
@@ -905,7 +905,7 @@ static void read_assert_pattern(QTestState *s, uint64_t page,
     for (unsigned r = 0; r < height; r++) {
         for (unsigned c = 0; c < pitch; c++) {
             g_assert_cmphex(got[r * pitch + c], ==,
-                            c < width ? read_pattern(c, r) : 0);
+                            read_pattern(c, r));
         }
     }
     if (len < 0x4000 - 8) {
@@ -1408,7 +1408,7 @@ static void test_read_reply_order(void)
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==, 0);
     qtest_quit(s);
     found = kona_log_read(log);
-    payload = strstr(found, "addr 0x320008 len 0xa0\n");
+    payload = strstr(found, "addr 0x320008 len 0x78\n");
     ready = strstr(found, "addr 0x320000 len 0x4\n");
     g_assert_nonnull(payload);
     g_assert_nonnull(ready);
@@ -1433,7 +1433,7 @@ static void test_read_payload_failure(void)
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found,
-                    "160-byte write to 0x9000004000000 failed (result 2)"));
+                    "120-byte write to 0x9000004000000 failed (result 2)"));
     g_assert_null(strstr(found, "addr 0x3fffff8 len 0x4\n"));
 }
 
@@ -2028,6 +2028,106 @@ static void index12_write(QTestState *s, uint32_t value)
     pixel_write(s, 10, 20);
     data_words(s, &word, 1);
     pixel_finish(s);
+}
+
+static void read_index12_assert(QTestState *s, bool halfword)
+{
+    static const uint16_t indices[] = {
+        0x001, 0x123, 0xabc, 0xfed, 0x800, 0xfff, 0x056, 0x9ab, 0x000,
+    };
+    unsigned bytes = halfword ? 2 : 1;
+    uint8_t got[ARRAY_SIZE(indices) * 2 + 4];
+
+    g_assert_cmphex(read_guest_word(s, READ_PAGE), ==, 1);
+    g_assert_cmphex(read_guest_word(s, READ_PAGE + 4), ==, 0xa5a5a5a5);
+    qtest_memread(s, READ_PAGE + 8, got, ARRAY_SIZE(indices) * bytes + 4);
+    for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+        if (halfword) {
+            g_assert_cmphex(got[i * 2], ==, indices[i] >> 8);
+            g_assert_cmphex(got[i * 2 + 1], ==, indices[i] & 255);
+        } else {
+            g_assert_cmphex(got[i], ==, indices[i] >> 4);
+        }
+        g_assert_cmphex(front_native_at(s, 10 + i % 3, 20 + i / 3),
+                        ==, indices[i] << 4);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmphex(got[ARRAY_SIZE(indices) * bytes + i], ==, 0xa5);
+    }
+}
+
+static void test_read_index12(gconstpointer opaque)
+{
+    static const uint32_t words[] = {
+        0x00010123, 0x0abc0bad, 0x0fed0800,
+        0x0fff0bad, 0x005609ab, 0x00000bad,
+    };
+    static const uint32_t unsupported[][7] = {
+        { 2, 1, 0, 12, 3, 3, 0 }, { 2, 1, 1, 8, 3, 3, 0 },
+        { 2, 1, 2, 12, 3, 3, 0 }, { 2, 0, 1, 12, 3, 3, 0 },
+        { 2, 1, 1, 16, 3, 3, 0 }, { 2, 1, 1, 12, 3, 3, 1 },
+        { 2, 1, 1, 12, 1280, 7, 0 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    read_activate(s, READ_SAVE, READ_PAGE);
+    index12_gc(s, 0xfff, 3);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 0, 1, 1, 4, 3, 3, 0 }, 7);
+    pixel_write(s, 10, 20);
+    data_words(s, words, ARRAY_SIZE(words));
+    pixel_finish(s);
+    read_gc(s);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 2, 1, 1, 12, 3, 3, 0 }, 7);
+    read_prepare(s, READ_PAGE);
+    if (mode == 2) {
+        qtest_writel(s, REG_COMMAND_SLOT(TOKEN_PIXEL_READ), 10);
+    }
+    if (mode == 1 || mode == 2) {
+        dir = g_dir_make_tmp("kona-index12-read-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 2) {
+        qtest_writel(s, REG_COMMAND_DATA, 20);
+    } else {
+        x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
+    }
+    read_index12_assert(s, true);
+    /* The same native words can produce tightly packed byte-index rows. */
+    read_setup(s, 3, 3);
+    read_prepare(s, READ_PAGE);
+    x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
+    read_index12_assert(s, false);
+    if (mode == 3) {
+        for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
+            x_command(s, TOKEN_PIXEL_SETUP, unsupported[i], 7);
+            read_prepare(s, READ_PAGE);
+            x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
+            read_unchanged(s, READ_PAGE);
+        }
+        /* A bad final source tag cannot write a prefix or the ready word. */
+        seed_rgb(s, 12, 22, 0xabcdef);
+        read_gc(s);
+        x_command(s, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]){ 2, 1, 1, 12, 3, 3, 0 }, 7);
+        read_prepare(s, READ_PAGE);
+        x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
+        read_unchanged(s, READ_PAGE);
+    }
+    assert_in_step(s);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
 }
 
 static void test_write_index12(gconstpointer opaque)
@@ -2919,6 +3019,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
                    test_read_indexed_rows);
     qtest_add_func("sn0/origin2000/kona-pixel/weave", test_weave);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/rows",
+                        GUINT_TO_POINTER(0), test_read_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/migrates",
+                        GUINT_TO_POINTER(1), test_read_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/"
+                        "partial-migrates", GUINT_TO_POINTER(2),
+                        test_read_index12);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/index12-read/refused",
+                        GUINT_TO_POINTER(3), test_read_index12);
     qtest_add_data_func("sn0/origin2000/kona-pixel/index12/pio",
                         GUINT_TO_POINTER(0), test_write_index12);
     qtest_add_data_func("sn0/origin2000/kona-pixel/index12/dma",
