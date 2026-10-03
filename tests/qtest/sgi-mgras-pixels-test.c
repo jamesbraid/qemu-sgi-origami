@@ -3360,6 +3360,30 @@ static void test_pio_read_captured_one_pixel_mode(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+static void test_pio_read_captured_single_row_mode(void)
+{
+    mgras_reset();
+    mgras_public_setup(qts, false);
+    pio_paint(qts, 260, 260, 0x00332211);
+    pio_paint(qts, 261, 260, 0x00665544);
+    mgras_enter_context(qts);
+
+    pio_read_start(qts, 260, 260, 2, 1, 0x00010080);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0x332211);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0x665544);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+
+    pio_read_start_with_counters(qts, 260, 260, 2, 1, 0x00010080,
+                                 0x00010001);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+
+    pio_read_start(qts, 260, 260, 1, 1, 0x00010080);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_HI), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RE_DATA_LO), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_pio_read_captured_mode_requires_matching_counters(void)
 {
     mgras_reset();
@@ -5010,6 +5034,8 @@ int main(int argc, char **argv)
                    test_pio_read_returns_the_box);
     qtest_add_func("sn0/origin2000/mgras/pio-read-captured-one-pixel-mode",
                    test_pio_read_captured_one_pixel_mode);
+    qtest_add_func("sn0/origin2000/mgras/pio-read-captured-single-row-mode",
+                   test_pio_read_captured_single_row_mode);
     qtest_add_func("sn0/origin2000/mgras/pio-read-captured-mode-"
                    "needs-matching-counters",
                    test_pio_read_captured_mode_requires_matching_counters);
