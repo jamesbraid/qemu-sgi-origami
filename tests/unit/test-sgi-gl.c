@@ -8104,6 +8104,257 @@ static void test_texture_volume_mipmaps(void)
     g_assert_cmpfloat(out[2], ==, 1);
 }
 
+typedef struct VolumeBorderPixels {
+    uint32_t width, height, depth, level;
+    uint32_t interior;
+    unsigned reads, border_reads;
+    bool fail;
+} VolumeBorderPixels;
+
+static bool volume_border_interior(void *opaque, uint32_t x, uint32_t y,
+                                   uint32_t z, uint32_t *rgba)
+{
+    VolumeBorderPixels *p = opaque;
+
+    g_assert_cmpuint(x, <, p->width);
+    g_assert_cmpuint(y, <, p->height);
+    g_assert_cmpuint(z, <, p->depth);
+    p->reads++;
+    *rgba = p->interior;
+    return true;
+}
+
+static bool volume_border_read(void *opaque, int32_t x, int32_t y,
+                               int32_t z, uint32_t *rgba)
+{
+    VolumeBorderPixels *p = opaque;
+
+    g_assert_cmpint(x, >=, -1);
+    g_assert_cmpint(y, >=, -1);
+    g_assert_cmpint(z, >=, -1);
+    g_assert_cmpint(x, <=, p->width);
+    g_assert_cmpint(y, <=, p->height);
+    g_assert_cmpint(z, <=, p->depth);
+    g_assert_true(x == -1 || y == -1 || z == -1 || x == p->width ||
+                  y == p->height || z == p->depth);
+    p->border_reads++;
+    *rgba = x == -1 && y == -1 && z == -1 ? 0x804020ff :
+        ((x == -1 ? 255u : 0) << 24) |
+        ((y == -1 ? 255u : 0) << 16) |
+        ((z == -1 ? 255u : 0) << 8) | 255;
+    return !p->fail;
+}
+
+static bool volume_border_level_interior(void *opaque, uint32_t level,
+                                         uint32_t x, uint32_t y, uint32_t z,
+                                         uint32_t *rgba)
+{
+    VolumeBorderPixels *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    return volume_border_interior(opaque, x, y, z, rgba);
+}
+
+static bool volume_border_level_read(void *opaque, uint32_t level,
+                                     int32_t x, int32_t y, int32_t z,
+                                     uint32_t *rgba)
+{
+    VolumeBorderPixels *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    return volume_border_read(opaque, x, y, z, rgba);
+}
+
+/* The corner differs from the faces, so its weight cannot be discarded. */
+static void test_texture_volume_border(void)
+{
+    const struct {
+        uint32_t wrap, filter;
+        float s, t, r;
+        double red, green, blue;
+        bool border;
+    } cases[] = {
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, -2, .25, .25,
+          1, 0, 0, true },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, .25, -2, .25,
+          0, 1, 0, true },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_NEAREST, .25, .25, -2,
+          0, 0, 1, true },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_LINEAR, -2, -2, -2,
+          128.0 / 255, 64.0 / 255, 32.0 / 255, true },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_LINEAR, .125, .0625, .1875,
+          .25 - .25 * .375 * .125 * 127 / 255,
+          .375 - .25 * .375 * .125 * 191 / 255,
+          .125 - .25 * .375 * .125 * 223 / 255, true },
+        { SGI_GL_CLAMP, SGI_GL_LINEAR, -2, -2, -2,
+          .5 - .125 * 127 / 255, .5 - .125 * 191 / 255,
+          .5 - .125 * 223 / 255, true },
+        { SGI_GL_CLAMP_TO_EDGE, SGI_GL_LINEAR, -2, -2, -2,
+          0, 0, 0, false },
+        { SGI_GL_REPEAT, SGI_GL_LINEAR, -.125, -.25, -.5,
+          0, 0, 0, false },
+        { SGI_GL_CLAMP_TO_BORDER, SGI_GL_LINEAR, 2, 2, 2,
+          0, 0, 0, true },
+    };
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, 1 };
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        VolumeBorderPixels p = { .width = 2, .height = 2, .depth = 2,
+                                 .interior = 255 };
+        SGIGLTexImage image = {
+            .width = 2, .height = 2, .depth = 2, .volume = true, .border = 1,
+            .base_format = SGI_GL_RGBA,
+            .min_filter = cases[i].filter, .mag_filter = cases[i].filter,
+            .wrap_s = cases[i].wrap, .wrap_t = cases[i].wrap,
+            .wrap_r = cases[i].wrap, .border_color = { 1, 0, 1, 1 },
+            .read_texel_3d = volume_border_interior,
+            .read_border_texel_3d = volume_border_read, .opaque = &p,
+        };
+        const float coord[4] = { cases[i].s, cases[i].t, cases[i].r, 1 };
+        float out[4] = { -1, -1, -1, -1 };
+
+        g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+        g_assert_cmpfloat_with_epsilon(out[0], cases[i].red, 0.000001);
+        g_assert_cmpfloat_with_epsilon(out[1], cases[i].green, 0.000001);
+        g_assert_cmpfloat_with_epsilon(out[2], cases[i].blue, 0.000001);
+        g_assert_cmpfloat(out[3], ==, 1);
+        g_assert_cmpuint(p.border_reads > 0, ==, cases[i].border);
+    }
+    sgi_gl_cleanup(&c);
+}
+
+/* A single slice still has two R faces and uses the volume callback. */
+static void test_texture_volume_border_one_slice(void)
+{
+    VolumeBorderPixels p = { .width = 2, .height = 2, .depth = 1,
+                             .interior = 255 };
+    SGIGLTexImage image = {
+        .width = 2, .height = 2, .depth = 1, .volume = true, .border = 1,
+        .base_format = SGI_GL_RGBA,
+        .min_filter = SGI_GL_LINEAR, .mag_filter = SGI_GL_LINEAR,
+        .wrap_s = SGI_GL_CLAMP_TO_EDGE, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .wrap_r = SGI_GL_CLAMP,
+        .read_texel_3d = volume_border_interior,
+        .read_border_texel_3d = volume_border_read, .opaque = &p,
+    };
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, 1 };
+    float coord[4] = { .25, .25, 0, 1 }, out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[2], ==, .5f);
+    coord[2] = 1;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[2], ==, 0);
+    g_assert_cmpuint(p.border_reads, ==, 2);
+
+    image.border = 0;
+    image.read_border_texel_3d = NULL;
+    image.border_color[1] = 1;
+    coord[2] = 0;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[1], ==, .5f);
+    g_assert_cmpfloat(out[2], ==, 0);
+    g_assert_cmpuint(p.border_reads, ==, 2);
+
+    image.border = 1;
+    image.read_border_texel_3d = volume_border_read;
+    p.fail = true;
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = -1;
+    }
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmpfloat(out[k], ==, -1);
+    }
+    /* A 2D callback cannot supply a missing volume border. */
+    image.read_border_texel_3d = NULL;
+    image.read_border_texel = texture_border_read;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    sgi_gl_cleanup(&c);
+}
+
+static void test_texture_volume_border_mipmaps(void)
+{
+    VolumeBorderPixels pixels[2] = {
+        { .width = 2, .height = 2, .depth = 2, .level = 4,
+          .interior = 0xff0000ff },
+        { .width = 1, .height = 1, .depth = 1, .level = 5,
+          .interior = 0x00ff00ff },
+    };
+    SGIGLTexLevel levels[2];
+    SGIGLTexPyramid pyramid = {
+        .levels = levels, .count = 2, .base_level = 4, .max_level = 5,
+        .min_lod = .5, .max_lod = .5,
+    };
+    SGIGLTexImage image = {
+        .volume = true, .pyramid = &pyramid,
+        .min_filter = SGI_GL_LINEAR_MIPMAP_LINEAR,
+        .mag_filter = SGI_GL_NEAREST,
+        .wrap_s = SGI_GL_CLAMP, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .wrap_r = SGI_GL_CLAMP_TO_EDGE,
+    };
+    SGIGLContext c;
+    const float coord[4] = { 0, .5, .5, 1 };
+    const float color[4] = { 1, 1, 1, 1 };
+    float out[4] = { -1, -1, -1, -1 };
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    for (unsigned i = 0; i < 2; i++) {
+        levels[i] = (SGIGLTexLevel) {
+            .level = pixels[i].level, .width = pixels[i].width,
+            .height = pixels[i].height, .depth = pixels[i].depth,
+            .base_format = SGI_GL_RGBA, .internal_format = SGI_GL_RGBA,
+            .border = 1, .read_texel_3d = volume_border_level_interior,
+            .read_border_texel_3d = volume_border_level_read,
+            .opaque = &pixels[i],
+        };
+    }
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[0], ==, .75f);
+    g_assert_cmpfloat(out[1], ==, .25f);
+    g_assert_cmpuint(pixels[0].border_reads, >, 0);
+    g_assert_cmpuint(pixels[1].border_reads, >, 0);
+
+    pixels[1].fail = true;
+    for (unsigned k = 0; k < 4; k++) {
+        out[k] = -1;
+    }
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmpfloat(out[k], ==, -1);
+    }
+    pixels[1].fail = false;
+    levels[1].read_border_texel_3d = NULL;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    levels[1].read_border_texel_3d = volume_border_level_read;
+    levels[1].border = 0;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                color, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    sgi_gl_cleanup(&c);
+}
+
 static void texture_volume_vertex(FragScene *f, float x, float y, float r)
 {
     texture_coord(f, 0.25f, 0.25f, r, 1);
@@ -9412,6 +9663,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-post-filter",
                     test_texture_3d_post_filter);
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
+    g_test_add_func("/sgi-gl/texture-volume-border/faces-corners",
+                    test_texture_volume_border);
+    g_test_add_func("/sgi-gl/texture-volume-border/one-slice",
+                    test_texture_volume_border_one_slice);
+    g_test_add_func("/sgi-gl/texture-volume-border/mipmaps",
+                    test_texture_volume_border_mipmaps);
     g_test_add_func("/sgi-gl/texture-volume-mipmaps",
                     test_texture_volume_mipmaps);
     g_test_add_func("/sgi-gl/texture-volume-pyramid",

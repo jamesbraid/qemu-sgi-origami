@@ -179,6 +179,10 @@ typedef struct SGIGLTexLevel {
     bool (*read_texel_3d)(void *opaque, uint32_t level, uint32_t x,
                           uint32_t y, uint32_t z, uint32_t *rgba);
     void *opaque;
+    /* Each signed axis ranges from -1 through its interior dimension. */
+    bool (*read_border_texel_3d)(void *opaque, uint32_t level,
+                                 int32_t x, int32_t y, int32_t z,
+                                 uint32_t *rgba);
 } SGIGLTexLevel;
 
 typedef struct SGIGLTexPyramid {
@@ -225,6 +229,9 @@ typedef struct SGIGLTexImage {
     double lod_scale_s, lod_scale_t;
     /* Expanded RGBA after filtering, before the texture environment. */
     void (*post_filter)(void *opaque, double rgba[4]);
+    /* Required for a volume with border == 1, including depth one. */
+    bool (*read_border_texel_3d)(void *opaque, int32_t x, int32_t y,
+                                 int32_t z, uint32_t *rgba);
 } SGIGLTexImage;
 
 /*
