@@ -1981,6 +1981,70 @@ DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
                                TYPE_SGI_MGRAS "/gl-contexts", SGIMgrasState,
                                gl, SGI_MGRAS_GL_CONTEXTS);
 
+static const VMStateDescription vmstate_sgi_mgras_gl_selection_hit = {
+    .name = TYPE_SGI_MGRAS "/gl-selection-hit",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(name_count, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32(depth_min, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32(depth_max, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32_ARRAY(names, SGIMgrasGLSelectionHit,
+                             SGI_MGRAS_GL_SELECTION_NAMES),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_selection_state = {
+    .name = TYPE_SGI_MGRAS "/gl-selection-state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(active, SGIMgrasGLSelection),
+        VMSTATE_BOOL(result_phase, SGIMgrasGLSelection),
+        VMSTATE_BOOL(pending, SGIMgrasGLSelection),
+        VMSTATE_BOOL(overflow, SGIMgrasGLSelection),
+        VMSTATE_UINT32(name_count, SGIMgrasGLSelection),
+        VMSTATE_UINT32(hit_count, SGIMgrasGLSelection),
+        VMSTATE_UINT32(depth_min, SGIMgrasGLSelection),
+        VMSTATE_UINT32(depth_max, SGIMgrasGLSelection),
+        VMSTATE_UINT32_ARRAY(names, SGIMgrasGLSelection,
+                             SGI_MGRAS_GL_SELECTION_NAMES),
+        VMSTATE_STRUCT_ARRAY(hits, SGIMgrasGLSelection,
+                             SGI_MGRAS_GL_SELECTION_HITS, 0,
+                             vmstate_sgi_mgras_gl_selection_hit,
+                             SGIMgrasGLSelectionHit),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_gl_selection_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const SGIMgrasGLSelection empty;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (memcmp(&s->gl_selection[i], &empty, sizeof(empty))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_selection = {
+    .name = TYPE_SGI_MGRAS "/gl-selection",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_selection_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_selection, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 0,
+                             vmstate_sgi_mgras_gl_selection_state,
+                             SGIMgrasGLSelection),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static bool mgras_nic_needed(void *opaque)
 {
     return SGI_MGRAS(opaque)->board_record;
@@ -2214,6 +2278,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         &vmstate_sgi_mgras_nic,
         &vmstate_sgi_mgras_dma_map_forward,
         &vmstate_sgi_mgras_gl_contexts,
+        &vmstate_sgi_mgras_gl_selection,
         &vmstate_sgi_mgras_gl_readback,
         &vmstate_sgi_mgras_gl_client_read,
         &vmstate_sgi_mgras_gl_clip_query,

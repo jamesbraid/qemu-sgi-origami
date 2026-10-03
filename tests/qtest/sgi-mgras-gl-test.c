@@ -70,6 +70,14 @@ static void test_hq_query_flag_only_from_query(void)
 #define GL_RE_COUNT_HDR       0x00008c04
 #define GL_BANKS_HDR          0x00009808
 #define GL_DEPTH_EQUAL        2
+#define GL_BEGIN_QUADS        0x00001d00
+#define GL_END_QUADS          0x00002700
+#define GL_RENDER_SELECT      0x0000cb04
+#define GL_RENDER             0x0000c900
+#define GL_INIT_NAMES         0x0000c400
+#define GL_LOAD_NAME          0x0000c504
+#define GL_PUSH_NAME          0x0000c704
+#define GL_SELECTION_SELECTOR 0x00000cec
 
 static void gl_matrix(QTestState *qts, uint32_t header, const float m[16])
 {
@@ -119,6 +127,166 @@ static void gl_ortho_triangle_ndc(QTestState *qts)
     gl_color3f(qts, 1, 1, 0);
     gl_vertex3f(qts, -0.40625f, -0.84375f, 0);
     gl_word(qts, GL_END_TRIANGLES);
+}
+
+
+/*
+ * The client's captured result walk binds one selector from its context. The
+ * observed selector is 0x0cec in this client trace; it is a test fixture, not
+ * a claim that the selector is universal or has a hardware-defined meaning.
+ */
+static uint32_t gl_selection_query(QTestState *qts, uint32_t index,
+                                   uint32_t a1, uint32_t a2)
+{
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
+    gl_word(qts, MGRAS_QUERY_TOKEN);
+    gl_word(qts, index);
+    gl_word(qts, a1);
+    gl_word(qts, a2);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_QUERY, ==,
+                    MGRAS_HQ_FLAG_QUERY);
+    return qtest_readl(qts, REG_QUERY_ANSWER);
+}
+
+static void gl_selection_quad(QTestState *qts, float z)
+{
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_vertex3f(qts, -0.5f, -0.5f, z);
+    gl_vertex3f(qts, 0.5f, -0.5f, z);
+    gl_vertex3f(qts, 0.5f, 0.5f, z);
+    gl_vertex3f(qts, -0.5f, 0.5f, z);
+    gl_word(qts, GL_END_QUADS);
+}
+
+static void test_gl_selection_records_overlapping_named_quads(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+
+    /* A normal state query still uses its existing query path. */
+    g_assert_cmphex(gl_query(qts, 0x03a, 0), ==, gl_bits(1));
+
+    gl_enter_slot(qts, GL_SLOT_A);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_depth_range(qts, 0.25f, 0.75f);
+
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_INIT_NAMES);
+    gl_word(qts, GL_PUSH_NAME);
+    gl_word(qts, 11);
+    gl_clear_color(qts, 1, 0, 0, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_selection_quad(qts, -0.5f);
+    gl_word(qts, GL_LOAD_NAME);
+    gl_word(qts, 22);
+    gl_selection_quad(qts, 0.5f);
+    gl_word(qts, GL_RENDER);
+
+    /* Even in the result phase, ordinary queries retain their own meaning. */
+    g_assert_cmphex(gl_query(qts, 0x03a, 0), ==, gl_bits(1));
+
+    /* Cursor threshold is 5 words per one-name record, not hit count. */
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    10);
+    g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+    /* Depth queries carry raw binary32 values; the client converts them. */
+    g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                    gl_bits(0.375f));
+    g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                    gl_bits(0.375f));
+    g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==, 11);
+    g_assert_cmphex(gl_selection_query(qts, 6, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(qts, 7, UINT32_MAX, 0), ==,
+                    gl_bits(0.625f));
+    g_assert_cmphex(gl_selection_query(qts, 8, UINT32_MAX, 0), ==,
+                    gl_bits(0.625f));
+    g_assert_cmphex(gl_selection_query(qts, 9, UINT32_MAX, 0), ==, 22);
+    g_assert_cmphex(gl_window_pixel(qts, 64, 64), ==, 0);
+
+    gl_enter_slot(qts, GL_SLOT_B);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_RENDER);
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    0);
+    gl_enter_slot(qts, GL_SLOT_A);
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    10);
+
+    mgras_reset();
+    gl_scene_start(qts, GL_FLAT);
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_RENDER);
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    0);
+
+    /* Selection queries must not change ordinary matrix state queries. */
+    g_assert_cmphex(gl_query(qts, 0x03a, 0), ==, gl_bits(1));
+}
+
+static void test_gl_selection_clipped_quad_has_no_hit(void)
+{
+    gl_scene_start(qts, GL_FLAT);
+    gl_word(qts, GL_RENDER_SELECT);
+    gl_word(qts, 0);
+    gl_word(qts, GL_INIT_NAMES);
+    gl_word(qts, GL_PUSH_NAME);
+    gl_word(qts, 33);
+    gl_word(qts, GL_BEGIN_QUADS);
+    gl_vertex3f(qts, 2, -0.5f, 0);
+    gl_vertex3f(qts, 3, -0.5f, 0);
+    gl_vertex3f(qts, 3, 0.5f, 0);
+    gl_vertex3f(qts, 2, 0.5f, 0);
+    gl_word(qts, GL_END_QUADS);
+    gl_word(qts, GL_LOAD_NAME);
+    gl_word(qts, 44);
+    gl_selection_quad(qts, 0.0f);
+    gl_word(qts, GL_RENDER);
+
+    /* The clipped quad must add no second record beside the visible one. */
+    g_assert_cmphex(gl_selection_query(qts, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    5);
+    g_assert_cmphex(gl_selection_query(qts, 1, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(qts, 2, UINT32_MAX, 0), ==,
+                    gl_bits(0.5f));
+    g_assert_cmphex(gl_selection_query(qts, 3, UINT32_MAX, 0), ==,
+                    gl_bits(0.5f));
+    g_assert_cmphex(gl_selection_query(qts, 4, UINT32_MAX, 0), ==, 44);
+    g_assert_cmphex(gl_query(qts, 0x03a, 0), ==, gl_bits(1));
+}
+
+static void gl_selection_migration_setup(QTestState *s)
+{
+    gl_enter_slot(s, GL_SLOT_A);
+    gl_word(s, GL_CONTEXT_OPENER);
+    gl_viewport(s, 0, 0, 128, 128);
+    gl_word(s, GL_RENDER_SELECT);
+    gl_word(s, 0);
+    gl_word(s, GL_INIT_NAMES);
+    gl_word(s, GL_PUSH_NAME);
+    gl_word(s, 77);
+    gl_selection_quad(s, 0.0f);
+}
+
+static void gl_selection_migration_check(QTestState *s)
+{
+    gl_word(s, GL_RENDER);
+    g_assert_cmphex(gl_selection_query(s, GL_SELECTION_SELECTOR, 1, 1), ==,
+                    5);
+    g_assert_cmphex(gl_selection_query(s, 1, UINT32_MAX, 0), ==, 1);
+    g_assert_cmphex(gl_selection_query(s, 2, UINT32_MAX, 0), ==,
+                    gl_bits(0.5f));
+    g_assert_cmphex(gl_selection_query(s, 3, UINT32_MAX, 0), ==,
+                    gl_bits(0.5f));
+    g_assert_cmphex(gl_selection_query(s, 4, UINT32_MAX, 0), ==, 77);
+}
+
+static void test_gl_selection_state_migrates(void)
+{
+    gl_migrate(gl_selection_migration_setup, gl_selection_migration_check);
 }
 
 /*
@@ -1977,6 +2145,14 @@ int main(int argc, char **argv)
                    test_gl_shallow_swap_still_shows_bank_one_ssi);
     qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
                    test_hq_query_flag_only_from_query);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-records-overlapping-named-quads",
+                   test_gl_selection_records_overlapping_named_quads);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-selection-clipped-quad-has-no-hit",
+                   test_gl_selection_clipped_quad_has_no_hit);
+    qtest_add_func("sn0/origin2000/mgras/gl-selection-state-migrates",
+                   test_gl_selection_state_migrates);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-ortho-matches-the-reference",
                    test_gl_ortho_matches_the_reference);

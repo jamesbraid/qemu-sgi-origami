@@ -56,6 +56,13 @@
 #define MGRAS_GL_BEGIN_TRI_FAN   0x00001c00
 #define MGRAS_GL_BEGIN_QUADS     0x00001d00
 #define MGRAS_GL_BEGIN_QUAD_STRIP 0x00001e00
+#define MGRAS_GL_RENDER_SELECT   0x0000cb04
+#define MGRAS_GL_RENDER          0x0000c900
+#define MGRAS_GL_INIT_NAMES      0x0000c400
+#define MGRAS_GL_LOAD_NAME       0x0000c504
+#define MGRAS_GL_PUSH_NAME       0x0000c704
+#define MGRAS_GL_POP_NAME        0x0000c600
+#define MGRAS_GL_SELECTION_QUERY 0x00000cec
 #define MGRAS_GL_CLEAR_COLOR_BUF 0x00001500
 #define MGRAS_GL_CLEAR_DEPTH_BUF 0x00004a00
 #define MGRAS_GL_VIEWPORT        0x00003310
@@ -886,6 +893,12 @@ bool sgi_mgras_gl_header(uint32_t header)
     }
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
+    case MGRAS_GL_RENDER_SELECT:
+    case MGRAS_GL_RENDER:
+    case MGRAS_GL_INIT_NAMES:
+    case MGRAS_GL_LOAD_NAME:
+    case MGRAS_GL_PUSH_NAME:
+    case MGRAS_GL_POP_NAME:
     case MGRAS_GL_RE_COUNT:
     case MGRAS_GL_CLEAR_COLOR_BUF:
     case MGRAS_GL_CLEAR_DEPTH_BUF:
@@ -1226,6 +1239,7 @@ void sgi_mgras_gl_reset(SGIMgrasState *s)
                sizeof(s->gl_context[i].clip_query));
         memset(&s->gl_context[i].pixels, 0,
                sizeof(s->gl_context[i].pixels));
+        memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
         sgi_mgras_texture_reset(&s->gl_context[i].tex);
         sgi_gl_reset(&s->gl[i], 0);
         if (!sgi_gl_enable_polygon_modes(&s->gl[i], &sink) ||
@@ -1267,6 +1281,7 @@ static void mgras_gl_forget(SGIMgrasState *s, unsigned int i, uint32_t hw_id)
     memset(s->gl_context[i].clip_query, 0,
            sizeof(s->gl_context[i].clip_query));
     memset(&s->gl_context[i].pixels, 0, sizeof(s->gl_context[i].pixels));
+    memset(&s->gl_selection[i], 0, sizeof(s->gl_selection[i]));
     sgi_mgras_texture_reset(&s->gl_context[i].tex);
 }
 
@@ -2059,6 +2074,154 @@ static uint32_t mgras_gl_writemask_answer(SGIMgrasState *s)
     return st->index_bits ? st->index_mask : st->colour_mask;
 }
 
+static void mgras_gl_selection_overflow(SGIMgrasGLSelection *sel)
+{
+    if (!sel->overflow) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL selection storage "
+                      "overflowed; later data was dropped\n");
+        sel->overflow = true;
+    }
+}
+
+static void mgras_gl_selection_flush(SGIMgrasState *s)
+{
+    SGIMgrasGLSelection *sel = &s->gl_selection[s->gl_current];
+    SGIMgrasGLSelectionHit *hit;
+
+    if (!sel->pending) {
+        return;
+    }
+    sel->pending = false;
+    if (sel->hit_count == SGI_MGRAS_GL_SELECTION_HITS) {
+        mgras_gl_selection_overflow(sel);
+        return;
+    }
+    hit = &sel->hits[sel->hit_count++];
+    hit->name_count = sel->name_count;
+    hit->depth_min = sel->depth_min;
+    hit->depth_max = sel->depth_max;
+    memcpy(hit->names, sel->names, sel->name_count * sizeof(sel->names[0]));
+}
+
+static void mgras_gl_selection_name(SGIMgrasState *s, uint32_t header,
+                                    const uint32_t *payload)
+{
+    SGIMgrasGLSelection *sel = &s->gl_selection[s->gl_current];
+
+    if (!sel->active) {
+        return;
+    }
+    mgras_gl_selection_flush(s);
+    switch (header) {
+    case MGRAS_GL_INIT_NAMES:
+        sel->name_count = 0;
+        break;
+    case MGRAS_GL_PUSH_NAME:
+        if (sel->name_count == SGI_MGRAS_GL_SELECTION_NAMES) {
+            mgras_gl_selection_overflow(sel);
+            break;
+        }
+        sel->names[sel->name_count++] = payload[0];
+        break;
+    case MGRAS_GL_LOAD_NAME:
+        if (!sel->name_count) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL selection "
+                          "load-name on an empty stack ignored\n");
+            break;
+        }
+        sel->names[sel->name_count - 1] = payload[0];
+        break;
+    case MGRAS_GL_POP_NAME:
+        if (!sel->name_count) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: GL selection "
+                          "pop-name on an empty stack ignored\n");
+            break;
+        }
+        sel->name_count--;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void mgras_gl_selection_mode(SGIMgrasState *s, uint32_t header,
+                                    const uint32_t *payload)
+{
+    SGIMgrasGLSelection *sel = &s->gl_selection[s->gl_current];
+
+    if (header == MGRAS_GL_RENDER_SELECT) {
+        if (payload[0]) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL selection mode value "
+                          "0x%x is not supported\n", payload[0]);
+            return;
+        }
+        memset(sel, 0, sizeof(*sel));
+        sel->active = true;
+        return;
+    }
+    if (sel->active) {
+        mgras_gl_selection_flush(s);
+        sel->result_phase = true;
+        sel->active = false;
+    } else {
+        sel->result_phase = false;
+    }
+    sel->name_count = 0;
+}
+
+static uint32_t mgras_gl_selection_query_word(const SGIMgrasGLSelection *sel,
+                                               uint32_t index)
+{
+    uint32_t start = 1;
+
+    if (!index) {
+        uint32_t words = 0;
+
+        for (uint32_t i = 0; i < sel->hit_count; i++) {
+            words += 4 + sel->hits[i].name_count;
+        }
+        return words;
+    }
+    for (uint32_t i = 0; i < sel->hit_count; i++) {
+        const SGIMgrasGLSelectionHit *hit = &sel->hits[i];
+
+        if (index == start) {
+            return hit->name_count;
+        }
+        if (index == start + 1) {
+            return hit->depth_min;
+        }
+        if (index == start + 2) {
+            return hit->depth_max;
+        }
+        if (index >= start + 3 && index < start + 3 + hit->name_count) {
+            return hit->names[index - start - 3];
+        }
+        start += 4 + hit->name_count;
+    }
+    return 0;
+}
+
+static bool mgras_gl_selection_query(SGIMgrasState *s, const uint32_t *args,
+                                     uint32_t *answer)
+{
+    const SGIMgrasGLSelection *sel = &s->gl_selection[s->gl_current];
+
+    if (!sel->result_phase) {
+        return false;
+    }
+    if (args[0] == MGRAS_GL_SELECTION_QUERY &&
+        args[1] == 1 && args[2] == 1) {
+        *answer = mgras_gl_selection_query_word(sel, 0);
+        return true;
+    }
+    if (args[1] == UINT32_MAX && !args[2]) {
+        *answer = mgras_gl_selection_query_word(sel, args[0]);
+        return true;
+    }
+    return false;
+}
+
 uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
                                    uint32_t nargs)
 {
@@ -2070,6 +2233,9 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: GL state query with %u "
                       "arguments on this board answered with zero\n", nargs);
         return 0;
+    }
+    if (mgras_gl_selection_query(s, args, &out[0])) {
+        return out[0];
     }
     if (mgras_gl_raster_query(s, index, &out[0])) {
         return out[0];
@@ -2488,6 +2654,41 @@ static bool mgras_gl_pixels_valid(const SGIMgrasGLPixels *px)
            px->ncarry < px->bpp && !px->ncomponent;
 }
 
+static bool mgras_gl_selection_valid(const SGIMgrasGLSelection *sel)
+{
+    float pending_min, pending_max;
+
+    if (sel->name_count > SGI_MGRAS_GL_SELECTION_NAMES ||
+        sel->hit_count > SGI_MGRAS_GL_SELECTION_HITS ||
+        (sel->active && sel->result_phase) ||
+        (sel->pending && !sel->active) ||
+        (!sel->active && sel->name_count)) {
+        return false;
+    }
+    memcpy(&pending_min, &sel->depth_min, sizeof(pending_min));
+    memcpy(&pending_max, &sel->depth_max, sizeof(pending_max));
+    if (sel->pending && (!isfinite(pending_min) || !isfinite(pending_max) ||
+                         pending_min < 0 || pending_max > 1 ||
+                         pending_min > pending_max)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < sel->hit_count; i++) {
+        const SGIMgrasGLSelectionHit *hit = &sel->hits[i];
+        float minimum, maximum;
+
+        if (hit->name_count > SGI_MGRAS_GL_SELECTION_NAMES) {
+            return false;
+        }
+        memcpy(&minimum, &hit->depth_min, sizeof(minimum));
+        memcpy(&maximum, &hit->depth_max, sizeof(maximum));
+        if (!isfinite(minimum) || !isfinite(maximum) || minimum < 0 ||
+            maximum > 1 || minimum > maximum) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool sgi_mgras_cmd_parser_valid(uint32_t cls, uint32_t reg,
                                 uint32_t words_remaining,
                                 uint32_t payload_count)
@@ -2536,6 +2737,7 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
             s->gl_context[i].client_read_bracket > 1 ||
             s->gl_context[i].client_read_kicked > 1 ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
+            !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
             return false;
         }
@@ -2749,6 +2951,130 @@ static const SGIRasterTarget mgras_gl_target = {
     .store_stencil = mgras_gl_store_stencil,
 };
 
+static bool mgras_gl_selection_clip_vertex(const SGIGLDraw *d,
+                                           const float *vertex,
+                                           SGIVolumeVertex *out)
+{
+    double object[4], eye[4] = { 0 };
+
+    for (int i = 0; i < 4; i++) {
+        object[i] = vertex[SGI_GL_V_POSITION + i];
+        if (!isfinite(object[i])) {
+            return false;
+        }
+    }
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 4; col++) {
+            eye[row] += d->state->modelview[col * 4 + row] * object[col];
+        }
+        if (!isfinite(eye[row])) {
+            return false;
+        }
+    }
+    sgi_gl_eye_to_clip(d->state, eye, out->clip);
+    if (!isfinite(out->clip[0]) || !isfinite(out->clip[1]) ||
+        !isfinite(out->clip[2]) || !isfinite(out->clip[3])) {
+        return false;
+    }
+    memcpy(out->eye, eye, sizeof(eye));
+    return true;
+}
+
+static bool mgras_gl_selection_quad_depth(const SGIGLDraw *d,
+                                          uint32_t first,
+                                          double *minimum, double *maximum)
+{
+    SGIVolumeVertex quad[4] = { 0 };
+    bool hit = false;
+
+    for (int i = 0; i < 4; i++) {
+        const float *vertex = d->vertices +
+                              (first + i) * SGI_GL_VERTEX_FLOATS;
+
+        if (!mgras_gl_selection_clip_vertex(d, vertex, &quad[i])) {
+            return false;
+        }
+    }
+    for (int tri = 0; tri < 2; tri++) {
+        unsigned indices[2][3] = { { 0, 1, 2 }, { 0, 2, 3 } };
+        SGIVolumeVertex in[3], clipped[SGI_VOLUME_TRIANGLE_MAX];
+        unsigned count;
+
+        for (int i = 0; i < 3; i++) {
+            in[i] = quad[indices[tri][i]];
+        }
+        count = sgi_volume_clip_triangle(in, clipped);
+        for (unsigned i = 0; i < count; i++) {
+            double window[3];
+            double depth;
+
+            sgi_gl_clip_to_window(d->state, clipped[i].clip, window);
+            depth = d->state->depth_range[0] +
+                    window[2] * (d->state->depth_range[1] -
+                                 d->state->depth_range[0]);
+            if (!isfinite(depth)) {
+                return false;
+            }
+            *minimum = hit ? MIN(*minimum, depth) : depth;
+            *maximum = hit ? MAX(*maximum, depth) : depth;
+            hit = true;
+        }
+    }
+    return hit;
+}
+
+static void mgras_gl_selection_hit(SGIMgrasState *s, double minimum,
+                                   double maximum)
+{
+    SGIMgrasGLSelection *sel = &s->gl_selection[s->gl_current];
+    float min_f = minimum, max_f = maximum;
+    uint32_t min_bits, max_bits;
+
+    memcpy(&min_bits, &min_f, sizeof(min_bits));
+    memcpy(&max_bits, &max_f, sizeof(max_bits));
+    if (!sel->pending) {
+        sel->depth_min = min_bits;
+        sel->depth_max = max_bits;
+        sel->pending = true;
+        return;
+    }
+    {
+        float old_min, old_max;
+
+        memcpy(&old_min, &sel->depth_min, sizeof(old_min));
+        memcpy(&old_max, &sel->depth_max, sizeof(old_max));
+        if (min_f < old_min) {
+            sel->depth_min = min_bits;
+        }
+        if (max_f > old_max) {
+            sel->depth_max = max_bits;
+        }
+    }
+}
+
+static SGIGLDrawResult mgras_gl_selection_draw(SGIMgrasState *s,
+                                               const SGIGLDraw *d)
+{
+    if (d->mode != SGI_GL_QUADS || !d->count || d->count % 4 ||
+        !d->vertices || d->state->window_matrix_given ||
+        d->state->clip_planes ||
+        (d->polygon_modes &&
+         (d->polygon_modes[0] != SGI_GL_FILL ||
+          d->polygon_modes[1] != SGI_GL_FILL))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: selection ignores unsupported "
+                      "GL geometry state\n");
+        return SGI_GL_DRAW_OK;
+    }
+    for (uint32_t i = 0; i < d->count; i += 4) {
+        double minimum = 0, maximum = 0;
+
+        if (mgras_gl_selection_quad_depth(d, i, &minimum, &maximum)) {
+            mgras_gl_selection_hit(s, minimum, maximum);
+        }
+    }
+    return SGI_GL_DRAW_OK;
+}
+
 /* A GL context's draw, rasterized into the banks and the depth plane. */
 static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
 {
@@ -2757,6 +3083,9 @@ static SGIGLDrawResult mgras_gl_draw_checked(void *opaque, const SGIGLDraw *d)
     SGIGLTexImage image;
     SGIGLDrawResult result;
 
+    if (s->gl_selection[s->gl_current].active) {
+        return mgras_gl_selection_draw(s, d);
+    }
     t.opaque = s;
     t.texture = sgi_mgras_texture_image(s, &image);
     result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
@@ -2775,6 +3104,9 @@ static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_target;
 
+    if (s->gl_selection[s->gl_current].active) {
+        return;
+    }
     t.opaque = s;
     sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
     s->dirty = true;
@@ -2793,6 +3125,8 @@ static void mgras_gl_context_start(SGIMgrasState *s)
 {
     SGIGLContext *gl = mgras_gl(s);
 
+    memset(&s->gl_selection[s->gl_current], 0,
+           sizeof(s->gl_selection[s->gl_current]));
     sgi_gl_reset(gl, gl->hw_id);
     s->gl_context[s->gl_current].client_read_bracket = 0;
     s->gl_context[s->gl_current].client_read_kicked = 0;
@@ -3995,6 +4329,16 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
     switch (header) {
     case MGRAS_GL_CONTEXT_OPENER:
         mgras_gl_context_start(s);
+        return;
+    case MGRAS_GL_RENDER_SELECT:
+    case MGRAS_GL_RENDER:
+        mgras_gl_selection_mode(s, header, payload);
+        return;
+    case MGRAS_GL_INIT_NAMES:
+    case MGRAS_GL_LOAD_NAME:
+    case MGRAS_GL_PUSH_NAME:
+    case MGRAS_GL_POP_NAME:
+        mgras_gl_selection_name(s, header, payload);
         return;
     case MGRAS_GL_RE_COUNT:
         s->gl_re_count_word = payload[0];
