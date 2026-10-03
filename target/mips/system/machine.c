@@ -76,6 +76,14 @@ static int cpu_post_load(void *opaque, int version_id)
     }
     cpu_mips_r10k_perf_post_load(env);
     mips_tlb_flush_caches(env);
+    env->tlb_active_mask = 0;
+    if (env->tlb) {
+        for (int i = 0; i < env->tlb->nb_tlb && i < 64; i++) {
+            if (!env->tlb->mmu.r4k.tlb[i].EHINV) {
+                env->tlb_active_mask |= (1ULL << i);
+            }
+        }
+    }
 
     return 0;
 }
