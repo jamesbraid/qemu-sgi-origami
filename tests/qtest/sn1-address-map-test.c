@@ -4804,13 +4804,14 @@ typedef struct RoutedMemoryResult {
     unsigned ram;
 } RoutedMemoryResult;
 
-static RoutedMemoryResult routed_memory_request(QTestState *qts,
+static RoutedMemoryResult routed_memory_request_cpu(QTestState *qts,
     uint64_t address, unsigned size, uint64_t value, unsigned mode,
-    unsigned cca)
+    unsigned cca, unsigned cpu)
 {
     RoutedMemoryResult result;
     g_autofree char *request = g_strdup_printf(
-        "%" PRIx64 " %u %" PRIx64 " %u %u", address, size, value, mode, cca);
+        "%" PRIx64 " %u %" PRIx64 " %u %u %u",
+        address, size, value, mode, cca, cpu);
     QDict *reply;
 
     qtest_qmp_assert_success(qts,
@@ -4824,6 +4825,13 @@ static RoutedMemoryResult routed_memory_request(QTestState *qts,
                           &result.value, &result.ram), ==, 3);
     qobject_unref(reply);
     return result;
+}
+
+static RoutedMemoryResult routed_memory_request(QTestState *qts,
+    uint64_t address, unsigned size, uint64_t value, unsigned mode,
+    unsigned cca)
+{
+    return routed_memory_request_cpu(qts, address, size, value, mode, cca, 2);
 }
 
 static QTestState *routed_memory_start_machine(const char *prom,
@@ -5394,6 +5402,224 @@ static void test_routed_memory_cached_local_claim(const void *data)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+
+static void test_routed_memory_sparse_banks(const void *data)
+{
+    unsigned direction = GPOINTER_TO_UINT(data);
+    unsigned home_cpu = direction ? 2 : 0;
+    unsigned reader_cpu = direction ? 0 : 2;
+    uint64_t node = direction ? UINT64_C(2) << 33 : 0;
+    const uint64_t addresses[] = {
+        0x3fffffff, 0x40000000, 0x40000001,
+        0x4ffffff8, 0x4ffffff9, 0x4ffffffc, 0x4fffffff, 0x50000000,
+    };
+    const uint64_t word = UINT64_C(0xa1b2c3d4e5f60718);
+    g_autofree char *image = create_sized_flash_image(16 * MiB);
+    QTestState *qts = routed_memory_start(prom_path, image, "");
+    uint8_t seed[16], alias_bytes[16], callback_bytes[16];
+
+    memset(seed, 0x39, sizeof(seed));
+    /* Locational banks 2/3 occupy software banks 0/1 under select 2. */
+    for (unsigned cca = 2; cca <= 5; cca += 3) {
+        for (unsigned i = 0; i < ARRAY_SIZE(addresses); i++) {
+            for (unsigned width = 1; width <= 8; width *= 2) {
+                uint64_t address = node + addresses[i];
+                uint64_t check = node +
+                    (addresses[i] < 0x40000010 ? 0x40000000 : 0x4ffffff0);
+                bool fitted = addresses[i] >= 0x40000000 &&
+                    addresses[i] < 0x50000000 &&
+                    width <= 0x50000000 - addresses[i];
+                RoutedMemoryResult alias, callback;
+
+                g_assert_true(qtest_memwrite_cpu(qts, home_cpu, check,
+                                                 seed, sizeof(seed)));
+                alias = routed_memory_request_cpu(qts, address, width, 0,
+                                                    0, cca, reader_cpu);
+                callback = routed_memory_request_cpu(qts, address, width, 0,
+                                                       2, cca, reader_cpu);
+                g_assert_cmpuint(alias.result, ==, fitted ? 0 : 2);
+                g_assert_cmpuint(alias.result, ==, callback.result);
+                g_test_message("CPU%u read 0x%" PRIx64 " width%u CCA%u: "
+                    "alias %u/%016" PRIx64 " callback %u/%016" PRIx64,
+                    reader_cpu, address, width, cca, alias.result, alias.value,
+                    callback.result, callback.value);
+                if (fitted) {
+                    g_assert_cmphex(alias.value, ==, callback.value);
+                    g_assert_cmpuint(alias.ram, ==, 1);
+                    g_assert_cmphex(alias.value >> ((8 - width) * 8), ==,
+                        UINT64_C(0x3939393939393939) >> ((8 - width) * 8));
+                }
+                alias = routed_memory_request_cpu(qts, address, width, word,
+                                                    1, cca, reader_cpu);
+                g_assert_cmpuint(alias.result, ==, fitted ? 0 : 2);
+                g_assert_true(qtest_memread_cpu(qts, home_cpu, check,
+                                                alias_bytes, 16));
+                g_assert_true(qtest_memwrite_cpu(qts, home_cpu, check,
+                                                 seed, sizeof(seed)));
+                callback = routed_memory_request_cpu(qts, address, width, word,
+                                                       3, cca, reader_cpu);
+                g_assert_cmpuint(alias.result, ==, callback.result);
+                g_assert_true(qtest_memread_cpu(qts, home_cpu, check,
+                                                callback_bytes, 16));
+                g_test_message("CPU%u write 0x%" PRIx64 " width%u CCA%u: "
+                    "alias %u/%016" PRIx64 "/%016" PRIx64 " callback "
+                    "%u/%016" PRIx64 "/%016" PRIx64,
+                    reader_cpu, address, width, cca, alias.result,
+                    ldq_be_p(alias_bytes), ldq_be_p(alias_bytes + 8),
+                    callback.result, ldq_be_p(callback_bytes),
+                    ldq_be_p(callback_bytes + 8));
+                {
+                    uint8_t alias_expected[16], callback_expected[16], bytes[8];
+
+                    memcpy(alias_expected, seed, sizeof(seed));
+                    memcpy(callback_expected, seed, sizeof(seed));
+                    stq_be_p(bytes, word);
+                    if (fitted) {
+                        memcpy(alias_expected + (address - check), bytes,
+                               width);
+                        memcpy(callback_expected, alias_expected, 16);
+                    } else if (addresses[i] == 0x3fffffff && width > 1) {
+                        /* Raw unaligned MMIO splits differ before bank1. */
+                        memcpy(callback_expected, bytes + 1, width - 1);
+                    } else if (addresses[i] >= 0x40000000 &&
+                               addresses[i] < 0x50000000) {
+                        unsigned fitted_bytes = 0x50000000 - addresses[i];
+
+                        memcpy(alias_expected + (address - check), bytes,
+                               fitted_bytes);
+                        memcpy(callback_expected, alias_expected, 16);
+                    }
+                    g_assert_cmpmem(alias_bytes, 16, alias_expected, 16);
+                    g_assert_cmpmem(callback_bytes, 16, callback_expected, 16);
+                    if (fitted || !(address & (width - 1))) {
+                        g_assert_cmpmem(alias_bytes, 16, callback_bytes, 16);
+                    }
+                }
+                g_test_message("CPU%u bank1 0x%" PRIx64 " width%u CCA%u: %s",
+                    reader_cpu, address, width, cca,
+                    fitted ? "fitted read/write" : "refused read/write");
+            }
+        }
+    }
+    for (unsigned state = 0; state < 2; state++) {
+        uint64_t address = node + (state ? 0x40000008 : 0x80000000);
+        RoutedMemoryResult alias, callback;
+
+        if (state) {
+            /* Retain fitted bank0 while disabling only bank1. */
+            routed_memory_writeq(qts, home_cpu,
+                BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+                (UINT64_C(2) << 32) | UINT64_C(0x3100));
+        }
+        alias = routed_memory_request_cpu(qts, address, 8, 0, 0, 5, reader_cpu);
+        callback = routed_memory_request_cpu(qts, address, 8, 0, 2, 5,
+                                              reader_cpu);
+        g_assert_cmpuint(alias.result, !=, 0);
+        g_assert_cmpuint(alias.result, ==, callback.result);
+        alias = routed_memory_request_cpu(qts, address, 8, word, 1, 5,
+                                           reader_cpu);
+        callback = routed_memory_request_cpu(qts, address, 8, word, 3, 5,
+                                              reader_cpu);
+        g_assert_cmpuint(alias.result, !=, 0);
+        g_assert_cmpuint(alias.result, ==, callback.result);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
+static char *create_routed_memory_sparse_prom(unsigned home_node)
+{
+    char *path = create_routed_memory_refresh_prom(false);
+    const struct {
+        unsigned offset;
+        uint32_t instruction;
+    } patches[] = {
+        /* Select the reader on the other node, retaining the slot check. */
+        { 0x440, home_node ? 0x1560001d : 0x1160001d },
+        /* EntryLo uses the target number and fitted software bank1. */
+        { 0x44c, home_node ? 0x3c0b1000 : 0x00005825 },
+        { 0x450, 0x3c0c0101 },
+        /* Both selected readers use the existing command loop. */
+        { 0x4c4, 0 },
+    };
+    int fd = open(path, O_WRONLY);
+    uint8_t bytes[4];
+
+    g_assert_cmpint(fd, >=, 0);
+    for (unsigned i = 0; i < ARRAY_SIZE(patches); i++) {
+        stl_be_p(bytes, patches[i].instruction);
+        g_assert_cmpint(pwrite(fd, bytes, sizeof(bytes), patches[i].offset),
+                        ==, sizeof(bytes));
+    }
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_routed_memory_sparse_fetch(const void *data)
+{
+    unsigned direction = GPOINTER_TO_UINT(data) & 1;
+    bool remap = GPOINTER_TO_UINT(data) & 2;
+    unsigned reader = direction ? 0 : 2;
+    unsigned home = direction ? 2 : 0;
+    uint64_t node = (uint64_t)home << 33;
+    const uint32_t code[] = {
+        0x67de0001, 0x34111100, 0x3415cafe,
+        0x3c08bfc0, 0x350804bc, 0x01000008, 0,
+    };
+    uint8_t bytes[sizeof(code)];
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_routed_memory_sparse_prom(home);
+    image = create_sized_flash_image(16 * MiB);
+    qts = routed_memory_start(prom, image, "-accel tcg,thread=multi");
+    for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(bytes + i * 4, code[i]);
+    }
+    g_assert_true(qtest_memwrite_cpu(qts, home, node + 0x40400000,
+                                     bytes, sizeof(bytes)));
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, reader, "s5", 0xcafe);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_cause(qts, reader) & 0x7c, ==, 0);
+    g_assert_cmphex(cpu_gpr(qts, reader, "s8"), ==, 1);
+    g_assert_cmphex(cpu_gpr(qts, reader, "s1"), ==, 0x1100);
+    {
+        RoutedMemoryResult mapping = routed_memory_request_cpu(qts,
+            node + 0x40400000, 8, 0, 0, 5, reader);
+
+        g_assert_cmpuint(mapping.result, ==, 0);
+        g_assert_cmpuint(mapping.ram, ==, 1);
+        g_assert_cmphex(mapping.value, ==, UINT64_C(0x67de000134111100));
+    }
+    /* The second invocation must not reuse the translated bank1 code. */
+    routed_memory_writeq(qts, home,
+        BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
+        remap ? BEDROCK_MD_INSTALLED :
+                (UINT64_C(2) << 32) | UINT64_C(0x3100));
+    routed_memory_writeq(qts, reader,
+        BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (!(cpu_cause(qts, reader) & 0x7c) &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(POLL_INTERVAL_US);
+    }
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, reader, "s2"), ==, 2);
+    g_assert_cmphex(cpu_gpr(qts, reader, "s8"), ==, 1);
+    g_assert_cmphex(cpu_cause(qts, reader) & 0x7c, ==, 6 << 2);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_routed_memory_boundaries(const void *data)
 {
     g_autofree char *image = create_sized_flash_image(16 * MiB);
@@ -5440,7 +5666,7 @@ static void test_routed_memory_boundaries(const void *data)
             }
         }
     }
-    /* The typed CPU path refuses bank two beyond the raw RAM extent. */
+    /* Select 0 moves fitted locational bank2 into software bank2. */
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
                           BEDROCK_MD_INSTALLED);
     for (unsigned cca = 2; cca <= 5; cca += 3) {
@@ -5453,10 +5679,16 @@ static void test_routed_memory_boundaries(const void *data)
             g_assert_cmpuint(actual.result, ==, callback.result);
             actual = routed_memory_request(qts, bank, size, 0, 0, cca);
             callback = routed_memory_request(qts, bank, size, 0, 2, cca);
-            g_assert_cmpuint(actual.result, !=, 0);
+            g_assert_cmpuint(actual.result, ==, 0);
             g_assert_cmpuint(actual.result, ==, callback.result);
             g_assert_cmphex(actual.value, ==, callback.value);
-            g_assert_cmpuint(actual.ram, ==, 0);
+            g_assert_cmphex(actual.value >> ((8 - size) * 8), ==,
+                            word >> ((8 - size) * 8));
+            g_assert_cmpuint(actual.ram, ==, 1);
+            actual = routed_memory_request(qts, 0, size, 0, 0, cca);
+            callback = routed_memory_request(qts, 0, size, 0, 2, cca);
+            g_assert_cmpuint(actual.result, !=, 0);
+            g_assert_cmpuint(actual.result, ==, callback.result);
         }
     }
     qtest_quit(qts);
@@ -6688,6 +6920,24 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn1/address-map/routed-memory/cached-refusal/disconnected-port",
                        GUINT_TO_POINTER(9), test_routed_memory_cached_refusal);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/read-to-node0",
+                       GUINT_TO_POINTER(0), test_routed_memory_sparse_banks);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/read-to-node2",
+                       GUINT_TO_POINTER(1), test_routed_memory_sparse_banks);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/fetch-disable-node0",
+                       GUINT_TO_POINTER(0), test_routed_memory_sparse_fetch);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/fetch-disable-node2",
+                       GUINT_TO_POINTER(1), test_routed_memory_sparse_fetch);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/fetch-remap-node0",
+                       GUINT_TO_POINTER(2), test_routed_memory_sparse_fetch);
+    qtest_add_data_func(
+        "sn1/address-map/routed-memory/sparse-bank/fetch-remap-node2",
+                       GUINT_TO_POINTER(3), test_routed_memory_sparse_fetch);
     qtest_add_data_func("sn1/address-map/routed-memory/snapshot", NULL,
                        test_routed_memory_snapshot);
     qtest_add_data_func("sn1/address-map/routed-memory/migration", NULL,

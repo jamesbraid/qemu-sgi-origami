@@ -498,7 +498,7 @@ void sn1_memory_mappings_refresh(SN1MemoryMappings *maps, SN1NodeState *origin)
         }
         number = sgi_bedrock_node_number(
             SGI_BEDROCK(alias->target->bedrock));
-        size = MIN(memory_region_size(alias->target->ram),
+        size = MIN(memory_region_size(&alias->target->ni_target[0]),
                    SN1_FABRIC_WINDOW_SIZE);
         enabled = size && alias->origin->endpoint.ready &&
             alias->target->endpoint.ready &&
@@ -580,7 +580,7 @@ SN1MemoryMappings *sn1_memory_mappings_new(DeviceState **nodes,
                 alias->parent = &node->ni_processor[cpu][0].region;
                 memory_region_init_alias(&alias->region, OBJECT(node), name,
                     &target->ni_target[0], 0,
-                    MIN(memory_region_size(target->ram),
+                    MIN(memory_region_size(&target->ni_target[0]),
                         SN1_FABRIC_WINDOW_SIZE));
                 memory_region_set_enabled(&alias->region, false);
                 memory_region_add_subregion_overlap(alias->parent, 0,

@@ -29,6 +29,8 @@
 #define LB_SCRATCH2 UINT64_C(0x608010)
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 #define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define MD_BANK0_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3100))
+#define MD_BANK1_BASE UINT64_C(0x40000000)
 #define REVISION_NODE_SHIFT 32
 #define REVISION_NODE_MASK (UINT64_C(0xff) << REVISION_NODE_SHIFT)
 #define CABLE_PATH "/machine/numalink-cable"
@@ -677,6 +679,72 @@ static void test_bte_memory_route(const void *data)
             }
         }
     }
+    /* SELECT2 places the second fitted bank in its own sparse window. */
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t own = NODE(node ? 2 : 0);
+        uint64_t peer = NODE(node ? 0 : 2);
+        uint8_t source[128], marker[128], untouched[128];
+        const uint64_t notify_marker = UINT64_C(0x123456789abcdef0);
+
+        for (unsigned i = 0; i < sizeof(source); i++) {
+            source[i] = (i * 13) ^ (0x96 + node);
+        }
+        memset(marker, 0xc0 + node, sizeof(marker));
+        memset(untouched, 0x32 + node, sizeof(untouched));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            own + MD_BANK1_BASE + 0x50000, source, sizeof(source)));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            own + 0x50000, untouched, sizeof(untouched)));
+        g_assert_true(qtest_memwrite_cpu(qts, (1 - node) * 2,
+            peer + 0x60000, untouched, sizeof(untouched)));
+        bte_cpu_writeq(qts, (1 - node) * 2, peer + 0x70000,
+                       notify_marker);
+        for (unsigned engine = 0; engine < 2; engine++) {
+            for (unsigned named = 0; named < 2; named++) {
+                for (unsigned zero = 0; zero < 2; zero++) {
+                    g_assert_true(qtest_memwrite_cpu(qts, (1 - node) * 2,
+                        peer + MD_BANK1_BASE + 0x60000,
+                        marker, sizeof(marker)));
+                    bte_cpu_writeq(qts, (1 - node) * 2,
+                        peer + MD_BANK1_BASE + 0x70000, UINT64_MAX);
+                    g_assert_cmphex(bte_memory_transfer(qts, node, engine,
+                        own + MD_BANK1_BASE + 0x50000,
+                        peer + MD_BANK1_BASE + 0x60000,
+                        peer + MD_BANK1_BASE + 0x70000, zero, named), ==, 0);
+                    g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                        peer + MD_BANK1_BASE + 0x60000,
+                        result, sizeof(source)));
+                    if (zero) {
+                        memset(bytes, 0, sizeof(source));
+                    } else {
+                        memcpy(bytes, source, sizeof(source));
+                    }
+                    g_assert_cmpmem(result, sizeof(source),
+                                    bytes, sizeof(source));
+                    g_assert_cmphex(bte_cpu_readq(qts, (1 - node) * 2,
+                        peer + MD_BANK1_BASE + 0x70000), ==, 0);
+                    g_assert_true(qtest_memread_cpu(qts, node * 2,
+                        own + MD_BANK1_BASE + 0x50000, result, sizeof(source)));
+                    g_assert_cmpmem(result, sizeof(source),
+                                    source, sizeof(source));
+                    g_assert_true(qtest_memread_cpu(qts, node * 2,
+                        own + 0x50000, result, sizeof(untouched)));
+                    g_assert_cmpmem(result, sizeof(untouched),
+                                    untouched, sizeof(untouched));
+                    g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                        peer + 0x60000, result, sizeof(untouched)));
+                    g_assert_cmpmem(result, sizeof(untouched),
+                                    untouched, sizeof(untouched));
+                    g_assert_cmphex(bte_cpu_readq(qts, (1 - node) * 2,
+                        peer + 0x70000), ==, notify_marker);
+                    g_test_message("%s node%u BTE%u %s sparse bank1 %s OK",
+                                   topology, node, engine,
+                                   named ? "named" : "local",
+                                   zero ? "zero" : "copy");
+                }
+            }
+        }
+    }
     /* Named registers enter the routed view before launching DMA. */
     for (unsigned node = 0; node < 2; node++) {
         uint64_t own = NODE(node ? 2 : 0);
@@ -702,6 +770,51 @@ static void test_bte_memory_route(const void *data)
     }
     check_remote_pi_interrupt(qts, true);
     check_remote_bte_interrupt(qts, true);
+    /* A disabled bank and the fitted bank's hole both preserve the target. */
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t own = NODE(node ? 2 : 0);
+        uint64_t peer = NODE(node ? 0 : 2);
+        uint8_t marker[128];
+        const uint64_t failed = (UINT64_C(1) << 16) | 1;
+
+        memset(marker, 0x5c + node, sizeof(marker));
+        g_assert_true(qtest_memwrite_cpu(qts, (1 - node) * 2,
+            peer + MD_BANK1_BASE + 0x60000, marker, sizeof(marker)));
+        bte_cpu_writeq(qts, (1 - node) * 2,
+            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_SELECT2);
+        memset(bytes, 0x32 + node, 128);
+        g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+            peer + 0x60000, result, 128));
+        g_assert_cmpmem(result, 128, bytes, 128);
+        for (unsigned named = 0; named < 2; named++) {
+            bte_cpu_writeq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000, UINT64_MAX);
+            g_assert_cmphex(bte_memory_transfer(qts, node, 0,
+                own + MD_BANK1_BASE + 0x50000,
+                peer + MD_BANK1_BASE + 0x60000,
+                own + MD_BANK1_BASE + 0x70000, false, named), ==, failed);
+            g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000), ==, failed);
+        }
+        bte_cpu_writeq(qts, (1 - node) * 2,
+            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+        g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+            peer + MD_BANK1_BASE + 0x60000, result, sizeof(marker)));
+        g_assert_cmpmem(result, sizeof(marker), marker, sizeof(marker));
+        for (unsigned named = 0; named < 2; named++) {
+            bte_cpu_writeq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000, UINT64_MAX);
+            g_assert_cmphex(bte_memory_transfer(qts, node, 0,
+                own + MD_BANK1_BASE + 0x10050000,
+                peer + MD_BANK1_BASE + 0x60000,
+                own + MD_BANK1_BASE + 0x70000, false, named), ==, failed);
+            g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000), ==, failed);
+            g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                peer + MD_BANK1_BASE + 0x60000, result, sizeof(marker)));
+            g_assert_cmpmem(result, sizeof(marker), marker, sizeof(marker));
+        }
+    }
     /* A missing target bank must refuse data, preserving backing RAM. */
     memset(bytes, 0x5a, sizeof(bytes));
     g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x20000,
@@ -724,6 +837,27 @@ static void test_bte_memory_route(const void *data)
         routed ? "/machine/master-route" : CABLE_PATH);
     check_remote_pi_interrupt(qts, false);
     check_remote_bte_interrupt(qts, false);
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t own = NODE(node ? 2 : 0);
+        uint64_t peer = NODE(node ? 0 : 2);
+        uint8_t marker[128];
+        const uint64_t failed = (UINT64_C(1) << 16) | 1;
+
+        memset(marker, 0x5c + node, sizeof(marker));
+        for (unsigned named = 0; named < 2; named++) {
+            bte_cpu_writeq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000, UINT64_MAX);
+            g_assert_cmphex(bte_memory_transfer(qts, node, 0,
+                own + MD_BANK1_BASE + 0x50000,
+                peer + MD_BANK1_BASE + 0x60000,
+                own + MD_BANK1_BASE + 0x70000, false, named), ==, failed);
+            g_assert_cmphex(bte_cpu_readq(qts, node * 2,
+                own + MD_BANK1_BASE + 0x70000), ==, failed);
+            g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                peer + MD_BANK1_BASE + 0x60000, result, sizeof(marker)));
+            g_assert_cmpmem(result, sizeof(marker), marker, sizeof(marker));
+        }
+    }
     for (unsigned named = 0; named < 2; named++) {
         g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
             NODE(2) + 0x20000, 0x30000, true, named),
