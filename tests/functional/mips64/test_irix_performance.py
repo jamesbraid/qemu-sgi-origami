@@ -150,6 +150,7 @@ class IrixPerformance(QemuSystemTest):
                                            platform.node()),
                          'cpus': os.cpu_count()},
                 'build_options': build_options,
+                'malloc_perturb': os.getenv('MALLOC_PERTURB_', '0'),
                 'warmups': 1, 'repeats': repeats,
             }
             report['identity'] = run_record(FORK_ROOT, self.qemu_bin,
