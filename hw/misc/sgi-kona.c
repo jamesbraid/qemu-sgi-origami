@@ -4373,7 +4373,9 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     framing.source_stride = stride;
     pixels = (uint64_t)h[1] * h[2];
     words = sgi_kona_texture_words(&framing);
-    if (h[0] != 0xde1 || h[7] > h[6] || h[8] ||
+    if (p->unpack_swap_bytes) {
+        reason = "byte-swapped source components are unsupported";
+    } else if (h[0] != 0xde1 || h[7] > h[6] || h[8] ||
         (h[6] && stride < (uint64_t)h[1] * bytes) ||
         !sgi_kona_texture_storage_base(h) || h[10] == UINT32_MAX || h[15] ||
         h[16] > 0xff || (h[16] & 15) > 13 || (h[16] >> 4) > 13 ||
@@ -4443,9 +4445,9 @@ static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
 
 /*
  * 0x33 pname value, glPixelStorei: the unpack and pack state the pipe
- * uses for the images it takes and returns (GL_UNPACK_ROW_LENGTH,
- * GL_UNPACK_ALIGNMENT and their pack forms). The library sends the state
- * and converts no image, so the pipe holds it (inferred). Other
+ * uses for images (GL_UNPACK_SWAP_BYTES, GL_UNPACK_ROW_LENGTH,
+ * GL_UNPACK_ALIGNMENT and the row-length/alignment pack forms). The library
+ * sends the state and converts no image, so the pipe holds it (inferred). Other
  * parameters are kept by no part of the model and logged.
  */
 static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
@@ -4454,6 +4456,9 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
     SGIKonaGLPipe *p = &s->gl_pipe[i];
 
     switch (pname) {
+    case 0x0cf0:                /* GL_UNPACK_SWAP_BYTES */
+        p->unpack_swap_bytes = value != 0;
+        break;
     case 0x0cf2:                /* GL_UNPACK_ROW_LENGTH */
         p->unpack_row_length = value;
         break;
@@ -5964,7 +5969,7 @@ bool sgi_kona_texture_dma_waiting(SGIKonaState *s)
     return u->count && u->header[6] == 1 && !u->complete;
 }
 
-/* Native byte transfers start at the exact mapped source address. */
+/* Native component transfers start at the exact mapped source address. */
 bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                  uint32_t per_line, uint64_t pitch)
 {
@@ -8950,6 +8955,17 @@ static int sgi_kona_gl_pipe_post_load(void *opaque, int version_id)
     return 0;
 }
 
+/* Appended separately so historical pipe descriptions keep their layout. */
+static const VMStateDescription vmstate_sgi_kona_gl_unpack = {
+    .name = TYPE_SGI_KONA "/gl-unpack",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(unpack_swap_bytes, SGIKonaGLPipe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
     .version_id = 2,
@@ -8987,6 +9003,11 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
 
+    if (version_id < 7) {
+        for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
+            s->gl_pipe[i].unpack_swap_bytes = false;
+        }
+    }
     if (version_id < 6) {
         s->gl_tex_table_slot = 0;
         memset(s->gl_tex_table_words, 0, sizeof(s->gl_tex_table_words));
@@ -9016,7 +9037,7 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_contexts = {
     .name = TYPE_SGI_KONA "/contexts",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .needed = sgi_kona_contexts_needed,
     .post_load = sgi_kona_contexts_post_load,
@@ -9052,6 +9073,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
         VMSTATE_UINT32_ARRAY_V(gl_tex_table_words, SGIKonaState,
                                SGI_KONA_GL_TEX_TABLE_WORDS, 6),
         VMSTATE_BOOL_V(gl_tex_table_refused, SGIKonaState, 6),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 7,
+                             vmstate_sgi_kona_gl_unpack, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
