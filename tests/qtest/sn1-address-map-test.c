@@ -377,6 +377,65 @@ static char *create_cpu_number_prom(void)
     return path;
 }
 
+/* Map a remote 4 KiB pair at xkseg, then enter its last two words. */
+static char *create_remote_exec_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    const uint32_t code[] = {
+        0x400a6000, /* mfc0 t2, Status */
+        0x354a0080, /* enable KX */
+        0x408a6000,
+        0x000000c0,
+        0x3c029200, /* local LB node-number register */
+        0x0002103c,
+        0x3c030160,
+        0x34630000,
+        0x00431025,
+        0xdc4b0000, /* ld t3, 0(v0) */
+        0x000b583e, /* dsrl32 t3, t3, 0 */
+        0x316b007f,
+        0x396b0001, /* choose the other node */
+        0x000b5ef8, /* dsll t3, t3, 27: node bits in EntryLo */
+        0x3c0c0001,
+        0x358c001f, /* physical 0x400000, C=3, D/V/G */
+        0x016c5825,
+        0x408b1000, /* EntryLo0 */
+        0x656b0040, /* next physical page */
+        0x408b1800, /* EntryLo1 */
+        0x3c0cc000,
+        0x000c603c,
+        0x3c0d1000,
+        0x018d6025, /* virtual c000000010000000 */
+        0x658d0004, /* ASID 4 */
+        0x40ad5000, /* dmtc0 t5, EntryHi */
+        0x40802800, /* PageMask 0 */
+        0x40800000, /* Index 0 */
+        0x000000c0,
+        0x42000002, /* tlbwi */
+        0x000000c0,
+        0x658c0ff8, /* entry at end of even page */
+        0x01800008, /* jr t4 */
+        0x00000000,
+    };
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image, 0x100000ff);
+    for (unsigned offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+        stl_be_p(image + 0x400 + 4 * i, code[i]);
+    }
+    fd = g_file_open_tmp("sn1-remote-exec-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
 static char *create_nmi_control_prom(void)
 {
     g_autoptr(GError) error = NULL;
@@ -4351,6 +4410,101 @@ static void test_routed_cpu_number_read_is_per_cpu(const void *data)
     g_assert_cmpint(g_unlink(image), ==, 0);
 }
 
+static void test_remote_ram_cross_page_execution(const void *data)
+{
+    g_autofree char *prom = NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    const uint32_t code[] = {
+        0x34130000, /* ori s3, zero, 0 */
+        0x10000002, /* branch across page, skipping failure marker */
+        0x66730001, /* delay slot on odd page */
+        0x3413ffff,
+        0x66730002,
+        0x3415cafe, /* completion marker */
+        0x1000ffff,
+        0x00000000,
+    };
+    uint8_t bytes[sizeof(code)];
+    const char *topology = data;
+    int fd;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    prom = create_remote_exec_prom();
+    fd = g_file_open_tmp("sn1-remote-exec-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * MiB), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s "
+        "-cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-accel tcg,thread=multi -no-shutdown -nodefaults -display none -S",
+        topology, strstr(topology, "expansion") ?
+        ",expansion-storage.0=expansion-enclosure=cfg" : "", prom, image);
+
+    /* Each CPU executes from its peer, independent of its local PI slice. */
+    stq_be_p(bytes, UINT64_C(1) << 32);
+    g_assert_true(qtest_memwrite_cpu(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
+                                    bytes, 8));
+    if (strstr(topology, "expansion")) {
+        /* Turns five and three connect the two compute nodes. */
+        stq_be_p(bytes, 5);
+        g_assert_true(qtest_memwrite_cpu(qts, 0,
+            BEDROCK_LOCAL + BEDROCK_NI + 0x1008, bytes, 8));
+        stq_be_p(bytes, 3);
+        g_assert_true(qtest_memwrite_cpu(qts, 2,
+            BEDROCK_LOCAL + BEDROCK_NI + 0x1000, bytes, 8));
+    }
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t base = (uint64_t)node << 33;
+        uint8_t readback[sizeof(code)];
+
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
+        for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
+            stl_be_p(bytes + 4 * i, code[i] | (i == 0 ? node * 16 : 0));
+        }
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+            base + 0x400ff8, bytes, sizeof(bytes)));
+        g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+            base + 0x400ff8, readback, sizeof(readback)));
+        g_assert_cmpmem(readback, sizeof(readback), bytes, sizeof(bytes));
+        g_test_message("node %u peer first instruction 0x%08x", node,
+                       ldl_be_p(readback));
+        g_assert_cmphex(ldl_be_p(readback), ==, code[0] | node * 16);
+    }
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_usleep(100000);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        g_autofree char *registers = qtest_hmp(qts, "info registers %u", cpu);
+
+        g_test_message("CPU %u %s", cpu, registers);
+        wait_for_cpu_gpr(qts, cpu, "s5", 0xcafe);
+    }
+    stop_vm(qts);
+    for (unsigned cpu = 0; cpu < 4; cpu++) {
+        uint64_t target = (cpu / 2) ^ 1;
+        uint64_t expected = 3 + 16 * target;
+
+        g_test_message("%s CPU %u target node %" PRIu64
+                       " delay-slot result 0x%" PRIx64,
+                       topology, cpu, target, cpu_gpr(qts, cpu, "s3"));
+        g_assert_cmphex(cpu_gpr(qts, cpu, "t3"), ==,
+                       (target << 27) | 0x1005f);
+        g_assert_cmphex(cpu_gpr(qts, cpu, "s3"), ==, expected);
+    }
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_cpu_enable_read_is_per_cpu(const void *data)
 {
     g_autofree char *path = NULL;
@@ -5142,6 +5296,14 @@ int main(int argc, char **argv)
                         test_cpu_number_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/routed-cpu-number-read-is-per-cpu",
                         NULL, test_routed_cpu_number_read_is_per_cpu);
+    qtest_add_data_func(
+                        "sn1/address-map/routed-remote-ram-cross-page-execution",
+                        "origin300-numalink-pci-expansion-experiment",
+                        test_remote_ram_cross_page_execution);
+    qtest_add_data_func(
+                        "sn1/address-map/direct-remote-ram-cross-page-execution",
+                        "origin300-two-chassis",
+                        test_remote_ram_cross_page_execution);
     qtest_add_data_func("sn1/address-map/cpu-enable-read-is-per-cpu", NULL,
                         test_cpu_enable_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-c-enable-controls-bus", NULL,
