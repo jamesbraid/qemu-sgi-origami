@@ -808,10 +808,10 @@ static void test_texture_pixel_conversion(void)
         g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==,
                          4 * components[format - 3]);
         g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, 1, byte_source,
-                                                     &rgba));
+                                                     false, &rgba));
         g_assert_cmphex(rgba, ==, expected[format - 3]);
         g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, 6, float_source,
-                                                     &rgba));
+                                                     false, &rgba));
         g_assert_cmphex(rgba, ==, expected_float[format - 3]);
         for (uint32_t type = 7; type < 10; type++) {
             rgba = 0x12345678;
@@ -819,7 +819,7 @@ static void test_texture_pixel_conversion(void)
                              ==, 0);
             g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
                                                           float_source,
-                                                          &rgba));
+                                                          false, &rgba));
             g_assert_cmphex(rgba, ==, 0x12345678);
         }
         for (unsigned component = 0;
@@ -834,12 +834,14 @@ static void test_texture_pixel_conversion(void)
                 source[component] = invalid[i];
                 rgba = 0x12345678;
                 g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 6,
-                                                              source, &rgba));
+                                                              source, false,
+                                                              &rgba));
                 g_assert_cmphex(rgba, ==, 0x12345678);
             }
         }
     }
-    g_assert_true(sgi_kona_gl_texture_pixel_rgba(5, 6, saturated, &rgba));
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(5, 6, saturated,
+                                                false, &rgba));
     g_assert_cmphex(rgba, ==, 0x00ff0000);
     for (uint32_t format = 0; format <= 8; format++) {
         if (format < 3 || format > 7) {
@@ -847,7 +849,8 @@ static void test_texture_pixel_conversion(void)
             g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==, 0);
             g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==, 0);
             g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 1,
-                                                          byte_source, &rgba));
+                                                          byte_source, false,
+                                                          &rgba));
             g_assert_cmphex(rgba, ==, 0x12345678);
         }
     }
@@ -932,14 +935,92 @@ static void test_texture_integer_conversion(void)
                              ==, cases[i].width * components[format - 3]);
             g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, cases[i].type,
                                                          cases[i].source,
-                                                         &rgba));
+                                                         false, &rgba));
             g_assert_cmphex(rgba, ==, cases[i].expected[format - 3]);
         }
     }
     /* Signed zero maps slightly positive under OpenGL 1.2.1 table 2.6. */
     const uint32_t zero[] = { 0 };
-    g_assert_true(sgi_kona_gl_texture_pixel_rgba(6, 0, zero, &rgba));
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(6, 0, zero, false, &rgba));
     g_assert_cmphex(rgba, ==, 0x010101ff);
+}
+
+static void test_texture_swap_bytes(void)
+{
+    static const struct {
+        uint32_t type, source[4], expected[5];
+    } cases[] = {
+        { 0, { 0x80ff007f },
+          { 0, 0x000001ff, 0x000001ff, 0x000000ff, 0 } },
+        { 1, { 0x4080c0ff },
+          { 0x00000040, 0x4080c0ff, 0x4080c0ff, 0x404040ff, 0x40404080 } },
+        { 2, { 0x0080ffff, 0x0000ff7f },
+          { 0, 0x000000ff, 0x000000ff, 0x000000ff, 0 } },
+        { 3, { 0x00000080, 0xffff0040 },
+          { 0, 0x0080ffff, 0x0080ff40, 0x000000ff, 0x00000080 } },
+        { 4, { 0x00000080, 0xffffffff, 0, 0xffffff7f },
+          { 0, 0x000000ff, 0x000000ff, 0x000000ff, 0 } },
+        { 5, { 0, 0x00000080, 0xffffffff, 0x00000040 },
+          { 0, 0x0080ffff, 0x0080ff40, 0x000000ff, 0x00000080 } },
+        { 6, { 0x0000803e, 0x0000003f, 0x0000403f, 0x0000803f },
+          { 0x00000040, 0x4080bfff, 0x4080bfff, 0x404040ff, 0x40404080 } },
+    };
+    const uint32_t components[] = { 1, 3, 4, 1, 2 };
+    const uint32_t invalid[] = {
+        0x0000c07f, 0x0100807f, 0x0000807f, 0x000080ff,
+    };
+    const uint32_t saturated[] = { 0x000080bf, 0x00000040, 0, 0x00000080 };
+    uint32_t rgba;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (uint32_t format = 3; format <= 7; format++) {
+            uint32_t source[4];
+
+            memcpy(source, cases[i].source, sizeof(source));
+            g_assert_true(sgi_kona_gl_texture_pixel_rgba(format, cases[i].type,
+                                                         source, true, &rgba));
+            g_assert_cmphex(rgba, ==, cases[i].expected[format - 3]);
+            g_assert_cmpmem(source, sizeof(source), cases[i].source,
+                            sizeof(cases[i].source));
+        }
+    }
+    for (uint32_t format = 3; format <= 7; format++) {
+        for (unsigned k = 0; k < components[format - 3]; k++) {
+            for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+                uint32_t source[4], original[4];
+
+                memcpy(source, cases[6].source, sizeof(source));
+                source[k] = invalid[i];
+                memcpy(original, source, sizeof(original));
+                rgba = 0x12345678;
+                g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 6,
+                                                              source, true,
+                                                              &rgba));
+                g_assert_cmphex(rgba, ==, 0x12345678);
+                g_assert_cmpmem(source, sizeof(source), original,
+                                sizeof(original));
+            }
+        }
+    }
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(5, 6, saturated, true, &rgba));
+    g_assert_cmphex(rgba, ==, 0x00ff0000);
+    /* Raw infinity becomes finite after swapping; test the decoded value. */
+    const uint32_t raw_infinity[] = { 0x7f800000 };
+
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(3, 6, raw_infinity,
+                                                true, &rgba));
+    g_assert_cmphex(rgba, ==, 0);
+    for (uint32_t format = 0; format < 10; format++) {
+        for (uint32_t type = 0; type < 9; type++) {
+            if (format < 3 || format > 7 || type > 6) {
+                rgba = 0x12345678;
+                g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
+                                                              cases[6].source,
+                                                              true, &rgba));
+                g_assert_cmphex(rgba, ==, 0x12345678);
+            }
+        }
+    }
 }
 
 static void test_texture_filter_curve(void)
@@ -1032,6 +1113,8 @@ int main(int argc, char **argv)
                     test_texture_internal_format);
     g_test_add_func("/sgi-kona-gl-decode/texture-integer-conversion",
                     test_texture_integer_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-swap-bytes",
+                    test_texture_swap_bytes);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/values",
                     test_texture_filter_curve);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/refusal",

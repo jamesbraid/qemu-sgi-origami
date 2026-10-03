@@ -509,7 +509,8 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 }
 
 bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
-                                    const uint32_t *source, uint32_t *rgba)
+                                    const uint32_t *source, bool swap_bytes,
+                                    uint32_t *rgba)
 {
     uint32_t components = sgi_kona_gl_texture_pixel_bytes(format, 1);
     uint32_t values[4] = { 0, 0, 0, 255 };
@@ -532,23 +533,27 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
         case 2:
         case 3:
             raw = (source[i / 2] >> (16 - (i % 2) * 16)) & 65535;
+            if (swap_bytes) {
+                raw = bswap16(raw);
+            }
             component = type == 3 ? raw / 65535.0 :
                         (2.0 * (int16_t)raw + 1) / 65535.0;
             break;
         case 4:
         case 5:
-            raw = source[i];
+            raw = swap_bytes ? bswap32(source[i]) : source[i];
             component = type == 5 ? raw / 4294967295.0 :
                         (2.0 * (int32_t)raw + 1) / 4294967295.0;
             break;
         case 6: {
             float value;
 
+            raw = swap_bytes ? bswap32(source[i]) : source[i];
             /* Reject both NaNs and infinities before host FP arithmetic. */
-            if ((source[i] & 0x7f800000) == 0x7f800000) {
+            if ((raw & 0x7f800000) == 0x7f800000) {
                 return false;
             }
-            memcpy(&value, &source[i], sizeof(value));
+            memcpy(&value, &raw, sizeof(value));
             component = value;
             break;
         }

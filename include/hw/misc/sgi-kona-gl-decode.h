@@ -121,13 +121,14 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 /*
  * Components occupy transport-decoded words, most significant bytes first.
  * Integer inputs use OpenGL 1.2.1 table 2.6; FLOAT inputs use IEEE binary32.
- * Conversion
- * produces full RRGGBBAA before destination-format conversion. Finite values
+ * Byte swapping reverses each multibyte component before conversion.
+ * Produces full RRGGBBAA before destination-format conversion. Finite values
  * clamp to [0, 1] and round to eight bits for the current model storage
  * profile. Unsupported forms and nonfinite components leave rgba unchanged.
  */
 bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
-                                    const uint32_t *source, uint32_t *rgba);
+                                    const uint32_t *source, bool swap_bytes,
+                                    uint32_t *rgba);
 
 /*
  * The first 32 words hold 64 signed mantissa/exponent coefficients. Word 32
