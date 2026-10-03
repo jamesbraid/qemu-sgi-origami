@@ -761,6 +761,17 @@ static const SGIGLTexLevel *sgi_soft_texture_level(const SGIGLTexPyramid *p,
     return NULL;
 }
 
+static bool sgi_soft_texture_border_supported(const SGIGLTexImage *im,
+                                               const SGIGLTexLevel *level)
+{
+    uint32_t border = level ? level->border : im->border;
+    bool callback = im->volume ?
+        (level ? !!level->read_border_texel_3d : !!im->read_border_texel_3d) :
+        (level ? !!level->read_border_texel : !!im->read_border_texel);
+
+    return border <= 1 && (!border || callback);
+}
+
 static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
 {
     const SGIGLTexPyramid *p = im->pyramid;
@@ -795,8 +806,7 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
     if (!base) {
         goto incomplete;
     }
-    if ((im->volume && base->border) || base->border > 1 ||
-        (base->border && !base->read_border_texel) ||
+    if (!sgi_soft_texture_border_supported(im, base) ||
         sgi_soft_texture_internal_format(base->internal_format) !=
         base->base_format || !sgi_soft_texture_format(base->base_format) ||
         (r->st->texture_env_mode == SGI_GL_DECAL &&
@@ -826,7 +836,7 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         if (l->level < p->base_level || l->level > last) {
             continue;
         }
-        if (l->border > 1 || (l->border && !l->read_border_texel) ||
+        if (!sgi_soft_texture_border_supported(im, l) ||
             !sgi_soft_texture_format(l->base_format) ||
             sgi_soft_texture_internal_format(l->internal_format) !=
             l->base_format) {
@@ -898,8 +908,7 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         for (int k = 0; k < 4; k++) {
             border_finite &= isfinite(im->border_color[k]);
         }
-        if ((im->volume && im->border) || im->border > 1 ||
-            (im->border && !im->read_border_texel) ||
+        if (!sgi_soft_texture_border_supported(im, NULL) ||
             !border_finite ||
             !sgi_soft_texture_format(im->base_format) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
@@ -1010,14 +1019,26 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
             sgi_soft_texture_components(format, out);
             return true;
         }
-        /* A one-texel ring includes corners, with signed interior indices. */
-        bool read = x >= -1 && y >= -1 && x <= width && y <= height &&
-            (level ? level->read_border_texel &&
+        /* Signed indices cover the stored faces, edges and corners. */
+        bool read;
+
+        if (x < -1 || y < -1 || x > width || y > height ||
+            (im->volume && (z < -1 || z > depth))) {
+            goto read_failure;
+        }
+        if (im->volume) {
+            read = level ? level->read_border_texel_3d &&
+                level->read_border_texel_3d(level->opaque, level->level,
+                                            x, y, z, &rgba) :
+                im->read_border_texel_3d &&
+                im->read_border_texel_3d(im->opaque, x, y, z, &rgba);
+        } else {
+            read = level ? level->read_border_texel &&
                 level->read_border_texel(level->opaque, level->level,
                                          x, y, &rgba) :
                 im->read_border_texel &&
-                im->read_border_texel(im->opaque, x, y, &rgba));
-
+                im->read_border_texel(im->opaque, x, y, &rgba);
+        }
         if (!read) {
             goto read_failure;
         }
