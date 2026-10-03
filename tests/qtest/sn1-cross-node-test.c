@@ -448,6 +448,132 @@ static void peer_bte_zero_line(QTestState *qts, uint64_t destination)
  * cached alias covering the line writes node 0's memory, as a processor's
  * cached alias does not apply to the engine.
  */
+static void bte_cpu_writeq(QTestState *qts, unsigned cpu, uint64_t address,
+                            uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, address, bytes, sizeof(bytes)));
+}
+
+static uint64_t bte_cpu_readq(QTestState *qts, unsigned cpu, uint64_t address)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, address, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static uint64_t bte_memory_transfer(QTestState *qts, unsigned node,
+    unsigned engine, uint64_t source, uint64_t destination,
+    uint64_t notification, bool zero)
+{
+    unsigned cpu = node * 2;
+    uint64_t base = BTE0 + engine * 0x10000;
+
+    bte_cpu_writeq(qts, cpu, base + BTE_STATUS, 1 | BTE_BUSY);
+    bte_cpu_writeq(qts, cpu, base + 8, source);
+    bte_cpu_writeq(qts, cpu, base + BTE_DESTINATION, destination);
+    bte_cpu_writeq(qts, cpu, base + 0x20, notification);
+    bte_cpu_writeq(qts, cpu, base + BTE_CONTROL, 0x10 | zero);
+    return bte_cpu_readq(qts, cpu, base + BTE_STATUS);
+}
+
+static void test_bte_memory_route(const void *data)
+{
+    const char *topology = data;
+    bool routed = strstr(topology, "expansion") != NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    uint8_t bytes[256], result[256];
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-bte-route-storage-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw -nodefaults -display none",
+        topology, routed ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
+        prom_path, image);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    for (unsigned node = 0; node < 2; node++) {
+        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                       MD_INSTALLED_SELECT2);
+        /* BTE memory has no inbound widget/device identity. */
+        bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
+    }
+    if (routed) {
+        bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + 0x681010, 5);
+        bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + 0x681000, 3);
+    }
+    for (unsigned node = 0; node < 2; node++) {
+        uint64_t own = NODE(node ? 2 : 0);
+        uint64_t peer = NODE(node ? 0 : 2);
+        uint8_t source[128];
+
+        memset(source, 0x80 + node, sizeof(source));
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2, own + 0x10000,
+                                         source, sizeof(source)));
+        for (unsigned engine = 0; engine < 2; engine++) {
+            for (unsigned zero = 0; zero < 2; zero++) {
+                memset(bytes, 0xa0 + node, sizeof(bytes));
+                g_assert_true(qtest_memwrite_cpu(qts, node * 2,
+                    peer + 0x20000, bytes, sizeof(bytes)));
+                bte_cpu_writeq(qts, node * 2, peer + 0x30000, UINT64_MAX);
+                g_assert_cmphex(bte_memory_transfer(qts, node, engine,
+                    own + 0x10000, peer + 0x20000, peer + 0x30000, zero),
+                    ==, 0);
+                g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
+                    peer + 0x20000, result, sizeof(result)));
+                if (zero) {
+                    memset(bytes, 0, sizeof(source));
+                } else {
+                    memcpy(bytes, source, sizeof(source));
+                }
+                g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
+                g_assert_cmphex(bte_cpu_readq(qts, (1 - node) * 2,
+                                              peer + 0x30000), ==, 0);
+                g_assert_true(qtest_memread_cpu(qts, node * 2,
+                    own + 0x10000, result, sizeof(source)));
+                g_assert_cmpmem(result, sizeof(source), source, sizeof(source));
+                g_test_message("%s node%u BTE%u %s remote data/notification OK",
+                               topology, node, engine, zero ? "zero" : "copy");
+            }
+        }
+    }
+    /* A missing target bank must refuse data, preserving backing RAM. */
+    memset(bytes, 0x5a, sizeof(bytes));
+    g_assert_true(qtest_memwrite_cpu(qts, 2, NODE(2) + 0x20000,
+                                     bytes, sizeof(bytes)));
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG, 0);
+    g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
+        NODE(2) + 0x20000, 0x30000, true), ==, (UINT64_C(1) << 16) | 1);
+    g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
+                    (UINT64_C(1) << 16) | 1);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
+                   MD_INSTALLED_SELECT2);
+    g_assert_true(qtest_memread_cpu(qts, 2, NODE(2) + 0x20000,
+                                    result, sizeof(result)));
+    g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
+    qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':{"
+        "'path':%s,'property':'down','value':true}}",
+        routed ? "/machine/master-route" : CABLE_PATH);
+    g_assert_cmphex(bte_memory_transfer(qts, 0, 0, 0x10000,
+        NODE(2) + 0x20000, 0x30000, true), ==, (UINT64_C(1) << 16) | 1);
+    g_assert_cmphex(bte_cpu_readq(qts, 0, 0x30000), ==,
+                    (UINT64_C(1) << 16) | 1);
+    g_assert_true(qtest_memread_cpu(qts, 2, NODE(2) + 0x20000,
+                                    result, sizeof(result)));
+    g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(image), ==, 0);
+}
+
 static void test_bte_data_goes_by_number(void)
 {
     QTestState *qts = machine_start();
@@ -1102,6 +1228,11 @@ int main(int argc, char **argv)
                        GUINT_TO_POINTER(3), test_prom_copy_live_node);
     qtest_add_func("sn1/cross-node/remote-interrupt-reaches-the-peer",
                    test_remote_interrupt_reaches_the_peer);
+    qtest_add_data_func("sn1/cross-node/bte-memory/direct",
+                        "origin300-two-chassis", test_bte_memory_route);
+    qtest_add_data_func("sn1/cross-node/bte-memory/routed",
+                        "origin300-numalink-pci-expansion-experiment",
+                        test_bte_memory_route);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
                    test_bte_data_goes_by_number);
     ret = g_test_run();
