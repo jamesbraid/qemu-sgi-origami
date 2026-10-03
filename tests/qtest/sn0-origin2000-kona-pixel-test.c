@@ -116,6 +116,20 @@ static uint32_t front_tag_at(QTestState *s, uint32_t x, uint32_t y)
     return kona_plane_word(s, PLANE_FRONT_TAG, x, KONA_FB_HEIGHT - 1 - y);
 }
 
+static char *copy_plane_digest(QTestState *s, unsigned plane)
+{
+    QDict *reply;
+    char *digest;
+
+    kona_qom_set_uint(s, "x-test-plane", plane);
+    reply = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'x-test-plane-digest'}}", KONA_QOM_PATH);
+    digest = g_strdup(qdict_get_str(reply, "return"));
+    qobject_unref(reply);
+    return digest;
+}
+
 static QTestState *kona_init_logged(const char *base_args, char **log)
 {
     int fd;
@@ -576,13 +590,13 @@ static void test_copy_overlapping(void)
 }
 
 /*
- * A copy keeps each pixel's tag with its word: a textport pixel still
- * resolves through the textport colour map, a direct pixel stays direct
- * and an X pixel stays an X colour-map index.
+ * Mixed source classes refuse before stores. Separate ordinary CI and RGB
+ * copies preserve their canonical tags; textport transport stays unsupported.
  */
-static void test_copy_keeps_tags(void)
+static void test_copy_refuses_mixed_tags(void)
 {
     g_autofree uint8_t *frame = NULL;
+    char *before[11];
 
     qtest_system_reset(qts);
     /* Textport colour map entry 5 is 0x102030; a point in it at (300, 10). */
@@ -603,15 +617,31 @@ static void test_copy_keeps_tags(void)
     data_words(qts, (uint32_t[]){ 0x05000000 }, 1);
     pixel_finish(qts);
 
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(qts, plane);
+    }
     copy_rect(qts, 300, 10, 400, 20, 3, 1);
-    g_assert_cmphex(front_tag_at(qts, 400, 20), ==, 1);
-    g_assert_cmphex(front_at(qts, 400, 20), ==, 5);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    copy_rect(qts, 302, 10, 402, 20, 1, 1);
+    x_command(qts, TOKEN_GC,
+              (uint32_t[]){ 0, 0x1ffe, 0, 0x1ffe, 0xffffff, 0xffffff,
+                            0x2804, 0x60001, 1, 6, 8, 0, 0 }, 13);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, 2, 2, 0, 1, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 301, 10, 401, 20 }, 4);
+    g_assert_cmphex(front_tag_at(qts, 400, 20), ==, TAG_DIRECT);
+    g_assert_cmphex(front_at(qts, 400, 20), ==, 0);
     g_assert_cmphex(front_tag_at(qts, 401, 20), ==, TAG_DIRECT);
     g_assert_cmphex(front_at(qts, 401, 20), ==, 0x00abcdef);
     g_assert_cmphex(front_tag_at(qts, 402, 20), ==, TAG_X_INDEX);
     g_assert_cmphex(front_at(qts, 402, 20), ==, 5);
     frame = kona_screendump(qts);
-    g_assert_cmphex(ppm_pixel(frame, 400, 20), ==, 0x102030);
+    g_assert_cmphex(ppm_pixel(frame, 400, 20), ==, 0);
     g_assert_cmphex(ppm_pixel(frame, 401, 20), ==, 0xabcdef);
     g_assert_cmphex(ppm_pixel(frame, 402, 20), ==, 0xc0c0c0);
     assert_in_step(qts);
@@ -1486,12 +1516,476 @@ static void test_read_reset_partial(void)
     read_supported(qts);
 }
 
+#define COPY_XY(x, y) (((uint32_t)(uint16_t)(x) << 16) | (uint16_t)(y))
+
+/* Independently pack the reviewed RGB8 colour and component masks. */
+static void copy_rgb_gc(uint32_t *gc, uint32_t rgb, uint32_t mask,
+                         unsigned gx)
+{
+    uint64_t color = 0x1ffe;
+    uint32_t fields[3];
+
+    for (unsigned i = 0; i < 3; i++) {
+        unsigned byte = (rgb >> (8 * i)) & 0xff;
+        unsigned mask_byte = (mask >> (8 * i)) & 0xff;
+
+        color |= (uint64_t)((byte << 4) | (byte >> 4)) << (14 + 13 * i);
+        fields[i] = (mask_byte << 4) | (mask_byte >> 4);
+    }
+    memset(gc, 0, 13 * sizeof(*gc));
+    gc[0] = color >> 32;
+    gc[1] = color;
+    gc[3] = 0x1ffe;
+    gc[4] = fields[2] | (fields[1] << 12);
+    gc[5] = 0xfff000 | fields[0];
+    gc[6] = 4;
+    gc[7] = gc[8] = 1;
+    gc[9] = gx * 2;
+}
+
+static uint32_t copy_expected(unsigned gx, uint32_t source, uint32_t dest,
+                               uint32_t mask, unsigned bits)
+{
+    static const uint8_t truth[] = {
+        0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15,
+    };
+    uint32_t result = 0;
+
+    for (unsigned bit = 0; bit < bits; bit++) {
+        unsigned input = (((source >> bit) & 1) << 1) |
+                         ((dest >> bit) & 1);
+
+        result |= ((truth[gx] >> input) & 1) << bit;
+    }
+    return (result & mask) | (dest & ~mask);
+}
+
+/* Existing public GL fixtures seed nonzero back, depth and stencil planes. */
+static void copy_canaries(QTestState *s)
+{
+    uint32_t gc[13] = { 0x20, 0, 0, 0, 0xf00fff, 0,
+                         8, 1, 0, 6, 0, 1, 1 };
+    static const uint32_t config[] = { 0, 12, 0, 1, 0, 0, 24, 8, 0, 0 };
+
+    read_gl_command(s, 0x1fd,
+                    (uint32_t[]){ 0x10000340, 0x9000, 0x10000 }, 3, true);
+    read_gl_command(s, 0x1f2,
+                    (uint32_t[]){ 0x10000380, 0x9000, 0x4000 }, 3, true);
+    read_gl_command(s, 1, config, ARRAY_SIZE(config), false);
+    read_gl_command(s, 2, (uint32_t[]){ 0 }, 1, false);
+    read_gl_command(s, 0x1f3,
+                    (uint32_t[]){ 450, 300, 0x05670080, 0x05670080,
+                                  450, 300, 128, 128, 0, 0xd, 0 }, 11, true);
+    read_gl_command(s, 0x1ee, (uint32_t[]){ 450, 300, 0 }, 3, true);
+    read_gl_command(s, 0xc4, (uint32_t[]){ 0x405 }, 1, false);
+    read_gl_command(s, 0x1d,
+                    (uint32_t[]){ 0x3f800000, 0x3f000000, 0x3e800000,
+                                  0x3f800000 }, 4, false);
+    read_gl_command(s, 0x1a, (uint32_t[]){ 0x4000 }, 1, false);
+    read_gl_command(s, 0x1f, (uint32_t[]){ 0x3fe40000, 0 }, 2, false);
+    read_gl_command(s, 0x20, (uint32_t[]){ 255 }, 1, false);
+    read_gl_command(s, 0x1e, (uint32_t[]){ 0x5a }, 1, false);
+    read_gl_command(s, 0x1a, (uint32_t[]){ 0x500 }, 1, false);
+    g_assert_cmphex(kona_plane_word(s, 1, 450, 300), !=, 0);
+    g_assert_cmphex(kona_plane_word(s, 5, 450, 300), !=, 0);
+    g_assert_cmphex(kona_plane_word(s, 6, 450, 300), ==, 0x5a);
+    for (unsigned plane = 7; plane < 11; plane++) {
+        gc[0] = plane == 10 ? 8 : 0x20;
+        gc[6] = plane == 7 ? 8 : plane == 8 ? 0x2c :
+                plane == 9 ? 0x1830 : 0x20;
+        gc[7] = plane == 9 ? 2 : 1;
+        gc[10] = plane == 9 ? 5 : 0;
+        gc[4] = plane == 10 ? 0x300000 : 0xf00fff;
+        x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+        x_command(s, 0x154,
+                  (uint32_t[]){ COPY_XY(700, 800), COPY_XY(701, 801) }, 2);
+        g_assert_cmphex(kona_plane_word(s, plane, 700,
+                                        KONA_FB_HEIGHT - 1 - 800), !=, 0);
+    }
+}
+
+static void copy_semantic_gc(QTestState *s, bool rgb, uint32_t mask,
+                              unsigned gx)
+{
+    uint32_t gc[13] = { 0, 0, 0, 0, 0xf0000f | (mask << 4), 0,
+                         0x180c, 0x40001, 1, gx * 2, 5, 1, 1 };
+
+    if (rgb) {
+        copy_rgb_gc(gc, 0, mask, gx);
+        gc[6] = 0x2804;
+        gc[7] = 0x60001;
+        gc[10] = 8;
+    }
+    x_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+}
+
+static void test_copy_semantics(gconstpointer opaque)
+{
+    unsigned test = GPOINTER_TO_UINT(opaque);
+    unsigned gx = (test >> 8) & 15;
+    unsigned mask_byte = test & 0xff;
+    bool rgb = test & 0x10000;
+    uint32_t source = rgb ? 0x963ca5 : 0x96;
+    uint32_t dest = rgb ? 0x5a81c3 : 0xa5;
+    uint32_t mask = rgb ? (mask_byte == 0xff ? 0xffffff :
+                           mask_byte ? 0x53a56c : 0) : mask_byte;
+    uint32_t result = copy_expected(gx, source, dest, mask, rgb ? 24 : 8);
+    uint32_t gc[13] = { source << 12, 0, 0, 0, 0xf00fff, 0,
+                         0xc, 1, 1, 6, 0, 1, 1 };
+    size_t pixels = (size_t)KONA_FB_WIDTH * KONA_FB_HEIGHT;
+    g_autofree uint8_t *words = g_malloc0(pixels * 4);
+    g_autofree uint8_t *tags = g_malloc0(pixels);
+    char *before[11] = { NULL };
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != 0 && plane != 2) {
+            before[plane] = copy_plane_digest(qts, plane);
+        }
+    }
+    for (unsigned region = 0; region < 2; region++) {
+        unsigned x = region ? 30 : 10, y = region ? 40 : 20;
+        uint32_t color = region ? dest : source;
+
+        if (rgb) {
+            copy_rgb_gc(gc, color, 0xffffff, 3);
+        } else {
+            gc[0] = color << 12;
+        }
+        x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+        x_command(qts, 0x154,
+                  (uint32_t[]){ COPY_XY(x, y), COPY_XY(x + 2, y + 2) }, 2);
+        for (unsigned row = 0; row < 2; row++) {
+            for (unsigned col = 0; col < 2; col++) {
+                size_t pixel = (KONA_FB_HEIGHT - 1 - y - row) *
+                               KONA_FB_WIDTH + x + col;
+                uint32_t value = region && row == 0 && col == 0 ?
+                                 result : color;
+
+                for (unsigned byte = 0; byte < 4; byte++) {
+                    words[pixel * 4 + byte] = value >> (8 * byte);
+                }
+                tags[pixel] = rgb ? 0 : TAG_X_INDEX;
+            }
+        }
+    }
+    copy_semantic_gc(qts, rgb, mask, gx);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 1, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(qts, plane);
+
+        if (plane == 0 || plane == 2) {
+            g_autofree char *expected = g_compute_checksum_for_data(
+                G_CHECKSUM_SHA256, plane == 0 ? words : tags,
+                pixels * (plane == 0 ? 4 : 1));
+
+            g_assert_cmpstr(actual, ==, expected);
+        } else {
+            g_assert_cmpstr(actual, ==, before[plane]);
+            g_free(before[plane]);
+        }
+    }
+    assert_in_step(qts);
+}
+
+static void test_copy_late_refusal(gconstpointer opaque)
+{
+    unsigned test = GPOINTER_TO_UINT(opaque);
+    bool rgb = test & 1, source_bad = test & 2;
+    uint32_t gc[13] = { 0x96000, 0, 0, 0, 0xf00fff, 0,
+                         0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t source = rgb ? 0x963ca5 : 0x96;
+    char *before[11];
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    if (rgb) {
+        copy_rgb_gc(gc, source, 0xffffff, 3);
+    }
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, 0x154,
+              (uint32_t[]){ COPY_XY(10, 20), COPY_XY(12, 21) }, 2);
+    if (rgb) {
+        copy_rgb_gc(gc, 0x5a81c3, 0xffffff, 3);
+    } else {
+        gc[0] = 0xa5000;
+    }
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, 0x154,
+              (uint32_t[]){ COPY_XY(30, 40), COPY_XY(32, 41) }, 2);
+    if (rgb) {
+        memcpy(gc, (uint32_t[]){ 0x7b000, 0, 0, 0, 0xf00fff, 0,
+                                 0xc, 1, 1, 6, 0, 1, 1 }, sizeof(gc));
+    } else {
+        copy_rgb_gc(gc, 0x123456, 0xffffff, 3);
+    }
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, 0x154, (uint32_t[]){
+        COPY_XY(source_bad ? 11 : 31, source_bad ? 20 : 40),
+        COPY_XY(source_bad ? 12 : 32, source_bad ? 21 : 41),
+    }, 2);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(qts, plane);
+    }
+    copy_semantic_gc(qts, rgb, rgb ? 0x53a56c : 0x53, 6);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 2, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    /* Even an incompatible accessed set is untouched by a zero mask. */
+    copy_semantic_gc(qts, rgb, 0, 3);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    copy_semantic_gc(qts, rgb, rgb ? 0xffffff : 0xff, 5);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    copy_semantic_gc(qts, rgb, rgb ? 0xffffff : 0xff, 3);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 1, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, source);
+    g_assert_cmphex(front_tag_at(qts, 30, 40), ==, rgb ? 0 : TAG_X_INDEX);
+    assert_in_step(qts);
+}
+
+static void test_copy_overlap_semantics(gconstpointer opaque)
+{
+    unsigned test = GPOINTER_TO_UINT(opaque);
+    bool rgb = test & 1, logic = test & 2;
+    unsigned direction = test >> 2;
+    unsigned gx = logic ? 6 : 3;
+    uint32_t mask = logic ? (rgb ? 0x53a56c : 0x53) :
+                            (rgb ? 0xffffff : 0xff);
+    uint32_t original[4][4], final[4][4];
+    uint32_t gc[13] = { 0, 0, 0, 0, 0xf00fff, 0, 0xc, 1, 1, 6, 0, 1, 1 };
+    unsigned sx = direction & 1, sy = (direction >> 1) & 1;
+    unsigned dx = !sx, dy = !sy;
+    size_t pixels = (size_t)KONA_FB_WIDTH * KONA_FB_HEIGHT;
+    g_autofree uint8_t *words = g_malloc0(pixels * 4);
+    g_autofree uint8_t *tags = g_malloc0(pixels);
+    char *before[11] = { NULL };
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        if (plane != 0 && plane != 2) {
+            before[plane] = copy_plane_digest(qts, plane);
+        }
+    }
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            uint32_t value = ((x + 1) * 0x31 + (y + 1) * 0x17) & 0xff;
+
+            if (rgb) {
+                value |= ((value ^ 0x5a) << 8) | ((value ^ 0xa5) << 16);
+                copy_rgb_gc(gc, value, 0xffffff, 3);
+            } else {
+                gc[0] = value << 12;
+            }
+            original[y][x] = final[y][x] = value;
+            x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+            x_command(qts, 0x154, (uint32_t[]){ COPY_XY(10 + x, 20 + y),
+                                               COPY_XY(11 + x, 21 + y) }, 2);
+        }
+    }
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 3; x++) {
+            final[dy + y][dx + x] = copy_expected(gx,
+                original[sy + y][sx + x], original[dy + y][dx + x],
+                mask, rgb ? 24 : 8);
+        }
+    }
+    copy_semantic_gc(qts, rgb, mask, gx);
+    x_command(qts, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 3, 3, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY,
+              (uint32_t[]){ 10 + sx, 20 + sy, 10 + dx, 20 + dy }, 4);
+    for (unsigned y = 0; y < 4; y++) {
+        for (unsigned x = 0; x < 4; x++) {
+            size_t pixel = (KONA_FB_HEIGHT - 1 - 20 - y) *
+                           KONA_FB_WIDTH + 10 + x;
+
+            for (unsigned byte = 0; byte < 4; byte++) {
+                words[pixel * 4 + byte] = final[y][x] >> (8 * byte);
+            }
+            tags[pixel] = rgb ? 0 : TAG_X_INDEX;
+        }
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(qts, plane);
+
+        if (plane == 0 || plane == 2) {
+            g_autofree char *expected = g_compute_checksum_for_data(
+                G_CHECKSUM_SHA256, plane == 0 ? words : tags,
+                pixels * (plane == 0 ? 4 : 1));
+
+            g_assert_cmpstr(actual, ==, expected);
+        } else {
+            g_assert_cmpstr(actual, ==, before[plane]);
+            g_free(before[plane]);
+        }
+    }
+    assert_in_step(qts);
+}
+
+static void test_copy_migration(gconstpointer opaque)
+{
+    bool rgb = GPOINTER_TO_UINT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t gc[13] = { 0x96000, 0, 0, 0, 0xf00fff, 0,
+                         0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t source = rgb ? 0x963ca5 : 0x96;
+    char *before[11];
+
+    dir = g_dir_make_tmp("sn0-kona-copy-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    from = qtest_init(MIGRATION_ARGS);
+    args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(args);
+    copy_canaries(from);
+    if (rgb) {
+        copy_rgb_gc(gc, source, 0xffffff, 3);
+    }
+    x_command(from, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(from, 0x154,
+              (uint32_t[]){ COPY_XY(10, 20), COPY_XY(12, 22) }, 2);
+    copy_semantic_gc(from, rgb, rgb ? 0xffffff : 0xff, 3);
+    x_command(from, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 1, rgb ? 2 : 1, rgb ? 2 : 1, 0, 2, 2, 0 }, 7);
+    x_command(from, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(from, plane);
+    }
+    sgi_migrate_stopped(from, uri);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(to, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    /* The migrated GC and setup perform another same-class copy. */
+    x_command(to, TOKEN_PIXEL_COPY, (uint32_t[]){ 30, 40, 50, 60 }, 4);
+    g_assert_cmphex(front_at(to, 50, 60), ==, source);
+    g_assert_cmphex(front_tag_at(to, 50, 60), ==, rgb ? 0 : TAG_X_INDEX);
+    assert_in_step(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
+static void test_copy_setup_refusal(gconstpointer opaque)
+{
+    unsigned kind = GPOINTER_TO_UINT(opaque);
+    uint32_t gc[13] = { 0x96000, 0, 0, 0, 0xf00fff, 0,
+                         0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t setup[7] = { 1, 1, 1, 0, 2, 2, 0 };
+    char *before[11];
+
+    qtest_system_reset(qts);
+    copy_canaries(qts);
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, 0x154,
+              (uint32_t[]){ COPY_XY(10, 20), COPY_XY(12, 22) }, 2);
+    gc[0] = 0xa5000;
+    x_command(qts, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    x_command(qts, 0x154,
+              (uint32_t[]){ COPY_XY(30, 40), COPY_XY(32, 42) }, 2);
+    copy_semantic_gc(qts, false, 0xff, 3);
+    if (kind == 0) {
+        setup[0] = 0;
+    } else if (kind == 1) {
+        setup[0] = 0x11;
+    } else if (kind == 2) {
+        setup[1] = 2;
+    } else if (kind == 3) {
+        setup[2] = 2;
+    } else if (kind == 4) {
+        setup[3] = 8;
+    } else if (kind == 5) {
+        setup[6] = 1;
+    } else if (kind == 6) {
+        setup[1] = setup[2] = 3;
+    } else {
+        /* Huge dimensions clip to screen bounds, then refuse a late tag. */
+        setup[4] = setup[5] = UINT32_MAX;
+    }
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        before[plane] = copy_plane_digest(qts, plane);
+    }
+    x_command(qts, TOKEN_PIXEL_SETUP, setup, ARRAY_SIZE(setup));
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    for (unsigned plane = 0; plane < ARRAY_SIZE(before); plane++) {
+        g_autofree char *actual = copy_plane_digest(qts, plane);
+
+        g_assert_cmpstr(actual, ==, before[plane]);
+        g_free(before[plane]);
+    }
+    x_command(qts, TOKEN_PIXEL_SETUP, (uint32_t[]){ 1, 1, 1, 0, 1, 1, 0 }, 7);
+    x_command(qts, TOKEN_PIXEL_COPY, (uint32_t[]){ 10, 20, 30, 40 }, 4);
+    g_assert_cmphex(front_at(qts, 30, 40), ==, 0x96);
+    assert_in_step(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
     qts = qtest_init(MACHINE_ARGS);
+
+    for (unsigned rgb = 0; rgb < 2; rgb++) {
+        for (unsigned gx = 0; gx < 16; gx++) {
+            static const uint8_t masks[] = { 0xff, 0x53, 0 };
+
+            for (unsigned i = 0; i < ARRAY_SIZE(masks); i++) {
+                g_autofree char *name = g_strdup_printf(
+                    "sn0/origin2000/kona-pixel/semantic-copy/%s/gx-%u-mask-%02x",
+                    rgb ? "rgb" : "ci", gx, masks[i]);
+
+                qtest_add_data_func(name, GUINT_TO_POINTER(
+                    (rgb << 16) | (gx << 8) | masks[i]), test_copy_semantics);
+            }
+        }
+    }
+
+    for (unsigned test = 0; test < 4; test++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/semantic-copy/refusal/%s-%s",
+            test & 1 ? "rgb" : "ci", test & 2 ? "source" : "destination");
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(test),
+                            test_copy_late_refusal);
+    }
+
+    for (unsigned test = 0; test < 16; test++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/semantic-copy/overlap/%s-%s-%u",
+            test & 1 ? "rgb" : "ci", test & 2 ? "xor" : "copy", test >> 2);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(test),
+                            test_copy_overlap_semantics);
+    }
+    qtest_add_data_func("sn0/origin2000/kona-pixel/semantic-copy/migration/ci",
+                        GUINT_TO_POINTER(0), test_copy_migration);
+    qtest_add_data_func("sn0/origin2000/kona-pixel/semantic-copy/migration/rgb",
+                        GUINT_TO_POINTER(1), test_copy_migration);
+
+    for (unsigned test = 0; test < 8; test++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/semantic-copy/setup-refusal/%u", test);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(test),
+                            test_copy_setup_refusal);
+    }
 
     qtest_add_func("sn0/origin2000/kona-pixel/read-indexed-rows",
                    test_read_indexed_rows);
@@ -1510,8 +2004,8 @@ int main(int argc, char **argv)
                    test_copy_doubling_tiles_screen);
     qtest_add_func("sn0/origin2000/kona-pixel/copy-overlapping",
                    test_copy_overlapping);
-    qtest_add_func("sn0/origin2000/kona-pixel/copy-keeps-tags",
-                   test_copy_keeps_tags);
+    qtest_add_func("sn0/origin2000/kona-pixel/copy-refuses-mixed-tags",
+                   test_copy_refuses_mixed_tags);
     qtest_add_func("sn0/origin2000/kona-pixel/copy-clipped",
                    test_copy_clipped);
     qtest_add_func("sn0/origin2000/kona-pixel/finish-without-write",

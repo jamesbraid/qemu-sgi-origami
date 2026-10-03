@@ -5552,38 +5552,55 @@ bool sgi_kona_x_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
     return true;
 }
 
+typedef struct SGIKonaXPreparedPixel {
+    uint32_t value;
+    uint8_t tag;
+    bool write;
+} SGIKonaXPreparedPixel;
+
 /*
- * 0x137, X pixel copy: source x, y, then destination x, y, copying the
- * setup's width by height (the direction is established by konCopyRect's
- * debug string).
- * The model copies within the front bank, each pixel's word and tag
- * together, so a pixel keeps how it resolves. The destination is clipped
- * to the screen, the clip list and the scissor, and a pixel whose source
- * is off the screen is not copied. Both points are taken as absolute: the
- * X load position is not added. konCopyRect sets it to 0, 0 first, so
- * its copies cannot tell. The unnamed routine at 0x4817f0 sends a
- * position and never a clip before its copies; a trace of it with a
- * non-zero position would tell whether the pipe adds the position to a
- * copy.
- *
- * Approximated: copying as if through a temporary, so an overlapping copy
- * reads every source pixel before it is overwritten, is the model's
- * choice; no copy in the traced runs overlaps its source. The shift and
- * packing words are not applied. The discriminating guest test is the
- * weave tiled across the screen after the run's 17 copies.
+ * Ordinary copies use bank zero under the reviewed X bank approximation.
+ * Paired clipping bounds staging to the screen. Preparing every result
+ * before stores preserves both original source and destination on overlap.
  */
 static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
 {
     const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
     const SGIPlane *tag = sgi_kona_plane(s, s->plane_front_tag);
+    const uint32_t *setup = s->x_pixel_setup;
     int64_t sx = (int32_t)args[0], sy = (int32_t)args[1];
     int64_t dx = (int32_t)args[2], dy = (int32_t)args[3];
-    int64_t w = s->x_pixel_setup[SGI_KONA_X_SETUP_WIDTH];
-    int64_t h = s->x_pixel_setup[SGI_KONA_X_SETUP_HEIGHT];
+    int64_t w = setup[SGI_KONA_X_SETUP_WIDTH];
+    int64_t h = setup[SGI_KONA_X_SETUP_HEIGHT];
     int64_t i0, i1, j0, j1;
     SGIKonaRect clip;
+    SGIXGC gc;
+    bool rgb;
+    uint8_t target_tag;
+    size_t width, height;
+    g_autofree SGIKonaXPreparedPixel *prepared = NULL;
 
     trace_sgi_kona_x_pixel_copy(sx, sy, dx, dy, w, h);
+    if (!sgi_kona_x_decode(s, &gc)) {
+        return;
+    }
+    rgb = gc.target == SGI_X_GC_MAIN_RGB8;
+    if ((!rgb && gc.target != SGI_X_GC_MAIN_CI8) ||
+        gc.raw[10] != (rgb ? 8 : 5) ||
+        setup[SGI_KONA_X_SETUP_MODE] != 1 ||
+        setup[SGI_KONA_X_SETUP_SRC_PACK] != (rgb ? 2 : 1) ||
+        setup[SGI_KONA_X_SETUP_DST_PACK] != (rgb ? 2 : 1) ||
+        setup[SGI_KONA_X_SETUP_SHIFT] || setup[SGI_KONA_X_SETUP_PAD]) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported X copy target %u "
+                      "setup %08x %08x %08x %08x %08x %08x %08x\n",
+                      gc.target, setup[0], setup[1], setup[2], setup[3],
+                      setup[4], setup[5], setup[6]);
+        return;
+    }
+    if (sgi_x_gc_noop(&gc)) {
+        return;
+    }
+    target_tag = rgb ? SGI_KONA_TAG_DIRECT : SGI_KONA_TAG_X_INDEX;
     sgi_kona_x_clip(s, &clip);
     i0 = MAX(MAX(0, -sx), clip.x1 - dx);
     i1 = MIN(MIN(w, SGI_KONA_FB_WIDTH - sx), clip.x2 - dx);
@@ -5592,27 +5609,68 @@ static void sgi_kona_x_pixel_copy(SGIKonaState *s, const uint32_t *args)
     if (i0 >= i1 || j0 >= j1) {
         return;
     }
-    /* Walk away from the destination's overlap with the source. */
-    for (int64_t n = 0; n < j1 - j0; n++) {
-        int64_t j = dy > sy ? j1 - 1 - n : j0 + n;
+    width = i1 - i0;
+    height = j1 - j0;
+    assert(width <= SGI_KONA_FB_WIDTH && height <= SGI_KONA_FB_HEIGHT);
+    /* The checked g_try_new0 multiplication refuses before any store. */
+    prepared = g_try_new0(SGIKonaXPreparedPixel, width * height);
+    if (!prepared) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: X copy preparation allocation failed\n");
+        return;
+    }
+    assert(bql_locked());
+    for (size_t row = 0; row < height; row++) {
+        int64_t j = j0 + row;
         int src_row = SGI_KONA_FB_HEIGHT - 1 - (sy + j);
         int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
 
-        for (int64_t m = 0; m < i1 - i0; m++) {
-            int64_t i = dx > sx ? i1 - 1 - m : i0 + m;
+        for (size_t col = 0; col < width; col++) {
+            int64_t i = i0 + col;
+            SGIKonaXPreparedPixel *pixel = &prepared[row * width + col];
+            uint32_t source, dest, source_tag, dest_tag;
 
             if (!sgi_kona_x_clip_contains(s, dx + i, dy + j)) {
                 continue;
             }
-            sgi_plane_store(&s->mem, front, dx + i, dst_row,
-                            sgi_plane_load(&s->mem, front, sx + i, src_row));
-            sgi_plane_store(&s->mem, tag, dx + i, dst_row,
-                            sgi_plane_load(&s->mem, tag, sx + i, src_row));
+            source = sgi_plane_load(&s->mem, front, sx + i, src_row);
+            source_tag = sgi_plane_load(&s->mem, tag, sx + i, src_row);
+            dest = sgi_plane_load(&s->mem, front, dx + i, dst_row);
+            dest_tag = sgi_plane_load(&s->mem, tag, dx + i, dst_row);
+            if (source_tag != target_tag || source > gc.width_mask ||
+                (sgi_x_gc_needs_destination(&gc) &&
+                 (dest_tag != target_tag || dest > gc.width_mask))) {
+                qemu_log_mask(LOG_UNIMP, "sgi-kona: X copy incompatible "
+                              "pixel source (%" PRId64 ",%" PRId64 ") "
+                              "destination (%" PRId64 ",%" PRId64 ")\n",
+                              sx + i, sy + j, dx + i, dy + j);
+                return;
+            }
+            pixel->value = sgi_x_gc_apply(&gc, source, dest);
+            pixel->tag = source_tag;
+            pixel->write = pixel->value != dest || pixel->tag != dest_tag;
         }
     }
-    sgi_scanout_invalidate_plane(&s->scanout, front,
-                                 SGI_KONA_FB_HEIGHT - (dy + j1),
-                                 SGI_KONA_FB_HEIGHT - 1 - (dy + j0));
+    for (size_t row = 0; row < height; row++) {
+        int64_t j = j0 + row;
+        int dst_row = SGI_KONA_FB_HEIGHT - 1 - (dy + j);
+        bool changed = false;
+
+        for (size_t col = 0; col < width; col++) {
+            int64_t i = i0 + col;
+            const SGIKonaXPreparedPixel *pixel = &prepared[row * width + col];
+
+            if (!pixel->write) {
+                continue;
+            }
+            sgi_plane_store(&s->mem, front, dx + i, dst_row, pixel->value);
+            sgi_plane_store(&s->mem, tag, dx + i, dst_row, pixel->tag);
+            changed = true;
+        }
+        if (changed) {
+            sgi_scanout_invalidate_plane(&s->scanout, front, dst_row, dst_row);
+        }
+    }
 }
 
 /* 0x13a, X pixel finish: always 0, ending the write ("Pixel writes"). */
