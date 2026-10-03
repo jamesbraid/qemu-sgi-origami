@@ -111,4 +111,17 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
 
+/* Native unsigned-byte (1) and FLOAT (6) source formats; zero if unknown. */
+uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
+
+/*
+ * Byte components occupy one word, first component in its high byte. FLOAT
+ * components occupy one transport-decoded IEEE binary32 word each. Conversion
+ * produces full RRGGBBAA before destination-format conversion. Finite values
+ * clamp to [0, 1] and round to eight bits for the current model storage
+ * profile. Unsupported forms and nonfinite components leave rgba unchanged.
+ */
+bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+                                    const uint32_t *source, uint32_t *rgba);
+
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

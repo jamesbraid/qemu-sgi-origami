@@ -4320,6 +4320,154 @@ static void test_texture_native_draw(void)
     qtest_quit(s);
 }
 
+static void texture_dma_packet(QTestState *s, uint64_t io, uint32_t total,
+                                uint32_t per_line, uint32_t gap);
+
+static void texture_float_rows(QTestState *s, const uint32_t *pixels,
+                                unsigned prefix, unsigned first, unsigned end)
+{
+    unsigned row_words = DIV_ROUND_UP(prefix + 32, 4);
+
+    for (unsigned row = 0; row < 2; row++) {
+        for (unsigned word = 0; word < DIV_ROUND_UP(prefix + 32, 4); word++) {
+            uint32_t value = 0;
+
+            if (row * row_words + word < first ||
+                row * row_words + word >= end) {
+                continue;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                int offset = word * 4 + k - prefix;
+                uint32_t byte = 0xee;
+
+                if (offset >= 0 && offset < 32) {
+                    byte = (pixels[row * 8 + offset / 4] >>
+                            (24 - (offset % 4) * 8)) & 255;
+                }
+                value = (value << 8) | byte;
+            }
+            qtest_writel(s, REG_COMMAND, value);
+        }
+    }
+}
+
+static void test_texture_native_float(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 1;
+    uint32_t source[] = {
+        0x3e800000, 0x3f000000, 0x3f400000, 0x3f800000,
+        0, 0x3f800000, 0, 0x3f800000,
+        0, 0, 0x3f800000, 0x3f800000,
+        0x3f800000, 0, 0, 0x3f800000,
+    };
+    uint32_t h[20];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    texture_native_bind(s, 0);
+    memcpy(h, texture_header, sizeof(h));
+    h[4] = 6;
+    h[5] = 3;
+    h[6] = dma;
+    h[7] = dma;
+    h[17] |= dma ? 4 : 0;
+    kona_command(s, 0x174, h, 20);
+    if (dma) {
+        uint8_t bytes[sizeof(source)];
+
+        for (unsigned k = 0; k < ARRAY_SIZE(source); k++) {
+            stl_be_p(bytes + k * 4, source[k]);
+        }
+        qtest_memwrite(s, 0x380003, bytes, sizeof(bytes));
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        texture_dma_packet(s, 3, sizeof(bytes), 32, 0);
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    } else {
+        texture_float_rows(s, source, 3, 0, 18);
+    }
+    assert_texture_pixel(s, 0, 0, 0);
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    assert_texture_pixel(s, 0, 0, 0x4080bfff);
+    assert_texture_pixel(s, 1, 1, 0xff0000ff);
+    if (mode == 2) {
+        /* Refusing a nonfinite last component preserves the published image. */
+        source[15] = 0x7fc00000;
+        kona_command(s, 0x174, h, 20);
+        texture_float_rows(s, source, 3, 0, 18);
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        assert_texture_pixel(s, 0, 0, 0x4080bfff);
+        assert_texture_pixel(s, 1, 1, 0xff0000ff);
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x4080bf);
+    qtest_quit(s);
+}
+
+static void test_texture_float_migration(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode >= 2;
+    uint32_t source[] = {
+        0x3e800000, 0x3f000000, 0x3f400000, 0x3f800000,
+        0, 0x3f800000, 0, 0x3f800000,
+        0, 0, 0x3f800000, 0x3f800000,
+        0x3f800000, 0, 0, 0x3f800000,
+    };
+    uint32_t h[20];
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to;
+
+    gl_make_current(from);
+    texture_native_bind(from, 0);
+    memcpy(h, texture_header, sizeof(h));
+    h[4] = 6;
+    h[5] = 3;
+    h[6] = h[7] = dma;
+    h[17] |= dma ? 4 : 0;
+    if (dma) {
+        uint8_t bytes[sizeof(source)];
+
+        for (unsigned k = 0; k < ARRAY_SIZE(source); k++) {
+            stl_be_p(bytes + k * 4, source[k]);
+        }
+        qtest_memwrite(from, 0x380003, bytes, sizeof(bytes));
+        qtest_writel(from, KONA_REG(0x100000), 0x20000380);
+    }
+    kona_command(from, 0x174, h, 20);
+    if (!dma) {
+        texture_float_rows(from, source, 3, 0, mode == 0 ? 7 : 18);
+    } else if (mode == 3) {
+        texture_dma_packet(from, 3, sizeof(source), 32, 0);
+    }
+    dir = g_dir_make_tmp("sn0-kona-float-XXXXXX", &error);
+    g_assert_no_error(error);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    assert_texture_pixel(to, 0, 0, 0);
+    if (mode == 0) {
+        texture_float_rows(to, source, 3, 7, 18);
+    } else if (mode == 2) {
+        texture_dma_packet(to, 3, sizeof(source), 32, 0);
+        g_assert_cmphex(qtest_readl(to, REG_MAILBOX), ==, 0x100);
+    }
+    kona_command(to, 0x176, (uint32_t[]) { 0 }, 1);
+    assert_texture_pixel(to, 0, 0, 0x4080bfff);
+    assert_texture_pixel(to, 1, 1, 0xff0000ff);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
+}
+
 static void test_texture_native_byte_formats(gconstpointer opaque)
 {
     static const struct {
@@ -5925,7 +6073,25 @@ int main(int argc, char **argv)
                    test_texture_native_draw);
     qtest_add_func("sn0/origin2000/kona-3d/texture/native-rows",
                    test_texture_native_rows);
-    qtest_add_data_func("sgi-kona-3d/texture/native-dma/trace-source",
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/pio",
+                        GUINT_TO_POINTER(0), test_texture_native_float);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/dma",
+                        GUINT_TO_POINTER(1), test_texture_native_float);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/nonfinite",
+                        GUINT_TO_POINTER(2), test_texture_native_float);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
+                        "migration/partial-pio",
+                        GUINT_TO_POINTER(0), test_texture_float_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
+                        "migration/complete-pio",
+                        GUINT_TO_POINTER(1), test_texture_float_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
+                        "migration/pending-dma",
+                        GUINT_TO_POINTER(2), test_texture_float_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/float/"
+                        "migration/complete-dma",
+                        GUINT_TO_POINTER(3), test_texture_float_migration);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/trace-source",
                         GUINT_TO_POINTER(12), test_texture_native_dma);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/native-migrate-rows",
                         GUINT_TO_POINTER(2), test_texture_native_migrates);
