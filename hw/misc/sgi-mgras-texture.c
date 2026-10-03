@@ -170,6 +170,7 @@
  * gl-texture-mip-level-select and gl-texture-trilinear-blend.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-mgras-gl.h"
@@ -1738,6 +1739,47 @@ static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
     return mgras_tex_read_volume_texel(opaque, level, x, y, 0, rgba);
 }
 
+static bool mgras_tex_read_image_texel_3d(void *opaque, uint32_t x,
+                                          uint32_t y, uint32_t z,
+                                          uint32_t *rgba)
+{
+    SGIMgrasTexture *t = opaque;
+
+    return mgras_tex_read_volume_texel(&t->views[0], 0, x, y, z, rgba);
+}
+
+static bool mgras_tex_read_image_texel(void *opaque, uint32_t x, uint32_t y,
+                                       uint32_t *rgba)
+{
+    return mgras_tex_read_image_texel_3d(opaque, x, y, 0, rgba);
+}
+
+static bool mgras_tex_color_table_ready(const SGIMgrasTexture *t,
+                                        uint32_t mode)
+{
+    return mode == MGRAS_TEX_COLOR_TABLE_MODE &&
+           SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES == 256 &&
+           SGI_MGRAS_TEXTURE_COLOR_TABLE_BYTES ==
+               3 * SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES &&
+           t->color_table_selector == MGRAS_TEX_COLOR_TABLE_SELECT &&
+           t->color_table_active && t->color_table_valid &&
+           t->color_table_written == sizeof(t->color_table_data);
+}
+
+static void mgras_tex_color_table_post_filter(void *opaque, double rgba[4])
+{
+    SGIMgrasTexture *t = opaque;
+
+    for (uint32_t channel = 0; channel < 3; channel++) {
+        double scaled = MIN(MAX(rgba[channel], 0.0), 1.0) *
+                        (SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES - 1);
+        uint32_t index = floor(scaled + 0.5);
+
+        rgba[channel] = t->color_table_data[
+            channel * SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES + index] / 255.0;
+    }
+}
+
 /* The sampler's base format for a layout and the class the draw names. */
 static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
 {
@@ -1905,7 +1947,7 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
             .base_format = format,
             .internal_format = format,
             .read_texel = mgras_tex_read_texel,
-            .read_volume_texel = mgras_tex_read_volume_texel,
+            .read_texel_3d = mgras_tex_read_volume_texel,
             .opaque = e,
         };
     }
@@ -2127,6 +2169,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                                                depth_size);
     bool captured_endpoint = pixel_endpoint || ordinary_volume;
     uint32_t color_table_mode = t->texmode1 & MGRAS_TEXMODE1_TABLE;
+    bool color_table;
     uint32_t min_filter;
     if (!mgras_tex_present(s) ||
         !s->gl_context[s->gl_current].gl->cur.texture_2d) {
@@ -2185,24 +2228,15 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         min_filter = t->texmode2 & MGRAS_TEXMODE2_MIN_LINEAR ?
                      SGI_GL_LINEAR : SGI_GL_NEAREST;
     }
-    if (color_table_mode == MGRAS_TEX_COLOR_TABLE_MODE &&
-        t->color_table_valid) {
-        for (uint32_t i = 0; i < SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES; i++) {
-            t->color_table_rgba[i] =
-                (uint32_t)t->color_table_data[i] << 24 |
-                (uint32_t)t->color_table_data[
-                    SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES + i] << 16 |
-                (uint32_t)t->color_table_data[
-                    2 * SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES + i] << 8;
-        }
-        t->color_table = (SGIGLTexColorTable) {
-            .enabled = true,
-            .size = SGI_MGRAS_TEXTURE_COLOR_TABLE_ENTRIES,
-            .base_format = SGI_GL_RGB,
-            .rgba = t->color_table_rgba,
-        };
-    }
+    color_table = mgras_tex_color_table_ready(t, color_table_mode);
     *image = (SGIGLTexImage) {
+        .width = 1u << t->views[0].log2w,
+        .height = 1u << t->views[0].log2h,
+        .base_format = format,
+        .border = 0,
+        .read_texel = mgras_tex_read_image_texel,
+        .read_texel_3d = mgras_tex_read_image_texel_3d,
+        .opaque = t,
         /*
          * Bit 8 is linear inside a level and 7 linear magnification:
          * inferred from the client's filter table, and the weights are
@@ -2227,8 +2261,7 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
             mgras_tex_c12(t->txbcolor[1]), mgras_tex_c12(t->txbcolor[1] >> 12),
         },
         .pyramid = &t->pyramid,
-        .color_table = color_table_mode == MGRAS_TEX_COLOR_TABLE_MODE &&
-                       t->color_table_valid ? &t->color_table : NULL,
+        .post_filter = color_table ? mgras_tex_color_table_post_filter : NULL,
     };
     return image;
 }

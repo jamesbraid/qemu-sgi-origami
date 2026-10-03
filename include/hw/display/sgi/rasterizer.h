@@ -167,17 +167,15 @@ bool sgi_volume_clip_segment(SGIVolumeVertex *a, SGIVolumeVertex *b);
 /* Absolute level identities in a borrowed, immutable normalized image view. */
 typedef struct SGIGLTexLevel {
     uint32_t level;
-    uint32_t width, height;
+    uint32_t width, height, depth;
     uint32_t base_format;
     uint32_t internal_format;
     uint32_t border;
     bool (*read_texel)(void *opaque, uint32_t level,
                        uint32_t x, uint32_t y, uint32_t *rgba);
-    bool (*read_volume_texel)(void *opaque, uint32_t level,
-                              uint32_t x, uint32_t y, uint32_t z,
-                              uint32_t *rgba);
+    bool (*read_texel_3d)(void *opaque, uint32_t level, uint32_t x,
+                          uint32_t y, uint32_t z, uint32_t *rgba);
     void *opaque;
-    uint32_t depth;
 } SGIGLTexLevel;
 
 typedef struct SGIGLTexPyramid {
@@ -199,37 +197,25 @@ typedef struct SGIGLTexPyramid {
  * must not change the binding or re-enter drawing. Concurrent mutation needs
  * family locking or a stable snapshot. The rasterizer retains no pointer.
  */
-#define SGI_GL_TEXTURE_COLOR_TABLE_MAX 256
-
-typedef struct SGIGLTexColorTable {
-    bool enabled;
-    uint32_t size;
-    uint32_t base_format;
-    /* Canonical RRGGBBAA entries owned by the family. */
-    const uint32_t *rgba;
-} SGIGLTexColorTable;
-
 typedef struct SGIGLTexImage {
-    uint32_t width, height;
+    uint32_t width, height, depth;
     uint32_t base_format;
     uint32_t border;
     uint32_t min_filter, mag_filter;
-    uint32_t wrap_s, wrap_t;
+    uint32_t wrap_s, wrap_t, wrap_r;
     float border_color[4];
     bool (*read_texel)(void *opaque, uint32_t x, uint32_t y, uint32_t *rgba);
-    bool (*read_volume_texel)(void *opaque, uint32_t x, uint32_t y,
-                              uint32_t z, uint32_t *rgba);
+    bool (*read_texel_3d)(void *opaque, uint32_t x, uint32_t y, uint32_t z,
+                          uint32_t *rgba);
+    bool volume;
     void *opaque;
     /*
      * NULL preserves the level-zero interface; otherwise image fields above
      * are ignored. The sampler fields still apply to every selected level.
      */
     const SGIGLTexPyramid *pyramid;
-    uint32_t depth;
-    uint32_t wrap_r;
-    bool volume;
-    /* Borrowed family state, immutable and live for the synchronous draw. */
-    const SGIGLTexColorTable *color_table;
+
+    void (*post_filter)(void *opaque, double rgba[4]);
 } SGIGLTexImage;
 
 /*
