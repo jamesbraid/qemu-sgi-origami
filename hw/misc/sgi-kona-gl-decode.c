@@ -377,18 +377,40 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     /*
      * Non-repeat S/T collapse three public clamp modes into the same bits.
      * Their border storage is not established by this sampler record.
-     * Detail and sharpening mag selectors need their filter-curve tables.
+     * Detail selectors still need their separate image binding.
      */
-    if (!min_filter[min] || mag > 1 || (bind[3] & 0x7000) ||
+    if (!min_filter[min] || (mag > 1 && mag != 5) ||
+        (bind[3] & 0x7000) ||
         !scale_s || !scale_t) {
         return false;
     }
     next.min_filter = min_filter[min];
     next.mag_filter = mag ? SGI_GL_LINEAR : SGI_GL_NEAREST;
+    next.filter_curve_slot = 0;
+    if (mag == 5) {
+        switch (bind[2] & 0x0c000000) {
+        case 0:
+            next.mag_filter = SGI_GL_LINEAR_SHARPEN_SGIS;
+            break;
+        case 0x04000000:
+            next.mag_filter = SGI_GL_LINEAR_SHARPEN_COLOR_SGIS;
+            break;
+        case 0x08000000:
+            next.mag_filter = SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS;
+            break;
+        default:
+            return false;
+        }
+        next.filter_curve_slot = bind[1] & 0xfff;
+        /* Categorical negative bounds cannot evaluate a sharpening curve. */
+        if ((lo && lo < 64) || hi < 64) {
+            return false;
+        }
+    }
     next.wrap_s = next.wrap_t = SGI_GL_REPEAT;
     next.lod_scale_s = scale_s / 16.0;
     next.lod_scale_t = scale_t / 16.0;
-    if (min >= 3) {
+    if (min >= 3 || mag == 5) {
         /*
          * Positive effective LOD bounds encode trunc(64 * (LOD + 1)).
          * Below 64 the base-zero producer uses a quantized exponential.

@@ -590,7 +590,7 @@ static void test_native_migration(void)
     assert_image(&dst, red, 1, 1);
     /* Version four had complete native images and no coverage/format fields. */
     g_byte_array_remove_range(a, 332, 1);
-    g_byte_array_set_size(a, a->len - 12);
+    g_byte_array_set_size(a, a->len - 16);
     stl_be_p(a->data, 4);
     g_assert_true(load(a, &dst));
     g_assert_true(sgi_kona_texture_native_table(&dst, 99, table));
@@ -666,7 +666,7 @@ static void test_native_sampling(void)
     a = save(&src);
     g_assert_true(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
-    stl_be_p(a->data + a->len - 20, 3);
+    stl_be_p(a->data + a->len - 24, 3);
     g_assert_false(load(a, &dst));
     g_assert_cmphex(draw(&dst, &c), ==, 0x800040);
     g_byte_array_unref(a);
@@ -779,6 +779,92 @@ static void test_filter_curves(void)
     sgi_kona_texture_cleanup(&s);
 }
 
+static void test_sharpen_curve_sampling(void)
+{
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    SGIGLContext c;
+    SGIGLDrawable d = {
+        .bound = true, .clip = { .n = 1, .r[0] = { 0, 0, 1, 1 } },
+    };
+    const uint32_t pixels[] = {
+        0x80808080, 0x80808080, 0x80808080, 0x80808080,
+    };
+    const uint32_t coarse[] = { 0x40404040 };
+    uint32_t words[33] = { 0 };
+    const SGIGLTexImage *im;
+    GByteArray *a;
+    double weight;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    sgi_gl_init(&c, 0);
+    sgi_gl_set_drawable(&c, &d);
+    c.cur.viewport[2] = c.cur.viewport[3] = 2;
+    c.cur.texture_2d = 1;
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    g_assert_true(sgi_kona_texture_upload(&src, 9, 0, 2, 2,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, pixels));
+    g_assert_true(sgi_kona_texture_upload(&src, 9, 1, 1, 1,
+                                         SGI_GL_RGBA, SGI_GL_RGBA, coarse));
+    sgi_kona_texture_defaults(&p);
+    p.mag_filter = SGI_GL_LINEAR_SHARPEN_SGIS;
+    p.filter_curve_slot = 13;
+    p.min_lod = p.max_lod = -1;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_nonnull(im->read_filter_weight);
+    weight = 123;
+    g_assert_false(im->read_filter_weight(im->opaque, -1, &weight));
+    g_assert_cmpfloat(weight, ==, 123);
+    /* Constant -1 in native units becomes public sharpening weight +1. */
+    for (unsigned k = 0; k < 16; k++) {
+        words[2 * k] = 0x200 | (0x200 << 10) | (0x200 << 20);
+        words[2 * k + 1] = 0x80;
+    }
+    g_assert_true(sgi_kona_texture_curve_upload(&src, 13, words));
+    g_assert_cmphex(draw(&src, &c), ==, 0xc0c0c0);
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_true(im->read_filter_weight(im->opaque, -1000, &weight));
+    g_assert_cmpfloat(weight, ==, 1);
+    g_assert_true(im->read_filter_weight(im->opaque, 5, &weight));
+    g_assert_cmpfloat(weight, ==, 1);
+    g_assert_false(im->read_filter_weight(im->opaque, NAN, &weight));
+    /* Nodes zero and one are distinct; interpolate in rho, not lambda. */
+    words[0] &= ~0x3ffu;
+    g_assert_true(sgi_kona_texture_curve_upload(&src, 13, words));
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_true(im->read_filter_weight(im->opaque, -7, &weight));
+    g_assert_cmpfloat(weight, ==, 0.5);
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_assert_cmphex(draw(&dst, &c), ==, 0xc0c0c0);
+    im = sgi_kona_texture_resolve(&dst);
+    g_assert_true(im->read_filter_weight(im->opaque, -7, &weight));
+    g_assert_cmpfloat(weight, ==, 0.5);
+    /* Last object word carries the slot immediately before the curve count. */
+    stl_be_p(a->data + a->len - 140, SGI_KONA_TEXTURE_CURVE_SLOTS);
+    g_assert_false(load(a, &dst));
+    g_assert_cmphex(draw(&dst, &c), ==, 0xc0c0c0);
+    g_byte_array_unref(a);
+    /* Version six restores ordinary sampler state with slot zero. */
+    sgi_kona_texture_defaults(&p);
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    a = save(&src);
+    g_byte_array_remove_range(a, a->len - 140, 4);
+    stl_be_p(a->data, 6);
+    g_assert_true(load(a, &dst));
+    im = sgi_kona_texture_resolve(&dst);
+    g_assert_cmphex(im->mag_filter, ==, SGI_GL_LINEAR);
+    g_assert_cmphex(draw(&dst, &c), ==, 0x808080);
+    g_byte_array_unref(a);
+    p.filter_curve_slot = SGI_KONA_TEXTURE_CURVE_SLOTS;
+    g_assert_false(sgi_kona_texture_bind(&src, 9, &p));
+    sgi_gl_cleanup(&c);
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 static void test_filter_curve_budget(void)
 {
     SGIKonaTextureState s;
@@ -870,6 +956,8 @@ int main(int argc, char **argv)
                     test_native_negative_lod);
     g_test_add_func("/sgi/kona/texture/filter-curves/storage",
                     test_filter_curves);
+    g_test_add_func("/sgi/kona/texture/filter-curves/sharpen-sampling",
+                    test_sharpen_curve_sampling);
     g_test_add_func("/sgi/kona/texture/filter-curves/budget",
                     test_filter_curve_budget);
     g_test_add_func("/sgi/kona/texture/filter-curves/migration",

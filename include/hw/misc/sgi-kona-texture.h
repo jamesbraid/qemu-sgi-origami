@@ -15,6 +15,7 @@ typedef struct SGIKonaTextureParams {
     double min_lod, max_lod;
     double post_scale[4], post_bias[4];
     double lod_scale_s, lod_scale_t;
+    uint32_t filter_curve_slot;
 } SGIKonaTextureParams;
 
 typedef struct SGIKonaTextureLevel {
@@ -39,6 +40,7 @@ typedef struct SGIKonaTextureObject {
     SGIGLTexLevel view[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexPyramid pyramid;
     SGIGLTexImage image;
+    const double *filter_curve;
     uint32_t native_width, native_height;
     uint32_t native_count, native_format;
     bool native_format_valid;
