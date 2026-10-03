@@ -1531,6 +1531,99 @@ static void test_r12000_migrate_rejects_different_fpu_id(void)
     r12000_migrate_rejects_profile(R12000_CPU_1_FPU);
 }
 
+static void tlb_reset_install(UserCode *p, unsigned int index)
+{
+    user_li(p, 8, index);
+    user_mtc0(p, 8, 0);
+    user_li(p, 8, 0x00400001); /* VPN and ASID shared by both writes. */
+    user_mtc0(p, 8, 10);
+    user_mtc0(p, 0, 5);
+    user_li(p, 8, 0xc006);
+    user_mtc0(p, 8, 2);
+    user_li(p, 8, 0xc046);
+    user_mtc0(p, 8, 3);
+    user_emit(p, 0x42000002); /* tlbwi */
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+}
+
+static void test_r10000_tlb_conflict_after_reset(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[20] = { 0 };
+    unsigned int second;
+    QTestState *qts;
+    int64_t deadline;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    user_li(image, 26, 0xa0000000 | R12000_MAILBOX);
+    user_i(image, 35, 26, 8, 16);
+    second = user_branch(image, 5, 8, 0);
+    tlb_reset_install(image, 0);
+    user_i(image, 9, 0, 8, 1);
+    user_i(image, 43, 26, 8, 0);
+    user_park(image);
+
+    user_patch(image, second, image->pos);
+    user_mtc0(image, 0, 0);
+    user_emit(image, 0x42000001); /* tlbr */
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(image, 0);
+    }
+    r12000_emit_reg(image, 8, 10, 4);
+    tlb_reset_install(image, 1);
+    r12000_emit_reg(image, 8, 12, 8);
+    user_mtc0(image, 0, 0);
+    user_emit(image, 0x42000001);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(image, 0);
+    }
+    r12000_emit_reg(image, 8, 10, 12);
+    user_i(image, 9, 0, 8, 2);
+    user_i(image, 43, 26, 8, 0);
+    user_park(image);
+
+    fd = g_file_open_tmp("r10000-tlb-reset-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu R10000 "
+                      "-bios %s -accel tcg -S", path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    for (unsigned int phase = 1; phase <= 2; phase++) {
+        deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+        do {
+            qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+            if (ldl_be_p(mailbox) == phase) {
+                break;
+            }
+            g_usleep(1000);
+        } while (g_get_monotonic_time() < deadline);
+        g_assert_cmphex(ldl_be_p(mailbox), ==, phase);
+        if (phase == 1) {
+            qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+            stl_be_p(mailbox, 0);
+            stl_be_p(mailbox + 16, 1);
+            qtest_memwrite(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+            qtest_system_reset(qts);
+            qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+        }
+    }
+    /* Reset retains the entry; the conflicting write must invalidate it. */
+    g_assert_cmphex(ldl_be_p(mailbox + 4), ==, 0x00400001);
+    g_assert_cmphex(ldl_be_p(mailbox + 8) & (1u << 21), ==, 1u << 21);
+    g_assert_cmphex(ldl_be_p(mailbox + 12), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1541,6 +1634,8 @@ int main(int argc, char **argv)
                    test_remote_user_code_first_call);
     qtest_add_func("/sn0/qtest/r10000-word-loads", test_r10000_word_loads);
     if (qtest_has_machine("malta")) {
+        qtest_add_func("/sn0/qtest/r10000-tlb-conflict-after-reset",
+                       test_r10000_tlb_conflict_after_reset);
         qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
         qtest_add_func("/r16000/word-loads", test_r16000_word_loads);
     }
