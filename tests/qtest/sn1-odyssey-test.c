@@ -4256,6 +4256,85 @@ static void push_block_16(QTestState *qts, uint32_t fourth)
  * coordinates intend. The model's old whole-frame mapping drew it upside
  * down, apex at the bottom.
  */
+static void test_command_fifo_gl_integer_triangle(void)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t draw[] = {
+        0x00010405, 0x2000,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 30, 40,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 70, 50,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 40, 85,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    /* Literal public vertex2i packet, combined matrix and depth scale. */
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    for (unsigned i = 0; i < ARRAY_SIZE(draw); i++) {
+        user_cmd_push(qts, draw[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 69), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 45), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 30, 40), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 70, 77), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_integer_assemblies(void)
+{
+    const uint32_t matrix[16] = {
+        0x40000000, 0, 0, 0x42800000,
+        0, 0xc0000000, 0, 0x42800000,
+        0, 0, 0x4f7fffc0, 0x4f7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const int32_t vertex[4][2] = {
+        { -20, -20 }, { 20, -20 }, { -20, 20 }, { 20, 20 },
+    };
+    const uint32_t primitive[] = { 4, 5, 6, 8 };
+    const unsigned index[4][6] = {
+        { 0, 1, 2, 1, 3, 2 }, { 0, 1, 2, 3 },
+        { 0, 1, 3, 2 }, { 0, 1, 2, 3 },
+    };
+
+    for (unsigned n = 0; n < ARRAY_SIZE(primitive); n++) {
+        QTestState *qts = board_start("");
+        unsigned count = n == 0 ? 6 : 4;
+
+        /* Signed coordinates are scaled and translated by the GL matrix. */
+        push_window_transform(qts, matrix);
+        user_cmd_push(qts, ODSY_GL_COLOR_3F);
+        user_cmd_push(qts, 0x3f800000);
+        user_cmd_push(qts, 0x3f800000);
+        user_cmd_push(qts, 0);
+        user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+        user_cmd_push(qts, primitive[n]);
+        for (unsigned i = 0; i < count; i++) {
+            user_cmd_push(qts, 0x8080c800);
+            user_cmd_push(qts, vertex[index[n][i]][0]);
+            user_cmd_push(qts, vertex[index[n][i]][1]);
+        }
+        user_cmd_push(qts, ODSY_CMD_GL_END);
+        g_assert_cmphex(odsy_test_pixel(qts, 32, 32), ==, 0xffff00ff);
+        g_assert_cmphex(odsy_test_pixel(qts, 96, 32), ==, 0xffff00ff);
+        g_assert_cmphex(odsy_test_pixel(qts, 32, 96), ==, 0xffff00ff);
+        g_assert_cmphex(odsy_test_pixel(qts, 96, 96), ==, 0xffff00ff);
+        g_assert_cmphex(odsy_test_pixel(qts, 20, 64), ==, 0);
+        g_assert_cmphex(odsy_test_pixel(qts, 108, 64), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
 static void test_command_fifo_gl_triangle(void)
 {
     QTestState *qts = board_start("");
@@ -13683,6 +13762,10 @@ int main(int argc, char **argv)
                    test_command_fifo_image_raster_colour_index);
     qtest_add_func("sn1/odyssey/command-fifo-gl-crossing-eye",
                    test_command_fifo_gl_crossing_eye);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-assemblies",
+                   test_command_fifo_gl_integer_assemblies);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-triangle",
+                   test_command_fifo_gl_integer_triangle);
     qtest_add_func("sn1/odyssey/command-fifo-gl-triangle",
                    test_command_fifo_gl_triangle);
     qtest_add_func("sn1/odyssey/command-fifo-lines",
