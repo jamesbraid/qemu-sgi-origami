@@ -662,6 +662,8 @@ typedef enum SGIKonaBitmapState {
  *   back tag       the same for the back bank
  *   list           SGI_KONA_LIST_ROW_BYTES-byte rows of words for display
  *                  lists resident in the pipe, "list-memory-size" bytes
+ *   depth          one internal 24-bit depth word per pixel
+ *   stencil        one internal byte per pixel, shared by colour banks
  *
  * Colour planes are bottom-origin: plane row y is textport wire row y,
  * which counts upward from the bottom display line. The tag says how a
@@ -1089,6 +1091,7 @@ struct SGIKonaState {
     uint32_t plane_back_tag;
     uint32_t plane_list;
     uint32_t plane_depth;
+    uint32_t plane_stencil;
 
     /*
      * Only to load a version 6 stream from before the board memory: it

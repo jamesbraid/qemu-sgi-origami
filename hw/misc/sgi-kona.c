@@ -2022,19 +2022,53 @@ static void sgi_kona_gl_store_depth(void *opaque, int x, int y,
     sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_depth), x, y, depth);
 }
 
-/*
- * The model's planes as the shared rasterizer reaches them: the colour
- * banks and the depth plane. No stencil plane is modelled, so the
- * stencil test passes and changes nothing (the shared rasterizer's rule
- * for planes without one).
- */
-static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t)
+static uint32_t sgi_kona_gl_load_stencil(void *opaque, int x, int y)
 {
+    SGIKonaState *s = opaque;
+
+    return sgi_plane_load(&s->mem, sgi_kona_plane(s, s->plane_stencil), x, y);
+}
+
+static void sgi_kona_gl_store_stencil(void *opaque, int x, int y,
+                                      uint32_t value)
+{
+    SGIKonaState *s = opaque;
+
+    sgi_plane_store(&s->mem, sgi_kona_plane(s, s->plane_stencil), x, y, value);
+}
+
+/* Drawing classification does not widen the zero-stencil RGB read contract. */
+static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
+{
+    const SGIKonaGLPipe *p;
+    const uint32_t *v;
+
+    if (context >= SGI_KONA_CONTEXTS) {
+        return -1;
+    }
+    p = &s->gl_pipe[context];
+    v = p->draw_config;
+    if (!p->draw_config_received || v[0] != 0 ||
+        (v[1] != 8 && v[1] != 12) || v[2] != 0 || v[3] > 1 ||
+        v[4] != 0 || v[5] != 0 || v[6] > 32 ||
+        (v[7] != 0 && v[7] != 8) || v[8] != 0 || v[9] != 0) {
+        return -1;
+    }
+    return v[7];
+}
+
+static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
+                               SGIRasterRules *rules, int stencil_bits)
+{
+    *rules = sgi_kona_gl_rules;
+    rules->stencil_bits = stencil_bits == 8 ? 8 : 0;
     *t = (SGIRasterTarget) {
         .store_colour = sgi_kona_gl_store_colour,
         .load_colour = sgi_kona_gl_load_colour,
         .load_depth = sgi_kona_gl_load_depth,
         .store_depth = sgi_kona_gl_store_depth,
+        .load_stencil = stencil_bits == 8 ? sgi_kona_gl_load_stencil : NULL,
+        .store_stencil = stencil_bits == 8 ? sgi_kona_gl_store_stencil : NULL,
         .opaque = s,
         .screen_top = SGI_KONA_FB_HEIGHT - 1,
         .screen_rows_down = false,
@@ -2058,11 +2092,19 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
 {
     SGIKonaState *s = opaque;
     SGIRasterTarget t;
+    SGIRasterRules rules;
+    int stencil_bits = sgi_kona_gl_stencil_bits(s, d->context);
     SGIGLDrawState st;
     SGIGLDraw copy;
     SGIGLDrawResult ret;
 
-    sgi_kona_gl_target(s, &t);
+    if (d->state->stencil_test && stencil_bits < 0) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: stencil draw of context %" PRIu32
+                      " refused for unavailable or unsupported visual\n",
+                      d->context);
+        return SGI_GL_DRAW_OK;
+    }
+    sgi_kona_gl_target(s, &t, &rules, stencil_bits);
     if (d->state->depth_test && !sgi_kona_gl_has_depth(s, d->context)) {
         st = *d->state;
         st.depth_test = 0;
@@ -2070,7 +2112,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy.state = &st;
         d = &copy;
     }
-    ret = sgi_soft_draw(&sgi_kona_gl_rules, &t, d);
+    ret = sgi_soft_draw(&rules, &t, d);
     if (ret != SGI_GL_DRAW_OK) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: GL draw of context %" PRIu32
                       " not completed by the rasterizer\n", d->context);
@@ -2087,9 +2129,16 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
 {
     SGIKonaState *s = opaque;
     SGIRasterTarget t;
+    SGIRasterRules rules;
     SGIRasterOp copy;
+    int stencil_bits = sgi_kona_gl_stencil_bits(s, s->context_current);
 
-    sgi_kona_gl_target(s, &t);
+    if ((op->clear_buffers & SGI_GL_STENCIL_BUFFER_BIT) && stencil_bits < 0) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: stencil clear refused for "
+                      "unavailable or unsupported visual\n");
+        return;
+    }
+    sgi_kona_gl_target(s, &t, &rules, stencil_bits);
     if ((op->clear_buffers & SGI_GL_DEPTH_BUFFER_BIT) &&
         (s->context_current == SGI_KONA_CONTEXT_NONE ||
          !sgi_kona_gl_has_depth(s, s->context_current))) {
@@ -2097,7 +2146,7 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
         copy.clear_buffers &= ~SGI_GL_DEPTH_BUFFER_BIT;
         op = &copy;
     }
-    sgi_soft_raster(&sgi_kona_gl_rules, &t, op);
+    sgi_soft_raster(&rules, &t, op);
 }
 
 /*
@@ -2375,10 +2424,11 @@ static void sgi_kona_gl_command(SGIKonaState *s, uint32_t selector,
         cmd.op = SGI_GL_OP_CLEAR_COLOR;
         break;
     case SGI_KONA_CMD_GL_CLEAR:
-        word = args[0] & (SGI_GL_COLOR_BUFFER_BIT | SGI_GL_DEPTH_BUFFER_BIT);
+        word = args[0] & (SGI_GL_COLOR_BUFFER_BIT | SGI_GL_DEPTH_BUFFER_BIT |
+                          SGI_GL_STENCIL_BUFFER_BIT);
         if (args[0] != word) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: glClear of buffers 0x%"
-                          PRIx32 "; only the colour and depth buffers are"
+                          PRIx32 "; only colour, depth and stencil buffers are"
                           " modelled\n", args[0]);
         }
         cmd = (SGIGLCmd) { SGI_GL_OP_CLEAR, 1, &word };
@@ -2880,8 +2930,8 @@ static void sgi_kona_gl_stipple_rows(SGIKonaState *s, int i)
  * and values (established from the senders). The integer forms of glFog
  * and glTexEnv convert by OpenGL's rules. glClearDepth's double in 0 to 1
  * is scaled to the 24-bit depth plane, rounded to nearest, the model's
- * choice. The stencil state is kept, but no stencil plane is modelled, so
- * its test passes. glHint and glClearAccum have no shared state and are
+ * choice. Stencil uses the shared stages and an internal S8 plane.
+ * glHint and glClearAccum have no shared state and are
  * absorbed. Returns false for a selector this does not carry out.
  */
 static bool sgi_kona_gl_raster_state(SGIKonaState *s, int i,
@@ -6475,7 +6525,7 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
     uint64_t base = 0;
 
     sgi_board_memory_init(&s->mem, 2 * colour.len + 2 * tag.len + list.len +
-                          depth.len);
+                          depth.len + pixels);
 
     p = colour;
     p.base = base;
@@ -6501,6 +6551,19 @@ static void sgi_kona_board_memory_init(SGIKonaState *s)
     p = depth;
     p.base = base;
     s->plane_depth = sgi_board_memory_add_plane(&s->mem, &p, &error_abort);
+    base += p.len;
+    p = (SGIPlane) {
+        .base = base,
+        .len = pixels,
+        .width = SGI_KONA_FB_WIDTH,
+        .height = SGI_KONA_FB_HEIGHT,
+        .stride = SGI_KONA_FB_WIDTH,
+        .format = SGI_PLANE_S8,
+        .packing = SGI_PACK_LE_RED_LOW,
+        .bottom_origin = true,
+        .evidence = "model choice: one internal screen-sized stencil plane",
+    };
+    s->plane_stencil = sgi_board_memory_add_plane(&s->mem, &p, &error_abort);
 }
 
 /*
