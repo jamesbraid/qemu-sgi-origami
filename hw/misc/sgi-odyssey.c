@@ -4407,6 +4407,29 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
     if (s->tex_env[0] < ARRAY_SIZE(environments)) {
         s->gl_ctx.cur.texture_env_mode = environments[s->tex_env[0]];
     }
+    /* Captured linear planes already include the eye-space transform. */
+    if ((s->cmd_tag == ODSY_GL_VERTEX_2F ||
+         s->cmd_tag == ODSY_GL_VERTEX_3F) && s->gl_linear_texgen) {
+        double vertex[4] = {
+            odyssey_f32(s->cmd_operand[0]),
+            odyssey_f32(s->cmd_operand[1]),
+            s->cmd_tag == ODSY_GL_VERTEX_3F ?
+                odyssey_f32(s->cmd_operand[2]) : 0, 1,
+        };
+
+        for (unsigned axis = 0; axis < 2; axis++) {
+            float value = 0;
+
+            if (!(s->gl_linear_texgen & s->tex_linear_valid & (1u << axis))) {
+                continue;
+            }
+            for (unsigned k = 0; k < 4; k++) {
+                value += odyssey_f32(s->tex_linear_plane[axis][k]) *
+                         vertex[k];
+            }
+            memcpy(&strq[axis], &value, sizeof(value));
+        }
+    }
     odyssey_gl_transpose(s->gl_texture_matrix, matrix);
     /* Input T may transform S, but transformed T cannot affect 1D sampling. */
     if (one_d) {
@@ -4916,6 +4939,7 @@ static bool odyssey_ucode_is_texgen(uint32_t a)
 /* What a program asks for, as far as the model recognises it. */
 typedef struct OdysseyProgram {
     bool known, lit, local_viewer, two_sided, texgen, clip, texture;
+    unsigned linear_texgen;
 } OdysseyProgram;
 
 /*
@@ -4942,6 +4966,29 @@ static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
             p->clip = true;
             n++;
             continue;
+        }
+        /*
+         * Independent public enable-S, enable-T and enable-both controls
+         * discriminate these short generation sequences. Other fragments
+         * retain their unsupported diagnostic; no whole program is matched.
+         */
+        if (a == 0x033) {
+            uint32_t third = s->gl_const[(k + n + 2) %
+                                         SGI_ODYSSEY_GL_CONSTANTS];
+            uint32_t fourth = s->gl_const[(k + n + 3) %
+                                          SGI_ODYSSEY_GL_CONSTANTS];
+
+            if (next == 0x06b && third == 0x077) {
+                p->linear_texgen = 3;
+                n += 2;
+                continue;
+            }
+            if ((next == 0x04d || next == 0x057) &&
+                third == 0x06c && fourth == 0x077) {
+                p->linear_texgen = next == 0x04d ? 1 : 2;
+                n += 3;
+                continue;
+            }
         }
         if (odyssey_ucode_is_texgen(a)) {
             p->texgen = true;
@@ -5199,6 +5246,7 @@ static void odyssey_gl_program(SGIOdysseyState *s)
         qemu_log_mask(LOG_UNIMP, "sgi-odyssey: texture-mode lighting finish in "
                       "geometry program 0x%x is not modeled\n", e29);
     }
+    s->gl_linear_texgen = p.known ? p.linear_texgen : 0;
     s->gl_lit = p.lit;
     s->gl_local_viewer = p.local_viewer;
 }
@@ -7629,6 +7677,15 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          */
         break;
     case ODSY_GL_CLIP_PLANE_LOAD:
+        /* Public linear controls vary these effective object-space planes. */
+        if (s->gl_light_vec_sel == 0x100 || s->gl_light_vec_sel == 0x104) {
+            unsigned axis = (s->gl_light_vec_sel - 0x100) / 4;
+
+            memcpy(s->tex_linear_plane[axis], s->cmd_operand,
+                   sizeof(s->tex_linear_plane[axis]));
+            s->tex_linear_valid |= 1u << axis;
+            break;
+        }
         /*
          * See ODSY_GL_CLIP_PLANE_BASE's comment: accept and pass through
          * loads into the shared layer's six slots, silently drop loads past
@@ -9155,6 +9212,9 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->gl_program_logged_count = 0;
     s->gl_two_sided_logged = false;
     s->gl_texgen_logged = false;
+    s->gl_linear_texgen = 0;
+    memset(s->tex_linear_plane, 0, sizeof(s->tex_linear_plane));
+    s->tex_linear_valid = 0;
     s->gl_clip_logged = false;
     s->gl_texture_stage_logged = false;
     s->gl_block_logged = false;
@@ -9810,6 +9870,10 @@ static int odyssey_post_load(void *opaque, int version_id)
         s->line_stipple[0] = s->line_stipple[1] = 0xffff;
         s->line_stipple[2] = 0;
     }
+    if (version_id < 36) {
+        memset(s->tex_linear_plane, 0, sizeof(s->tex_linear_plane));
+        s->tex_linear_valid = 0;
+    }
     if (version_id < 35) {
         memset(s->tex_colour_table, 0, sizeof(s->tex_colour_table));
         memset(s->tex_colour_table_valid, 0,
@@ -9856,7 +9920,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 35,
+    .version_id = 36,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -10013,6 +10077,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_ARRAY_V(tex_lod, SGIOdysseyState, 4, 31),
         VMSTATE_UINT32_ARRAY_V(tex_coord, SGIOdysseyState, 2, 22),
         VMSTATE_UINT32_V(tex_coord_r, SGIOdysseyState, 34),
+        VMSTATE_UINT32_2DARRAY_V(tex_linear_plane, SGIOdysseyState, 2, 4, 36),
+        VMSTATE_UINT32_V(tex_linear_valid, SGIOdysseyState, 36),
         /* The colour-mode words (v24). */
         VMSTATE_UINT32_ARRAY_V(colour_mode, SGIOdysseyState, 2, 24),
         /* Program memory and the per-context windows (v25). */
