@@ -432,6 +432,7 @@ static int mips_timer_adjacent_post_load(void *opaque, int version_id)
     MIPSCPU *cpu = opaque;
 
     cpu->env.timer_adjacent_pending = true;
+    cpu->env.timer_adjacent_pc = cpu->env.active_tc.PC;
     return 0;
 }
 
