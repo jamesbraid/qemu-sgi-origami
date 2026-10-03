@@ -688,6 +688,7 @@ typedef enum SGIKonaBitmapState {
 typedef struct SGIKonaTextureUpload {
     uint32_t header[20];
     uint32_t count;
+    uint32_t source_stride;
     uint32_t *pixels;
     bool complete;
 } SGIKonaTextureUpload;
@@ -1195,6 +1196,11 @@ struct SGIKonaState {
  * these. See sgi_kona_fb_read() for the resolve.
  */
 uint32_t sgi_kona_fb_read(SGIKonaState *s, int x, int y);
+
+/* A native texture upload staged from exact mapped source bytes. */
+bool sgi_kona_texture_dma_waiting(SGIKonaState *s);
+bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                                 uint32_t per_line, uint64_t pitch);
 
 /*
  * The X server's image write by DMA: whether the open X pixel write waits

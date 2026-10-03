@@ -313,6 +313,7 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
 {
     SGIKonaDma *d = &s->dma;
     bool record = d->record_pending;
+    bool texture = !record && sgi_kona_texture_dma_waiting(s);
     uint32_t total = w[2], per_line = w[3], gap = w[4];
     uint64_t cookie = SGI_KONA_DMA_COOKIE_NONE;
     g_autofree uint64_t *pages = NULL;
@@ -341,7 +342,8 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     io = ((uint64_t)w[0] << 12) | (w[1] & 0xfff);
     in_page = io & (SGI_KONA_DMA_PAGE_SIZE - 1);
 
-    if (!per_line || per_line % 4 || !total || total % per_line) {
+    if (!per_line || (!texture && per_line % 4) ||
+        !total || total % per_line) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: dma of 0x%x bytes in lines of 0x%x is not "
                       "whole lines of whole words; refusing\n", total,
@@ -372,6 +374,13 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
 
     if (record) {
         sgi_kona_dma_list(s, &pl, in_page, lines, total, cookie);
+    } else if (texture) {
+        /* Publish only after the complete source was read and staged. */
+        if (sgi_kona_texture_image_dma(s, io, lines, per_line, pitch) &&
+            cookie != SGI_KONA_DMA_COOKIE_NONE) {
+            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
+                             SGI_DONE_WRITTEN, cookie, total);
+        }
     } else if (sgi_kona_x_pixel_dma_waiting(s)) {
         /*
          * The X server's image: its bytes feed the open pixel write
@@ -389,7 +398,7 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
     } else {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: dma packet with no list record and no X"
-                      " pixel write waiting; no pixels or completion\n");
+                      " pixel or texture write waiting; no pixels or completion\n");
     }
 }
 
