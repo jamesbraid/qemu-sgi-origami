@@ -138,6 +138,7 @@ static void kona_load_colour(QTestState *s, uint32_t index, uint8_t r,
  */
 static void kona_dma_packet(QTestState *s, uint32_t addr, unsigned count)
 {
+    qtest_qom_set_bool(s, KONA_QOM_PATH, "x-test-dma-framebuffer", true);
     qtest_writel(s, REG_DMA_FIFO_PUSH, 0x1eb);
     qtest_writel(s, REG_DMA_FIFO_PUSH, addr >> 12);
     qtest_writel(s, REG_DMA_FIFO_PUSH, (addr & 0xfffu) | KONA_DMA_ADDR_TAG);

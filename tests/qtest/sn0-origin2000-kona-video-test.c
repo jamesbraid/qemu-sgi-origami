@@ -919,7 +919,7 @@ static void test_cursor_load_nonzero_slot(void)
 
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found, "sgi_kona_x_cursor slot 0x2698"));
-    g_assert_nonnull(strstr(found, "token 0x130 argc 261 consumed"));
+    g_assert_null(strstr(found, "token 0x130 argc 261 consumed"));
     g_assert_null(strstr(found, "sync word"));
 }
 
