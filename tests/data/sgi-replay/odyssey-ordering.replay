@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Synthetic model regression, not a hardware capture.
+sgi-replay 2
+head sgi-odyssey
+read 4 0x000024 0xb
+write 4 0x000024 0x0f00320b
+read 4 0x000024 0x0f00320b
+write 4 0x000024 0x11223344
+read 8 0x000020 0x11223344
+write 8 0x000020 0x55667788
+read 4 0x000024 0x55667788
+read 4 0x000024 0x00007788 0x0000ffff
+reset
+read 4 0x000024 0xb

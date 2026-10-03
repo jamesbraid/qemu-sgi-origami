@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Synthetic model regression, not a hardware capture.
+sgi-replay 2
+head sgi-kona
+# Interleaved reads must observe the immediately preceding write.
+write 4 0x00007c 0x11223344
+read 4 0x00007c 0x11223344
+write 4 0x00007c 0x55667788
+read 4 0x00007c 0x55667788
+# Color and point packets must stay in order.
+write 4 0xc10000 1
+write 4 0xc10000 0x2
+write 4 0xc10000 0x00ff0000
+write 4 0xc10000 1
+write 4 0xc10000 0x6
+write 4 0xc10000 100
+write 4 0xc10000 50
+pixel 100 50 0x00ff0000
+display-pixel 100 50 0x00ff0000
+write 4 0xc10000 1
+write 4 0xc10000 0x2
+write 4 0xc10000 0x0000ff00
+write 4 0xc10000 1
+write 4 0xc10000 0x6
+write 4 0xc10000 200
+write 4 0xc10000 150
+pixel 100 50 0x00ff0000
+pixel 200 150 0x0000ff00
+display-pixel 200 150 0x0000ff00
+reset
+read 4 0x00007c 0
+pixel 100 50 0
+pixel 200 150 0

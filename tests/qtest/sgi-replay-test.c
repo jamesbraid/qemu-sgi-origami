@@ -36,9 +36,12 @@
  * @mmio_base is where the machine maps offset 0 of the head's register
  * window, @mmio_size that window's size; write and read offsets are checked
  * against it.  @qom_path is the head's device, which must provide the
- * x-test-pixel-x/-y selectors and the x-test-pixel, x-test-display-pixel,
- * x-test-wid and x-test-overlay values the pixel verbs read.  @width and
- * @height bound those verbs' coordinates.  @trace is the -trace arguments
+ * x-test-pixel-x/-y selectors and x-test-pixel for native pixel checks.
+ * @display_pixel_property selects scanout readback. @auxiliary_planes
+ * enables x-test-wid and x-test-overlay checks. @console selects the
+ * screendump device, and @needs_prom supplies synthetic firmware to
+ * machines that require a payload. @width and @height bound pixel
+ * coordinates.  @trace is the -trace arguments
  * that record the head's register accesses into SGI_REPLAY_TRACE.
  */
 typedef struct ReplayHead {
@@ -50,6 +53,10 @@ typedef struct ReplayHead {
     uint32_t width;
     uint32_t height;
     const char *trace;
+    const char *console;
+    const char *display_pixel_property;
+    bool auxiliary_planes;
+    bool needs_prom;
 } ReplayHead;
 
 static const ReplayHead replay_heads[] = {
@@ -70,6 +77,38 @@ static const ReplayHead replay_heads[] = {
         .height = 1024,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
+        .display_pixel_property = "x-test-display-pixel",
+        .auxiliary_planes = true,
+    },
+    {
+        .codename = "sgi-kona",
+        .machine = "-M origin2000 -smp 8 -m 256M "
+                   "-device sgi-kona,id=kona0,slot=io4",
+        .mmio_base = SPACE_IO + (11ULL << 24),
+        .mmio_size = 16 * MiB,
+        .qom_path = "/machine/module0/kona0",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_kona_pio_read "
+                 "-trace enable=sgi_kona_pio_write",
+        .console = "kona0",
+        /* KONA's console displays the native framebuffer directly. */
+        .display_pixel_property = "x-test-pixel",
+    },
+    {
+        /* This direct attachment is an experimental machine composition. */
+        .codename = "sgi-odyssey",
+        .machine = "-M origin300,topology=origin300-v12-direct "
+                   "-cpu R14000 -smp 2 -S",
+        .mmio_base = SPACE_IO + (11ULL << 24),
+        .mmio_size = 0x410000,
+        .qom_path = "/machine/module0/rear-panel",
+        .width = 1280,
+        .height = 1024,
+        .trace = "-trace enable=sgi_odyssey_mmio",
+        .console = "rear-panel",
+        .display_pixel_property = "x-test-display-pixel",
+        .needs_prom = true,
     },
 };
 
@@ -168,7 +207,8 @@ static uint32_t pixel(QTestState *qts, const ReplayHead *head, uint32_t x,
                       uint32_t y, bool display)
 {
     return plane_value(qts, head, x, y,
-                       display ? "x-test-display-pixel" : "x-test-pixel");
+                       display ? head->display_pixel_property :
+                                 "x-test-pixel");
 }
 
 static void replay_mmio(QTestState *qts, const ReplayHead *head,
@@ -353,7 +393,22 @@ static void replay_pixels(QTestState *qts, const ReplayHead *head,
  * bytes depend on the zlib the build links, and a PPM's depend only on the
  * pixels.
  */
-static void replay_screendump(QTestState *qts, const char *path,
+static void screendump(QTestState *qts, const ReplayHead *head,
+                       const char *path)
+{
+    if (head->console) {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s, "
+            "'device': %s, 'format': 'ppm'}}", path, head->console);
+    } else {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s, "
+            "'format': 'ppm'}}", path);
+    }
+}
+
+static void replay_screendump(QTestState *qts, const ReplayHead *head,
+                              const char *path,
                               unsigned int line, char **words)
 {
     g_autofree char *dir = NULL;
@@ -384,9 +439,7 @@ static void replay_screendump(QTestState *qts, const char *path,
         g_error("cannot create screendump file: %s", error->message);
     }
     close(fd);
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'screendump', 'arguments': {'filename': %s, "
-        "'format': 'ppm'}}", dump);
+    screendump(qts, head, dump);
     if (!g_file_get_contents(dump, &actual, &actual_len, &error)) {
         g_error("cannot read screendump %s: %s", dump, error->message);
     }
@@ -411,6 +464,10 @@ static void replay_plane(QTestState *qts, const ReplayHead *head,
 {
     uint64_t x, y, expected, actual;
 
+    if (!head->auxiliary_planes) {
+        g_error("%s:%u: head %s does not support %s", path, line,
+                head->codename, words[0]);
+    }
     if (!words[1] || !words[2] || !words[3] || words[4]) {
         g_error("%s:%u: %s requires X Y VALUE", path, line, words[0]);
     }
@@ -543,7 +600,7 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "overlay")) {
         replay_plane(qts, head, path, line, words, "x-test-overlay");
     } else if (!strcmp(words[0], "screendump")) {
-        replay_screendump(qts, path, line, words);
+        replay_screendump(qts, head, path, line, words);
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -569,7 +626,7 @@ static void run_replay(const char *path,
                        void (*check_trace)(const char *trace_contents))
 {
     const char *trace = g_getenv("SGI_REPLAY_TRACE");
-    const char *screendump = g_getenv("SGI_REPLAY_SCREENDUMP");
+    const char *screendump_path = g_getenv("SGI_REPLAY_SCREENDUMP");
     const char *checkpoint_load = g_getenv("SGI_REPLAY_CHECKPOINT_LOAD");
     const char *checkpoint_save = g_getenv("SGI_REPLAY_CHECKPOINT_SAVE");
     const char *start_line_env = g_getenv("SGI_REPLAY_START_LINE");
@@ -580,6 +637,8 @@ static void run_replay(const char *path,
     g_autofree char *args = NULL;
     g_autofree char *load_uri = NULL;
     g_autofree char *save_uri = NULL;
+    g_autofree char *prom = NULL;
+    g_autofree char *bios_args = NULL;
     g_auto(GStrv) lines = NULL;
     g_autoptr(GError) error = NULL;
     bool remove_trace = false;
@@ -603,7 +662,23 @@ static void run_replay(const char *path,
         trace = temporary_trace;
         remove_trace = true;
     }
-    args = g_strdup_printf("%s %s -D %s%s", head->machine, head->trace,
+    if (head->needs_prom) {
+        g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+        g_autofree char *quoted = NULL;
+
+        /* qtest never executes this synthetic firmware payload. */
+        fd = g_file_open_tmp("sgi-replay-prom-XXXXXX.bin", &prom, &error);
+        g_assert_no_error(error);
+        g_assert_cmpint(fd, >=, 0);
+        close(fd);
+        g_assert_true(g_file_set_contents(prom, (char *)image, PROM_SIZE,
+                                          &error));
+        g_assert_no_error(error);
+        quoted = g_shell_quote(prom);
+        bios_args = g_strdup_printf(" -bios %s", quoted);
+    }
+    args = g_strdup_printf("%s%s %s -D %s%s", head->machine,
+                           bios_args ? bios_args : "", head->trace,
                            trace, checkpoint_load && *checkpoint_load ?
                            " -incoming defer" : "");
     qts = qtest_init(args);
@@ -633,12 +708,13 @@ static void run_replay(const char *path,
         save_uri = g_strdup_printf("file:%s", checkpoint_save);
         sgi_migrate_stopped(qts, save_uri);
     }
-    if (screendump && *screendump) {
-        qtest_qmp_assert_success(qts,
-            "{'execute': 'screendump', 'arguments': {'filename': %s}}",
-            screendump);
+    if (screendump_path && *screendump_path) {
+        screendump(qts, head, screendump_path);
     }
     qtest_quit(qts);
+    if (prom) {
+        unlink(prom);
+    }
     if (!g_file_get_contents(trace, &trace_contents, NULL, &error)) {
         g_error("cannot read trace %s: %s", trace, error->message);
     }
@@ -692,6 +768,74 @@ static void run_fixture(const char *name,
     g_autofree char *path = replay_fixture_path(name);
 
     run_replay(path, check_trace);
+}
+
+static void run_family_fixture(const char *name)
+{
+    g_autofree char *path = g_test_build_filename(G_TEST_DIST, "..", "data",
+                                                 "sgi-replay", name, NULL);
+
+    run_replay(path, NULL);
+}
+
+static void test_kona_ordering(void)
+{
+    run_family_fixture("kona-ordering.replay");
+}
+
+static void test_odyssey_ordering(void)
+{
+    run_family_fixture("odyssey-ordering.replay");
+}
+
+static void test_kona_screendump(void)
+{
+    static const char header[] = "P6\n1280 1024\n255\n";
+    g_autofree char *source = g_test_build_filename(G_TEST_DIST, "..", "data",
+                                                   "sgi-replay",
+                                                   "kona-ordering.replay",
+                                                   NULL);
+    g_autofree char *dir = NULL;
+    g_autofree char *fixture = NULL;
+    g_autofree char *reference = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *records = NULL;
+    g_autofree char *image = NULL;
+    g_autoptr(GError) error = NULL;
+    gsize length;
+    char *reset;
+
+    g_assert_true(g_file_get_contents(source, &contents, NULL, &error));
+    g_assert_no_error(error);
+    reset = strstr(contents, "\nreset\n");
+    g_assert_nonnull(reset);
+    *reset = '\0';
+    dir = g_dir_make_tmp("sgi-replay-kona-XXXXXX", &error);
+    g_assert_no_error(error);
+    fixture = g_build_filename(dir, "points.replay", NULL);
+    reference = g_build_filename(dir, "points.ppm", NULL);
+    g_assert_true(g_file_set_contents(fixture, contents, -1, &error));
+    g_assert_no_error(error);
+
+    g_setenv("SGI_REPLAY_SCREENDUMP", reference, true);
+    run_replay(fixture, NULL);
+    g_unsetenv("SGI_REPLAY_SCREENDUMP");
+    g_assert_true(g_file_get_contents(reference, &image, &length, &error));
+    g_assert_no_error(error);
+    g_assert_cmpuint(length, ==, sizeof(header) - 1 + 1280 * 1024 * 3);
+    g_assert_cmpmem(image, sizeof(header) - 1, header, sizeof(header) - 1);
+    g_assert_cmpmem(image + sizeof(header) - 1 + (50 * 1280 + 100) * 3, 3,
+                    "\xff\0\0", 3);
+    g_assert_cmpmem(image + sizeof(header) - 1 + (150 * 1280 + 200) * 3, 3,
+                    "\0\xff\0", 3);
+
+    records = g_strconcat(contents, "\nscreendump points.ppm\n", NULL);
+    g_assert_true(g_file_set_contents(fixture, records, -1, &error));
+    g_assert_no_error(error);
+    run_replay(fixture, NULL);
+    unlink(fixture);
+    unlink(reference);
+    rmdir(dir);
 }
 
 static void test_replay(void)
@@ -1246,9 +1390,52 @@ static void test_invalid_late_head(void)
                         "*:4: head must lead the fixture*");
 }
 
+static void test_invalid_kona_plane(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-kona\nwid 0 0 0\n",
+                        "*:3: head sgi-kona does not support wid*");
+}
+
+static void test_invalid_odyssey_plane(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-odyssey\noverlay 0 0 0\n",
+                        "*:3: head sgi-odyssey does not support overlay*");
+}
+
+static void test_invalid_kona_readback(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-kona\n"
+                        "write 4 0x7c 0x11223344\nread 4 0x7c 0x55667788\n",
+                        "*:4: read 0x7c returned 0x11223344, "
+                        "expected 0x55667788*");
+}
+
+static void test_invalid_odyssey_aperture(void)
+{
+    test_invalid_header("sgi-replay 2\nhead sgi-odyssey\n"
+                        "read 4 0x410000 0\n",
+                        "*:3: MMIO access is outside the sgi-odyssey "
+                        "aperture*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    if (qtest_has_device("sgi-kona")) {
+        qtest_add_func("sgi-replay/kona/ordering", test_kona_ordering);
+        qtest_add_func("sgi-replay/kona/screendump", test_kona_screendump);
+        qtest_add_func("sgi-replay/kona/unsupported-plane",
+                       test_invalid_kona_plane);
+        qtest_add_func("sgi-replay/kona/readback-mismatch",
+                       test_invalid_kona_readback);
+    }
+    if (qtest_has_machine("origin300") && qtest_has_device("sgi-odyssey")) {
+        qtest_add_func("sgi-replay/odyssey/ordering", test_odyssey_ordering);
+        qtest_add_func("sgi-replay/odyssey/unsupported-plane",
+                       test_invalid_odyssey_plane);
+        qtest_add_func("sgi-replay/odyssey/aperture-bounds",
+                       test_invalid_odyssey_aperture);
+    }
     qtest_add_func("sgi-replay/mgras/replay", test_replay);
     qtest_add_func("sgi-replay/mgras/replay-screendump",
                    test_replay_screendump);
