@@ -3090,7 +3090,7 @@ static bool odyssey_pixel_allowed(SGIOdysseyState *s, int64_t x, int64_t y)
 }
 
 /* A colour write, into each buffer the drawing mask selects. */
-static void odyssey_paint_pixel(SGIOdysseyState *s, uint32_t x, uint32_t y,
+static void odyssey_paint_pixel(SGIOdysseyState *s, int64_t x, int64_t y,
                                 uint32_t pixel)
 {
     unsigned buffers = odyssey_draw_buffers(s);
@@ -3519,8 +3519,10 @@ static void odyssey_image_put(SGIOdysseyState *s, bool paint, uint32_t rgba,
         /* An off-screen object: box coordinates, no window or id tests. */
         odyssey_object_store(s, obj, s->image_cur_x, s->image_cur_y, rgba);
     } else if (paint) {
-        /* An index is stored raw; scanout resolves it (see resolve_row). */
-        odyssey_paint_pixel(s, s->image_cur_x, s->image_cur_y,
+        /* Screen pixels are window-relative; object pixels are not. */
+        odyssey_paint_pixel(s,
+                            (int64_t)s->image_cur_x + s->win_origin[0],
+                            (int64_t)s->image_cur_y + s->win_origin[1],
                             is_index ? rgba : (rgba & ~0xffu) | 0xff);
     }
     if ((x_decreasing && s->image_cur_x == s->image_x2) ||
