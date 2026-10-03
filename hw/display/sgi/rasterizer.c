@@ -1243,6 +1243,9 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
                                         texel)) {
         return false;
     }
+    if (im->post_filter) {
+        im->post_filter(im->opaque, texel);
+    }
     for (int k = 0; k < 4; k++) {
         bool alpha = k == 3;
 
