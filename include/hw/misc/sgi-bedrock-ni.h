@@ -4,6 +4,7 @@
 #define HW_MISC_SGI_BEDROCK_NI_H
 
 #include "hw/core/sysbus.h"
+#include "qemu/notify.h"
 #include "hw/misc/sgi-bedrock-ni-regs.h"
 
 #define TYPE_SGI_BEDROCK_NI "sgi-bedrock-ni"
@@ -28,9 +29,13 @@ struct SGIBedrockNIState {
     */
     SGIBedrockState *bedrock;
     SGIBedrockNIRegs regs;
+    NotifierList changed;
 };
 
 /* Port status bit 1: the link is up. */
 #define SGI_BEDROCK_NI_LINK_UP (1ULL << 1)
+
+void sgi_bedrock_ni_add_change_notifier(SGIBedrockNIState *s,
+                                        Notifier *notifier);
 
 #endif

@@ -218,6 +218,7 @@ typedef struct SGIMachineIoConfig {
 typedef struct SGIMachinePeerNotifier {
     Notifier notifier;
     SN1FabricEndpoint *endpoint;
+    SN1MemoryMappings **memory_mappings;
 } SGIMachinePeerNotifier;
 
 /*
@@ -282,6 +283,7 @@ struct SGIMachineState {
      * SGIModelLinkEnd index addresses them. */
     SGIRouterState **routers;
     SGISN1RouterState **sn1_routers;
+    SN1MemoryMappings *sn1_memory_mappings;
     unsigned int router_count;
     Clock *cpu_refclk;
     Clock *rt_refclk;
@@ -4526,6 +4528,8 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
                 return false;
             }
         }
+        sn1_memory_mappings_add_cable(s->sn1_memory_mappings,
+                                      SGI_NET_CABLE(dev));
         object_unref(OBJECT(dev));
         if (ends[0]->kind == SGI_MODEL_LINK_END_KIND_NODE &&
             ends[1]->kind == SGI_MODEL_LINK_END_KIND_NODE) {
@@ -4550,6 +4554,9 @@ static void sgi_machine_io_peer_number_changed(Notifier *notifier, void *data)
         container_of(notifier, SGIMachinePeerNotifier, notifier);
 
     sn1_fabric_update_claims(peer->endpoint);
+    if (peer->memory_mappings) {
+        sn1_memory_mappings_refresh(*peer->memory_mappings, NULL);
+    }
 }
 
 #define SGI_MACHINE_IP53_FINGERPRINT_SIZE 32
@@ -5201,6 +5208,8 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
             SGI_ORIGIN300_PCI_EXPANSION(dev);
         const uint8List *port;
         SGIMachinePeerNotifier *notifier = &s->io_peer_notifiers[a->peer_index];
+
+        notifier->memory_mappings = &s->sn1_memory_mappings;
 
         object_property_add_child(module, "l1", OBJECT(l1));
         s->controllers[a->controller_index] = l1;
@@ -6910,12 +6919,28 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
          * Bedrock while it realizes, and a Bedrock's cable reference may be
          * set afterwards. Then every node derives which numbers it reaches.
          */
+        s->sn1_memory_mappings = sn1_memory_mappings_new(s->bedrock_nodes,
+            s->num_nodes, s->sn1_routers, s->router_count);
         if (!sgi_machine_build_bedrock_links(s, t, errp)) {
             return false;
         }
         for (node_index = 0; node_index < node_count; node_index++) {
-            sn1_node_update_claims(SN1_NODE(s->bedrock_nodes[node_index]));
+            SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+
+            sn1_node_update_claims(node);
+            sgi_bedrock_lock_net_cable(SGI_BEDROCK(node->bedrock));
         }
+        for (unsigned i = 0; i < s->router_count; i++) {
+            sgi_sn1_router_lock_cables(s->sn1_routers[i]);
+        }
+        for (unsigned i = 0; i < s->io_peer_count; i++) {
+            SN1FabricEndpoint *endpoint = s->io_peer_notifiers[i].endpoint;
+
+            if (endpoint) {
+                sgi_bedrock_lock_net_cable(endpoint->bedrock);
+            }
+        }
+        sn1_memory_mappings_refresh(s->sn1_memory_mappings, NULL);
 
         /*
          * Each fitted I/O board names the attachment of its XBridge head.
@@ -7528,14 +7553,11 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     if (t && sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         unsigned int i;
 
-        if (s->num_nodes == 1) {
-            sn1_node_full_reset(SN1_NODE(s->bedrock_nodes[0]), type);
-            return;
-        }
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_reset_cpus(SN1_NODE(s->bedrock_nodes[i]));
         }
         qemu_devices_reset(type);
+        sn1_memory_mappings_refresh(s->sn1_memory_mappings, NULL);
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_release_cpus(SN1_NODE(s->bedrock_nodes[i]));
         }
@@ -8094,6 +8116,10 @@ static void sgi_machine_instance_init(Object *obj)
 static void sgi_machine_instance_finalize(Object *obj)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
+
+    sn1_memory_mappings_stop(s->sn1_memory_mappings);
+    g_free(s->sn1_memory_mappings);
+    s->sn1_memory_mappings = NULL;
     size_t i;
 
     if (s->ip53_fingerprint_registered) {

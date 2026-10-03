@@ -8,6 +8,12 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 
+void sgi_bedrock_ni_add_change_notifier(SGIBedrockNIState *s,
+                                        Notifier *notifier)
+{
+    notifier_list_add(&s->changed, notifier);
+}
+
 static void ni_update_irq(SGIBedrockNIState *s)
 {
     qemu_set_irq(s->error, sgi_bedrock_ni_regs_error_level(&s->regs));
@@ -61,6 +67,7 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
                       "register 0x%" HWADDR_PRIx "\n", offset);
         break;
     case SGI_BEDROCK_NI_WRITTEN:
+        notifier_list_notify(&s->changed, NULL);
         break;
     }
     ni_update_irq(s);
@@ -81,12 +88,18 @@ static void ni_reset_enter(Object *obj, ResetType type)
 
 static void ni_reset_hold(Object *obj, ResetType type)
 {
-    ni_update_irq(SGI_BEDROCK_NI(obj));
+    SGIBedrockNIState *s = SGI_BEDROCK_NI(obj);
+
+    ni_update_irq(s);
+    notifier_list_notify(&s->changed, NULL);
 }
 
 static int ni_post_load(void *opaque, int version_id)
 {
-    ni_update_irq(opaque);
+    SGIBedrockNIState *s = opaque;
+
+    ni_update_irq(s);
+    notifier_list_notify(&s->changed, NULL);
     return 0;
 }
 
@@ -121,6 +134,7 @@ static void ni_init(Object *obj)
 {
     SGIBedrockNIState *s = SGI_BEDROCK_NI(obj);
 
+    notifier_list_init(&s->changed);
     memory_region_init_io(&s->mmio, obj, &ni_ops, s, TYPE_SGI_BEDROCK_NI,
                           SGI_BEDROCK_NI_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);

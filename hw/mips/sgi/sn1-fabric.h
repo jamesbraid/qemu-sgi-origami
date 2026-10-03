@@ -7,6 +7,9 @@
 #include "hw/misc/sgi-bedrock.h"
 
 typedef struct SN1FabricClass SN1FabricClass;
+typedef struct SN1MemoryMappings SN1MemoryMappings;
+typedef struct SN1NodeState SN1NodeState;
+typedef struct SGISN1RouterState SGISN1RouterState;
 
 #define TYPE_SGI_SN1_FABRIC "sgi-sn1-fabric"
 DECLARE_CLASS_CHECKERS(SN1FabricClass, SGI_SN1_FABRIC, TYPE_SGI_SN1_FABRIC)
@@ -73,5 +76,12 @@ void sn1_fabric_init_view(SN1FabricEndpoint *endpoint, unsigned int view,
                          MemoryRegion floor_alias[SN1_FABRIC_SPACES],
                          MemoryRegion claim[SN1_FABRIC_SPACES]
                                            [SN1_FABRIC_CLAIMS]);
+
+SN1MemoryMappings *sn1_memory_mappings_new(DeviceState **nodes,
+    unsigned num_nodes, SGISN1RouterState **routers, unsigned num_routers);
+void sn1_memory_mappings_add_cable(SN1MemoryMappings *maps,
+                                  SGINetCableState *cable);
+void sn1_memory_mappings_refresh(SN1MemoryMappings *maps, SN1NodeState *origin);
+void sn1_memory_mappings_stop(SN1MemoryMappings *maps);
 
 #endif

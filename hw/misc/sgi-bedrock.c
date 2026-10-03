@@ -1672,6 +1672,21 @@ static void bedrock_test_release_scratch1(Object *obj, Visitor *v,
     bedrock_hold_flush_scratch1(s, slot);
 }
 
+void sgi_bedrock_lock_net_cable(SGIBedrockState *s)
+{
+    s->net_cable_locked = true;
+}
+
+static void bedrock_check_net_cable(const Object *obj, const char *name,
+                                    Object *value, Error **errp)
+{
+    SGIBedrockState *s = SGI_BEDROCK((Object *)obj);
+
+    if (s->net_cable_locked && value != OBJECT(s->net_cable)) {
+        error_setg(errp, "machine network attachments are fixed");
+    }
+}
+
 static void bedrock_init(Object *obj)
 {
     SGIBedrockState *s = SGI_BEDROCK(obj);
@@ -1787,7 +1802,7 @@ static void bedrock_init(Object *obj)
                         bedrock_test_release_scratch1, NULL, NULL);
     object_property_add_link(obj, "net-cable", TYPE_SGI_NET_CABLE,
                              (Object **)&s->net_cable,
-                             object_property_allow_set_link, 0);
+                             bedrock_check_net_cable, 0);
 }
 
 uint8_t sgi_bedrock_node_number(SGIBedrockState *s)

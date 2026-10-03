@@ -81,7 +81,8 @@ slow_qtests = {
   # the 15 merge-queue full-suite runs 44454 to 45080: 243 s, 75 s and 58 s.
   'sn0-router-test': 730,
   'sn0-tigon-test': 320,
-  'sn1-address-map-test': 340,
+  # Routed RAM boundary and MTTCG cases start multiple machines.
+  'sn1-address-map-test': 1800,
   'sn1-bedrock-flash-test': 175,
   'sn1-bedrock-md-test': 160,
   'sn1-cross-node-test': 70,
