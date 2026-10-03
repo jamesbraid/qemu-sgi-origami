@@ -9,6 +9,8 @@
 #ifndef HW_MISC_SGI_KONA_GL_DECODE_H
 #define HW_MISC_SGI_KONA_GL_DECODE_H
 
+#include "hw/misc/sgi-kona-texture.h"
+
 #define SGI_KONA_GL_MAX_ARGS 8
 
 typedef enum SGIKonaGLLayoutEvidence {
@@ -95,5 +97,14 @@ bool sgi_kona_gl_query_serialize(const SGIKonaGLQueryInfo *info,
 bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
                                    uint32_t bias, double scale_rgba[4],
                                    double bias_rgba[4]);
+
+/*
+ * Decode established repeat/ordinary-filter sampler fields. Level identity,
+ * border colour and post-filter transforms remain with their owning records.
+ * Unsupported encodings leave every parameter unchanged.
+ */
+bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
+                                 const uint32_t record[22],
+                                 SGIKonaTextureParams *params);
 
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */
