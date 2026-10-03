@@ -977,6 +977,9 @@ struct SGIKonaState {
      * words: the count still to come. See sgi_kona_gl_tex_table_word().
      */
     uint32_t gl_tex_table_remaining;
+    uint32_t gl_tex_table_slot;
+    uint32_t gl_tex_table_words[SGI_KONA_GL_TEX_TABLE_WORDS];
+    bool gl_tex_table_refused;
 
     /*
      * A GL data run (see sgi_kona_gl_data_word()): the command it belongs
