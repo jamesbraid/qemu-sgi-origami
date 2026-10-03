@@ -9091,9 +9091,9 @@ static uint32_t texture_table_pio_word(unsigned index, bool plane1,
                     (index * index * 4095 + 32512) / (255 * 255) : 0;
 
     if (plane1) {
-        return (blue << 20) | ramp;
+        return (blue << 12) | ramp;
     }
-    return (red << 20) | green;
+    return (red << 12) | green;
 }
 
 static void texture_adapter_upload_colour_table(QTestState *qts,
@@ -10077,6 +10077,32 @@ static void test_texture_adapter_colour_table(void)
     g_assert_cmphex(odsy_test_pixel(qts, 16, 10), ==, 0xbf400080);
     texture_adapter_point_rgba(qts, 17, 10, 0.75f, 0.75f, half_alpha);
     g_assert_cmphex(odsy_test_pixel(qts, 17, 10), ==, 0x00ff0080);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_colour_table_rgb_basis(void)
+{
+    const uint32_t white[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start("");
+
+    texture_adapter_upload_l8_table_input(qts, 0x180000);
+    texture_adapter_window(qts);
+    for (unsigned plane = 0; plane < 2; plane++) {
+        for (unsigned block = 0; block < 16; block++) {
+            uint32_t words[16] = { 0 };
+
+            if (block == 15) {
+                words[15] = plane ? 0x00ffffff : 0x007f7000;
+            }
+            user_cmd_push(qts, 0x00013e00 | (plane << 4) | block);
+            push_user_words(qts, words, ARRAY_SIZE(words));
+        }
+    }
+    texture_adapter_bind(qts, 0x180000, 0x11500001, 1);
+    texture_adapter_point_rgba(qts, 10, 10, 0.75f, 0.75f, white);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x7f00ffff);
     qtest_quit(qts);
 }
 
@@ -13263,6 +13289,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_components_environment);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table",
                    test_texture_adapter_colour_table);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-rgb-basis",
+                   test_texture_adapter_colour_table_rgb_basis);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table-incomplete",
                    test_texture_adapter_colour_table_incomplete);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table-reset",

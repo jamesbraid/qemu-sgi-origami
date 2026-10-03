@@ -4118,7 +4118,7 @@ static void odyssey_texture_colour_table(void *opaque, double rgba[4])
         unsigned plane = channel == 2;
         uint32_t word = s->tex_colour_table[plane][index];
         uint32_t component = channel == 1 ? word & 0xfff :
-                                            (word >> 20) & 0xfff;
+                                            (word >> 12) & 0xfff;
 
         rgba[channel] = component / 4095.0;
     }
