@@ -151,6 +151,11 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         storage = &s->global[(address - 0x20) / 8];
         break;
     case 0x50:
+        if (!write) {
+            /* Ordinary-router position inputs are a reviewed approximation. */
+            packet->value = s->jbus_control | (UINT64_C(3) << 20);
+            return SGI_NET_PACKET_OK;
+        }
         storage = &s->jbus_control;
         break;
     case 0x100 ... 0x120:
