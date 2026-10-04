@@ -17,6 +17,46 @@ typedef enum SGIRenderCreateResult {
     SGI_RENDER_CREATE_HOST_ERROR,
 } SGIRenderCreateResult;
 
+typedef enum SGIRendererTextureFormat {
+    SGI_RENDERER_TEXTURE_ALPHA,
+    SGI_RENDERER_TEXTURE_LUMINANCE,
+    SGI_RENDERER_TEXTURE_LUMINANCE_ALPHA,
+    SGI_RENDERER_TEXTURE_INTENSITY,
+    SGI_RENDERER_TEXTURE_RGB,
+    SGI_RENDERER_TEXTURE_RGBA,
+} SGIRendererTextureFormat;
+
+typedef enum SGIRendererTextureWrap {
+    SGI_RENDERER_TEXTURE_REPEAT,
+    SGI_RENDERER_TEXTURE_CLAMP,
+    SGI_RENDERER_TEXTURE_EDGE,
+    SGI_RENDERER_TEXTURE_BORDER,
+} SGIRendererTextureWrap;
+
+typedef enum SGIRendererTextureEnvironment {
+    SGI_RENDERER_TEXTURE_REPLACE,
+    SGI_RENDERER_TEXTURE_MODULATE,
+    SGI_RENDERER_TEXTURE_DECAL,
+    SGI_RENDERER_TEXTURE_BLEND,
+} SGIRendererTextureEnvironment;
+
+/* Owned by the synchronous caller; the worker only reads the snapshot. */
+typedef struct SGIRendererTexture {
+    uint64_t serial;
+    uint32_t width, height;
+    SGIRendererTextureFormat format;
+    SGIRendererTextureWrap wrap[2];
+    SGIRendererTextureEnvironment environment;
+    bool linear;
+    float border[4], env_colour[4];
+    double scale[4], bias[4];
+    const uint8_t *texels;
+    size_t bytes;
+    /* Called on the device thread to check the worker's texture result. */
+    bool (*apply)(void *opaque, const double coord[4], double colour[4]);
+    void *opaque;
+} SGIRendererTexture;
+
 typedef struct SGIRendererRequest {
     uint64_t generation;
     float vertices[3][4];
@@ -25,6 +65,8 @@ typedef struct SGIRendererRequest {
     double alpha;             /* Flat source alpha, not stored plane alpha. */
     double colour[3][4];      /* Clamped vertex RGBA before interpolation. */
     double inverse_w[3];      /* Reciprocal clip w. */
+    const SGIRendererTexture *texture;
+    double texcoord[3][4];
     double offset;            /* Filled polygon bias in window depth. */
     double depth[3];          /* Normalized depth, linear in window space. */
     int32_t clip[4]; /* Inclusive local rectangle; {0,0,-1,-1} is empty. */

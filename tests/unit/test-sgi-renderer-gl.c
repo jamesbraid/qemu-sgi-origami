@@ -135,6 +135,133 @@ done:
     return available;
 }
 
+static const uint8_t texture_pixels[16] = {
+    0, 0, 0, 128, 255, 0, 128, 128,
+    0, 255, 128, 128, 255, 255, 255, 128,
+};
+
+static double texture_axis(double c, SGIRendererTextureWrap wrap)
+{
+    if (wrap == SGI_RENDERER_TEXTURE_REPEAT) {
+        return c - floor(c);
+    }
+    if (wrap == SGI_RENDERER_TEXTURE_EDGE) {
+        return CLAMP(c, 0.25, 0.75);
+    }
+    if (wrap == SGI_RENDERER_TEXTURE_BORDER) {
+        return CLAMP(c, -0.25, 1.25);
+    }
+    return CLAMP(c, 0, 1);
+}
+
+static bool texture_apply(void *opaque, const double coord[4], double colour[4])
+{
+    const SGIRendererTexture *t = opaque;
+    double u = texture_axis(coord[0] / coord[3], t->wrap[0]);
+    double v = texture_axis(coord[1] / coord[3], t->wrap[1]);
+    double sx = u * 2 - (t->linear ? 0.5 : 0);
+    double sy = v * 2 - (t->linear ? 0.5 : 0);
+    int ix = floor(sx), iy = floor(sy);
+    double ax = sx - ix, ay = sy - iy, texel[4] = { 0 };
+
+    if (!t->linear) {
+        if (u == 1 && t->wrap[0] != SGI_RENDERER_TEXTURE_BORDER) {
+            ix = 1;
+        }
+        if (v == 1 && t->wrap[1] != SGI_RENDERER_TEXTURE_BORDER) {
+            iy = 1;
+        }
+    }
+    for (unsigned y = 0; y < (t->linear ? 2 : 1); y++) {
+        for (unsigned x = 0; x < (t->linear ? 2 : 1); x++) {
+            int px = ix + x, py = iy + y;
+            double weight = t->linear ?
+                            (x ? ax : 1 - ax) * (y ? ay : 1 - ay) : 1;
+
+            if (t->wrap[0] == SGI_RENDERER_TEXTURE_REPEAT) {
+                px = (px + 2) % 2;
+            }
+            if (t->wrap[1] == SGI_RENDERER_TEXTURE_REPEAT) {
+                py = (py + 2) % 2;
+            }
+            for (unsigned c = 0; c < 4; c++) {
+                double value = px < 0 || px > 1 || py < 0 || py > 1 ?
+                               t->border[c] :
+                               texture_pixels[(py * 2 + px) * 4 + c] / 255.0;
+
+                texel[c] += weight * value;
+            }
+        }
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        if (t->environment == SGI_RENDERER_TEXTURE_REPLACE) {
+            colour[c] = texel[c];
+        } else if (t->environment == SGI_RENDERER_TEXTURE_MODULATE) {
+            colour[c] *= texel[c];
+        } else if (t->environment == SGI_RENDERER_TEXTURE_DECAL && c < 3) {
+            colour[c] = colour[c] * (1 - texel[3]) + texel[c] * texel[3];
+        } else if (t->environment == SGI_RENDERER_TEXTURE_BLEND) {
+            colour[c] = c == 3 ? colour[c] * texel[c] :
+                        colour[c] * (1 - texel[c]) +
+                        t->env_colour[c] * texel[c];
+        }
+    }
+    return true;
+}
+
+static void test_shader_texture(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
+    QemuEGLDisplayLease *provider = NULL;
+    SGIRendererTexture texture = {
+        .serial = 1, .width = 2, .height = 2,
+        .format = SGI_RENDERER_TEXTURE_RGBA,
+        .linear = mode & 1, .environment = mode / 2,
+        .wrap = { mode / 2, mode / 2 },
+        .env_colour = { 0.25f, 0.5f, 0.75f, 0.25f },
+        .border = { 0.25f, 0.5f, 0.75f, 0.5f },
+        .scale = { 1, 1, 1, 1 },
+        .texels = texture_pixels, .bytes = sizeof(texture_pixels),
+        .apply = texture_apply,
+    };
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!node) {
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
+        return;
+    }
+    g_assert_true(egl_init_session(node, DISPLAY_GL_MODE_CORE,
+                                  &provider, &err));
+    g_assert_null(err);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    texture.opaque = &texture;
+    request->texture = &texture;
+    request->clip[2] = request->clip[3] = 127;
+    request->vertices[1][0] = request->vertices[2][1] = 128;
+    for (unsigned i = 0; i < 3; i++) {
+        double q = 1 << i;
+
+        request->vertices[i][3] = 1;
+        request->inverse_w[i] = 1 / q;
+        request->texcoord[i][0] = (i == 1 ? 1.25 : -0.25) * q;
+        request->texcoord[i][1] = (i == 2 ? 1.25 : -0.25) * q;
+        request->texcoord[i][3] = q;
+        memcpy(request->colour[i], (double[]) { 0.5, 0.25, 0.75, 0.5 },
+               sizeof(request->colour[i]));
+    }
+    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    g_assert_null(err);
+    g_assert_true(sgi_renderer_staging_valid(request));
+    sgi_renderer_free(renderer);
+    egl_cleanup_session(provider);
+}
+
 #ifdef CONFIG_GBM
 static void test_shader_output(void)
 {
@@ -6004,11 +6131,17 @@ int main(int argc, char **argv)
                     test_decoded_clear_full_screen_commit);
     g_test_add_func("/sgi-renderer-gl/decoded-clear-depth-stencil",
                     test_decoded_clear_depth_stencil);
-#ifdef CONFIG_GBM
     if (g_getenv("QEMU_TEST_SGI_RENDER_NODE")) {
+#ifdef CONFIG_GBM
         g_test_add_func("/sgi-renderer-gl/shader-output", test_shader_output);
-    }
 #endif
+        for (unsigned mode = 0; mode < 8; mode++) {
+            g_autofree char *path = g_strdup_printf("/sgi-renderer-gl/texture/%u",
+                                                    mode);
+
+            g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_shader_texture);
+        }
+    }
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/shader-failure",

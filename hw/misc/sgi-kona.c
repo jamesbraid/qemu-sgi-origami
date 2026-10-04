@@ -2353,13 +2353,140 @@ static bool sgi_kona_renderer_logic_op(const SGIGLDrawState *st)
            (st->blend && st->blend_equation == SGI_GL_LOGIC_OP);
 }
 
+static bool sgi_kona_renderer_texture_apply(void *opaque,
+                                            const double coord[4],
+                                            double colour[4])
+{
+    return sgi_raster_texture_fragment(opaque, coord, colour);
+}
+
+static SGIRasterTextureResult sgi_kona_renderer_texture(
+    SGIKonaState *s, const SGIGLDraw *d, const SGIRasterTarget *target,
+    SGIRendererTexture *texture, SGIRasterTexture **sampler, uint8_t **pixels)
+{
+    static const uint32_t formats[] = {
+        SGI_GL_ALPHA, SGI_GL_LUMINANCE, SGI_GL_LUMINANCE_ALPHA,
+        SGI_GL_INTENSITY, SGI_GL_RGB, SGI_GL_RGBA,
+    };
+    static const uint32_t wraps[] = {
+        SGI_GL_REPEAT, SGI_GL_CLAMP, SGI_GL_CLAMP_TO_EDGE,
+        SGI_GL_CLAMP_TO_BORDER,
+    };
+    static const uint32_t environments[] = {
+        SGI_GL_REPLACE, SGI_GL_MODULATE, SGI_GL_DECAL, SGI_GL_BLEND,
+    };
+    const SGIGLDrawState *st = d->state;
+    const SGIGLTexImage *image = target->texture;
+    const SGIGLTexLevel *base = NULL;
+    const SGIKonaTextureObject *object;
+    uint64_t bytes;
+    unsigned format, environment;
+    SGIRasterTextureResult result;
+
+    result = sgi_raster_texture_check(st, image);
+    if (result != SGI_RASTER_TEXTURE_READY) {
+        return sgi_raster_texture_prepare(st, image, sampler);
+    }
+    if (st->texture_1d || st->texture_3d ||
+        image->one_dimensional || image->volume || !image->pyramid ||
+        image->shadow_compare || image->min_filter != image->mag_filter ||
+        (image->min_filter != SGI_GL_NEAREST &&
+         image->min_filter != SGI_GL_LINEAR)) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    for (unsigned i = 0; i < image->pyramid->count; i++) {
+        if (image->pyramid->levels[i].level == image->pyramid->base_level) {
+            base = &image->pyramid->levels[i];
+            break;
+        }
+    }
+    if (!base || base->border) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    for (format = 0; format < ARRAY_SIZE(formats); format++) {
+        if (base->base_format == formats[format]) {
+            break;
+        }
+    }
+    for (environment = 0; environment < ARRAY_SIZE(environments);
+         environment++) {
+        if (st->texture_env_mode == environments[environment]) {
+            break;
+        }
+    }
+    if (format == ARRAY_SIZE(formats) ||
+        environment == ARRAY_SIZE(environments)) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    texture->format = format;
+    texture->environment = environment;
+    for (unsigned axis = 0; axis < 2; axis++) {
+        uint32_t wrap = axis ? image->wrap_t : image->wrap_s;
+        unsigned mode;
+
+        for (mode = 0; mode < ARRAY_SIZE(wraps); mode++) {
+            if (wrap == wraps[mode]) {
+                break;
+            }
+        }
+        if (mode == ARRAY_SIZE(wraps)) {
+            return SGI_RASTER_TEXTURE_UNSUPPORTED;
+        }
+        texture->wrap[axis] = mode;
+    }
+    object = g_hash_table_lookup(s->textures.objects,
+                                 GUINT_TO_POINTER(s->textures.bound_handle));
+    if (!object || image != &object->image) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        texture->border[c] = CLAMP(image->border_color[c], 0, 1);
+        texture->env_colour[c] = CLAMP(st->texture_env_color[c], 0, 1);
+        texture->scale[c] = object->params.post_scale[c];
+        texture->bias[c] = object->params.post_bias[c];
+    }
+    bytes = (uint64_t)base->width * base->height * 4;
+    if (bytes > SGI_KONA_TEXTURE_BYTES) {
+        return SGI_RASTER_TEXTURE_UNSUPPORTED;
+    }
+    result = sgi_raster_texture_prepare(st, image, sampler);
+    if (result != SGI_RASTER_TEXTURE_READY) {
+        return result;
+    }
+    *pixels = g_try_malloc(bytes);
+    if (!*pixels) {
+        return SGI_RASTER_TEXTURE_OOM;
+    }
+    for (unsigned y = 0; y < base->height; y++) {
+        for (unsigned x = 0; x < base->width; x++) {
+            uint32_t rgba;
+            uint8_t *pixel = *pixels + ((size_t)y * base->width + x) * 4;
+
+            if (!base->read_texel(base->opaque, base->level, x, y, &rgba)) {
+                return SGI_RASTER_TEXTURE_UNSUPPORTED;
+            }
+            stl_be_p(pixel, rgba);
+        }
+    }
+    texture->serial = s->renderer_requests + 1;
+    texture->width = base->width;
+    texture->height = base->height;
+    texture->bytes = bytes;
+    texture->texels = *pixels;
+    texture->linear = image->min_filter == SGI_GL_LINEAR;
+    texture->apply = sgi_kona_renderer_texture_apply;
+    texture->opaque = *sampler;
+    return SGI_RASTER_TEXTURE_READY;
+}
+
 static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       const SGIVolumeVertex vertices[3],
                                       const float *provoking,
                                       const SGIClipRect *tile,
                                       SGIRendererRequest *request,
                                       SGIColourTarget *target,
-                                      const SGIRasterRules *rules)
+                                      const SGIRasterRules *rules,
+                                      const SGIRendererTexture *texture)
 {
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
@@ -2420,8 +2547,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->fog ||
         (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
                                 SGI_GL_OFFSET_POINT)) ||
-        st->texture_1d || st->texture_2d ||
-        st->texture_3d || st->dither || st->clip_planes ||
+        st->texture_1d || st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         !(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
         !(st->depth_range[1] >= 0 && st->depth_range[1] <= 1) ||
@@ -2448,6 +2574,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->cull_face_mode != SGI_GL_FRONT_AND_BACK) {
         return false;
     }
+    request->texture = texture;
     request->smooth = st->shade_model == SGI_GL_SMOOTH;
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = vertices[i].attr;
@@ -2478,15 +2605,30 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         window_vertices[i][0] = request->vertices[i][0];
         window_vertices[i][1] = request->vertices[i][1];
         window_vertices[i][2] = request->depth[i];
-        if (request->smooth) {
+        if (request->smooth || texture) {
             request->inverse_w[i] = 1.0 / clip_position[3];
             for (unsigned c = 0; c < 4; c++) {
-                double value = vertex[SGI_GL_V_COLOR + c];
+                double value = request->smooth ? vertex[SGI_GL_V_COLOR + c] :
+                               provoking[SGI_GL_V_COLOR + c];
 
                 if (!isfinite(value)) {
                     return false;
                 }
                 request->colour[i][c] = CLAMP(value, 0, 1);
+            }
+        }
+    }
+    if (texture) {
+        for (unsigned i = 0; i < 3; i++) {
+            for (unsigned c = 0; c < 4; c++) {
+                request->texcoord[i][c] =
+                    vertices[i].attr[SGI_GL_V_TEXCOORD + c];
+                if (!isfinite(request->texcoord[i][c])) {
+                    return false;
+                }
+            }
+            if (request->texcoord[i][3] <= 0) {
+                return false;
             }
         }
     }
@@ -2518,7 +2660,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     if (!sgi_renderer_request_tile(request, tx, ty, width, height, bounds)) {
         return false;
     }
-    if (!request->smooth && st->alpha_test &&
+    if (!request->smooth && !texture && st->alpha_test &&
         !sgi_raster_alpha_test(rules, st->alpha_func,
                                request->alpha, st->alpha_ref)) {
         request->clip[0] = request->clip[1] = 0;
@@ -2626,10 +2768,13 @@ static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
 
 static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
                                    const SGIRasterRules *rules,
-                                   const SGIRasterTarget *t)
+                                   const SGIRasterTarget *t, bool *out_oom)
 {
     SGIRendererRequest *requests;
     g_autofree SGIKonaRendererTriangle *triangles = NULL;
+    g_autofree uint8_t *texture_pixels = NULL;
+    SGIRendererTexture texture = { 0 };
+    g_autoptr(SGIRasterTexture) sampler = NULL;
     SGIColourTarget target;
     const SGIGLDrawable *drawable = &d->state->drawable;
     const SGIPlane *plane;
@@ -2643,7 +2788,9 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     bool success = false;
     bool logic_op = sgi_kona_renderer_logic_op(d->state);
     bool blend = d->state->blend && !logic_op;
+    SGIRasterTextureResult texture_result;
 
+    *out_oom = false;
     if (!s->host_gpu) {
         return false;
     }
@@ -2679,6 +2826,22 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     if (tile_count > 256 / count) {
         return false;
     }
+    texture_result = sgi_kona_renderer_texture(s, d, t, &texture, &sampler,
+                                                &texture_pixels);
+    switch (texture_result) {
+    case SGI_RASTER_TEXTURE_READY:
+    case SGI_RASTER_TEXTURE_DISABLED:
+    case SGI_RASTER_TEXTURE_INCOMPLETE:
+        break;
+    case SGI_RASTER_TEXTURE_UNSUPPORTED:
+        return false;
+    case SGI_RASTER_TEXTURE_OOM:
+        *out_oom = true;
+        s->renderer_fallbacks--;
+        return false;
+    default:
+        g_assert_not_reached();
+    }
     triangles = g_try_new(SGIKonaRendererTriangle, 256 / tile_count);
     if (!triangles) {
         s->renderer_failed = true;
@@ -2703,7 +2866,8 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
 
         if (!sgi_kona_renderer_request(s, &triangle, piece->vertices,
                                        piece->provoking, &tile, &requests[i],
-                                       &target, rules)) {
+                                       &target, rules,
+                                       texture_pixels ? &texture : NULL)) {
             goto out;
         }
     }
@@ -2737,7 +2901,8 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
                     uint32_t colour = (pixel[0] << 16) |
                                       (pixel[1] << 8) | pixel[2];
 
-                    if (request->smooth && (d->state->alpha_test || blend)) {
+                    if (request->texture ||
+                        (request->smooth && (d->state->alpha_test || blend))) {
                         double rgba[4];
 
                         if (!sgi_renderer_fragment(request, x, y, rgba)) {
@@ -2807,6 +2972,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
     SGIGLDrawState st;
     SGIGLDraw copy;
     SGIGLDrawResult ret;
+    bool oom;
 
     if (d->state->stencil_test && stencil_bits < 0) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: stencil draw of context %" PRIu32
@@ -2822,8 +2988,11 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy.state = &st;
         d = &copy;
     }
-    if (sgi_kona_renderer_draw(s, d, &rules, &t)) {
+    if (sgi_kona_renderer_draw(s, d, &rules, &t, &oom)) {
         return SGI_GL_DRAW_OK;
+    }
+    if (oom) {
+        return SGI_GL_DRAW_OUT_OF_MEMORY;
     }
     ret = sgi_soft_draw(&rules, &t, d);
     if (ret != SGI_GL_DRAW_OK) {
@@ -2835,7 +3004,11 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
 
 static void sgi_kona_gl_draw(void *opaque, const SGIGLDraw *d)
 {
-    sgi_kona_gl_draw_checked(opaque, d);
+    SGIKonaState *s = opaque;
+
+    if (sgi_kona_gl_draw_checked(s, d) == SGI_GL_DRAW_OUT_OF_MEMORY) {
+        sgi_kona_gl_set_error(s, SGI_GL_OUT_OF_MEMORY);
+    }
 }
 
 static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)

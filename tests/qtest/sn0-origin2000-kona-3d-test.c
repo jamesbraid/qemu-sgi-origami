@@ -13247,11 +13247,168 @@ static void test_renderer_volume_clip(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static const uint32_t renderer_texture_pixels[4] = {
+    0xff000000, 0x00ff0055, 0x0000ffaa, 0xffffffff,
+};
+
+static void renderer_texture_sample(double u, double v, bool linear,
+                                      double texel[4])
+{
+    double sx = (u - floor(u)) * 2 - (linear ? 0.5 : 0);
+    double sy = (v - floor(v)) * 2 - (linear ? 0.5 : 0);
+    int ix = floor(sx), iy = floor(sy);
+    double ax = sx - ix, ay = sy - iy;
+
+    memset(texel, 0, 4 * sizeof(*texel));
+    for (unsigned y = 0; y < (linear ? 2 : 1); y++) {
+        for (unsigned x = 0; x < (linear ? 2 : 1); x++) {
+            unsigned at = ((iy + y + 2) % 2) * 2 + (ix + x + 2) % 2;
+            uint32_t pixel = renderer_texture_pixels[at];
+            double weight = linear ? (x ? ax : 1 - ax) * (y ? ay : 1 - ay) : 1;
+
+            for (unsigned c = 0; c < 4; c++) {
+                texel[c] += ((pixel >> (24 - c * 8)) & 255) / 255.0 * weight;
+            }
+        }
+    }
+}
+
+static void test_renderer_texture(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const float positions[4][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
+    };
+    static const uint32_t environments[4] = { 0x1e01, 0x2100, 0x2101, 0xbe2 };
+    unsigned environment = mode == 4 ? 1 : mode == 5 ? 2 : mode == 6 ? 3 :
+                           mode >= 7 ? 1 : 0;
+    uint32_t h[20], record[22] = { 0x43, 0x101010, 256u << 10 };
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    memcpy(h, texture_header, sizeof(h));
+    kona_command(s, 0x174, h, ARRAY_SIZE(h));
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, renderer_texture_pixels[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x1d5,
+                 (uint32_t[]) { 0, (2u << 28) | (41 << 12),
+                                (0x30 << 14) | (mode == 1 ? 36 : 0), 0x11, 1 },
+                 5);
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command(s, 0x12,
+                 (uint32_t[]) { 0x2200, environments[environment], 0, 0, 0 },
+                 5);
+    kona_command(s, 0x11,
+                 (uint32_t[]) { 0x2201, fbits(0.25f), fbits(0.5f),
+                                fbits(0.75f), fbits(0.25f) }, 5);
+    if (mode == 3) {
+        kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
+    } else if (mode == 7) {
+        stencil_config(s, 8);
+        stencil_function(s, 0x207, 0, 255);
+        stencil_operations(s, 0x1e02, 0x1e02, 0x1e02);
+        kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+        kona_command(s, 0xce, (uint32_t[]) { 0x207 }, 1);
+        kona_command(s, 0xca, (uint32_t[]) { 0x206, fbits(0.25f) }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+    } else if (mode == 8) {
+        kona_command(s, 0xcb, (uint32_t[]) { 0x302, 0x303 }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbe2 }, 1);
+    } else if (mode == 9) {
+        kona_command(s, 0x21, (uint32_t[]) { 1, 0, 1, 0 }, 4);
+    } else if (mode == 10) {
+        kona_command(s, 0xc, (uint32_t[]) { 32, 16, 64, 80 }, 4);
+        kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    }
+    gl_begin(s, 7);
+    for (unsigned v = 0; v < 4; v++) {
+        float w = mode == 2 ? 1 << v : 1;
+        float x = positions[v][0], y = positions[v][1];
+
+        if (mode == 11) {
+            x = x ? 192 : -64;
+            y = y ? 192 : -64;
+        }
+        kona_command_f(s, 0x6b, (float[]) {
+            mode == 3 ? 0.25f + positions[v][0] / 256 : 0.5f,
+            mode == 3 ? 0.5f : 0.25f,
+            mode == 3 ? 0.75f - positions[v][1] / 256 : 0.75f, 0.5f,
+        }, 4);
+        kona_command_f(s, 0x88,
+                       (float[]) { x / 128 * w, y / 128 * w, 0, w }, 4);
+        kona_command_f(s, 0x94, (float[]) { x * w, y * w, 0, w }, 4);
+    }
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    if (mode == 7) {
+        g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, 0x5b);
+        g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0x800000);
+    }
+    for (unsigned palette = 0; palette < 2; palette++) {
+        expected_clear(expected, palette ? 0x326496 : 0xffffff);
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 0; x < 128; x++) {
+                double u = (x + 0.5) / 128, v = (y + 0.5) / 128;
+                double texel[4], colour[4] = { 0.5, 0.25, 0.75, 0.5 };
+                const double env[4] = { 0.25, 0.5, 0.75, 0.25 };
+                double alpha;
+                uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
+
+                if (mode == 10 && (x < 32 || x >= 96 || y < 16 || y >= 96)) {
+                    continue;
+                }
+                if (mode == 3) {
+                    colour[0] = 0.25 + u * 0.5;
+                    colour[1] = 0.5;
+                    colour[2] = 0.75 - v * 0.5;
+                }
+                renderer_texture_sample(u, v, mode == 1, texel);
+                for (unsigned c = 0; c < 4; c++) {
+                    if (environment == 0) {
+                        colour[c] = texel[c];
+                    } else if (environment == 1) {
+                        colour[c] *= texel[c];
+                    } else if (environment == 2 && c < 3) {
+                        colour[c] = colour[c] * (1 - texel[3]) +
+                                    texel[c] * texel[3];
+                    } else if (environment == 3) {
+                        colour[c] = c == 3 ? colour[c] * texel[c] :
+                            colour[c] * (1 - texel[c]) + env[c] * texel[c];
+                    }
+                }
+                alpha = floor(colour[3] * 255 + 0.5);
+                if (mode == 7 && alpha < 64) {
+                    continue;
+                }
+                for (unsigned c = 0; c < 3; c++) {
+                    double value = floor(colour[c] * 255 + 0.5);
+
+                    if (mode == 8) {
+                        value = floor(value * alpha / 255 + 255 - alpha + 0.5);
+                    } else if (mode == 9 && c == 1) {
+                        value = 255;
+                    }
+                    pixel[c] = value;
+                }
+            }
+        }
+        assert_window_matches(s, expected);
+        kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    }
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb60,
-        0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
+        0xde0, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -14367,6 +14524,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_volume_clip);
+    }
+    for (unsigned mode = 0; mode < 12; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/texture/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_texture);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

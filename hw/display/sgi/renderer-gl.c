@@ -52,6 +52,9 @@ typedef struct SGIRendererGL {
     GLuint vbo;
     GLuint texture;
     GLuint framebuffer;
+    GLuint sampled_texture;
+    uint64_t texture_serial;
+    bool texture_ready;
 } SGIRendererGL;
 
 static bool renderer_gl_error(SGIRendererGL *renderer, const char *operation)
@@ -524,18 +527,73 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         "#version 330 core\n"
         "layout(location=0) in vec4 vertex;\n"
         "layout(location=1) in vec4 projected_colour;\n"
-        "out vec4 interpolated_colour;\n"
+        "layout(location=2) in float reciprocal_w;\n"
+        "layout(location=3) in vec4 projected_texcoord;\n"
+        "out vec4 interpolated_colour; out float inverse_w;\n"
+        "out vec4 texcoord;\n"
         "void main() { gl_Position = vec4(vertex.xy / 64.0 - 1.0,"
-        "vertex.z, vertex.w); interpolated_colour = projected_colour; }\n";
+        "vertex.z, vertex.w); interpolated_colour = projected_colour;"
+        "inverse_w = reciprocal_w; texcoord = projected_texcoord; }\n";
     static const char *fragment_source =
         "#version 330 core\n"
-        "uniform vec3 colour;\n"
-        "uniform bool smooth_shading;\n"
-        "in vec4 interpolated_colour;\n"
-        "layout(location=0) out vec4 pixel;\n"
-        "void main() { vec3 rgb = smooth_shading ? "
-        "interpolated_colour.rgb / interpolated_colour.a : colour; "
-        "pixel = vec4(rgb, 1.0); }\n";
+        "uniform vec4 colour; uniform bool smooth_shading;\n"
+        "uniform bool textured; uniform sampler2D image;\n"
+        "uniform int texture_format, environment; uniform ivec2 wraps;\n"
+        "uniform bool linear_filter;\n"
+        "uniform vec4 border_colour, env_colour, post_scale, post_bias;\n"
+        "in vec4 interpolated_colour; in float inverse_w;\n"
+        "in vec4 texcoord; layout(location=0) out vec4 pixel;\n"
+        "vec4 components(vec4 t) {\n"
+        "  if (texture_format == 0) t.rgb = vec3(1.0);\n"
+        "  else if (texture_format == 1 || texture_format == 2) t.gb = t.rr;\n"
+        "  else if (texture_format == 3) t = t.rrrr;\n"
+        "  if (texture_format == 1 || texture_format == 4) t.a = 1.0;\n"
+        "  return t; }\n"
+        "float axis(float c, int n, int wrap) {\n"
+        "  float half_texel = 0.5 / float(n);\n"
+        "  if (wrap == 0) return c - floor(c);\n"
+        "  if (wrap == 2) return clamp(c, half_texel, 1.0 - half_texel);\n"
+        "  if (wrap == 3) return clamp(c, -half_texel, 1.0 + half_texel);\n"
+        "  return clamp(c, 0.0, 1.0); }\n"
+        "vec4 tap(ivec2 p, ivec2 size) {\n"
+        "  for (int k = 0; k < 2; k++) {\n"
+        "    if (wraps[k] == 0) p[k] = (p[k] % size[k] + size[k]) % size[k];\n"
+        "    else if (p[k] < 0 || p[k] >= size[k])\n"
+        "      return components(border_colour); }\n"
+        "  return components(texelFetch(image, p, 0)); }\n"
+        "vec4 sample_image(vec2 uv) {\n"
+        "  ivec2 size = textureSize(image, 0);\n"
+        "  uv = vec2(axis(uv.x, size.x, wraps.x),"
+        "axis(uv.y, size.y, wraps.y));\n"
+        "  if (!linear_filter) {\n"
+        "    ivec2 p = ivec2(floor(uv * vec2(size)));\n"
+        "    for (int k = 0; k < 2; k++)\n"
+        "      if (uv[k] == 1.0 && wraps[k] != 3) p[k] = size[k] - 1;\n"
+        "    return tap(p, size); }\n"
+        "  vec2 v = uv * vec2(size) - 0.5; ivec2 p = ivec2(floor(v));\n"
+        "  vec2 a = fract(v); vec4 t = vec4(0.0);\n"
+        "  for (int y = 0; y < 2; y++) for (int x = 0; x < 2; x++) {\n"
+        "    float weight = (x == 1 ? a.x : 1.0 - a.x) *"
+        "(y == 1 ? a.y : 1.0 - a.y);\n"
+        "    if (weight != 0.0) t += weight * tap(p + ivec2(x,y), size); }\n"
+        "  return t; }\n"
+        "vec4 apply_environment(vec4 c, vec4 t) {\n"
+        "  for (int k = 0; k < 4; k++) {\n"
+        "    bool alpha = k == 3;\n"
+        "    if ((!alpha && texture_format == 0) ||"
+        "(alpha && (texture_format == 1 || texture_format == 4))) continue;\n"
+        "    if (environment == 0) c[k] = t[k];\n"
+        "    else if (environment == 1) c[k] *= t[k];\n"
+        "    else if (environment == 2) { if (!alpha) c[k] ="
+        "texture_format == 4 ? t[k] : c[k] * (1.0 - t.a) + t[k] * t.a; }\n"
+        "    else c[k] = alpha && texture_format != 3 ? c[k] * t[k] :"
+        "c[k] * (1.0 - t[k]) + env_colour[k] * t[k]; }\n"
+        "  return c; }\n"
+        "void main() { vec4 c = smooth_shading ? "
+        "interpolated_colour / inverse_w : colour;\n"
+        "  if (textured) { vec4 t = sample_image(texcoord.xy / texcoord.w);"
+        "t = clamp(t * post_scale + post_bias, 0.0, 1.0);"
+        "c = apply_environment(c, t); } pixel = vec4(c.rgb, 1.0); }\n";
     EGLint attributes[] = {
         EGL_CONTEXT_OPENGL_PROFILE_MASK,
         EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
@@ -595,11 +653,18 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     glBindVertexArray(renderer->vao);
     glGenBuffers(1, &renderer->vbo);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vbo);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), NULL);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float), NULL);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
                             (void *)(4 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
+                            (void *)(8 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
+                            (void *)(9 * sizeof(float)));
+    glEnableVertexAttribArray(3);
+    glGenTextures(1, &renderer->sampled_texture);
     glGenTextures(1, &renderer->texture);
     glBindTexture(GL_TEXTURE_2D, renderer->texture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SGI_RENDERER_SIZE,
@@ -648,10 +713,73 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     return !renderer_gl_error(renderer, "startup");
 }
 
+static bool renderer_gl_texture(SGIRendererGL *renderer,
+                                  const SGIRendererTexture *t)
+{
+    float scale[4], bias[4];
+    GLint maximum;
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, renderer->sampled_texture);
+    if (!t) {
+        return true;
+    }
+    if (!renderer->texture_ready || renderer->texture_serial != t->serial) {
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maximum);
+        if (t->width > maximum || t->height > maximum) {
+            error_setg(&renderer->error,
+                       "SGI texture exceeds host texture size %d", maximum);
+            return false;
+        }
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glPixelStorei(GL_UNPACK_SWAP_BYTES, GL_FALSE);
+        glPixelStorei(GL_UNPACK_LSB_FIRST, GL_FALSE);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+        glPixelStorei(GL_UNPACK_SKIP_IMAGES, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, t->width, t->height, 0,
+                      GL_RGBA, GL_UNSIGNED_BYTE, t->texels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        renderer->texture_serial = t->serial;
+        renderer->texture_ready = true;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        scale[c] = t->scale[c];
+        bias[c] = t->bias[c];
+        if (!isfinite(scale[c]) || !isfinite(bias[c])) {
+            error_setg(&renderer->error,
+                       "SGI texture post-filter state exceeds host precision");
+            return false;
+        }
+    }
+    glUniform1i(glGetUniformLocation(renderer->program, "image"), 0);
+    glUniform1i(glGetUniformLocation(renderer->program, "texture_format"),
+                 t->format);
+    glUniform1i(glGetUniformLocation(renderer->program, "environment"),
+                 t->environment);
+    glUniform2i(glGetUniformLocation(renderer->program, "wraps"),
+                 t->wrap[0], t->wrap[1]);
+    glUniform1i(glGetUniformLocation(renderer->program, "linear_filter"),
+                 t->linear);
+    glUniform4fv(glGetUniformLocation(renderer->program, "border_colour"),
+                  1, t->border);
+    glUniform4fv(glGetUniformLocation(renderer->program, "env_colour"),
+                  1, t->env_colour);
+    glUniform4fv(glGetUniformLocation(renderer->program, "post_scale"),
+                  1, scale);
+    glUniform4fv(glGetUniformLocation(renderer->program, "post_bias"),
+                  1, bias);
+    return !renderer_gl_error(renderer, "texture upload");
+}
+
 static bool renderer_gl_execute(SGIRendererGL *renderer)
 {
     SGIRendererRequest *request = &renderer->request;
-    float vertices[3][8] = { 0 };
+    float vertices[3][13] = { 0 };
     double scale = MAX(request->inverse_w[0],
                         MAX(request->inverse_w[1], request->inverse_w[2]));
     static const GLenum disabled[] = {
@@ -667,7 +795,7 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     }
     for (unsigned i = 0; i < 3; i++) {
         memcpy(vertices[i], request->vertices[i], sizeof(request->vertices[i]));
-        if (request->smooth) {
+        if (request->smooth || request->texture) {
             float inverse_w = request->inverse_w[i] / scale;
 
             if (!isfinite(inverse_w) || inverse_w <= 0) {
@@ -675,10 +803,24 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
                            "SGI renderer reciprocal w is outside host precision");
                 return false;
             }
-            for (unsigned c = 0; c < 3; c++) {
+            for (unsigned c = 0; c < 4; c++) {
                 vertices[i][4 + c] = request->colour[i][c] * inverse_w;
+                if (request->texture) {
+                    vertices[i][9 + c] = request->texcoord[i][c] * inverse_w;
+                    if (!isfinite(vertices[i][9 + c])) {
+                        error_setg(&renderer->error,
+                                   "SGI texture coordinates exceed host "
+                                   "precision");
+                        return false;
+                    }
+                }
             }
-            vertices[i][7] = inverse_w;
+            vertices[i][8] = inverse_w;
+            if (request->texture && vertices[i][12] <= 0) {
+                error_setg(&renderer->error,
+                           "SGI texture q is outside host precision");
+                return false;
+            }
         }
     }
     for (unsigned i = 0; i < ARRAY_SIZE(disabled); i++) {
@@ -697,11 +839,22 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
                 request->clip[3] - request->clip[1] + 1);
     glEnable(GL_SCISSOR_TEST);
     glUseProgram(renderer->program);
-    glUniform3f(glGetUniformLocation(renderer->program, "colour"),
-                 request->rgb[0] / 255.0f, request->rgb[1] / 255.0f,
-                 request->rgb[2] / 255.0f);
+    if (request->texture) {
+        glUniform4f(glGetUniformLocation(renderer->program, "colour"),
+                     request->colour[0][0], request->colour[0][1],
+                     request->colour[0][2], request->colour[0][3]);
+    } else {
+        glUniform4f(glGetUniformLocation(renderer->program, "colour"),
+                     request->rgb[0] / 255.0f, request->rgb[1] / 255.0f,
+                     request->rgb[2] / 255.0f, request->alpha);
+    }
     glUniform1i(glGetUniformLocation(renderer->program, "smooth_shading"),
                  request->smooth);
+    glUniform1i(glGetUniformLocation(renderer->program, "textured"),
+                 request->texture != NULL);
+    if (!renderer_gl_texture(renderer, request->texture)) {
+        return false;
+    }
     glBindVertexArray(renderer->vao);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
@@ -1105,6 +1258,7 @@ static void renderer_gl_cleanup(SGIRendererGL *renderer)
         if (eglGetCurrentContext() == renderer->context) {
             glDeleteFramebuffers(1, &renderer->framebuffer);
             glDeleteTextures(1, &renderer->texture);
+            glDeleteTextures(1, &renderer->sampled_texture);
             glDeleteBuffers(1, &renderer->vbo);
             glDeleteVertexArrays(1, &renderer->vao);
             glDeleteProgram(renderer->program);

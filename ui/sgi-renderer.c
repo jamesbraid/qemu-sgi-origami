@@ -187,6 +187,29 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
     if (!isfinite(request->alpha) || !isfinite(request->offset)) {
         return false;
     }
+    if (request->texture) {
+        const SGIRendererTexture *t = request->texture;
+
+        if (!t->width || !t->height || t->width > INT32_MAX ||
+            t->height > INT32_MAX || !t->texels || !t->apply ||
+            t->bytes != (uint64_t)t->width * t->height * 4 ||
+            (unsigned)t->format > SGI_RENDERER_TEXTURE_RGBA ||
+            (unsigned)t->wrap[0] > SGI_RENDERER_TEXTURE_BORDER ||
+            (unsigned)t->wrap[1] > SGI_RENDERER_TEXTURE_BORDER ||
+            (unsigned)t->environment > SGI_RENDERER_TEXTURE_BLEND ||
+            (t->environment == SGI_RENDERER_TEXTURE_DECAL &&
+             t->format != SGI_RENDERER_TEXTURE_RGB &&
+             t->format != SGI_RENDERER_TEXTURE_RGBA)) {
+            return false;
+        }
+        for (unsigned c = 0; c < 4; c++) {
+            if (!(t->border[c] >= 0 && t->border[c] <= 1) ||
+                !(t->env_colour[c] >= 0 && t->env_colour[c] <= 1) ||
+                !isfinite(t->scale[c]) || !isfinite(t->bias[c])) {
+                return false;
+            }
+        }
+    }
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = request->vertices[i];
 
@@ -196,7 +219,7 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
         if (vertex[2] != 0 || vertex[3] != 1) {
             return false;
         }
-        if (request->smooth) {
+        if (request->smooth || request->texture) {
             if (!isfinite(request->inverse_w[i]) ||
                 request->inverse_w[i] <= 0) {
                 return false;
@@ -206,6 +229,16 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
                       request->colour[i][c] <= 1)) {
                     return false;
                 }
+            }
+        }
+        if (request->texture) {
+            for (unsigned c = 0; c < 4; c++) {
+                if (!isfinite(request->texcoord[i][c])) {
+                    return false;
+                }
+            }
+            if (request->texcoord[i][3] <= 0) {
+                return false;
             }
         }
         for (unsigned axis = 0; axis < 2; axis++) {
@@ -333,7 +366,7 @@ static bool renderer_fragment(const SGIRendererRequest *request,
         !renderer_covered(vertices, area, x, y)) {
         return false;
     }
-    if (!request->smooth) {
+    if (!request->smooth && !request->texture) {
         for (unsigned c = 0; c < 3; c++) {
             colour[c] = request->rgb[c] / 255.0;
         }
@@ -352,11 +385,30 @@ static bool renderer_fragment(const SGIRendererRequest *request,
         return false;
     }
     for (unsigned c = 0; c < 4; c++) {
-        colour[c] = (weights[0] * request->colour[indices[0]][c] +
-                     weights[1] * request->colour[indices[1]][c] +
-                     weights[2] * request->colour[indices[2]][c]) / sum;
+        colour[c] = request->smooth ?
+            (weights[0] * request->colour[indices[0]][c] +
+             weights[1] * request->colour[indices[1]][c] +
+             weights[2] * request->colour[indices[2]][c]) / sum :
+            request->colour[0][c];
         if (!isfinite(colour[c])) {
             return false;
+        }
+    }
+    if (request->texture) {
+        double coord[4];
+
+        for (unsigned c = 0; c < 4; c++) {
+            coord[c] = (weights[0] * request->texcoord[indices[0]][c] +
+                        weights[1] * request->texcoord[indices[1]][c] +
+                        weights[2] * request->texcoord[indices[2]][c]) / sum;
+        }
+        if (!request->texture->apply(request->texture->opaque, coord, colour)) {
+            return false;
+        }
+        for (unsigned c = 0; c < 4; c++) {
+            if (!isfinite(colour[c])) {
+                return false;
+            }
         }
     }
     return true;
@@ -484,7 +536,14 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     int32_t clip[4];
     bool smooth = request->smooth;
     double alpha = request->alpha, offset = request->offset;
-    double colour[3][4], inverse_w[3], depth[3];
+    double colour[3][4], inverse_w[3], depth[3], texcoord[3][4];
+    const SGIRendererTexture *texture = request->texture;
+    SGIRendererTexture texture_inputs;
+
+    if (texture) {
+        memcpy(&texture_inputs, texture, sizeof(texture_inputs));
+    }
+    memcpy(texcoord, request->texcoord, sizeof(texcoord));
 
     memcpy(depth, request->depth, sizeof(depth));
     memcpy(colour, request->colour, sizeof(colour));
@@ -513,6 +572,9 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         memcmp(request->colour, colour, sizeof(colour)) ||
         memcmp(request->inverse_w, inverse_w, sizeof(inverse_w)) ||
         memcmp(request->depth, depth, sizeof(depth)) ||
+        memcmp(request->texcoord, texcoord, sizeof(texcoord)) ||
+        request->texture != texture ||
+        (texture && memcmp(texture, &texture_inputs, sizeof(texture_inputs))) ||
         !sgi_renderer_staging_valid(request)) {
         renderer->failed = true;
         error_setg(errp, "Invalid SGI OpenGL renderer staging");
