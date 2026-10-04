@@ -184,7 +184,7 @@ SGIRenderer *sgi_renderer_new(Error **errp)
 
 bool sgi_renderer_request_valid(const SGIRendererRequest *request)
 {
-    if (!isfinite(request->alpha)) {
+    if (!isfinite(request->alpha) || !isfinite(request->offset)) {
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
@@ -483,7 +483,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     float vertices[3][4];
     int32_t clip[4];
     bool smooth = request->smooth;
-    double alpha = request->alpha;
+    double alpha = request->alpha, offset = request->offset;
     double colour[3][4], inverse_w[3], depth[3];
 
     memcpy(depth, request->depth, sizeof(depth));
@@ -509,6 +509,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         memcmp(request->clip, clip, sizeof(clip)) ||
         memcmp(request->vertices, vertices, sizeof(vertices)) ||
         request->smooth != smooth || request->alpha != alpha ||
+        request->offset != offset ||
         memcmp(request->colour, colour, sizeof(colour)) ||
         memcmp(request->inverse_w, inverse_w, sizeof(inverse_w)) ||
         memcmp(request->depth, depth, sizeof(depth)) ||

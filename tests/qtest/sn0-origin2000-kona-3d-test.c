@@ -13065,6 +13065,7 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
     QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
     g_autofree Expected *expected = g_new(Expected, 1);
     uint32_t depth[4], stencil[4];
+    double offset = 0;
 
     renderer_fixture(s);
     stencil_config(s, 8);
@@ -13081,6 +13082,24 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
     } else if (mode == 3) {
         kona_command(s, 0xc, (uint32_t[]) { 32, 16, 64, 80 }, 4);
         kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    }
+    if (mode >= 4) {
+        kona_command(s, 0x24, (uint32_t[]) { mode == 9 ? 0x2a02 : 0x8037 }, 1);
+        if (mode == 4 || mode == 5) {
+            float factor = mode == 4 ? 1 : -1;
+
+            kona_command_f(s, 0x168, (float[]) { factor, 0 }, 2);
+            offset = factor / 128.0;
+        } else if (mode == 6 || mode == 9) {
+            kona_command_f(s, 0x168, (float[]) { 0, 4194304 }, 2);
+            offset = mode == 6 ? 4194304.0 / 0xffffff : 0;
+        } else {
+            float bias = mode == 7 ? 0.125f : mode == 8 ? -0.125f :
+                         mode == 10 ? 1 : -1;
+
+            kona_command_f(s, 0x11b, (float[]) { 0, bias }, 2);
+            offset = bias;
+        }
     }
     gl_begin(s, 4);
     for (unsigned v = 0; v < 3; v++) {
@@ -13105,7 +13124,8 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
                                    255 + 0.5);
             bool covered = x + y < 127 && (mode != 2 || alpha >= 128) &&
                 (mode != 3 || (x >= 32 && x < 96 && y >= 16 && y < 96));
-            uint32_t zq = floor((mode == 1 ? 1 - z : z) * 0xffffff + 0.5);
+            double window = CLAMP((mode == 1 ? 1 - z : z) + offset, 0, 1);
+            uint32_t zq = floor(window * 0xffffff + 0.5);
             bool kept = covered && zq < 0x9fffff;
             uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
 
@@ -13231,7 +13251,7 @@ static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb60,
-        0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
+        0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -14334,7 +14354,7 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_stencil);
     }
-    for (unsigned mode = 0; mode < 4; mode++) {
+    for (unsigned mode = 0; mode < 12; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/renderer/depth-gradient/%u", mode);
 
