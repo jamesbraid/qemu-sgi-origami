@@ -1578,6 +1578,8 @@ F: tests/unit/test-sgi-memory.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-pi-gfx.c
 F: tests/unit/test-sgi-initial-flash.c
+F: tests/unit/test-sgi-machine-init.c
+F: tools/sgi/
 F: tests/unit/test-sgi-prom-image.c
 F: tests/unit/test-sgi-rad1-audio-pcm.c
 F: tests/unit/test-sgi-router.c
