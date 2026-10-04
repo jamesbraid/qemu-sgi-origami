@@ -5577,7 +5577,8 @@ static void test_texture_refused(void)
         }
         prepare_refused_reply(s);
         kona_command(s, 0x174, h, 20);
-        if (k < ARRAY_SIZE(fields) && h[4] == 1 && !h[6]) {
+        if (k < ARRAY_SIZE(fields) && h[0] == 0xde1 && h[4] == 1 && !h[6] &&
+            !h[7] && !h[8]) {
             texture_words(s, texture_source, 4, 0);
         }
         assert_reply_unchanged(s);
@@ -5590,9 +5591,9 @@ static void test_texture_refused(void)
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "native texture header refused:"),
                      ==, ARRAY_SIZE(fields) + 1);
-    g_assert_cmpuint(count_occurrences(found, "payload length unknown"), ==, 2);
+    g_assert_cmpuint(count_occurrences(found, "payload length unknown"), ==, 5);
     g_assert_cmpuint(count_occurrences(found, "draining framed rows"),
-                     ==, ARRAY_SIZE(fields) - 2);
+                     ==, ARRAY_SIZE(fields) - 5);
     g_assert_cmpuint(count_occurrences(found, "DMA source not staged"), ==, 1);
 }
 
@@ -6123,26 +6124,45 @@ static void test_texture_8x8_migrates(void)
 
 static void test_texture_8x8_refused(void)
 {
+    static const struct {
+        unsigned field;
+        uint32_t value;
+        bool drain;
+    } cases[] = {
+        { 0, 0xde0, false },
+        { 1, 0, false }, { 2, 0, false },
+        { 3, 0, false }, { 4, 7, false },
+        { 5, 4, false }, { 6, 2, false },
+        { 7, 1, false }, { 8, 1, false },
+        { 9, 0x31, true }, { 10, UINT32_MAX, true },
+        { 11, 1, true }, { 12, 1, true },
+        { 13, 6, true }, { 14, 6, true },
+        { 15, 1, true }, { 16, 0xff, true },
+        { 17, 0x2180, true },
+    };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
-    uint32_t h[20];
+    uint32_t h[20], hostile[64];
     char *before[7];
 
+    for (unsigned k = 0; k < ARRAY_SIZE(hostile); k++) {
+        hostile[k] = texture_hostile[k % ARRAY_SIZE(texture_hostile)];
+    }
     texture_canaries(s, before);
+    texture_native_bind(s, 0);
+    kona_command(s, 0x174, texture_header, 20);
+    texture_words(s, texture_source, 4, 0);
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    assert_texture_pixel(s, 0, 0, texture_source[0]);
+
     for (unsigned image = 0; image < 2; image++) {
-        for (unsigned field = 0; field < 24; field++) {
+        for (unsigned k = 0; k <= ARRAY_SIZE(cases); k++) {
+            bool drain = k < ARRAY_SIZE(cases) && cases[k].drain;
+
             memcpy(h, texture_8x8_headers[image], sizeof(h));
-            if (field < 20) {
-                h[field] ^= 1;
-            } else if (field == 20) {
-                h[17] ^= 8; /* Unobserved word-ten/seventeen cross-product. */
-            } else if (field == 21) {
-                kona_command(s, 0x33, (uint32_t[]){ 0xcf5, 8 }, 2);
-            } else if (field == 22) {
-                kona_command(s, 0x33, (uint32_t[]){ 0xcf5, 4 }, 2);
-                kona_command(s, 0x33, (uint32_t[]){ 0xcf2, 2 }, 2);
+            if (k < ARRAY_SIZE(cases)) {
+                h[cases[k].field] = cases[k].value;
             } else {
-                kona_command(s, 0x33, (uint32_t[]){ 0xcf2, 0 }, 2);
                 return_context_deactivate(s);
             }
             prepare_refused_reply(s);
@@ -6150,15 +6170,40 @@ static void test_texture_8x8_refused(void)
             assert_texture_staging(s, NULL, 0, 0);
             assert_reply_unchanged(s);
             texture_assert_planes(s, before);
+            if (drain) {
+                /* Model framing drains this unchanged 8x8 source profile. */
+                texture_words(s, hostile, 63, 2);
+                assert_texture_staging(s, hostile, 63, 63);
+                assert_reply_unchanged(s);
+                texture_assert_planes(s, before);
+                assert_texture_pixel(s, 0, 0, texture_source[0]);
+                qtest_writeq(s, REG_COMMAND,
+                             ((uint64_t)hostile[63] << 32) | 0x176);
+                qtest_writel(s, REG_COMMAND, 0);
+                assert_texture_staging(s, hostile, 64, 0);
+            } else {
+                kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+            }
+            assert_reply_unchanged(s);
+            texture_assert_planes(s, before);
+            assert_texture_pixel(s, 0, 0, texture_source[0]);
+            if (k == ARRAY_SIZE(cases)) {
+                gl_make_current_depth(s, 24);
+            }
+            assert_native_query_word(s, 0xb92, 0x207, false);
         }
-        gl_make_current_depth(s, 24);
     }
     texture_free_digests(before);
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_cmpuint(count_occurrences(found, "native texture header refused:"),
-                     ==, 48);
-    g_assert_null(strstr(found, "sgi_kona_gl_data token 0x174"));
+                     ==, 2 * (ARRAY_SIZE(cases) + 1));
+    g_assert_cmpuint(count_occurrences(found, "payload length unknown"),
+                     ==, 20);
+    g_assert_cmpuint(count_occurrences(found, "draining framed rows"), ==, 18);
+    g_assert_cmpuint(count_occurrences(found, "token 0x174 argc 64 consumed"),
+                     ==, 18);
+    g_assert_false(log_shows_misframing(found));
 }
 
 static uint64_t renderer_counter(QTestState *s, const char *name)
