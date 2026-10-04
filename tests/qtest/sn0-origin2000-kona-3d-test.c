@@ -12027,13 +12027,13 @@ static void test_texture_8x8_migrates(void)
 static void test_texture_8x8_refused(gconstpointer opaque)
 {
     bool known = GPOINTER_TO_UINT(opaque);
-    static const unsigned known_fields[] = { 0, 8, 9, 13, 15, 17 };
+    static const unsigned known_fields[] = { 9, 13, 15, 17 };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(&log);
     uint32_t h[20], record[22] = { 0x43, 0x101010, 256u << 10, 0x33 };
     uint32_t hostile[64];
     char *before[7];
-    unsigned cases = 7, drains = 0, unknowns = 14;
+    unsigned cases = 12, drains = 0, unknowns = 24;
 
     if (known) {
         cases = ARRAY_SIZE(known_fields);
@@ -12067,10 +12067,10 @@ static void test_texture_8x8_refused(gconstpointer opaque)
             } else {
                 switch (field) {
                 case 0:
-                    h[3] = 8;
+                    h[3] = UINT32_MAX;
                     break;
                 case 1:
-                    h[4] = 7;
+                    h[4] = UINT32_MAX;
                     break;
                 case 2:
                     h[5] = 4;
@@ -12085,10 +12085,29 @@ static void test_texture_8x8_refused(gconstpointer opaque)
                     return_context_deactivate(s);
                     break;
                 case 6:
-                    h[7] = 1;
+                    h[7] = 2;
+                    break;
+                case 7:
+                    h[0] = UINT32_MAX;
+                    break;
+                case 8:
+                    h[8] = 1;
+                    break;
+                case 9:
+                    h[1] = 8193;
+                    break;
+                case 10:
+                    h[2] = 8193;
+                    break;
+                case 11:
+                    h[2] = 1;
+                    kona_command(s, 0x33,
+                                 (uint32_t[]) { 0xcf2, UINT32_MAX }, 2);
                     break;
                 }
             }
+            g_test_message("image %u, %s source-span case %u", image,
+                           known ? "known" : "unknown", field);
             prepare_refused_reply(s);
             kona_command(s, 0x174, h, ARRAY_SIZE(h));
             if (known) {
@@ -12104,6 +12123,8 @@ static void test_texture_8x8_refused(gconstpointer opaque)
                 /* No payload count is established for these headers. */
                 if (field == 5) {
                     return_context_restore(s, SAVE_AREA);
+                } else if (field == 11) {
+                    kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 0 }, 2);
                 }
                 kona_command(s, 0x176, &image, 1);
             }
@@ -12852,7 +12873,10 @@ static void test_renderer_blend(gconstpointer opaque)
 
 static void test_renderer_smooth(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned input = GPOINTER_TO_UINT(opaque);
+    bool gpu = input == 13;
+    unsigned mode = gpu ? 1 : input;
+    const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
     static const float colours[4][4] = {
         { 1, 0, 0, 0 }, { 0, 1, 0, 0.5f }, { 0, 0, 1, 1 }, { 1, 1, 1, 1 },
     };
@@ -12861,9 +12885,16 @@ static void test_renderer_smooth(gconstpointer opaque)
     };
     const double inverse_w[4] = { 1, mode == 1 ? 2 : 1,
                                  mode == 1 ? 4 : 1, 1 };
-    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    QTestState *s;
     g_autofree Expected *expected = g_new(Expected, 1);
 
+    if (gpu && !node) {
+        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        return;
+    }
+    s = gpu ? qtest_initf(MACHINE_ARGS " -global sgi-kona.host-gpu=on"
+                          " -display egl-headless,rendernode=%s", node) :
+              qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
     renderer_fixture(s);
     kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
     if (mode == 4) {
@@ -12905,8 +12936,14 @@ static void test_renderer_smooth(gconstpointer opaque)
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
                      mode < 10 ? 1 : 2);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    if (gpu) {
+        /* A host precision refusal must preserve the exact software image. */
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws") +
+                         renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    } else {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    }
     for (unsigned palette = 0; palette < 2; palette++) {
         expected_clear(expected, palette ? 0x326496 : 0xffffff);
         for (unsigned y = 0; y < 128; y++) {
@@ -14548,6 +14585,9 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_logic_op);
     }
+    qtest_add_data_func(
+        "sn0/origin2000/kona-3d/renderer/smooth-gpu-precision",
+        GUINT_TO_POINTER(13), test_renderer_smooth);
     for (unsigned mode = 0; mode < 64; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/renderer/alpha-test/%u", mode);

@@ -601,7 +601,9 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         "interpolated_colour / inverse_w : colour;\n"
         "  if (textured) { vec4 t = sample_image(texcoord.xy / texcoord.w);"
         "t = clamp(t * post_scale + post_bias, 0.0, 1.0);"
-        "c = apply_environment(c, t); } pixel = vec4(c.rgb, 1.0); }\n";
+        "c = apply_environment(c, t); } "
+        "pixel = vec4(floor(clamp(c.rgb, 0.0, 1.0) * 255.0 + 0.5) / "
+        "255.0, 1.0); }\n";
     EGLint attributes[] = {
         EGL_CONTEXT_OPENGL_PROFILE_MASK,
         EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,

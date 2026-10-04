@@ -5988,6 +5988,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     if ((h[0] != SGI_GL_TEXTURE_1D && h[0] != SGI_GL_TEXTURE_2D &&
          h[0] != SGI_GL_TEXTURE_3D) || !sgi_kona_texture_source_valid(h) ||
         h[6] > 1 || h[7] > 1 || h[8] || !h[1] || !h[2] ||
+        h[1] > SGI_KONA_GL_IMAGE_MAX || h[2] > SGI_KONA_GL_IMAGE_MAX ||
         h[5] > 3 || i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused:"
                       " payload length unknown, stream recovery unsafe\n");
@@ -6022,15 +6023,19 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         stride = layout.stride;
         words = 0;
     }
+    if (stride > UINT32_MAX) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused:"
+                      " payload length unknown, source stride exceeds "
+                      "model addressing\n");
+        return 0;
+    }
     pixels = (uint64_t)h[1] * h[2];
     if (p->pixel_transfer_unsupported) {
         reason = "native texture pixel transfer unsupported";
     } else if (!sgi_kona_texture_native_header(h) ||
         (h[6] && stride < layout.row_bytes)) {
         reason = "unsupported native destination layout";
-    } else if (stride > UINT32_MAX || h[1] > SGI_KONA_GL_IMAGE_MAX ||
-               h[2] > SGI_KONA_GL_IMAGE_MAX ||
-               words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
+    } else if (words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
                pixels * DIV_ROUND_UP(MAX(bytes, 4), 4) >
                SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
         reason = "payload exceeds model staging capacity";

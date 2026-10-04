@@ -248,6 +248,7 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x131, 1 }, { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
     { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 }, { 0x15f, 1 },
     { 0x160, 6 }, { 0x161, 24 }, { 0x138, 2 },
+    { 0x151, 24 }, { 0x15a, 12 },
 };
 
 /*
@@ -415,8 +416,6 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x174, 20 }, { 0x176, 1 }, { 0x178, 1 }, { 0x179, 22 },
     { 0x17b, 14 }, { 0x17c, 4 }, { 0x17d, 6 },
     { 0x1d5, 5 }, { 0x106, 5 }, { 0xed, 4 },
-    { 0x1c4, 1 }, { 0x1c5, 1 },
-    { 0x17b, 14 }, { 0x17c, 4 }, { 0x17d, 6 },
 };
 
 /*

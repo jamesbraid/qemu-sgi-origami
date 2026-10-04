@@ -907,7 +907,7 @@ static void read_write_pattern(QTestState *s, int x, int y,
 static void read_assert_pattern(QTestState *s, uint64_t page,
                                 unsigned width, unsigned height)
 {
-    unsigned pitch = (width + 3) & ~3;
+    unsigned pitch = width;
     unsigned len = pitch * height;
     g_autofree uint8_t *got = g_malloc(len);
 
@@ -917,7 +917,7 @@ static void read_assert_pattern(QTestState *s, uint64_t page,
     for (unsigned r = 0; r < height; r++) {
         for (unsigned c = 0; c < pitch; c++) {
             g_assert_cmphex(got[r * pitch + c], ==,
-                            c < width ? read_pattern(c, r) : 0);
+                            read_pattern(c, r));
         }
     }
     if (len < 0x4000 - 8) {
@@ -2059,7 +2059,7 @@ static void read_index12_assert(QTestState *s, bool halfword)
         0x001, 0x123, 0xabc, 0xfed, 0x800, 0xfff, 0x056, 0x9ab, 0x000,
     };
     unsigned bytes = halfword ? 2 : 1;
-    unsigned pitch = halfword ? 8 : 4;
+    unsigned pitch = 3 * bytes;
     unsigned len = 3 * pitch;
     uint8_t got[3 * 8 + 4];
 
