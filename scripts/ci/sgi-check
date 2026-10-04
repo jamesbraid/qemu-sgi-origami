@@ -231,9 +231,11 @@ def full(args):
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
     build.meson_test('full-unit', ['--suite', 'qemu:sgi-unit'], expected)
 
-    run([build.meson, 'test', '-C', build.path, '--setup', 'qemu:thorough',
-         '--logbase', 'full-qtest', '--num-processes', str(QTEST_PROCESSES),
-         '--print-errorlogs', '--suite', 'qemu:qtest-mips64'])
+    expected = build.path / 'full-qtest.expected'
+    build.list_meson_tests(expected, '--suite', 'qemu:qtest-mips64')
+    build.meson_test('full-qtest', ['--suite', 'qemu:qtest-mips64'], expected,
+                     allow_skips=OPTIONAL_QTEST_SKIPS,
+                     processes=QTEST_PROCESSES)
 
 
 def main(argv=None):
