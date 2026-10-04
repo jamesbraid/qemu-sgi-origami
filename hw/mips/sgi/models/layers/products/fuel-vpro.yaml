@@ -34,26 +34,57 @@ layer:
       emulation:
         bedrock_nodes:
           bedrock:
+            # Approximation. Bits 15:12 are established: OpenBSD reads them
+            # and classifies 0x4 as Fuel (docs/datasheets/ip34-fuel.md). The
+            # low nibble is not neutral: PROM 6.210 adds 0x20 to it to index
+            # its CPU-configuration table (docs/research/ip5x-prom-cpu-boot.md,
+            # docs/research/origin300-flash-cpu-identity.md). 1 is the value
+            # every recorded Fuel PROM, diagnostic and IRIX run used, chosen
+            # as Origin 300's 0x8001 is. The other bits, the reset value and
+            # the producer are unknown.
+            board_id_word: 16385
             board_id_mask: 61440
             board_id_required_bits: 16384
             local_region: 0
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
             provenance: derived
-            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
-            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+            sources: ["openbsd:2df91d80c104636deeef8124252ddd5951b55fbf sys/arch/sgi/sgi/ip27.h lines 43 to 46 and sgi/ip27_machdep.c lines 165 to 185: Fuel product code 0x4 in bits 15:12", hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
+            notes: >-
+              The board-identification word is an approximation: the
+              established Fuel product code, and the low-nibble CPU
+              configuration selector every recorded Fuel run used. Regions
+              and bank mask preserve existing emulator initialization.
         l1_controllers:
           l1:
+            # Inferred. The public Linux IP35 series maps L1 brick type 'A'
+            # (0x41) to Fuel and '4' to Origin 300, and PROM 6.210's type
+            # converter accepts raw '4' or 'A' but rejects 0x61. No Fuel
+            # L1 identity reply is captured (docs/datasheets/ip34-fuel.md).
+            reported_type: 65
+            # No revision: the two public Fuel captures report 1.48.1 and
+            # 1.14.4 and neither is tied to the selected revision G board,
+            # so the reply stays the observable unknown-version error.
             mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
-            provenance: derived
-            sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
-            notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
+            provenance: guest-source
+            sources: ["linux-mips [PATCH 35/38] MIPS: SGI-IP27: identify the machine by the L1 brick type (Imre Kaloz, 2026-10-01): brick type 'A' is SGI Fuel", "docs/datasheets/ip34-fuel.md: L1 identity, PROM 6.210 I/O type lookup and L1 firmware revision input"]
+            notes: >-
+              The reported type comes from a published driver table and the
+              PROM's accepted set, not a captured Fuel reply. The older
+              Linux-MIPS IP34 constant 0x61 ('a') fails PROM 6.210's I/O
+              type lookup.
         io_boards:
           ip34-system-board:
+            # Inferred. Mainline Linux assigns subsystem device 0xc30a to
+            # the IP34 system board's IOC3; no Fuel configuration-space
+            # value is captured (docs/datasheets/ip34-fuel.md).
+            ioc3_subsystem_id: 49930
             mac_source: module-l1
-            provenance: derived
-            sources: [hw/mips/sgi/baseio.c]
-            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.
+            provenance: guest-source
+            sources: ["Mainline Linux arch/mips/pci/pci-xtalk-bridge.c: IP34 IOC3 subsystem device 0xc30a", "docs/datasheets/ioc3.md: board variants", hw/mips/sgi/baseio.c]
+            notes: >-
+              The IOC3 subsystem ID is a public driver expectation, not a
+              captured Fuel value. The supplied MAC policy is unchanged.
         pci_function_revisions:
           scsi:
             revision: 6

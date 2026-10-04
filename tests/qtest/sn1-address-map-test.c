@@ -2277,6 +2277,13 @@ static void test_l1_product_identity(const void *data)
     l1_expect_product_identity(qts, 0x34);
     qtest_quit(qts);
 
+    qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
+                      quoted);
+    l1_expect_product_identity(qts, 0x41);
+    qtest_system_reset(qts);
+    l1_expect_product_identity(qts, 0x41);
+    qtest_quit(qts);
+
     for (size_t i = 0; i < ARRAY_SIZE(fuel_codes); i++) {
         qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                           "ioc3-subsystem-id=0xc30a,"
@@ -2363,10 +2370,9 @@ static void test_fuel_l1_revision(const void *data)
     g_autofree char *quoted = g_shell_quote(prom_path);
     QTestState *qts;
 
-    qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
-                      "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2 "
-                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
+    /* The Fuel catalogue has no L1 revision: the reply stays unknown. */
+    qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M -bios %s -S",
+                      quoted);
     l1_expect_revision(qts, -1, -1, -1);
     qtest_system_reset(qts);
     l1_expect_revision(qts, -1, -1, -1);

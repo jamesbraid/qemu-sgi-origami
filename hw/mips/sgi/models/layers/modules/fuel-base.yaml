@@ -46,9 +46,19 @@ layer:
         hardware_kind: bedrock
         node_asic: {processor_interfaces: 2, cpus_per_interface: 2}
         provenance: vendor-document
-        description: The Fuel power-on test names Bedrock; its silicon revision is unknown.
+        description: The Fuel power-on test names Bedrock; its reported revision is inferred and its silicon revision is unknown.
+        identity:
+          # Inferred, as for Origin 300: two public Fuel inventories report
+          # revision 2 (docs/datasheets/ip34-fuel.md, node ASIC).
+          hardware_revision: 2
+          notes: >-
+            A real PROM 6.201 inventory reports Bedrock revision 2 on a
+            machine later named a 030-1707-003 revision H board, and an
+            IRIX 6.5.22 hinv -v reports HUB revision 2 for a revision G
+            board. Both are software labels, not Bedrock register reads,
+            and neither establishes a reset value or a universal revision.
         datasheet_contracts: [docs/datasheets/bedrock-processor-interface.md, docs/datasheets/bedrock-local-block.md, docs/datasheets/bedrock-io-interface.md]
-        sources: ["007-4480-001 printed pages 127 to 130: power-on test components"]
+        sources: ["007-4480-001 printed pages 127 to 130: power-on test components", "fuel/sgi-sh-fuel-repair-attempt.html: PROM 6.201 inventory, Bedrock revision 2", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 132 to 145: HUB revision 2"]
       - id: xbridge
         name: XBridge
         kind: pci-host-bridge

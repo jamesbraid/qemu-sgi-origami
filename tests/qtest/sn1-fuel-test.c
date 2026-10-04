@@ -1136,21 +1136,27 @@ static void test_fuel_rejects_other_board_code(const void *data)
     qtest_quit(qts);
 }
 
-static void test_fuel_requires_l1_type_code(const void *data)
+/* A plain launch takes every board value from the Fuel catalogue. */
+static void test_fuel_catalogue_defaults(const void *data)
 {
-    const char *prom = data;
+    g_autofree char *quoted = g_shell_quote(data);
+    QTestState *qts = qtest_initf("-M fuel -cpu R14000 -smp 1 -m 512M "
+                                  "-bios %s -S", quoted);
 
-    if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 0, 0);
-        g_test_trap_assert_failed();
-        g_test_trap_assert_stderr("*has no catalogue value for l1-type-code*");
-        return;
+    for (unsigned int reset = 0; reset < 2; reset++) {
+        g_assert_cmphex(qtest_readq(qts,
+                                    HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
+                        ==, 0x4001);
+        g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)),
+                        ==, 2);
+        g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, II_WIDGET_ID)),
+                        ==, 2);
+        g_assert_cmphex(fuel_qom_uint(qts, "/machine/node0/baseio/ioc3",
+                                     "subsystem-id"), ==, 0xc30a);
+        g_assert_cmphex(fuel_qom_uint(qts, "/machine/node0/l1",
+                                     "brick-type-code"), ==, 0x41);
+        qtest_system_reset(qts);
     }
-    g_autofree char *quoted = g_shell_quote(prom);
-    QTestState *qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
-                                  "ioc3-subsystem-id=0xc30a,bedrock-revision=2 "
-                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
-                                  quoted);
     qtest_quit(qts);
 }
 
@@ -1188,26 +1194,6 @@ static void test_fuel_rejects_zero_l1_type_code(const void *data)
     QTestState *qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                                   "ioc3-subsystem-id=0xc30a,"
                                   "l1-type-code=0,bedrock-revision=0x2 "
-                                  "-cpu R14000 -smp 1 -m 512M -bios %s -S",
-                                  quoted);
-    qtest_quit(qts);
-}
-
-static void test_fuel_requires_bedrock_revision(const void *data)
-{
-    const char *prom = data;
-
-    if (!g_test_subprocess()) {
-        g_test_trap_subprocess(NULL, 0, 0);
-        g_test_trap_assert_failed();
-        g_test_trap_assert_stderr(
-            "*has no catalogue value for bedrock-revision*");
-        return;
-    }
-    g_autofree char *quoted = g_shell_quote(prom);
-    QTestState *qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
-                                  "ioc3-subsystem-id=0xc30a,"
-                                  "l1-type-code=0x61 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
@@ -1871,14 +1857,12 @@ int main(int argc, char **argv)
     qtest_add_data_func("fuel/memory", prom, test_fuel_memory);
     qtest_add_data_func("fuel/rejects-other-board-code", prom,
                         test_fuel_rejects_other_board_code);
-    qtest_add_data_func("fuel/requires-l1-type-code", prom,
-                        test_fuel_requires_l1_type_code);
+    qtest_add_data_func("fuel/catalogue-defaults", prom,
+                        test_fuel_catalogue_defaults);
     qtest_add_data_func("fuel/rejects-out-of-range-l1-type-code", prom,
                         test_fuel_rejects_out_of_range_l1_type_code);
     qtest_add_data_func("fuel/rejects-zero-l1-type-code", prom,
                         test_fuel_rejects_zero_l1_type_code);
-    qtest_add_data_func("fuel/requires-bedrock-revision", prom,
-                        test_fuel_requires_bedrock_revision);
     qtest_add_data_func("fuel/rejects-large-bedrock-revision", prom,
                         test_fuel_rejects_large_bedrock_revision);
     qtest_add_data_func("fuel/bedrock-revision-overrides-origin300", prom,

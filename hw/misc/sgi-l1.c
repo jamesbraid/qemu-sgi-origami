@@ -34,8 +34,12 @@ struct SGIL1ProductProfile {
     bool compute_services;
 };
 
+/*
+ * No Fuel L1 identity reply is captured, so ip34 has no default type; the
+ * machine passes the catalogue's code through brick-type-code.
+ */
 static const SGIL1ProductProfile l1_profiles[] = {
-    { "ip34", 0x61, 2, 0, true },
+    { "ip34", 0, 2, 0, true },
     { "unknown", 0x34, 2, 0, true },
     { "ip45", 0x34, 2, 0, true },
     { "ip35", 0x43, 2, 0, true },
@@ -212,9 +216,6 @@ static uint32_t l1_brick_type_character(SGIL1State *s)
 {
     if (s->brick_type_code) {
         return s->brick_type_code;
-    }
-    if (!strcmp(s->brick_type, "ip34")) {
-        return 0x61;
     }
     if (!strcmp(s->brick_type, "ip35")) {
         return 0x43;
@@ -767,7 +768,8 @@ static bool l1_read_query(SGIL1State *s, SGIL1State *recipient,
 
     switch (command) {
     case 3:
-        if (!s->brick_type_code && !strcmp(s->brick_type, "unknown")) {
+        if (!l1_brick_type_character(s) ||
+            (!s->brick_type_code && !strcmp(s->brick_type, "unknown"))) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: brick identity not configured\n");
             l1_reply_direct(recipient, channel, -104, 0, NULL, 0);
