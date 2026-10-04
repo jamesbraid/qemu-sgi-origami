@@ -2018,7 +2018,10 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
         } else if (rad4_ten_bit_entry(s, index)) {
             uint16_t wat = *rad4_ten_bit_entry(s, index);
 
-            /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
+            /*
+             * Tables 2 and 5, p.3-4: cycle 0 is bits 9-2, cycle 1 is bits
+             * 1-0.
+             */
             val = s->rgb_reserved_phase == 0 ?
                   (wat >> RAD4_WAT_CYCLE0_SHIFT) & 0xff :
                   (uint8_t)((wat & RAD4_WAT_CYCLE1_MASK) <<
@@ -2175,7 +2178,10 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
         } else if (rad4_ten_bit_entry(s, index)) {
             uint16_t *wat = rad4_ten_bit_entry(s, index);
 
-            /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
+            /*
+             * Tables 2 and 5, p.3-4: cycle 0 is bits 9-2, cycle 1 is bits
+             * 1-0.
+             */
             if (s->rgb_reserved_phase == 0) {
                 *wat = (uint16_t)(v & 0xff) << RAD4_WAT_CYCLE0_SHIFT;
             } else {
