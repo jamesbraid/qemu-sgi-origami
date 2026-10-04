@@ -55,6 +55,11 @@ class IP30CatalogueTests(unittest.TestCase):
              "initial": "zero"},
             {"name": "nvram0-clock", "size": 24, "read-only": False,
              "initial": "zero"}])
+        # The topology's flash is the same 1 MiB part the store backs.
+        topology = next(t for t in catalogue["topologies"]
+                        if t["name"] == "octane2")
+        self.assertEqual(topology["nodes"][0]["flash"],
+                         {"kind": "operator-prom", "size": 1048576})
         self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)

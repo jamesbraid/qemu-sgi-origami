@@ -411,10 +411,6 @@ _IP30_CLOCK_BYTES = 24
 # that fit one.
 _IO_FLASH_BYTES = 0x100000
 _IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
-# Octane's writable 1 MiB boot flash (hw/mips/sgi/octane.c's
-# OCTANE_FLASH_SIZE); the topology's own flash size still describes the
-# older 2 MiB PROM payload window.
-_IP30_BOOT_FLASH_BYTES = 0x100000
 _BOOT_PROM_KINDS = {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}
 
 
@@ -568,9 +564,7 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     generation = topology["generation"]
     storage = []
     for position, node in enumerate(fitted):
-        if generation == "IP30":
-            size = _IP30_BOOT_FLASH_BYTES
-        elif generation == "SN1":
+        if generation == "SN1":
             size = product["boot_flash_bytes"]
             if size is None:
                 raise ValueError(
