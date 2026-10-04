@@ -38,16 +38,20 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_ids.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
 #include "hw/input/psitech-rad4-km.h"
 #include "migration/vmstate.h"
+#include "system/block-backend.h"
 #include "qemu/timer.h"
 #include "ui/console.h"
 #include "qom/object.h"
@@ -449,18 +453,43 @@ static bool rad4_rgb_index_supported(uint16_t index)
     return false;
 }
 
+/*
+ * The serial configuration EEPROM behind BAR0 offset 0x6c, a 93C46-type
+ * 64-word by 16-bit Microwire part. The driver's own commands identify it:
+ * after a start bit it sends READ (10), WRITE (01), EWEN (00 11xxxx) and
+ * EWDS (00 00xxxx) with six address bits, the public 93C46 x16 command set.
+ * The part number on the board is not established.
+ *
+ * Each command is a start bit (the first one sampled with chip select
+ * high), two opcode bits and six address bits. READ answers a dummy zero
+ * and then streams words, most significant bit first, continuing into the
+ * next address for as long as chip select stays high. WRITE takes 16 data
+ * bits and programs the word when chip select drops, only after EWEN.
+ * Programming completes at once: chip select raised again reads data-out
+ * one (ready), so the driver's busy poll ends on its first sample.
+ */
 typedef enum Rad4SerialState {
-    RAD4_SERIAL_IDLE,
-    RAD4_SERIAL_COMMAND,
-    RAD4_SERIAL_ACK,
-    RAD4_SERIAL_PAYLOAD,
-    RAD4_SERIAL_FAILED,
+    RAD4_SERIAL_IDLE,       /* chip select low */
+    RAD4_SERIAL_START,      /* waiting for the start bit */
+    RAD4_SERIAL_COMMAND,    /* opcode and address bits */
+    RAD4_SERIAL_READ_DUMMY, /* READ decoded; dummy zero on the next fall */
+    RAD4_SERIAL_READ,       /* streaming data bits */
+    RAD4_SERIAL_WRITE_DATA, /* WRITE decoded; collecting 16 data bits */
+    RAD4_SERIAL_WRITE_READY, /* data complete; programs on chip select low */
+    RAD4_SERIAL_DONE,       /* command finished; data-out stays high */
 } Rad4SerialState;
 
-/* Start bit (1) followed by command byte 0xac, MSB first, 9 bits total. */
-#define RAD4_SERIAL_COMMAND_BITS 9
-#define RAD4_SERIAL_PAYLOAD_BITS (40 * 8)
-static const uint16_t rad4_serial_expected_command = 0x1ac;
+#define RAD4_EEPROM_WORDS       64
+#define RAD4_EEPROM_BYTES       (RAD4_EEPROM_WORDS * 2)
+#define RAD4_EEPROM_ADDR_BITS   6
+#define RAD4_EEPROM_ADDR_MASK   (RAD4_EEPROM_WORDS - 1)
+#define RAD4_EEPROM_CMD_BITS    (2 + RAD4_EEPROM_ADDR_BITS)
+
+#define RAD4_EEPROM_OP_EXTENDED 0x0 /* address bits 5-4 select the command */
+#define RAD4_EEPROM_OP_WRITE    0x1
+#define RAD4_EEPROM_OP_READ     0x2
+#define RAD4_EEPROM_EXT_EWDS    0x0
+#define RAD4_EEPROM_EXT_EWEN    0x3
 
 typedef enum Rad4RecState {
     RAD4_REC_UNARMED,
@@ -523,6 +552,17 @@ struct PsitechRad4State {
     uint32_t serial_bit_count;
     uint16_t serial_command_shift;
     bool serial_miso;
+
+    /*
+     * Serial EEPROM contents and command state. The contents survive device
+     * and system reset, like the nonvolatile part they stand for, and are
+     * written through to the optional backing drive.
+     */
+    uint16_t eeprom[RAD4_EEPROM_WORDS];
+    uint8_t eeprom_address;
+    uint16_t eeprom_data;
+    bool eeprom_write_enabled;
+    BlockBackend *eeprom_blk;
 
     /* Expansion-ROM route state. */
     uint32_t rom_desc;
@@ -1558,11 +1598,55 @@ static void rad4_serial_reset(PsitechRad4State *s)
     s->serial_miso = true;
 }
 
+/* Write one EEPROM word through to the backing drive, if there is one. */
+static void rad4_eeprom_flush_word(PsitechRad4State *s, unsigned address)
+{
+    uint8_t buf[2];
+
+    if (!s->eeprom_blk) {
+        return;
+    }
+    stw_be_p(buf, s->eeprom[address]);
+    if (blk_pwrite(s->eeprom_blk, address * 2, sizeof(buf), buf, 0) < 0) {
+        error_report("psitech-rad4: failed to write EEPROM word 0x%02x to "
+                     "its backing drive", address);
+    }
+}
+
+static void rad4_eeprom_decode(PsitechRad4State *s)
+{
+    unsigned opcode = s->serial_command_shift >> RAD4_EEPROM_ADDR_BITS;
+
+    unsigned extended;
+
+    s->eeprom_address = s->serial_command_shift & RAD4_EEPROM_ADDR_MASK;
+    extended = s->eeprom_address >> (RAD4_EEPROM_ADDR_BITS - 2);
+    s->serial_bit_count = 0;
+    s->serial_state = RAD4_SERIAL_DONE;
+
+    if (opcode == RAD4_EEPROM_OP_READ) {
+        s->serial_state = RAD4_SERIAL_READ_DUMMY;
+    } else if (opcode == RAD4_EEPROM_OP_WRITE) {
+        s->eeprom_data = 0;
+        s->serial_state = RAD4_SERIAL_WRITE_DATA;
+    } else if (opcode == RAD4_EEPROM_OP_EXTENDED &&
+               extended == RAD4_EEPROM_EXT_EWDS) {
+        s->eeprom_write_enabled = false;
+    } else if (opcode == RAD4_EEPROM_OP_EXTENDED &&
+               extended == RAD4_EEPROM_EXT_EWEN) {
+        s->eeprom_write_enabled = true;
+    } else {
+        /* ERASE, ERAL and WRAL: the driver never sends them. */
+        qemu_log_mask(LOG_UNIMP,
+                      "psitech-rad4: EEPROM command 0x%02x is unimplemented\n",
+                      s->serial_command_shift);
+    }
+}
+
 /*
- * Bit-banged synthetic EEPROM: a start bit followed by command 0xac reads
- * back 40 zero bytes. Any other command, or
- * chip select deasserted before the transaction completes, latches an
- * all-ones readback until cold reset.
+ * One write to the serial register: chip select, clock and data-in as the
+ * guest drives them. Data-in is sampled on rising clock edges and data-out
+ * changes on falling ones, where the driver reads it.
  */
 static void rad4_serial_edge(PsitechRad4State *s, bool cs, bool clk,
                              bool mosi)
@@ -1572,39 +1656,42 @@ static void rad4_serial_edge(PsitechRad4State *s, bool cs, bool clk,
 
     if (!s->serial_cs_prev && cs) {
         rad4_serial_reset(s);
-        s->serial_state = RAD4_SERIAL_COMMAND;
+        s->serial_state = RAD4_SERIAL_START;
     }
     if (s->serial_cs_prev && !cs) {
-        if (s->serial_state != RAD4_SERIAL_IDLE &&
-            s->serial_bit_count <
-                (s->serial_state == RAD4_SERIAL_PAYLOAD ?
-                 RAD4_SERIAL_PAYLOAD_BITS : 0)) {
-            /* Premature deassertion mid-transaction. */
-            s->serial_state = RAD4_SERIAL_FAILED;
-            s->serial_miso = true;
-        } else if (s->serial_state == RAD4_SERIAL_COMMAND ||
-                  s->serial_state == RAD4_SERIAL_ACK) {
-            s->serial_state = RAD4_SERIAL_FAILED;
-            s->serial_miso = true;
-        } else {
-            s->serial_state = RAD4_SERIAL_IDLE;
+        if (s->serial_state == RAD4_SERIAL_WRITE_READY) {
+            if (s->eeprom_write_enabled) {
+                s->eeprom[s->eeprom_address] = s->eeprom_data;
+                rad4_eeprom_flush_word(s, s->eeprom_address);
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "psitech-rad4: EEPROM write to word 0x%02x "
+                              "without write enable, ignored\n",
+                              s->eeprom_address);
+            }
         }
+        rad4_serial_reset(s);
     }
 
     if (cs && clk_rising) {
         switch (s->serial_state) {
-        case RAD4_SERIAL_COMMAND:
-            s->serial_command_shift =
-                (uint16_t)((s->serial_command_shift << 1) | (mosi ? 1 : 0));
-            s->serial_bit_count++;
-            if (s->serial_bit_count == RAD4_SERIAL_COMMAND_BITS) {
-                if (s->serial_command_shift == rad4_serial_expected_command) {
-                    s->serial_state = RAD4_SERIAL_ACK;
-                } else {
-                    s->serial_state = RAD4_SERIAL_FAILED;
-                    s->serial_miso = true;
-                }
+        case RAD4_SERIAL_START:
+            if (mosi) {
+                s->serial_command_shift = 0;
                 s->serial_bit_count = 0;
+                s->serial_state = RAD4_SERIAL_COMMAND;
+            }
+            break;
+        case RAD4_SERIAL_COMMAND:
+            s->serial_command_shift = (s->serial_command_shift << 1) | mosi;
+            if (++s->serial_bit_count == RAD4_EEPROM_CMD_BITS) {
+                rad4_eeprom_decode(s);
+            }
+            break;
+        case RAD4_SERIAL_WRITE_DATA:
+            s->eeprom_data = (s->eeprom_data << 1) | mosi;
+            if (++s->serial_bit_count == 16) {
+                s->serial_state = RAD4_SERIAL_WRITE_READY;
             }
             break;
         default:
@@ -1614,14 +1701,19 @@ static void rad4_serial_edge(PsitechRad4State *s, bool cs, bool clk,
 
     if (cs && clk_falling) {
         switch (s->serial_state) {
-        case RAD4_SERIAL_ACK:
+        case RAD4_SERIAL_READ_DUMMY:
             s->serial_miso = false;
-            s->serial_state = RAD4_SERIAL_PAYLOAD;
             s->serial_bit_count = 0;
+            s->serial_state = RAD4_SERIAL_READ;
             break;
-        case RAD4_SERIAL_PAYLOAD:
-            s->serial_miso = false;
-            s->serial_bit_count++;
+        case RAD4_SERIAL_READ:
+            s->serial_miso = (s->eeprom[s->eeprom_address] >>
+                              (15 - s->serial_bit_count)) & 1;
+            if (++s->serial_bit_count == 16) {
+                s->serial_bit_count = 0;
+                s->eeprom_address = (s->eeprom_address + 1) &
+                                    RAD4_EEPROM_ADDR_MASK;
+            }
             break;
         default:
             break;
@@ -2265,6 +2357,10 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     rad4_serial_reset(s);
     s->serial_clk_prev = false;
     s->serial_cs_prev = false;
+    /* The part powers up write-disabled; its contents are not reset. */
+    s->eeprom_address = 0;
+    s->eeprom_data = 0;
+    s->eeprom_write_enabled = false;
 
     s->rom_desc = 0;
     s->rom_mode = 0;
@@ -2334,11 +2430,49 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->cursor_shown_y_end = -1;
 }
 
+/*
+ * Load the EEPROM from its backing drive: a raw 128-byte 93C46 image, each
+ * 16-bit word stored most significant byte first, the order the part shifts
+ * it out. Without a drive the EEPROM starts all zero, which the driver reads
+ * as mode zero with every option bit clear.
+ */
+static bool rad4_eeprom_realize(PsitechRad4State *s, Error **errp)
+{
+    uint8_t image[RAD4_EEPROM_BYTES];
+    int64_t len;
+
+    if (!s->eeprom_blk) {
+        return true;
+    }
+    /* blk_getlength() rounds up to a whole sector, so only check a floor. */
+    len = blk_getlength(s->eeprom_blk);
+    if (len < RAD4_EEPROM_BYTES) {
+        error_setg(errp, "psitech-rad4: EEPROM image must hold %d bytes",
+                   RAD4_EEPROM_BYTES);
+        return false;
+    }
+    if (blk_set_perm(s->eeprom_blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                     BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+    if (blk_pread(s->eeprom_blk, 0, sizeof(image), image, 0) < 0) {
+        error_setg(errp, "psitech-rad4: failed to read the EEPROM image");
+        return false;
+    }
+    for (int i = 0; i < RAD4_EEPROM_WORDS; i++) {
+        s->eeprom[i] = lduw_be_p(image + i * 2);
+    }
+    return true;
+}
+
 static void rad4_realize(PCIDevice *dev, Error **errp)
 {
     PsitechRad4State *s = PSITECH_RAD4(dev);
     Object *obj = OBJECT(dev);
 
+    if (!rad4_eeprom_realize(s, errp)) {
+        return;
+    }
     s->framebuffer = g_malloc0(RAD4_FB_SIZE);
     s->rgb_store = g_malloc0(0x10000);
     s->display_buffer = g_malloc0(RAD4_MODE0_WIDTH * RAD4_MODE0_HEIGHT * 4);
@@ -2434,8 +2568,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 5,
-    .minimum_version_id = 5,
+    .version_id = 6,
+    .minimum_version_id = 6,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2450,6 +2584,10 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_UINT32(serial_bit_count, PsitechRad4State),
         VMSTATE_UINT16(serial_command_shift, PsitechRad4State),
         VMSTATE_BOOL(serial_miso, PsitechRad4State),
+        VMSTATE_UINT16_ARRAY(eeprom, PsitechRad4State, RAD4_EEPROM_WORDS),
+        VMSTATE_UINT8(eeprom_address, PsitechRad4State),
+        VMSTATE_UINT16(eeprom_data, PsitechRad4State),
+        VMSTATE_BOOL(eeprom_write_enabled, PsitechRad4State),
         VMSTATE_UINT32(rom_desc, PsitechRad4State),
         VMSTATE_UINT32(rom_mode, PsitechRad4State),
         VMSTATE_UINT32(rom_command, PsitechRad4State),
@@ -2486,10 +2624,15 @@ static const VMStateDescription vmstate_psitech_rad4 = {
  * identity instead, over this same shared implementation, the way
  * hw/misc/sgi-ioc3.c's own "subsystem-id" property
  * selects a board identity.
+ *
+ * eeprom optionally names a raw drive holding the serial EEPROM image
+ * (rad4_eeprom_realize()), so a mode the guest stores there survives a
+ * restart of QEMU, not only a guest reboot.
  */
 static const Property psitech_rad4_properties[] = {
     DEFINE_PROP_UINT16("device-id", PsitechRad4State, device_id,
                        RAD4_DEVICE_ID),
+    DEFINE_PROP_DRIVE("eeprom", PsitechRad4State, eeprom_blk),
 };
 
 static void rad4_instance_init(Object *obj)
