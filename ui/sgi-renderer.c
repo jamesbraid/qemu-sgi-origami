@@ -184,14 +184,21 @@ SGIRenderer *sgi_renderer_new(Error **errp)
 
 bool sgi_renderer_request_valid(const SGIRendererRequest *request)
 {
-    static const float vertices[3][4] = {
-        { 16.25f, 16.25f, 0.0f, 1.0f },
-        { 111.25f, 16.25f, 0.0f, 1.0f },
-        { 16.25f, 111.25f, 0.0f, 1.0f },
-    };
+    for (unsigned i = 0; i < 3; i++) {
+        const float *vertex = request->vertices[i];
 
-    if (memcmp(request->vertices, vertices, sizeof(vertices))) {
-        return false;
+        if (vertex[2] != 0 || vertex[3] != 1) {
+            return false;
+        }
+        for (unsigned axis = 0; axis < 2; axis++) {
+            double subpixel = vertex[axis] * 256.0;
+
+            if (!isfinite(subpixel) || vertex[axis] < 0 ||
+                vertex[axis] > SGI_RENDERER_SIZE ||
+                subpixel != floor(subpixel)) {
+                return false;
+            }
+        }
     }
     if (request->clip[0] < 0 || request->clip[1] < 0 ||
         request->clip[2] >= SGI_RENDERER_SIZE ||
@@ -200,8 +207,30 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
         request->clip[1] > request->clip[3]) {
         return false;
     }
-    for (unsigned c = 0; c < 3; c++) {
-        if (request->rgb[c] != 0 && request->rgb[c] != 255) {
+    return true;
+}
+
+static int64_t renderer_edge(const int64_t a[2], const int64_t b[2],
+                             int64_t x, int64_t y)
+{
+    int64_t dx = b[0] - a[0], dy = b[1] - a[1];
+
+    return dx * (y - a[1]) - dy * (x - a[0]);
+}
+
+/* Match the CPU model's bottom-origin top-left coverage and 8-bit grid. */
+static bool renderer_covered(const int64_t vertices[3][2], int64_t area,
+                             unsigned x, unsigned y)
+{
+    if (!area) {
+        return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        const int64_t *a = vertices[i], *b = vertices[(i + 1) % 3];
+        int64_t edge = renderer_edge(a, b, x * 256 + 128, y * 256 + 128);
+
+        if (edge < 0 || (!edge && !(b[1] < a[1] ||
+                                  (b[1] == a[1] && b[0] < a[0])))) {
             return false;
         }
     }
@@ -210,14 +239,31 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
 
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
 {
+    int64_t vertices[3][2], area;
+
     if (!sgi_renderer_request_valid(request)) {
         return false;
     }
+    for (unsigned i = 0; i < 3; i++) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            vertices[i][axis] = request->vertices[i][axis] * 256;
+        }
+    }
+    area = renderer_edge(vertices[0], vertices[1],
+                         vertices[2][0], vertices[2][1]);
+    if (area < 0) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            int64_t tmp = vertices[1][axis];
+
+            vertices[1][axis] = vertices[2][axis];
+            vertices[2][axis] = tmp;
+        }
+    }
     for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
         for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
-            bool covered = x >= 16 && y >= 16 && x + y <= 126 &&
-                           x >= request->clip[0] && x <= request->clip[2] &&
-                           y >= request->clip[1] && y <= request->clip[3];
+            bool covered = x >= request->clip[0] && x <= request->clip[2] &&
+                           y >= request->clip[1] && y <= request->clip[3] &&
+                           renderer_covered(vertices, area, x, y);
             const uint8_t *pixel = request->rgba +
                                   (y * SGI_RENDERER_SIZE + x) * 4;
 

@@ -2352,13 +2352,6 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       SGIRendererRequest *request,
                                       SGIColourTarget *target)
 {
-    static const float identity[16] = {
-        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1,
-    };
-    static const float projection[16] = {
-        1.0f / 64, 0, 0, 0, 0, 1.0f / 64, 0, 0,
-        0, 0, -1, 0, -1, -1, 0, 1,
-    };
     static const int32_t viewport[4] = { 0, 0, 128, 128 };
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
@@ -2419,27 +2412,53 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->texture_3d || st->dither || st->clip_planes ||
         st->scissor_test || st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
-        memcmp(st->modelview, identity, sizeof(identity)) ||
-        memcmp(st->projection, projection, sizeof(projection)) ||
         memcmp(st->viewport, viewport, sizeof(viewport))) {
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = d->vertices + i * SGI_GL_VERTEX_FLOATS;
+        double eye[4] = { 0 }, clip_position[4], window[3];
 
-        memcpy(request->vertices[i], vertex, sizeof(request->vertices[i]));
         if (vertex[SGI_GL_V_COLOR + 3] != 1) {
             return false;
         }
-        for (unsigned c = 0; c < 3; c++) {
-            float colour = vertex[SGI_GL_V_COLOR + c];
-
-            if ((colour != 0 && colour != 1) ||
-                (i && colour != d->vertices[SGI_GL_V_COLOR + c])) {
+        for (unsigned row = 0; row < 4; row++) {
+            for (unsigned k = 0; k < 4; k++) {
+                eye[row] += st->modelview[k * 4 + row] * (double)vertex[k];
+            }
+        }
+        sgi_gl_eye_to_clip(st, eye, clip_position);
+        if (!isfinite(clip_position[3]) || clip_position[3] <= 0) {
+            return false;
+        }
+        for (unsigned axis = 0; axis < 3; axis++) {
+            if (!isfinite(clip_position[axis]) ||
+                fabs(clip_position[axis]) > clip_position[3]) {
                 return false;
             }
-            request->rgb[c] = colour == 1 ? 255 : 0;
         }
+        sgi_gl_clip_to_window(st, clip_position, window);
+        for (unsigned axis = 0; axis < 2; axis++) {
+            double position = window[axis];
+
+            if (!isfinite(position) || position < 0 ||
+                position > SGI_RENDERER_SIZE) {
+                return false;
+            }
+            request->vertices[i][axis] = floor(position * 256 + 0.5) / 256;
+        }
+        request->vertices[i][2] = 0;
+        request->vertices[i][3] = 1;
+    }
+    /* Flat triangles take the third vertex's colour, as the CPU path does. */
+    for (unsigned c = 0; c < 3; c++) {
+        float colour = d->vertices[2 * SGI_GL_VERTEX_FLOATS +
+                                   SGI_GL_V_COLOR + c];
+
+        if (!isfinite(colour)) {
+            return false;
+        }
+        request->rgb[c] = floor(CLAMP((double)colour, 0, 1) * 255 + 0.5);
     }
     request->clip[0] = MAX((int64_t)clip->x0 - x, 0);
     request->clip[1] = MAX((int64_t)clip->y0 - y, 0);
@@ -2472,6 +2491,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     if (!sgi_kona_renderer_request(s, d, request, &target)) {
         goto out;
     }
+    s->renderer_requests++;
     if (!s->renderer) {
         s->renderer = sgi_renderer_new(&err);
     }
@@ -10494,6 +10514,8 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-gc", "uint32", sgi_kona_test_get_gc,
                         NULL, NULL, NULL);
+    object_property_add_uint64_ptr(obj, "x-test-gpu-requests",
+                                   &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-fallbacks",

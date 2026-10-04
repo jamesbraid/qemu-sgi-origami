@@ -789,6 +789,7 @@ struct SGIKonaState {
     bool host_gpu;
     bool renderer_failed;
     uint64_t renderer_generation;
+    uint64_t renderer_requests;
     uint64_t renderer_draws;
     uint64_t renderer_fallbacks;
 
