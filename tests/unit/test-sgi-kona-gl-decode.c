@@ -755,8 +755,29 @@ static void test_texture_sampler_1d(void)
 
     g_assert_true(sgi_kona_gl_texture_sampler_1d(bind, record, &p));
     g_assert_cmpuint(p.min_filter, ==, SGI_GL_LINEAR);
+    g_assert_cmpfloat(p.lod_scale_t, ==, 1);
+    g_assert_cmpfloat(p.lod_scale_r, ==, 1);
     original = p;
-    for (unsigned k = 0; k < 5; k++) {
+    for (unsigned scale = 0; scale <= 255; scale += 255) {
+        for (unsigned wrap = 0; wrap < 4; wrap++) {
+            uint32_t unused_bind[5], unused_record[22];
+
+            memcpy(unused_bind, bind, sizeof(unused_bind));
+            memcpy(unused_record, record, sizeof(unused_record));
+            unused_bind[3] |= wrap << 13;
+            unused_record[1] = (scale << 8) | 16;
+            p.lod_scale_t = 9;
+            p.lod_scale_r = 7;
+            g_assert_true(sgi_kona_gl_texture_sampler_1d(unused_bind,
+                                                         unused_record, &p));
+            g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+        }
+    }
+    record[1] = 0x1000;
+    g_assert_false(sgi_kona_gl_texture_sampler_1d(bind, record, &p));
+    g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+    record[1] = 0x1010;
+    for (unsigned k = 0; k < 6; k++) {
         uint32_t bad[5];
 
         memcpy(bad, bind, sizeof(bad));
@@ -775,6 +796,9 @@ static void test_texture_sampler_1d(void)
             break;
         case 4:
             bad[2] = 3 << 5;
+            break;
+        case 5:
+            bad[2] |= 0xc00;
             break;
         }
         g_assert_false(sgi_kona_gl_texture_sampler_1d(bad, record, &p));
