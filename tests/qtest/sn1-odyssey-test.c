@@ -10856,6 +10856,250 @@ static void test_texture_public_border_2d_incomplete(void)
     qtest_quit(qts);
 }
 
+static uint32_t texture_public_border_volume_texel(unsigned x, unsigned y,
+                                                    unsigned z)
+{
+    return ((0x10 + x) << 24) | (y << 16) | (z << 8) | 0xff;
+}
+
+static void texture_public_border_upload_3d(QTestState *qts,
+                                            unsigned width, unsigned height,
+                                            unsigned depth, bool stored,
+                                            unsigned missing)
+{
+    unsigned x0 = stored ? 15 : 0;
+    unsigned y0 = stored ? 15 : 0;
+    unsigned w = width + (stored ? 2 : 0);
+    unsigned h = height + (stored ? 2 : 0);
+    unsigned d = depth + (stored ? 2 : 0);
+
+    for (unsigned z = 0; z < d; z++) {
+        uint32_t base = 0x16a800 + z * (stored ? 0x400 : 0x80);
+
+        if (stored && missing == 1 && z == 0) {
+            continue;
+        }
+        upload_begin_xy(qts, base, stored ? 4 : 2, 0x080024d0,
+                        x0, y0, w, h);
+        for (unsigned y = 0; y < h; y++) {
+            uint32_t row[8];
+            unsigned row_width = w;
+
+            for (unsigned x = 0; x < w; x++) {
+                row[x] = texture_public_border_volume_texel(x, y, z);
+            }
+            if (stored && missing == 2 && z == 1 && y == 1) {
+                row_width--;
+            }
+            if (stored && missing == 3 && z == 0 && y == 0) {
+                row_width--;
+            }
+            upload_row(qts, 0x4b, row, row_width);
+        }
+        upload_end(qts);
+    }
+}
+
+static void texture_public_border_bind_3d(QTestState *qts,
+                                          unsigned width, unsigned height,
+                                          unsigned depth, bool stored,
+                                          bool linear)
+{
+    uint32_t sampler[] = {
+        0x08000000 | (ctz32(width) << 10) | (ctz32(height) << 5) |
+        ctz32(depth), width, height, depth,
+        stored ? (linear ? 0x03002a22 : 0x03002a00) :
+                 (linear ? 0x13002a22 : 0x13002a00),
+        stored ? 0x00101505 : 0, stored ? 0x01f0ffff : 0,
+    };
+    const uint32_t env[] = { 1, 0, 0, 0, 0 };
+    const uint32_t level[] = {
+        0x16a800, stored ? 0x41100004 : 0x41100002, stored ? 4 : 1,
+    };
+    const uint32_t words[] = {
+        0x00010405, 0x20,
+        0x00011c16,
+        sampler[0], sampler[1], sampler[2], sampler[3],
+        sampler[4], sampler[5], sampler[6],
+        0x0001141b, env[0], env[1], env[2], env[3], env[4],
+        0x00010e80, level[0], level[1], level[2],
+        0x00010406, 0,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void test_texture_public_border_3d_copied_rows(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, true, 0);
+    for (unsigned z = 0; z < 4; z++) {
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                g_assert_cmphex(odsy_test_object_texel(
+                                    qts, 0x16a800 + z * 0x400,
+                                    15 + x, 15 + y), ==,
+                                texture_public_border_volume_texel(x, y, z));
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void texture_public_border_sample_3d(bool linear)
+{
+    static const unsigned interior[8][3] = {
+        { 1, 1, 1 }, { 2, 1, 1 }, { 1, 2, 1 }, { 2, 2, 1 },
+        { 1, 1, 2 }, { 2, 1, 2 }, { 1, 2, 2 }, { 2, 2, 2 },
+    };
+    static const unsigned nearest[15][3] = {
+        { 0, 1, 1 }, { 3, 1, 1 }, { 1, 0, 1 }, { 1, 3, 1 },
+        { 1, 1, 0 }, { 1, 1, 3 }, { 0, 0, 1 }, { 3, 3, 2 },
+        { 0, 2, 0 }, { 3, 1, 3 }, { 1, 0, 0 }, { 2, 3, 3 },
+        { 0, 0, 0 }, { 3, 3, 3 }, { 2, 2, 2 },
+    };
+    static const float coordinate[] = { -0.25f, 0.25f, 0.75f, 1.25f };
+    /*
+     * With width 2, linear filtering uses u = 2*s - 0.5. At s=0,
+     * x=-1 and x=0 each have weight 0.5; t=r=0.25 select y=z=0.
+     * The stored grid values are (0,1,1) and (1,1,1), so red is
+     * halfway between 16 and 17 while G/B stay 1. Permit that one
+     * red byte to round either way. The s=0.125 control gives weights
+     * 0.25/0.75 and a non-tie result. The positive-edge cases mirror
+     * those weights with stored grid values (2,2,2) and (3,2,2).
+     */
+    static const struct {
+        float s, t, r;
+        uint32_t expected, alternate;
+    } linear_border[] = {
+        { 0.0f, 0.25f, 0.25f, 0x100101ff, 0x110101ff },
+        { 0.125f, 0.25f, 0.25f, 0x110101ff, 0 },
+        { 1.0f, 0.75f, 0.75f, 0x120202ff, 0x130202ff },
+        { 0.875f, 0.75f, 0.75f, 0x120202ff, 0 },
+        { 0.125f, 0.125f, 0.25f, 0x110101ff, 0 },
+        { 0.125f, 0.125f, 0.125f, 0x110101ff, 0 },
+    };
+    QTestState *qts = board_start("");
+    const unsigned (*points)[3] = linear ? interior : nearest;
+    unsigned count = linear ? ARRAY_SIZE(interior) : ARRAY_SIZE(nearest);
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, true, 0);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, true, linear);
+    for (unsigned i = 0; i < count; i++) {
+        int x = 16 + 28 * i;
+        float s = coordinate[points[i][0]];
+        float t = coordinate[points[i][1]];
+        float r = coordinate[points[i][2]];
+
+        texture_adapter_point_3d(qts, x, 64, s, t, r);
+        g_assert_cmphex(odsy_test_pixel(qts, x, 64), ==,
+                        texture_public_border_volume_texel(points[i][0],
+                                                           points[i][1],
+                                                            points[i][2]));
+    }
+    if (linear) {
+        for (unsigned i = 0; i < ARRAY_SIZE(linear_border); i++) {
+            int x = 16 + 28 * i;
+
+            texture_adapter_point_3d(qts, x, 96, linear_border[i].s,
+                                     linear_border[i].t, linear_border[i].r);
+            uint32_t pixel = odsy_test_pixel(qts, x, 96);
+
+            if (linear_border[i].alternate) {
+                g_assert_true(pixel == linear_border[i].expected ||
+                              pixel == linear_border[i].alternate);
+            } else {
+                g_assert_cmphex(pixel, ==, linear_border[i].expected);
+            }
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_3d_nearest(void)
+{
+    texture_public_border_sample_3d(false);
+}
+
+static void test_texture_public_border_3d_linear(void)
+{
+    texture_public_border_sample_3d(true);
+}
+
+static void test_texture_public_border_3d_incomplete(void)
+{
+    for (unsigned missing = 1; missing <= 3; missing++) {
+        QTestState *qts = board_start("");
+
+        texture_public_border_upload_3d(qts, 2, 2, 2, true, missing);
+        texture_adapter_window(qts);
+        push_depth_clear(qts, 0, 0, 0, 0);
+        texture_public_border_bind_3d(qts, 2, 2, 2, true, false);
+        odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+        texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
+        g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+        qtest_quit(qts);
+    }
+}
+
+static void test_texture_public_border_3d_wide(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 4, 2, 2, true, 0);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 4, 2, 2, true, false);
+    texture_adapter_point_3d(qts, 10, 10, 0.625f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
+                    texture_public_border_volume_texel(3, 1, 1));
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_3d_zero_nearest(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, false, 0);
+    g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 0, 0), ==,
+                    texture_public_border_volume_texel(0, 0, 0));
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, false, false);
+    texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
+                    texture_public_border_volume_texel(0, 0, 0));
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_3d_zero_linear(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_3d(qts, 2, 2, 2, false, 0);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    texture_public_border_bind_3d(qts, 2, 2, 2, false, true);
+    texture_adapter_point_3d(qts, 10, 10, 0.25f, 0.25f, 0.25f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==,
+                    texture_public_border_volume_texel(0, 0, 0));
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_3d(void)
+{
+    test_texture_public_border_3d_copied_rows();
+    test_texture_public_border_3d_nearest();
+    test_texture_public_border_3d_linear();
+    test_texture_public_border_3d_incomplete();
+    test_texture_public_border_3d_wide();
+    test_texture_public_border_3d_zero_nearest();
+    test_texture_public_border_3d_zero_linear();
+}
+
 static void texture_two_dimensional_border_upload(QTestState *qts,
                                                    bool stored, bool truncated)
 {
@@ -14327,6 +14571,64 @@ static void test_texture_public_border_1d_migration(void)
  * A DMA transfer to the screen and a BEGIN 0xa image raster both reach the
  * buffer the drawing mask names and leave the other untouched.
  */
+static void test_texture_public_border_3d_migration(void)
+{
+    /* -0.25 selects stored index -1; 0.25 selects interior index 0. */
+    static const struct {
+        float s, t, r;
+        unsigned x, y, z;
+    } samples[] = {
+        { -0.25f, 0.25f, 0.25f, 0, 1, 1 },
+        { -0.25f, -0.25f, 0.25f, 0, 0, 1 },
+        { -0.25f, -0.25f, -0.25f, 0, 0, 0 },
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-texture-volume-border-XXXXXX",
+                             &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_public_border_upload_3d(from, 2, 2, 2, true, 0);
+    texture_adapter_window(from);
+    push_depth_clear(from, 0, 0, 0, 0);
+    texture_public_border_bind_3d(from, 2, 2, 2, true, false);
+    for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+        int x = 16 + 28 * i;
+
+        texture_adapter_point_3d(from, x, 64, samples[i].s, samples[i].t,
+                                 samples[i].r);
+        g_assert_cmphex(odsy_test_pixel(from, x, 64), ==,
+                        texture_public_border_volume_texel(samples[i].x,
+                                                           samples[i].y,
+                                                           samples[i].z));
+    }
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(samples); i++) {
+        int x = 16 + 28 * i;
+
+        texture_adapter_point_3d(to, x, 96, samples[i].s, samples[i].t,
+                                 samples[i].r);
+        g_assert_cmphex(odsy_test_pixel(to, x, 96), ==,
+                        texture_public_border_volume_texel(samples[i].x,
+                                                           samples[i].y,
+                                                           samples[i].z));
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_buffers_transfers_follow_mask(void)
 {
     QTestState *qts = board_start("");
@@ -16278,6 +16580,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "public-stored-border-2d-incomplete",
                    test_texture_public_border_2d_incomplete);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d",
+                   test_texture_public_border_3d);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-3d-migration",
+                   test_texture_public_border_3d_migration);
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "two-dimensional-border-upload",
                    test_texture_two_dimensional_border_upload);
