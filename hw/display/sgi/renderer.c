@@ -244,12 +244,11 @@ static bool sgi_render_mode_lines(uint32_t mode)
 
 /*
  * Points, lines and polygon modes. Smoothing is refused only where the
- * scalar path smooths: points and lines whose enable is set under rules
- * that smooth. Under rules that do not, sgi_soft_draw() ignores the
- * enables and draws aliased, and so does this path. Polygon smoothing is
- * never implemented by the scalar path, which draws such polygons
- * aliased, so it is never refused here. Each enable and the polygon modes
- * apply only to their own class of primitive (OpenGL 1.2.1, 3.3 to 3.5).
+ * scalar path smooths: points, lines and polygons whose enable is set
+ * under rules that smooth. Under rules that do not, sgi_soft_draw()
+ * ignores the enables and draws aliased, and so does this path. Each
+ * enable and the polygon modes apply only to their own class of primitive
+ * (OpenGL 1.2.1, 3.3 to 3.5).
  */
 static bool sgi_render_draw_supported(const SGIRasterRules *rules,
                                       const SGIRasterTarget *target,
@@ -275,6 +274,8 @@ static bool sgi_render_draw_supported(const SGIRasterRules *rules,
         (!sgi_render_mode_lines(draw->mode) && draw->line_stipple_enabled) ||
         (draw->mode == SGI_GL_POINTS && rules->smooth_primitives &&
          draw->point_smooth) ||
+        (sgi_render_mode_polygons(draw->mode) && rules->smooth_primitives &&
+         draw->polygon_smooth) ||
         (st->shade_model != SGI_GL_SMOOTH &&
          st->shade_model != SGI_GL_FLAT) || st->index_bits ||
         st->draw_buffers != SGI_GL_DRAW_FRONT ||

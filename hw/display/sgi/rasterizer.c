@@ -63,6 +63,7 @@ typedef struct SGISoftDraw {
     uint32_t point_size, line_width;
     bool point_smooth, line_smooth;
     double smooth_point_size, smooth_line_width;
+    bool polygon_smooth;
     const uint32_t *polygon_stipple;
     uint32_t rgba_mask;
     bool rgba_read;
@@ -3529,6 +3530,398 @@ static const float *sgi_soft_polygon_vertex(const SGIGLDraw *d,
     return &d->vertices[index * SGI_GL_VERTEX_FLOATS];
 }
 
+typedef struct SGISoftAAPoint {
+    double x, y;
+} SGISoftAAPoint;
+
+typedef enum SGISoftAAEdge {
+    SGI_AA_LEFT,
+    SGI_AA_RIGHT,
+    SGI_AA_BOTTOM,
+    SGI_AA_TOP,
+} SGISoftAAEdge;
+
+static bool sgi_soft_aa_inside(const SGISoftAAPoint *p, SGISoftAAEdge edge,
+                               double value)
+{
+    switch (edge) {
+    case SGI_AA_LEFT:   return p->x >= value;
+    case SGI_AA_RIGHT:  return p->x <= value;
+    case SGI_AA_BOTTOM: return p->y >= value;
+    case SGI_AA_TOP:    return p->y <= value;
+    }
+    g_assert_not_reached();
+}
+
+static SGISoftAAPoint sgi_soft_aa_intersection(const SGISoftAAPoint *a,
+                                               const SGISoftAAPoint *b,
+                                               SGISoftAAEdge edge,
+                                               double value)
+{
+    double t = edge <= SGI_AA_RIGHT ? (value - a->x) / (b->x - a->x) :
+                                     (value - a->y) / (b->y - a->y);
+
+    return (SGISoftAAPoint) {
+        .x = a->x + t * (b->x - a->x),
+        .y = a->y + t * (b->y - a->y),
+    };
+}
+
+/* Clip a convex window-space polygon to one side of a pixel square. */
+static bool sgi_soft_aa_clip(const SGISoftAAPoint *src, size_t n,
+                             SGISoftAAPoint *dst, size_t capacity,
+                             SGISoftAAEdge edge, double value, size_t *out_n)
+{
+    size_t m = 0;
+    const SGISoftAAPoint *a;
+
+    if (!n) {
+        *out_n = 0;
+        return true;
+    }
+    a = &src[n - 1];
+    for (size_t i = 0; i < n; i++) {
+        const SGISoftAAPoint *b = &src[i];
+        bool ai = sgi_soft_aa_inside(a, edge, value);
+        bool bi = sgi_soft_aa_inside(b, edge, value);
+
+        if (ai != bi) {
+            if (m == capacity) {
+                return false;
+            }
+            dst[m++] = sgi_soft_aa_intersection(a, b, edge, value);
+        }
+        if (bi) {
+            if (m == capacity) {
+                return false;
+            }
+            dst[m++] = *b;
+        }
+        a = b;
+    }
+    *out_n = m;
+    return true;
+}
+
+static double sgi_soft_aa_edge(const SGISoftVertex *a,
+                               const SGISoftVertex *b,
+                               double x, double y)
+{
+    return (b->x - a->x) * (y - a->y) -
+           (b->y - a->y) * (x - a->x);
+}
+
+/* A convex polygon contains the square when it contains all four corners. */
+static bool sgi_soft_aa_contains_pixel(const SGISoftVertex *v, size_t n,
+                                       int px, int py, double scale,
+                                       bool ccw)
+{
+    for (size_t i = 0; i < n; i++) {
+        const SGISoftVertex *a = &v[i];
+        const SGISoftVertex *b = &v[(i + 1) % n];
+        double x = px * scale, y = py * scale;
+
+        if (ccw) {
+            if (sgi_soft_aa_edge(a, b, x, y) < 0 ||
+                sgi_soft_aa_edge(a, b, x + scale, y) < 0 ||
+                sgi_soft_aa_edge(a, b, x, y + scale) < 0 ||
+                sgi_soft_aa_edge(a, b, x + scale, y + scale) < 0) {
+                return false;
+            }
+        } else if (sgi_soft_aa_edge(a, b, x, y) > 0 ||
+                   sgi_soft_aa_edge(a, b, x + scale, y) > 0 ||
+                   sgi_soft_aa_edge(a, b, x, y + scale) > 0 ||
+                   sgi_soft_aa_edge(a, b, x + scale, y + scale) > 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * Rasterize one clipped convex polygon once. Pixel-square clipping computes
+ * geometric coverage; centroid sampling is exact for affine datums and the
+ * documented approximation for perspective-correct varyings.
+ */
+static void sgi_soft_polygon_coverage(const SGISoftDraw *r,
+                                      const SGISoftVertex *v, size_t n,
+                                      const float flat_color[4],
+                                      double flat_index,
+                                      double offset)
+{
+    SGISoftAAPoint *a = NULL, *b = NULL;
+    SGISoftAAPoint *tmp;
+    SGISoftFrag flat = { 0 };
+    int px0, px1, py0, py1;
+    int sub = r->rules->subpixel_bits;
+    double scale = 1 << sub;
+    int64_t min_x, max_x, min_y, max_y;
+    double polygon_area = 0;
+    size_t capacity;
+
+    if (n < 3 || n > SIZE_MAX - 8 || !sgi_soft_bounds(r, &px0, &py0,
+                                                      &px1, &py1)) {
+        return;
+    }
+    capacity = n + 8;
+    a = g_try_new(SGISoftAAPoint, capacity);
+    b = g_try_new(SGISoftAAPoint, capacity);
+    if (!a || !b) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon coverage workspace "
+                      "allocation failed; primitive dropped\n");
+        goto out;
+    }
+    min_x = max_x = v[0].x;
+    min_y = max_y = v[0].y;
+    for (size_t i = 0; i < n; i++) {
+        const SGISoftVertex *next = &v[(i + 1) % n];
+
+        min_x = MIN(min_x, v[i].x);
+        max_x = MAX(max_x, v[i].x);
+        min_y = MIN(min_y, v[i].y);
+        max_y = MAX(max_y, v[i].y);
+        polygon_area += v[i].x * next->y - next->x * v[i].y;
+    }
+    if (!(fabs(polygon_area) > 0)) {
+        goto out;
+    }
+    px0 = MAX(px0, (int)(min_x >> sub));
+    px1 = MIN(px1, (int)(max_x >> sub));
+    py0 = MAX(py0, (int)(min_y >> sub));
+    py1 = MIN(py1, (int)(max_y >> sub));
+    for (unsigned k = 0; k < 4; k++) {
+        flat.rgba[k] = flat_color[k];
+    }
+    flat.index = flat_index;
+
+    for (int py = py0; py <= py1; py++) {
+        for (int px = px0; px <= px1; px++) {
+            double coverage;
+            double x, y, z = 0, bary[3] = { 0 }, w[3];
+            size_t fan_i = 0;
+            SGISoftVertex fan[3];
+            SGISoftFrag frag = flat;
+            bool found = false;
+
+            if (r->polygon_stipple &&
+                !(r->polygon_stipple[(uint32_t)py & 31] &
+                  (1u << ((uint32_t)px & 31)))) {
+                continue;
+            }
+            if (sgi_soft_aa_contains_pixel(v, n, px, py, scale,
+                                           polygon_area > 0)) {
+                coverage = 1.0;
+                x = px + 0.5;
+                y = py + 0.5;
+            } else {
+                const SGISoftAAPoint *src = a;
+                SGISoftAAPoint *dst = b;
+                size_t count = n;
+                double twice_area = 0, cx = 0, cy = 0;
+
+                /* Restore the polygon before clipping this pixel. */
+                for (size_t i = 0; i < n; i++) {
+                    a[i] = (SGISoftAAPoint) {
+                        v[i].x / scale, v[i].y / scale,
+                    };
+                }
+                for (unsigned e = SGI_AA_LEFT; e <= SGI_AA_TOP; e++) {
+                    double bound = e == SGI_AA_LEFT ? px :
+                                   e == SGI_AA_RIGHT ? px + 1 :
+                                   e == SGI_AA_BOTTOM ? py : py + 1;
+
+                    if (!sgi_soft_aa_clip(src, count, dst, capacity, e,
+                                          bound, &count)) {
+                        qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon coverage "
+                                      "clip exceeded its bound\n");
+                        goto out;
+                    }
+                    tmp = (SGISoftAAPoint *)src;
+                    src = dst;
+                    dst = tmp;
+                    if (count < 3) {
+                        break;
+                    }
+                }
+                if (count < 3) {
+                    continue;
+                }
+                for (size_t i = 0; i < count; i++) {
+                    const SGISoftAAPoint *p = &src[i];
+                    const SGISoftAAPoint *q = &src[(i + 1) % count];
+                    double pxp = p->x - px, pyp = p->y - py;
+                    double qxp = q->x - px, qyp = q->y - py;
+                    double cross = pxp * qyp - qxp * pyp;
+
+                    twice_area += cross;
+                    cx += (pxp + qxp) * cross;
+                    cy += (pyp + qyp) * cross;
+                }
+                if (!(fabs(twice_area) > 0)) {
+                    continue;
+                }
+                coverage = MIN(1.0, fabs(twice_area) * 0.5);
+                x = px + cx / (3 * twice_area);
+                y = py + cy / (3 * twice_area);
+            }
+
+            /* Find the fan triangle containing the overlap centroid. */
+            for (size_t i = 1; i + 1 < n; i++) {
+                double den = sgi_soft_aa_edge(&v[0], &v[i],
+                                               v[i + 1].x, v[i + 1].y);
+
+                if (den == 0) {
+                    continue;
+                }
+                bary[0] = sgi_soft_aa_edge(&v[i], &v[i + 1], x * scale,
+                                            y * scale) / den;
+                bary[1] = sgi_soft_aa_edge(&v[i + 1], &v[0], x * scale,
+                                            y * scale) / den;
+                bary[2] = 1 - bary[0] - bary[1];
+                if (bary[0] >= -0.000000001 && bary[1] >= -0.000000001 &&
+                    bary[2] >= -0.000000001) {
+                    found = true;
+                    fan_i = i;
+                    break;
+                }
+            }
+            if (!found) {
+                continue;
+            }
+            {
+                size_t i = fan_i;
+
+                w[0] = bary[0] * v[0].inv_w;
+                w[1] = bary[1] * v[i].inv_w;
+                w[2] = bary[2] * v[i + 1].inv_w;
+                double sum = w[0] + w[1] + w[2];
+
+                if (!(sum > 0) || !isfinite(sum)) {
+                    continue;
+                }
+                fan[0] = v[0];
+                fan[1] = v[i];
+                fan[2] = v[i + 1];
+
+                z = bary[0] * v[0].z + bary[1] * v[i].z +
+                    bary[2] * v[i + 1].z;
+                for (int k = 0; k < 4; k++) {
+                    frag.texcoord[k] = (w[0] * v[0].texcoord[k] +
+                        w[1] * v[i].texcoord[k] +
+                        w[2] * v[i + 1].texcoord[k]) / sum;
+                    if (r->st->shade_model != SGI_GL_FLAT) {
+                        frag.rgba[k] = (w[0] * v[0].rgba[k] +
+                            w[1] * v[i].rgba[k] +
+                            w[2] * v[i + 1].rgba[k]) / sum;
+                    }
+                }
+                frag.fog = (w[0] * v[0].fog + w[1] * v[i].fog +
+                            w[2] * v[i + 1].fog) / sum;
+                if (r->st->shade_model != SGI_GL_FLAT) {
+                    frag.index = v[0].index +
+                        (w[1] * (v[i].index - v[0].index) +
+                         w[2] * (v[i + 1].index - v[0].index)) / sum;
+                }
+                if (r->st->clip_planes) {
+                    double d[SGI_GL_CLIP_PLANES];
+
+                    for (int k = 0; k < SGI_GL_CLIP_PLANES; k++) {
+                        d[k] = (w[0] * fan[0].clip[k] +
+                                w[1] * fan[1].clip[k] +
+                                w[2] * fan[2].clip[k]) / sum;
+                    }
+                    if (sgi_soft_clipped(r->st, d)) {
+                        continue;
+                    }
+                }
+                if (r->texture_base) {
+                    SGISoftTexPlane gradient;
+                    double value[4], out[5];
+
+                    if (!sgi_soft_texture_plane(fan, sub,
+                                                r->texture->volume,
+                                                r->texture->one_dimensional,
+                                                &gradient)) {
+                        continue;
+                    }
+                    for (unsigned k = 0; k < 4; k++) {
+                        value[k] = gradient.value[k] +
+                            (px + 0.5 - gradient.x) * gradient.dx[k] +
+                            (py + 0.5 - gradient.y) * gradient.dy[k];
+                    }
+                    frag.texture_rho =
+                        sgi_soft_texture_derivatives(value, gradient.dx,
+                            gradient.dy,
+                            r->texture_base->width *
+                            sgi_soft_texture_lod_scale(
+                                r->texture->lod_scale_s),
+                            r->texture_base->height *
+                            sgi_soft_texture_lod_scale(
+                                r->texture->lod_scale_t),
+                            r->texture->volume ? r->texture_base->depth *
+                            sgi_soft_texture_lod_scale(
+                                r->texture->lod_scale_r) : 0, out) ?
+                        out[4] : NAN;
+                }
+                sgi_soft_fragment_coverage(r, px, py, z, offset, &frag,
+                                           coverage, true);
+            }
+        }
+    }
+out:
+    g_free(a);
+    g_free(b);
+}
+
+static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
+                                    const SGIVolumeVertex *poly, size_t n,
+                                    const float *provoking, bool front,
+                                    double slope)
+{
+    SGISoftVertex *v = g_try_new(SGISoftVertex, n);
+    double offset = 0;
+    const float *flat_color = &provoking[SGI_GL_V_COLOR];
+
+    if (!v) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing workspace "
+                      "allocation failed; primitive dropped\n");
+        return;
+    }
+    if (!front && r->back_colors) {
+        flat_color = &provoking[SGI_GL_V_BACK_COLOR];
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (!sgi_soft_project(r, &poly[i], &v[i])) {
+            goto out;
+        }
+        if (!front && r->back_colors) {
+            const float *back = &poly[i].attr[SGI_GL_V_BACK_COLOR];
+
+            for (unsigned k = 0; k < 4; k++) {
+                v[i].rgba[k] = MIN(MAX(back[k], 0.0f), 1.0f);
+            }
+        }
+    }
+    if (r->texture_base) {
+        for (size_t i = 1; i + 1 < n; i++) {
+            SGISoftVertex fan[3] = { v[0], v[i], v[i + 1] };
+
+            if (!sgi_soft_texture_coefficients(r, fan)) {
+                goto out;
+            }
+        }
+    }
+    if (r->st->polygon_offset & SGI_GL_OFFSET_FILL) {
+        offset = slope * r->st->offset_factor +
+                 r->st->offset_units / sgi_soft_depth_max(r->rules) +
+                 r->st->offset_bias;
+    }
+    sgi_soft_polygon_coverage(r, v, n, flat_color,
+                              provoking[SGI_GL_V_INDEX], offset);
+out:
+    g_free(v);
+}
+
 /* Replay the original fan, including its validation and fragment ordering. */
 static void sgi_soft_polygon_fill(const SGISoftDraw *r, const SGIGLDraw *d,
                                   const uint32_t *indices, size_t n,
@@ -3649,6 +4042,17 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
     }
     mode = d->polygon_modes[front ? 0 : 1];
     if (mode == SGI_GL_FILL) {
+        if (r->polygon_smooth) {
+            if (r->st->index_bits) {
+                qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing in "
+                              "colour-index mode is unsupported; "
+                              "polygon drawn aliased\n");
+                sgi_soft_polygon_fill(r, d, indices, count, provoking);
+                goto out;
+            }
+            sgi_soft_polygon_smooth(r, poly, n, provoking, front, slope);
+            goto out;
+        }
         sgi_soft_polygon_fill(r, d, indices, count, provoking);
         goto out;
     }
@@ -3722,9 +4126,17 @@ out:
 static SGIGLDrawResult sgi_soft_polygon_modes(const SGISoftDraw *r,
                                              const SGIGLDraw *d)
 {
+    static const uint32_t fill_modes[2] = { SGI_GL_FILL, SGI_GL_FILL };
     uint32_t indices[4];
     uint32_t n = d->count, stride;
     SGIGLDrawResult result;
+
+    if (!d->polygon_modes) {
+        SGIGLDraw fill = *d;
+
+        fill.polygon_modes = fill_modes;
+        return sgi_soft_polygon_modes(r, &fill);
+    }
 
     if (d->mode == SGI_GL_POLYGON) {
         return sgi_soft_polygon(r, d, NULL, n, d->vertices, false);
@@ -3791,6 +4203,7 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
         .line_smooth = rules->smooth_primitives && d->line_smooth,
         .smooth_point_size = d->point_size,
         .smooth_line_width = d->line_width,
+        .polygon_smooth = rules->smooth_primitives && d->polygon_smooth,
         .polygon_stipple = d->polygon_stipple_enabled ?
                            d->polygon_stipple : NULL,
     };
@@ -3831,11 +4244,7 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     if (!sgi_soft_setup_ops(&r)) {
         return SGI_GL_DRAW_OK;
     }
-    if (rules->smooth_primitives && d->polygon_smooth &&
-        d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing is not "
-                      "implemented\n");
-    } else if (!rules->smooth_primitives) {
+    if (!rules->smooth_primitives) {
         const char *smooth = NULL;
 
         if (d->mode == SGI_GL_POINTS && d->point_smooth) {
@@ -3852,6 +4261,10 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
                           "unsupported by raster rules; drawn aliased\n",
                           smooth);
         }
+    }
+    if (r.polygon_smooth && d->mode >= SGI_GL_TRIANGLES &&
+        d->mode <= SGI_GL_POLYGON) {
+        return sgi_soft_polygon_modes(&r, d);
     }
     if (d->polygon_modes && d->mode >= SGI_GL_TRIANGLES &&
         d->mode <= SGI_GL_POLYGON &&

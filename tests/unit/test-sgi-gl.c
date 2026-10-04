@@ -5321,6 +5321,198 @@ static void wide_vertex(FragScene *f, float x, float y)
                  (uint32_t[]) { bits(x / 32 - 1), bits(y / 32 - 1) }, 2);
 }
 
+/* Draw a window-coordinate quad through the public GL_QUADS path. */
+static void frag_window_quad(FragScene *f, float x0, float y0,
+                             float x1, float y1,
+                             float r, float g, float b, float a)
+{
+    uint32_t word[4] = { bits(r), bits(g), bits(b), bits(a) };
+
+    frag_command(f, SGI_GL_OP_COLOR4F, word, 4);
+    word[0] = SGI_GL_QUADS;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    wide_vertex(f, x0, y0);
+    wide_vertex(f, x1, y0);
+    wide_vertex(f, x1, y1);
+    wide_vertex(f, x0, y1);
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+static void frag_gradient_quad(FragScene *f)
+{
+    static const float xy[4][2] = {
+        { 8.5f, 8.5f }, { 24.5f, 8.5f },
+        { 24.5f, 24.5f }, { 8.5f, 24.5f },
+    };
+    static const float rgba[4][4] = {
+        { 1, 0, 0, 1 }, { 0, 1, 0, 1 },
+        { 0, 0, 1, 1 }, { 1, 1, 1, 1 },
+    };
+    uint32_t word[4] = { SGI_GL_QUADS };
+
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    for (int i = 0; i < 4; i++) {
+        for (int k = 0; k < 4; k++) {
+            word[k] = bits(rgba[i][k]);
+        }
+        frag_command(f, SGI_GL_OP_COLOR4F, word, 4);
+        wide_vertex(f, xy[i][0], xy[i][1]);
+    }
+    frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+static void polygon_smooth_blend_scene(FragScene *f, bool smooth,
+                                       const SGIRasterRules *rules)
+{
+    frag_init(f);
+    f->rec.rules = rules;
+    frag_blend(f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f->c, SGI_GL_BLEND, true);
+    frag_quad(f, 0, 0, 1, 1);
+    enable(&f->c, SGI_GL_POLYGON_SMOOTH, smooth);
+    frag_window_quad(f, 8.25, 8.25, 18.25, 18.25, 1, 0, 0, 0.5f);
+}
+
+/* Coverage affects source alpha, and disabling it restores aliased output. */
+static void test_polygon_smooth_blend_and_recovery(void)
+{
+    FragScene off, smooth, recovery;
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t edge;
+
+    smooth_rules.smooth_primitives = true;
+    polygon_smooth_blend_scene(&off, false, &smooth_rules);
+    polygon_smooth_blend_scene(&smooth, true, &smooth_rules);
+    polygon_smooth_blend_scene(&recovery, true, &smooth_rules);
+    enable(&recovery.c, SGI_GL_POLYGON_SMOOTH, false);
+    memset(&recovery.p, 0, sizeof(recovery.p));
+    frag_quad(&recovery, 0, 0, 1, 1);
+    frag_window_quad(&recovery, 8.25, 8.25, 18.25, 18.25,
+                     1, 0, 0, 0.5f);
+    g_assert_cmpmem(&off.p.colour, sizeof(off.p.colour),
+                    &recovery.p.colour, sizeof(recovery.p.colour));
+    edge = frag_pixel(&smooth, 8, 12);
+    g_assert_cmphex(edge, !=, frag_pixel(&off, 8, 12));
+    g_assert_cmpuint(edge >> 16, <, 0x80);
+    g_assert_cmpuint(edge & 0xff, >, 0x80);
+    g_assert_cmphex(frag_pixel(&smooth, 12, 12), ==,
+                    frag_pixel(&off, 12, 12));
+    g_assert_cmphex(frag_pixel(&smooth, 6, 12), ==, 0x0000ff);
+}
+
+/* The quad's fan diagonal is interior and must not become a smoothed edge. */
+static void test_polygon_smooth_quad_has_no_fan_diagonal(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, true);
+    enable(&f.c, SGI_GL_ALPHA_TEST, true);
+    frag_alpha_func(&f, 0x0204 /* GL_GREATER */, 0.99f);
+    frag_window_quad(&f, 8.5, 8.5, 24.5, 24.5, 1, 1, 1, 1);
+    for (int y = 9; y < 24; y++) {
+        for (int x = 9; x < 24; x++) {
+            g_assert_cmphex(frag_pixel(&f, x, y), ==, 0xffffff);
+        }
+    }
+}
+
+/* Pixel coverage must continue across columns and into the next scanline. */
+static void test_polygon_smooth_covers_multiple_scanlines(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_window_quad(&f, 8.25, 8.25, 12.75, 10.75, 1, 1, 1, 1);
+    for (int y = 9; y < 11; y++) {
+        for (int x = 9; x < 12; x++) {
+            g_assert_cmphex(frag_pixel(&f, x, y), ==, 0xffffff);
+        }
+    }
+}
+
+/* Smooth color stays continuous across the interior fan diagonal. */
+static void test_polygon_smooth_quad_interpolation(void)
+{
+    FragScene f, off;
+    SGIRasterRules smooth_rules = rules_stencil;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    frag_init(&off);
+    f.rec.rules = &smooth_rules;
+    off.rec.rules = &smooth_rules;
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, true);
+    enable(&f.c, SGI_GL_ALPHA_TEST, true);
+    enable(&off.c, SGI_GL_ALPHA_TEST, true);
+    frag_alpha_func(&f, 0x0204 /* GL_GREATER */, 0.99f);
+    frag_alpha_func(&off, 0x0204 /* GL_GREATER */, 0.99f);
+    frag_gradient_quad(&f);
+    frag_gradient_quad(&off);
+    /* The fan diagonal stays interior with the aliased interpolated colour. */
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    frag_pixel(&off, 16, 16));
+}
+
+/* Stipple masks the same window pixels when polygon smoothing is enabled. */
+static void test_polygon_smooth_stipple(void)
+{
+    FragScene off, on;
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t rows[32] = { 0 };
+
+    rows[10] = 1u << 10;
+    smooth_rules.smooth_primitives = true;
+    frag_init(&off);
+    frag_init(&on);
+    off.rec.rules = &smooth_rules;
+    on.rec.rules = &smooth_rules;
+    g_assert_true(sgi_gl_polygon_stipple(&off.c, rows));
+    g_assert_true(sgi_gl_polygon_stipple(&on.c, rows));
+    enable(&off.c, SGI_GL_POLYGON_STIPPLE, true);
+    enable(&on.c, SGI_GL_POLYGON_STIPPLE, true);
+    enable(&on.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_window_quad(&off, 8, 8, 16, 16, 1, 1, 1, 1);
+    frag_window_quad(&on, 8.25, 8.25, 16.25, 16.25, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&off, 10, 10), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&on, 10, 10), !=, 0);
+    g_assert_cmphex(frag_pixel(&off, 11, 10), ==, 0);
+    g_assert_cmphex(frag_pixel(&on, 11, 10), ==, 0);
+}
+
+/* View-volume and scissor clipping bound the polygon coverage area. */
+static void test_polygon_smooth_clipping(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_window_quad(&f, -2, 4.5, 4, 12.5, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 0, 6), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 3, 6), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 4, 6), ==, 0);
+    frag_scissor(&f, 1, 5, 2, 4);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    memset(&f.p, 0, sizeof(f.p));
+    frag_window_quad(&f, -2, 4.5, 4, 12.5, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 0, 6), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 1, 6), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 2, 6), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 3, 6), ==, 0);
+}
+
+
 static void test_wide_coverage(void)
 {
     static const struct {
@@ -5986,41 +6178,6 @@ static void test_smoothing_rules_disabled(void)
                     "raster rules; drawn aliased\n"
                     "sgi-gl: polygon smoothing requested but unsupported by "
                     "raster rules; drawn aliased\n");
-}
-
-static void polygon_smoothing_unimplemented_scene(void)
-{
-    FragScene aliased, requested;
-    SGIRasterRules smooth_rules = rules_stencil;
-
-    smooth_rules.smooth_primitives = true;
-    frag_init(&aliased);
-    frag_init(&requested);
-    aliased.rec.rules = requested.rec.rules = &smooth_rules;
-    frag_command(&aliased, SGI_GL_OP_BEGIN,
-                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
-    wide_vertex(&aliased, 10, 30);
-    wide_vertex(&aliased, 16, 30);
-    wide_vertex(&aliased, 10, 36);
-    frag_command(&aliased, SGI_GL_OP_END, NULL, 0);
-    enable(&requested.c, SGI_GL_POLYGON_SMOOTH, true);
-    frag_command(&requested, SGI_GL_OP_BEGIN,
-                 (uint32_t[]) { SGI_GL_TRIANGLES }, 1);
-    wide_vertex(&requested, 10, 30);
-    wide_vertex(&requested, 16, 30);
-    wide_vertex(&requested, 10, 36);
-    frag_command(&requested, SGI_GL_OP_END, NULL, 0);
-
-    g_assert(memcmp(aliased.p.colour, requested.p.colour,
-                    sizeof(aliased.p.colour)) == 0);
-}
-
-static void test_polygon_smoothing_unimplemented(void)
-{
-    g_autofree char *log = logged_by(polygon_smoothing_unimplemented_scene);
-
-    g_assert_cmpstr(log, ==,
-                    "sgi-gl: polygon smoothing is not implemented\n");
 }
 
 #define CLIP_EPSILON (1.0 / (1ull << 40))
@@ -12687,6 +12844,18 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/alpha-zero-targets", test_alpha_zero_targets);
     g_test_add_func("/sgi-gl/alpha-texture-fog-rejection",
                     test_alpha_texture_fog_rejection);
+    g_test_add_func("/sgi-gl/polygon-smooth-blend-and-recovery",
+                    test_polygon_smooth_blend_and_recovery);
+    g_test_add_func("/sgi-gl/polygon-smooth-quad-has-no-fan-diagonal",
+                    test_polygon_smooth_quad_has_no_fan_diagonal);
+    g_test_add_func("/sgi-gl/polygon-smooth-covers-multiple-scanlines",
+                    test_polygon_smooth_covers_multiple_scanlines);
+    g_test_add_func("/sgi-gl/polygon-smooth-quad-interpolation",
+                    test_polygon_smooth_quad_interpolation);
+    g_test_add_func("/sgi-gl/polygon-smooth-stipple",
+                    test_polygon_smooth_stipple);
+    g_test_add_func("/sgi-gl/polygon-smooth-clipping",
+                    test_polygon_smooth_clipping);
     g_test_add_func("/sgi-gl/wide-coverage", test_wide_coverage);
     g_test_add_func("/sgi-gl/wide-diagonal", test_wide_diagonal);
     g_test_add_func("/sgi-gl/wide-state", test_wide_state);
@@ -12714,8 +12883,6 @@ int main(int argc, char **argv)
                     test_line_smoothing_stipple);
     g_test_add_func("/sgi-gl/smoothing-rules-disabled",
                     test_smoothing_rules_disabled);
-    g_test_add_func("/sgi-gl/polygon-smoothing-unimplemented",
-                    test_polygon_smoothing_unimplemented);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",

@@ -212,8 +212,10 @@ static void populate(SGIGLContext *c, bool other)
     c->line_stipple_pattern = other ? 0xffff : 0x5a5a;
     c->polygon_mode[0] = other ? SGI_GL_POINT : SGI_GL_LINE;
     c->polygon_mode[1] = other ? SGI_GL_FILL : SGI_GL_POINT;
-    c->raster_enables = other ? SGI_GL_RASTER_POLYGON_STIPPLE :
+    c->raster_enables = other ? SGI_GL_RASTER_POLYGON_STIPPLE |
+                                SGI_GL_RASTER_POLYGON_SMOOTH :
                                 SGI_GL_RASTER_POINT_SMOOTH |
+                                SGI_GL_RASTER_LINE_SMOOTH |
                                 SGI_GL_RASTER_LINE_STIPPLE;
 
     g_assert_true(sgi_gl_context_valid(c, &error_abort));
@@ -421,6 +423,15 @@ static void test_round_trip(void)
                 g_test_message("context %d differs at byte %zd", i, diff);
             }
             g_assert_cmpint(diff, ==, -1);
+            if (!(dir ^ i)) {
+                g_assert_true(dst->gl[i].raster_enables &
+                              SGI_GL_RASTER_POINT_SMOOTH);
+                g_assert_true(dst->gl[i].raster_enables &
+                              SGI_GL_RASTER_LINE_SMOOTH);
+            } else {
+                g_assert_true(dst->gl[i].raster_enables &
+                              SGI_GL_RASTER_POLYGON_SMOOTH);
+            }
         }
         g_byte_array_unref(stream);
     }

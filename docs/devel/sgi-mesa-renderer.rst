@@ -115,12 +115,10 @@ Smoothing follows the scalar path:
 - Under rules whose ``smooth_primitives`` is false, the scalar path ignores
   the point, line and polygon smoothing enables and draws aliased, and so
   does this path.
-- Under rules that smooth, the scalar path smooths points and lines, so a
-  point or line draw with its enable set returns ``SGI_RENDER_UNSUPPORTED``
-  before the snapshot. Odyssey's rules smooth, so its smoothed lines stay
-  refused.
-- The scalar path never smooths polygons; it draws them aliased and logs it.
-  Polygon smoothing is therefore never refused.
+- Under rules that smooth, the scalar path smooths points, lines and
+  polygons, so a point, line or polygon draw with its enable set returns
+  ``SGI_RENDER_UNSUPPORTED`` before the snapshot. Odyssey's rules smooth, so
+  its smoothed lines stay refused.
 
 Each enable applies only to its own class of primitive. Polygon modes
 likewise apply only to polygons, so points ignore them.
