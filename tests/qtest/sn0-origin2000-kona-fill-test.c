@@ -1436,9 +1436,8 @@ static void test_point_gc_refusal(void)
 static void test_point_run_discard(void)
 {
     static const struct { uint32_t token; unsigned count; } unsupported[] = {
-        { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
+        { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
         { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 },
-        { 0x15f, 1 }, { 0x160, 6 }, { 0x161, 24 },
     };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
@@ -1510,7 +1509,8 @@ static void test_point_data_framing(gconstpointer opaque)
                      (uint32_t[]){ XY(10, 20), XY(12, 22) }, 2);
         assert_box(s, 10, 20, 12, 22, 0x55);
         g_assert_cmphex(front_at(s, 0, 26), ==,
-                        c->token == 0x14c || c->token == 0x14d ? 0x55 : 0);
+                        c->token == 0x14c || c->token == 0x14d ||
+                        c->token == 0x14e ? 0x55 : 0);
         assert_in_step(s);
         qtest_quit(s);
         found = kona_log_read(log);
@@ -1647,6 +1647,114 @@ static void semantic_rgb_gc(uint32_t *gc, uint32_t rgb, uint32_t mask,
     gc[7] = 1;
     gc[8] = 1;
     gc[9] = gx * 2;
+}
+
+static void test_point_batch(gconstpointer opaque)
+{
+    unsigned value = GPOINTER_TO_UINT(opaque), shape = value / 16;
+    unsigned mode = value % 16;
+    static const unsigned tokens[] = { 0x14e, 0x15f, 0x160, 0x161 };
+    static const unsigned counts[] = { 24, 1, 6, 24 };
+    bool background = shape != 0, rgb = mode == 2 || mode == 3;
+    unsigned gx = mode == 1 || mode == 3 || mode == 5 ? 6 :
+                  mode == 8 ? 5 : 3;
+    unsigned count = counts[shape];
+    uint32_t mask = mode == 7 ? 0 : rgb ?
+                    (mode == 3 ? 0x53a56c : 0xffffff) :
+                    mode == 1 ? 0x53 : 0xff;
+    uint32_t source = rgb ? (background ? 0x1379bd : 0x962ca5) :
+                           (background ? 0x96 : 0x3c);
+    uint32_t dest = rgb ? 0x5a81c3 : 0xa5;
+    uint32_t gc[13] = { 0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+                        0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t args[24], result = 0;
+    uint32_t pending[] = { XY(90, 40), XY(92, 40), XY(94, 40) };
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    if (rgb) {
+        semantic_rgb_gc(gc, dest, 0xffffff, 3);
+    }
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(8, 18), XY(70, 22) }, 2);
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(88, 38), XY(96, 42) }, 2);
+    if (mode == 5) {
+        semantic_rgb_gc(gc, 0x123456, 0xffffff, 3);
+        kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+        kona_command(s, TOKEN_BOX,
+                     (uint32_t[]) { XY(10 + 2 * (count - 1), 20),
+                                    XY(11 + 2 * (count - 1), 21) }, 2);
+    }
+    if (rgb) {
+        uint32_t bg[13];
+
+        semantic_rgb_gc(gc, 0x962ca5, mask, gx);
+        semantic_rgb_gc(bg, 0x1379bd, mask, gx);
+        gc[2] = bg[0];
+        gc[3] = bg[1];
+    } else {
+        memcpy(gc, (uint32_t[]) { 0x3c000, 0x1ffe, 0x96000, 0x1ffe,
+                                 0xf0000f | (mask << 4), 0,
+                                 0xc, 1, 1, gx * 2, 0, 1, 1 }, sizeof(gc));
+    }
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    if (mode == 4) {
+        kona_command(s, TOKEN_POSITION, (uint32_t[]) { 100, 50, 200, 200 }, 4);
+        kona_command(s, TOKEN_CLIP, (uint32_t[]) { 1, 10, 20, 70, 21 }, 5);
+        kona_command(s, 0x12d, (uint32_t[]) { 20, 20, 16, 1 }, 4);
+        kona_command(s, 0x13d, (uint32_t[]) { 5, 4, 1 }, 3);
+        qtest_writel(s, REG_COMMAND, 0x80000000);
+        kona_command(s, 0x13c, (uint32_t[]) { 5 }, 1);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        args[i] = XY(10 + 2 * i, 20);
+    }
+    for (unsigned byte = 0; byte < (rgb ? 3 : 1); byte++) {
+        result |= (uint32_t)semantic_ci_result(gx, source >> (8 * byte),
+                                                dest >> (8 * byte),
+                                                mask >> (8 * byte)) <<
+                  (8 * byte);
+    }
+    kona_command(s, 0x143, pending, ARRAY_SIZE(pending));
+    g_assert_cmphex(front_at(s, 90, 40), ==, dest);
+    if (mode == 6) {
+        unsigned partial = count / 2;
+
+        kona_command(s, tokens[shape], args, partial);
+        g_assert_cmphex(front_at(s, 90, 40), ==, dest);
+        g_assert_cmphex(front_at(s, 10, 20), ==, dest);
+        dir = g_dir_make_tmp("kona-point-batch-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MIGRATION_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+        for (unsigned i = partial; i < count; i++) {
+            qtest_writel(s, REG_COMMAND, args[i]);
+        }
+    } else {
+        kona_command(s, tokens[shape], args, count);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        unsigned x = 10 + 2 * i;
+        bool drawn = mode != 5 &&
+                     (mode != 4 || (x >= 20 && x < 36 && x % 4 == 0));
+        uint32_t expected = mode == 5 && i == count - 1 ? 0x123456 :
+                            drawn ? result : dest;
+
+        g_assert_cmphex(front_at(s, x, 20), ==, expected);
+        g_assert_cmphex(front_at(s, x + 1, 20), ==, dest);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(pending); i++) {
+        g_assert_cmphex(front_at(s, 90 + 2 * i, 40), ==,
+                        mode == 4 || mode == 5 ? dest : result);
+    }
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
 }
 
 static void test_semantic_ci_logic(gconstpointer opaque)
@@ -2222,6 +2330,23 @@ int main(int argc, char **argv)
                    test_cursor_refusal_abort);
     qtest_add_func("sn0/origin2000/kona-fill/loaded-cursor",
                    test_loaded_cursor);
+    static const char *point_batch_shapes[] = {
+        "foreground24", "background1", "background6", "background24",
+    };
+    static const char *point_batch_cases[] = {
+        "copy", "masked-xor", "rgb-copy", "rgb-masked-xor", "clip",
+        "late-incompatible", "partial-migrates", "zero-mask", "noop",
+    };
+    for (unsigned shape = 0; shape < ARRAY_SIZE(point_batch_shapes); shape++) {
+        for (unsigned mode = 0; mode < ARRAY_SIZE(point_batch_cases); mode++) {
+            g_autofree char *name = g_strdup_printf(
+                "sn0/origin2000/kona-fill/point-batch/%s/%s",
+                point_batch_shapes[shape], point_batch_cases[mode]);
+
+            qtest_add_data_func(name, GUINT_TO_POINTER(shape * 16 + mode),
+                                test_point_batch);
+        }
+    }
     qtest_add_func("sn0/origin2000/kona-fill/absolute-points",
                    test_absolute_points);
     qtest_add_func("sn0/origin2000/kona-fill/point-clipping",

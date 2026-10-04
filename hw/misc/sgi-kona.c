@@ -6294,8 +6294,9 @@ static bool sgi_kona_x_decode(SGIKonaState *s, SGIXGC *gc)
  * Retain the existing clipped/stippled geometry and bank-zero model choice.
  * Validate every accessed destination before any canonical word/tag store.
  */
-static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
-                            int64_t x2, int64_t y2, bool commit)
+static bool sgi_kona_x_fill_source(SGIKonaState *s, int64_t x1, int64_t y1,
+                                   int64_t x2, int64_t y2, bool background,
+                                   bool commit)
 {
     SGIBoardMemory *memory = &s->mem;
     const SGIPlane *front = sgi_kona_plane(s, s->plane_front);
@@ -6369,7 +6370,8 @@ static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
                 continue;
             }
             old = sgi_plane_load(memory, front, x, row);
-            value = sgi_x_gc_apply(&gc, gc.foreground, old);
+            value = sgi_x_gc_apply(&gc, background ? gc.background :
+                                                    gc.foreground, old);
             if (value != old || (tag && sgi_plane_load(memory, tag, x, row) !=
                                           target_tag)) {
                 sgi_plane_store(memory, front, x, row, value);
@@ -6389,6 +6391,12 @@ static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
         }
     }
     return true;
+}
+
+static bool sgi_kona_x_fill(SGIKonaState *s, int64_t x1, int64_t y1,
+                            int64_t x2, int64_t y2, bool commit)
+{
+    return sgi_kona_x_fill_source(s, x1, y1, x2, y2, false, commit);
 }
 
 static bool sgi_kona_x_fill_box(SGIKonaState *s, uint32_t w0, uint32_t w1,
@@ -6533,13 +6541,15 @@ done:
 }
 
 static bool sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
-                                   unsigned count, bool commit)
+                                   unsigned count, bool background,
+                                   bool commit)
 {
     for (unsigned i = 0; i < count; i++) {
         int x = (int16_t)(words[i] >> 16);
         int y = (int16_t)words[i];
 
-        if (!sgi_kona_x_fill(s, x, y, x + 1, y + 1, commit)) {
+        if (!sgi_kona_x_fill_source(s, x, y, x + 1, y + 1,
+                                      background, commit)) {
             return false;
         }
     }
@@ -6547,12 +6557,14 @@ static bool sgi_kona_x_point_words(SGIKonaState *s, const uint32_t *words,
 }
 
 static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
-                              unsigned argc)
+                              unsigned argc, bool background)
 {
-    if (sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have, false) &&
-        sgi_kona_x_point_words(s, args, argc, false)) {
-        sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have, true);
-        sgi_kona_x_point_words(s, args, argc, true);
+    if (sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have,
+                                 background, false) &&
+        sgi_kona_x_point_words(s, args, argc, background, false)) {
+        sgi_kona_x_point_words(s, s->x_boxes, s->x_boxes_have,
+                                 background, true);
+        sgi_kona_x_point_words(s, args, argc, background, true);
     }
     s->x_boxes_have = 0;
 }
@@ -7731,6 +7743,10 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_DATA3:
     case SGI_KONA_CMD_X_POINT:
     case SGI_KONA_CMD_X_POINT6:
+    case SGI_KONA_CMD_X_POINT24:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT6:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT24:
     case SGI_KONA_CMD_X_DATA2:
     case SGI_KONA_CMD_X_DATA4:
     case SGI_KONA_CMD_X_DATA6:
@@ -7909,9 +7925,14 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_X_POINT:
     case SGI_KONA_CMD_X_POINT6:
-        sgi_kona_x_points(s, args, argc);
+    case SGI_KONA_CMD_X_POINT24:
+        sgi_kona_x_points(s, args, argc, false);
         break;
-    case 0x14e:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT6:
+    case SGI_KONA_CMD_X_BACKGROUND_POINT24:
+        sgi_kona_x_points(s, args, argc, true);
+        break;
     case 0x14f:
     case 0x150:
     case 0x159:
@@ -7919,9 +7940,6 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case 0x15c:
     case 0x15d:
     case 0x15e:
-    case 0x15f:
-    case 0x160:
-    case 0x161:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: unsupported X drawing token 0x%x\n",
                       selector);
