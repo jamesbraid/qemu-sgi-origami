@@ -4,6 +4,8 @@
  * what it refuses and what it leaves behind. All images are synthetic.
  */
 #include "qemu/osdep.h"
+#include <sys/resource.h>
+#include "qemu/bswap.h"
 
 typedef struct ToolRun {
     int status;
@@ -20,28 +22,40 @@ static void tool_run_clear(ToolRun *run)
     g_free(run->err);
 }
 
-/* Run the tool with the NULL-terminated arguments after argv[0]. */
-static ToolRun run_tool(const char *first, ...)
+/* Run the tool with @args, after running @setup in the child if given. */
+static ToolRun run_toolv(GSpawnChildSetupFunc setup, const char *const *args)
 {
     g_autoptr(GPtrArray) argv = g_ptr_array_new();
     g_autoptr(GError) error = NULL;
     ToolRun run = { 0 };
-    const char *arg;
-    va_list ap;
 
     g_ptr_array_add(argv, (gpointer)tool);
-    va_start(ap, first);
-    for (arg = first; arg; arg = va_arg(ap, const char *)) {
-        g_ptr_array_add(argv, (gpointer)arg);
+    for (; *args; args++) {
+        g_ptr_array_add(argv, (gpointer)*args);
     }
-    va_end(ap);
     g_ptr_array_add(argv, NULL);
 
     g_assert_true(g_spawn_sync(NULL, (char **)argv->pdata, NULL,
-                               G_SPAWN_DEFAULT, NULL, NULL, &run.out,
+                               G_SPAWN_DEFAULT, setup, NULL, &run.out,
                                &run.err, &run.status, &error));
     g_assert_no_error(error);
     return run;
+}
+
+/* Run the tool with the NULL-terminated arguments after argv[0]. */
+static ToolRun run_tool(const char *first, ...)
+{
+    g_autoptr(GPtrArray) args = g_ptr_array_new();
+    const char *arg;
+    va_list ap;
+
+    va_start(ap, first);
+    for (arg = first; arg; arg = va_arg(ap, const char *)) {
+        g_ptr_array_add(args, (gpointer)arg);
+    }
+    va_end(ap);
+    g_ptr_array_add(args, NULL);
+    return run_toolv(NULL, (const char *const *)args->pdata);
 }
 
 static bool run_succeeded(const ToolRun *run)
@@ -190,6 +204,393 @@ static void test_inputs_checked(void)
     g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
 }
 
+/* Synthetic images: a recognisable pattern, nothing from a real PROM. */
+#define PAYLOAD_SIZE 0x40
+#define IO_PROM_SIZE 0x3000
+#define IP27_CONFIG 0x60
+#define IP35_LABEL (8 * 1024 * 1024 + 0x1e0000 + 0x10)
+/* The exact payload every Bedrock topology's -bios must be. */
+#define IP35_PROM_SIZE 1476264
+
+typedef struct StoreSize {
+    const char *name;
+    size_t size;
+} StoreSize;
+
+static char *boot_prom;
+static char *ip35_prom;
+static char *io_prom;
+
+static char *make_image(const char *name, size_t size, uint8_t seed)
+{
+    g_autofree uint8_t *bytes = g_malloc(size);
+    char *path = scratch_path(name);
+    size_t i;
+
+    for (i = 0; i < size; i++) {
+        bytes[i] = seed + i * 7;
+    }
+    g_assert_true(g_file_set_contents(path, (char *)bytes, size, NULL));
+    return path;
+}
+
+static uint8_t *read_store(const char *dir, const char *name, gsize *size)
+{
+    g_autofree char *path = g_strdup_printf("%s/%s.raw", dir, name);
+    char *bytes;
+
+    g_assert_true(g_file_get_contents(path, &bytes, size, NULL));
+    return (uint8_t *)bytes;
+}
+
+static void remove_tree(const char *dir)
+{
+    g_autoptr(GDir) d = g_dir_open(dir, 0, NULL);
+    const char *name;
+
+    g_assert_nonnull(d);
+    while ((name = g_dir_read_name(d))) {
+        g_autofree char *path = g_build_filename(dir, name, NULL);
+
+        g_assert_cmpint(g_unlink(path), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/* How many entries @dir holds. */
+static unsigned int count_entries(const char *dir)
+{
+    g_autoptr(GDir) d = g_dir_open(dir, 0, NULL);
+    unsigned int count = 0;
+
+    g_assert_nonnull(d);
+    while (g_dir_read_name(d)) {
+        count++;
+    }
+    return count;
+}
+
+/*
+ * Create @machine's state in a fresh directory and check that it holds
+ * exactly @stores, each its catalogue size. Returns the directory.
+ */
+static char *create_and_check(const char *stem, const char *machine,
+                              bool with_io_prom, const StoreSize *stores,
+                              size_t count)
+{
+    char *dir = scratch_path(stem);
+    bool ip35 = g_str_has_prefix(machine, "origin300,") ||
+                g_str_has_prefix(machine, "fuel,");
+    const char *args[] = {
+        "--machine", machine, "--boot-prom", ip35 ? ip35_prom : boot_prom,
+        dir, NULL, NULL, NULL,
+    };
+    ToolRun run;
+    size_t i;
+
+    if (with_io_prom) {
+        args[4] = "--io-prom";
+        args[5] = io_prom;
+        args[6] = dir;
+    }
+    run = run_toolv(NULL, args);
+    if (!run_succeeded(&run)) {
+        g_printerr("%s", run.err);
+    }
+    g_assert_true(run_succeeded(&run));
+    g_assert_cmpstr(run.out, ==, "");
+    g_assert_cmpstr(run.err, ==, "");
+    tool_run_clear(&run);
+
+    g_assert_cmpuint(count_entries(dir), ==, count);
+    for (i = 0; i < count; i++) {
+        g_autofree char *path = g_strdup_printf("%s/%s.raw", dir,
+                                                stores[i].name);
+        struct stat st;
+
+        g_assert_cmpint(lstat(path, &st), ==, 0);
+        g_assert_true(S_ISREG(st.st_mode));
+        g_assert_cmpuint(st.st_size, ==, stores[i].size);
+    }
+    return dir;
+}
+
+static void assert_all(const uint8_t *bytes, size_t from, size_t to,
+                       uint8_t value)
+{
+    size_t i;
+
+    for (i = from; i < to; i++) {
+        if (bytes[i] != value) {
+            g_printerr("byte 0x%zx is 0x%02x, not 0x%02x\n", i, bytes[i],
+                       value);
+        }
+        g_assert_cmphex(bytes[i], ==, value);
+    }
+}
+
+static void assert_zero_store(const char *dir, const char *name)
+{
+    gsize size;
+    g_autofree uint8_t *bytes = read_store(dir, name, &size);
+
+    assert_all(bytes, 0, size, 0);
+}
+
+static void assert_starts_with_payload(const uint8_t *bytes, uint8_t seed)
+{
+    size_t i;
+
+    for (i = 0; i < PAYLOAD_SIZE; i++) {
+        g_assert_cmphex(bytes[i], ==, (uint8_t)(seed + i * 7));
+    }
+}
+
+static void test_origin200(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 },
+    };
+    g_autofree char *dir = create_and_check(
+        "o200", "origin200,topology=origin200,nodes=1", false, stores,
+        ARRAY_SIZE(stores));
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
+
+    /*
+     * A payload too short to reach the configuration block leaves the
+     * template's block, carrying Origin 200's own values.
+     */
+    assert_starts_with_payload(flash, 0x27);
+    g_assert_cmphex(ldq_be_p(flash + IP27_CONFIG + 0x08), ==,
+                    0x69703237636f6e66ULL);
+    g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x2c), ==, 15);
+    g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x30), ==, 1);
+    g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x3c), ==, 4);
+    assert_zero_store(dir, "nvram0");
+    assert_zero_store(dir, "nvram0-clock");
+    remove_tree(dir);
+}
+
+static void test_origin2000(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "node1-flash", 1048576 },
+        { "io0-flash", 1048576 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 },
+    };
+    g_autofree char *dir = create_and_check(
+        "o2k", "origin2000,topology=origin2000-deskside,nodes=2", true,
+        stores, ARRAY_SIZE(stores));
+    gsize size, size1;
+    g_autofree uint8_t *node0 = read_store(dir, "node0-flash", &size);
+    g_autofree uint8_t *node1 = read_store(dir, "node1-flash", &size1);
+    g_autofree uint8_t *io = read_store(dir, "io0-flash", &size);
+    size_t i;
+
+    /* Every node gets the same PROM. */
+    g_assert_cmpmem(node0, size, node1, size1);
+    /* The I/O PROM is kept as supplied, erased after it. */
+    for (i = 0; i < IO_PROM_SIZE; i++) {
+        g_assert_cmphex(io[i], ==, (uint8_t)(0x06 + i * 7));
+    }
+    assert_all(io, IO_PROM_SIZE, size, 0xff);
+    remove_tree(dir);
+}
+
+static void test_origin200_gigachannel(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "io0-flash", 1048576 },
+        { "nvram0", 32768 }, { "nvram0-clock", 16 },
+    };
+    g_autofree char *dir = create_and_check(
+        "o200-gigachannel", "origin200,topology=origin200-gigachannel,nodes=1",
+        true, stores, ARRAY_SIZE(stores));
+
+    remove_tree(dir);
+}
+
+static void check_ip35_flash(const char *dir)
+{
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
+
+    assert_starts_with_payload(flash, 0x27);
+    g_assert_cmphex(flash[IP35_PROM_SIZE - 1], ==,
+                    (uint8_t)(0x27 + (IP35_PROM_SIZE - 1) * 7));
+    assert_all(flash, IP35_PROM_SIZE, IP35_PROM_SIZE + 0x1000, 0xff);
+    /* The blank-media label in position one, and nothing else there. */
+    g_assert_cmphex(ldl_be_p(flash + IP35_LABEL), ==, 0x504c4f49);
+    assert_all(flash, 8 * 1024 * 1024, IP35_LABEL - 0x10, 0xff);
+}
+
+static void test_origin300(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 16777216 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 },
+    };
+    g_autofree char *dir = create_and_check(
+        "o300", "origin300,topology=origin300,nodes=1", false, stores,
+        ARRAY_SIZE(stores));
+
+    check_ip35_flash(dir);
+    assert_zero_store(dir, "nvram0");
+    remove_tree(dir);
+}
+
+/* An IP35 PROM the machine would refuse as -bios is refused here too. */
+static void test_ip35_prom_size(void)
+{
+    g_autofree char *dir = scratch_path("o300-short");
+    ToolRun run = run_tool("--machine", "origin300,topology=origin300,nodes=1",
+                           "--boot-prom", boot_prom, dir, NULL);
+    g_autofree char *message = g_strdup_printf(
+        "boot PROM '%s' decodes to %d bytes; origin300,topology=origin300,"
+        "nodes=1 needs exactly %d", boot_prom, PAYLOAD_SIZE, IP35_PROM_SIZE);
+
+    assert_refused(&run, message);
+    tool_run_clear(&run);
+    g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
+}
+
+static void test_fuel(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 16777216 }, { "nvram0", 32768 },
+        { "nvram0-clock", 16 },
+    };
+    g_autofree char *dir = create_and_check(
+        "fuel", "fuel,topology=fuel,nodes=1", false, stores,
+        ARRAY_SIZE(stores));
+
+    check_ip35_flash(dir);
+    remove_tree(dir);
+}
+
+static void test_octane(void)
+{
+    static const StoreSize stores[] = {
+        { "node0-flash", 1048576 }, { "nvram0", 512 },
+        { "nvram0-clock", 24 },
+    };
+    g_autofree char *dir = create_and_check(
+        "octane", "octane,topology=octane", false, stores,
+        ARRAY_SIZE(stores));
+    gsize size;
+    g_autofree uint8_t *flash = read_store(dir, "node0-flash", &size);
+
+    assert_starts_with_payload(flash, 0x27);
+    assert_all(flash, PAYLOAD_SIZE, size, 0xff);
+    assert_zero_store(dir, "nvram0");
+    remove_tree(dir);
+}
+
+/* "DIR/" creates DIR, not something inside it. */
+static void test_trailing_slash(void)
+{
+    g_autofree char *dir = scratch_path("slash");
+    g_autofree char *arg = g_strdup_printf("%s/", dir);
+    ToolRun run = run_tool("--machine", "origin200,topology=origin200,nodes=1",
+                           "--boot-prom", boot_prom, arg, NULL);
+
+    g_assert_true(run_succeeded(&run));
+    tool_run_clear(&run);
+    g_assert_cmpuint(count_entries(dir), ==, 3);
+    remove_tree(dir);
+}
+
+static void assert_existing_refused(const char *path)
+{
+    ToolRun run = run_tool("--machine", "origin200,topology=origin200,nodes=1",
+                           "--boot-prom", boot_prom, path, NULL);
+    g_autofree char *message = g_strdup_printf("'%s' already exists", path);
+
+    assert_refused(&run, message);
+    tool_run_clear(&run);
+}
+
+/* Whatever is already at DIR stays as it was, and nothing joins it. */
+static void test_existing_refused(void)
+{
+    g_autofree char *parent = scratch_path("existing");
+    g_autofree char *dir = g_build_filename(parent, "dir", NULL);
+    g_autofree char *file = g_build_filename(parent, "file", NULL);
+    g_autofree char *link = g_build_filename(parent, "link", NULL);
+    g_autofree char *dangling = g_build_filename(parent, "dangling", NULL);
+    g_autofree char *contents = NULL;
+
+    g_assert_cmpint(g_mkdir(parent, 0700), ==, 0);
+    g_assert_cmpint(g_mkdir(dir, 0700), ==, 0);
+    g_assert_true(g_file_set_contents(file, "keep", -1, NULL));
+    g_assert_cmpint(symlink(dir, link), ==, 0);
+    g_assert_cmpint(symlink("nowhere", dangling), ==, 0);
+
+    assert_existing_refused(dir);
+    assert_existing_refused(file);
+    assert_existing_refused(link);
+    assert_existing_refused(dangling);
+
+    g_assert_cmpuint(count_entries(dir), ==, 0);
+    g_assert_true(g_file_get_contents(file, &contents, NULL, NULL));
+    g_assert_cmpstr(contents, ==, "keep");
+    g_assert_cmpuint(count_entries(parent), ==, 4);
+    g_assert_cmpint(g_unlink(dangling), ==, 0);
+    g_assert_cmpint(g_unlink(link), ==, 0);
+    g_assert_cmpint(g_unlink(file), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_assert_cmpint(g_rmdir(parent), ==, 0);
+}
+
+/*
+ * Cap the files the tool may write well under a flash part, so the first
+ * store fails with EFBIG part-way through the run.
+ */
+static void limit_file_size(gpointer opaque)
+{
+    struct rlimit limit = { .rlim_cur = 65536, .rlim_max = 65536 };
+
+    signal(SIGXFSZ, SIG_IGN);
+    setrlimit(RLIMIT_FSIZE, &limit);
+}
+
+/* A failed write leaves neither DIR nor its private directory behind. */
+static void test_failure_cleanup(void)
+{
+    g_autofree char *parent = scratch_path("failure");
+    g_autofree char *dir = g_build_filename(parent, "machine", NULL);
+    g_autofree char *bad = make_image("bad-prom", 4096, 0);
+    const char *args[] = {
+        "--machine", "origin200,topology=origin200,nodes=1",
+        "--boot-prom", boot_prom, dir, NULL,
+    };
+    ToolRun run;
+
+    g_assert_cmpint(g_mkdir(parent, 0700), ==, 0);
+    run = run_toolv(limit_file_size, args);
+    assert_refused(&run, "cannot write 'node0-flash.raw'");
+    tool_run_clear(&run);
+    g_assert_cmpuint(count_entries(parent), ==, 0);
+
+    /* An image that does not decode stops the run before any file. */
+    {
+        g_autofree uint8_t *bytes = g_malloc0(4096);
+
+        stq_be_p(bytes + 0x40, 0x4a464b535743534dULL);
+        g_assert_true(g_file_set_contents(bad, (char *)bytes, 4096, NULL));
+    }
+    run = run_tool("--machine", "origin200,topology=origin200,nodes=1",
+                   "--boot-prom", bad, dir, NULL);
+    g_assert_false(run_succeeded(&run));
+    tool_run_clear(&run);
+    g_assert_cmpuint(count_entries(parent), ==, 0);
+
+    g_assert_cmpint(g_rmdir(parent), ==, 0);
+    g_assert_cmpint(g_unlink(bad), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -207,7 +608,29 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/unknown-machine",
                     test_unknown_machine);
     g_test_add_func("/sgi-machine-init/inputs-checked", test_inputs_checked);
+    g_test_add_func("/sgi-machine-init/origin200", test_origin200);
+    g_test_add_func("/sgi-machine-init/origin2000", test_origin2000);
+    g_test_add_func("/sgi-machine-init/origin200-gigachannel",
+                    test_origin200_gigachannel);
+    g_test_add_func("/sgi-machine-init/origin300", test_origin300);
+    g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
+    g_test_add_func("/sgi-machine-init/fuel", test_fuel);
+    g_test_add_func("/sgi-machine-init/octane", test_octane);
+    g_test_add_func("/sgi-machine-init/trailing-slash", test_trailing_slash);
+    g_test_add_func("/sgi-machine-init/existing-refused",
+                    test_existing_refused);
+    g_test_add_func("/sgi-machine-init/failure-cleanup",
+                    test_failure_cleanup);
+    boot_prom = make_image("boot-prom", PAYLOAD_SIZE, 0x27);
+    ip35_prom = make_image("ip35-prom", IP35_PROM_SIZE, 0x27);
+    io_prom = make_image("io-prom", IO_PROM_SIZE, 0x06);
     ret = g_test_run();
+    g_assert_cmpint(g_unlink(boot_prom), ==, 0);
+    g_assert_cmpint(g_unlink(io_prom), ==, 0);
+    g_assert_cmpint(g_unlink(ip35_prom), ==, 0);
+    g_free(boot_prom);
+    g_free(ip35_prom);
+    g_free(io_prom);
 
     g_assert_cmpint(g_rmdir(scratch), ==, 0);
     g_free(scratch);
