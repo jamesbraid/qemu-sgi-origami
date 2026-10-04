@@ -183,6 +183,21 @@ bool sgi_kona_gl_bitmap_pio_layout(const uint32_t header[9],
                                    uint32_t row_length, uint32_t skip_rows,
                                    uint32_t skip_pixels, uint32_t alignment,
                                    SGIKonaGLBitmapLayout *layout);
+typedef struct SGIKonaGLBitmapDMALayout {
+    SGIKonaGLBitmapLayout bitmap;
+    uint64_t total_bytes, line_bytes, pitch, span;
+    uint32_t lines, source_phase;
+} SGIKonaGLBitmapDMALayout;
+
+/* Contiguous DMA is word-aligned; strided DMA requests exact row bytes. */
+bool sgi_kona_gl_bitmap_dma_layout(const uint32_t header[9],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLBitmapDMALayout *layout);
+/* Locate a raw source byte before residual bit skips and bit normalization. */
+bool sgi_kona_gl_bitmap_pio_offset(const SGIKonaGLBitmapLayout *layout,
+                                   uint32_t row, uint64_t byte,
+                                   uint64_t *offset);
 /* Normalize one byte to MSB-first; missing words leave output unchanged. */
 bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *layout,
                                  const uint32_t *words, size_t nwords,

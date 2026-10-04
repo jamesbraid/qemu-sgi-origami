@@ -859,6 +859,78 @@ bool sgi_kona_gl_bitmap_pio_layout(const uint32_t header[9],
     return true;
 }
 
+bool sgi_kona_gl_bitmap_dma_layout(const uint32_t header[9],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLBitmapDMALayout *layout)
+{
+    SGIKonaGLBitmapDMALayout d = { 0 };
+    SGIKonaGLBitmapLayout *l = &d.bitmap;
+    uint32_t pio_header[9];
+
+    if (!header || !layout || header[3] != 1) {
+        return false;
+    }
+    memcpy(pio_header, header, sizeof(pio_header));
+    pio_header[3] = 0;
+    if (!sgi_kona_gl_bitmap_pio_layout(pio_header, row_length, skip_rows,
+                                       skip_pixels, alignment, l) ||
+        l->stride < l->row_bytes) {
+        return false;
+    }
+    if (l->strided) {
+        d.lines = l->height;
+        d.line_bytes = l->row_bytes;
+        d.pitch = l->stride;
+        d.source_phase = l->phase;
+        if (umul64_overflow(d.lines, d.line_bytes, &d.total_bytes) ||
+            umul64_overflow(d.lines - 1, d.pitch, &d.span) ||
+            uadd64_overflow(d.span, d.line_bytes, &d.span)) {
+            return false;
+        }
+    } else {
+        d.lines = 1;
+        if (umul64_overflow(l->payload_words, 4, &d.total_bytes)) {
+            return false;
+        }
+        d.line_bytes = d.pitch = d.span = d.total_bytes;
+    }
+    if (d.total_bytes > UINT32_MAX || d.line_bytes > UINT32_MAX ||
+        d.pitch - d.line_bytes > UINT32_MAX) {
+        return false;
+    }
+    *layout = d;
+    return true;
+}
+
+bool sgi_kona_gl_bitmap_pio_offset(const SGIKonaGLBitmapLayout *l,
+                                   uint32_t row, uint64_t byte,
+                                   uint64_t *offset)
+{
+    uint64_t start, pos;
+
+    if (!l || !offset || row >= l->height || byte >= l->row_bytes) {
+        return false;
+    }
+    if (l->strided) {
+        uint32_t phase = (l->phase + row * l->stride) & 3;
+
+        if (umul64_overflow(sgi_kona_gl_bitmap_words_before(l, row),
+                           4, &start) ||
+            uadd64_overflow(start, phase, &start)) {
+            return false;
+        }
+    } else if (umul64_overflow(row, l->stride, &start) ||
+               uadd64_overflow(start, l->phase, &start)) {
+        return false;
+    }
+    if (uadd64_overflow(start, byte, &pos)) {
+        return false;
+    }
+    *offset = pos;
+    return true;
+}
+
 bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *l,
                                  const uint32_t *words, size_t nwords,
                                  bool lsb_first, uint32_t row, uint32_t byte,
@@ -871,12 +943,8 @@ bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *l,
     if (!l || !words || !out || row >= l->height || first_bit >= l->width) {
         return false;
     }
-    if (l->strided) {
-        uint32_t phase = (l->phase + row * l->stride) & 3;
-
-        start = 4 * sgi_kona_gl_bitmap_words_before(l, row) + phase;
-    } else {
-        start = l->phase + row * l->stride;
+    if (!sgi_kona_gl_bitmap_pio_offset(l, row, 0, &start)) {
+        return false;
     }
     for (uint32_t i = 0; i < 8 && first_bit + i < l->width; i++) {
         uint64_t source_bit = first_bit + i + l->bit_skip;

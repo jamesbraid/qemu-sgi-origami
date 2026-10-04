@@ -1596,6 +1596,173 @@ static void test_bitmap_pio_refusals(void)
     g_assert_cmphex(out, ==, 0xa5);
 }
 
+static void test_bitmap_dma_contiguous_padding(void)
+{
+    const uint32_t header[9] = { 10, 3, 2, 1, 0 };
+    const uint32_t words[] = { 0xaabbffff, 0xcccc0000, 0xdddde040 };
+    const uint8_t expected[][2] = { { 0xff, 0xc0 }, { 0, 0 }, { 0xe0, 0x40 } };
+    SGIKonaGLBitmapDMALayout d;
+
+    g_assert_true(sgi_kona_gl_bitmap_dma_layout(header, 0, 1, 0, 4, &d));
+    g_assert_cmpuint(d.source_phase, ==, 0);
+    g_assert_cmpuint(d.bitmap.phase, ==, 2);
+    g_assert_cmpuint(d.lines, ==, 1);
+    g_assert_cmpuint(d.total_bytes, ==, 12);
+    g_assert_cmpuint(d.line_bytes, ==, 12);
+    g_assert_cmpuint(d.pitch, ==, 12);
+    g_assert_cmpuint(d.span, ==, 12);
+    for (uint32_t row = 0; row < 3; row++) {
+        for (uint32_t byte = 0; byte < 2; byte++) {
+            uint64_t offset;
+            uint8_t out;
+
+            g_assert_true(sgi_kona_gl_bitmap_pio_offset(&d.bitmap, row,
+                                                        byte, &offset));
+            g_assert_cmpuint(offset, ==, 2 + row * 4 + byte);
+            g_assert_true(sgi_kona_gl_bitmap_pio_byte(&d.bitmap, words,
+                              ARRAY_SIZE(words), false, row, byte, &out));
+            g_assert_cmphex(out, ==, expected[row][byte]);
+        }
+    }
+}
+
+static void test_bitmap_dma_strided_bit_skips(void)
+{
+    const uint32_t header[9] = { 10, 3, 1, 1, 1 };
+    const uint8_t source[][2] = {
+        { 0x16, 0x40 }, { 0xac, 0xd8 }, { 0xff, 0xff },
+    };
+    const uint64_t positions[][2] = { { 1, 2 }, { 4, 5 }, { 11, 12 } };
+    const uint8_t expected[][3][2] = {
+        { { 0xb2, 0 }, { 0x66, 0xc0 }, { 0xff, 0xc0 } },
+        { { 0x40, 0 }, { 0xa8, 0xc0 }, { 0xff, 0xc0 } },
+    };
+    uint32_t words[4] = { 0 };
+    SGIKonaGLBitmapDMALayout d;
+
+    g_assert_true(sgi_kona_gl_bitmap_dma_layout(header, 24, 1, 11, 1, &d));
+    g_assert_cmpuint(d.source_phase, ==, 1);
+    g_assert_cmpuint(d.bitmap.bit_skip, ==, 3);
+    g_assert_cmpuint(d.lines, ==, 3);
+    g_assert_cmpuint(d.total_bytes, ==, 6);
+    g_assert_cmpuint(d.line_bytes, ==, 2);
+    g_assert_cmpuint(d.pitch, ==, 3);
+    g_assert_cmpuint(d.span, ==, 8);
+    g_assert_cmpuint(d.bitmap.payload_words, ==, ARRAY_SIZE(words));
+    for (uint32_t row = 0; row < 3; row++) {
+        for (uint32_t byte = 0; byte < 2; byte++) {
+            uint64_t offset;
+
+            g_assert_true(sgi_kona_gl_bitmap_pio_offset(&d.bitmap, row,
+                                                        byte, &offset));
+            g_assert_cmpuint(offset, ==, positions[row][byte]);
+            words[offset / 4] |= (uint32_t)source[row][byte] <<
+                                 (24 - 8 * (offset & 3));
+        }
+    }
+    for (unsigned lsb = 0; lsb < 2; lsb++) {
+        for (uint32_t row = 0; row < 3; row++) {
+            for (uint32_t byte = 0; byte < 2; byte++) {
+                uint8_t out;
+
+                g_assert_true(sgi_kona_gl_bitmap_pio_byte(&d.bitmap, words,
+                                  ARRAY_SIZE(words), lsb, row, byte, &out));
+                g_assert_cmphex(out, ==, expected[lsb][row][byte]);
+            }
+        }
+    }
+}
+
+static void test_bitmap_dma_partial_widths(void)
+{
+    uint32_t header[9] = { 1, 2, 3, 1, 0 };
+    const uint32_t words[] = { UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+    SGIKonaGLBitmapDMALayout d;
+
+    for (uint32_t width = 1; width <= 33; width++) {
+        uint32_t row_bytes = (width + 7) / 8;
+        uint32_t total = 4 * ((3 + 2 * row_bytes + 3) / 4);
+
+        header[0] = width;
+        g_assert_true(sgi_kona_gl_bitmap_dma_layout(header, 0, 0, 0, 1, &d));
+        g_assert_cmpuint(d.total_bytes, ==, total);
+        g_assert_cmpuint(d.source_phase, ==, 0);
+        g_assert_cmpuint(d.bitmap.phase, ==, 3);
+        for (uint32_t row = 0; row < 2; row++) {
+            for (uint32_t byte = 0; byte < row_bytes; byte++) {
+                uint8_t out, expected = 0xff;
+
+                if (byte == row_bytes - 1 && (width & 7)) {
+                    expected <<= 8 - (width & 7);
+                }
+                g_assert_true(sgi_kona_gl_bitmap_pio_byte(&d.bitmap, words,
+                                  ARRAY_SIZE(words), false, row, byte, &out));
+                g_assert_cmphex(out, ==, expected);
+            }
+        }
+    }
+}
+
+static void test_bitmap_dma_refusals(void)
+{
+    const struct {
+        uint32_t header[9];
+        uint32_t row_length, skip_pixels, alignment;
+    } cases[] = {
+        { { 32, 1, 0, 0, 0 }, 0, 0, 4 },
+        { { 32, 1, 0, 2, 0 }, 0, 0, 4 },
+        { { 32, 1, 4, 1, 0 }, 0, 0, 4 },
+        { { 0, 1, 0, 1, 0 }, 0, 0, 4 },
+        { { 32, 0, 0, 1, 0 }, 0, 0, 4 },
+        { { 32, 1, 0, 1, 0 }, 0, 0, 3 },
+        { { 32, 1, 0, 1, 0 }, 0, 1, 4 },
+        { { 32, 1, 0, 1, 1 }, 0, 0, 4 },
+        { { 32, 1, 0, 1, 1 }, 16, 0, 1 },
+        { { 32, UINT32_MAX, 0, 1, 0 }, 0, 0, 4 },
+    };
+    SGIKonaGLBitmapDMALayout before = { .total_bytes = 0x1234 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIKonaGLBitmapDMALayout d = before;
+
+        g_assert_false(sgi_kona_gl_bitmap_dma_layout(cases[i].header,
+                          cases[i].row_length, 0, cases[i].skip_pixels,
+                          cases[i].alignment, &d));
+        g_assert_cmpmem(&d, sizeof(d), &before, sizeof(before));
+    }
+}
+
+static void test_bitmap_dma_large_span(void)
+{
+    const uint32_t header[9] = { 1, 16, 1, 1, 1 };
+    SGIKonaGLBitmapDMALayout d;
+
+    g_assert_true(sgi_kona_gl_bitmap_dma_layout(header, UINT32_MAX, 0, 0,
+                                                1, &d));
+    g_assert_cmpuint(d.total_bytes, ==, 16);
+    g_assert_cmpuint(d.line_bytes, ==, 1);
+    g_assert_cmpuint(d.pitch, ==, 536870912);
+    g_assert_cmpuint(d.span, ==, UINT64_C(8053063681));
+    g_assert_cmpuint(d.source_phase, ==, 1);
+}
+
+static void test_bitmap_pio_offset_refusals(void)
+{
+    SGIKonaGLBitmapLayout l = {
+        .width = 1, .height = 3, .row_bytes = 1, .stride = UINT64_MAX,
+    };
+    uint64_t offset = 0x1234;
+
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(NULL, 0, 0, &offset));
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(&l, 0, 0, NULL));
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(&l, 3, 0, &offset));
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(&l, 0, 1, &offset));
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(&l, 2, 0, &offset));
+    l.phase = 1;
+    g_assert_false(sgi_kona_gl_bitmap_pio_offset(&l, 1, 0, &offset));
+    g_assert_cmpuint(offset, ==, 0x1234);
+}
+
 static void test_pixels_pio_contiguous_padding(void)
 {
     const uint32_t header[8] = { 1, 3, 4, 1, 2, 0, 0, 0 };
@@ -2241,6 +2408,18 @@ int main(int argc, char **argv)
                     test_bitmap_pio_skip_rows_phase);
     g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/large-counts",
                     test_bitmap_pio_large_counts);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-dma/contiguous-padding",
+                    test_bitmap_dma_contiguous_padding);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-dma/strided-bit-skips",
+                    test_bitmap_dma_strided_bit_skips);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-dma/partial-widths",
+                    test_bitmap_dma_partial_widths);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-dma/refusals",
+                    test_bitmap_dma_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-dma/large-span",
+                    test_bitmap_dma_large_span);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/offset-refusals",
+                    test_bitmap_pio_offset_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixels-pio/contiguous-padding",
                     test_pixels_pio_contiguous_padding);
     g_test_add_func("/sgi-kona-gl-decode/pixels-pio/strided-phases",
