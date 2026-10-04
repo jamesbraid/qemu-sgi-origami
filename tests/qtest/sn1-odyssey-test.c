@@ -1431,6 +1431,18 @@ static void test_baseio_prom_diagnostic_registers(void)
     qtest_quit(qts);
 }
 
+/* How many times @needle occurs in @haystack, without overlapping. */
+static unsigned count_occurrences(const char *haystack, const char *needle)
+{
+    unsigned count = 0;
+
+    for (const char *p = strstr(haystack, needle); p;
+         p = strstr(p + strlen(needle), needle)) {
+        count++;
+    }
+    return count;
+}
+
 /*
  * Everything past the modeled ladder -- the indirect write port, the
  * display back end, and the command FIFO's read side (it is write-only,
@@ -1450,7 +1462,6 @@ static void test_unmodeled_offsets_are_visible(void)
     g_autofree char *extra = NULL;
     g_autofree char *log = NULL;
     QTestState *qts;
-    const char *at;
     int fd;
 
     fd = g_file_open_tmp("sn1-odyssey-unimp-XXXXXX.log", &log_path, &error);
@@ -1475,10 +1486,9 @@ static void test_unmodeled_offsets_are_visible(void)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
-    at = strstr(log, "4-byte read at 0x110000 is not modeled");
-    g_assert_nonnull(at);
     /* Once per offset, however many times the guest touches it. */
-    g_assert_null(strstr(at + 1, "4-byte read at 0x110000 is not modeled"));
+    g_assert_cmpuint(count_occurrences(log,
+                         "4-byte read at 0x110000 is not modeled"), ==, 1);
     g_assert_nonnull(strstr(log, "2-byte write at 0x110000 is not modeled"));
     g_assert_nonnull(strstr(log,
                             "command FIFO word 0x00007777 is not modeled"));
