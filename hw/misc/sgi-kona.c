@@ -2313,8 +2313,8 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         (st->colour_mask & 7) != 7 || (st->colour_mask & ~15) ||
         st->cull_face || st->alpha_test || st->depth_test || st->stencil_test ||
         st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
-        st->polygon_offset || st->texture_2d || st->texture_3d || st->dither ||
-        st->clip_planes ||
+        st->polygon_offset || st->texture_1d || st->texture_2d ||
+        st->texture_3d || st->dither || st->clip_planes ||
         st->scissor_test || st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         memcmp(st->modelview, identity, sizeof(identity)) ||
@@ -3906,6 +3906,7 @@ static void sgi_kona_gl_restore(SGIGLContext *c, const SGIGLContext *saved,
         SGI_KONA_RESTORE(cur.polygon_offset);
         SGI_KONA_RESTORE(cur.scissor_test);
         SGI_KONA_RESTORE(cur.stencil_test);
+        SGI_KONA_RESTORE(cur.texture_1d);
         SGI_KONA_RESTORE(cur.texture_2d);
         SGI_KONA_RESTORE(cur.texture_3d);
         SGI_KONA_RESTORE(cur.clip_planes);
@@ -4341,9 +4342,12 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
 static bool sgi_kona_texture_native_header(const uint32_t *h)
 {
     bool volume = h[0] == SGI_GL_TEXTURE_3D;
+    bool one_dimensional = h[0] == SGI_GL_TEXTURE_1D;
     uint32_t layout = (volume ? 0x21c0 : 0x2180) | (h[6] << 2);
 
-    return (volume || h[0] == SGI_GL_TEXTURE_2D) && h[6] <= 1 &&
+    return (volume || one_dimensional || h[0] == SGI_GL_TEXTURE_2D) &&
+           (!one_dimensional || (h[2] == 1 && !h[12] && !h[14] && !h[15])) &&
+           h[6] <= 1 &&
            h[7] <= h[6] && !h[8] &&
            sgi_kona_texture_storage_base(h) && h[10] != UINT32_MAX &&
            (volume ? h[15] < SGI_KONA_GL_IMAGE_MAX : !h[15]) &&
@@ -4359,7 +4363,8 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
 {
     SGIKonaTextureParams params;
     uint32_t handle = s->texture_bind[0], width, height, depth, base, internal;
-    bool volume = (s->texture_bind[1] >> 28) == 3;
+    unsigned target = s->texture_bind[1] >> 28;
+    bool volume = target == 3, one_dimensional = target == 1;
     uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
 
     if (!s->texture_bind_valid || handle == UINT32_MAX) {
@@ -4367,7 +4372,9 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         return;
     }
     sgi_kona_texture_defaults(&params);
-    if (!s->texture_record_valid ||
+    if (target < 1 || target > 3 ||
+        (target == 2 && (s->texture_bind[3] & 0xf00)) ||
+        !s->texture_record_valid ||
         !sgi_kona_gl_texture_internal_format((s->texture_bind[1] >> 12) & 0xfff,
                                              &base, &internal) ||
         storage != (base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ?
@@ -4381,8 +4388,11 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
                  s->texture_record_token == SGI_KONA_CMD_GL_TEX_BIND_VOLUME,
                  &params)) :
             (s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D ||
-             !sgi_kona_gl_texture_sampler(s->texture_bind, s->texture_record,
-                                          &params))) ||
+             !(one_dimensional ?
+               sgi_kona_gl_texture_sampler_1d(s->texture_bind,
+                                               s->texture_record, &params) :
+               sgi_kona_gl_texture_sampler(s->texture_bind, s->texture_record,
+                                            &params)))) ||
         !sgi_kona_gl_texture_transform(s->texture_transform[1],
                                        s->texture_transform[2],
                                        s->texture_transform[3],
@@ -4400,8 +4410,11 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         (volume ?
             !sgi_kona_texture_native_volume_dimensions(&s->textures, handle,
                                                         width, height, depth) :
-            (!sgi_kona_texture_native_dimensions(&s->textures, handle, width,
-                                                  height) ||
+            (!(one_dimensional ?
+               sgi_kona_texture_native_dimensions_1d(&s->textures, handle,
+                                                       width) :
+               sgi_kona_texture_native_dimensions(&s->textures, handle, width,
+                                                    height)) ||
              !sgi_kona_texture_native_layout(&s->textures, handle,
                                               s->texture_record[3]))) ||
         !sgi_kona_texture_bind(&s->textures, handle, &params)) {
