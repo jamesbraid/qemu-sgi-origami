@@ -2677,6 +2677,107 @@ static void test_gl_pixels_captured_float_rgba(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+static void test_gl_pixels_captured_float_rgba_8x1(void)
+{
+    enum { WIDTH = 8 };
+    uint32_t row[WIDTH * 4];
+    static const uint8_t alpha[] = { 48, 80, 112, 144, 176, 208, 224, 240 };
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      4 + WIDTH - 1, 6, 1);
+    gl_pixels_float_program(qts, true, false, 4, 0x84);
+    gl_alpha_func(qts, GL_GREATER, 2048);
+    gl_one(qts, GL_ALPHA_TEST_HDR, 1);
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        uint8_t red = 24 + 23 * col;
+        uint8_t green = 32 + 17 * col;
+        uint8_t blue = 40 + 11 * col;
+
+        row[col * 4] = gl_bits((float)red / 255.0f);
+        row[col * 4 + 1] = gl_bits((float)green / 255.0f);
+        row[col * 4 + 2] = gl_bits((float)blue / 255.0f);
+        row[col * 4 + 3] = gl_bits((float)alpha[col] / 255.0f);
+    }
+    gl_pixels_draw(qts, ARRAY_SIZE(row));
+    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_fence(qts);
+
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        uint32_t expected = 0;
+
+        if (alpha[col] > 127) {
+            expected = (uint32_t)(24 + 23 * col) << 16 |
+                       (uint32_t)(32 + 17 * col) << 8 | (40 + 11 * col);
+        }
+        g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6), ==, expected);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_gl_pixels_captured_float_rgba_shape_recovery(void)
+{
+    enum { WIDTH = 8, HEIGHT = 8 };
+    uint32_t row[WIDTH * 4];
+
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        row[col * 4] = gl_bits(0.25f);
+        row[col * 4 + 1] = gl_bits(0.5f);
+        row[col * 4 + 2] = gl_bits(0.75f);
+        row[col * 4 + 3] = gl_bits(1.0f);
+    }
+
+    /* The observed float DrawPixels contract is the single 8x1 shape. */
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      4 + WIDTH - 1, 6 + HEIGHT - 1, 1);
+    gl_pixels_float_program(qts, true, false, 8, 0x104);
+    gl_pixels_draw(qts, WIDTH * HEIGHT * 4);
+    for (uint32_t line = 0; line < HEIGHT; line++) {
+        gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    }
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 4 + WIDTH - 1,
+                                    6 + HEIGHT - 1), ==, 0);
+
+    /* Unsupported float packets must leave the FIFO ready for a byte draw. */
+    gl_pixels_program(qts, GL_PIX_4UB, 4, 20, 30, 20, 30, 1);
+    gl_pixels_draw(qts, 1);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x112233ff }, 1);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x112233);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* A wrong signature is also rejected, then the same byte path recovers. */
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      4 + WIDTH - 1, 6, 1);
+    gl_pixels_float_program(qts, true, false, 4, 0x80);
+    gl_pixels_draw(qts, WIDTH * 4);
+    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+
+    gl_pixels_program(qts, GL_PIX_4UB, 4, 20, 30, 20, 30, 1);
+    gl_pixels_draw(qts, 1);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x445566ff }, 1);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x445566);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* A routine/unpack mismatch cannot opt into the float path. */
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      4 + WIDTH - 1, 6, 1);
+    gl_pixels_float_program(qts, true, false, 3, 0x84);
+    gl_pixels_draw(qts, WIDTH * 4);
+    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_gl_pixels_float_malformed_unpack(void)
 {
     static const uint32_t row[] = {
@@ -4025,6 +4126,126 @@ static void test_gl_readpixels_dma_bounded_rgba(void)
                     sizeof(unbracketed));
 }
 
+static void test_gl_readpixels_dma_float_rgba(void)
+{
+    enum { WIDTH = 8, HEIGHT = 8, PAGE_BYTES = 4096, FLOAT_OFFSET = 0x800,
+           BYTE_OFFSET = 0xc00, FLOAT_ROW_BYTES = WIDTH * 16 };
+    uint32_t pixels[WIDTH * HEIGHT];
+    uint8_t want_float[WIDTH * HEIGHT * 16];
+    uint8_t want_byte[WIDTH * HEIGHT * 4];
+    uint8_t poison[PAGE_BYTES];
+    uint8_t got[PAGE_BYTES];
+    static const uint32_t heights[] = { 1, HEIGHT };
+
+    gl_pixels_context(qts, 0);
+    gl_read_dma_map(qts);
+    for (uint32_t shape = 0; shape < ARRAY_SIZE(heights); shape++) {
+        uint32_t height = heights[shape];
+        uint32_t bytes = WIDTH * height * 16;
+
+        for (uint32_t row = 0; row < height; row++) {
+            for (uint32_t col = 0; col < WIDTH; col++) {
+                uint8_t red = 17 + 13 * col;
+                uint8_t green = 29 + 9 * row;
+                uint8_t blue = 43 + 5 * (row + col);
+                uint8_t alpha = 61 + 7 * row + 3 * col;
+                uint32_t pixel = (uint32_t)red << 24 |
+                                 (uint32_t)green << 16 |
+                                 (uint32_t)blue << 8 | alpha;
+                uint32_t index = row * WIDTH + col;
+                uint8_t channel[] = { red, green, blue, alpha };
+
+                pixels[index] = pixel;
+                want_byte[index * 4] = red;
+                want_byte[index * 4 + 1] = green;
+                want_byte[index * 4 + 2] = blue;
+                want_byte[index * 4 + 3] = alpha;
+                /* The observed GL_FLOAT client normalizes 32-bit words. */
+                for (uint32_t component = 0; component < 4; component++) {
+                    stl_be_p(want_float + index * 16 + component * 4,
+                             (uint32_t)channel[component] * 0x01010101u);
+                }
+            }
+            gl_draw_rgba_row(qts, 1, 1 + row, pixels + row * WIDTH, WIDTH);
+        }
+
+        memset(poison, 0xa5, sizeof(poison));
+        qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+        gl_word(qts, GL_READ_OPEN);
+        gl_read_registers(qts, 1, 1, height, WIDTH, height, 0x00c00083,
+                          false);
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     ((uint64_t)0x000a0204 << 32) | FLOAT_ROW_BYTES);
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     ((uint64_t)0x000a0304 << 32) | (height << 16 | WIDTH));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     ((uint64_t)0x000a0404 << 32) | 0x00c00083);
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     ((uint64_t)0x000a0604 << 32) | 0xa);
+        gl_read_dma_descriptor_at(qts, bytes, FLOAT_OFFSET, 1, bytes, 0xb9);
+        gl_word(qts, 0x0000da00);
+        gl_word(qts, GL_READ_CLOSE);
+
+        qtest_memread(qts, 0x30000, got, sizeof(got));
+        g_assert_cmpmem(got, FLOAT_OFFSET, poison, FLOAT_OFFSET);
+        g_assert_cmpmem(got + FLOAT_OFFSET, bytes, want_float, bytes);
+        g_assert_cmpmem(got + FLOAT_OFFSET + bytes,
+                        sizeof(got) - FLOAT_OFFSET - bytes,
+                        poison + FLOAT_OFFSET + bytes,
+                        sizeof(got) - FLOAT_OFFSET - bytes);
+        g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    }
+
+    memset(poison, 0xa5, sizeof(poison));
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 1, 1, HEIGHT, WIDTH, HEIGHT,
+                      GL_READ_MODE_RGBA, false);
+    gl_read_dma_class_a_signature_format(qts, WIDTH, HEIGHT, 0x00c00080);
+    gl_read_dma_descriptor_at(qts, WIDTH * 4 * HEIGHT, BYTE_OFFSET, 1,
+                              WIDTH * 4 * HEIGHT, 0xb9);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, GL_READ_CLOSE);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got + BYTE_OFFSET, sizeof(want_byte), want_byte,
+                    sizeof(want_byte));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* The legacy four-byte signature must not opt in to float readback. */
+    memset(poison, 0xa5, sizeof(poison));
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_word(qts, GL_READ_OPEN);
+    gl_read_registers(qts, 1, 1, HEIGHT, WIDTH, HEIGHT, 0x00c00083,
+                      false);
+    gl_read_dma_class_a_signature_format(qts, WIDTH, HEIGHT, 0x00c00083);
+    gl_read_dma_descriptor_at(qts, WIDTH * HEIGHT * 16, FLOAT_OFFSET, 1,
+                              WIDTH * HEIGHT * 16, 0xb9);
+    gl_word(qts, 0x0000da00);
+    gl_word(qts, GL_READ_CLOSE);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* The distinct unbracketed 0x00400083 transfer stays unclaimed. */
+    memset(poison, 0xa5, sizeof(poison));
+    qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+    gl_read_registers(qts, 1, 1, 1, WIDTH, 1, 0x00400083, false);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0204 << 32) | FLOAT_ROW_BYTES);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0304 << 32) | (1 << 16 | WIDTH));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0404 << 32) | 0x00400083);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x000a0604 << 32) | 0xa);
+    gl_read_dma_descriptor_at(qts, FLOAT_ROW_BYTES, FLOAT_OFFSET, 1,
+                              FLOAT_ROW_BYTES, 0xb9);
+    gl_word(qts, 0x0000da00);
+    qtest_memread(qts, 0x30000, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_gl_readpixels_dma_one_row_rectangular(void)
 {
     static const uint32_t row[] = { 0x010203ff, 0x040506ff };
@@ -4446,7 +4667,8 @@ static void test_gl_readpixels_dma_captured_rgb64x1(void)
 static void test_gl_readpixels_dma_captured_one_row_selectors(void)
 {
     enum { WIDTH = 64, PAGE_COUNT = 3 };
-    static const uint32_t widths[] = { 48, 64 };
+    static const uint32_t widths[] = { 48, 48, 64 };
+    static const uint32_t pitches[] = { 0x100, 192, 0x100 };
     uint32_t pixels[WIDTH];
     uint8_t image[WIDTH * 4];
     uint8_t poison[PAGE_COUNT * 4096];
@@ -4485,14 +4707,14 @@ static void test_gl_readpixels_dma_captured_one_row_selectors(void)
                               first_mode, false);
             gl_read_dma_class_a_signature_format(qts, first_width, 1,
                                                  0xc10080);
-            gl_read_dma_descriptor_at(qts, 0x100, 0x800, 1,
+            gl_read_dma_descriptor_at(qts, pitches[shape], 0x800, 1,
                                       first_width * 4, 0xbf);
             gl_word(qts, 0x0000da00);
             gl_read_registers(qts, first_width + 1, 1, 1, second_width, 1,
                               second_mode, false);
             gl_read_dma_class_a_signature_format(qts, second_width, 1,
                                                  0xc10480);
-            gl_read_dma_descriptor_at(qts, 0x100, 0x8a4, 1,
+            gl_read_dma_descriptor_at(qts, pitches[shape], 0x8a4, 1,
                                       second_width * 4, 0xbf);
             gl_word(qts, 0x0000da00);
             gl_word(qts, GL_READ_CLOSE);
@@ -4502,10 +4724,7 @@ static void test_gl_readpixels_dma_captured_one_row_selectors(void)
                 g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
             } else {
                 g_assert_cmpmem(got, 0x800, poison, 0x800);
-                g_assert_cmpmem(got + 0x800, first_width * 4, image,
-                                first_width * 4);
-                g_assert_cmpmem(got + 0x8a4, second_width * 4,
-                                image + first_width * 4, second_width * 4);
+                g_assert_cmpmem(got + 0x800, width * 4, image, width * 4);
                 g_assert_cmpmem(got + 0x8a4 + second_width * 4,
                                 sizeof(got) - 0x8a4 - second_width * 4,
                                 poison + 0x8a4 + second_width * 4,
@@ -4513,6 +4732,49 @@ static void test_gl_readpixels_dma_captured_one_row_selectors(void)
             }
             g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
         }
+    }
+
+    for (unsigned int malformed = 0; malformed < 3; malformed++) {
+        uint32_t pitch = malformed == 0 ? 191 : 192;
+        uint32_t rows = malformed == 2 ? 2 : 1;
+        uint32_t bpr = malformed == 1 ? first_width * 4 - 1 :
+                       first_width * 4;
+
+        qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+        gl_word(qts, GL_READ_OPEN);
+        gl_read_registers(qts, 1, 1, 1, first_width, 1, 0xc10080, false);
+        gl_read_dma_class_a_signature_format(qts, first_width, 1,
+                                             0xc10080);
+        gl_read_dma_descriptor_at(qts, pitch, 0x800, rows, bpr, 0xbf);
+        gl_word(qts, 0x0000da00);
+        gl_word(qts, GL_READ_CLOSE);
+        qtest_memread(qts, 0x30000, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
+        g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    }
+
+    for (unsigned int fragment = 0; fragment < 2; fragment++) {
+        uint32_t width = fragment ? 7 : first_width;
+        uint32_t x = fragment ? first_width + 1 : 1;
+        uint32_t format = fragment ? 0xc10480 : 0xc10080;
+        uint32_t offset = fragment ? 0x1400 : 0x1000;
+        const uint8_t *expected = image + (fragment ? first_width * 4 : 0);
+
+        qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+        gl_word(qts, GL_READ_OPEN);
+        gl_read_registers(qts, x, 1, 1, width, 1, format, false);
+        gl_read_dma_class_a_signature_format(qts, width, 1, format);
+        gl_read_dma_descriptor_at(qts, 192, offset, 1, width * 4, 0xbf);
+        gl_word(qts, 0x0000da00);
+        gl_word(qts, GL_READ_CLOSE);
+        qtest_memread(qts, 0x30000, got, sizeof(got));
+        g_assert_cmpmem(got, offset, poison, offset);
+        g_assert_cmpmem(got + offset, width * 4, expected, width * 4);
+        g_assert_cmpmem(got + offset + width * 4, 192 - width * 4,
+                        poison + offset + width * 4, 192 - width * 4);
+        g_assert_cmpmem(got + offset + 192, sizeof(got) - offset - 192,
+                        poison + offset + 192, sizeof(poison) - offset - 192);
+        g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
 }
 
@@ -5296,6 +5558,11 @@ int main(int argc, char **argv)
                    test_gl_pixels_captured_float_rgb_three_by_two_rejected);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgba",
                    test_gl_pixels_captured_float_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgba-8x1",
+                   test_gl_pixels_captured_float_rgba_8x1);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-pixels-captured-float-rgba-unsupported-shapes-recover",
+                   test_gl_pixels_captured_float_rgba_shape_recovery);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-float-malformed-unpack",
                    test_gl_pixels_float_malformed_unpack);
     qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
@@ -5437,6 +5704,8 @@ int main(int argc, char **argv)
                    test_gl_readpixels_bracket_opaque);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bounded-rgba",
                    test_gl_readpixels_dma_bounded_rgba);
+    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-float-rgba",
+                   test_gl_readpixels_dma_float_rgba);
     qtest_add_func("sn0/origin2000/mgras/gl-copypixels-slow-path",
                    test_gl_copypixels_slow_path);
     qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-one-row-rectangular",

@@ -1563,8 +1563,11 @@ bool sgi_mgras_gl_client_read_active(SGIMgrasState *s)
 
 bool sgi_mgras_gl_client_read_done(SGIMgrasState *s)
 {
-    if (s->gl_current >= SGI_MGRAS_GL_CONTEXTS ||
-        !s->gl_context[s->gl_current].client_read_kicked) {
+    uint32_t context = s->gl_current;
+    bool kicked = context < SGI_MGRAS_GL_CONTEXTS &&
+                  s->gl_context[context].client_read_kicked;
+
+    if (!kicked) {
         return false;
     }
     s->gl_context[s->gl_current].client_read_kicked = 0;
@@ -3635,6 +3638,8 @@ static bool mgras_gl_pixels_captured_float_rgba(uint32_t width,
              unpack_first == 8) ||
             (width == 32 && height == 1 && row_words == pixels * 4 &&
              unpack_first == 0x10) ||
+            (width == 8 && height == 1 && row_words == pixels * 4 &&
+             unpack_first == 4) ||
             (width == 2 && height == 32 && row_words == 0x80 &&
              unpack_first == 0x10));
 }
@@ -3981,8 +3986,9 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
  * it. A raster op for a run of pixels in shared code (hw/display/sgi)
  * would take a row at once.
  */
-static void mgras_gl_pixels_put(SGIMgrasState *s, int32_t x, int32_t y,
-                                const float rgba[4], float index)
+static void mgras_gl_pixels_put(SGIMgrasState *s,
+                                const SGIMgrasGLPixels *px, int32_t x,
+                                int32_t y, const float rgba[4], float index)
 {
     static const uint8_t set = 0x80;
     SGIGLContext *c = mgras_gl(s);
@@ -4039,7 +4045,7 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px->x + px->col, px->y + px->row, rgba, v);
+    mgras_gl_pixels_put(s, px, px->x + px->col, px->y + px->row, rgba, v);
 }
 
 /* Take n image bytes of the current row; bytes past its last pixel drop. */
@@ -4074,7 +4080,7 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_put(s, px->x + px->col, px->y + px->row, rgba, 0);
+    mgras_gl_pixels_put(s, px, px->x + px->col, px->y + px->row, rgba, 0);
     px->ncomponent = 0;
     px->col++;
     return true;
