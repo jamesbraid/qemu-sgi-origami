@@ -12341,6 +12341,7 @@ static void test_renderer_general_triangle(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     mode == 4 ? 2 :
                      mode < 4 || (mode >= 6 && mode <= 8) ? 1 : 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
@@ -12374,7 +12375,7 @@ static void test_renderer_polygon(gconstpointer opaque)
     }
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
-                     mode == 3 ? 0 : mode == 2 ? 1 : 2);
+                     mode == 3 ? 3 : mode == 2 ? 1 : 2);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
     expected_clear(expected, mode == 2 ? 0xffffff : 0x0000ff);
@@ -13144,6 +13145,85 @@ static void test_renderer_depth_gradient(gconstpointer opaque)
             qobject_unref(reply);
         }
     }
+    qtest_quit(s);
+}
+
+static void test_renderer_volume_clip(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    float positions[4][3] = {
+        { 0, 0, 0 }, { 128, 0, 0 }, { 128, 128, 0 }, { 0, 128, 0 },
+    };
+    unsigned count = mode >= 6 ? 3 : 4;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (mode == 0) {
+        positions[0][0] = positions[3][0] = -64;
+    } else if (mode == 1) {
+        positions[1][0] = positions[2][0] = 192;
+    } else if (mode == 2) {
+        positions[0][1] = positions[1][1] = -64;
+    } else if (mode == 3) {
+        positions[2][1] = positions[3][1] = 192;
+    } else if (mode == 4 || mode == 5) {
+        positions[0][2] = positions[3][2] = mode == 4 ? 2 : -2;
+    } else {
+        positions[0][0] = positions[0][1] = -128;
+        positions[1][0] = 384;
+        positions[1][1] = -128;
+        positions[2][0] = -128;
+        positions[2][1] = 384;
+        if (mode == 7) {
+            kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
+        } else if (mode == 9) {
+            positions[0][0] = positions[1][0] = positions[2][0] = 256;
+        }
+    }
+    gl_begin(s, count == 3 ? 4 : 7);
+    for (unsigned v = 0; v < count; v++) {
+        float w = mode == 8 ? 1 << v : 1;
+
+        kona_command_f(s, 0x63, (float[]) {
+            mode == 7 ? v == 0 : v != count - 1,
+            mode == 7 && v == 1,
+            mode == 7 ? v == 2 : v == count - 1,
+        }, 3);
+        kona_command_f(s, 0x94, (float[]) {
+            positions[v][0] * w, positions[v][1] * w,
+            positions[v][2] * w, w,
+        }, 4);
+    }
+    gl_end(s);
+    if (mode == 9) {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 0);
+    } else {
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
+    }
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, 0xffffff);
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
+
+            if (mode == 9 || ((mode == 4 || mode == 5) && x < 64)) {
+                continue;
+            }
+            if (mode == 7) {
+                double b1 = (x + 128.5) / 512, b2 = (y + 128.5) / 512;
+
+                pixel[0] = floor((1 - b1 - b2) * 255 + 0.5);
+                pixel[1] = floor(b1 * 255 + 0.5);
+                pixel[2] = floor(b2 * 255 + 0.5);
+            } else {
+                pixel[0] = pixel[1] = 0;
+                pixel[2] = 255;
+            }
+        }
+    }
+    assert_window_matches(s, expected);
     qtest_quit(s);
 }
 
@@ -14260,6 +14340,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_depth_gradient);
+    }
+    for (unsigned mode = 0; mode < 10; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/volume-clip/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_volume_clip);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
