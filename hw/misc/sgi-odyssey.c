@@ -4257,12 +4257,12 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         /*
          * Observed small-volume mip levels follow the preceding level's
          * slices, with one 128-byte address unit per slice. Larger-volume
-         * packing and nonzero base levels are not established. Keep this
+         * packing and nonzero table selectors are not established. Keep this
          * bounded model policy separate from the level-zero address rule.
          */
         if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
             (!mipmap && word != 0x13000000) ||
-            (mipmap && (filter != 0x40 || ws || wt ||
+            (mipmap && ((filter != 0x40 && filter != 0xa0) || ws || wt ||
                         (image->base_format != SGI_GL_RGB &&
                          image->base_format != SGI_GL_RGBA) ||
                         width > 16 || height > 16 || depth > 16 ||

@@ -11191,7 +11191,7 @@ static void volume_mipmap_bind(QTestState *qts)
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
-static void volume_mipmap_native_quad(QTestState *qts)
+static void volume_mipmap_quad(QTestState *qts, uint32_t span, uint32_t end)
 {
     const uint32_t matrix[16] = {
         ODSY_F_ONE, 0, 0, 0,
@@ -11203,16 +11203,84 @@ static void volume_mipmap_native_quad(QTestState *qts)
         0x33008000, 0x290080f3, 0x2a008100, 0x2c00810c,
         ODSY_CMD_GL_BEGIN, 7,
         0xc380cc23, 0, 0, 0x3f000000, 0x8080c800, 32, 32,
-        0xc380cc23, 0x41400000, 0, 0x3f000000, 0x8080c800, 96, 32,
-        0xc380cc23, 0x41400000, 0x41400000, 0x3f000000,
-        0x8080c800, 96, 96,
-        0xc380cc23, 0, 0x41400000, 0x3f000000, 0x8080c800, 32, 96,
+        0xc380cc23, span, 0, 0x3f000000, 0x8080c800, end, 32,
+        0xc380cc23, span, span, 0x3f000000,
+        0x8080c800, end, end,
+        0xc380cc23, 0, span, 0x3f000000, 0x8080c800, 32, end,
         ODSY_CMD_GL_END,
     };
 
     push_window_transform(qts, matrix);
     push_block_16(qts, 0xbf800000);
     push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void volume_mipmap_native_quad(QTestState *qts)
+{
+    volume_mipmap_quad(qts, 0x41400000, 96);
+}
+
+static void volume_mipmap_control(unsigned control)
+{
+    const uint32_t trilinear[] = {
+        0x00011c16, 0x08000c63, 8, 8, 8, 0x128000a0, 0, 0,
+    };
+    const uint32_t base_level[] = {
+        0x00011c16, 0x08000421, 2, 2, 2, 0x12800040, 0, 0,
+        0x00010e80, 0x16ae00, 0x41100002, 1,
+    };
+    QTestState *qts = board_start("");
+    uint32_t expected = control == 0 ? 0x6a9500ff :
+                        control == 1 ? 0xffff00ff : 0x0000ffff;
+    unsigned end = control == 1 ? 48 : 96;
+    uint32_t span = control == 0 ? 0x41400000 :
+                    control == 1 ? 0x41800000 : ODSY_F_ONE;
+
+    volume_mipmap_upload(qts, -1);
+    volume_mipmap_bind(qts);
+    if (control == 0) {
+        push_user_words(qts, trilinear, ARRAY_SIZE(trilinear));
+    } else if (control == 2) {
+        push_user_words(qts, base_level, ARRAY_SIZE(base_level));
+    }
+    /* The base-level result differs from a dropped draw's blue background. */
+    if (control == 2) {
+        odsy_test_pixel_write(qts, 64, 64, 0x12345678);
+    }
+    volume_mipmap_quad(qts, span, end);
+    for (unsigned y = 128 - end; y < 96; y++) {
+        for (unsigned x = 32; x < end; x++) {
+            uint32_t actual = odsy_test_pixel(qts, x, y);
+
+            if (control == 0) {
+                for (unsigned shift = 0; shift < 32; shift += 8) {
+                    int delta = ((actual >> shift) & 255) -
+                                ((expected >> shift) & 255);
+
+                    g_assert_cmpint(abs(delta), <=, 1);
+                }
+            } else {
+                g_assert_cmphex(actual, ==, expected);
+            }
+        }
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 31, 64), ==, ODSY_PLANE_BLUE);
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_volume_mipmap_trilinear(void)
+{
+    volume_mipmap_control(0);
+}
+
+static void test_texture_adapter_volume_mipmap_depth_one(void)
+{
+    volume_mipmap_control(1);
+}
+
+static void test_texture_adapter_volume_mipmap_base_level(void)
+{
+    volume_mipmap_control(2);
 }
 
 static void test_texture_adapter_volume_mipmap_nearest(void)
@@ -14660,6 +14728,12 @@ int main(int argc, char **argv)
                    test_texture_adapter_scalar_components);
     qtest_add_func("sn1/odyssey/texture-adapter/luminance-alpha",
                    test_texture_adapter_luminance_alpha);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-trilinear",
+                   test_texture_adapter_volume_mipmap_trilinear);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-depth-one",
+                   test_texture_adapter_volume_mipmap_depth_one);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-base-level",
+                   test_texture_adapter_volume_mipmap_base_level);
     qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-nearest",
                    test_texture_adapter_volume_mipmap_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-missing-slice",
