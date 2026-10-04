@@ -500,9 +500,88 @@ static void test_restart_persistence(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_backing_noop(const void *data)
+{
+    const bool failure = GPOINTER_TO_UINT(data);
+    g_autofree char *dir = g_dir_make_tmp("ds1742-noop-XXXXXX", NULL);
+    g_autofree char *image = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *trace = g_build_filename(dir, "block.trace", NULL);
+    g_autofree char *config = g_build_filename(dir, "blkdebug.conf", NULL);
+    g_autofree char *backing = NULL;
+    g_autofree char *contents = NULL;
+    char initial[0x800] = { 0 };
+    gsize before, after;
+    QTestState *qts;
+
+#ifndef CONFIG_TRACE_LOG
+    if (!failure) {
+        g_test_skip("native block text traces are unavailable");
+        g_rmdir(dir);
+        return;
+    }
+#endif
+    if (failure && !g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr("*ds1742: could not save SRAM byte*");
+        g_rmdir(dir);
+        return;
+    }
+    g_assert_true(g_file_set_contents(image, initial, sizeof(initial), NULL));
+    if (failure) {
+        g_assert_true(g_file_set_contents(config,
+            "[inject-error]\nevent = \"write_aio\"\n"
+            "errno = \"5\"\nonce = \"on\"\n", -1, NULL));
+    }
+    backing = failure ? g_strdup_printf("blkdebug:%s:%s", config, image) :
+                        g_strdup(image);
+    qts = qtest_initf("-M none -cpu R10000 -S"
+        " -rtc base=2024-01-01T00:00:00,clock=vm"
+        " -drive if=none,id=nvram,file=%s,format=raw"
+        " -device ds1742,id=clock,drive=nvram -D %s %s", backing, trace,
+        failure ? "" : "-trace enable=blk_co_p*");
+    qtest_sysbus_mmio_map(qts, PATH, 0, BASE);
+    wr(qts, 0x100, 0xa5);
+    if (failure) {
+        g_assert_cmphex(rd(qts, 0x100), ==, 0xa5);
+        g_assert_true(g_file_get_contents(image, &contents, NULL, NULL));
+        g_assert_cmphex((uint8_t)contents[0x100], ==, 0);
+        g_clear_pointer(&contents, g_free);
+        wr(qts, 0x100, 0xa5);
+    } else {
+        g_assert_true(g_file_get_contents(trace, &contents, &before, NULL));
+        g_assert_nonnull(strstr(contents, "blk_co_pwritev "));
+        g_clear_pointer(&contents, g_free);
+        wr(qts, 0x7f8, 0x40);
+        for (unsigned int i = 0; i < 8; i++) {
+            rd(qts, 0x7f8 + i);
+        }
+        wr(qts, 0x7f8, 0);
+        wr(qts, 0x100, 0xa5);
+        g_assert_true(g_file_get_contents(trace, &contents, &after, NULL));
+        g_assert_cmpuint(after, ==, before);
+        g_clear_pointer(&contents, g_free);
+        /* An unchanged century must not suppress a W-fall calendar commit. */
+        set_time(qts, 0x12, 0, 0, 1, 1, 0x24, 0x20);
+    }
+    g_assert_true(g_file_get_contents(image, &contents, NULL, NULL));
+    g_assert_cmphex((uint8_t)contents[0x100], ==, 0xa5);
+    if (!failure) {
+        g_assert_cmphex((uint8_t)contents[0x7f9], ==, 0x12);
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+    g_unlink(trace);
+    g_unlink(config);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("/ds1742/backing-noop", NULL, test_backing_noop);
+    qtest_add_data_func("/ds1742/backing-retry", GUINT_TO_POINTER(true),
+                        test_backing_noop);
     qtest_add_func("/ds1742/calendar", test_calendar);
     qtest_add_func("/ds1742/invalid-dates", test_invalid_dates);
     qtest_add_func("/ds1742/reset-with-write", test_reset_with_write);

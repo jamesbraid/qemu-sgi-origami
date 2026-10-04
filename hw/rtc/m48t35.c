@@ -237,8 +237,12 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
 /* A backing-store failure is not the guest's error; the write landed. */
 static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
 {
+    if (s->cell[addr] == val && !s->storage_failed) {
+        return;
+    }
     s->cell[addr] = val;
     if (s->blk && blk_pwrite(s->blk, addr, 1, &s->cell[addr], 0) < 0) {
+        s->storage_failed = true;
         error_report("m48t35: write to backing store failed");
     }
 }
@@ -273,19 +277,26 @@ static void m48t35_save_clock(M48T35State *s)
     s->cell[M48T35_MONTH] = to_bcd(c.mon + 1);
     s->cell[M48T35_YEAR] = to_bcd(c.year);
     /* Migrated RAM must reach the destination's backing store too. */
+    s->storage_failed = true;
     if (blk_pwrite(s->blk, 0, M48T35_SIZE, s->cell, 0) < 0) {
         error_report("m48t35: saving the image to the backing store failed");
+        return;
     }
     trace_m48t35_clock_saved(c.year, c.mon + 1, c.mday, c.hour, c.min, c.sec,
                              host);
 
-    if (m48t35_drive_writable(s->clock_blk)) {
+    if (s->clock_blk) {
+        if (!m48t35_drive_writable(s->clock_blk)) {
+            return;
+        }
         memcpy(record, M48T35_CLOCK_REF_MAGIC, 8);
         stq_le_p(record + 8, host);
         if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
             error_report("m48t35: saving the clock reference failed");
+            return;
         }
     }
+    s->storage_failed = false;
 }
 
 static bool m48t35_is_bcd(uint8_t v, int lo, int hi)
@@ -443,12 +454,18 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
         s->stopped = s->staged_stop;
         s->stopped_epoch = m48t35_part_seconds(&c);
         s->time_offset = s->stopped_epoch - m48t35_host_seconds();
-        m48t35_store(s, M48T35_CONTROL, val);
+        s->cell[M48T35_CONTROL] = val;
         m48t35_save_clock(s);
         return;
     }
 
-    m48t35_store(s, M48T35_CONTROL, val);
+    if (s->storage_failed ||
+        ((was ^ val) & ~(M48T35_CSR_READ | M48T35_CSR_WRITE))) {
+        m48t35_store(s, M48T35_CONTROL, val);
+    } else {
+        /* Selecting a read freeze or a staged write only changes the latch. */
+        s->cell[M48T35_CONTROL] = val;
+    }
 }
 
 static uint64_t m48t35_read(void *opaque, hwaddr addr, unsigned size)

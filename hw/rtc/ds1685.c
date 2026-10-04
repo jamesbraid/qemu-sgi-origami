@@ -360,13 +360,7 @@ static bool ds1685_write_backend(DS1685State *s, BlockBackend *blk,
 {
     int ret = blk_pwrite(blk, 0, size, buffer, 0);
 
-    if (ret >= 0) {
-        ret = blk_flush(blk);
-        if (ret < 0) {
-            error_report("ds1685: flushing %s failed: %s",
-                         what, strerror(-ret));
-        }
-    } else {
+    if (ret < 0) {
         error_report("ds1685: writing %s failed: %s", what, strerror(-ret));
     }
     return ret >= 0;
@@ -723,7 +717,6 @@ static uint8_t ds1685_read_reg(DS1685State *s, uint8_t reg)
              */
             s->common[reg] &= ~DS1685_C_FLAGS;
             ds1685_update_irq(s);
-            ds1685_save(s);
             return value;
         }
 
@@ -963,10 +956,32 @@ static void ds1685_data_write(void *opaque, hwaddr addr, uint64_t val,
                               unsigned size)
 {
     DS1685State *s = opaque;
+    uint8_t *stored, was, changed;
+    bool bank1 = ds1685_bank1(s);
 
-    trace_ds1685_write(s->index, ds1685_bank1(s), val);
+    if (s->index < DS1685_UPPER_FIRST) {
+        stored = &s->common[s->index];
+    } else if (!bank1) {
+        stored = &s->nvram[EXT(s->index)];
+    } else if (s->index == DS1685_EXTRAM_DATA) {
+        stored = &s->extram[s->ext[EXT(DS1685_EXTRAM_ADDR)] &
+                            (DS1685_EXTRAM_SIZE - 1)];
+    } else {
+        stored = &s->ext[EXT(s->index)];
+    }
+    was = *stored;
+    trace_ds1685_write(s->index, bank1, val);
     ds1685_write_reg(s, s->index, val);
-    ds1685_save(s);
+    changed = was ^ *stored;
+    if (s->index == DS1685_REG_A) {
+        /* Bank and periodic-rate selection do not change the saved clock. */
+        changed &= DS1685_A_DV2 | DS1685_A_DV1;
+    }
+    /* Run register side effects even when the persistent byte is unchanged. */
+    if (changed || s->load_pending || s->storage_failed ||
+        s->storage_deferred) {
+        ds1685_save(s);
+    }
 }
 
 /*
