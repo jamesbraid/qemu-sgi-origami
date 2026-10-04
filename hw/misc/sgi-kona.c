@@ -2893,11 +2893,6 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
 
     switch (selector) {
     case SGI_KONA_CMD_GL_MATRIX_MODE:
-        if (args[0] == 0x1800) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: the colour matrix stack is"
-                          " not modelled; glMatrixMode ignored\n");
-            return true;
-        }
         cmd = (SGIGLCmd) { SGI_GL_OP_MATRIX_MODE, 1, args };
         break;
     case SGI_KONA_CMD_GL_LOAD_IDENTITY:
