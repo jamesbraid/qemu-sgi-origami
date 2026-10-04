@@ -3744,7 +3744,8 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
             for (unsigned k = 0; k < 4; k++) {
                 rgba[k] = source[k] * scale[k] + bias[k];
             }
-            if (!sgi_kona_gl_pixel_pack_double(format, type, rgba, false,
+            if (!sgi_kona_gl_pixel_pack_double(format, type, rgba,
+                                                  p->pack_swap_bytes,
                                          out, pixel_bytes)) {
                 return;
             }
@@ -5311,6 +5312,10 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
 {
     SGIKonaGLPipe *p = &s->gl_pipe[i];
 
+    if (s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        return;
+    }
     switch (pname) {
     case 0x0cf1:                /* GL_UNPACK_LSB_FIRST */
         p->unpack_lsb_first = value != 0;
@@ -5329,6 +5334,9 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
         break;
     case 0x0cf5:                /* GL_UNPACK_ALIGNMENT */
         p->unpack_alignment = value;
+        break;
+    case 0x0d00:                /* GL_PACK_SWAP_BYTES */
+        p->pack_swap_bytes = value != 0;
         break;
     case 0x0d02:                /* GL_PACK_ROW_LENGTH */
         p->pack_row_length = value;
@@ -10060,6 +10068,16 @@ static const VMStateDescription vmstate_sgi_kona_gl_zoom_attrib = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_gl_pack = {
+    .name = TYPE_SGI_KONA "/gl-pack",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(pack_swap_bytes, SGIKonaGLPipe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_bitmap_unpack = {
     .name = TYPE_SGI_KONA "/gl-bitmap-unpack",
     .version_id = 1,
@@ -10207,6 +10225,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              vmstate_sgi_kona_gl_transfer_pipe, SGIKonaGLPipe),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_bitmap_unpack, SGIKonaGLPipe),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
+                             vmstate_sgi_kona_gl_pack, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
