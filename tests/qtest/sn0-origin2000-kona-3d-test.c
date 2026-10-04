@@ -4589,18 +4589,20 @@ static void texture_native_format_bind(QTestState *s, unsigned index,
 static void test_texture_ordinary_source(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    static const unsigned formats[] = { 0, 1, 2, 3, 6, 7 };
+    static const unsigned formats[] = { 0, 1, 2, 3, 6, 7, 9, 10 };
     static const uint32_t expected[] = {
         0x800000ff, 0x008000ff, 0x000080ff, 0x00000080,
-        0x808080ff, 0x80808040,
+        0x808080ff, 0x80808040, 0x204080ff, 0x20408010,
     };
-    unsigned index = mode < 12 ? mode % 6 : 1;
-    unsigned format = formats[index], components = format == 7 ? 2 : 1;
-    bool dma = (mode >= 6 && mode < 12) || mode == 13;
-    bool migrate = mode == 12 || mode == 13;
-    uint32_t pixel = mode == 14 ? 0 : expected[index];
+    unsigned index = mode < 16 ? mode % 8 : 1;
+    unsigned format = formats[index];
+    unsigned components = format == 7 ? 2 : format == 9 ? 3 :
+                          format == 10 ? 4 : 1;
+    bool dma = (mode >= 8 && mode < 16) || mode == 17;
+    bool migrate = mode == 16 || mode == 17;
+    uint32_t pixel = mode == 18 ? 0 : expected[index];
     unsigned bytes = 4 * components;
-    uint8_t source[12] = { 0 };
+    uint8_t source[20] = { 0 };
     uint32_t h[20];
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
     g_autofree char *dir = NULL, *uri = NULL;
@@ -4615,9 +4617,8 @@ static void test_texture_ordinary_source(gconstpointer opaque)
     h[17] |= dma ? 4 : 0;
     kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
     for (unsigned k = 0; k < 4; k++) {
-        source[1 + k * components] = 128;
-        if (components == 2) {
-            source[2 + k * components] = 64;
+        for (unsigned c = 0; c < components; c++) {
+            source[1 + k * components + c] = 128 >> c;
         }
     }
     if (dma) {
@@ -4628,7 +4629,7 @@ static void test_texture_ordinary_source(gconstpointer opaque)
     if (!dma) {
         qtest_writel(s, REG_COMMAND, ldl_be_p(source));
     }
-    if (mode == 14) {
+    if (mode == 18) {
         qtest_writel(s, REG_COMMAND + 0xc + 0x20 * 0x1fc, 0);
         return_context_restore(s, SAVE_AREA);
     }
@@ -4654,7 +4655,7 @@ static void test_texture_ordinary_source(gconstpointer opaque)
         assert_texture_pixel(s, k % 2, k / 2, pixel);
     }
     texture_native_format_bind(s, 37, 0, 0, 0);
-    assert_texture_pixel(s, 0, 0, mode == 14 ? 0 : pixel | 0xff);
+    assert_texture_pixel(s, 0, 0, mode == 18 ? 0 : pixel | 0xff);
     texture_native_format_bind(s, 41, 0, 0, 0);
     assert_texture_pixel(s, 0, 0, pixel);
     texture_native_format_bind(s, 0, 0, 0, 0);
@@ -6230,12 +6231,15 @@ static void test_read_pixels_typed(gconstpointer opaque)
 static void test_read_pixels_colour(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    unsigned format = mode >= 64 ? (mode - 64) / 7 :
+    unsigned format = mode >= 96 ? 9 + (mode - 96) / 7 :
+                      mode >= 64 ? (mode - 64) / 7 :
                       mode < 35 ? 3 + mode / 7 : 4;
-    unsigned type = mode >= 64 ? (mode - 64) % 7 :
+    unsigned type = mode >= 96 ? (mode - 96) % 7 :
+                    mode >= 64 ? (mode - 64) % 7 :
                     mode < 35 ? mode % 7 : mode == 35 ? 5 : 4;
     unsigned components = format <= 3 || format == 6 ? 1 :
-                          format == 7 ? 2 : format == 4 ? 3 : 4;
+                          format == 7 ? 2 :
+                          (format == 4 || format == 9) ? 3 : 4;
     unsigned scalar_bytes = type < 2 ? 1 : type < 4 ? 2 : 4;
     static const uint32_t maximum[] = {
         0x7f, 0xff, 0x7fff, 0xffff, 0x7fffffff, 0xffffffff, 0x3f800000,
@@ -6258,7 +6262,8 @@ static void test_read_pixels_colour(gconstpointer opaque)
     stl_be_p(expected, 1);
     for (unsigned pixel = 0; pixel < 4; pixel++) {
         for (unsigned c = 0; c < components; c++) {
-            bool one = format <= 2 ? pixel == format + 1 :
+            bool one = format >= 9 ? (c == 3 || pixel == 3 - c) :
+                       format <= 2 ? pixel == format + 1 :
                        format == 3 || (format == 7 && c == 1) ||
                        (format == 5 && c == 3) ||
                        ((format == 6 || format == 7) ? pixel != 0 :
@@ -6301,12 +6306,14 @@ static void test_read_pixels_pack_swap(gconstpointer opaque)
     static const uint32_t maximum[] = {
         0xff, 0xff, 0xffff, 0xffff, 0xffffffff, 0xffffffff,
     };
-    unsigned format = mode >= 32 ? (mode == 53 ? 1 : (mode - 32) / 7) :
+    unsigned format = mode >= 54 ? 9 + (mode - 54) / 7 :
+                      mode >= 32 ? (mode == 53 ? 1 : (mode - 32) / 7) :
                       mode < 21 ? formats[mode / 7] : mode == 30 ? 3 : 5;
-    unsigned type = mode >= 32 ? (mode == 53 ? 3 : (mode - 32) % 7) :
+    unsigned type = mode >= 54 ? (mode - 54) % 7 :
+                    mode >= 32 ? (mode == 53 ? 3 : (mode - 32) % 7) :
                     mode < 21 ? mode % 7 : 3;
     unsigned components = format <= 3 ? 1 : format == 7 ? 2 :
-                          format == 4 ? 3 : 4;
+                          (format == 4 || format == 9) ? 3 : 4;
     unsigned scalar_bytes = type < 2 ? 1 : type < 4 ? 2 : 4;
     bool swap = mode != 21 && mode != 22 && mode != 24 &&
                 mode != 27 && mode != 28 && mode != 29;
@@ -6361,7 +6368,8 @@ static void test_read_pixels_pack_swap(gconstpointer opaque)
     stl_be_p(expected, 1);
     for (unsigned pixel = 0; pixel < 4; pixel++) {
         for (unsigned c = 0; c < components; c++) {
-            double value = format <= 2 ? (format + 1) / 8.0 :
+            double value = format >= 9 ? (c == 3 ? 0.625 : (3 - c) / 8.0) :
+                           format <= 2 ? (format + 1) / 8.0 :
                            format == 3 || (format == 7 && c == 1) || c == 3 ?
                            0.625 : format == 7 ? 0.75 : (c + 1) / 8.0;
             double converted = type == 6 ? 0 : value * maximum[type];
@@ -6486,6 +6494,66 @@ static void test_read_pixels_typed_extent(gconstpointer opaque)
         qtest_memread(s, RETURN_PAGE, got, sizeof(got));
         g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
     }
+    assert_native_query_word(s, 0xb92, 0x207, false);
+    qtest_quit(s);
+}
+
+static void test_reordered_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned format = mode & 1 ? 10 : 9, components = mode & 1 ? 4 : 3;
+    unsigned type = mode == 2 ? 3 : mode == 3 ? 6 : 1;
+    unsigned size = type == 1 ? 1 : type == 3 ? 2 : 4;
+    bool dma = mode >= 2;
+    const uint8_t pixels[2][4] = { { 64, 128, 192, 128 },
+                                  { 16, 32, 48, 64 } };
+    uint8_t source[36] = { 0 };
+    uint32_t h[] = { 2, 1, format, type, 1, dma, 0, 0 };
+    unsigned bytes = 2 * components * size;
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    if (mode == 2) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 1 }, 2);
+    }
+    for (unsigned x = 0; x < 2; x++) {
+        for (unsigned c = 0; c < components; c++) {
+            uint8_t *at = source + 1 + (x * components + c) * size;
+
+            if (size == 1) {
+                *at = pixels[x][c];
+            } else if (size == 2) {
+                stw_le_p(at, pixels[x][c] * 257 + 1);
+            } else {
+                stl_be_p(at, fbits(pixels[x][c] / 255.0));
+            }
+        }
+    }
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380001, source + 1, bytes);
+    }
+    kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    if (dma) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 0 }, 2);
+        texture_dma_packet(s, 1, bytes, bytes, 0);
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    } else {
+        for (unsigned k = 0; k < DIV_ROUND_UP(1 + bytes, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(source + k * 4));
+        }
+    }
+    expected_clear(e, 0);
+    for (unsigned x = 0; x < 2; x++) {
+        for (unsigned c = 0; c < 3; c++) {
+            e->rgb[((127 - 64) * 128 + 64 + x) * 3 + c] = pixels[x][2 - c];
+        }
+    }
+    assert_window_matches(s, e);
     assert_native_query_word(s, 0xb92, 0x207, false);
     qtest_quit(s);
 }
@@ -9968,8 +10036,9 @@ int main(int argc, char **argv)
     }
     static const char *texture_source_cases[] = {
         "red-pio", "green-pio", "blue-pio", "alpha-pio", "luminance-pio",
-        "luminance-alpha-pio", "red-dma", "green-dma", "blue-dma",
-        "alpha-dma", "luminance-dma", "luminance-alpha-dma",
+        "luminance-alpha-pio", "bgr-pio", "bgra-pio", "red-dma",
+        "green-dma", "blue-dma", "alpha-dma", "luminance-dma",
+        "luminance-alpha-dma", "bgr-dma", "bgra-dma",
         "partial-pio-migrates", "pending-dma-migrates",
         "partial-pio-context-aborted",
     };
@@ -10441,6 +10510,29 @@ int main(int argc, char **argv)
     static const char *colour_types[] = {
         "byte", "ubyte", "short", "ushort", "int", "uint", "float",
     };
+    static const char *reordered_pixels_cases[] = {
+        "bgr-pio", "bgra-pio", "bgr-ushort-swapped-dma", "bgra-float-dma",
+    };
+    for (unsigned k = 0; k < ARRAY_SIZE(reordered_pixels_cases); k++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/reordered-pixels/%s",
+            reordered_pixels_cases[k]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(k), test_reordered_pixels);
+    }
+    for (unsigned mode = 0; mode < 14; mode++) {
+        g_autofree char *read = g_strdup_printf(
+            "sn0/origin2000/kona-3d/reordered-read/%s-%s",
+            mode < 7 ? "bgr" : "bgra", colour_types[mode % 7]);
+        g_autofree char *pack = g_strdup_printf(
+            "sn0/origin2000/kona-3d/reordered-pack/%s-%s",
+            mode < 7 ? "bgr" : "bgra", colour_types[mode % 7]);
+
+        qtest_add_data_func(read, GUINT_TO_POINTER(96 + mode),
+                            test_read_pixels_colour);
+        qtest_add_data_func(pack, GUINT_TO_POINTER(54 + mode),
+                            test_read_pixels_pack_swap);
+    }
     static const char *single_formats[] = { "red", "green", "blue" };
     for (unsigned mode = 0; mode < 42; mode++) {
         g_autofree char *path = g_strdup_printf(
