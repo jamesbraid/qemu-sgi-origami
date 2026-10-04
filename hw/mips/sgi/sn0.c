@@ -782,6 +782,11 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                               node->cpuclk);
         object_property_set_bool(OBJECT(node->cpu[slice]), "big-endian", true,
                                  &error_abort);
+        if (node->model_node->cpu_slots) {
+            object_property_set_uint(OBJECT(node->cpu[slice]), "reset-mode",
+                node->model_node->cpu_slots->value->assembly->mode_bits &
+                SN0_PROCESSOR_MODE_MASK, &error_abort);
+        }
         qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
         cpu_mips_irq_init_cpu(node->cpu[slice]);
         cpu_mips_clock_init(node->cpu[slice]);

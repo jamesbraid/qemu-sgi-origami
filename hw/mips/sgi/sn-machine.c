@@ -4648,7 +4648,6 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     const SGIModelTopology *t = sgi_machine_topology(machine);
-    uint32_t mode_bits;
     CPUState *cs;
     unsigned int node, slice;
 
@@ -4685,16 +4684,9 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
         return;
     }
 
-    mode_bits = t ?
-        sgi_machine_topology_node0(t)->cpu_slots->value->assembly->mode_bits : 0;
     qemu_devices_reset(type);
     CPU_FOREACH(cs) {
-        CPUMIPSState *env = &MIPS_CPU(cs)->env;
-
         cpu_reset(cs);
-        env->CP0_Config0 =
-            (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-            (mode_bits & SN0_PROCESSOR_MODE_MASK);
     }
     for (node = 0; node < s->num_nodes; node++) {
         SN0NodeState *node_state = s->nodes[node];

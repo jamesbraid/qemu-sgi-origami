@@ -29,9 +29,7 @@
 
 static unsigned int r10k_scache_size(const CPUMIPSState *env)
 {
-    return r10k_scache_capacity(env->cfg.scache_size,
-                                extract32(env->CP0_Config0,
-                                          CP0C0_R10K_SS, 3));
+    return env->r10k->scache_size;
 }
 
 static unsigned int r10k_scache_line_size(const CPUMIPSState *env)
@@ -492,10 +490,9 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         return;
     }
     /*
-     * The CPU definition supplies the default secondary-cache capacity. An
-     * R10000's reset Config input can select the larger fitted cache. Index
-     * diagnostic operations use the translated physical address and address
-     * bit zero selects the way.
+     * The capacity is the one realize sized the arrays to, from the CPU
+     * definition and any board reset mode. Index diagnostic operations use
+     * the translated physical address and address bit zero selects the way.
      */
     if (cache_type == 3 && (cache_operation == 0b001 ||
                            cache_operation == 0b010 ||

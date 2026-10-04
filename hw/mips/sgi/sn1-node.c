@@ -801,28 +801,12 @@ static void sn1_prom_flash_programmed(void *opaque, unsigned position)
     }
 }
 
-/*
- * The reset-latched processor mode field is 25 bits wide (bits 24:0 of
- * CP0_Config0), as on the R10000 family. sn-machine.c uses the same mask for
- * the Hub. Keep it here because this node's reset cannot share the Hub reset
- * order (see sn1_node_full_reset).
- */
-#define SN1_PROCESSOR_MODE_MASK 0x01ffffff
-
 void sn1_node_reset_cpus(SN1NodeState *node)
 {
-    uint32_t mode_bits =
-        node->model_node->cpu_slots->value->assembly->mode_bits;
     unsigned int i;
 
     for (i = 0; i < node->nr_cpus; i++) {
-        CPUState *cs = CPU(node->cpu[i]);
-        CPUMIPSState *env = &node->cpu[i]->env;
-
-        cpu_reset(cs);
-        env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)
-                           SN1_PROCESSOR_MODE_MASK) |
-                           (mode_bits & SN1_PROCESSOR_MODE_MASK);
+        cpu_reset(CPU(node->cpu[i]));
     }
 }
 
@@ -1424,6 +1408,10 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         qdev_connect_clock_in(cpu_dev, "clk-in", node->cpuclk);
         object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                                  &error_abort);
+        /* The reset-latched processor mode field is Config0 bits 24:0. */
+        object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
+            node->model_node->cpu_slots->value->assembly->mode_bits &
+            0x01ffffff, &error_abort);
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,
                                  &error_abort);
