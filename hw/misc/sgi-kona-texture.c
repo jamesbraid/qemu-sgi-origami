@@ -438,7 +438,8 @@ bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
 {
     SGIKonaTextureObject *o;
 
-    if ((physical_size & 15) > 13 || ((physical_size >> 4) & 15) > 13) {
+    if ((physical_size & ~0xffu) || (physical_size & 15) > 13 ||
+        ((physical_size >> 4) & 15) > 13) {
         return false;
     }
     o = texture_object(s, handle, false);
@@ -1264,7 +1265,8 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         valid = qemu_get_be32(f);
         o->native_layout = qemu_get_be32(f);
-        if (valid > 1 || (o->native_layout & 15) > 13 ||
+        if (valid > 1 || (o->native_layout & ~0xffu) ||
+            (o->native_layout & 15) > 13 ||
             ((o->native_layout >> 4) & 15) > 13 ||
             (valid && (o->native_depth || !o->native_width))) {
             goto invalid;
