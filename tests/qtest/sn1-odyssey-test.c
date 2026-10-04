@@ -10453,6 +10453,105 @@ static void texture_coordinate_replay(QTestState *qts, uint64_t page)
     }
 }
 
+static void context_save_texture_coordinate_inactive(bool nonunit,
+                                                     bool negative_zero)
+{
+    const uint64_t pages[2] = { ODSY_SHADOW_PAGE, ODSY_SHADOW_PAGE + 0x1000 };
+    uint32_t coords[2][4] = {
+        { 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000 },
+        { 0x3e000000, 0x3f400000, 0x3f600000, 0x3f800000 },
+    };
+    uint32_t records[2][5];
+    unsigned words[2];
+    QTestState *qts = board_start("");
+
+    if (nonunit) {
+        coords[0][3] = 0x40000000;
+        coords[1][3] = 0x3f000000;
+    }
+    if (negative_zero) {
+        coords[0][2] = 0x80000000;
+        coords[1][2] = 0;
+    }
+    for (unsigned owner = 0; owner < 2; owner++) {
+        words[owner] = nonunit ? 5 : coords[owner][2] ? 4 : 3;
+        records[owner][0] = nonunit ? 0xc380d025 :
+                            coords[owner][2] ? 0xc380cc23 : 0xc380c821;
+        memcpy(&records[owner][1], coords[owner], 4 * sizeof(uint32_t));
+    }
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    for (unsigned slot = 0; slot < 4; slot++) {
+        for (unsigned owner = 0; owner < 2; owner++) {
+            uint64_t page = pages[owner];
+            uint32_t descriptor = (0xa5a5a5a5 & ~0x03000000) | (slot << 24);
+
+            qtest_memset(qts, page, 0xa5, 4096);
+            qtest_writel(qts, page + 0x84, descriptor);
+            qtest_writel(qts, page + 0x88, 0x5a5a5a5a);
+            qtest_writel(qts, page + ODSY_CTX_SWITCH_DONE_OFFSET, 0);
+            /* Texture targets are inactive, independently of current STRQ. */
+            push_user_words(qts, (uint32_t[]) { ODSY_REG_TEX_MODE, 0 }, 2);
+            push_user_words(qts, (uint32_t[]) {
+                0xc380d025, coords[owner][0], coords[owner][1],
+                coords[owner][2], coords[owner][3],
+            }, 5);
+            reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+            qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                         (UINT64_C(7) << 40) |
+                         ((uint64_t)(owner ? 1 : 2) << 16) | 1);
+            g_assert_cmphex(qtest_readl(qts, page +
+                                        ODSY_CTX_SWITCH_DONE_OFFSET), ==, 1);
+            g_assert_cmphex(qtest_readl(qts, page + 0x84), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, page + 0x88), ==, 0);
+            g_assert_cmphex(qtest_readl(qts, page + 0x140), ==,
+                            records[owner][0]);
+            for (unsigned i = 0; i < 4; i++) {
+                g_assert_cmphex(qtest_readl(qts, page + 0x400 + 4 * i), ==,
+                                i < words[owner] - 1 ? coords[owner][i] :
+                                0xa5a5a5a5);
+            }
+            for (unsigned other = 1; other < 4; other++) {
+                g_assert_cmphex(qtest_readl(qts, page + 0x140 + 4 * other),
+                                ==, 0xa5a5a5a5);
+                for (unsigned i = 0; i < 4; i++) {
+                    g_assert_cmphex(qtest_readl(qts, page + 0x400 +
+                                                16 * other + 4 * i), ==,
+                                    0xa5a5a5a5);
+                }
+            }
+        }
+        for (unsigned owner = 0; owner < 2; owner++) {
+            texture_coordinate_replay(qts, pages[owner]);
+            texture_current_query(qts, records[owner], words[owner],
+                                  2, owner ? 8 : 5, 1);
+        }
+        /* The restored R must come from guest RAM, including its raw sign. */
+        qtest_writel(qts, pages[0] + 0x408, 0x3ec00000);
+        records[0][3] = 0x3ec00000;
+        texture_coordinate_replay(qts, pages[0]);
+        texture_current_query(qts, records[0], words[0], 2, 5, 1);
+        records[0][3] = coords[0][2];
+    }
+    qtest_quit(qts);
+}
+
+static void test_context_save_texture_coordinate_inactive_r(void)
+{
+    context_save_texture_coordinate_inactive(false, false);
+}
+
+static void test_context_save_texture_coordinate_inactive_q(void)
+{
+    context_save_texture_coordinate_inactive(true, false);
+}
+
+static void test_context_save_texture_coordinate_inactive_negative_zero_r(void)
+{
+    context_save_texture_coordinate_inactive(false, true);
+}
+
 static void test_context_save_texture_coordinate(void)
 {
     const uint32_t pixels[4] = {
@@ -15362,6 +15461,13 @@ int main(int argc, char **argv)
                    test_query_record_migration);
     qtest_add_func("sn1/odyssey/query-record-migration-defaults",
                    test_query_record_migration_defaults);
+    qtest_add_func("sn1/odyssey/context-save-texture-coordinate-inactive-r",
+                   test_context_save_texture_coordinate_inactive_r);
+    qtest_add_func("sn1/odyssey/context-save-texture-coordinate-inactive-q",
+                   test_context_save_texture_coordinate_inactive_q);
+    qtest_add_func(
+        "sn1/odyssey/context-save-texture-coordinate-inactive-negative-zero-r",
+        test_context_save_texture_coordinate_inactive_negative_zero_r);
     qtest_add_func("sn1/odyssey/context-save-texture-coordinate",
                    test_context_save_texture_coordinate);
     qtest_add_func("sn1/odyssey/context-save-idle-descriptors",
