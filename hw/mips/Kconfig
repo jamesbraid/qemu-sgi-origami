@@ -139,6 +139,7 @@ config SGI_XIO_BOARD
 config SGI_XIO_BOARD_TEST
     bool
     default y if SGI_DEVICES
+    depends on TEST_DEVICES
     select SGI_XIO_BOARD
     select SGI_XIO_TEST_TARGET
     select SGI_PI_GFX
@@ -189,6 +190,7 @@ config SGI_PCI_SHOEHORN
 config SGI_BOARD_TEST
     bool
     default y if SGI_DEVICES
+    depends on TEST_DEVICES
     select SGI_BASEIO
     select SGI_XIO_BASEIO
     select SGI_PCI_EXPANSION
