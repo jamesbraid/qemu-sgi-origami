@@ -82,6 +82,9 @@ void sgi_gl_init(SGIGLContext *c, uint32_t hw_id)
 {
     memset(c, 0, sizeof(*c));
     c->hw_id = hw_id;
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        c->hints[i] = SGI_GL_DONT_CARE;
+    }
     for (int i = 0; i < 4; i++) {
         c->cur_color[i] = 1.0f;
     }
@@ -602,6 +605,7 @@ static void sgi_gl_matrix_command(SGIGLContext *c, const SGIGLCmd *cmd)
 
 /* The arguments each command takes. */
 static const uint8_t sgi_gl_nargs[] = {
+    [SGI_GL_OP_HINT] = 2,
     [SGI_GL_OP_VIEWPORT] = 4,
     [SGI_GL_OP_CLEAR_COLOR] = 4,
     [SGI_GL_OP_CLEAR_DEPTH] = 1,
@@ -1088,6 +1092,35 @@ static void sgi_gl_hold(SGIGLContext *c, unsigned int n, const float *v)
     memcpy(c->held[n], v, sizeof(c->held[n]));
 }
 
+void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
+                           const uint32_t *bits, unsigned int components,
+                           float out[SGI_GL_VERTEX_FLOATS])
+{
+    memset(out, 0, SGI_GL_VERTEX_FLOATS * sizeof(float));
+    out[SGI_GL_V_POSITION + 3] = 1.0f;
+    memcpy(&out[SGI_GL_V_POSITION], bits, components * sizeof(uint32_t));
+    memcpy(&out[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
+    memcpy(&out[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
+    sgi_gl_texture_coord(c, &out[SGI_GL_V_TEXCOORD]);
+    memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
+    out[SGI_GL_V_INDEX] = c->cur_index;
+    /* Material and lighting belong to the instant this vertex arrived. */
+    if (sgi_gl_lit(c)) {
+        sgi_gl_light_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
+                            &out[SGI_GL_V_COLOR], &out[SGI_GL_V_BACK_COLOR]);
+    } else {
+        memcpy(&out[SGI_GL_V_BACK_COLOR], c->cur_color,
+               sizeof(c->cur_color));
+    }
+    if (c->polygon.enabled &&
+        (mode == SGI_GL_TRIANGLE_STRIP || mode == SGI_GL_TRIANGLE_FAN ||
+         mode == SGI_GL_QUAD_STRIP)) {
+        uint32_t edge = 1;
+
+        memcpy(&out[SGI_GL_V_EDGE], &edge, sizeof(edge));
+    }
+}
+
 /*
  * One vertex of the primitive open since glBegin (OpenGL 1.2.1, 2.6.1),
  * carrying the current attributes. The context holds at most three
@@ -1109,34 +1142,8 @@ static void sgi_gl_vertex(SGIGLContext *c, const SGIGLSink *sink,
         qemu_log_mask(LOG_UNIMP, "sgi-gl: vertex outside glBegin ignored\n");
         return;
     }
-    cur[SGI_GL_V_POSITION + 3] = 1.0f;
-    memcpy(&cur[SGI_GL_V_POSITION], pos, components * sizeof(float));
-    memcpy(&cur[SGI_GL_V_COLOR], c->cur_color, sizeof(c->cur_color));
-    memcpy(&cur[SGI_GL_V_NORMAL], c->cur_normal, sizeof(c->cur_normal));
-    sgi_gl_texture_coord(c, &cur[SGI_GL_V_TEXCOORD]);
-    memcpy(&cur[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
-    cur[SGI_GL_V_INDEX] = c->cur_index;
-    /*
-     * Lit where it arrives, under the material and matrices current then:
-     * glMaterial may change between the vertices of a primitive, and the
-     * light, light model and modelview may not (2.13.2, 2.6.3).
-     */
-    if (sgi_gl_lit(c)) {
-        sgi_gl_light_vertex(c, &cur[SGI_GL_V_POSITION], c->cur_normal,
-                            &cur[SGI_GL_V_COLOR], &cur[SGI_GL_V_BACK_COLOR]);
-    } else {
-        memcpy(&cur[SGI_GL_V_BACK_COLOR], c->cur_color,
-               sizeof(c->cur_color));
-    }
-
-    if (c->polygon.enabled &&
-        (c->begin_mode == SGI_GL_TRIANGLE_STRIP ||
-         c->begin_mode == SGI_GL_TRIANGLE_FAN ||
-         c->begin_mode == SGI_GL_QUAD_STRIP)) {
-        uint32_t edge = 1;
-
-        memcpy(&cur[SGI_GL_V_EDGE], &edge, sizeof(edge));
-    }
+    sgi_gl_capture_vertex(c, c->begin_mode, (const uint32_t *)pos,
+                          components, cur);
     if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
         SGIGLPolygonAssembly *p = &c->polygon;
 
@@ -2063,6 +2070,12 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
     sink->raster(sink->opaque, &op);
 }
 
+static bool sgi_gl_hint_mode(uint32_t mode)
+{
+    return mode == SGI_GL_DONT_CARE || mode == SGI_GL_FASTEST ||
+           mode == SGI_GL_NICEST;
+}
+
 void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                     const SGIGLCmd *cmd)
 {
@@ -2076,6 +2089,16 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
         return;
     }
     switch (cmd->op) {
+    case SGI_GL_OP_HINT:
+        if (c->in_begin || a[0] < SGI_GL_PERSPECTIVE_CORRECTION_HINT ||
+            a[0] > SGI_GL_FOG_HINT || !sgi_gl_hint_mode(a[1])) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-gl: hint target 0x%x mode 0x%x ignored%s\n",
+                          a[0], a[1], c->in_begin ? " inside glBegin" : "");
+            return;
+        }
+        c->hints[a[0] - SGI_GL_PERSPECTIVE_CORRECTION_HINT] = a[1];
+        return;
     case SGI_GL_OP_TEXCOORD2F:
     case SGI_GL_OP_TEXCOORD3F:
     case SGI_GL_OP_TEXCOORD4F:
@@ -2540,6 +2563,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return false;
     }
     switch (pname) {
+    case SGI_GL_PERSPECTIVE_CORRECTION_HINT ... SGI_GL_FOG_HINT:
+        out[0] = c->hints[pname - SGI_GL_PERSPECTIVE_CORRECTION_HINT];
+        *n = 1;
+        return true;
     case SGI_GL_CURRENT_COLOR:
         for (int i = 0; i < 4; i++) {
             out[i] = sgi_gl_bits(c->cur_color[i]);
@@ -2950,6 +2977,17 @@ bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
     return true;
 }
 
+void sgi_gl_discard_primitive(SGIGLContext *c)
+{
+    if (c->polygon.enabled && c->begin_mode == SGI_GL_POLYGON) {
+        sgi_gl_polygon_release(&c->polygon);
+    }
+    c->in_begin = false;
+    c->begin_mode = 0;
+    c->nheld = 0;
+    c->strip_odd = c->strip_prev = c->strip_swap = 0;
+}
+
 bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
 {
     const SGIGLDrawState *st = &c->cur;
@@ -2998,6 +3036,12 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "tx_depth", c->tx_depth },
     };
 
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        if (!sgi_gl_hint_mode(c->hints[i])) {
+            error_setg(errp, "sgi-gl: hint %u mode 0x%x", i, c->hints[i]);
+            return false;
+        }
+    }
     for (size_t i = 0; i < ARRAY_SIZE(flags); i++) {
         if (flags[i].value > 1) {
             error_setg(errp, "sgi-gl: %s is %u, not 0 or 1", flags[i].name,
@@ -3901,6 +3945,9 @@ static int sgi_gl_context_pre_load(void *opaque)
 
     memset(c->polygon_stipple, 0xff, sizeof(c->polygon_stipple));
     c->line_phase = 0;
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        c->hints[i] = SGI_GL_DONT_CARE;
+    }
     c->strip_prev = c->strip_swap = 0;
     c->line_phase_loaded = c->draw_error_loaded = false;
     sgi_gl_polygon_release(&c->polygon);
@@ -3952,6 +3999,29 @@ static const VMStateDescription vmstate_sgi_gl_texture_coords = {
     .fields = (const VMStateField[]) {
         VMSTATE_SGI_GL_FLOATS(cur_texcoord, SGIGLContext, 4),
         VMSTATE_SGI_GL_FLOATS(raster_texcoord, SGIGLContext, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_gl_hints_needed(void *opaque)
+{
+    const SGIGLContext *c = opaque;
+
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        if (c->hints[i] != SGI_GL_DONT_CARE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_gl_hints = {
+    .name = "sgi-gl-context/hints",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_hints_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(hints, SGIGLContext, SGI_GL_HINTS),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -4020,6 +4090,7 @@ const VMStateDescription vmstate_sgi_gl_context = {
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_gl_hints,
         &vmstate_sgi_gl_clear_stencil,
         &vmstate_sgi_gl_rasterization,
         &vmstate_sgi_gl_polygon_stipple,

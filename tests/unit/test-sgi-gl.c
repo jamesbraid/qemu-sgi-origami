@@ -3245,6 +3245,54 @@ static uint32_t frag_stencil_at(const FragScene *f, int x, int y)
     return f->p.stencil[planes_index(x, y)];
 }
 
+/* Shared clip-union semantics, independent of any family's packet format. */
+static void test_stencil_clear_clip_union(void)
+{
+    FragScene f;
+    SGIGLDrawable d = {
+        .bound = true,
+        .origin = { 3, 5 },
+        .clip = { .n = 2, .r = { { 7, 9, 17, 19 }, { 27, 13, 39, 29 } } },
+        .front = 0,
+        .back = 1,
+    };
+
+    frag_init(&f);
+    sgi_gl_set_drawable(&f.c, &d);
+    for (unsigned i = 0; i < W * H; i++) {
+        f.p.stencil[i] = 0xa5;
+        f.p.colour[0][i] = 0x123456;
+        f.p.colour[1][i] = 0x654321;
+        f.p.depth[i] = 0x345678;
+    }
+    frag_command(&f, SGI_GL_OP_VIEWPORT, (uint32_t[]){ 0, 0, 1, 1 }, 4);
+    frag_command(&f, SGI_GL_OP_SCISSOR, (uint32_t[]){ 5, 7, 27, 19 }, 4);
+    enable(&f.c, SGI_GL_SCISSOR_TEST, true);
+    enable(&f.c, SGI_GL_STENCIL_TEST, true);
+    frag_stencil(&f, 0x200, 0, 255, 0, 0, 0);
+    enable(&f.c, SGI_GL_DEPTH_TEST, true);
+    frag_command(&f, SGI_GL_OP_DEPTH_FUNC, (uint32_t[]){ 0x200 }, 1);
+    frag_command(&f, SGI_GL_OP_DRAW_BUFFERS, (uint32_t[]){ 0 }, 1);
+    frag_command(&f, SGI_GL_OP_STENCIL_MASK, (uint32_t[]){ 0x0f }, 1);
+    frag_command(&f, SGI_GL_OP_CLEAR_STENCIL, (uint32_t[]){ 0x13c }, 1);
+    frag_clear(&f, SGI_GL_STENCIL_BUFFER_BIT);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            bool owned = (x >= 7 && x <= 17 && y >= 9 && y <= 19) ||
+                         (x >= 27 && x <= 39 && y >= 13 && y <= 29);
+            bool scissored = x >= 8 && x <= 34 && y >= 12 && y <= 30;
+            unsigned i = planes_index(x, y);
+
+            g_assert_cmphex(f.p.stencil[i], ==,
+                            owned && scissored ? 0xac : 0xa5);
+            g_assert_cmphex(f.p.colour[0][i], ==, 0x123456);
+            g_assert_cmphex(f.p.colour[1][i], ==, 0x654321);
+            g_assert_cmphex(f.p.depth[i], ==, 0x345678);
+        }
+    }
+    sgi_gl_cleanup(&f.c);
+}
+
 /*
  * The stencil test (OpenGL 1.2.1, 4.1.5) and glClear's stencil buffer
  * (4.2.3), against an eight-bit stencil buffer:
@@ -5456,6 +5504,7 @@ typedef struct TexturePixels {
     uint32_t pixel[4];
     unsigned reads;
     bool fail;
+    bool lookup_enabled;
 } TexturePixels;
 
 static bool texture_read(void *opaque, uint32_t x, uint32_t y, uint32_t *rgba)
@@ -5722,6 +5771,20 @@ static void test_texture_dimensionality(void)
     }
     g_assert_cmpuint(pixels.reads, >, 0);
     g_assert_cmpuint(pixels.reads_2d, ==, 0);
+    /* Same S/T and depth: only a volume applies the out-of-range R border. */
+    image.wrap_r = SGI_GL_CLAMP_TO_BORDER;
+    image.border_color[1] = image.border_color[3] = 1;
+    for (int volume = 0; volume < 2; volume++) {
+        frag_init(&f);
+        image.volume = volume;
+        f.rec.target.texture = &image;
+        enable(&f.c, volume ? SGI_GL_TEXTURE_3D : SGI_GL_TEXTURE_2D, true);
+        texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+        texture_coord(&f, 0.25f, 0.25f, 1.5f, 1);
+        frag_quad(&f, 1, 0, 1, 1);
+        g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                        volume ? 0x00ff00 : 0x0000ff);
+    }
 }
 
 static void test_texture_3d_post_filter(void)
@@ -5746,6 +5809,106 @@ static void test_texture_3d_post_filter(void)
     g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x404080);
     g_assert_cmpuint(pixels.reads, ==, 8);
     g_assert_cmpuint(pixels.post_filter_calls, ==, 1);
+}
+
+/* Direct draw producers have the same environment clamp as context commands. */
+static void texture_lookup_post_filter(void *opaque, double rgba[4])
+{
+    static const double intensity[] = { 191.0 / 255, 64.0 / 255 };
+    TexturePixels *pixels = opaque;
+    uint32_t index;
+
+    pixels->post_filter_calls++;
+    if (!pixels->lookup_enabled) {
+        return;
+    }
+    index = floor(MIN(MAX(rgba[0], 0.0), 1.0) *
+                  (ARRAY_SIZE(intensity) - 1) + 0.5);
+    for (unsigned k = 0; k < 4; k++) {
+        rgba[k] = intensity[index];
+    }
+}
+
+static void test_texture_post_filter_lookup(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x808080ff, 0x808080ff, 0x808080ff, 0x808080ff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+    unsigned calls;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(128.0 / 255, 128.0 / 255, 128.0 / 255));
+
+    image.post_filter = texture_lookup_post_filter;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(128.0 / 255, 128.0 / 255, 128.0 / 255));
+    g_assert_cmpuint(pixels.post_filter_calls, >, 0);
+
+    calls = pixels.post_filter_calls;
+    pixels.lookup_enabled = true;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_MODULATE, 0, 0, 0);
+    texture_coord(&f, 0.25f, 0.25f, 0, 1);
+    frag_quad(&f, 0.5f, 0.5f, 0.5f, 1);
+    /* Lookup uses the filtered texel, then MODULATE multiplies .25 by .5. */
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==,
+                    texture_rgb(32.0 / 255, 32.0 / 255, 32.0 / 255));
+    g_assert_cmpuint(pixels.post_filter_calls, >, calls);
+}
+
+static void test_texture_environment_clamp(void)
+{
+    const double l = 128.0 / 255;
+    TexturePixels pixels = { .pixel = {
+        0x80808080, 0x80808080, 0x80808080, 0x80808080 } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+
+    for (unsigned format = 0; format < 2; format++) {
+        image.base_format = format ? SGI_GL_INTENSITY : SGI_GL_RGBA;
+        for (unsigned alpha_check = 0; alpha_check < 3; alpha_check++) {
+            double alpha = format ? 0.8 * (1 - l) + l : 0.8 * l;
+
+            frag_init(&f);
+            f.rec.target.texture = &image;
+            enable(&f.c, SGI_GL_TEXTURE_2D, true);
+            texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_BLEND, 0, 0, 0);
+            f.c.cur.texture_env_color[0] = -1;
+            f.c.cur.texture_env_color[1] = 2;
+            f.c.cur.texture_env_color[2] = 0.5;
+            f.c.cur.texture_env_color[3] = 2;
+            texture_coord(&f, 0.25f, 0.25f, 0, 1);
+            if (alpha_check) {
+                float ref = floor(alpha * 255 + 0.5) / 255;
+
+                ref += alpha_check == 1 ? -1.0 / 255 : 1.0 / 255;
+                enable(&f.c, SGI_GL_ALPHA_TEST, true);
+                frag_command(&f, SGI_GL_OP_ALPHA_FUNC,
+                             (uint32_t[]) { SGI_GL_NEVER_ENUM + SGI_GL_GREATER,
+                                            bits(ref) }, 2);
+            }
+            frag_quad(&f, 0.25f, 0.5f, 0.75f, 0.8f);
+            g_assert_cmphex(frag_pixel(&f, 16, 16), ==, alpha_check == 2 ? 0 :
+                           texture_rgb(0.25 * (1 - l), 0.5 * (1 - l) + l,
+                                       0.75 * (1 - l) + 0.5 * l));
+        }
+    }
 }
 
 /* Different unused channels expose accidental generic-RGBA environments. */
@@ -7810,6 +7973,243 @@ static void mipmap_init(MipmapFixture *f, uint32_t min, uint32_t mag,
     texture_coord(&f->scene, 0.5f, 0.5f, 0, 1);
 }
 
+static bool texture_filter_weight(void *opaque, double lambda, double *weight)
+{
+    double *value = opaque;
+
+    g_assert_cmpfloat(lambda, ==, -2);
+    *weight = *value;
+    return *value != -99;
+}
+
+static void test_texture_sharpen(void)
+{
+    const uint32_t modes[] = {
+        SGI_GL_LINEAR_SHARPEN_SGIS, SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS,
+        SGI_GL_LINEAR_SHARPEN_COLOR_SGIS,
+    };
+    const float coord[4] = { 0.375, 0.375, 0, 1 };
+    const float color[4] = { 1, 1, 1, 1 };
+
+    for (unsigned m = 0; m < ARRAY_SIZE(modes); m++) {
+        for (unsigned custom = 0; custom < 2; custom++) {
+            MipmapFixture f;
+            float out[4];
+            double weight = 2;
+
+            mipmap_init(&f, SGI_GL_LINEAR, modes[m], -2, -2);
+            f.image.opaque = &weight;
+            f.image.read_filter_weight = custom ? texture_filter_weight : NULL;
+            for (unsigned j = 0; j < 16; j++) {
+                f.pixels[0].pixels[j] = 0x80604080;
+            }
+            for (unsigned j = 0; j < 4; j++) {
+                f.pixels[1].pixels[j] = 0x402080c0;
+            }
+            g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                          &f.image, coord, color, out));
+            for (unsigned k = 0; k < 4; k++) {
+                const double a[] = { 128, 96, 64, 128 };
+                const double b[] = { 64, 32, 128, 192 };
+                bool selected = m == 0 || (m == 1 ? k == 3 : k != 3);
+                double expected = a[k] / 255;
+
+                if (selected) {
+                    expected = MIN(MAX(expected + (custom ? 2 : .5) *
+                                   (a[k] - b[k]) / 255, 0), 1);
+                }
+                g_assert_cmpfloat_with_epsilon(out[k], expected, 0.000001);
+            }
+            for (unsigned fallback = 0; fallback < 4; fallback++) {
+                f.pyramid.count = fallback == 0 ? 1 : 3;
+                f.pyramid.max_level = fallback == 1 ? 0 : 2;
+                f.levels[1].internal_format = fallback == 2 ? SGI_GL_RGB :
+                                                                    SGI_GL_RGBA;
+                f.levels[1].width = fallback == 3 ? 1 : 2;
+                g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                              &f.image, coord, color, out));
+                g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255,
+                                                0.000001);
+            }
+            f.pyramid.count = 3;
+            f.pyramid.max_level = 2;
+            f.levels[1].internal_format = SGI_GL_RGBA;
+            f.levels[1].width = 2;
+            f.pixels[1].fail = true;
+            for (unsigned k = 0; k < 4; k++) {
+                out[k] = .123f;
+            }
+            g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                           &f.image, coord, color, out));
+            g_assert_cmpfloat(out[0], ==, .123f);
+            f.pixels[1].fail = false;
+            f.image.read_filter_weight = texture_filter_weight;
+            for (unsigned bad = 0; bad < 2; bad++) {
+                weight = bad ? NAN : -99;
+                g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                               &f.image, coord, color, out));
+                g_assert_cmpfloat(out[0], ==, .123f);
+            }
+            sgi_gl_cleanup(&f.scene.c);
+        }
+    }
+}
+
+static void test_texture_detail(void)
+{
+    const uint32_t filters[] = {
+        SGI_GL_LINEAR_DETAIL_SGIS, SGI_GL_LINEAR_DETAIL_ALPHA_SGIS,
+        SGI_GL_LINEAR_DETAIL_COLOR_SGIS,
+    };
+    const float coord[4] = { .125, .125, 0, 1 };
+    const float color[4] = { 1, 1, 1, 1 };
+
+    for (unsigned m = 0; m < ARRAY_SIZE(filters); m++) {
+        for (unsigned modulate = 0; modulate < 2; modulate++) {
+            for (unsigned custom = 0; custom < 2; custom++) {
+                MipmapFixture f;
+                float out[4];
+                double weight = .25;
+                MipmapRecordPixels pixels = {
+                    .level = 0, .width = 2, .height = 2,
+                    .pixels = { 0xc04080ff, 0xc04080ff,
+                                0xc04080ff, 0xc04080ff },
+                };
+                SGIGLTexLevel detail = {
+                    .width = 2, .height = 2, .base_format = SGI_GL_RGBA,
+                    .internal_format = SGI_GL_RGBA,
+                    .read_texel = mipmap_read, .opaque = &pixels,
+                };
+
+                mipmap_init(&f, SGI_GL_LINEAR, filters[m], -2, -2);
+                for (unsigned j = 0; j < 16; j++) {
+                    f.pixels[0].pixels[j] = 0x80808080;
+                }
+                f.image.detail_image = &detail;
+                f.image.detail_mode = modulate ? SGI_GL_MODULATE : SGI_GL_ADD;
+                f.image.read_filter_weight = custom ? texture_filter_weight :
+                                                     NULL;
+                f.image.opaque = &weight;
+                g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                              &f.image, coord, color, out));
+                for (unsigned k = 0; k < 4; k++) {
+                    const double b[] = { 192, 64, 128, 255 };
+                    bool selected = m == 0 || (m == 1 ? k == 3 : k != 3);
+                    double expected = 128.0 / 255;
+                    double signed_detail = (custom ? .25 : .5) *
+                                           (2 * b[k] / 255 - 1);
+
+                    if (selected) {
+                        expected = modulate ? expected * (1 + signed_detail) :
+                                              expected + signed_detail;
+                    }
+                    expected = MIN(MAX(expected, 0), 1);
+                    g_assert_cmpfloat_with_epsilon(out[k], expected, 0.000001);
+                }
+                for (unsigned fallback = 0; fallback < 5; fallback++) {
+                    f.image.detail_image = fallback == 0 ? NULL : &detail;
+                    detail.internal_format = fallback == 1 ? SGI_GL_RGB :
+                                                                    SGI_GL_RGBA;
+                    detail.border = fallback == 2;
+                    detail.width = fallback == 3 ? 0 : 2;
+                    f.image.detail_level = fallback == 4 ? 1 : 0;
+                    g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                                  &f.image, coord, color, out));
+                    g_assert_cmpfloat_with_epsilon(out[0], 128.0 / 255,
+                                                   0.000001);
+                }
+                detail.width = 2;
+                f.image.detail_level = 0;
+                pixels.fail = true;
+                out[0] = .123f;
+                g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                               &f.image, coord, color, out));
+                g_assert_cmpfloat(out[0], ==, .123f);
+                sgi_gl_cleanup(&f.scene.c);
+            }
+        }
+    }
+}
+
+static void texture_detail_post_filter(void *opaque, double rgba[4])
+{
+    unsigned *calls = opaque;
+
+    (*calls)++;
+    g_assert_cmpfloat(rgba[0], ==, 1);
+    g_assert_cmpfloat(rgba[1], ==, 0);
+    rgba[0] = .25;
+    rgba[1] = .75;
+}
+
+static void test_texture_detail_repeat(void)
+{
+    MipmapFixture f;
+    MipmapRecordPixels pixels = {
+        .level = 0, .width = 2, .height = 2,
+        .pixels = { 0xff0080ff, 0x00ff80ff, 0xff0080ff, 0x00ff80ff },
+    };
+    SGIGLTexLevel detail = {
+        .width = 2, .height = 2, .base_format = SGI_GL_RGBA,
+        .internal_format = SGI_GL_RGBA,
+        .read_texel = mipmap_read, .opaque = &pixels,
+    };
+    const float color[4] = { 1, 1, 1, 1 };
+    const float s[] = { .125, .625, -.375, .375, .25 };
+
+    mipmap_init(&f, SGI_GL_LINEAR, SGI_GL_LINEAR_DETAIL_SGIS, -4, -4);
+    for (unsigned j = 0; j < 16; j++) {
+        f.pixels[0].pixels[j] = 0x80808080;
+    }
+    f.image.detail_image = &detail;
+    f.image.detail_mode = SGI_GL_ADD;
+    f.image.wrap_s = f.image.wrap_t = SGI_GL_CLAMP_TO_EDGE;
+    for (unsigned scale = 0; scale < 3; scale++) {
+        f.image.detail_level = -(int)scale;
+        for (unsigned i = 0; i < ARRAY_SIZE(s); i++) {
+            float coord[4] = { s[i] / (1 << scale), .125, 0, 1 };
+            float out[4];
+
+            g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                          &f.image, coord, color, out));
+            g_assert_cmpfloat_with_epsilon(out[0], i < 3 ? 1 : i == 3 ? 0 :
+                                                     128.0 / 255, 0.000001);
+            g_assert_cmpfloat_with_epsilon(out[1], i < 3 ? 0 : i == 3 ? 1 :
+                                                     128.0 / 255, 0.000001);
+        }
+    }
+    float out[4];
+    float coord[4] = { .125, .125, 0, 1 };
+
+    unsigned calls = 0;
+    const float half_color[4] = { .5, .5, .5, .5 };
+
+    f.image.detail_level = 0;
+    f.image.opaque = &calls;
+    f.image.post_filter = texture_detail_post_filter;
+    f.scene.c.cur.texture_env_mode = SGI_GL_MODULATE;
+    g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur, &f.image,
+                                            coord, half_color, out));
+    g_assert_cmpuint(calls, ==, 1);
+    g_assert_cmpfloat(out[0], ==, .125);
+    g_assert_cmpfloat(out[1], ==, .375);
+    f.image.post_filter = NULL;
+    f.scene.c.cur.texture_env_mode = SGI_GL_REPLACE;
+    f.image.detail_level = INT32_MIN;
+    out[0] = .123f;
+    g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur, &f.image,
+                                             coord, color, out));
+    g_assert_cmpfloat(out[0], ==, .123f);
+    /* A nonzero primary base level disables detail independently of LOD. */
+    f.pyramid.base_level = 1;
+    f.image.detail_level = 0;
+    g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur, &f.image,
+                                            coord, color, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    g_assert_cmpfloat(out[1], ==, 1);
+    sgi_gl_cleanup(&f.scene.c);
+}
+
 static void mipmap_point(MipmapFixture *f)
 {
     frag_command(&f->scene, SGI_GL_OP_COLOR4F,
@@ -8309,6 +8709,51 @@ static void test_texture_volume_footprint(gconstpointer opaque)
     }
 }
 
+/* R scales alter level selection, but have no effect on a 2D image. */
+static void test_texture_volume_r_scale(gconstpointer opaque)
+{
+    const double scales[] = { 0, 1, .5, 16, -1, NAN, INFINITY };
+    uint32_t mode = GPOINTER_TO_UINT(opaque);
+
+    for (unsigned volume = 0; volume < 2; volume++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(scales); i++) {
+            MipmapFixture f;
+            bool invalid = volume &&
+                           (!isfinite(scales[i]) || scales[i] < 0);
+            bool minify = volume && scales[i] == 16;
+
+            mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST,
+                         -1000, 1000);
+            f.pyramid.base_level = 1;
+            f.image.volume = volume;
+            f.image.wrap_r = SGI_GL_REPEAT;
+            f.image.lod_scale_r = scales[i];
+            for (unsigned level = 1; level < 3; level++) {
+                f.levels[level].depth = 3 - level;
+                f.levels[level].read_texel_3d = mipmap_volume_read;
+                for (unsigned p = 0; p < 8; p++) {
+                    f.pixels[level].pixels[p] = level == 1 ?
+                                                0x00ff00ff : 0x0000ffff;
+                }
+            }
+            frag_command(&f.scene, SGI_GL_OP_BEGIN,
+                         (uint32_t[]) { mode }, 1);
+            texture_volume_vertex(&f.scene, -.484375f, -.484375f, .125f);
+            texture_volume_vertex(&f.scene, -.359375f, -.484375f, .375f);
+            if (mode == SGI_GL_TRIANGLES) {
+                texture_volume_vertex(&f.scene, -.484375f, -.359375f, .125f);
+            }
+            frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+            g_assert_cmphex(frag_pixel(&f.scene, 17,
+                                     mode == SGI_GL_TRIANGLES ? 17 : 16), ==,
+                            invalid ? 0 : minify ? 0x0000ff : 0x00ff00);
+            g_assert_cmpuint(f.pixels[minify ? 2 : 1].reads > 0, ==, !invalid);
+            g_assert_cmpuint(f.pixels[minify ? 1 : 2].reads, ==, 0);
+            sgi_gl_cleanup(&f.scene.c);
+        }
+    }
+}
+
 /* Fixed bounds make the discrete lambda boundary exact, independent of log2. */
 static void test_mipmap_filter_boundaries(void)
 {
@@ -8441,6 +8886,44 @@ static void test_mipmap_projective_triangle(void)
 #ifdef SGI_GL_TEXTURE_TEST
 #include "tests/unit/sgi-gl-texture-test.h"
 
+static void test_texture_enhanced_cutoff(void)
+{
+    const uint32_t min[] = {
+        SGI_GL_NEAREST, SGI_GL_LINEAR, SGI_GL_NEAREST_MIPMAP_NEAREST,
+        SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_NEAREST_MIPMAP_LINEAR,
+        SGI_GL_LINEAR_MIPMAP_LINEAR,
+    };
+    SGIGLTexPyramid p = { .base_level = 0, .min_lod = -8, .max_lod = 8 };
+
+    const uint32_t mag[] = {
+        SGI_GL_LINEAR_SHARPEN_SGIS, SGI_GL_LINEAR_DETAIL_SGIS,
+    };
+
+    for (unsigned m = 0; m < ARRAY_SIZE(mag); m++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(min); i++) {
+            double cutoff = i == 2 || i == 3 ? .5 : 0;
+            uint32_t out[3];
+            double numeric[2];
+
+            g_assert_true(sgi_gl_texture_test_select(min[i],
+                          mag[m], &p, 2,
+                          exp2(cutoff - .001), out, numeric));
+            g_assert_cmpuint(out[2], ==, mag[m]);
+            g_assert_true(sgi_gl_texture_test_select(min[i],
+                          mag[m], &p, 2,
+                          exp2(cutoff + .001), out, numeric));
+            g_assert_cmpuint(out[2], !=, mag[m]);
+            p.min_lod = p.max_lod = cutoff;
+            g_assert_true(sgi_gl_texture_test_select(min[i],
+                          mag[m], &p, 2, 0, out, numeric));
+            g_assert_cmpuint(out[2], ==, mag[m]);
+            p.min_lod = -8;
+            p.max_lod = 8;
+        }
+    }
+}
+
+
 static void mipmap_close(double actual, double expected)
 {
     g_assert_true(isfinite(actual));
@@ -8498,6 +8981,31 @@ static void test_mipmap_numeric_derivatives(void)
         g_assert_false(sgi_gl_texture_test_derivatives(v, x,
             (double[]) { 0, 0, 0 }, 4, 4, result));
     }
+}
+
+static void test_mipmap_numeric_axis_bias(void)
+{
+    const double value[] = { 0, 0, 1 };
+    const double dx[] = { 0.75, 2, 0 };
+    const double dy[] = { 0, 1, 0 };
+    double out[5];
+
+    /* Public per-axis bias scales gradients before the footprint norm. */
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 2, 1, out));
+    mipmap_close(out[4], sqrt(52));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 1, 2, out));
+    mipmap_close(out[4], sqrt(73));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 0.5, 2, out));
+    mipmap_close(out[4], sqrt(66.25));
+    g_assert_true(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                        4, 2, 0, 0, out));
+    mipmap_close(out[4], 5);
+    g_assert_false(sgi_gl_texture_test_derivatives_scaled(value, dx, dy,
+                                                         4, 2, INFINITY, 1,
+                                                         out));
 }
 
 static void test_mipmap_numeric_selection(void)
@@ -9396,6 +9904,93 @@ static void test_line_stipple_error_clone(gconstpointer closed)
     sgi_gl_cleanup(&legacy);
 }
 
+static void assert_shared_hints(const SGIGLContext *c,
+                                const uint32_t expected[SGI_GL_HINTS])
+{
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        uint32_t out[SGI_GL_GET_WORDS];
+        unsigned n = 0;
+
+        g_assert_true(sgi_gl_get(c, 0xc50 + i, out, &n));
+        g_assert_cmpuint(n, ==, 1);
+        g_assert_cmphex(out[0], ==, expected[i]);
+    }
+}
+
+static void test_hints(void)
+{
+    SGIGLContext c, copy;
+    uint32_t expected[SGI_GL_HINTS] = {
+        0x1100, 0x1100, 0x1100, 0x1100, 0x1100,
+    };
+    const uint32_t bad_modes[] = { 0, 0x1103, UINT32_MAX };
+    const uint32_t bad_targets[] = { 0xc4f, 0xc55, 0x84ef, 0xbb };
+
+    sgi_gl_init(&c, 1);
+    sgi_gl_init(&copy, 2);
+    assert_shared_hints(&c, expected);
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        for (unsigned mode = 0x1100; mode <= 0x1102; mode++) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50 + i, mode }, 2);
+            expected[i] = mode;
+            assert_shared_hints(&c, expected);
+        }
+        for (unsigned j = 0; j < ARRAY_SIZE(bad_modes); j++) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50 + i, bad_modes[j] }, 2);
+            assert_shared_hints(&c, expected);
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(bad_targets); i++) {
+        command(&c, NULL, SGI_GL_OP_HINT,
+                 (uint32_t[]){ bad_targets[i], 0x1101 }, 2);
+        assert_shared_hints(&c, expected);
+    }
+    for (unsigned n = 0; n <= 3; n++) {
+        if (n != 2) {
+            command(&c, NULL, SGI_GL_OP_HINT,
+                     (uint32_t[]){ 0xc50, 0x1100, 0 }, n);
+            assert_shared_hints(&c, expected);
+        }
+    }
+    command(&c, NULL, SGI_GL_OP_HINT, (uint32_t[]){ 0x1101, 0xc50 }, 2);
+    assert_shared_hints(&c, expected);
+    command(&c, NULL, SGI_GL_OP_BEGIN, (uint32_t[]){ SGI_GL_POINTS }, 1);
+    command(&c, NULL, SGI_GL_OP_HINT, (uint32_t[]){ 0xc50, 0x1100 }, 2);
+    assert_shared_hints(&c, expected);
+    command(&c, NULL, SGI_GL_OP_END, NULL, 0);
+    g_assert_true(sgi_gl_clone(&copy, &c));
+    assert_shared_hints(&copy, expected);
+    sgi_gl_reset(&c, 1);
+    for (unsigned i = 0; i < SGI_GL_HINTS; i++) {
+        expected[i] = 0x1100;
+    }
+    assert_shared_hints(&c, expected);
+    sgi_gl_cleanup(&c);
+    sgi_gl_cleanup(&copy);
+}
+
+static void test_hints_ignore_rendering(void)
+{
+    g_autofree FragScene *f = g_new0(FragScene, 1);
+
+    frag_init(f);
+    for (unsigned hint = 0; hint < SGI_GL_HINTS; hint++) {
+        for (unsigned mode = 0x1100; mode <= 0x1102; mode++) {
+            memset(&f->p, 0, sizeof(f->p));
+            frag_command(f, SGI_GL_OP_HINT,
+                         (uint32_t[]){ 0xc50 + hint, mode }, 2);
+            frag_quad(f, 1, 0, 0, 1);
+            for (unsigned i = 0; i < W * H; i++) {
+                g_assert_cmphex(f->p.colour[0][i], ==, 0xff0000);
+                g_assert_cmphex(f->p.colour[1][i], ==, 0);
+            }
+        }
+    }
+    sgi_gl_cleanup(&f->c);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -9420,6 +10015,8 @@ int main(int argc, char **argv)
                     test_mipmap_format_pipeline);
     g_test_add_func("/sgi-gl/mipmap-numeric-derivatives",
                     test_mipmap_numeric_derivatives);
+    g_test_add_func("/sgi-gl/mipmap-numeric-axis-bias",
+                    test_mipmap_numeric_axis_bias);
     g_test_add_func("/sgi-gl/mipmap-numeric-selection",
                     test_mipmap_numeric_selection);
     g_test_add_func("/sgi-gl/mipmap-numeric-samples",
@@ -9458,12 +10055,24 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-3d-post-filter",
                     test_texture_3d_post_filter);
     g_test_add_func("/sgi-gl/texture-3d-errors", test_texture_3d_errors);
+    g_test_add_func("/sgi-gl/texture-sharpen", test_texture_sharpen);
+    g_test_add_func("/sgi-gl/texture-detail", test_texture_detail);
+    g_test_add_func("/sgi-gl/texture-detail-repeat",
+                    test_texture_detail_repeat);
+    g_test_add_func("/sgi-gl/texture-enhanced-cutoff",
+                    test_texture_enhanced_cutoff);
     g_test_add_func("/sgi-gl/texture-volume-border/faces-edges-corners",
                     test_texture_volume_border);
     g_test_add_func("/sgi-gl/texture-volume-border/one-slice",
                     test_texture_volume_border_one_slice);
     g_test_add_func("/sgi-gl/texture-volume-border/mipmaps",
                     test_texture_volume_border_mipmaps);
+    g_test_add_data_func("/sgi-gl/texture-volume-r-scale/triangle",
+                        GUINT_TO_POINTER(SGI_GL_TRIANGLES),
+                        test_texture_volume_r_scale);
+    g_test_add_data_func("/sgi-gl/texture-volume-r-scale/line",
+                        GUINT_TO_POINTER(SGI_GL_LINES),
+                        test_texture_volume_r_scale);
     g_test_add_func("/sgi-gl/texture-volume-mipmaps",
                     test_texture_volume_mipmaps);
     g_test_add_func("/sgi-gl/texture-volume-pyramid",
@@ -9475,12 +10084,16 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(SGI_GL_LINES),
                         test_texture_volume_footprint);
     g_test_add_func("/sgi-gl/texture-post-filter", test_texture_post_filter);
+    g_test_add_func("/sgi-gl/texture-post-filter-lookup",
+                    test_texture_post_filter_lookup);
     g_test_add_func("/sgi-gl/texture-post-filter-precision",
                     test_texture_post_filter_precision);
     g_test_add_func("/sgi-gl/texture-apply-pixel", test_texture_apply_pixel);
     g_test_add_func("/sgi-gl/mipmap-post-filter-order",
                     test_mipmap_post_filter_order);
     g_test_add_func("/sgi-gl/texture-environment", test_texture_environment);
+    g_test_add_func("/sgi-gl/texture-environment-clamp",
+                    test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
     g_test_add_func("/sgi-gl/texture-errors", test_texture_errors);
@@ -9682,5 +10295,10 @@ int main(int argc, char **argv)
                     test_resume_primitive_refuses);
     g_test_add_func("/sgi-gl/resume-primitive-keeps-stipple-phase",
                     test_resume_primitive_keeps_stipple_phase);
+    g_test_add_func("/sgi-gl/stencil-clear-clip-union",
+                    test_stencil_clear_clip_union);
+    g_test_add_func("/sgi-gl/hints", test_hints);
+    g_test_add_func("/sgi-gl/hints-ignore-rendering",
+                    test_hints_ignore_rendering);
     return g_test_run();
 }

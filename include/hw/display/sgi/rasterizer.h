@@ -227,11 +227,21 @@ typedef struct SGIGLTexImage {
     /* Required for a 2D image with border == 1; outside the interior only. */
     bool (*read_border_texel)(void *opaque, int32_t x, int32_t y,
                               uint32_t *rgba);
+    /* Positive per-axis derivative factors; zero preserves identity. */
+    double lod_scale_s, lod_scale_t;
     /* Expanded RGBA after filtering, before the texture environment. */
     void (*post_filter)(void *opaque, double rgba[4]);
     /* Required for a volume with border == 1, including depth one. */
     bool (*read_border_texel_3d)(void *opaque, int32_t x, int32_t y,
                                  int32_t z, uint32_t *rgba);
+    /* Positive volume R derivative factor; zero preserves identity. */
+    double lod_scale_r;
+    /* NULL selects the public default curve; lambda is already clamped. */
+    bool (*read_filter_weight)(void *opaque, double lambda, double *weight);
+    /* Borrowed level-zero detail image; L <= 0, mode ADD or MODULATE. */
+    const SGIGLTexLevel *detail_image;
+    int32_t detail_level;
+    uint32_t detail_mode;
 } SGIGLTexImage;
 
 /*
