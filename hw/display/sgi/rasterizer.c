@@ -3880,7 +3880,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
 {
     const SGIRasterPixels *p = &op->pixels;
     bool image = p->rgba || p->rgba_float || p->rgba_double || p->depth ||
-                 p->stencil;
+                 p->stencil || p->index;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = {
         .fog = p->distance,
@@ -3898,6 +3898,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     r.rgba_reported = &rgba_reported;
     r.texture_reports = &texture_reports;
     if ((!p->stencil && !sgi_soft_texture_setup(&r, true)) ||
+        (!p->stencil && !sgi_soft_check_index(t, p->state->index_bits)) ||
         !p->width || !p->height || !image ||
         !isfinite(p->x) || !isfinite(p->y) ||
         !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
@@ -3961,6 +3962,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                 }
                 continue;
             }
+            frag.index = p->index ? (double)p->index[at] : p->colour_index;
             rgba = p->rgba ? p->rgba[at] : 0;
             for (int k = 0; k < 4; k++) {
                 double component = p->depth ? p->colour[k] :

@@ -1793,6 +1793,112 @@ static void test_draw_pixels_double_refusal(void)
                                                      1, 1, NULL));
 }
 
+static void test_draw_pixels_index(gconstpointer opaque)
+{
+    static const uint32_t image[] = { 0x1000001, 0xf1234567 };
+    static const double depth[] = { 0.25, 0.75 };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    uint32_t bits = mode == 1 ? 12 : mode == 2 ? 32 : 8;
+    uint32_t mask = bits == 32 ? UINT32_MAX : (1u << bits) - 1;
+    uint32_t expected[] = { image[0] & mask, image[1] & mask };
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    sgi_gl_set_index_mode(&c, bits);
+    c.raster_pos[0] = 10.25;
+    c.raster_pos[1] = 20.25;
+    if (mode == 3 || mode == 4) {
+        p.colour[0][planes_index(10, 20)] = 0xc0;
+        p.colour[0][planes_index(11, 20)] = 0xc0;
+        if (mode == 3) {
+            c.cur.index_mask = 0xf;
+            expected[0] = 0xc1;
+            expected[1] = 0xc7;
+        } else {
+            c.cur.index_logic_op = 1;
+            c.cur.logic_op_mode = 0x1506;
+            expected[0] ^= 0xc0;
+            expected[1] ^= 0xc0;
+        }
+    } else if (mode == 5) {
+        c.cur.fog = 1;
+        c.cur.fog_mode = SGI_GL_LINEAR;
+        c.cur.fog_start = 0;
+        c.cur.fog_end = 2;
+        c.cur.fog_index = 4;
+        c.raster_distance = 1;
+        expected[0] += 2;
+        expected[1] += 2;
+    } else if (mode == 6 || mode == 7 || mode == 11) {
+        c.cur.depth_test = 1;
+        c.cur.depth_func = mode == 11 ? SGI_GL_ALWAYS : SGI_GL_LESS;
+        if (mode == 6) {
+            expected[0] = expected[1] = 0;
+        } else {
+            p.depth[planes_index(10, 20)] = 0xffffff;
+            p.depth[planes_index(11, 20)] = 0xffffff;
+        }
+    } else if (mode == 8) {
+        c.cur.alpha_test = c.cur.blend = 1;
+        c.cur.alpha_func = SGI_GL_NEVER;
+        c.cur.texture_1d = c.cur.texture_2d = c.cur.texture_3d = 1;
+    } else if (mode == 10) {
+        c.cur.scissor_test = 1;
+        memcpy(c.cur.scissor, (int32_t[]) { 8, 20, 1, 1 },
+               sizeof(c.cur.scissor));
+    } else if (mode == 13) {
+        sgi_gl_set_index_mode(&c, 0);
+    } else if (mode == 14) {
+        rec.target.store_index = NULL;
+    } else if (mode == 15) {
+        c.raster_valid = 0;
+    }
+    if (mode == 11) {
+        c.raster_index = 45;
+        c.cur_index = 99;
+        g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1,
+                                                        depth, 1, 1, 1, 0));
+        expected[0] = expected[1] = 45;
+        g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0x400000);
+        g_assert_cmphex(p.depth[planes_index(11, 20)], ==, 0xbfffff);
+    } else if (mode == 9 || mode == 10) {
+        g_assert_true(sgi_gl_draw_pixels_index(&c, &sink, 2, 1, image, -2, 2));
+        g_assert_cmphex(p.colour[0][planes_index(8, 20)], ==, 1);
+        g_assert_cmphex(p.colour[0][planes_index(6, 20)], ==,
+                        mode == 9 ? 0x67 : 0);
+        g_assert_cmphex(p.colour[0][planes_index(9, 21)], ==,
+                        mode == 9 ? 1 : 0);
+        g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+        return;
+    } else if (mode == 12 || mode == 13) {
+        g_assert_false(sgi_gl_draw_pixels_index(&c, &sink, 2, 1,
+                                                 mode == 12 ? NULL : image,
+                                                 1, 1));
+        g_assert_cmpuint(rec.ops, ==, 0);
+        expected[0] = expected[1] = 0;
+    } else {
+        g_assert_true(sgi_gl_draw_pixels_index(&c, &sink, 2, 1, image, 1, 1));
+        if (mode == 14 || mode == 15) {
+            expected[0] = expected[1] = 0;
+        }
+        if (mode == 15) {
+            g_assert_cmpuint(rec.ops, ==, 0);
+        }
+    }
+    for (unsigned k = 0; k < 2; k++) {
+        g_assert_cmphex(p.colour[0][planes_index(10 + k, 20)], ==, expected[k]);
+        g_assert_cmphex(p.colour[1][planes_index(10 + k, 20)], ==, 0);
+    }
+    g_assert_cmpfloat(c.raster_pos[0], ==, 10.25);
+    g_assert_cmpfloat(c.raster_pos[1], ==, 20.25);
+}
+
 static void test_draw_pixels_stencil(void)
 {
     const uint32_t image[] = { 0x13c, 0xab };
@@ -12182,6 +12288,20 @@ int main(int argc, char **argv)
                     test_draw_pixels_float_refusal);
     g_test_add_func("/sgi-gl/draw-pixels/double-precision",
                     test_draw_pixels_double_precision);
+    static const char *index_pixel_names[] = {
+        "eight-bits", "twelve-bits", "full-precision", "mask", "logic-op",
+        "fog", "depth-fail", "depth-pass", "rgba-operations-ignored",
+        "negative-zoom", "scissor", "depth-source-raster-index",
+        "missing-source", "rgba-visual", "missing-index-store",
+        "invalid-raster-position",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(index_pixel_names); mode++) {
+        g_autofree char *path = g_strdup_printf("/sgi-gl/index-pixels/%s",
+                                                index_pixel_names[mode]);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(mode),
+                             test_draw_pixels_index);
+    }
     g_test_add_func("/sgi-gl/stencil-pixels/write", test_draw_pixels_stencil);
     g_test_add_func("/sgi-gl/stencil-pixels/clipping",
                     test_draw_pixels_stencil_clipping);
