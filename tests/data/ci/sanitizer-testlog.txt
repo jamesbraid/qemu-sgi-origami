@@ -1,0 +1,130 @@
+=================================== 81/94 ====================================
+test:         qtest+qtest-mips64 - qemu:qtest-mips64/sn0-example-test
+start time:   07:35:20
+duration:     1.00s
+result:       exit status 0
+----------------------------------- stdout -----------------------------------
+TAP version 14
+ok 1 /mips64/example/pass
+==============================================================================
+=================================== 82/94 ====================================
+test:         qtest+qtest-mips64 - qemu:qtest-mips64/sn0-xbow-transport-test
+start time:   07:35:28
+duration:     6.67s
+result:       killed by signal 6 SIGABRT
+command:      QTEST_QEMU_IMG=./qemu-img UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 QTEST_QEMU_STORAGE_DAEMON_BINARY=./storage-daemon/qemu-storage-daemon QTEST_QEMU_BINARY=./qemu-system-mips64 MESON_TEST_ITERATION=1 PYTHON=/src/build-asan/pyvenv/bin/python3 MSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 G_TEST_DBUS_DAEMON=/src/tests/dbus-daemon.sh RUST_BACKTRACE=1 MALLOC_PERTURB_=158 QTEST_QEMU_VNC_BINARY=./tools/qemu-vnc/qemu-vnc /src/build-asan/tests/qtest/sn0-xbow-transport-test --tap -k
+----------------------------------- stdout -----------------------------------
+TAP version 14
+# random seed: R02Seed936c50a57917f62daa8c98ba70a75
+1..16
+# Start of mips64 tests
+# Start of sn0 tests
+# Start of xbow-transport tests
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 1 /mips64/sn0/xbow-transport/bounds-guards
+# slow test /mips64/sn0/xbow-transport/bounds-guards executed in 0.77 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 2 /mips64/sn0/xbow-transport/interrupt-packet-face
+# slow test /mips64/sn0/xbow-transport/interrupt-packet-face executed in 0.51 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 3 /mips64/sn0/xbow-transport/separate-faces
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 4 /mips64/sn0/xbow-transport/gating
+# slow test /mips64/sn0/xbow-transport/gating executed in 0.57 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 5 /mips64/sn0/xbow-transport/attributes-errors
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test -global sgi-xbow-transport-test.stop-on-link-reset=on  -accel qtest
+ok 6 /mips64/sn0/xbow-transport/reset-refusal
+# slow test /mips64/sn0/xbow-transport/reset-refusal executed in 0.52 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+ok 7 /mips64/sn0/xbow-transport/quiesce
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test -global sgi-xbow-transport-test.stop-on-link-reset=on  -accel qtest
+ok 8 /mips64/sn0/xbow-transport/stale-reset-timer
+# slow test /mips64/sn0/xbow-transport/stale-reset-timer executed in 0.51 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M sgi-xbow-transport-test -cpu R10000 -S -accel tcg -device loader,addr=0xffffffff80000000,cpu-num=0 -global sgi-xbow-transport-test.stop-on-link-reset=on  -accel qtest
+ok 9 /mips64/sn0/xbow-transport/running-refusal
+# slow test /mips64/sn0/xbow-transport/running-refusal executed in 0.75 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14894.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14894.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M none -cpu R10000 -S -device sgi-xbow-transport-test,id=test   -accel qtest
+----------------------------------- stderr -----------------------------------
+==14896==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14909==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14925==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14945==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14970==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14989==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 8, write address 0x134, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 9, write address 0x174, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 10, write address 0x1b4, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 11, write address 0x1f4, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 12, write address 0x234, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 13, write address 0x274, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 14, write address 0x2b4, width 4
+qemu-system-mips64: /machine/peripheral/test/xbow: unsupported link reset: widget 15, write address 0x2f4, width 4
+==15011==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==15029==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==15051==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+qemu-system-mips64: warning: CPU input clock is not connected to any output clock, using default frequency of 200 MHz.
+qemu-system-mips64: /machine/unattached/device[1]/xbow: unsupported link reset: widget 8, write address 0x134, width 4
+qemu-system-mips64: /machine/unattached/device[1]/xbow: unsupported link reset: widget 9, write address 0x174, width 4
+==15080==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+=================================================================
+==15080==ERROR: AddressSanitizer: heap-use-after-free on address 0x60b000012340 at pc 0x55d0c0a1b2c3 bp 0x7ffd1a2b3c40 sp 0x7ffd1a2b3c38
+READ of size 8 at 0x60b000012340 thread T0
+    #0 0x55d0c0a1b2c2 in xbow_lifetime_check ../hw/misc/sgi-xbow.c:1
+    #1 0x55d0c0a1c000 in memory_region_dispatch_write ../system/memory.c:1
+    #2 0x55d0c0a1d000 in main ../system/main.c:1
+
+0x60b000012340 is located 0 bytes inside of 104-byte region [0x60b000012340,0x60b0000123a8)
+freed by thread T0 here:
+    #0 0x7f0000000001 in free (/lib/x86_64-linux-gnu/libasan.so.8+0x1)
+
+SUMMARY: AddressSanitizer: heap-use-after-free ../hw/misc/sgi-xbow.c:1 in xbow_lifetime_check
+Shadow bytes around the buggy address:
+  0x60b000012300: fa fa fa fa fd fd fd fd fd fd fd fd fd fd fd fd
+==15080==ABORTING
+==============================================================================
+=================================== 92/94 ====================================
+test:         qtest+qtest-mips64 - qemu:qtest-mips64/sn0-fabric-test
+start time:   07:32:56
+duration:     240.45s
+result:       killed by signal 15 SIGTERM
+command:      QTEST_QEMU_IMG=./qemu-img UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 QTEST_QEMU_STORAGE_DAEMON_BINARY=./storage-daemon/qemu-storage-daemon MALLOC_PERTURB_=126 QTEST_QEMU_BINARY=./qemu-system-mips64 MESON_TEST_ITERATION=1 PYTHON=/src/build-asan/pyvenv/bin/python3 MSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 G_TEST_DBUS_DAEMON=/src/tests/dbus-daemon.sh RUST_BACKTRACE=1 QTEST_QEMU_VNC_BINARY=./tools/qemu-vnc/qemu-vnc /src/build-asan/tests/qtest/sn0-fabric-test --tap -k
+----------------------------------- stdout -----------------------------------
+TAP version 14
+# random seed: R02S1e250c1cbf704a6610d8398948ceda84
+1..8
+# Start of mips64 tests
+# Start of sn0 tests
+# Start of fabric tests
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4  -accel qtest
+ok 1 /mips64/sn0/fabric/dual-map-is-own-plus-peer
+# slow test /mips64/sn0/fabric/dual-map-is-own-plus-peer executed in 34.59 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4  -accel qtest
+ok 2 /mips64/sn0/fabric/link-status-follows-the-fabric
+# slow test /mips64/sn0/fabric/link-status-follows-the-fabric executed in 35.77 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4  -accel qtest
+ok 3 /mips64/sn0/fabric/direct-link-refuses-nonzero-route
+# slow test /mips64/sn0/fabric/direct-link-refuses-nonzero-route executed in 35.35 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4  -accel qtest
+ok 4 /mips64/sn0/fabric/bte-resolves-by-programmed-number
+# slow test /mips64/sn0/fabric/bte-resolves-by-programmed-number executed in 43.40 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4  -accel qtest
+ok 5 /mips64/sn0/fabric/bte-completion-interrupt-goes-by-number
+# slow test /mips64/sn0/fabric/bte-completion-interrupt-goes-by-number executed in 25.98 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4 -device sgi-bridge-dma-test,addr=3,bus=pci.1  -accel qtest
+ok 6 /mips64/sn0/fabric/bridge-interrupt-reaches-the-peer-hub
+# slow test /mips64/sn0/fabric/bridge-interrupt-reaches-the-peer-hub executed in 21.43 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4 -device sgi-bridge-dma-test,addr=6,bus=pci.1  -accel qtest
+ok 7 /mips64/sn0/fabric/bridge-dma-reaches-the-peer-node
+# slow test /mips64/sn0/fabric/bridge-dma-reaches-the-peer-node executed in 23.77 secs
+# starting QEMU: exec ./qemu-system-mips64 -qtest unix:/tmp/qtest-14307.sock -qtest-log /dev/null -chardev socket,path=/tmp/qtest-14307.qmp,id=char0 -object monitor-qmp,id=qmp0,chardev=char0 -display none -audio none -run-with exit-with-parent=on -M origin200,topology=origin200-dual -m 128M -smp 4 -S  -accel qtest
+----------------------------------- stderr -----------------------------------
+==14309==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14451==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14599==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14702==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==14866==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==15625==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==15644==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==15660==WARNING: ASan doesn't fully support makecontext/swapcontext functions and may produce false positives in some cases!
+==============================================================================

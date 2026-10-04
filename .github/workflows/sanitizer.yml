@@ -149,13 +149,25 @@ jobs:
             # block can sit thousands of lines above the end, and a tail showed
             # whichever tests happened to finish last. Print every block whose
             # result is neither a pass nor a skip, cut to its last 150 lines, which
-            # is where the assertion and QEMU's exit status are. Fall back to the
-            # tail when no such block exists, so this never shows less than before.
+            # is where the assertion and QEMU's exit status are. A block ends at
+            # the separator meson writes, a line of exactly 78 "=". The address
+            # sanitizer opens its report with a shorter line of "=" (65), which an
+            # "any run of =" rule mistook for the end of the block and so never
+            # printed a single frame. When a block holds a sanitizer report, print
+            # it from its banner through the last SUMMARY (or ABORTING) line in
+            # full, even when it sits above the 150-line window. Fall back to the
+            # tail when no failing block exists, so this never shows less than
+            # before. The program avoids interval expressions: mawk lacks them.
             if ! awk '
-                /^=+ [0-9]+\/[0-9]+ =+$/ { inblk = 1; n = 0; res = "" }
+                /^=+ [0-9]+\/[0-9]+ =+$/ { inblk = 1; n = 0; res = ""; san = 0; sane = 0 }
                 inblk { buf[++n] = $0 }
                 inblk && /^result:/ { res = $0; sub(/^result:[ \t]*/, "", res) }
-                inblk && /^=+$/ {
+                inblk && !san && /ERROR: [A-Za-z]*Sanitizer|runtime error:/ {
+                    san = n
+                    if (n > 1 && buf[n - 1] ~ /^=+$/) san = n - 1
+                }
+                inblk && san && (/^SUMMARY: / || /^==[0-9]+==ABORTING/) { sane = n }
+                inblk && length($0) == 78 && /^=+$/ {
                     inblk = 0
                     if (res != "exit status 0" && res != "exit status 77") {
                         found = 1
@@ -163,6 +175,13 @@ jobs:
                         from = n - 150
                         if (from <= 5) from = 6
                         else print "[... " from - 6 " earlier lines of this test log omitted ...]"
+                        if (san && san < from) {
+                            if (!sane) sane = n
+                            last = sane < from - 1 ? sane : from - 1
+                            if (san > 6 && from > 6) print "[... sanitizer report below ...]"
+                            for (i = san; i <= last; i++) print buf[i]
+                            if (last < from - 1) print "[... " from - 1 - last " lines between the report and the tail omitted ...]"
+                        }
                         for (i = from; i <= n; i++) print buf[i]
                     }
                 }
