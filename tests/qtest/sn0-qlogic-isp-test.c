@@ -716,6 +716,11 @@ static void build_command(uint8_t *entry, uint32_t handle, uint16_t device,
 /* One 16 KiB ATE must preserve all four 4 KiB scatter-gather segments. */
 static void test_write_four_quarters_through_16k_ate(const void *data)
 {
+    bool native = GPOINTER_TO_INT(data);
+    const char *trace = g_getenv("QEMU_DMA_ISP_TRACE");
+    g_autofree char *tracing = trace ? g_strdup_printf(
+        "-trace enable=sgi_hub_ii_*,file=%s/isp-%s-16k.trace",
+        trace, native ? "native" : "buffer") : g_strdup("");
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("qtest-isp-ate-write.XXXXXX", &path, NULL);
     QTestState *qts;
@@ -724,7 +729,7 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
     uint8_t status[ISP_QUEUE_ENTRY_SIZE];
     uint8_t expected[4 * PAGE_SIZE_4K], source[sizeof(expected)];
-    uint8_t seen[sizeof(expected)];
+    uint8_t seen[sizeof(expected)], guard[8];
     unsigned int i, j;
     int64_t deadline;
 
@@ -732,8 +737,9 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     g_assert_cmpint(ftruncate(fd, 1024 * 1024), ==, 0);
     qts = qtest_initf(MACHINE_WITH_BRIDGE
                       " -drive id=d0,if=none,file=%s,format=raw"
-                      " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=d0",
-                      path);
+                      " -device scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=d0"
+                      " -global qlogic-isp1040.dma-buffer=%s %s",
+                      path, native ? "off" : "on", tracing);
     aim_device0_window_at_its_bar(qts);
     qtest_writel(qts, CFG0(SCSI_DEVICE0) + PCI_COMMAND,
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
@@ -756,6 +762,8 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     }
     memcpy(source, expected, sizeof(source));
     normalise_words(source, sizeof(source));
+    qtest_memset(qts, buffer - sizeof(guard), 0xee,
+                  sizeof(source) + 2 * sizeof(guard));
     qtest_memwrite(qts, buffer, source, sizeof(source));
     qtest_memread(qts, buffer, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
@@ -815,6 +823,36 @@ static void test_write_four_quarters_through_16k_ate(const void *data)
     }
     qtest_memread(qts, buffer, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
+    /* READ(10) uses the same scatter list and independently checked disk. */
+    qtest_memset(qts, buffer, 0xee, sizeof(source));
+    normalise_words(entry, sizeof(entry));
+    put32le(entry + ISP_REQ_OFF_HANDLE, handle + 1);
+    entry[ISP_REQ_OFF_CDB] = 0x28;
+    normalise_words(entry, sizeof(entry));
+    qtest_memwrite(qts, RING_PHYS + 2 * ISP_QUEUE_ENTRY_SIZE,
+                   entry, sizeof(entry));
+    isp_writew(qts, ISP_REG_REQUEST_QUEUE, 3);
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != 3) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_memread(qts, RESP_PHYS + 2 * ISP_QUEUE_ENTRY_SIZE, status,
+                  sizeof(status));
+    normalise_words(status, sizeof(status));
+    g_assert_cmphex(get32le(status + ISP_STATUS_OFF_HANDLE), ==, handle + 1);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==, 0);
+    g_assert_cmphex(get32le(status + 20), ==, 0);
+    qtest_memread(qts, buffer, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), source, sizeof(source));
+    for (unsigned side = 0; side < 2; side++) {
+        qtest_memread(qts, side ? buffer + sizeof(source) :
+                      buffer - sizeof(guard), guard, sizeof(guard));
+        for (unsigned k = 0; k < sizeof(guard); k++) {
+            g_assert_cmphex(guard[k], ==, 0xee);
+        }
+    }
     qtest_quit(qts);
     close(fd);
     unlink(path);
@@ -1510,6 +1548,9 @@ int main(int argc, char **argv)
                         test_a64_ring_data_out);
     qtest_add_data_func("sn0/qlogic-isp/write-four-quarters-through-16k-ate",
                         NULL, test_write_four_quarters_through_16k_ate);
+    qtest_add_data_func("sn0/qlogic-isp/native-four-quarters-through-16k-ate",
+                        GINT_TO_POINTER(1),
+                        test_write_four_quarters_through_16k_ate);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-send-diagnostic", NULL,
                         test_a64_ring_send_diagnostic);
     qtest_add_data_func("sn0/qlogic-isp/a64-ring-missing-target", NULL,
