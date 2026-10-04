@@ -365,6 +365,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_DATA3        0x143
 #define SGI_KONA_CMD_X_DATA4        0x144
 #define SGI_KONA_CMD_X_BDATA4       0x145
+#define SGI_KONA_CMD_X_DATA5        0x146
 #define SGI_KONA_CMD_X_DATA6        0x147
 #define SGI_KONA_CMD_X_DATA8        0x149
 #define SGI_KONA_CMD_X_DATA10       0x14b

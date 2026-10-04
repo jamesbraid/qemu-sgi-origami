@@ -178,13 +178,14 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_STORE_STIPPLE, 3 },
     { SGI_KONA_CMD_X_ROTATE_STIPPLE, 3 },
     /*
-     * Point senders carry one or six words. Short line-data runs carry
-     * one or three.
+     * Point senders carry one, six or twenty-four words. Short line-data
+     * runs carry one, three or five.
      */
     { SGI_KONA_CMD_X_POINT, 1 },
     { SGI_KONA_CMD_X_POINT6, 6 },
     { SGI_KONA_CMD_X_DATA1, 1 },
     { SGI_KONA_CMD_X_DATA3, 3 },
+    { SGI_KONA_CMD_X_DATA5, 5 },
     { SGI_KONA_CMD_X_POINT24, 24 },
     { SGI_KONA_CMD_X_BACKGROUND_POINT, 1 },
     { SGI_KONA_CMD_X_BACKGROUND_POINT6, 6 },

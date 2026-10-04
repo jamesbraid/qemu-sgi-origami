@@ -7775,6 +7775,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     switch (selector) {
     case SGI_KONA_CMD_X_DATA1:
     case SGI_KONA_CMD_X_DATA3:
+    case SGI_KONA_CMD_X_DATA5:
     case SGI_KONA_CMD_X_POINT:
     case SGI_KONA_CMD_X_POINT6:
     case SGI_KONA_CMD_X_POINT24:
@@ -7939,6 +7940,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_X_DATA1:
     case SGI_KONA_CMD_X_DATA3:
+    case SGI_KONA_CMD_X_DATA5:
     case SGI_KONA_CMD_X_DATA2:
     case SGI_KONA_CMD_X_DATA4:
     case SGI_KONA_CMD_X_DATA6:

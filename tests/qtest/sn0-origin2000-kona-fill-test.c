@@ -1851,6 +1851,62 @@ static void test_relative_point_batch(gconstpointer opaque)
     qtest_quit(from);
 }
 
+static void test_data5_points(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const uint32_t source = mode == 2 ? 0x96 : 0x3c;
+    uint32_t gc[] = { 0x3c000, 0x1ffe, 0x96000, 0x1ffe, 0xf00fff, 0,
+                      0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t data[5];
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    for (unsigned k = 0; k < ARRAY_SIZE(data); k++) {
+        data[k] = mode == 1 && k ? XY(2, 0) : XY(10 + 2 * k, 20);
+    }
+    kona_command(s, 0x146, data, mode == 3 ? 2 : ARRAY_SIZE(data));
+    g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+    if (mode == 3) {
+        dir = g_dir_make_tmp("kona-data5-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MIGRATION_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+        for (unsigned k = 2; k < ARRAY_SIZE(data); k++) {
+            qtest_writel(s, REG_COMMAND, data[k]);
+        }
+    } else if (mode == 5) {
+        kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    } else if (mode == 6) {
+        for (unsigned k = 0; k < 6; k++) {
+            kona_command(s, 0x146, data, ARRAY_SIZE(data));
+        }
+    }
+    if (mode == 4) {
+        kona_command(s, TOKEN_BOX,
+                     (uint32_t[]) { XY(30, 30), XY(32, 32) }, 2);
+    } else {
+        kona_command(s, mode == 1 ? 0x14f : mode == 2 ? 0x15f : 0x14c,
+                     (uint32_t[]) { mode == 1 ? XY(2, 0) : XY(20, 20) }, 1);
+    }
+    for (unsigned k = 0; k < 5; k++) {
+        g_assert_cmphex(front_at(s, 10 + 2 * k, 20), ==,
+                        mode >= 4 ? 0 : source);
+    }
+    g_assert_cmphex(front_at(s, 20, 20), ==, mode == 4 ? 0 : source);
+    g_assert_cmphex(front_at(s, 21, 20), ==, 0);
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(30, 30), XY(32, 32) }, 2);
+    assert_box(s, 30, 30, 32, 32, 0x3c);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
 static void test_relative_point_coordinates(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -2500,6 +2556,16 @@ int main(int argc, char **argv)
             qtest_add_data_func(name, GUINT_TO_POINTER(shape * 16 + mode),
                                 test_relative_point_batch);
         }
+    }
+    static const char *data5_cases[] = {
+        "absolute", "relative", "background", "partial-migrates",
+        "odd-box", "interrupted", "overflow",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(data5_cases); mode++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-fill/data5/%s", data5_cases[mode]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(mode), test_data5_points);
     }
     static const char *relative_coordinate_cases[] = {
         "signed", "x-overflow", "y-overflow", "interrupted", "reset",

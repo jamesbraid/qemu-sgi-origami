@@ -244,6 +244,7 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1f5, 6 }, { 0x1f6, 2 },
     { 0x16d, 2 }, { 0x16e, 2 }, { 0x170, 1 }, { 0x171, 1 }, { 0x167, 4 },
     { 0x16f, 3 }, { 0x14c, 1 }, { 0x14d, 6 }, { 0x141, 1 }, { 0x143, 3 },
+    { 0x146, 5 },
     { 0x131, 1 }, { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
     { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 }, { 0x15f, 1 },
     { 0x160, 6 }, { 0x161, 24 }, { 0x138, 2 },
@@ -271,6 +272,35 @@ static void test_command_table_shape(void)
     }
 }
 
+static void test_command_data5(void)
+{
+    RecordedPacket r = { 0 };
+    SGICommandPort p;
+    const uint32_t args[] = { 0x14c, 0x150, 0x159, 0x1ff, 0x143 };
+
+    sgi_command_port_init(&p, &test_ops, &r, SGI_KONA_PORT_TEXTPORT,
+                           sgi_kona_command_tokens,
+                           sgi_kona_command_num_tokens);
+    sgi_command_port_write(&p, 0x146, 4);
+    g_assert_false(r.got_unsupported);
+    for (unsigned i = 0; i < ARRAY_SIZE(args); i++) {
+        g_assert_false(r.got_packet);
+        sgi_command_port_write(&p, args[i], 4);
+    }
+    g_assert_true(r.got_packet);
+    g_assert_false(r.got_unsupported);
+    g_assert_cmphex(r.selector, ==, 0x146);
+    g_assert_cmpuint(r.argc, ==, 5);
+    g_assert_cmpmem(r.args, sizeof(args), args, sizeof(args));
+    r.got_packet = false;
+    sgi_command_port_write(&p, 0x14c, 4);
+    sgi_command_port_write(&p, 0x12345678, 4);
+    g_assert_true(r.got_packet);
+    g_assert_cmphex(r.selector, ==, 0x14c);
+    g_assert_cmpuint(r.argc, ==, 1);
+    g_assert_cmphex(r.args[0], ==, 0x12345678);
+}
+
 /*
  * The X tokens the header excludes: the data tokens whose counts the
  * grammar infers only from their names.
@@ -278,7 +308,7 @@ static void test_command_table_shape(void)
 static void test_command_excludes_uncounted_x_tokens(void)
 {
     static const uint32_t excluded[] = {
-        0x146, 0x148, 0x14a,
+        0x148, 0x14a,
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(excluded); i++) {
@@ -541,5 +571,6 @@ int main(int argc, char **argv)
                     test_doorbell_selectors_frame);
     g_test_add_func("/sgi-kona-ports/doorbell/excluded-selectors",
                     test_doorbell_excluded_selectors);
+    g_test_add_func("/sgi-kona-ports/command/data5", test_command_data5);
     return g_test_run();
 }
