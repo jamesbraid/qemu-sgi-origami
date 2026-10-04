@@ -319,7 +319,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     height = MAX(n ? n->image.height : 0, h[14] + 1);
     depth = volume ? MAX(n ? n->image.depth : 0, h[15] + 1) : 1;
     if (!native_volume_dimensions(width, height, depth) ||
-        (o && o->native_width &&
+        (o && o->native_width && (!o->native_layout_valid || volume) &&
          (width > o->native_width || height > o->native_height ||
           (volume && o->native_depth && depth > o->native_depth))) ||
         (n && (n->image.base_format != base_format ||
@@ -429,6 +429,24 @@ bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
     o->native_width = width;
     o->native_height = height;
     o->native_depth = 0;
+    o->native_layout_valid = false;
+    return true;
+}
+
+bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
+                                   uint32_t physical_size)
+{
+    SGIKonaTextureObject *o;
+
+    if ((physical_size & 15) > 13 || ((physical_size >> 4) & 15) > 13) {
+        return false;
+    }
+    o = texture_object(s, handle, false);
+    if (!o || !o->native_width || o->native_depth) {
+        return false;
+    }
+    o->native_layout = physical_size;
+    o->native_layout_valid = true;
     return true;
 }
 
@@ -449,6 +467,7 @@ bool sgi_kona_texture_native_volume_dimensions(SGIKonaTextureState *s,
     o->native_width = width;
     o->native_height = height;
     o->native_depth = depth;
+    o->native_layout_valid = false;
     return true;
 }
 
@@ -612,7 +631,8 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
     if (x >= l->width || y >= l->height || !l->pixels) {
         return false;
     }
-    *rgba = l->pixels[(size_t)y * l->width + x];
+    *rgba = l->pixels[(size_t)y * (l->stride_width ? l->stride_width :
+                                  l->width) + x];
     if (l->base_format == SGI_GL_RGB) {
         *rgba |= 0xff;
     }
@@ -630,6 +650,35 @@ static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
     *rgba = l->pixels[((size_t)z * l->height + y) * l->width + x];
     if (l->base_format == SGI_GL_RGB) {
         *rgba |= 0xff;
+    }
+    return true;
+}
+
+static bool texture_native_interior(const SGIKonaTextureObject *o,
+                                      const SGIKonaTextureNativeImage *n,
+                                      unsigned level)
+{
+    uint32_t width = MAX(1u, o->native_width >> level);
+    uint32_t height = MAX(1u, o->native_height >> level);
+    int ps = o->native_layout & 15;
+    int pt = (o->native_layout >> 4) & 15;
+    uint32_t geometry = MAX(ps - (int)level, 3) |
+                        (MAX(pt - (int)level, 2) << 4);
+
+    if (o->params.base_level || o->params.wrap_s != SGI_GL_REPEAT ||
+        o->params.wrap_t != SGI_GL_REPEAT || !o->native_width ||
+        (n->header[17] & 0x60) || n->header[16] != geometry ||
+        width > n->image.width || height > n->image.height) {
+        return false;
+    }
+    for (uint32_t y = 0; y < height; y++) {
+        uint64_t row = (uint64_t)y * n->image.width;
+
+        for (uint32_t x = 0; x < width; x++) {
+            if (!native_covered(n->coverage, row + x)) {
+                return false;
+            }
+        }
     }
     return true;
 }
@@ -662,10 +711,16 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                     (!h[19] && h[18] == descriptor));
             }
 
-            matches = matches && n->covered == native_pixels(n) &&
-                      texture_dimensions(n->image.width, n->image.height) &&
+            matches = matches &&
                       (!o->native_format_valid || h[9] == o->native_format);
-            if (matches && o->native_width) {
+            if (!volume && o->native_layout_valid) {
+                matches = matches && texture_native_interior(o, n, level);
+            } else {
+                matches = matches && n->covered == native_pixels(n) &&
+                          texture_dimensions(n->image.width, n->image.height);
+            }
+            if (matches && o->native_width &&
+                (volume || !o->native_layout_valid)) {
                 matches = n->image.width == MAX(1u, o->native_width >> level) &&
                           n->image.height == MAX(1u, o->native_height >> level);
             }
@@ -681,13 +736,18 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: ambiguous native texture level %u "
                           "for handle 0x%x\n", level, o->handle);
-            if (volume) {
+            if (volume || o->native_layout_valid) {
                 return UINT32_MAX;
             }
         } else if (image) {
             SGIKonaTextureLevel *view = &o->native_view[count];
 
             *view = *image;
+            if (!volume && o->native_layout_valid) {
+                view->stride_width = image->width;
+                view->width = MAX(1u, o->native_width >> level);
+                view->height = MAX(1u, o->native_height >> level);
+            }
             if (o->native_internal_valid) {
                 view->base_format = o->native_base_format;
                 view->internal_format = o->native_internal_format;
@@ -978,6 +1038,8 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
             .d = o->params.lod_scale_r,
         };
         qemu_put_be64(f, scale_r.u);
+        qemu_put_be32(f, o->native_layout_valid);
+        qemu_put_be32(f, o->native_layout);
     }
     qemu_put_be32(f, g_hash_table_size(s->filter_curves));
     g_hash_table_iter_init(&iter, s->filter_curves);
@@ -1200,6 +1262,14 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
             !texture_params(&o->params)) {
             goto invalid;
         }
+        valid = qemu_get_be32(f);
+        o->native_layout = qemu_get_be32(f);
+        if (valid > 1 || (o->native_layout & 15) > 13 ||
+            ((o->native_layout >> 4) & 15) > 13 ||
+            (valid && (o->native_depth || !o->native_width))) {
+            goto invalid;
+        }
+        o->native_layout_valid = valid;
     }
     curves = qemu_get_be32(f);
     if (curves > SGI_KONA_TEXTURE_CURVE_SLOTS) {
