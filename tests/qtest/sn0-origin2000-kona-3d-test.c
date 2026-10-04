@@ -5951,7 +5951,7 @@ static void test_read_pixels_typed_extent(gconstpointer opaque)
 static void test_draw_pixels_scalar_pio(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    static const uint32_t types[] = { 0, 2, 3, 4, 5, 6, 3, 6, 0, 6, 6, 6 };
+    static const uint32_t types[] = { 0, 2, 3, 4, 5, 6, 3, 6, 0, 6, 6, 6, 5 };
     static const uint32_t scales[] = { 0xd14, 0xd18, 0xd1a };
     static const uint32_t biases[] = { 0xd15, 0xd19, 0xd1b };
     uint32_t h[] = { 2, 1, 6, types[mode], 0, 0, 0, 0 };
@@ -6041,6 +6041,13 @@ static void test_draw_pixels_scalar_pio(gconstpointer opaque)
         data[7] = 0x7fc00000;
         rgb[1] = 0;
         words = 8;
+        break;
+    case 12:
+        h[0] = 1;
+        data[0] = 0x7fffffff;
+        pixel_transfer_set(s, 0xd14, -4294967296.0);
+        pixel_transfer_set(s, 0xd15, 2147483648.0);
+        rgb[0] = 0x807f7f;
         break;
     }
     kona_command(s, 0x3a, h, ARRAY_SIZE(h));
@@ -9591,6 +9598,7 @@ int main(int argc, char **argv)
         "byte", "short", "ushort", "int", "uint", "float",
         "ushort-swapped", "float-swapped-migrates", "signed-before-bias",
         "float-before-transfer", "float-alpha-precision", "late-nan-atomic",
+        "uint-before-transfer",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(scalar_pixels_cases); mode++) {
         g_autofree char *path = g_strdup_printf(

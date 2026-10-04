@@ -4853,7 +4853,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
         count > SGI_KONA_TEXTURE_BYTES /
-                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(float)) ||
+                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(double)) ||
         a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
         s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
         s->gl[i].cur.texture_3d || p->pixel_zoom_unsupported ||
@@ -4887,7 +4887,7 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     uint32_t i = u->context;
     const SGIKonaGLPipe *p;
     g_autofree uint32_t *rgba = NULL;
-    g_autofree float (*rgba_float)[4] = NULL;
+    g_autofree double (*rgba_double)[4] = NULL;
     bool scalar = u->header[3] != 1;
     uint64_t count;
 
@@ -4900,11 +4900,11 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     p = &s->gl_pipe[i];
     count = (uint64_t)layout.width * layout.height;
     if (scalar) {
-        rgba_float = g_try_malloc_n(count, sizeof(*rgba_float));
+        rgba_double = g_try_malloc_n(count, sizeof(*rgba_double));
     } else {
         rgba = g_try_new(uint32_t, count);
     }
-    if (scalar ? !rgba_float : !rgba) {
+    if (scalar ? !rgba_double : !rgba) {
         goto out;
     }
     for (uint32_t row = 0; row < layout.height; row++) {
@@ -4923,8 +4923,8 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
                 source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
             }
             if (scalar ?
-                !sgi_kona_gl_pixel_rgba_float(u->header[2], u->header[3],
-                    source, u->header[8], rgba_float[pixel]) :
+                !sgi_kona_gl_pixel_rgba_double(u->header[2], u->header[3],
+                    source, u->header[8], rgba_double[pixel]) :
                 !sgi_kona_gl_texture_pixel_rgba(u->header[2], u->header[3],
                     source, false, &rgba[pixel])) {
                 goto out;
@@ -4937,8 +4937,8 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     }
     sgi_kona_gl_sink(s, &sink);
     if (scalar) {
-        sgi_gl_draw_pixels_float_transfer(&s->gl[i], &sink, layout.width,
-                                          layout.height, rgba_float,
+        sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, layout.width,
+                                          layout.height, rgba_double,
                                           sgi_kona_gl_float(p->pixel_zoom[0]),
                                           sgi_kona_gl_float(p->pixel_zoom[1]),
                                           &transfer);
@@ -10224,7 +10224,8 @@ static bool sgi_kona_gl_image_valid(const SGIKonaGLImageUpload *u)
                u->header[1] <= SGI_KONA_GL_IMAGE_MAX &&
                (uint64_t)u->header[0] * u->header[1] <=
                SGI_KONA_TEXTURE_BYTES /
-                   (u->header[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(float)) &&
+                   (u->header[3] == 1 ? sizeof(uint32_t) :
+                                        4 * sizeof(double)) &&
                !u->header[7] &&
                sgi_kona_gl_pixels_layout(u, &pixels) &&
                pixels.payload_words == u->count &&
