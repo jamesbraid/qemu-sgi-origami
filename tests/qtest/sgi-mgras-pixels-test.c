@@ -2677,7 +2677,7 @@ static void test_gl_pixels_captured_float_rgba(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
-static void test_gl_pixels_captured_float_rgba_8x1(void)
+static void test_gl_pixels_uncaptured_float_rgba_8x1_unsupported(void)
 {
     enum { WIDTH = 8 };
     uint32_t row[WIDTH * 4];
@@ -2704,14 +2704,17 @@ static void test_gl_pixels_captured_float_rgba_8x1(void)
     gl_pixels_fence(qts);
 
     for (uint32_t col = 0; col < WIDTH; col++) {
-        uint32_t expected = 0;
-
-        if (alpha[col] > 127) {
-            expected = (uint32_t)(24 + 23 * col) << 16 |
-                       (uint32_t)(32 + 17 * col) << 8 | (40 + 11 * col);
-        }
-        g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6), ==, expected);
+        g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6), ==, 0);
     }
+    g_assert_cmphex(gl_window_pixel(qts, 4 + WIDTH, 6), ==, 0);
+
+    /* An unsupported float shape leaves the next byte image usable. */
+    gl_pixels_program(qts, GL_PIX_4UB, 4, 20, 30, 20, 30, 1);
+    gl_pixels_draw(qts, 1);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x112233ff }, 1);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x112233);
+    g_assert_cmphex(gl_window_pixel(qts, 21, 30), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -2727,7 +2730,7 @@ static void test_gl_pixels_captured_float_rgba_shape_recovery(void)
         row[col * 4 + 3] = gl_bits(1.0f);
     }
 
-    /* The observed float DrawPixels contract is the single 8x1 shape. */
+    /* An unrecognized float rectangle is dropped before byte recovery. */
     gl_pixels_context(qts, 0);
     gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
                       4 + WIDTH - 1, 6 + HEIGHT - 1, 1);
@@ -2749,32 +2752,40 @@ static void test_gl_pixels_captured_float_rgba_shape_recovery(void)
     g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x112233);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
-    /* A wrong signature is also rejected, then the same byte path recovers. */
+    /* A wrong signature rejects a documented 2x1 float shape. */
     gl_pixels_context(qts, 0);
-    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
-                      4 + WIDTH - 1, 6, 1);
-    gl_pixels_float_program(qts, true, false, 4, 0x80);
-    gl_pixels_draw(qts, WIDTH * 4);
-    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 4, 6, 5, 6, 1);
+    gl_pixels_float_program(qts, true, false, 1, 0x80);
+    gl_pixels_draw(qts, 8);
+    gl_pixels_row(qts, 0, row, 8);
     gl_pixels_fence(qts);
     g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 5, 6), ==, 0);
 
     gl_pixels_program(qts, GL_PIX_4UB, 4, 20, 30, 20, 30, 1);
     gl_pixels_draw(qts, 1);
     gl_pixels_row(qts, 0, (const uint32_t[]){ 0x445566ff }, 1);
     gl_pixels_fence(qts);
     g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x445566);
+    g_assert_cmphex(gl_window_pixel(qts, 21, 30), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
-    /* A routine/unpack mismatch cannot opt into the float path. */
+    /* The RGB routine set cannot satisfy this supported RGBA shape. */
     gl_pixels_context(qts, 0);
-    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
-                      4 + WIDTH - 1, 6, 1);
-    gl_pixels_float_program(qts, true, false, 3, 0x84);
-    gl_pixels_draw(qts, WIDTH * 4);
-    gl_pixels_row(qts, 0, row, ARRAY_SIZE(row));
+    gl_pixels_program(qts, GL_PIX_4UB, 8, 4, 6, 5, 6, 1);
+    gl_pixels_float_program(qts, false, false, 1, 0x24);
+    gl_pixels_draw(qts, 8);
+    gl_pixels_row(qts, 0, row, 8);
     gl_pixels_fence(qts);
     g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 5, 6), ==, 0);
+
+    gl_pixels_program(qts, GL_PIX_4UB, 4, 20, 30, 20, 30, 1);
+    gl_pixels_draw(qts, 1);
+    gl_pixels_row(qts, 0, (const uint32_t[]){ 0x778899ff }, 1);
+    gl_pixels_fence(qts);
+    g_assert_cmphex(gl_window_pixel(qts, 20, 30), ==, 0x778899);
+    g_assert_cmphex(gl_window_pixel(qts, 21, 30), ==, 0);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
@@ -5573,8 +5584,8 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/gl-pixels-captured-float-rgba",
         test_gl_pixels_captured_float_rgba, true);
     mgras_qtest_add_func(
-        "sn0/origin2000/mgras/gl-pixels-captured-float-rgba-8x1",
-        test_gl_pixels_captured_float_rgba_8x1, true);
+        "sn0/origin2000/mgras/gl-pixels-uncaptured-float-rgba-8x1-unsupported",
+        test_gl_pixels_uncaptured_float_rgba_8x1_unsupported, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-pixels-captured-float-rgba-unsupported-shapes-recover",
