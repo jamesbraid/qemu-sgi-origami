@@ -6958,6 +6958,458 @@ static void indexed_colour_maps(QTestState *s, uint32_t token)
     }
 }
 
+static void native_index_visual(QTestState *s, unsigned bits)
+{
+    gl_make_current_depth(s, 24);
+    kona_command(s, 1,
+                 (uint32_t[]) { 0, 0, bits, 0, 0, 0, 24, 0, 0, 0 }, 10);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+}
+
+static void assert_native_index_pixels(QTestState *s, unsigned x,
+                                        const uint32_t *expected, unsigned n)
+{
+    uint8_t got[64];
+
+    g_assert_cmpuint(n, <=, sizeof(got) / 4);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]) { x, 64, n, 1, 11, 5, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, n * 4);
+    for (unsigned k = 0; k < n; k++) {
+        g_assert_cmphex(ldl_be_p(got + 4 * k), ==, expected[k]);
+    }
+}
+
+static void native_index_draw(QTestState *s, uint32_t a, uint32_t b)
+{
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 11, 5, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, a);
+    qtest_writel(s, REG_COMMAND, b);
+}
+
+static void native_index_map(QTestState *s, unsigned token,
+                              const uint32_t *values, unsigned n)
+{
+    kona_command(s, token,
+                 (uint32_t[]) { 0xc70, n, fbits(n - 1), 256 }, 4);
+    for (unsigned k = 0; k < n; k++) {
+        qtest_writel(s, REG_COMMAND, values[k]);
+    }
+}
+
+static void test_native_index_bitmap(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool unpack_lsb = mode & 1, pack_lsb = mode & 2;
+    bool input_dma = mode < 32 && (mode & 4);
+    bool output_dma = (mode & 8) || mode == 33;
+    unsigned phase = output_dma ? (mode >> 1) & 3 : 0;
+    unsigned gap = output_dma && (mode & 16) ? 5 : 0;
+    uint8_t input[] = { unpack_lsb ? 0x6a : 0x56,
+                        unpack_lsb ? 1 : 0x80,
+                        unpack_lsb ? 0xad : 0xb5, 0 };
+    uint8_t payload[] = { pack_lsb ? 0x6a : 0x56,
+                          pack_lsb ? 1 : 0x80,
+                          pack_lsb ? 0xad : 0xb5, 0 };
+    uint32_t indices[] = { 0x122, 0x123, 0x122, 0x123, 0x122,
+                           0x123, 0x123, 0x122, 0x123 };
+    uint8_t got[32], expected[32];
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    native_index_visual(s, mode & 16 ? 8 : 12);
+    native_index_map(s, 0x35, (uint32_t[]) { 0x122, 0x123 }, 2);
+    pixel_transfer_set(s, 0xd10, 1);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf1, unpack_lsb }, 2);
+    qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+    if (input_dma) {
+        qtest_memwrite(s, destination, input, sizeof(input));
+    }
+    kona_command(s, 0x3a,
+                 (uint32_t[]) { 9, 2, 11, 7, 0, input_dma, 0, 0 }, 8);
+    if (mode == 32) {
+        read_dma_migrate(from, &s, &to, &dir);
+    }
+    if (input_dma) {
+        texture_dma_packet(s, 0, 4, 4, 0);
+    } else {
+        qtest_writel(s, REG_COMMAND, ldl_be_p(input));
+    }
+    pixel_transfer_set(s, 0xd10, 0);
+    if (mode & 16) {
+        for (unsigned k = 0; k < ARRAY_SIZE(indices); k++) {
+            indices[k] &= 0xff;
+        }
+    }
+    assert_native_index_pixels(s, 64, indices, ARRAY_SIZE(indices));
+    kona_command(s, 0x33, (uint32_t[]) { 0xd01, pack_lsb }, 2);
+    prepare_refused_reply(s);
+    memset(expected, 0xa5, sizeof(expected));
+    if (output_dma) {
+        kona_command_kicked(s, 0x1f1,
+                            (uint32_t[]) { physical_page_word(reason_page),
+                                           tagged_offset_word(reason_page),
+                                           0x4000 }, 3);
+        qtest_memset(s, destination, 0xa5, sizeof(expected));
+        read_dma_clear_notifications(s, reason_page);
+        kona_command(s, 0x1f5,
+                     (uint32_t[]) { 0, 0x9000 | phase, 4,
+                                    gap ? 2 : 4, gap, 0 }, 6);
+    }
+    kona_command(s, 0x39,
+                 (uint32_t[]) { 64, 64, 9, 2, 11, 7, phase }, 7);
+    if (output_dma) {
+        assert_reply_unchanged(s);
+        qtest_memread(s, destination, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+        if (mode == 33) {
+            read_dma_migrate(from, &s, &to, &dir);
+            kona_command(s, 0x33, (uint32_t[]) { 0xd01, !pack_lsb }, 2);
+            kona_command_f(s, 0x1c, (float[]) { 0 }, 1);
+            kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+        }
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x13579bdf }, 2);
+        memcpy(expected + phase, payload, 2);
+        memcpy(expected + phase + 2 + gap, payload + 2, 2);
+        qtest_memread(s, destination, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+        g_assert_cmphex(guest_word(s, reason_page), ==, 0x100);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0x20);
+        assert_reply_unchanged(s);
+    } else {
+        assert_reply_posted(s);
+        stl_be_p(expected, 0);
+        memcpy(expected + 8, payload, sizeof(payload));
+        qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_native_index_logic(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque), op = mode & 15;
+    uint32_t a = 0x123, b = 0xabc;
+    const uint32_t result[] = {
+        0, a & b, a & ~b, a, ~a & b, b, a ^ b, a | b,
+        ~(a | b), ~(a ^ b), ~b, a | ~b, ~a, ~a | b, ~(a & b), UINT32_MAX,
+    };
+    uint32_t mask = mode & 16 ? 0xff : 0xfff;
+    uint32_t expected[] = { result[op] & mask, result[op] & mask };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    native_index_visual(s, mode & 16 ? 8 : 12);
+    native_index_draw(s, b, b);
+    kona_command(s, 0x24, (uint32_t[]) { 0xbf1 }, 1);
+    kona_command(s, 0x2e, (uint32_t[]) { 0x1500 + op }, 1);
+    native_index_draw(s, a, a);
+    assert_native_index_pixels(s, 64, expected, 2);
+    qtest_quit(s);
+}
+
+static void test_native_index_state(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t expected[] = { 18, 52 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    native_index_visual(s, 12);
+    if (mode == 0) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+        kona_command(s, 0xce, (uint32_t[]) { 0x207 }, 1);
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 13, 6, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, fbits(0.25f));
+        qtest_writel(s, REG_COMMAND, fbits(0.75f));
+        assert_native_index_pixels(s, 64, (uint32_t[]) { 1, 1 }, 2);
+        kona_command(s, 0xce, (uint32_t[]) { 0x201 }, 1);
+        native_index_draw(s, 18, 52);
+        expected[0] = 1;
+    } else if (mode == 1) {
+        uint8_t got[2];
+
+        kona_command(s, 1,
+                     (uint32_t[]) { 0, 0, 12, 0, 0, 0, 24, 8, 0, 0 }, 10);
+        stencil_clear(s, 3, 255);
+        stencil_function(s, 0x200, 5, 255);
+        stencil_operations(s, 0x1e01, 0x1e00, 0x1e00);
+        native_index_draw(s, 18, 52);
+        assert_native_index_pixels(s, 64, (uint32_t[]) { 0, 0 }, 2);
+        stencil_function(s, 0x202, 5, 255);
+        stencil_operations(s, 0x1e00, 0x1e00, 0x1e02);
+        native_index_draw(s, 18, 52);
+        prepare_refused_reply(s);
+        kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 12, 1, 0 }, 7);
+        assert_reply_posted(s);
+        qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), ((uint8_t[]) { 6, 6 }), 2);
+    } else if (mode == 2) {
+        kona_command(s, 1,
+                     (uint32_t[]) { 0, 0, 12, 1, 0, 0, 24, 0, 0, 0 }, 10);
+        kona_command(s, 0xc4, (uint32_t[]) { 0x404 }, 1);
+        native_index_draw(s, 18, 52);
+        kona_command(s, 0xc4, (uint32_t[]) { 0x405 }, 1);
+        native_index_draw(s, 0xabc, 0x123);
+        kona_command(s, 0x37, (uint32_t[]) { 0x405 }, 1);
+        assert_native_index_pixels(s, 64, (uint32_t[]) { 0xabc, 0x123 }, 2);
+        kona_command(s, 0x37, (uint32_t[]) { 0x404 }, 1);
+    } else {
+        kona_command(s, 1,
+                     (uint32_t[]) { 0, 12, 0, 0, 0, 0, 24, 0, 0, 0 }, 10);
+        kona_command(s, 0x3a, (uint32_t[]) { 3, 1, 5, 1, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, 0xff0000ff);
+        qtest_writel(s, REG_COMMAND, 0x00ff00ff);
+        qtest_writel(s, REG_COMMAND, 0xffff00ff);
+        kona_command(s, 1,
+                     (uint32_t[]) { 0, 0, 12, 0, 0, 0, 24, 0, 0, 0 }, 10);
+        native_index_draw(s, 18, 52);
+        /* The final untouched pixel still has an RGB tag. */
+        prepare_refused_reply(s);
+        kona_command(s, 0x39, (uint32_t[]) { 64, 64, 3, 1, 11, 5, 0 }, 7);
+        assert_reply_unchanged(s);
+    }
+    assert_native_index_pixels(s, 64, expected, 2);
+    qtest_quit(s);
+}
+
+static void test_native_index_sources(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned type = mode % 7;
+    unsigned bits = ((mode / 7) & 1) ? 12 : 8;
+    bool dma = (mode / 14) & 1, swap = (mode / 28) & 1;
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    uint32_t first = type < 2 ? 18 : 0x123;
+    uint32_t second = type < 2 ? 52 : 0xbcd;
+    uint32_t expected[] = { first & ((1u << bits) - 1),
+                            second & ((1u << bits) - 1) };
+    uint8_t bytes[12] = { 0 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    native_index_visual(s, bits);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf0, swap }, 2);
+    packed_pixel_bytes(bytes + 1, type == 6 ? fbits(first + 0.75f) : first,
+                         size, swap);
+    packed_pixel_bytes(bytes + 1 + size,
+                         type == 6 ? fbits(second + 0.75f) : second,
+                         size, swap);
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380001, bytes + 1, 2 * size);
+    }
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 11, type, 1, dma, 0, 0 }, 8);
+    if (dma) {
+        texture_dma_packet(s, 1, 2 * size, 2 * size, 0);
+    } else {
+        for (unsigned k = 0; k < DIV_ROUND_UP(1 + 2 * size, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(bytes + k * 4));
+        }
+    }
+    assert_native_index_pixels(s, 64, expected, 2);
+    qtest_quit(s);
+}
+
+static void test_native_index_read_types(gconstpointer opaque)
+{
+    unsigned type = GPOINTER_TO_UINT(opaque);
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    uint32_t masks[] = { 0x7f, 0xff, 0x7fff, 0xffff,
+                         0x7fffffff, 0xffffffff };
+    uint8_t got[8], expected[8];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    native_index_visual(s, 12);
+    native_index_draw(s, 0xabc, 0x123);
+    kona_command(s, 0x33, (uint32_t[]) { 0xd00, 1 }, 2);
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t raw = k ? 0x123 : 0xabc;
+
+        packed_pixel_bytes(expected + k * size,
+                             type == 6 ? fbits(raw) : raw & masks[type],
+                             size, true);
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 11, type, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, 2 * size);
+    g_assert_cmpmem(got, 2 * size, expected, 2 * size);
+    qtest_quit(s);
+}
+
+static void test_native_index_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t values[] = { 0xabc, 0x123, 0x345, 0x678 };
+    uint32_t expected[] = { 18, 52, 0 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+    bool mapped = mode >= 2 && mode <= 11;
+
+    native_index_visual(s, 12);
+    assert_native_query_word(s, 0xcb0, 1, false);
+    if (mapped && mode != 5) {
+        if (mode == 4) {
+            for (unsigned k = 0; k < 4; k++) {
+                values[k] = fbits(k == 2 ? -2.75f : 291.25f);
+            }
+        }
+        if (mode == 7) {
+            kona_command(s, 0x35,
+                         (uint32_t[]) { 0xc70, 4, fbits(3), 256 }, 4);
+            qtest_writel(s, REG_COMMAND, values[0]);
+            qtest_writel(s, REG_COMMAND, values[1]);
+            read_dma_migrate(from, &s, &to, &dir);
+            qtest_writel(s, REG_COMMAND, values[2]);
+            qtest_writel(s, REG_COMMAND, values[3]);
+        } else {
+            native_index_map(s, mode == 3 ? 0x36 : mode == 4 ? 0x34 : 0x35,
+                               values, 4);
+        }
+        assert_native_query_word(s, 0xcb0, 4, true);
+    }
+    if (mapped) {
+        pixel_transfer_set(s, 0xd10, 1);
+        expected[0] = mode == 5 ? 0 : mode == 4 ? 0xffd : 0x345;
+        expected[1] = mode == 5 ? 0 : mode == 4 ? 0x123 : 0xabc;
+    }
+    if (mode == 0 || mode == 1) {
+        kona_command_f(s, 0x1c, (float[]) { mode ? 0xabc : 257.75f }, 1);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+        if (!mode) {
+            expected[0] = expected[1] = 257;
+            goto read;
+        }
+        kona_command(s, 0x23, (uint32_t[]) { 0xf }, 1);
+        expected[0] = 0xab2;
+        expected[1] = 0xab4;
+    } else if (mode == 6) {
+        kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+        native_index_map(s, 0x35, (uint32_t[]) { 0 }, 1);
+        read_dma_migrate(from, &s, &to, &dir);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    } else if (mode == 8) {
+        read_dma_migrate(from, &s, &to, &dir);
+    } else if (mode == 9 || mode == 10) {
+        if (mode == 9) {
+            native_index_map(s, 0x34, (uint32_t[]) { fbits(0), fbits(NAN) }, 2);
+        } else {
+            native_index_map(s, 0x35, (uint32_t[]) { 0, 0, 0 }, 3);
+        }
+        assert_native_query_word(s, 0xcb0, 4, false);
+    } else if (mode == 11) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        assert_native_query_word(s, 0xcb0, 1, false);
+        native_index_map(s, 0x35, (uint32_t[]) { 0 }, 1);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+        assert_native_query_word(s, 0xcb0, 4, false);
+    } else if (mode == 19) {
+        native_index_map(s, 0x35, values, 4);
+        qtest_system_reset(s);
+        native_index_visual(s, 12);
+        assert_native_query_word(s, 0xcb0, 1, false);
+    }
+    if (mode == 14) {
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 11, 6, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, fbits(18));
+        qtest_writel(s, REG_COMMAND, fbits(NAN));
+        expected[0] = expected[1] = 0;
+    } else if (mode == 23) {
+        uint8_t source[8];
+
+        stl_be_p(source, 18);
+        stl_be_p(source + 4, 52);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000, source, sizeof(source));
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 11, 5, 0, 1, 0, 0 }, 8);
+        read_dma_migrate(from, &s, &to, &dir);
+        texture_dma_packet(s, 0, 8, 8, 0);
+    } else if (mode == 24) {
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 11, 5, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, 18);
+        read_dma_migrate(from, &s, &to, &dir);
+        qtest_writel(s, REG_COMMAND, 52);
+    } else {
+        native_index_draw(s, 18, 52);
+    }
+    /* Observe stored indices independently of the enabled input transfer. */
+    pixel_transfer_set(s, 0xd10, 0);
+    if (mode == 12 || mode == 13) {
+        if (mode == 13) {
+            native_index_map(s, 0x35, values, 4);
+            pixel_transfer_set(s, 0xd10, 1);
+        }
+        prepare_refused_reply(s);
+        kona_command(s, 0x110, (uint32_t[]) { 64, 64, 2, 1 }, 4);
+        assert_reply_posted(s);
+        kona_command_f(s, 0xa9, (float[]) { 1.0f / 64, 0 }, 2);
+        kona_command(s, 0x38,
+                     (uint32_t[]) { 64, 64, 2, 1, 0, 0x1800, 0x80000000 }, 7);
+        expected[2] = mode == 13 ? 0xabc : 52;
+        expected[1] = mode == 13 ? 0x345 : 18;
+        pixel_transfer_set(s, 0xd10, 0);
+        assert_native_index_pixels(s, 64, expected, 3);
+        goto out;
+    } else if (mode == 15) {
+        uint8_t got[8], rgba[] = { 255, 0, 0, 255, 0, 0, 255, 255 };
+
+        indexed_colour_maps(s, 0x34);
+        pixel_transfer_set(s, 0xd10, 1);
+        pixel_transfer_set(s, 0xd14, NAN);
+        prepare_refused_reply(s);
+        kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 5, 1, 0 }, 7);
+        assert_reply_posted(s);
+        qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), rgba, sizeof(rgba));
+        goto out;
+    } else if (mode == 18) {
+        native_index_map(s, 0x35, values, 4);
+        pixel_transfer_set(s, 0xd10, 1);
+        expected[0] = 0x345;
+        expected[1] = 0xabc;
+    } else if (mode == 20) {
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 5, 1, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, 0xffffffff);
+        qtest_writel(s, REG_COMMAND, 0xffffffff);
+        prepare_refused_reply(s);
+        kona_command(s, 0x3e, (uint32_t[]) { 0xdbdbdbdb }, 1);
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0x502);
+    } else if (mode == 21 || mode == 22) {
+        if (mode == 21) {
+            kona_command(s, 1,
+                         (uint32_t[]) { 0, 0, 16, 0, 0, 0, 24, 0, 0, 0 }, 10);
+        } else {
+            kona_command(s, 0x114, (uint32_t[]) { 1 }, 1);
+        }
+        prepare_refused_reply(s);
+        kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 11, 5, 0 }, 7);
+        assert_reply_unchanged(s);
+        goto out;
+    }
+read:
+    assert_native_index_pixels(s, 64, expected, 2);
+out:
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_indexed_colour_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -12799,6 +13251,51 @@ int main(int argc, char **argv)
         }
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_bitmap_stencil_read);
+    }
+    for (unsigned mode = 0; mode < 32; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-logic/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_logic);
+    }
+    for (unsigned mode = 0; mode < 4; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-state/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_state);
+    }
+    for (unsigned mode = 0; mode < 34; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-bitmap/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_bitmap);
+    }
+    for (unsigned mode = 0; mode < 56; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-sources/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_sources);
+    }
+    for (unsigned type = 0; type < 7; type++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-read-types/%u", type);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(type),
+                           test_native_index_read_types);
+    }
+    for (unsigned mode = 0; mode < 25; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-pixels/%u", mode);
+
+        if (mode == 16 || mode == 17) {
+            continue;
+        }
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_pixels);
     }
     static const char *pixel_map_size_names[] = {
         "default", "published", "replaced", "rejected", "attributes",
