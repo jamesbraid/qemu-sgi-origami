@@ -43,6 +43,7 @@
 #include "system/runstate.h"
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sgi-storage.h"
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
 #define OCTANE_SHORT_SPAN (16 * MiB)
@@ -81,6 +82,9 @@ typedef struct OctaneMachineState {
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
     Error *flash_migration_blocker;
+    /* Catalogue storage item name -> the block node or drive it binds. */
+    GHashTable *storage;
+    /* Deprecated: a -drive id; node0-flash names the same backing. */
     char *flash_drive;
     uint64_t flash_select;
     uint64_t flash_strap;
@@ -284,7 +288,8 @@ static void octane_reset(MachineState *machine, ResetType type)
     }
 }
 
-static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
+static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge,
+                           const char *nvram, const char *nvram_clock)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
     PCIBus *bus = PCI_HOST_BRIDGE(bridge)->bus;
@@ -325,9 +330,13 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
                          s->node->heart->gpio_classic ? 1u << 2 : 0);
     qdev_prop_set_uint8(DEVICE(pci), "timekeeper-kind",
                        SGI_IOC3_TIMEKEEPER_DS1685);
-    if (blk_by_name("sgi-nvram0")) {
-        qdev_prop_set_drive_err(DEVICE(pci), "ds1685-drive",
-                               blk_by_name("sgi-nvram0"), &error_fatal);
+    if (nvram) {
+        object_property_set_str(OBJECT(pci), "ds1685-drive", nvram,
+                                &error_fatal);
+    }
+    if (nvram_clock) {
+        object_property_set_str(OBJECT(pci), "ds1685-clock-drive",
+                                nvram_clock, &error_fatal);
     }
     qdev_prop_set_bit(DEVICE(pci), "phy-ics1890", true);
     qdev_prop_set_uint8(DEVICE(pci), "phy-addr", 1);
@@ -365,6 +374,48 @@ static const SaveVMHandlers octane_flash_load_handlers = {
     .load_setup = octane_flash_load_setup,
 };
 
+/*
+ * The boot flash and DS1685 backings: the catalogue's node0-flash, nvram0
+ * and nvram0-clock bindings, or the older flash-drive= and sgi-nvram0
+ * drive forms, which still work. Both forms of one store at once, and a
+ * clock record without its NVRAM, are refused as on the SN machines.
+ */
+static void octane_storage_backing(OctaneMachineState *s, const char *product,
+                                   const char **flash, const char **nvram,
+                                   const char **nvram_clock)
+{
+    BlockBackend *legacy_nvram = blk_by_name("sgi-nvram0");
+    MachineState *machine = MACHINE(s);
+    const char *node;
+
+    sgi_storage_check(s->storage, product, product, s->model, &error_fatal);
+    node = sgi_storage_node(s->storage, "node0-flash");
+    if (node && s->flash_drive) {
+        error_setg(&error_fatal, "%s: node0-flash and flash-drive=%s both "
+                   "back the boot flash", product, s->flash_drive);
+    }
+    if (!!machine->firmware + !!node + !!s->flash_drive != 1) {
+        error_setg(&error_fatal, "%s requires one of -bios, node0-flash or "
+                   "flash-drive", product);
+    }
+    *flash = node;
+
+    *nvram = sgi_storage_node(s->storage, "nvram0");
+    *nvram_clock = sgi_storage_node(s->storage, "nvram0-clock");
+    if (legacy_nvram && (*nvram || *nvram_clock)) {
+        error_setg(&error_fatal, "%s: %s and -drive id=sgi-nvram0 both back "
+                   "the same Timekeeper NVRAM", product,
+                   *nvram ? "nvram0" : "nvram0-clock");
+    }
+    if (*nvram_clock && !*nvram) {
+        error_setg(&error_fatal, "%s: nvram0-clock needs nvram0", product);
+    }
+    if (legacy_nvram) {
+        /* The DS1685 finds the legacy "sgi-nvram0-clock" itself. */
+        *nvram = blk_name(legacy_nvram);
+    }
+}
+
 static void octane_init_common(MachineState *machine, bool octane2)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
@@ -385,6 +436,8 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MIPSCPU *cpu;
     Clock *cpuclk;
     const SGIModelProcessor *processor;
+    const char *product = octane2 ? "octane2" : "octane";
+    const char *flash_node, *nvram, *nvram_clock;
     g_autofree char *path = NULL;
     int64_t size;
     int loaded;
@@ -394,8 +447,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
     uint16_t links = (1 << 8) | (1 << 15);
 
-    s->model = octane_model(octane2 ? "octane2" : "octane",
-                             s->topology_name);
+    s->model = octane_model(product, s->topology_name);
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
 
@@ -424,9 +476,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
         error_setg(&error_fatal,
                    "octane flash-select and flash-strap must be 0 or 1");
     }
-    if (!!machine->firmware == !!s->flash_drive) {
-        error_setg(&error_fatal, "octane requires either -bios or flash-drive");
-    }
+    octane_storage_backing(s, product, &flash_node, &nvram, &nvram_clock);
     flash_chip = qdev_new(TYPE_PFLASH_CFI01);
     object_property_add_child(OBJECT(machine), "boot-flash",
                               OBJECT(flash_chip));
@@ -439,21 +489,27 @@ static void octane_init_common(MachineState *machine, bool octane2)
     qdev_prop_set_bit(flash_chip, "big-endian", true);
     qdev_prop_set_uint16(flash_chip, "id0", 0x00b0);
     qdev_prop_set_uint16(flash_chip, "id1", 0x66a8);
-    if (s->flash_drive) {
-        BlockBackend *blk = blk_by_name(s->flash_drive);
-
+    if (flash_node || s->flash_drive) {
         if (runstate_check(RUN_STATE_INMIGRATE)) {
             error_setg(&error_fatal,
                        "octane: migration with persistent boot flash is not supported");
         }
-        if (!blk) {
-            error_setg(&error_fatal, "no flash drive named '%s'",
-                       s->flash_drive);
+        if (s->flash_drive) {
+            BlockBackend *blk = blk_by_name(s->flash_drive);
+
+            if (!blk) {
+                error_setg(&error_fatal, "no flash drive named '%s'",
+                           s->flash_drive);
+            }
+            if (blk_getlength(blk) != OCTANE_FLASH_SIZE) {
+                error_setg(&error_fatal,
+                           "octane boot flash must be exactly 1 MiB");
+            }
+            qdev_prop_set_drive_err(flash_chip, "drive", blk, &error_fatal);
+        } else {
+            object_property_set_str(OBJECT(flash_chip), "drive", flash_node,
+                                    &error_fatal);
         }
-        if (blk_getlength(blk) != OCTANE_FLASH_SIZE) {
-            error_setg(&error_fatal, "octane boot flash must be exactly 1 MiB");
-        }
-        qdev_prop_set_drive_err(flash_chip, "drive", blk, &error_fatal);
         error_setg(&s->flash_migration_blocker,
                    "octane: migration with persistent boot flash is not supported");
         migrate_add_blocker(&s->flash_migration_blocker, &error_fatal);
@@ -671,7 +727,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
                              SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 
-    octane_fit_pci(machine, SGI_BRIDGE(bridge));
+    octane_fit_pci(machine, SGI_BRIDGE(bridge), nvram, nvram_clock);
 }
 
 static void octane_init(MachineState *machine)
@@ -721,8 +777,24 @@ static void octane_instance_init_common(Object *obj, const char *product)
     object_property_set_description(obj, "graphics-widget",
                                     "Crossbow port of the graphics board, "
                                     "9 to 12 (default 11)");
+    for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
+         entry; entry = entry->next) {
+        if (!g_str_equal(entry->value->product, product)) {
+            continue;
+        }
+        for (const SGIModelStorageItemList *item = entry->value->storage;
+             item; item = item->next) {
+            if (!object_property_find(obj, item->value->name)) {
+                sgi_storage_add_property(obj, &s->storage,
+                                         item->value->name);
+            }
+        }
+    }
     object_property_add_str(obj, "flash-drive", octane_get_flash_drive,
                             octane_set_flash_drive);
+    object_property_set_description(obj, "flash-drive",
+                                    "Deprecated: -drive id backing the boot "
+                                    "flash; use node0-flash");
     object_property_add_uint64_ptr(obj, "flash-select", &s->flash_select,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint64_ptr(obj, "flash-strap", &s->flash_strap,
@@ -761,6 +833,9 @@ static void octane_instance_finalize(Object *obj)
     unregister_savevm(NULL, "octane-flash-storage", s);
     migrate_del_blocker(&s->flash_migration_blocker);
     g_free(s->flash_drive);
+    if (s->storage) {
+        g_hash_table_destroy(s->storage);
+    }
 }
 
 static void octane_class_init(ObjectClass *oc, const void *data)
