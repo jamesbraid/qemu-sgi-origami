@@ -11140,6 +11140,142 @@ static void test_texture_adapter_linear_r(void)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+static void test_texture_adapter_linear_q(void)
+{
+    const uint32_t colours[4] = {
+        0xff0000ff, 0xffff00ff, 0x0000ffff, 0xffffffff,
+    };
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t setup[] = {
+        0x28008000, 0x600080f3, 0x28008001, 0x6000810c,
+        0x28008002, 0x60008033, 0x28008003, 0x60008066,
+        0x28008004, 0x6000806c, 0x28008005, 0x60008077,
+        0x28008006, 0x6080809a, 0x28008007, 0x60008203,
+        0x28008008, 0x608080c5,
+        0x3100810c, 0x908091bb, 0x3c800000, 0, 0, 0,
+        0x31008000,
+        0x33008001, 0x290080f3, 0x2a008100, 0x2c00810c,
+    };
+    const uint32_t quad[] = {
+        0x00014400, 7,
+        0xc380d025, 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000,
+        0x8080c800, 32, 32,
+        0xc380d025, 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000,
+        0x8080c800, 96, 32,
+        0xc380d025, 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000,
+        0x8080c800, 96, 96,
+        0xc380d025, 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000,
+        0x8080c800, 32, 96, 0x00014001,
+    };
+    const uint32_t shifted_q[16] = {
+        ODSY_F_ONE, 0, 0, 0,
+        0, ODSY_F_ONE, 0, 0,
+        0, 0, ODSY_F_ONE, 0,
+        0, 0, 0, 0x3fc00000,
+    };
+    const uint64_t page = ODSY_SHADOW_PAGE;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *qts = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-linear-q-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    for (unsigned z = 0; z < ARRAY_SIZE(colours); z++) {
+        const uint32_t pixels[4] = {
+            colours[z], colours[z], colours[z], colours[z],
+        };
+
+        texture_adapter_upload_3d_slice(qts, 0x16a800 + z * 0x80,
+                                        pixels, 2, 2);
+    }
+    texture_adapter_window(qts);
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    texture_adapter_bind_3d(qts, 0x16a800, 2, 4, 2, 1, 1);
+    /* Literal public Q-plane, numeric list and complete STRQ integer quad. */
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, quad, ARRAY_SIZE(quad));
+    g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==, colours[0]);
+    g_assert_cmphex(odsy_test_pixel(qts, 48, 64), ==, colours[3]);
+    g_assert_cmphex(odsy_test_pixel(qts, 64, 64), ==, colours[2]);
+    g_assert_cmphex(odsy_test_pixel(qts, 88, 64), ==, colours[1]);
+    /* Retaining the plane alone cannot enable Q generation. */
+    texture_linear_program(qts, 0);
+    push_user_words(qts, quad, ARRAY_SIZE(quad));
+    g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==, colours[2]);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+
+    /* Generated Q must leave the explicit current STRQ unchanged. */
+    user_cmd_push(qts, 0xc380d025);
+    push_user_words(qts, (uint32_t[]) {
+        0x3f400000, 0x3e800000, 0x3f200000, 0x40000000,
+    }, 4);
+    texture_adapter_current_point(qts, 36, 63);
+    g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==, colours[0]);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    qtest_memset(qts, page, 0xa5, 4096);
+    qtest_writel(qts, page + 0x84, 0);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+    qtest_writeq(qts, WIDGET + ODSY_CTX_SWITCH_PORT,
+                 (UINT64_C(7) << 40) | (UINT64_C(1) << 16) | 1);
+    g_assert_cmphex(qtest_readl(qts, page + 0x140), ==, 0xc380d025);
+    g_assert_cmphex(qtest_readl(qts, page + 0x40c), ==, 0x40000000);
+    texture_adapter_point_3d(qts, 40, 63, 0.25f, 0.25f, 0.125f);
+    texture_coordinate_replay(qts, page);
+    texture_linear_program(qts, 0);
+    texture_adapter_current_point(qts, 36, 63);
+    g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==, colours[1]);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(qts, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    texture_adapter_current_point(to, 36, 63);
+    g_assert_cmphex(odsy_test_pixel(to, 36, 64), ==, colours[0]);
+
+    /* The texture matrix scales generated Q before projective division. */
+    user_cmd_push(to, ODSY_GL_MATRIX_SELECT_TEXTURE);
+    user_cmd_push(to, ODSY_GL_MATRIX_LOAD);
+    push_user_words(to, shifted_q, ARRAY_SIZE(shifted_q));
+    texture_adapter_current_point(to, 36, 63);
+    g_assert_cmphex(odsy_test_pixel(to, 36, 64), ==, colours[2]);
+
+    qtest_system_reset(to);
+    for (unsigned z = 0; z < ARRAY_SIZE(colours); z++) {
+        const uint32_t pixels[4] = {
+            colours[z], colours[z], colours[z], colours[z],
+        };
+
+        texture_adapter_upload_3d_slice(to, 0x16a800 + z * 0x80,
+                                        pixels, 2, 2);
+    }
+    texture_adapter_window(to);
+    texture_adapter_bind_3d(to, 0x16a800, 2, 4, 2, 1, 1);
+    /* Reload the stage selectors without reloading the Q plane. */
+    push_user_words(to, setup, 18);
+    push_user_words(to, &setup[25], 4);
+    texture_adapter_point_3d(to, 36, 64, 0.75f, 0.25f, 0.625f);
+    g_assert_cmphex(odsy_test_pixel(to, 36, 64), ==, colours[2]);
+    qtest_quit(to);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_texture_adapter_projective_3d(void)
 {
     const uint32_t colours[4] = {
@@ -14107,6 +14243,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_level_zero_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-r",
                    test_texture_adapter_linear_r);
+    qtest_add_func("sn1/odyssey/texture-adapter/linear-q",
+                   test_texture_adapter_linear_q);
     qtest_add_func("sn1/odyssey/texture-adapter/projective-3d",
                    test_texture_adapter_projective_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/3d-state-restore",
