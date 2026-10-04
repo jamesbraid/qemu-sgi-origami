@@ -596,7 +596,7 @@ static SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
  * glColorMask channel mask lets through. The planes hold no alpha, so
  * its bit has no effect.
  */
-static uint32_t sgi_soft_colour_mask(const SGIRasterRules *r, uint32_t mask)
+uint32_t sgi_raster_colour_mask(const SGIRasterRules *r, uint32_t mask)
 {
     uint32_t channel = (1u << r->color_bits) - 1, out = 0;
 
@@ -611,7 +611,7 @@ static uint32_t sgi_soft_colour_mask(const SGIRasterRules *r, uint32_t mask)
 /* The packed colour's bits, all of which a full mask writes. */
 static uint32_t sgi_soft_colour_bits(const SGIRasterRules *r)
 {
-    return sgi_soft_colour_mask(r, SGI_GL_COLOUR_MASK_ALL);
+    return sgi_raster_colour_mask(r, SGI_GL_COLOUR_MASK_ALL);
 }
 
 /*
@@ -638,7 +638,7 @@ static bool sgi_soft_setup_ops(SGISoftDraw *r)
                       (st->blend && st->blend_equation == SGI_GL_LOGIC_OP);
         r->blend = st->blend && !r->logic_op;
     }
-    r->colour_mask = sgi_soft_colour_mask(r->rules, st->colour_mask);
+    r->colour_mask = sgi_raster_colour_mask(r->rules, st->colour_mask);
     r->dither = st->dither && r->rules->dither != SGI_DITHER_NONE;
     if (!st->index_bits) {
         r->rgba_mask = sgi_soft_rgba_mask(r->rules, st->colour_mask);
@@ -4092,7 +4092,7 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         double c[3] = { op->clear_rgba[0], op->clear_rgba[1],
                         op->clear_rgba[2] };
 
-        mask = sgi_soft_colour_mask(rules, op->clear_colour_mask);
+        mask = sgi_raster_colour_mask(rules, op->clear_colour_mask);
         if (!rgba && mask != sgi_soft_colour_bits(rules) &&
             mask && !t->load_colour) {
             qemu_log_mask(LOG_UNIMP, "sgi-gl: a partial colour mask needs "

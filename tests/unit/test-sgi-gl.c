@@ -4666,6 +4666,31 @@ static void frag_colour_mask(FragScene *f, bool r, bool g, bool b, bool a)
  * none they write nothing, and the alpha channel's bit changes nothing in
  * planes without alpha. Planes that cannot be read are written whole.
  */
+static void test_packed_colour_mask(void)
+{
+    static const struct {
+        unsigned bits;
+        uint32_t masks[8];
+    } cases[] = {
+        { 1, { 0, 4, 2, 6, 1, 5, 3, 7 } },
+        { 8, { 0, 0xff0000, 0xff00, 0xffff00,
+                0xff, 0xff00ff, 0xffff, 0xffffff } },
+        { 10, { 0, 0x3ff00000, 0xffc00, 0x3ffffc00,
+                 0x3ff, 0x3ff003ff, 0xfffff, 0x3fffffff } },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIRasterRules rules = rules_supported;
+
+        rules.color_bits = cases[i].bits;
+        g_assert_true(sgi_raster_rules_supported(&rules));
+        for (unsigned mask = 0; mask < 16; mask++) {
+            g_assert_cmphex(sgi_raster_colour_mask(&rules, mask), ==,
+                            cases[i].masks[mask & 7]);
+        }
+    }
+}
+
 static void test_colour_mask(void)
 {
     static FragScene f;
@@ -12376,6 +12401,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/blend", test_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
+    g_test_add_func("/sgi-gl/packed-colour-mask", test_packed_colour_mask);
     g_test_add_func("/sgi-gl/fog", test_fog);
     g_test_add_func("/sgi-gl/fog-factor-hook", test_fog_factor_hook);
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);

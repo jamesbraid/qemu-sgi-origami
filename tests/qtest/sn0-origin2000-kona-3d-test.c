@@ -12642,6 +12642,52 @@ static void test_renderer_culling(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_colour_mask(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque), mask = mode & 15;
+    bool direct = mode & 16;
+    const uint8_t old[3] = { direct ? 47 : 255, direct ? 89 : 255,
+                             direct ? 123 : 255 };
+    const uint8_t colour[3] = { 17, 63, 191 };
+    uint32_t words[4], rgb = 0;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (direct) {
+        kona_command_f(s, 0x1d, (float[]) { 47 / 255.0f, 89 / 255.0f,
+                                           123 / 255.0f, 1 }, 4);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        words[i] = mask & (1u << i);
+        if (i < 3) {
+            rgb = (rgb << 8) | (words[i] ? colour[i] : old[i]);
+        }
+    }
+    kona_command(s, 0x21, words, 4);
+    kona_command_f(s, 0x63, (float[]) { 17 / 255.0f, 63 / 255.0f,
+                                      191 / 255.0f }, 3);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, rgb);
+    assert_window_matches(s, expected);
+    /* A fully masked indexed pixel must still follow its palette entry. */
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    if (!direct && !(mask & 7)) {
+        expected_clear(expected, 0x326496);
+    }
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
@@ -13710,6 +13756,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_culling);
+    }
+    for (unsigned mode = 0; mode < 32; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/colour-mask/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_colour_mask);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
