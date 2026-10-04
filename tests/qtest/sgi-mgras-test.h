@@ -20,7 +20,7 @@
 /*
  * The register cases share one machine: nothing they read depends on the
  * CPU count or the memory size, so neither is spelled out here. The
- * migration cases start their own pairs and keep the fuller machine,
+ * migration cases start their own machines and keep the fuller machine,
  * because what they check crosses a whole machine's saved state.
  */
 #define MACHINE_ARGS "-M origin2000 -device sgi-mgras,slot=io3"
@@ -28,11 +28,68 @@
     "-M origin2000 -smp 8 -m 256M -device sgi-mgras,slot=io3"
 
 /*
- * Started once in main() and reset before each register case. Booting a
- * machine per case cost about three seconds each and made this the
- * slowest qtest in the suite for no extra coverage.
+ * Shared QTestState, started lazily and reused by shared tests. Released
+ * before tests that start their own machines.
  */
 static QTestState *qts;
+
+typedef struct {
+    bool uses_shared;
+    void (*fn)(void);
+} MgrasQTestFunc;
+
+typedef struct {
+    bool uses_shared;
+    const void *data;
+    void (*fn)(const void *);
+} MgrasQTestDataFunc;
+
+static inline void mgras_qtest_prepare(bool uses_shared)
+{
+    if (uses_shared) {
+        if (!qts) {
+            qts = qtest_init(MACHINE_ARGS);
+        }
+    } else if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
+}
+
+static inline void mgras_qtest_run_func(const void *opaque)
+{
+    const MgrasQTestFunc *test = opaque;
+    mgras_qtest_prepare(test->uses_shared);
+    test->fn();
+}
+
+static inline void mgras_qtest_run_data_func(const void *opaque)
+{
+    const MgrasQTestDataFunc *test = opaque;
+    mgras_qtest_prepare(test->uses_shared);
+    test->fn(test->data);
+}
+
+static inline void mgras_qtest_add_func(const char *path, void (*fn)(void),
+                                        bool uses_shared)
+{
+    MgrasQTestFunc *test = g_new(MgrasQTestFunc, 1);
+    test->uses_shared = uses_shared;
+    test->fn = fn;
+    qtest_add_data_func_full(path, test, mgras_qtest_run_func, g_free);
+}
+
+static inline void mgras_qtest_add_data_func(const char *path,
+                                             const void *data,
+                                             void (*fn)(const void *),
+                                             bool uses_shared)
+{
+    MgrasQTestDataFunc *test = g_new(MgrasQTestDataFunc, 1);
+    test->uses_shared = uses_shared;
+    test->data = data;
+    test->fn = fn;
+    qtest_add_data_func_full(path, test, mgras_qtest_run_data_func, g_free);
+}
 #define REG_INT_DEST_UPPER     MGRAS_REG(0x000034)
 #define REG_INT_DEST_LOWER     MGRAS_REG(0x00003c)
 #define REG_STARTUP_STATUS     MGRAS_REG(0x008000)
@@ -1906,6 +1963,7 @@ static inline void gl_migrate(void (*setup)(QTestState *),
                               void (*check)(QTestState *))
 {
     g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
     GError *err = NULL;
@@ -1913,18 +1971,22 @@ static inline void gl_migrate(void (*setup)(QTestState *),
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-state-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "migrate.bin", NULL);
+    uri = g_strdup_printf("file:%s", path);
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     setup(from);
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
     check(to);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(path);
     g_rmdir(tmpfs);
 }
 

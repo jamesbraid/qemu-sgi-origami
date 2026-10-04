@@ -2443,168 +2443,209 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/gl-context-re-count-token/si",
-                   test_gl_context_re_count_token_si);
-    qtest_add_func("sn0/origin2000/mgras/gl-context-re-count-token/ssi",
-                   test_gl_context_re_count_token_ssi);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
-                   test_hq_query_sets_flag_after_arguments);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-matrices",
-                   test_hq_query_answers_the_matrices);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-window-origin",
-                   test_hq_query_answers_the_window_origin);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-position",
-                   test_hq_query_answers_the_raster_position);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-colour-index",
-                   test_hq_query_answers_the_colour_index);
-    qtest_add_func("sn0/origin2000/mgras/gl-texcoord3f-"
-                   "packet-and-context-state",
-                   test_gl_texcoord3f_packet_and_context_state);
-    qtest_add_func("sn0/origin2000/mgras/gl-texcoord3f-state-migrates",
-                   test_gl_texcoord3f_state_migrates);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-write-mask",
-                   test_hq_query_answers_the_write_mask);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-raster-state",
-                   test_hq_query_answers_the_raster_state);
-    qtest_add_func("sn0/origin2000/mgras/gl-raster-pos2i",
-                   test_gl_raster_pos2i);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-colour-index-draws-through-the-colour-map",
-                   test_gl_colour_index_draws_through_the_colour_map);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-colour-index-zero-mask-keeps-the-pixel",
-                   test_gl_colour_index_zero_mask_keeps_the_pixel);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-colour-index-draws-into-bank-one",
-                   test_gl_colour_index_draws_into_bank_one);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-colour-index-swap-shows-the-drawn-bank",
-                   test_gl_colour_index_swap_shows_the_drawn_bank);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-deep-swap-shows-the-drawn-buffer-ssi",
-                   test_gl_deep_swap_shows_the_drawn_buffer_ssi);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-shallow-swap-still-shows-bank-one-ssi",
-                   test_gl_shallow_swap_still_shows_bank_one_ssi);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-flag-only-from-query",
-                   test_hq_query_flag_only_from_query);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-records-overlapping-named-quads",
-                   test_gl_selection_records_overlapping_named_quads);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-clipped-quad-has-no-hit",
-                   test_gl_selection_clipped_quad_has_no_hit);
-    qtest_add_func("sn0/origin2000/mgras/gl-selection-supports-primitives",
-                   test_gl_selection_supports_primitives);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-depth-uses-clipped-vertices",
-                   test_gl_selection_depth_uses_clipped_vertices);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-polygon-mode-does-not-change-hits",
-                   test_gl_selection_polygon_mode_does_not_change_hits);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-respects-polygon-culling",
-                   test_gl_selection_respects_polygon_culling);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-selection-preserves-strip-winding",
-                   test_gl_selection_preserves_strip_winding);
-    qtest_add_func("sn0/origin2000/mgras/gl-selection-state-migrates",
-                   test_gl_selection_state_migrates);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-ortho-matches-the-reference",
-                   test_gl_ortho_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-frustum-matches-the-reference",
-                   test_gl_frustum_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-load-matrix-reads-columns",
-                   test_gl_load_matrix_reads_columns);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-mult-matrix-multiplies-on-the-right",
-                   test_gl_mult_matrix_multiplies_on_the_right);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-matrix-mode-selects-the-matrix",
-                   test_gl_matrix_mode_selects_the_matrix);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-matrix-product-is-single-precision",
-                   test_gl_matrix_product_is_single_precision);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-context-setup-restores-initial-state",
-                   test_gl_context_setup_restores_initial_state);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-back-buffer-draws-into-bank-one",
-                   test_gl_back_buffer_draws_into_bank_one);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-front-and-back-draw-into-both-banks",
-                   test_gl_front_and_back_draw_into_both_banks);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-front-buffer-is-the-other-bank",
-                   test_gl_front_buffer_is_the_other_bank);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-bank-token-moves-the-back-buffer",
-                   test_gl_bank_token_moves_the_back_buffer);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-context-image-restores-the-banks",
-                   test_gl_context_image_restores_the_banks);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-swap-matches-the-reference",
-                   test_gl_swap_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-swap-pending-matches-the-reference",
-                   test_gl_swap_pending_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/gl-state-follows-the-context-slot",
-                   test_gl_state_follows_the_context_slot);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-context-opener-resets-only-its-context",
-                   test_gl_context_opener_resets_only_its_context);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-images-without-a-slot-share-one-state",
-                   test_gl_images_without_a_slot_share_one_state);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-context-table-replaces-the-least-recent",
-                   test_gl_context_table_replaces_the_least_recent);
-    qtest_add_func("sn0/origin2000/mgras/gl-parser-follows-the-context",
-                   test_gl_parser_follows_the_context);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-packet-split-by-a-context-switch",
-                   test_gl_packet_split_by_a_context_switch);
-    qtest_add_func("sn0/origin2000/mgras/gl-new-context-starts-at-a-header",
-                   test_gl_new_context_starts_at_a_header);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-new-context-starts-in-the-initial-state",
-                   test_gl_new_context_starts_in_the_initial_state);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-default-context-keeps-its-packet",
-                   test_gl_default_context_keeps_its_packet);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-new-context-without-a-slot-keeps-the-default",
-                   test_gl_new_context_without_a_slot_keeps_the_default);
-    qtest_add_func("sn0/origin2000/mgras/gl-bit-31-alone-keeps-the-packet",
-                   test_gl_bit_31_alone_keeps_the_packet);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-transforms-multiply-on-the-right",
-                   test_gl_transforms_multiply_on_the_right);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-push-and-pop-restore-the-matrix",
-                   test_gl_push_and_pop_restore_the_matrix);
-    qtest_add_func("sn0/origin2000/mgras/gl-matrix-stack-holds-32",
-                   test_gl_matrix_stack_holds_32);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-front-face-selects-the-two-sided-colour",
-                   test_gl_front_face_selects_the_two_sided_colour);
-    qtest_add_func("sn0/origin2000/mgras/gl-grids-and-accum-are-consumed",
-                   test_gl_grids_and_accum_are_consumed);
-    qtest_add_func("sn0/origin2000/mgras/gl-subsections-follow-their-state",
-                   test_gl_subsections_follow_their_state);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-state-subsections-follow-their-state",
-                   test_gl_state_subsections_follow_their_state);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-context-re-count-token/si",
+        test_gl_context_re_count_token_si, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-context-re-count-token/ssi",
+        test_gl_context_re_count_token_ssi, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-sets-flag-after-arguments",
+        test_hq_query_sets_flag_after_arguments, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-matrices",
+        test_hq_query_answers_the_matrices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-window-origin",
+        test_hq_query_answers_the_window_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-raster-position",
+        test_hq_query_answers_the_raster_position, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-colour-index",
+        test_hq_query_answers_the_colour_index, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-texcoord3f-packet-and-context-state",
+        test_gl_texcoord3f_packet_and_context_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-texcoord3f-state-migrates",
+        test_gl_texcoord3f_state_migrates, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-write-mask",
+        test_hq_query_answers_the_write_mask, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-raster-state",
+        test_hq_query_answers_the_raster_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-raster-pos2i",
+        test_gl_raster_pos2i, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-colour-index-draws-through-the-colour-map",
+        test_gl_colour_index_draws_through_the_colour_map, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-colour-index-zero-mask-keeps-the-pixel",
+        test_gl_colour_index_zero_mask_keeps_the_pixel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-index-draws-into-bank-one",
+        test_gl_colour_index_draws_into_bank_one, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-colour-index-swap-shows-the-drawn-bank",
+        test_gl_colour_index_swap_shows_the_drawn_bank, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-deep-swap-shows-the-drawn-buffer-ssi",
+        test_gl_deep_swap_shows_the_drawn_buffer_ssi, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-shallow-swap-still-shows-bank-one-ssi",
+        test_gl_shallow_swap_still_shows_bank_one_ssi, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-flag-only-from-query",
+        test_hq_query_flag_only_from_query, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-selection-records-overlapping-named-quads",
+        test_gl_selection_records_overlapping_named_quads, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-selection-clipped-quad-has-no-hit",
+        test_gl_selection_clipped_quad_has_no_hit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-selection-supports-primitives",
+        test_gl_selection_supports_primitives, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-selection-depth-uses-clipped-vertices",
+        test_gl_selection_depth_uses_clipped_vertices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-selection-polygon-mode-does-not-change-hits",
+        test_gl_selection_polygon_mode_does_not_change_hits, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-selection-respects-polygon-culling",
+        test_gl_selection_respects_polygon_culling, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-selection-preserves-strip-winding",
+        test_gl_selection_preserves_strip_winding, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-selection-state-migrates",
+        test_gl_selection_state_migrates, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-ortho-matches-the-reference",
+        test_gl_ortho_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-frustum-matches-the-reference",
+        test_gl_frustum_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-load-matrix-reads-columns",
+        test_gl_load_matrix_reads_columns, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-mult-matrix-multiplies-on-the-right",
+        test_gl_mult_matrix_multiplies_on_the_right, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-matrix-mode-selects-the-matrix",
+        test_gl_matrix_mode_selects_the_matrix, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-matrix-product-is-single-precision",
+        test_gl_matrix_product_is_single_precision, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-context-setup-restores-initial-state",
+        test_gl_context_setup_restores_initial_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-back-buffer-draws-into-bank-one",
+        test_gl_back_buffer_draws_into_bank_one, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-front-and-back-draw-into-both-banks",
+        test_gl_front_and_back_draw_into_both_banks, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-front-buffer-is-the-other-bank",
+        test_gl_front_buffer_is_the_other_bank, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-bank-token-moves-the-back-buffer",
+        test_gl_bank_token_moves_the_back_buffer, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-context-image-restores-the-banks",
+        test_gl_context_image_restores_the_banks, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-swap-matches-the-reference",
+        test_gl_swap_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-swap-pending-matches-the-reference",
+        test_gl_swap_pending_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-state-follows-the-context-slot",
+        test_gl_state_follows_the_context_slot, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-context-opener-resets-only-its-context",
+        test_gl_context_opener_resets_only_its_context, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-images-without-a-slot-share-one-state",
+        test_gl_images_without_a_slot_share_one_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-context-table-replaces-the-least-recent",
+        test_gl_context_table_replaces_the_least_recent, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-parser-follows-the-context",
+        test_gl_parser_follows_the_context, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-packet-split-by-a-context-switch",
+        test_gl_packet_split_by_a_context_switch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-new-context-starts-at-a-header",
+        test_gl_new_context_starts_at_a_header, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-new-context-starts-in-the-initial-state",
+        test_gl_new_context_starts_in_the_initial_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-default-context-keeps-its-packet",
+        test_gl_default_context_keeps_its_packet, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-new-context-without-a-slot-keeps-the-default",
+        test_gl_new_context_without_a_slot_keeps_the_default, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-bit-31-alone-keeps-the-packet",
+        test_gl_bit_31_alone_keeps_the_packet, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-transforms-multiply-on-the-right",
+        test_gl_transforms_multiply_on_the_right, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-push-and-pop-restore-the-matrix",
+        test_gl_push_and_pop_restore_the_matrix, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-matrix-stack-holds-32",
+        test_gl_matrix_stack_holds_32, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-front-face-selects-the-two-sided-colour",
+        test_gl_front_face_selects_the_two_sided_colour, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-grids-and-accum-are-consumed",
+        test_gl_grids_and_accum_are_consumed, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-subsections-follow-their-state",
+        test_gl_subsections_follow_their_state, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-state-subsections-follow-their-state",
+        test_gl_state_subsections_follow_their_state, false);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

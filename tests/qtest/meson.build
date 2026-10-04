@@ -942,6 +942,7 @@ foreach dir : target_dirs
          depends: [test_deps, qtest_emulator, emulator_modules],
          env: qtest_env,
          args: test_args,
+         is_parallel: not test.startswith('sgi-mgras-'),
          protocol: 'tap',
          timeout: slow_qtests.get(test, 60),
          priority: slow_qtests.get(test, 60),

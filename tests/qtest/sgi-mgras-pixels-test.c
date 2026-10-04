@@ -2488,7 +2488,7 @@ static void test_gl_bitmap_split_by_a_context_switch(void)
 
 static void gl_pixels_context(QTestState *qts, uint32_t index_bits)
 {
-    mgras_reset();
+    mgras_reset_state(qts);
     gl_enter_slot(qts, GL_SLOT_A);
     gl_word(qts, GL_CONTEXT_OPENER);
     if (index_bits) {
@@ -4793,6 +4793,7 @@ static void test_gl_readpixels_dma_bracket_migration(void)
         0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5, 0xa5,
     };
     g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
     GError *err = NULL;
@@ -4801,11 +4802,9 @@ static void test_gl_readpixels_dma_bracket_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-readpixels-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "migrate.bin", NULL);
+    uri = g_strdup_printf("file:%s", path);
     from = qts;
-    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-
     qtest_system_reset(from);
     g_assert_cmphex(qtest_readl(from, REG_HQ_STATUS), ==, 0x13);
     gl_enter_slot(from, GL_SLOT_A);
@@ -4833,6 +4832,12 @@ static void test_gl_readpixels_dma_bracket_migration(void)
     gl_read_dma_class_a_signature(from, 2, 2);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    qts = NULL;
+
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_read_dma_descriptor(to, 16, 1, 16);
     gl_word(to, 0x0000da00);
@@ -4844,6 +4849,7 @@ static void test_gl_readpixels_dma_bracket_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
+    g_remove(path);
     g_rmdir(tmpfs);
 }
 
@@ -5485,255 +5491,353 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/dma-map-slot-registers",
-                   test_dma_map_slot_registers);
-    qtest_add_func("sn0/origin2000/mgras/dma-map-close-and-discard",
-                   test_dma_map_close_marker_and_discard);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-paints-from-host-memory",
-                   test_dma_image_transfer_paints_from_host_memory);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-traces-source-chunks",
-                   test_dma_image_transfer_traces_source_chunks);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-kick-byte-selects-slot",
-                   test_dma_image_transfer_kick_byte_selects_slot);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-src-off-aligned-selects-page",
-                   test_dma_image_transfer_src_off_aligned_selects_page);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-reads-list-entry-at-0x18",
-                   test_dma_image_transfer_reads_list_entry_at_0x18);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-past-page-list-moves-nothing",
-                   test_dma_image_transfer_past_page_list_moves_nothing);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-applies-logic-op",
-                   test_dma_image_transfer_applies_logic_op);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-applies-colour-mask",
-                   test_dma_image_transfer_applies_colour_mask);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-draws-ci8-indices",
-                   test_dma_image_transfer_draws_ci8_indices);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-lands-in-bank-zero",
-                   test_dma_image_transfer_lands_in_bank_zero);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-reads-screen-to-host",
-                   test_dma_image_transfer_reads_screen_to_host);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-reads-screen-to-host-did-selection",
-                   test_dma_image_transfer_reads_screen_to_host_did_selection);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-reads-rgb555",
-                   test_dma_image_transfer_reads_rgb555);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "dma-image-transfer-reads-rgb-red-in-low-byte",
-                   test_dma_image_transfer_reads_rgb_red_in_low_byte);
-    qtest_add_func("sn0/origin2000/mgras/byte-row-pairs-rgb-survives-dma-copy",
-                   test_byte_row_pairs_rgb_survives_dma_copy);
-    qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
-                   test_direct_pio_pixel_pairs);
-    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-draws-its-image",
-                   test_gl_bitmap_draws_its_image);
-    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-unaligned-image",
-                   test_gl_bitmap_unaligned_image);
-    qtest_add_func("sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
-                   test_gl_bitmap_split_by_a_context_switch);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-colour-index",
-                   test_gl_pixels_inline_colour_index);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-colour-index-into-bank-one",
-                   test_gl_pixels_colour_index_into_bank_one);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgb",
-                   test_gl_pixels_captured_float_rgb);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgb-3x2",
-                   test_gl_pixels_captured_float_rgb_three_by_two);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgb-3x2-rejected",
-                   test_gl_pixels_captured_float_rgb_three_by_two_rejected);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgba",
-                   test_gl_pixels_captured_float_rgba);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-captured-float-rgba-8x1",
-                   test_gl_pixels_captured_float_rgba_8x1);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-unsupported-shapes-recover",
-                   test_gl_pixels_captured_float_rgba_shape_recovery);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-float-malformed-unpack",
-                   test_gl_pixels_float_malformed_unpack);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-inline-rgb",
-                   test_gl_pixels_inline_rgb);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-two-by-two",
-                   test_gl_pixels_ordinary_rgba_two_by_two);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-single-row",
-                   test_gl_pixels_ordinary_rgba_single_row);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-ordinary-rgba-short-count",
-                   test_gl_pixels_ordinary_rgba_two_rows_short_count);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-ordinary-rgba-captured-row-counts",
-                   test_gl_pixels_ordinary_rgba_captured_row_counts);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-ordinary-rgba-64x32-inline-rejected",
-                   test_gl_pixels_ordinary_rgba_64x32_inline_rejected);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-single-row",
-                   test_gl_pixels_captured_float_rgba_single_row);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-wrong-unpack-word",
-                   test_gl_pixels_captured_float_rgba_wrong_unpack_word);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-rgb-count-stays-per-row",
-                   test_gl_pixels_rgb_count_stays_per_row);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-small-shapes",
-                   test_gl_pixels_captured_float_rgba_small_shapes);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-32x1",
-                   test_gl_pixels_captured_float_rgba_32x1);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-32x1-bad-signature",
-                   test_gl_pixels_captured_float_rgba_32x1_bad_signature);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-wide-strips",
-                   test_gl_pixels_captured_float_rgba_wide_strips);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-captured-float-rgba-wide-client-offsets",
-                   test_gl_pixels_captured_float_rgba_wide_client_offsets);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-abgr",
-                   test_gl_pixels_dma_abgr);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rgba-and-rgb",
-                   test_gl_pixels_dma_rgba_and_rgb);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-rows-in-two-parts",
-                   test_gl_pixels_dma_rows_in_two_parts);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-unmodelled-draw-nothing",
-                   test_gl_pixels_unmodelled_draw_nothing);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-long-load",
-                   test_gl_pixels_long_load);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-rows-follow-their-draw",
-                   test_gl_pixels_rows_follow_their_draw);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-pixels-raster-kick-leaves-the-draw",
-                   test_gl_pixels_raster_kick_leaves_the_draw);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-far-raster-position",
-                   test_gl_pixels_far_raster_position);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-raster-position",
-                   test_gl_pixels_follow_the_raster_position);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-follow-the-context",
-                   test_gl_pixels_follow_the_context);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-moves-the-context",
-                   test_gl_eviction_moves_the_context);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-needs-the-read-token",
-                   test_gl_eviction_needs_the_read_token);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-buffer-at-host-zero",
-                   test_gl_eviction_buffer_at_host_zero);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
-                   test_gl_eviction_chunks_need_not_be_adjacent);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-clip-query-registers",
-                   test_gl_pixels_preserve_clip_query_registers_per_context);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-oversized-row",
-                   test_gl_pixels_dma_oversized_row_is_refused);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-dma-no-rows",
-                   test_gl_pixels_dma_no_rows_is_empty);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-inline-write",
-                   test_gl_eviction_inline_write_moves_nothing);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-buffer-on-another-node",
-                   test_gl_eviction_buffer_on_another_node);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-returns-the-box",
-                   test_pio_read_returns_the_box);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-captured-one-pixel-mode",
-                   test_pio_read_captured_one_pixel_mode);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-captured-single-row-mode",
-                   test_pio_read_captured_single_row_mode);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-captured-ximage-mode-80",
-                   test_pio_read_captured_ximage_mode_80);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-captured-mode-"
-                   "needs-matching-counters",
-                   test_pio_read_captured_mode_requires_matching_counters);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-rows-start-a-unit",
-                   test_pio_read_rows_start_a_unit);
-    qtest_add_func("sn0/origin2000/mgras/pio-read-other-mode-reads-zero",
-                   test_pio_read_other_mode_reads_zero);
-    qtest_add_func("sn0/origin2000/mgras/pio-write-control-starts-no-read",
-                   test_pio_write_control_starts_no_read);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-draws-the-probe-list",
-                   test_gl_list_draws_the_probe_list);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-follows-the-chain",
-                   test_gl_list_follows_the_chain);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-big-matches-the-reference",
-                   test_gl_list_big_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-page-on-another-node",
-                   test_gl_list_page_on_another_node);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-page-on-the-highest-node",
-                   test_gl_list_page_on_the_highest_node);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-calls-nest-64-deep",
-                   test_gl_list_calls_nest_64_deep);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-call-needs-its-next-token",
-                   test_gl_list_call_needs_its_next_token);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-continues-at-offset-zero",
-                   test_gl_list_continues_at_offset_zero);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-calls-a-list",
-                   test_gl_list_calls_a_list);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-unknown-header-draws-nothing",
-                   test_gl_list_unknown_header_draws_nothing);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-crosses-a-page",
-                   test_gl_list_crosses_a_page);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-ends-inside-a-packet",
-                   test_gl_list_ends_inside_a_packet);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-over-the-word-limit",
-                   test_gl_list_over_the_word_limit);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-over-the-range-limit",
-                   test_gl_list_over_the_range_limit);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-chain-over-the-word-limit",
-                   test_gl_list_chain_over_the_word_limit);
-    qtest_add_func("sn0/origin2000/mgras/gl-dma-read-fence-is-consumed-quietly",
-                   test_gl_dma_read_fence_is_consumed_quietly);
-    qtest_add_func("sn0/origin2000/mgras/gl-list-past-the-pool-is-bounded",
-                   test_gl_list_past_the_pool_is_bounded);
-    qtest_add_func("sn0/origin2000/mgras/gl-records-apply-the-read-registers",
-                   test_gl_records_apply_the_read_registers);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
-                   test_gl_readpixels_dataport_rgba);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-sync-bit-set",
-                   test_gl_readpixels_sync_bit_set);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-other-mode-reads-zero",
-                   test_gl_readpixels_other_mode_reads_zero);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
-                   test_gl_readpixels_bracket_opaque);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bounded-rgba",
-                   test_gl_readpixels_dma_bounded_rgba);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-float-rgba",
-                   test_gl_readpixels_dma_float_rgba);
-    qtest_add_func("sn0/origin2000/mgras/gl-copypixels-slow-path",
-                   test_gl_copypixels_slow_path);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-one-row-rectangular",
-                   test_gl_readpixels_dma_one_row_rectangular);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-captured-rectangles",
-                   test_gl_readpixels_dma_captured_rectangles);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-readpixels-dma-client-buffer-selection",
-                   test_gl_readpixels_dma_client_buffer_selection);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-short-pixel",
-                   test_gl_readpixels_dma_rejects_short_one_pixel_descriptor);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-readpixels-dma-area-exceeds-plane-width",
-                   test_gl_readpixels_dma_area_exceeds_plane_width);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-readpixels-dma-captured-wide-rectangles",
-                   test_gl_readpixels_dma_captured_wide_rectangles);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-readpixels-dma-captured-rgb-64x1",
-                   test_gl_readpixels_dma_captured_rgb64x1);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-readpixels-dma-captured-one-row-selectors",
-                   test_gl_readpixels_dma_captured_one_row_selectors);
-    qtest_add_func("sn0/origin2000/mgras/gl-readpixels-dma-bracket-migration",
-                   test_gl_readpixels_dma_bracket_migration);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-map-slot-registers",
+        test_dma_map_slot_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-map-close-and-discard",
+        test_dma_map_close_marker_and_discard, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-paints-from-host-memory",
+        test_dma_image_transfer_paints_from_host_memory, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-traces-source-chunks",
+        test_dma_image_transfer_traces_source_chunks, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-kick-byte-selects-slot",
+        test_dma_image_transfer_kick_byte_selects_slot, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-src-off-aligned-selects-page",
+        test_dma_image_transfer_src_off_aligned_selects_page, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-reads-list-entry-at-0x18",
+        test_dma_image_transfer_reads_list_entry_at_0x18, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-past-page-list-moves-nothing",
+        test_dma_image_transfer_past_page_list_moves_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-applies-logic-op",
+        test_dma_image_transfer_applies_logic_op, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-applies-colour-mask",
+        test_dma_image_transfer_applies_colour_mask, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-draws-ci8-indices",
+        test_dma_image_transfer_draws_ci8_indices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-lands-in-bank-zero",
+        test_dma_image_transfer_lands_in_bank_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-reads-screen-to-host",
+        test_dma_image_transfer_reads_screen_to_host, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-reads-screen-to-host-did-selection",
+        test_dma_image_transfer_reads_screen_to_host_did_selection, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-image-transfer-reads-rgb555",
+        test_dma_image_transfer_reads_rgb555, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "dma-image-transfer-reads-rgb-red-in-low-byte",
+        test_dma_image_transfer_reads_rgb_red_in_low_byte, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/byte-row-pairs-rgb-survives-dma-copy",
+        test_byte_row_pairs_rgb_survives_dma_copy, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-pio-pixel-pairs",
+        test_direct_pio_pixel_pairs, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-bitmap-draws-its-image",
+        test_gl_bitmap_draws_its_image, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-bitmap-unaligned-image",
+        test_gl_bitmap_unaligned_image, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-bitmap-split-by-a-context-switch",
+        test_gl_bitmap_split_by_a_context_switch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-inline-colour-index",
+        test_gl_pixels_inline_colour_index, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-colour-index-into-bank-one",
+        test_gl_pixels_colour_index_into_bank_one, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-captured-float-rgb",
+        test_gl_pixels_captured_float_rgb, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-captured-float-rgb-3x2",
+        test_gl_pixels_captured_float_rgb_three_by_two, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgb-3x2-rejected",
+        test_gl_pixels_captured_float_rgb_three_by_two_rejected, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-captured-float-rgba",
+        test_gl_pixels_captured_float_rgba, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-captured-float-rgba-8x1",
+        test_gl_pixels_captured_float_rgba_8x1, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-unsupported-shapes-recover",
+        test_gl_pixels_captured_float_rgba_shape_recovery, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-float-malformed-unpack",
+        test_gl_pixels_float_malformed_unpack, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-inline-rgb",
+        test_gl_pixels_inline_rgb, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-ordinary-rgba-two-by-two",
+        test_gl_pixels_ordinary_rgba_two_by_two, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-ordinary-rgba-single-row",
+        test_gl_pixels_ordinary_rgba_single_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-ordinary-rgba-short-count",
+        test_gl_pixels_ordinary_rgba_two_rows_short_count, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-ordinary-rgba-captured-row-counts",
+        test_gl_pixels_ordinary_rgba_captured_row_counts, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-ordinary-rgba-64x32-inline-rejected",
+        test_gl_pixels_ordinary_rgba_64x32_inline_rejected, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-single-row",
+        test_gl_pixels_captured_float_rgba_single_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-wrong-unpack-word",
+        test_gl_pixels_captured_float_rgba_wrong_unpack_word, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-rgb-count-stays-per-row",
+        test_gl_pixels_rgb_count_stays_per_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-small-shapes",
+        test_gl_pixels_captured_float_rgba_small_shapes, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-captured-float-rgba-32x1",
+        test_gl_pixels_captured_float_rgba_32x1, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-32x1-bad-signature",
+        test_gl_pixels_captured_float_rgba_32x1_bad_signature, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-wide-strips",
+        test_gl_pixels_captured_float_rgba_wide_strips, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-pixels-captured-float-rgba-wide-client-offsets",
+        test_gl_pixels_captured_float_rgba_wide_client_offsets, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-dma-abgr",
+        test_gl_pixels_dma_abgr, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-dma-rgba-and-rgb",
+        test_gl_pixels_dma_rgba_and_rgb, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-dma-rows-in-two-parts",
+        test_gl_pixels_dma_rows_in_two_parts, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-unmodelled-draw-nothing",
+        test_gl_pixels_unmodelled_draw_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-long-load",
+        test_gl_pixels_long_load, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-rows-follow-their-draw",
+        test_gl_pixels_rows_follow_their_draw, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-raster-kick-leaves-the-draw",
+        test_gl_pixels_raster_kick_leaves_the_draw, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-far-raster-position",
+        test_gl_pixels_far_raster_position, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-follow-the-raster-position",
+        test_gl_pixels_follow_the_raster_position, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-follow-the-context",
+        test_gl_pixels_follow_the_context, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-moves-the-context",
+        test_gl_eviction_moves_the_context, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-needs-the-read-token",
+        test_gl_eviction_needs_the_read_token, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-buffer-at-host-zero",
+        test_gl_eviction_buffer_at_host_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-chunks-not-adjacent",
+        test_gl_eviction_chunks_need_not_be_adjacent, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-clip-query-registers",
+        test_gl_pixels_preserve_clip_query_registers_per_context, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-dma-oversized-row",
+        test_gl_pixels_dma_oversized_row_is_refused, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-dma-no-rows",
+        test_gl_pixels_dma_no_rows_is_empty, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-inline-write",
+        test_gl_eviction_inline_write_moves_nothing, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-buffer-on-another-node",
+        test_gl_eviction_buffer_on_another_node, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-returns-the-box",
+        test_pio_read_returns_the_box, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-captured-one-pixel-mode",
+        test_pio_read_captured_one_pixel_mode, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-captured-single-row-mode",
+        test_pio_read_captured_single_row_mode, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-captured-ximage-mode-80",
+        test_pio_read_captured_ximage_mode_80, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "pio-read-captured-mode-needs-matching-counters",
+        test_pio_read_captured_mode_requires_matching_counters, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-rows-start-a-unit",
+        test_pio_read_rows_start_a_unit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-read-other-mode-reads-zero",
+        test_pio_read_other_mode_reads_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pio-write-control-starts-no-read",
+        test_pio_write_control_starts_no_read, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-draws-the-probe-list",
+        test_gl_list_draws_the_probe_list, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-follows-the-chain",
+        test_gl_list_follows_the_chain, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-big-matches-the-reference",
+        test_gl_list_big_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-page-on-another-node",
+        test_gl_list_page_on_another_node, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-page-on-the-highest-node",
+        test_gl_list_page_on_the_highest_node, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-calls-nest-64-deep",
+        test_gl_list_calls_nest_64_deep, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-call-needs-its-next-token",
+        test_gl_list_call_needs_its_next_token, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-continues-at-offset-zero",
+        test_gl_list_continues_at_offset_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-calls-a-list",
+        test_gl_list_calls_a_list, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-unknown-header-draws-nothing",
+        test_gl_list_unknown_header_draws_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-crosses-a-page",
+        test_gl_list_crosses_a_page, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-ends-inside-a-packet",
+        test_gl_list_ends_inside_a_packet, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-over-the-word-limit",
+        test_gl_list_over_the_word_limit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-over-the-range-limit",
+        test_gl_list_over_the_range_limit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-chain-over-the-word-limit",
+        test_gl_list_chain_over_the_word_limit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-dma-read-fence-is-consumed-quietly",
+        test_gl_dma_read_fence_is_consumed_quietly, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-list-past-the-pool-is-bounded",
+        test_gl_list_past_the_pool_is_bounded, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-records-apply-the-read-registers",
+        test_gl_records_apply_the_read_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dataport-rgba",
+        test_gl_readpixels_dataport_rgba, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-sync-bit-set",
+        test_gl_readpixels_sync_bit_set, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-other-mode-reads-zero",
+        test_gl_readpixels_other_mode_reads_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-bracket-opaque",
+        test_gl_readpixels_bracket_opaque, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-bounded-rgba",
+        test_gl_readpixels_dma_bounded_rgba, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-float-rgba",
+        test_gl_readpixels_dma_float_rgba, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-copypixels-slow-path",
+        test_gl_copypixels_slow_path, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-one-row-rectangular",
+        test_gl_readpixels_dma_one_row_rectangular, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-captured-rectangles",
+        test_gl_readpixels_dma_captured_rectangles, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-readpixels-dma-client-buffer-selection",
+        test_gl_readpixels_dma_client_buffer_selection, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-short-pixel",
+        test_gl_readpixels_dma_rejects_short_one_pixel_descriptor, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-readpixels-dma-area-exceeds-plane-width",
+        test_gl_readpixels_dma_area_exceeds_plane_width, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-readpixels-dma-captured-wide-rectangles",
+        test_gl_readpixels_dma_captured_wide_rectangles, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-captured-rgb-64x1",
+        test_gl_readpixels_dma_captured_rgb64x1, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-readpixels-dma-captured-one-row-selectors",
+        test_gl_readpixels_dma_captured_one_row_selectors, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-readpixels-dma-bracket-migration",
+        test_gl_readpixels_dma_bracket_migration, true);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

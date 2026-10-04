@@ -40,11 +40,9 @@ static void mgras_retrace_migration(bool programmed, bool stale_table,
 
     tmpfs = g_dir_make_tmp("sn0-mgras-retrace-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     /* An offset phase, so a destination that restarts it is caught. */
     reset_at = qtest_clock_step(from, 12345);
@@ -64,6 +62,10 @@ static void mgras_retrace_migration(bool programmed, bool stale_table,
     qtest_clock_step(from, mgras_retrace_gap(src, 3) / 2);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     /*
      * qtest cannot step by zero; one nanosecond reads the clock. The
@@ -78,7 +80,7 @@ static void mgras_retrace_migration(bool programmed, bool stale_table,
     mgras_expect_retraces(to, dst, 2, 3, retrace_vector);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
     g_rmdir(tmpfs);
 }
 
@@ -116,14 +118,16 @@ static void mgras_public_pending_migration(bool wide)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-public-glyph-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
     mgras_public_setup(from, true);
     mgras_public_rect(from, 31, 43, wide ? 12 : 5, wide ? 1 : 2, true);
     mgras_public_write(from, 0x70, wide ? 0x81240000 : 0x88000000, !wide);
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(mgras_test_pixel(to, 31, 43), ==, wide ? 0 : 0x112233);
     g_assert_cmphex(mgras_test_pixel(to, 31, 44), ==, 0);
     mgras_public_write(to, wide ? 0x71 : 0x70,
@@ -138,7 +142,8 @@ static void mgras_public_pending_migration(bool wide)
                     wide ? 0xa0b0d0 : 0x112233);
     g_assert_cmphex(mgras_test_pixel(to, 31, wide ? 44 : 45), ==, 0);
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
     rmdir(tmpfs);
 }
 
@@ -162,11 +167,9 @@ static void test_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     mgras_enter_context(from);
 
@@ -176,7 +179,6 @@ static void test_migration(void)
      * identity modelview matrix. The destination starts from reset, so it
      * reads 2 unless that word travels with the stream.
      */
-    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 2);
     qtest_writel(from, REG_HQ_FLAGS_CLEAR, MGRAS_HQ_FLAG_QUERY);
     qtest_writel(from, REG_CONTEXT_COMMAND, MGRAS_QUERY_TOKEN);
     qtest_writel(from, REG_CONTEXT_COMMAND, 0x3a);
@@ -206,6 +208,13 @@ static void test_migration(void)
     qtest_writeb(from, REG_DAC_LUT_DATA_2, 0xe4);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming defer");
+    to = qtest_init(dest_cmdline);
+    g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 2);
+    qtest_qmp_assert_success(to, "{'execute': 'migrate-incoming', "
+                             "'arguments': {'uri': %s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(qtest_readb(to, REG_DAC_LUT_DATA_2), ==, 0xe4);
     g_assert_cmphex(qtest_readl(to, REG_GE_REVISION), ==, 0x3f800000);
@@ -220,7 +229,8 @@ static void test_migration(void)
     g_assert_cmphex(mgras_test_display_pixel(to, 2, 2), ==, 0x00665544);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
 }
 
 static void test_discarded_fifo_migration(void)
@@ -233,17 +243,19 @@ static void test_discarded_fifo_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-discard-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     mgras_enter_context(from);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  (uint64_t)MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 252) << 32);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int i = 0; i < 31; i++) {
         qtest_writeq(to, REG_CONTEXT_COMMAND, 0);
@@ -259,7 +271,8 @@ static void test_discarded_fifo_migration(void)
     g_assert_cmphex(mgras_test_pixel(to, 0, 0), ==, 0x00112233);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
 }
 
 static void mgras_begin_partial_fifo_fill(QTestState *qts)
@@ -312,18 +325,20 @@ static void test_partial_fifo_fill_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-partial-fill-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     expected = qtest_init(MIGRATION_ARGS);
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     mgras_begin_partial_fifo_fill(expected);
     mgras_begin_partial_fifo_fill(from);
     g_assert_cmphex(mgras_test_pixel(expected, 96, 88), ==, 0);
     g_assert_cmphex(mgras_test_pixel(from, 96, 88), ==, 0);
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     mgras_finish_partial_fifo_fill(expected);
     mgras_finish_partial_fifo_fill(to);
@@ -345,7 +360,8 @@ static void test_partial_fifo_fill_migration(void)
     g_assert_cmphex(migrated_surface, ==, expected_surface);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
     qtest_quit(expected);
 }
 
@@ -362,11 +378,9 @@ static void test_ge_upload_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-ge-upload-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_GE_CTRL_A, 0x200000);
     for (int i = 0; i < ARRAY_SIZE(words) / 2; i++) {
@@ -374,6 +388,10 @@ static void test_ge_upload_migration(void)
     }
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int i = ARRAY_SIZE(words) / 2; i < ARRAY_SIZE(words); i++) {
         qtest_writel(to, REG_GE_DATA_A, words[i]);
@@ -387,7 +405,8 @@ static void test_ge_upload_migration(void)
     g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
 }
 
 static void test_visual_state_migration(void)
@@ -400,11 +419,9 @@ static void test_visual_state_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-visual-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     mgras_enter_context(from);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
@@ -433,6 +450,10 @@ static void test_visual_state_migration(void)
     g_assert_cmphex(mgras_test_display_pixel(from, 31, 30), ==, 0x00a1b2c3);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(qtest_readb(to, REG_XMAP_INDEX), ==, 9 << 2);
     g_assert_cmphex(mgras_test_display_pixel(to, 30, 30), ==, 0x00112233);
@@ -454,7 +475,8 @@ static void test_visual_state_migration(void)
     g_assert_cmphex(mgras_test_display_pixel(to, 31, 30), ==, 0x00a1b2c3);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
 }
 
 static void test_cursor_migration(void)
@@ -467,11 +489,9 @@ static void test_cursor_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-cursor-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     mgras_write_cmap_position(from, 0x001d, 28, 0x0000ff00);
@@ -493,13 +513,18 @@ static void test_cursor_migration(void)
     g_assert_cmphex(mgras_test_display_pixel(from, 50, 60), ==, 0x000000ff);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(mgras_test_display_pixel(to, 50, 60), ==, 0x000000ff);
     g_assert_cmphex(mgras_test_display_pixel(to, 51, 61), ==, 0x00ffffff);
     g_assert_cmphex(mgras_test_display_pixel(to, 52, 62), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + 5);
+    g_rmdir(tmpfs);
 }
 int main(int argc, char **argv)
 {
@@ -507,35 +532,46 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/retrace-phase-migration",
-                   test_retrace_phase_migration);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "retrace-programmed-period-migration",
-                   test_retrace_programmed_period_migration);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "retrace-running-period-migration",
-                   test_retrace_running_period_migration);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-wide-migration",
-                   test_public_fifo_glyph_wide_migration);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
-                   test_public_fifo_glyph_narrow_migration);
-    qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
-    qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
-                   test_discarded_fifo_migration);
-    qtest_add_func("sn0/origin2000/mgras/partial-fifo-fill-migration",
-                   test_partial_fifo_fill_migration);
-    qtest_add_func("sn0/origin2000/mgras/ge-upload-migration",
-                   test_ge_upload_migration);
-    qtest_add_func("sn0/origin2000/mgras/visual-state-migration",
-                   test_visual_state_migration);
-    qtest_add_func("sn0/origin2000/mgras/cursor-migration",
-                   test_cursor_migration);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-phase-migration",
+        test_retrace_phase_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-programmed-period-migration",
+        test_retrace_programmed_period_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-running-period-migration",
+        test_retrace_running_period_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-wide-migration",
+        test_public_fifo_glyph_wide_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-narrow-migration",
+        test_public_fifo_glyph_narrow_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/migration",
+        test_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/discarded-fifo-migration",
+        test_discarded_fifo_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/partial-fifo-fill-migration",
+        test_partial_fifo_fill_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ge-upload-migration",
+        test_ge_upload_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/visual-state-migration",
+        test_visual_state_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/cursor-migration",
+        test_cursor_migration, false);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }
