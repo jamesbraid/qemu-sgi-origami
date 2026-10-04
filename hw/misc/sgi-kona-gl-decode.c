@@ -606,6 +606,9 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
     uint32_t components;
 
     switch (format) {
+    case 0:                     /* RED */
+    case 1:                     /* GREEN */
+    case 2:                     /* BLUE */
     case 3:                     /* ALPHA */
     case 6:                     /* LUMINANCE */
         components = 1;
@@ -685,6 +688,14 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
     b = values[2];
     a = values[3];
     switch (format) {
+    case 1:
+        g = r;
+        r = 0;
+        break;
+    case 2:
+        b = r;
+        r = 0;
+        break;
     case 3:
         a = r;
         r = g = b = 0;
@@ -1131,7 +1142,9 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
         }
         values[i] = rgba[i];
     }
-    if (format == 3) {
+    if (format < 3) {
+        values[0] = values[format];
+    } else if (format == 3) {
         values[0] = values[3];
     } else if (format == 6 || format == 7) {
         /* ReadPixels luminance sums channels before clamping. */
