@@ -484,6 +484,10 @@ sgi_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn-promdata-window-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') and
+   is_variable('qemu_sgi_machine_init') ?
+    ['sgi-machine-init-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-odyssey-test', 'sn1-odyssey-query-test'] : []) + \
@@ -808,6 +812,11 @@ foreach dir : target_dirs
   if have_qemu_vnc
     qtest_env.set('QTEST_QEMU_VNC_BINARY', './tools/qemu-vnc/qemu-vnc')
     test_deps += [qemu_vnc]
+  endif
+  if is_variable('qemu_sgi_machine_init')
+    qtest_env.set('QTEST_QEMU_SGI_MACHINE_INIT',
+                  qemu_sgi_machine_init.full_path())
+    test_deps += [qemu_sgi_machine_init]
   endif
 
   qtest_env.set('PYTHON', python.full_path())

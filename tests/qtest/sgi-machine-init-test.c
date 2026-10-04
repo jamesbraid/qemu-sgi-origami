@@ -1,0 +1,265 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * A machine started on state qemu-sgi-machine-init created must read the
+ * same boot flash as one started with no files on the same PROM image.
+ * Each case creates the state from a synthetic PROM, starts the machine
+ * once with every store attached through -blockdev and its storage
+ * property and once unbacked with the image through -bios, and compares
+ * the flash through the window the processor boots from.
+ */
+#include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "libqtest.h"
+
+/* The IP27 and IP35 boot windows, uncached. */
+#define BOOT_WINDOW UINT64_C(0x1fc00000)
+
+#define IP27_FLASH_SIZE (1024 * 1024)
+/* A stock-shaped IP27 configuration block, so the product values apply. */
+#define IP27_CONFIG 0x60
+#define IP27_CONFIG_MAGIC 0x69703237636f6e66ULL
+#define IP27_PROM_SIZE 0x20000
+
+/* Origin 300's PROM position holds exactly the image its -bios takes. */
+#define IP35_PROM_SIZE 0x1686a8
+#define SN1_MACHINE "-cpu R14000 -smp 2"
+
+#define O2K_DESKSIDE "origin2000,topology=origin2000-deskside,nodes=2"
+
+static char *scratch;
+
+/* A synthetic image: a pattern, with an IP27 configuration block if asked. */
+static char *make_prom(const char *name, size_t size, bool ip27_config)
+{
+    g_autofree uint8_t *bytes = g_malloc(size);
+    char *path = g_build_filename(scratch, name, NULL);
+    size_t i;
+
+    for (i = 0; i < size; i++) {
+        bytes[i] = 0x5a ^ (i * 13) ^ (i >> 8);
+    }
+    if (ip27_config) {
+        stq_be_p(bytes + IP27_CONFIG + 0x08, IP27_CONFIG_MAGIC);
+        stl_be_p(bytes + IP27_CONFIG + 0x2c, 8);
+        stl_be_p(bytes + IP27_CONFIG + 0x30, 0);
+        stl_be_p(bytes + IP27_CONFIG + 0x3c, 1);
+    }
+    g_assert_true(g_file_set_contents(path, (char *)bytes, size, NULL));
+    return path;
+}
+
+/* Run the tool for @machine; returns the new state directory. */
+static char *create_state(const char *stem, const char *machine,
+                          const char *boot_prom, const char *io_prom)
+{
+    const char *tool = g_getenv("QTEST_QEMU_SGI_MACHINE_INIT");
+    char *dir = g_build_filename(scratch, stem, NULL);
+    g_autoptr(GPtrArray) argv = g_ptr_array_new();
+    g_autoptr(GError) error = NULL;
+    g_autofree char *err = NULL;
+    int status;
+
+    g_assert_nonnull(tool);
+    g_ptr_array_add(argv, (gpointer)tool);
+    g_ptr_array_add(argv, (gpointer)"--machine");
+    g_ptr_array_add(argv, (gpointer)machine);
+    g_ptr_array_add(argv, (gpointer)"--boot-prom");
+    g_ptr_array_add(argv, (gpointer)boot_prom);
+    if (io_prom) {
+        g_ptr_array_add(argv, (gpointer)"--io-prom");
+        g_ptr_array_add(argv, (gpointer)io_prom);
+    }
+    g_ptr_array_add(argv, dir);
+    g_ptr_array_add(argv, NULL);
+    g_assert_true(g_spawn_sync(NULL, (char **)argv->pdata, NULL,
+                               G_SPAWN_DEFAULT, NULL, NULL, NULL, &err,
+                               &status, &error));
+    g_assert_no_error(error);
+    if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+        g_printerr("%s", err);
+    }
+    g_assert_true(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    return dir;
+}
+
+/*
+ * "-blockdev ... -M <machine>,<name>=<name>,..." attaching every store in
+ * @dir, each as a block node named for its storage item.
+ */
+static char *attach_state(const char *machine, const char *dir)
+{
+    g_autoptr(GDir) d = g_dir_open(dir, 0, NULL);
+    g_autoptr(GString) blockdevs = g_string_new("");
+    g_autoptr(GString) options = g_string_new(machine);
+    const char *file;
+
+    g_assert_nonnull(d);
+    while ((file = g_dir_read_name(d))) {
+        g_autofree char *name = g_strndup(file, strlen(file) - 4);
+
+        g_assert_true(g_str_has_suffix(file, ".raw"));
+        g_string_append_printf(blockdevs,
+                               " -blockdev driver=raw,node-name=%s,"
+                               "file.driver=file,file.filename=%s/%s",
+                               name, dir, file);
+        g_string_append_printf(options, ",%s=%s", name, name);
+    }
+    return g_strdup_printf("-M %s%s", options->str, blockdevs->str);
+}
+
+static void remove_state(char *dir)
+{
+    g_autoptr(GDir) d = g_dir_open(dir, 0, NULL);
+    const char *file;
+
+    while ((file = g_dir_read_name(d))) {
+        g_autofree char *path = g_build_filename(dir, file, NULL);
+
+        g_assert_cmpint(g_unlink(path), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+    g_free(dir);
+}
+
+static uint8_t *read_window(QTestState *qts, unsigned int cpu, size_t size)
+{
+    uint8_t *bytes = g_malloc(size);
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, BOOT_WINDOW, bytes, size));
+    return bytes;
+}
+
+/* Each node's window, through the first processor on that node. */
+static uint8_t **read_nodes(QTestState *qts, const unsigned int *cpus,
+                            unsigned int nodes, size_t size)
+{
+    uint8_t **windows = g_new0(uint8_t *, nodes);
+    unsigned int i;
+
+    for (i = 0; i < nodes; i++) {
+        windows[i] = read_window(qts, cpus[i], size);
+    }
+    return windows;
+}
+
+static void free_nodes(uint8_t **windows, unsigned int nodes)
+{
+    unsigned int i;
+
+    for (i = 0; i < nodes; i++) {
+        g_free(windows[i]);
+    }
+    g_free(windows);
+}
+
+static void assert_nodes_equal(uint8_t **created, uint8_t **unbacked,
+                               unsigned int nodes, size_t size)
+{
+    unsigned int i;
+
+    for (i = 0; i < nodes; i++) {
+        g_assert_cmpmem(created[i], size, unbacked[i], size);
+    }
+}
+
+static void test_origin200(void)
+{
+    static const unsigned int cpus[] = { 0 };
+    const char *machine = "origin200,topology=origin200,nodes=1";
+    g_autofree char *prom = make_prom("o200-prom", IP27_PROM_SIZE, true);
+    char *dir = create_state("o200", machine, prom, NULL);
+    g_autofree char *attached = attach_state(machine, dir);
+    QTestState *qts;
+    uint8_t **created, **unbacked;
+
+    qts = qtest_init(attached);
+    created = read_nodes(qts, cpus, 1, IP27_FLASH_SIZE);
+    qtest_quit(qts);
+    qts = qtest_initf("-M %s -bios %s", machine, prom);
+    unbacked = read_nodes(qts, cpus, 1, IP27_FLASH_SIZE);
+    qtest_quit(qts);
+
+    assert_nodes_equal(created, unbacked, 1, IP27_FLASH_SIZE);
+    /* Origin 200's own values replaced the image's 8 and 1. */
+    g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x2c), ==, 15);
+    g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x30), ==, 1);
+    g_assert_cmpuint(ldl_be_p(created[0] + IP27_CONFIG + 0x3c), ==, 4);
+    free_nodes(created, 1);
+    free_nodes(unbacked, 1);
+    remove_state(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_origin2000(void)
+{
+    /* Two processors per node: node 1's first is processor 2. */
+    static const unsigned int cpus[] = { 0, 2 };
+    g_autofree char *prom = make_prom("o2k-prom", IP27_PROM_SIZE, true);
+    g_autofree char *io_prom = make_prom("o2k-io-prom", 0x3000, false);
+    char *dir = create_state("o2k", O2K_DESKSIDE, prom, io_prom);
+    g_autofree char *attached = attach_state(O2K_DESKSIDE, dir);
+    QTestState *qts;
+    uint8_t **created, **unbacked;
+
+    qts = qtest_initf("%s -smp 4 -m 512M", attached);
+    created = read_nodes(qts, cpus, 2, IP27_FLASH_SIZE);
+    qtest_quit(qts);
+    qts = qtest_initf("-M " O2K_DESKSIDE ",io-prom=%s -smp 4 -m 512M "
+                      "-bios %s", io_prom, prom);
+    unbacked = read_nodes(qts, cpus, 2, IP27_FLASH_SIZE);
+    qtest_quit(qts);
+
+    assert_nodes_equal(created, unbacked, 2, IP27_FLASH_SIZE);
+    free_nodes(created, 2);
+    free_nodes(unbacked, 2);
+    remove_state(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+    g_assert_cmpint(g_unlink(io_prom), ==, 0);
+}
+
+/*
+ * Origin 300 still requires -bios with flash attached and then boots
+ * from the flash, so both runs pass it.
+ */
+static void test_origin300(void)
+{
+    static const unsigned int cpus[] = { 0 };
+    const char *machine = "origin300,topology=origin300,nodes=1";
+    g_autofree char *prom = make_prom("o300-prom", IP35_PROM_SIZE, false);
+    char *dir = create_state("o300", machine, prom, NULL);
+    g_autofree char *attached = attach_state(machine, dir);
+    QTestState *qts;
+    uint8_t **created, **unbacked;
+
+    qts = qtest_initf("%s " SN1_MACHINE " -bios %s", attached, prom);
+    created = read_nodes(qts, cpus, 1, IP35_PROM_SIZE);
+    qtest_quit(qts);
+    qts = qtest_initf("-M %s " SN1_MACHINE " -bios %s", machine, prom);
+    unbacked = read_nodes(qts, cpus, 1, IP35_PROM_SIZE);
+    qtest_quit(qts);
+
+    assert_nodes_equal(created, unbacked, 1, IP35_PROM_SIZE);
+    free_nodes(created, 1);
+    free_nodes(unbacked, 1);
+    remove_state(dir);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+int main(int argc, char **argv)
+{
+    g_autoptr(GError) error = NULL;
+    int ret;
+
+    g_test_init(&argc, &argv, NULL);
+    scratch = g_dir_make_tmp("sgi-machine-init-XXXXXX", &error);
+    g_assert_no_error(error);
+
+    qtest_add_func("/sgi-machine-init/origin200", test_origin200);
+    qtest_add_func("/sgi-machine-init/origin2000", test_origin2000);
+    qtest_add_func("/sgi-machine-init/origin300", test_origin300);
+    ret = g_test_run();
+
+    g_assert_cmpint(g_rmdir(scratch), ==, 0);
+    g_free(scratch);
+    return ret;
+}
