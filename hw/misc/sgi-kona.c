@@ -2470,38 +2470,46 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     return sgi_renderer_request_valid(request);
 }
 
-static unsigned sgi_kona_renderer_indices(const SGIGLDraw *d,
-                                          unsigned indices[2][4])
+static unsigned sgi_kona_renderer_count(const SGIGLDraw *d)
 {
-    static const unsigned triangle[1][4] = { { 0, 1, 2, 2 } };
-    static const unsigned polygon[1][4] = { { 0, 1, 2, 0 } };
-    static const unsigned quad[2][4] = { { 0, 1, 2, 3 }, { 0, 2, 3, 3 } };
-    static const unsigned strip[2][4] = { { 0, 1, 3, 3 }, { 0, 3, 2, 3 } };
-
     if (d->count == 3 && d->mode == SGI_GL_TRIANGLES) {
-        memcpy(indices, triangle, sizeof(triangle));
         return 1;
     }
-    if (d->count == 3 && d->mode == SGI_GL_POLYGON) {
-        memcpy(indices, polygon, sizeof(polygon));
-        return 1;
+    if (d->count >= 3 && d->mode == SGI_GL_POLYGON) {
+        return d->count - 2;
     }
-    if (d->count == 4 && d->mode == SGI_GL_QUADS) {
-        memcpy(indices, quad, sizeof(quad));
-        return 2;
-    }
-    if (d->count == 4 && d->mode == SGI_GL_QUAD_STRIP) {
-        memcpy(indices, strip, sizeof(strip));
+    if (d->count == 4 && (d->mode == SGI_GL_QUADS ||
+                          d->mode == SGI_GL_QUAD_STRIP)) {
         return 2;
     }
     return 0;
+}
+
+static void sgi_kona_renderer_indices(const SGIGLDraw *d, unsigned piece,
+                                      unsigned indices[4])
+{
+    static const unsigned triangle[4] = { 0, 1, 2, 2 };
+    static const unsigned quad[2][4] = { { 0, 1, 2, 3 }, { 0, 2, 3, 3 } };
+    static const unsigned strip[2][4] = { { 0, 1, 3, 3 }, { 0, 3, 2, 3 } };
+
+    if (d->mode == SGI_GL_POLYGON) {
+        indices[0] = indices[3] = 0;
+        indices[1] = piece + 1;
+        indices[2] = piece + 2;
+    } else {
+        const unsigned *source = d->mode == SGI_GL_QUADS ? quad[piece] :
+                                 d->mode == SGI_GL_QUAD_STRIP ? strip[piece] :
+                                 triangle;
+
+        memcpy(indices, source, sizeof(triangle));
+    }
 }
 
 static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
 {
     SGIRendererRequest *requests;
     SGIColourTarget target;
-    unsigned indices[2][4], count;
+    unsigned indices[4], count;
     SGIGLDraw triangle = *d;
     float vertices[3][SGI_GL_VERTEX_FLOATS];
     Error *err = NULL;
@@ -2512,8 +2520,9 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     }
     assert(bql_locked());
     s->renderer_fallbacks++;
-    count = sgi_kona_renderer_indices(d, indices);
-    if (s->renderer_failed || !count) {
+    count = sgi_kona_renderer_count(d);
+    /* Bound host staging to 256 triangles. Larger draws use software. */
+    if (s->renderer_failed || !count || count > 256) {
         return false;
     }
     requests = g_try_new0(SGIRendererRequest, count);
@@ -2525,12 +2534,13 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     triangle.count = 3;
     triangle.vertices = &vertices[0][0];
     for (unsigned i = 0; i < count; i++) {
-        const float *provoking = d->vertices +
-                                 indices[i][3] * SGI_GL_VERTEX_FLOATS;
+        const float *provoking;
 
+        sgi_kona_renderer_indices(d, i, indices);
+        provoking = d->vertices + indices[3] * SGI_GL_VERTEX_FLOATS;
         for (unsigned v = 0; v < 3; v++) {
             memcpy(vertices[v], d->vertices +
-                                indices[i][v] * SGI_GL_VERTEX_FLOATS,
+                                indices[v] * SGI_GL_VERTEX_FLOATS,
                    sizeof(vertices[v]));
         }
         if (!sgi_kona_renderer_request(s, &triangle, provoking,

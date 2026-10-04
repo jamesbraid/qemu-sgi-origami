@@ -12392,6 +12392,47 @@ static void test_renderer_polygon(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_large_polygon(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned count = mode == 0 ? 4 : mode == 4 ? 259 :
+                     mode == 5 ? 258 : 5;
+    const float vertices[5][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 64 }, { 128, 128 }, { 0, 128 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    gl_begin(s, 9);
+    for (unsigned i = 0; i < count; i++) {
+        unsigned vertex = mode == 0 ? (i < 2 ? i : i + 1) :
+                          mode == 2 ? (i ? 5 - i : 0) : i < 5 ? i : 0;
+        float x = vertices[vertex][0], y = vertices[vertex][1];
+
+        if (mode == 3 && i == count - 1) {
+            x = -.001;
+        }
+        kona_command_f(s, 0x63, (float[]) { i == 0, 0, i != 0 }, 3);
+        gl_vertex2f(s, x, y);
+    }
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     mode == 3 || mode == 4 ? 0 : count - 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, 0xff0000);
+    assert_window_matches(s, expected);
+    if (mode == 4) {
+        kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+        renderer_triangle(s);
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 1);
+        g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 2);
+        assert_window_matches(s, expected);
+    }
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
@@ -13426,6 +13467,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_polygon);
+    }
+    for (unsigned mode = 0; mode < 6; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/large-polygon/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_large_polygon);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
