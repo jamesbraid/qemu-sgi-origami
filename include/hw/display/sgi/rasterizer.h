@@ -198,6 +198,19 @@ typedef struct SGIGLTexLevel {
     bool (*read_border_texel_3d)(void *opaque, uint32_t level,
                                  int32_t x, int32_t y, int32_t z,
                                  uint32_t *rgba);
+    /* Raw readers use base-format slots and per-channel widths. */
+    uint8_t component_bits[4];
+    bool (*read_texel_components)(void *opaque, uint32_t level, uint32_t x,
+                                  uint32_t y, uint16_t component[4]);
+    bool (*read_border_texel_components)(void *opaque, uint32_t level,
+                                         int32_t x, int32_t y,
+                                         uint16_t component[4]);
+    bool (*read_texel_3d_components)(void *opaque, uint32_t level,
+                                     uint32_t x, uint32_t y, uint32_t z,
+                                     uint16_t component[4]);
+    bool (*read_border_texel_3d_components)(void *opaque, uint32_t level,
+                                            int32_t x, int32_t y, int32_t z,
+                                            uint16_t component[4]);
 } SGIGLTexLevel;
 
 typedef struct SGIGLTexPyramid {
@@ -214,9 +227,11 @@ typedef struct SGIGLTexPyramid {
  * are ignored. The two flags are mutually exclusive. Otherwise depth and
  * wrap_r are ignored. Dimensions count interior texels; row zero has the
  * lowest T and slice zero the lowest R. Interior callbacks get in-range
- * indices; stored-border callbacks get signed indices. Both return canonical
- * RRGGBBAA bytes. DEPTH_COMPONENT callbacks instead return an unsigned
- * normalized 32-bit depth value.
+ * indices; stored-border callbacks get signed indices. Packed callbacks
+ * return canonical RRGGBBAA bytes; raw-component callbacks return
+ * base-format channels in the corresponding slots, normalized using the
+ * declared component widths. DEPTH_COMPONENT callbacks instead return an
+ * unsigned normalized 32-bit depth value through the packed callback.
  * The family validates storage and guest addressing. It owns object state,
  * binding and migration, rebuilding this borrowed descriptor after load.
  * Image and descriptor stay immutable through each synchronous draw; the
@@ -264,6 +279,17 @@ typedef struct SGIGLTexImage {
     /* Zero disables comparison. SGIX operators compare depth to projected R. */
     uint32_t shadow_compare;
     double shadow_ambient;
+    /* Appended to preserve the existing packed-callback initializer layout. */
+    uint8_t component_bits[4];
+    bool (*read_texel_components)(void *opaque, uint32_t x, uint32_t y,
+                                  uint16_t component[4]);
+    bool (*read_texel_3d_components)(void *opaque, uint32_t x, uint32_t y,
+                                     uint32_t z, uint16_t component[4]);
+    bool (*read_border_texel_components)(void *opaque, int32_t x, int32_t y,
+                                         uint16_t component[4]);
+    bool (*read_border_texel_3d_components)(void *opaque, int32_t x, int32_t y,
+                                            int32_t z,
+                                            uint16_t component[4]);
 } SGIGLTexImage;
 
 /*

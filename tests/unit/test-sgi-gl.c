@@ -11971,6 +11971,226 @@ static void test_mipmap_numeric_samples(void)
     }
     mipmap_close(sample[3], 1);
 }
+
+typedef struct ComponentTexture {
+    uint32_t level;
+    uint16_t texel[2][4];
+    uint16_t border[4];
+    unsigned reads;
+    bool fail;
+} ComponentTexture;
+
+static bool component_texture_read(void *opaque, uint32_t x, uint32_t y,
+                                  uint16_t component[4])
+{
+    ComponentTexture *p = opaque;
+
+    g_assert_cmpuint(x, <, 2);
+    g_assert_cmpuint(y, ==, 0);
+    p->reads++;
+    memcpy(component, p->texel[x], sizeof(p->texel[x]));
+    return !p->fail;
+}
+
+static bool component_texture_read_3d(void *opaque, uint32_t x, uint32_t y,
+                                     uint32_t z, uint16_t component[4])
+{
+    g_assert_cmpuint(z, ==, 0);
+    return component_texture_read(opaque, x, y, component);
+}
+
+static bool component_texture_level_read_3d(void *opaque, uint32_t level,
+                                            uint32_t x, uint32_t y,
+                                            uint32_t z,
+                                            uint16_t component[4])
+{
+    ComponentTexture *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    return component_texture_read_3d(opaque, x, y, z, component);
+}
+
+static bool component_texture_level_border_3d(void *opaque, uint32_t level,
+                                              int32_t x, int32_t y,
+                                              int32_t z,
+                                              uint16_t component[4])
+{
+    ComponentTexture *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    g_assert_cmpint(x, ==, 0);
+    g_assert_cmpint(y, ==, 0);
+    g_assert_cmpint(z, ==, -1);
+    memcpy(component, p->border, sizeof(p->border));
+    return !p->fail;
+}
+
+static bool component_texture_border(void *opaque, int32_t x, int32_t y,
+                                     uint16_t component[4])
+{
+    ComponentTexture *p = opaque;
+
+    g_assert_cmpint(x, ==, -1);
+    g_assert_cmpint(y, ==, 0);
+    memcpy(component, p->border, sizeof(p->border));
+    return !p->fail;
+}
+
+static bool component_texture_level_read(void *opaque, uint32_t level,
+                                         uint32_t x, uint32_t y,
+                                         uint16_t component[4])
+{
+    ComponentTexture *p = opaque;
+
+    g_assert_cmpuint(level, ==, p->level);
+    return component_texture_read(opaque, x, y, component);
+}
+
+static void test_texture_component_precision(void)
+{
+    ComponentTexture a = { .texel = { { 2040, 0, 0, 4095 },
+                                        { 2048, 0, 0, 4095 } } };
+    ComponentTexture b = { .texel = { { 2047, 0, 0, 4095 },
+                                        { 2055, 0, 0, 4095 } } };
+    SGIGLTexImage image = {
+        .width = 2, .height = 1, .base_format = SGI_GL_RGBA,
+        .wrap_s = SGI_GL_CLAMP_TO_EDGE, .wrap_t = SGI_GL_CLAMP_TO_EDGE,
+        .component_bits = { 12, 12, 12, 12 },
+        .read_texel_components = component_texture_read,
+    };
+    double nearest[4], filtered_a[4], filtered_b[4];
+
+    image.opaque = &a;
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                              0.25, 0.5, nearest));
+    mipmap_close(nearest[0], 2040.0 / 4095);
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_LINEAR,
+                                              0.5, 0.5, filtered_a));
+    image.opaque = &b;
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_LINEAR,
+                                              0.5, 0.5, filtered_b));
+    g_assert_cmpuint(2040 >> 4, ==, 2047 >> 4);
+    g_assert_cmpuint(2048 >> 4, ==, 2055 >> 4);
+    g_assert_cmpuint(floor(filtered_a[0] * 255 + 0.5), ==, 127);
+    g_assert_cmpuint(floor(filtered_b[0] * 255 + 0.5), ==, 128);
+
+    ComponentTexture volume_pixels = {
+        .texel = { { 1024, 0, 0, 4095 }, { 0, 0, 0, 0 } },
+    };
+    SGIGLTexImage volume = {
+        .width = 1, .height = 1, .depth = 1, .volume = true,
+        .base_format = SGI_GL_RGBA,
+        .component_bits = { 12, 12, 12, 12 },
+        .read_texel_3d_components = component_texture_read_3d,
+        .opaque = &volume_pixels,
+    };
+
+    g_assert_true(sgi_gl_texture_test_sample(&volume, NULL, SGI_GL_NEAREST,
+                                              0.5, 0.5, nearest));
+    mipmap_close(nearest[0], 1024.0 / 4095);
+
+    /* 3D mip-level taps dispatch both interior and signed-border readers. */
+    volume_pixels.level = 5;
+    volume_pixels.texel[0][0] = 0;
+    volume_pixels.border[0] = 4095;
+    volume_pixels.border[1] = volume_pixels.border[2] =
+        volume_pixels.border[3] = 0;
+    SGIGLTexLevel volume_level = {
+        .level = 5, .width = 1, .height = 1, .depth = 1,
+        .base_format = SGI_GL_RGBA, .border = 1,
+        .component_bits = { 12, 12, 12, 12 },
+        .read_texel_3d_components = component_texture_level_read_3d,
+        .read_border_texel_3d_components =
+            component_texture_level_border_3d,
+        .opaque = &volume_pixels,
+    };
+    g_assert_true(sgi_gl_texture_test_sample(&volume, &volume_level,
+        SGI_GL_LINEAR, 0.5, 0.5, nearest));
+    mipmap_close(nearest[0], 0.5);
+
+    /* Each mip level supplies its own exact channels before the level blend. */
+    SGIGLTexLevel level_a = {
+        .level = 3, .width = 2, .height = 1, .base_format = SGI_GL_RGBA,
+        .component_bits = { 12, 12, 12, 12 },
+        .read_texel_components = component_texture_level_read, .opaque = &a,
+    };
+    SGIGLTexLevel level_b = level_a;
+
+    level_b.level = 4;
+    level_b.opaque = &b;
+    a.level = level_a.level;
+    b.level = level_b.level;
+    g_assert_true(sgi_gl_texture_test_sample(&image, &level_a, SGI_GL_LINEAR,
+                                              0.5, 0.5, filtered_a));
+    g_assert_true(sgi_gl_texture_test_sample(&image, &level_b, SGI_GL_LINEAR,
+                                              0.5, 0.5, filtered_b));
+    sgi_gl_texture_test_mix(filtered_a, filtered_b, 0.5);
+    mipmap_close(filtered_a[0], 2047.5 / 4095);
+
+    /* The same callback path expands luminance-alpha after normalization. */
+    image.base_format = SGI_GL_LUMINANCE_ALPHA;
+    image.component_bits[0] = 12;
+    image.component_bits[1] = image.component_bits[2] = 0;
+    image.component_bits[3] = 4;
+    a.texel[0][0] = 2048;
+    a.texel[0][3] = 10;
+    image.opaque = &a;
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                              0.25, 0.5, nearest));
+    mipmap_close(nearest[0], 2048.0 / 4095);
+    mipmap_close(nearest[1], 2048.0 / 4095);
+    mipmap_close(nearest[2], 2048.0 / 4095);
+    mipmap_close(nearest[3], 10.0 / 15);
+
+    /* A stored border uses the same declared precision as interior texels. */
+    image.base_format = SGI_GL_RGBA;
+    image.component_bits[0] = image.component_bits[1] =
+        image.component_bits[2] = image.component_bits[3] = 12;
+    image.width = 1;
+    image.border = 1;
+    image.wrap_s = SGI_GL_CLAMP_TO_BORDER;
+    image.read_border_texel_components = component_texture_border;
+    a.texel[0][0] = a.texel[0][1] = a.texel[0][2] = a.texel[0][3] = 0;
+    a.border[0] = 4095;
+    a.border[1] = a.border[2] = a.border[3] = 0;
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_LINEAR,
+                                              0.25, 0.5, nearest));
+    mipmap_close(nearest[0], 0.25);
+
+    a.fail = true;
+    g_assert_false(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                               0.5, 0.5, nearest));
+    a.fail = false;
+    a.texel[0][0] = 4096;
+    g_assert_false(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                               0.5, 0.5, nearest));
+    a.texel[0][0] = 0;
+    image.component_bits[0] = 0;
+    g_assert_false(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                               0.5, 0.5, nearest));
+
+    /* Packed bytes and raw 8-bit channels normalize to the same values. */
+    TexturePixels legacy_pixels = { .pixel = { 0x804020ff, 0x804020ff } };
+    image = texture_image(&legacy_pixels);
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                              0.25, 0.25, nearest));
+    mipmap_close(nearest[0], 128.0 / 255);
+    mipmap_close(nearest[1], 64.0 / 255);
+    mipmap_close(nearest[2], 32.0 / 255);
+    mipmap_close(nearest[3], 1);
+    ComponentTexture byte_pixels = { .texel = { { 128, 64, 32, 255 },
+                                                  { 128, 64, 32, 255 } } };
+    image.component_bits[0] = image.component_bits[1] =
+        image.component_bits[2] = image.component_bits[3] = 8;
+    image.read_texel = NULL;
+    image.read_texel_components = component_texture_read;
+    image.opaque = &byte_pixels;
+    g_assert_true(sgi_gl_texture_test_sample(&image, NULL, SGI_GL_NEAREST,
+                                              0.25, 0.25, filtered_a));
+    for (unsigned k = 0; k < 4; k++) {
+        mipmap_close(filtered_a[k], nearest[k]);
+    }
+}
 #endif
 
 static MipmapFixture mipmap_logged;
@@ -12937,6 +13157,8 @@ int main(int argc, char **argv)
                     test_mipmap_numeric_selection);
     g_test_add_func("/sgi-gl/mipmap-numeric-samples",
                     test_mipmap_numeric_samples);
+    g_test_add_func("/sgi-gl/texture-component-precision",
+                    test_texture_component_precision);
     g_test_add_func("/sgi-gl/mipmap-validation",
                     test_mipmap_validation);
     g_test_add_func("/sgi-gl/mipmap-absolute-levels",
