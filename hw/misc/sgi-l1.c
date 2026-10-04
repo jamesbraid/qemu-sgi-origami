@@ -11,6 +11,7 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
+#include "net/util.h"
 #include "qapi/error.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
@@ -2502,6 +2503,231 @@ static const VMStateDescription vmstate_l1 = {
     },
 };
 
+/*
+ * Synthetic identity records: what the L1 hands out when no raw record file
+ * names a component. Each area uses the Information-Area encoding OpenBSD's
+ * l1.c reads: a type/length byte (top two bits the type, low six the length),
+ * then the bytes. SGI 007-4498-002 printed pages 181-182 and 007-4365-001
+ * printed page 75 give the IO8 areas' 16- and 80-byte field boundaries.
+ * The contents are not factory data: serials, dates, keys and the IO8 part
+ * are placeholders, and only the node board's name, part and revision
+ * letter come from real inventories (the caller supplies them). Every area
+ * sums to zero modulo 256.
+ */
+#define L1_IA_BINARY 0
+#define L1_IA_ASCII 3
+#define L1_IA_EOF 0xc1
+
+static void l1_ia_field(GByteArray *area, unsigned type, const char *data,
+                        size_t length)
+{
+    uint8_t tag = type << 6 | length;
+
+    g_assert(length <= 0x3f);
+    g_byte_array_append(area, &tag, 1);
+    g_byte_array_append(area, (const uint8_t *)data, length);
+}
+
+static void l1_ia_text(GByteArray *area, const char *text)
+{
+    l1_ia_field(area, L1_IA_ASCII, text, strlen(text));
+}
+
+/* Pads to a multiple of eight bytes and appends the zero-sum checksum. */
+static void l1_ia_finish(SGIL1EEPROM *record, GByteArray *area)
+{
+    uint8_t zero = 0;
+    uint8_t sum = 0;
+
+    while ((area->len + 1) % 8) {
+        g_byte_array_append(area, &zero, 1);
+    }
+    for (unsigned i = 0; i < area->len; i++) {
+        sum += area->data[i];
+    }
+    sum = -sum;
+    g_byte_array_append(area, &sum, 1);
+    record->length = area->len;
+    record->data = g_byte_array_free(area, false);
+    record->invalid = false;
+}
+
+/* The chassis area: both identity strings the placeholder "NA". */
+static void l1_build_chassis_area(SGIL1EEPROM *record)
+{
+    static const uint8_t header[] = { 0x00, 0x02, 0x00 };
+    GByteArray *area = g_byte_array_new();
+    uint8_t eof = L1_IA_EOF;
+
+    g_byte_array_append(area, header, sizeof(header));
+    l1_ia_text(area, "NA");
+    l1_ia_text(area, "NA");
+    g_byte_array_append(area, &eof, 1);
+    l1_ia_finish(record, area);
+}
+
+/*
+ * A board area: placeholder manufacturer "SYNTHETIC", serial "000000" and
+ * a zero date, the given name, part and revision, zeroed unknown binary
+ * fields, and for an IO8 the twelve ASCII hex digits of its station
+ * address after them.
+ */
+static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
+                                const char *part, const char *revision,
+                                const uint8_t *mac)
+{
+    static const char zeros[4];
+    GByteArray *area = g_byte_array_new();
+    uint8_t header[6] = { 0 };
+    uint8_t fru_file = 0, eof = L1_IA_EOF;
+
+    g_byte_array_append(area, header, sizeof(header));
+    l1_ia_text(area, "SYNTHETIC");
+    l1_ia_text(area, name);
+    l1_ia_text(area, "000000");
+    l1_ia_text(area, part);
+    g_byte_array_append(area, &fru_file, 1);
+    l1_ia_text(area, revision);
+    l1_ia_field(area, L1_IA_BINARY, zeros, 1);
+    l1_ia_text(area, "00");
+    for (unsigned i = 0; i < 3; i++) {
+        l1_ia_field(area, L1_IA_BINARY, zeros, sizeof(zeros));
+    }
+    if (mac) {
+        char digits[13];
+
+        snprintf(digits, sizeof(digits), "%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        l1_ia_text(area, digits);
+    }
+    g_byte_array_append(area, &eof, 1);
+    /* Byte 1 counts the area's eight-byte units, checksum included. */
+    area->data[1] = (area->len + 1 + 7) / 8;
+    l1_ia_finish(record, area);
+}
+
+/*
+ * The station address in an 80-byte IO8 board area with the published
+ * layout: three binary tags at 49, 54 and 59, the twelve-digit ASCII field
+ * tagged at 64, end-of-fields at 77. Another layout yields no address.
+ */
+static bool l1_io8_board_mac(const SGIL1EEPROM *record, uint8_t mac[6])
+{
+    const uint8_t *data = record->data;
+
+    if (record->length != 80 || record->invalid ||
+        data[0] || data[1] != 0x0a || data[2] ||
+        data[49] != 0x04 || data[54] != 0x04 || data[59] != 0x04 ||
+        data[64] != 0xcc || data[77] != L1_IA_EOF || data[78]) {
+        return false;
+    }
+    for (unsigned i = 0; i < 12; i++) {
+        if (!g_ascii_isxdigit(data[65 + i])) {
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        mac[i] = g_ascii_xdigit_value(data[65 + 2 * i]) << 4 |
+                 g_ascii_xdigit_value(data[66 + 2 * i]);
+    }
+    return memcmp(mac, "\0\0\0\0\0\0", 6) && !(mac[0] & 1);
+}
+
+static bool l1_component_selected(SGIL1State *s, unsigned component)
+{
+    return component < ARRAY_SIZE(s->selected) &&
+           s->selected[component].present;
+}
+
+/*
+ * Fills each identity area no raw file supplied. Component 0 is the node
+ * board, component 1 the IO8; a selected record on a component leaves it
+ * alone. The Fuel-family MAC text record has no modeled EEPROM bytes: only
+ * the RAM copy the firmware serves through request 0x0008 is seeded.
+ */
+static bool l1_build_identity(SGIL1State *s, Error **errp)
+{
+    bool io8 = false, mac_text = false;
+    uint8_t mac[6];
+
+    if (s->mac_record && s->mac_record[0]) {
+        io8 = !strcmp(s->mac_record, "io8-board");
+        mac_text = !strcmp(s->mac_record, "mac-text");
+        if (!io8 && !mac_text) {
+            error_setg(errp, "L1 mac-record must be io8-board or mac-text");
+            return false;
+        }
+    }
+    if (s->mac) {
+        if (!io8 && !mac_text) {
+            error_setg(errp, "L1 mac needs a mac-record");
+            return false;
+        }
+        if (net_parse_macaddr(mac, s->mac) < 0 ||
+            !memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
+            error_setg(errp, "L1 mac must be a nonzero unicast address");
+            return false;
+        }
+    } else if (io8 || (mac_text && !s->board_mac_valid)) {
+        error_setg(errp, "L1 mac-record needs a mac");
+        return false;
+    }
+    if ((s->node_board_name || s->node_board_part ||
+         s->node_board_revision) &&
+        (!s->node_board_name || !s->node_board_part ||
+         !s->node_board_revision)) {
+        error_setg(errp, "L1 node board identity needs a name, part and "
+                   "revision");
+        return false;
+    }
+    if (s->node_board_name &&
+        (strlen(s->node_board_name) > 0x3f ||
+         strlen(s->node_board_part) > 0x3f ||
+         strlen(s->node_board_revision) > 0x3f)) {
+        error_setg(errp, "L1 node board identity field is too long");
+        return false;
+    }
+    if ((s->node_board_name || io8 || mac_text) &&
+        !s->profile->compute_services) {
+        error_setg(errp, "L1 expansion profile has no node identity");
+        return false;
+    }
+
+    if (s->node_board_name && !l1_component_selected(s, 0)) {
+        if (!s->records[0].length) {
+            l1_build_chassis_area(&s->records[0]);
+        }
+        if (!s->records[16].length) {
+            l1_build_board_area(&s->records[16], s->node_board_name,
+                                s->node_board_part, s->node_board_revision,
+                                NULL);
+        }
+    }
+    if (io8 && !l1_component_selected(s, 1)) {
+        if (!s->records[1].length) {
+            l1_build_chassis_area(&s->records[1]);
+        }
+        if (!s->records[17].length) {
+            l1_build_board_area(&s->records[17], "IO8", "NOTOBSERVED0", "00",
+                                mac);
+        }
+        /* A supplied board area carries its own address, if it has one. */
+        s->board_mac_valid = l1_io8_board_mac(&s->records[17], s->board_mac);
+    }
+    if (mac_text && !s->board_mac_valid) {
+        if (s->system_serial) {
+            error_setg(errp, "L1 MAC text and system-serial conflict");
+            return false;
+        }
+        s->system_serial = g_strdup_printf("%02X%02X%02X%02X%02X%02X",
+                                           mac[0], mac[1], mac[2], mac[3],
+                                           mac[4], mac[5]);
+        memcpy(s->board_mac, mac, sizeof(s->board_mac));
+        s->board_mac_valid = true;
+    }
+    return true;
+}
+
 static void l1_realize(DeviceState *dev, Error **errp)
 {
     SGIL1State *s = SGI_L1(dev);
@@ -2609,16 +2835,16 @@ static void l1_realize(DeviceState *dev, Error **errp)
             }
         }
         s->system_serial = g_strndup(data + start + cursor + 1, 12);
-        for (size_t i = 0; i < sizeof(s->fuel_mac); i++) {
-            s->fuel_mac[i] =
+        for (size_t i = 0; i < sizeof(s->board_mac); i++) {
+            s->board_mac[i] =
                 (g_ascii_xdigit_value(s->system_serial[2 * i]) << 4) |
                 g_ascii_xdigit_value(s->system_serial[2 * i + 1]);
         }
-        if (!memcmp(s->fuel_mac, "\0\0\0\0\0\0",
-                    sizeof(s->fuel_mac)) || (s->fuel_mac[0] & 1)) {
+        if (!memcmp(s->board_mac, "\0\0\0\0\0\0",
+                    sizeof(s->board_mac)) || (s->board_mac[0] & 1)) {
             goto invalid_fuel_mac;
         }
-        s->fuel_mac_valid = true;
+        s->board_mac_valid = true;
         goto fuel_mac_done;
 
 invalid_fuel_mac:
@@ -2773,6 +2999,9 @@ fuel_mac_done:
             l1_selected_spd_scan(record);
         }
     }
+    if (!l1_build_identity(s, errp)) {
+        return;
+    }
     s->pending_rack = s->rack;
     s->pending_bay = s->bay;
     s->power_up_bh = qemu_bh_new(l1_power_up_bh, s);
@@ -2794,10 +3023,10 @@ bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6])
 {
     SGIL1State *s = SGI_L1(dev);
 
-    if (!s->fuel_mac_valid) {
+    if (!s->board_mac_valid) {
         return false;
     }
-    memcpy(mac, s->fuel_mac, sizeof(s->fuel_mac));
+    memcpy(mac, s->board_mac, sizeof(s->board_mac));
     return true;
 }
 
@@ -3060,6 +3289,12 @@ static const Property l1_properties[] = {
     DEFINE_PROP_UINT32("partition", SGIL1State, partition, 0),
     DEFINE_PROP_STRING("system-serial", SGIL1State, system_serial),
     DEFINE_PROP_STRING("fuel-mac-eeprom", SGIL1State, fuel_mac_eeprom),
+    DEFINE_PROP_STRING("mac", SGIL1State, mac),
+    DEFINE_PROP_STRING("mac-record", SGIL1State, mac_record),
+    DEFINE_PROP_STRING("node-board-name", SGIL1State, node_board_name),
+    DEFINE_PROP_STRING("node-board-part", SGIL1State, node_board_part),
+    DEFINE_PROP_STRING("node-board-revision", SGIL1State,
+                       node_board_revision),
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),

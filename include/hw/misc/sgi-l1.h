@@ -169,8 +169,19 @@ struct SGIL1State {
     uint8_t last_reason[2];
     char *system_serial;
     char *fuel_mac_eeprom;
-    uint8_t fuel_mac[6];
-    bool fuel_mac_valid;
+    /*
+     * The board's station address and the record carrying it, and the node
+     * board's identity, for the synthetic records built when no raw file
+     * supplies them.
+     */
+    char *mac;
+    char *mac_record;
+    char *node_board_name;
+    char *node_board_part;
+    char *node_board_revision;
+    /* The address the identity records carry, for the onboard Ethernet. */
+    uint8_t board_mac[6];
+    bool board_mac_valid;
     char *brick_serial;
     char *brick_type;
     uint32_t brick_type_code;
