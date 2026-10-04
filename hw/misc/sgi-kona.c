@@ -5120,21 +5120,20 @@ static void sgi_kona_gl_bitmap_move(SGIKonaState *s, int i,
 static bool sgi_kona_gl_raw_bitmap_layout(const SGIKonaGLImageUpload *u,
                                            SGIKonaGLBitmapLayout *layout)
 {
-    uint32_t header[9];
+    if (u->header[3] == 1) {
+        SGIKonaGLBitmapDMALayout d;
 
-    memcpy(header, u->header, sizeof(header));
-    if (header[3] > 1) {
-        return false;
+        if (!sgi_kona_gl_bitmap_dma_layout(u->header, u->row_length,
+                                           u->skip_rows, u->skip_pixels,
+                                           u->alignment, &d)) {
+            return false;
+        }
+        *layout = d.bitmap;
+        return true;
     }
-    header[3] = 0;
-    if (!sgi_kona_gl_bitmap_pio_layout(header, u->row_length,
-                                        u->skip_rows, u->skip_pixels,
-                                        u->alignment, layout)) {
-        return false;
-    }
-    return !u->header[3] ||
-           (!(header[0] & 31) && !layout->strided && !layout->phase &&
-            !u->skip_pixels && layout->stride == header[0] / 8);
+    return sgi_kona_gl_bitmap_pio_layout(u->header, u->row_length,
+                                         u->skip_rows, u->skip_pixels,
+                                         u->alignment, layout);
 }
 
 static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
@@ -7040,32 +7039,52 @@ bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                 uint32_t per_line, uint64_t pitch)
 {
     SGIKonaGLImageUpload *u = &s->gl_image_upload;
-    SGIKonaGLBitmapLayout layout;
+    SGIKonaGLBitmapDMALayout d;
     uint8_t chunk[4096];
-    uint64_t bytes = (uint64_t)u->count * 4;
 
     if (!sgi_kona_bitmap_dma_waiting(s) || u->refused ||
         u->context != s->context_current ||
-        !sgi_kona_gl_raw_bitmap_layout(u, &layout) ||
-        (io & 3) || lines != 1 || per_line != bytes || pitch != bytes ||
-        bytes > UINT64_MAX - io) {
+        !sgi_kona_gl_bitmap_dma_layout(u->header, u->row_length,
+                                         u->skip_rows, u->skip_pixels,
+                                         u->alignment, &d) ||
+        (io & 3) != d.source_phase || lines != d.lines ||
+        per_line != d.line_bytes || pitch != d.pitch ||
+        d.span > UINT64_MAX - io) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: raw bitmap DMA source framing mismatch;"
                       " image refused\n");
         sgi_kona_gl_image_clear(s);
         return false;
     }
-    for (uint32_t offset = 0; offset < per_line;) {
-        uint32_t n = MIN(sizeof(chunk), per_line - offset);
+    for (uint32_t line = 0; line < lines; line++) {
+        for (uint32_t offset = 0; offset < per_line;) {
+            uint32_t n = MIN(sizeof(chunk), per_line - offset);
 
-        if (!sgi_kona_device_read(s, io + offset, chunk, n)) {
-            sgi_kona_gl_image_clear(s);
-            return false;
+            if (!sgi_kona_device_read(s, io + line * pitch + offset,
+                                       chunk, n)) {
+                sgi_kona_gl_image_clear(s);
+                return false;
+            }
+            if (!d.bitmap.strided) {
+                for (uint32_t k = 0; k < n; k += 4) {
+                    u->words[(offset + k) / 4] = ldl_be_p(chunk + k);
+                }
+            } else {
+                for (uint32_t k = 0; k < n; k++) {
+                    uint64_t at;
+
+                    if (!sgi_kona_gl_bitmap_pio_offset(&d.bitmap, line,
+                                                        offset + k, &at) ||
+                        at / 4 >= u->count) {
+                        sgi_kona_gl_image_clear(s);
+                        return false;
+                    }
+                    u->words[at / 4] |= (uint32_t)chunk[k] <<
+                                       (24 - 8 * (at % 4));
+                }
+            }
+            offset += n;
         }
-        for (uint32_t k = 0; k < n; k += 4) {
-            u->words[(offset + k) / 4] = ldl_be_p(chunk + k);
-        }
-        offset += n;
     }
     return sgi_kona_gl_raw_bitmap_done(s);
 }
