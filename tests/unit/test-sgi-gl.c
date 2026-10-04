@@ -4254,6 +4254,107 @@ static void test_alpha_compare_precision(void)
     }
 }
 
+static void test_fragment_depth_stencil(void)
+{
+    static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    static Planes p;
+    SGIRasterTarget target = planes_target(&p);
+    SGIRasterRules rules = rules_supported;
+    SGIGLDrawState st = {
+        .depth_test = true, .depth_mask = true,
+        .stencil_test = true, .stencil_func = SGI_GL_ALWAYS,
+        .stencil_value_mask = 255, .stencil_write_mask = 255,
+        .stencil_op = { 0, SGI_GL_INCR, SGI_GL_DECR },
+    };
+    unsigned at = planes_index(3, 5);
+
+    rules.depth_bits = rules.stencil_bits = 8;
+    for (unsigned func = 0; func <= SGI_GL_ALWAYS; func++) {
+        for (int relation = -1; relation <= 1; relation++) {
+            bool kept = passes[func] & (1 << (1 - relation));
+            uint32_t old = 128 - relation;
+
+            p.depth[at] = old;
+            p.stencil[at] = 40;
+            p.colour[0][at] = 0x123456;
+            st.depth_func = func;
+            g_assert_cmpint(sgi_raster_depth_stencil(&rules, &st, &target,
+                3, 5, 0.5), ==, kept);
+            g_assert_cmphex(p.depth[at], ==, kept ? 128 : old);
+            g_assert_cmphex(p.stencil[at], ==, kept ? 39 : 41);
+            g_assert_cmphex(p.colour[0][at], ==, 0x123456);
+        }
+    }
+    st.depth_func = SGI_GL_ALWAYS;
+    st.stencil_op[0] = SGI_GL_INCR;
+    st.stencil_op[2] = SGI_GL_REPLACE;
+    for (unsigned func = 0; func <= SGI_GL_ALWAYS; func++) {
+        for (int relation = -1; relation <= 1; relation++) {
+            bool kept = passes[func] & (1 << (1 - relation));
+
+            st.stencil_func = func;
+            st.stencil_ref = 40 + relation;
+            p.depth[at] = 200;
+            p.stencil[at] = 40;
+            g_assert_cmpint(sgi_raster_depth_stencil(&rules, &st, &target,
+                3, 5, 0.5), ==, kept);
+            g_assert_cmphex(p.depth[at], ==, kept ? 128 : 200);
+            g_assert_cmphex(p.stencil[at], ==, kept ? st.stencil_ref : 41);
+        }
+    }
+    st.stencil_func = SGI_GL_EQUAL;
+    st.stencil_ref = 0x35;
+    st.stencil_value_mask = 15;
+    st.stencil_write_mask = 0xf0;
+    p.stencil[at] = 0xa5;
+    g_assert_true(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, 0.5));
+    g_assert_cmphex(p.stencil[at], ==, 0x35);
+    st.stencil_func = SGI_GL_ALWAYS;
+    st.stencil_write_mask = 255;
+    st.depth_mask = false;
+    p.depth[at] = 200;
+    g_assert_true(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, 0.5));
+    g_assert_cmphex(p.depth[at], ==, 200);
+    st.depth_test = false;
+    st.depth_mask = true;
+    st.depth_func = SGI_GL_NEVER;
+    g_assert_true(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, 0.5));
+    g_assert_cmphex(p.depth[at], ==, 200);
+    rules.stencil_bits = 0;
+    st.stencil_func = SGI_GL_NEVER;
+    p.stencil[at] = 0xa5;
+    g_assert_true(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, 0.5));
+    g_assert_cmphex(p.stencil[at], ==, 0xa5);
+    g_assert_false(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, NAN));
+    g_assert_false(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, -1));
+    g_assert_false(sgi_raster_depth_stencil(&rules, &st, &target, 3, 5, 2));
+}
+
+static void test_window_depth(void)
+{
+    SGIGLDrawState st = { .depth_range = { 0.25, 0.75 } };
+    double z;
+
+    g_assert_true(sgi_raster_window_depth(&st, 0, 0, &z));
+    g_assert_cmpfloat(z, ==, 0.25);
+    g_assert_true(sgi_raster_window_depth(&st, 1, 0, &z));
+    g_assert_cmpfloat(z, ==, 0.75);
+    st.depth_range[0] = 1;
+    st.depth_range[1] = 0;
+    g_assert_true(sgi_raster_window_depth(&st, 0.25, 0, &z));
+    g_assert_cmpfloat(z, ==, 0.75);
+    g_assert_true(sgi_raster_window_depth(&st, 0.5, 1, &z));
+    g_assert_cmpfloat(z, ==, 1);
+    g_assert_true(sgi_raster_window_depth(&st, 0.5, -1, &z));
+    g_assert_cmpfloat(z, ==, 0);
+    st.window_matrix_given = true;
+    g_assert_true(sgi_raster_window_depth(&st, 0.25, 0, &z));
+    g_assert_cmpfloat(z, ==, 0.25);
+    g_assert_false(sgi_raster_window_depth(&st, NAN, 0, &z));
+    g_assert_false(sgi_raster_window_depth(&st, -0.5, 0, &z));
+    g_assert_false(sgi_raster_window_depth(&st, 1.5, 0, &z));
+}
+
 static void frag_stencil(FragScene *f, uint32_t func, int32_t ref,
                          uint32_t mask, uint32_t fail, uint32_t zfail,
                          uint32_t zpass)
@@ -12475,6 +12576,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/alpha-compare-precision",
                     test_alpha_compare_precision);
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
+    g_test_add_func("/sgi-gl/fragment-depth-stencil",
+                    test_fragment_depth_stencil);
+    g_test_add_func("/sgi-gl/window-depth", test_window_depth);
     g_test_add_func("/sgi-gl/blend", test_blend);
     g_test_add_func("/sgi-gl/packed-blend", test_packed_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);

@@ -2357,7 +2357,8 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       const float *provoking,
                                       const SGIClipRect *tile,
                                       SGIRendererRequest *request,
-                                      SGIColourTarget *target)
+                                      SGIColourTarget *target,
+                                      const SGIRasterRules *rules)
 {
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
@@ -2379,8 +2380,8 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     visual = s->gl_pipe[d->context].draw_config;
     if (visual[0] || (visual[1] != 8 && visual[1] != 12) || visual[2] ||
         visual[3] > 1 || visual[4] || visual[5] ||
-        (visual[6] != 0 && visual[6] != 24) ||
-        visual[7] || visual[8] || visual[9]) {
+        visual[6] > 32 || (visual[7] != 0 && visual[7] != 8) ||
+        visual[8] || visual[9]) {
         return false;
     }
     if (d->mode != SGI_GL_TRIANGLES || d->count != 3 || d->back_colors ||
@@ -2414,13 +2415,21 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     }
     if ((st->shade_model != SGI_GL_FLAT && st->shade_model != SGI_GL_SMOOTH) ||
         (st->colour_mask & ~15) ||
-        st->depth_test || st->stencil_test ||
         st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
-        st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
+        !(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
+        !(st->depth_range[1] >= 0 && st->depth_range[1] <= 1) ||
         st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return false;
+    }
+    if ((st->depth_test &&
+         !sgi_kona_renderer_plane(s, sgi_kona_plane(s, s->plane_depth),
+                                   SGI_PLANE_Z24, x, y, width, height)) ||
+        (st->stencil_test && rules->stencil_bits &&
+         !sgi_kona_renderer_plane(s, sgi_kona_plane(s, s->plane_stencil),
+                                   SGI_PLANE_S8, x, y, width, height))) {
         return false;
     }
     if (st->alpha_test && st->alpha_func > SGI_GL_ALWAYS) {
@@ -2465,6 +2474,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
             }
             request->vertices[i][axis] = round(position * 256) / 256;
         }
+        request->depth[i] = CLAMP(window[2], 0, 1);
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
         if (request->smooth) {
@@ -2504,7 +2514,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         return false;
     }
     if (!request->smooth && st->alpha_test &&
-        !sgi_raster_alpha_test(&sgi_kona_gl_rules, st->alpha_func,
+        !sgi_raster_alpha_test(rules, st->alpha_func,
                                request->alpha, st->alpha_ref)) {
         request->clip[0] = request->clip[1] = 0;
         request->clip[2] = request->clip[3] = -1;
@@ -2565,7 +2575,9 @@ static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
     return tile;
 }
 
-static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
+static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
+                                   const SGIRasterRules *rules,
+                                   const SGIRasterTarget *t)
 {
     SGIRendererRequest *requests;
     SGIColourTarget target;
@@ -2640,7 +2652,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                    sizeof(vertices[v]));
         }
         if (!sgi_kona_renderer_request(s, &triangle, provoking, &tile,
-                                       &requests[i], &target)) {
+                                       &requests[i], &target, rules)) {
             goto out;
         }
     }
@@ -2657,7 +2669,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
         goto out;
     }
     /* Commit only complete batches, so fallback cannot replay a prefix. */
-    colour_mask = sgi_raster_colour_mask(&sgi_kona_gl_rules,
+    colour_mask = sgi_raster_colour_mask(rules,
                                          d->state->colour_mask);
     for (unsigned i = 0; i < count; i++) {
         SGIRendererRequest *request = &requests[i];
@@ -2670,7 +2682,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                 const uint8_t *pixel = request->rgba +
                                       (y * SGI_RENDERER_SIZE + x) * 4;
 
-                if (pixel[3] && colour_mask) {
+                if (pixel[3]) {
                     uint32_t colour = (pixel[0] << 16) |
                                       (pixel[1] << 8) | pixel[2];
 
@@ -2682,11 +2694,26 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                         }
                         alpha = rgba[3];
                         if (d->state->alpha_test &&
-                            !sgi_raster_alpha_test(&sgi_kona_gl_rules,
+                            !sgi_raster_alpha_test(rules,
                                 d->state->alpha_func, alpha,
                                 d->state->alpha_ref)) {
                             continue;
                         }
+                    }
+                    if (d->state->depth_test || d->state->stencil_test) {
+                        double z, window;
+
+                        if (!sgi_renderer_depth(request, x, y, &z)) {
+                            g_assert_not_reached();
+                        }
+                        if (!sgi_raster_window_depth(d->state, z, 0, &window) ||
+                            !sgi_raster_depth_stencil(rules, d->state, t,
+                                tile.x0 + x, tile.y0 + y, window)) {
+                            continue;
+                        }
+                    }
+                    if (!colour_mask) {
+                        continue;
                     }
                     if (logic_op || blend || colour_mask != 0xffffff) {
                         uint32_t old = sgi_kona_gl_load_colour(s, target,
@@ -2698,7 +2725,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                                 d->state->logic_op_mode - SGI_GL_CLEAR,
                                 colour, old) & 0xffffff;
                         } else if (blend) {
-                            colour = sgi_raster_blend_rgb(&sgi_kona_gl_rules,
+                            colour = sgi_raster_blend_rgb(rules,
                                 d->state, colour, alpha, old);
                         }
                         colour = (colour & colour_mask) | (old & ~colour_mask);
@@ -2742,7 +2769,7 @@ static SGIGLDrawResult sgi_kona_gl_draw_checked(void *opaque,
         copy.state = &st;
         d = &copy;
     }
-    if (sgi_kona_renderer_draw(s, d)) {
+    if (sgi_kona_renderer_draw(s, d, &rules, &t)) {
         return SGI_GL_DRAW_OK;
     }
     ret = sgi_soft_draw(&rules, &t, d);

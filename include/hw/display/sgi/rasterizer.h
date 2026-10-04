@@ -472,6 +472,15 @@ SGIRenderResult sgi_render_raster_checked(SGIRenderer *renderer,
                                           const SGIRasterTarget *target,
                                           const SGIRasterOp *op, Error **errp);
 
+/* After alpha rejection, test and update canonical depth and stencil. */
+bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
+                               const SGIGLDrawState *st,
+                               const SGIRasterTarget *t, int x, int y,
+                               double z);
+/* Map normalized depth through the depth range, add offset and clamp. */
+bool sgi_raster_window_depth(const SGIGLDrawState *st, double z,
+                              double offset, double *window);
+
 /*
  * Rasterize a draw into the target, under the draw's state and the head's
  * rules. A rule set sgi_raster_rules_supported() refuses draws nothing.

@@ -190,6 +190,9 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = request->vertices[i];
 
+        if (!(request->depth[i] >= 0 && request->depth[i] <= 1)) {
+            return false;
+        }
         if (vertex[2] != 0 || vertex[3] != 1) {
             return false;
         }
@@ -394,6 +397,33 @@ bool sgi_renderer_fragment(const SGIRendererRequest *request, unsigned x,
     return renderer_fragment(request, vertices, area, indices, x, y, colour);
 }
 
+bool sgi_renderer_depth(const SGIRendererRequest *request, unsigned x,
+                         unsigned y, double *depth)
+{
+    int64_t vertices[3][2], area;
+    unsigned indices[3];
+    double b1, b2;
+
+    if (x >= SGI_RENDERER_SIZE || y >= SGI_RENDERER_SIZE ||
+        !sgi_renderer_request_valid(request)) {
+        return false;
+    }
+    area = renderer_positive_triangle(request, vertices, indices);
+    if ((int32_t)x < request->clip[0] || (int32_t)x > request->clip[2] ||
+        (int32_t)y < request->clip[1] || (int32_t)y > request->clip[3] ||
+        !renderer_covered(vertices, area, x, y)) {
+        return false;
+    }
+    b1 = (double)renderer_edge(vertices[2], vertices[0],
+                                x * 256 + 128, y * 256 + 128) / area;
+    b2 = (double)renderer_edge(vertices[0], vertices[1],
+                                x * 256 + 128, y * 256 + 128) / area;
+    *depth = request->depth[indices[0]] +
+             b1 * (request->depth[indices[1]] - request->depth[indices[0]]) +
+             b2 * (request->depth[indices[2]] - request->depth[indices[0]]);
+    return true;
+}
+
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
 {
     int64_t vertices[3][2], area;
@@ -454,8 +484,9 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     int32_t clip[4];
     bool smooth = request->smooth;
     double alpha = request->alpha;
-    double colour[3][4], inverse_w[3];
+    double colour[3][4], inverse_w[3], depth[3];
 
+    memcpy(depth, request->depth, sizeof(depth));
     memcpy(colour, request->colour, sizeof(colour));
     memcpy(inverse_w, request->inverse_w, sizeof(inverse_w));
     memcpy(rgb, request->rgb, sizeof(rgb));
@@ -480,6 +511,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         request->smooth != smooth || request->alpha != alpha ||
         memcmp(request->colour, colour, sizeof(colour)) ||
         memcmp(request->inverse_w, inverse_w, sizeof(inverse_w)) ||
+        memcmp(request->depth, depth, sizeof(depth)) ||
         !sgi_renderer_staging_valid(request)) {
         renderer->failed = true;
         error_setg(errp, "Invalid SGI OpenGL renderer staging");
