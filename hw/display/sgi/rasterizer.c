@@ -744,6 +744,20 @@ static bool sgi_soft_texture_mipmap(uint32_t filter)
            filter <= SGI_GL_LINEAR_MIPMAP_LINEAR;
 }
 
+static bool sgi_soft_texture_sharpen(uint32_t filter)
+{
+    return filter == SGI_GL_LINEAR_SHARPEN_SGIS ||
+           filter == SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS ||
+           filter == SGI_GL_LINEAR_SHARPEN_COLOR_SGIS;
+}
+
+static bool sgi_soft_texture_detail(uint32_t filter)
+{
+    return filter == SGI_GL_LINEAR_DETAIL_SGIS ||
+           filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ||
+           filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS;
+}
+
 static bool sgi_soft_texture_dimensions(uint32_t w, uint32_t h)
 {
     return w && h && w <= INT32_MAX && h <= INT32_MAX &&
@@ -791,7 +805,9 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im)
         (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
         (im->min_filter != SGI_GL_NEAREST && im->min_filter != SGI_GL_LINEAR &&
          !mipmap) ||
-        (im->mag_filter != SGI_GL_NEAREST && im->mag_filter != SGI_GL_LINEAR)) {
+        (im->mag_filter != SGI_GL_NEAREST && im->mag_filter != SGI_GL_LINEAR &&
+         !sgi_soft_texture_sharpen(im->mag_filter) &&
+         !sgi_soft_texture_detail(im->mag_filter))) {
         goto unsupported;
     }
     for (uint32_t i = 1; i < p->count; i++) {
@@ -897,6 +913,14 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r)
         qemu_log_mask(LOG_UNIMP, "sgi-gl: unsupported texture state "
                       "environment 0x%x, draw dropped\n",
                       st->texture_env_mode);
+        return false;
+    }
+    if (im && (!isfinite(im->lod_scale_s) || !isfinite(im->lod_scale_t) ||
+               im->lod_scale_s < 0 || im->lod_scale_t < 0 ||
+               (im->volume && (!isfinite(im->lod_scale_r) ||
+                               im->lod_scale_r < 0)))) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-gl: invalid derivative scales, draw dropped\n");
         return false;
     }
     if (im && im->pyramid) {
@@ -1163,9 +1187,14 @@ static bool sgi_soft_texture_select(uint32_t min, uint32_t mag,
                                      const SGIGLTexPyramid *p, uint32_t last,
                                      double rho, SGISoftTexSelection *out)
 {
-    double lambda, c = mag == SGI_GL_LINEAR &&
+    bool enhanced = sgi_soft_texture_sharpen(mag) ||
+                    sgi_soft_texture_detail(mag);
+    double lambda, c = enhanced ?
         (min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
-         min == SGI_GL_NEAREST_MIPMAP_LINEAR) ? 0.5 : 0;
+         min == SGI_GL_LINEAR_MIPMAP_NEAREST ? 0.5 : 0) :
+        (mag == SGI_GL_LINEAR &&
+         (min == SGI_GL_NEAREST_MIPMAP_NEAREST ||
+          min == SGI_GL_NEAREST_MIPMAP_LINEAR) ? 0.5 : 0);
     uint32_t range = last - p->base_level;
 
     if (!isfinite(rho) || rho < 0) {
@@ -1213,11 +1242,16 @@ static bool sgi_soft_texture_select(uint32_t min, uint32_t mag,
 }
 
 /* Projective gradients precede wrapping; D is Q/W, not geometry W. */
+static double sgi_soft_texture_lod_scale(double scale)
+{
+    return scale ? scale : 1.0;
+}
+
 static bool sgi_soft_texture_derivatives(const double value[4],
                                           const double dx[4],
                                           const double dy[4],
-                                          uint32_t ns, uint32_t nt,
-                                          uint32_t nr,
+                                          double ns, double nt,
+                                          double nr,
                                           double out[5])
 {
     double d = value[2], d2 = d * d;
@@ -1256,6 +1290,122 @@ static void sgi_soft_texture_mix(double value[4], const double other[4],
     }
 }
 
+static bool sgi_soft_texture_weight(const SGISoftDraw *r, double lambda,
+                                     double *weight)
+{
+    const SGIGLTexImage *im = r->texture;
+
+    *weight = MIN(MAX(-lambda / 4, 0), 1);
+    if (im->read_filter_weight &&
+        (!im->read_filter_weight(im->opaque, lambda, weight) ||
+         !isfinite(*weight))) {
+        sgi_soft_texture_report(r, 16, "invalid filter weight, "
+                                      "fragment dropped");
+        return false;
+    }
+    return true;
+}
+
+static bool sgi_soft_texture_sharpen_sample(const SGISoftDraw *r,
+                                             uint32_t filter, double lambda,
+                                             double s, double t, double rr,
+                                             double texel[4])
+{
+    const SGIGLTexImage *im = r->texture;
+    const SGIGLTexPyramid *p = im->pyramid;
+    const SGIGLTexLevel *base = r->texture_base, *coarse;
+    uint32_t extent = MAX(base->width, base->height);
+    double other[4], weight;
+
+    if (!sgi_soft_texture_sample(r, base, SGI_GL_LINEAR, s, t, rr, texel)) {
+        return false;
+    }
+    if (im->volume) {
+        extent = MAX(extent, base->depth);
+    }
+    coarse = p->base_level < UINT32_MAX ?
+        sgi_soft_texture_level(p, p->base_level + 1) : NULL;
+    if (extent <= 1 || p->max_level <= p->base_level || !coarse ||
+        coarse->width != MAX(1, base->width / 2) ||
+        coarse->height != MAX(1, base->height / 2) ||
+        (im->volume && coarse->depth != MAX(1, base->depth / 2)) ||
+        coarse->internal_format != base->internal_format ||
+        coarse->base_format != base->base_format ||
+        coarse->border != base->border ||
+        !sgi_soft_texture_border_supported(im, coarse) ||
+        (im->volume ? !coarse->read_texel_3d : !coarse->read_texel)) {
+        return true;
+    }
+    if (!sgi_soft_texture_weight(r, lambda, &weight) ||
+        !sgi_soft_texture_sample(r, coarse, SGI_GL_LINEAR, s, t, rr, other)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        if ((k == 3 && filter == SGI_GL_LINEAR_SHARPEN_COLOR_SGIS) ||
+            (k != 3 && filter == SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS)) {
+            continue;
+        }
+        texel[k] = MIN(MAX(texel[k] + weight * (texel[k] - other[k]), 0), 1);
+    }
+    return true;
+}
+
+static bool sgi_soft_texture_detail_sample(const SGISoftDraw *r,
+                                            uint32_t filter, double lambda,
+                                            double s, double t, double rr,
+                                            double texel[4])
+{
+    const SGIGLTexImage *im = r->texture;
+    const SGIGLTexLevel *base = r->texture_base, *detail = im->detail_image;
+    SGIGLTexImage repeat = *im;
+    SGISoftDraw draw = *r;
+    double other[4], weight, ds, dt;
+    int scale = MIN(-(int64_t)im->detail_level, INT_MAX);
+
+    if (!sgi_soft_texture_sample(r, base, SGI_GL_LINEAR, s, t, rr, texel)) {
+        return false;
+    }
+    if (im->volume || im->pyramid->base_level || !detail ||
+        detail->level || detail->border || !detail->read_texel ||
+        !sgi_soft_texture_dimensions(detail->width, detail->height) ||
+        detail->internal_format != base->internal_format ||
+        detail->base_format != base->base_format || im->detail_level > 0) {
+        return true;
+    }
+    if (im->detail_mode != SGI_GL_ADD && im->detail_mode != SGI_GL_MODULATE) {
+        sgi_soft_texture_report(r, 32, "unsupported detail mode, "
+                                      "fragment dropped");
+        return false;
+    }
+    /* Scaling is in primary texels, independent of the detail dimensions. */
+    ds = scalbn(s * base->width / detail->width, scale);
+    dt = scalbn(t * base->height / detail->height, scale);
+    if (!isfinite(ds) || !isfinite(dt)) {
+        sgi_soft_texture_report(r, 32, "invalid detail coordinates, "
+                                      "fragment dropped");
+        return false;
+    }
+    repeat.wrap_s = repeat.wrap_t = SGI_GL_REPEAT;
+    draw.texture = &repeat;
+    if (!sgi_soft_texture_weight(r, lambda, &weight) ||
+        !sgi_soft_texture_sample(&draw, detail, SGI_GL_LINEAR,
+                                  ds, dt, 0, other)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        double signed_detail = weight * (2 * other[k] - 1);
+
+        if ((k == 3 && filter == SGI_GL_LINEAR_DETAIL_COLOR_SGIS) ||
+            (k != 3 && filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS)) {
+            continue;
+        }
+        texel[k] = im->detail_mode == SGI_GL_ADD ?
+                   texel[k] + signed_detail : texel[k] * (1 + signed_detail);
+        texel[k] = MIN(MAX(texel[k], 0), 1);
+    }
+    return true;
+}
+
 static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
 {
     const SGIGLTexImage *im = r->texture;
@@ -1292,8 +1442,20 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
             return false;
         }
         level = sgi_soft_texture_level(im->pyramid, selected.first);
-        if (!sgi_soft_texture_sample(r, level, selected.filter, s, t, rr,
-                                     texel)) {
+        if (sgi_soft_texture_sharpen(selected.filter)) {
+            if (!sgi_soft_texture_sharpen_sample(r, selected.filter,
+                                                  selected.lambda,
+                                                  s, t, rr, texel)) {
+                return false;
+            }
+        } else if (sgi_soft_texture_detail(selected.filter)) {
+            if (!sgi_soft_texture_detail_sample(r, selected.filter,
+                                                 selected.lambda,
+                                                 s, t, rr, texel)) {
+                return false;
+            }
+        } else if (!sgi_soft_texture_sample(r, level, selected.filter,
+                                             s, t, rr, texel)) {
             return false;
         }
         if (selected.alpha && selected.first != selected.second) {
@@ -1336,7 +1498,7 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
             frag->rgba[k] = alpha && format != SGI_GL_INTENSITY ?
                 frag->rgba[k] * texel[k] :
                 frag->rgba[k] * (1 - texel[k]) +
-                st->texture_env_color[k] * texel[k];
+                MIN(MAX(st->texture_env_color[k], 0), 1) * texel[k];
             break;
         }
     }
@@ -2164,9 +2326,13 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                                (py + 0.5 - gradient.y) * gradient.dy[k];
                 }
                 frag.texture_rho = sgi_soft_texture_derivatives(value,
-                    gradient.dx, gradient.dy, r->texture_base->width,
-                    r->texture_base->height,
-                    r->texture->volume ? r->texture_base->depth : 0, out) ?
+                    gradient.dx, gradient.dy, r->texture_base->width *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                    r->texture_base->height *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
+                    r->texture->volume ? r->texture_base->depth *
+                    sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
+                    out) ?
                     out[4] : NAN;
             }
             sgi_soft_fragment(r, px, py, z, offset, &frag);
@@ -2513,9 +2679,13 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                         value[k] = texture_value[k] + t * texture_delta[k];
                     }
                     frag.texture_rho = sgi_soft_texture_derivatives(value,
-                        texture_delta, zero, r->texture_base->width,
-                        r->texture_base->height,
-                        r->texture->volume ? r->texture_base->depth : 0, out) ?
+                        texture_delta, zero, r->texture_base->width *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                        r->texture_base->height *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
+                        r->texture->volume ? r->texture_base->depth *
+                        sgi_soft_texture_lod_scale(r->texture->lod_scale_r) : 0,
+                        out) ?
                         out[4] / texture_length : NAN;
                 }
                 sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
@@ -3297,6 +3467,19 @@ bool sgi_gl_texture_test_derivatives(const double value[3],
     double y[4] = { dy[0], dy[1], dy[2], 0 };
 
     return sgi_soft_texture_derivatives(v, x, y, ns, nt, 0, out);
+}
+
+bool sgi_gl_texture_test_derivatives_scaled(const double value[3],
+    const double dx[3], const double dy[3], uint32_t ns, uint32_t nt,
+    double scale_s, double scale_t, double out[5])
+{
+    double v[4] = { value[0], value[1], value[2], 0 };
+    double x[4] = { dx[0], dx[1], dx[2], 0 };
+    double y[4] = { dy[0], dy[1], dy[2], 0 };
+
+    return sgi_soft_texture_derivatives(v, x, y,
+        ns * sgi_soft_texture_lod_scale(scale_s),
+        nt * sgi_soft_texture_lod_scale(scale_t), 0, out);
 }
 
 bool sgi_gl_texture_test_select(uint32_t min, uint32_t mag,

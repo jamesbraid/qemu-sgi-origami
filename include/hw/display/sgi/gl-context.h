@@ -162,6 +162,13 @@ enum {
 #define SGI_GL_LINEAR_MIPMAP_NEAREST 0x2701
 #define SGI_GL_NEAREST_MIPMAP_LINEAR 0x2702
 #define SGI_GL_LINEAR_MIPMAP_LINEAR 0x2703
+#define SGI_GL_LINEAR_SHARPEN_SGIS       0x80ad
+#define SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS 0x80ae
+#define SGI_GL_LINEAR_SHARPEN_COLOR_SGIS 0x80af
+#define SGI_GL_LINEAR_DETAIL_SGIS       0x8097
+#define SGI_GL_LINEAR_DETAIL_ALPHA_SGIS 0x8098
+#define SGI_GL_LINEAR_DETAIL_COLOR_SGIS 0x8099
+#define SGI_GL_ADD                      0x0104
 #define SGI_GL_REPEAT           0x2901
 #define SGI_GL_CLAMP            0x2900
 #define SGI_GL_CLAMP_TO_EDGE    0x812f
@@ -268,6 +275,15 @@ enum {
 #define SGI_GL_STENCIL_PASS_DEPTH_PASS 0x0b96
 #define SGI_GL_STENCIL_REF      0x0b97
 #define SGI_GL_STENCIL_WRITEMASK 0x0b98
+#define SGI_GL_PERSPECTIVE_CORRECTION_HINT 0x0c50
+#define SGI_GL_POINT_SMOOTH_HINT 0x0c51
+#define SGI_GL_LINE_SMOOTH_HINT 0x0c52
+#define SGI_GL_POLYGON_SMOOTH_HINT 0x0c53
+#define SGI_GL_FOG_HINT         0x0c54
+#define SGI_GL_DONT_CARE        0x1100
+#define SGI_GL_FASTEST          0x1101
+#define SGI_GL_NICEST           0x1102
+#define SGI_GL_HINTS            5
 #define SGI_GL_MATRIX_MODE      0x0ba0
 #define SGI_GL_NORMALIZE        0x0ba1
 #define SGI_GL_VIEWPORT         0x0ba2
@@ -774,6 +790,8 @@ typedef struct SGIGLContext {
     bool line_phase_loaded;
     bool draw_error_loaded;
     uint32_t line_phase;
+    /* Advisory modes are retained even though rendering ignores them. */
+    uint32_t hints[SGI_GL_HINTS];
 } SGIGLContext;
 
 /* The GL entry points a family decodes to, one per command. */
@@ -870,6 +888,7 @@ typedef enum SGIGLOp {
      * oldest retained vertex instead of its middle one.
      */
     SGI_GL_OP_SWAP_TMESH,
+    SGI_GL_OP_HINT,             /* target, mode */
 } SGIGLOp;
 
 /*
@@ -1135,6 +1154,12 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp);
 bool sgi_gl_resume_primitive(SGIGLContext *c, uint32_t mode,
                              const float (*v)[SGI_GL_VERTEX_FLOATS],
                              unsigned int k, uint32_t count);
+/* Close an interrupted primitive without drawing a line-loop edge. */
+void sgi_gl_discard_primitive(SGIGLContext *c);
+/* Capture one vertex with current attributes and lighting, without drawing. */
+void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
+                           const uint32_t *bits, unsigned int components,
+                           float out[SGI_GL_VERTEX_FLOATS]);
 
 /*
  * Migration of one context: every field of SGIGLContext, described field

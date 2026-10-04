@@ -7,6 +7,9 @@
 bool sgi_gl_texture_test_derivatives(const double value[3],
     const double dx[3], const double dy[3], uint32_t ns, uint32_t nt,
     double out[5]);
+bool sgi_gl_texture_test_derivatives_scaled(const double value[3],
+    const double dx[3], const double dy[3], uint32_t ns, uint32_t nt,
+    double scale_s, double scale_t, double out[5]);
 bool sgi_gl_texture_test_select(uint32_t min, uint32_t mag,
     const SGIGLTexPyramid *p, uint32_t last, double rho, uint32_t out[3],
     double numeric[2]);
