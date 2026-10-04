@@ -320,11 +320,17 @@ typedef struct SGIKonaGLPixelZoom {
     bool unsupported;
 } SGIKonaGLPixelZoom;
 
+typedef struct SGIKonaGLPixelTransfer {
+    uint32_t scale[4];
+    uint32_t bias[4];
+} SGIKonaGLPixelTransfer;
+
 typedef struct SGIKonaGLPipe {
     uint32_t pending_error;
     bool pixel_zoom_unsupported;
     uint32_t pixel_zoom[2];
     bool pixel_transfer_unsupported;
+    SGIKonaGLPixelTransfer pixel_transfer;
     bool unpack_swap_bytes;
     uint32_t unpack_alignment;
     uint32_t unpack_row_length;
@@ -349,6 +355,10 @@ typedef struct SGIKonaGLPipe {
 
 /* The copies one context's attribute stack holds, OpenGL 1.2.1's least. */
 #define SGI_KONA_GL_ATTRIB_DEPTH 16
+enum {
+    SGI_KONA_GL_ATTRIB_SLOTS = SGI_KONA_CONTEXTS *
+                               SGI_KONA_GL_ATTRIB_DEPTH,
+};
 
 /*
  * The most words of a GL data run the model keeps: twelve for each of
@@ -936,6 +946,8 @@ struct SGIKonaState {
         gl_return_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLPixelZoom
         gl_zoom_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLPixelTransfer
+        gl_transfer_attrib[SGI_KONA_GL_ATTRIB_SLOTS];
     uint32_t gl_attrib_mask[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t gl_attrib_depth[SGI_KONA_CONTEXTS];
 

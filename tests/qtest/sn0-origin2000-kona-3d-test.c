@@ -5361,7 +5361,7 @@ static void test_draw_pixels(gconstpointer opaque)
     } else if (mode == 16) {
         kona_command_f(s, 0x2f, (float[]) { 2, 1 }, 2);
     } else if (mode == 6) {
-        kona_command(s, 0x30, (uint32_t[]) { 0x0d14, 0x3f800000 }, 2);
+        kona_command(s, 0x30, (uint32_t[]) { 0x0d10, 0x3f800000 }, 2);
     } else if (mode == 7) {
         kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
     } else if (mode == 8) {
@@ -5572,6 +5572,146 @@ static void test_draw_pixels_zoom(gconstpointer opaque)
     qtest_quit(from);
     if (tmpfs) {
         g_rmdir(tmpfs);
+    }
+}
+
+static void pixel_transfer_set(QTestState *s, uint32_t pname, float value)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    kona_command(s, 0x30, (uint32_t[]) { pname, bits }, 2);
+}
+
+static void test_draw_pixels_transfer(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 1;
+    bool migrate = mode == 2 || mode == 5 || mode == 10;
+    bool refused = mode == 9 || mode == 10 || mode == 12 || mode == 13;
+    uint32_t rgb = 0x80c060;
+    uint32_t h[] = { 2, 2, 5, 1, 0, dma, dma, 0 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    pixel_transfer_set(s, 0xd14, 2);
+    pixel_transfer_set(s, 0xd19, 0.25);
+    pixel_transfer_set(s, 0xd1a, 0.5);
+    if (mode == 3 || mode == 4 || mode == 5 || mode == 13) {
+        kona_command(s, 0xc9, (uint32_t[]) { mode == 4 ? 0x2020 : 0x20 }, 1);
+        pixel_transfer_set(s, 0xd14, 0);
+    } else if (mode == 6) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        pixel_transfer_set(s, 0xd14, 0);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    } else if (mode == 7 || mode == 8) {
+        if (mode == 7) {
+            return_context_deactivate(s);
+            attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        } else {
+            qtest_system_reset(s);
+            gl_make_current(s);
+        }
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        rgb = 0x4080c0;
+    } else if (mode == 11) {
+        gl_begin(s, 4);
+        pixel_transfer_set(s, 0xd14, 0);
+        gl_end(s);
+    }
+    if (mode == 9 || mode == 10 || mode == 14) {
+        pixel_transfer_set(s, 0xd14, INFINITY);
+        if (mode == 14) {
+            pixel_transfer_set(s, 0xd14, 2);
+        }
+    } else if (mode == 12 || mode == 13) {
+        pixel_transfer_set(s, mode == 12 ? 0xffff : 0xd10, 1);
+        pixel_transfer_set(s, 0xd14, 2);
+    } else if (mode == 15) {
+        const uint32_t irrelevant[] = { 0xd11, 0xd12, 0xd13, 0xd1e, 0xd1f };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(irrelevant); k++) {
+            pixel_transfer_set(s, irrelevant[k], 42);
+        }
+        pixel_transfer_set(s, 0xd10, -0.0);
+    } else if (mode == 16) {
+        pixel_transfer_set(s, 0xd14, 4);
+        pixel_transfer_set(s, 0xd19, -1);
+        pixel_transfer_set(s, 0xd1b, 1);
+        rgb = 0xff00ff;
+    } else if (mode == 17 || mode == 18) {
+        pixel_transfer_set(s, 0xd14, 1);
+        pixel_transfer_set(s, 0xd19, 0);
+        pixel_transfer_set(s, 0xd1a, 1);
+        pixel_transfer_set(s, 0xd1c, 0);
+        pixel_transfer_set(s, 0xd1d, mode == 17 ? 0.5 : 0.25);
+        if (mode == 17) {
+            kona_command(s, 0xca, (uint32_t[]) { 0x204, 0x3f000000 }, 2);
+            kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+            refused = true;
+        } else {
+            kona_command(s, 0xcb, (uint32_t[]) { 0x302, 0x303 }, 2);
+            kona_command(s, 0x24, (uint32_t[]) { 0xbe2 }, 1);
+            rgb = 0x102030;
+        }
+    }
+    if (mode == 2) {
+        kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+        qtest_writel(s, REG_COMMAND, 0x4080c080);
+    }
+    if (migrate) {
+        dir = g_dir_make_tmp("sn0-kona-transfer-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 3 || mode == 4 || mode == 5 || mode == 13) {
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    }
+    if (mode != 2) {
+        kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    }
+    if (dma) {
+        static const uint8_t bytes[] = {
+            0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+            0x40, 0x80, 0xc0, 0x80, 0x40, 0x80, 0xc0, 0x80,
+        };
+
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+        texture_dma_packet(s, 0, sizeof(bytes), 8, 0);
+    } else {
+        for (unsigned k = mode == 2 ? 1 : 0; k < 4; k++) {
+            qtest_writel(s, REG_COMMAND, 0x4080c080);
+        }
+    }
+    expected_clear(e, 0);
+    if (!refused) {
+        for (unsigned k = 0; k < 4; k++) {
+            unsigned at = ((127 - (64 + k / 2)) * 128 + 64 + k % 2) * 3;
+
+            e->rgb[at] = rgb >> 16;
+            e->rgb[at + 1] = rgb >> 8;
+            e->rgb[at + 2] = rgb;
+        }
+    }
+    assert_window_matches(s, e);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
     }
 }
 
@@ -7985,6 +8125,22 @@ int main(int argc, char **argv)
             native_bitmap_cases[mode]);
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_native_bitmap);
+    }
+    static const char *transfer_cases[] = {
+        "pio", "dma", "partial-migrates", "pixel-mode-pop", "combined-pop",
+        "attrib-migrates", "contexts", "fresh-context-default", "reset-default",
+        "nonfinite", "nonfinite-migrates", "begin-setter-refused",
+        "unknown-sticky",
+        "map-color-sticky-pop", "finite-restored", "irrelevant-state", "clamp",
+        "before-alpha-test", "before-blend",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(transfer_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-pixels-transfer/%s",
+            transfer_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_draw_pixels_transfer);
     }
     static const char *draw_pixels_zoom_cases[] = {
         "pio", "dma", "negative-pio", "negative-dma", "downscale",
