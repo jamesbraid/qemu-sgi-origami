@@ -910,15 +910,20 @@ static void test_slot_source_dma(void)
     qtest_quit(s);
 }
 
-static void test_source_dma_byte_lanes(void)
+static void run_source_dma_byte_lanes(bool self_ordered)
 {
-    QTestState *s = assembly_start(
+    QTestState *s = assembly_start(self_ordered ?
+        "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+        "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0,"
+        "byte-lane-self-ordered=on" :
         "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
         "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=0");
     uint64_t head = VIEW(2), card = head + 0x200000;
     const uint32_t address[] = { 0x80008000, 0x40000000 };
-    const uint64_t expected[] = { 0x4342414047464544ULL,
-                                 0x4041424344454647ULL };
+    const uint64_t expected[][2] = {
+        { 0x4342414047464544ULL, 0x4041424344454647ULL },
+        { 0x4041424344454647ULL, 0x4342414047464544ULL },
+    };
 
     qtest_writel(s, head + 0x20010, 0x01000000);
     qtest_writel(s, head + 0x20004, 6);
@@ -931,15 +936,26 @@ static void test_source_dma_byte_lanes(void)
         qtest_writel(s, card + 4, 8);
         qtest_writel(s, card + 8, 0x40);
         qtest_writel(s, card + 0xc, 1);
-        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==, expected[i]);
+        g_assert_cmphex(qtest_readq(s, FABRIC + SCRATCH), ==,
+                        expected[self_ordered][i]);
         qtest_writel(s, card + 0x14, address[i]);
         qtest_writel(s, card + 0x1c, 0);
         qtest_writel(s, card, 0x80009000);
         qtest_writel(s, card + 0xc, 2);
         g_assert_cmphex(qtest_readq(s, FABRIC + 0x9000), ==,
-                        0x4342414047464544ULL);
+                        expected[self_ordered][0]);
     }
     qtest_quit(s);
+}
+
+static void test_source_dma_byte_lanes(void)
+{
+    run_source_dma_byte_lanes(false);
+}
+
+static void test_source_self_ordered_dma(void)
+{
+    run_source_dma_byte_lanes(true);
 }
 
 static void test_source_dma_wide_register(void)
@@ -1253,6 +1269,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/slot-source-dma", test_slot_source_dma);
     qtest_add_func("/sn1/xbridge-chip/source-dma-byte-lanes",
                    test_source_dma_byte_lanes);
+    qtest_add_func("/sn1/xbridge-chip/source-self-ordered-dma",
+                   test_source_self_ordered_dma);
     qtest_add_func("/sn1/xbridge-chip/six-head-source-dma",
                    test_six_head_source_dma);
     qtest_add_func("/sn1/xbridge-chip/head-source-interrupts",

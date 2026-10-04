@@ -113,14 +113,12 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
 AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 
 /*
- * What a device plugged into this bridge says about itself: "my transfers
- * already carry the guest's byte order, so hand me bytes uncorrected". A
- * device that models its own big-endian view of guest memory (as SGI's own
- * silicon does) must not have this chip's byte lanes applied on top, on
- * either the DMA path or its register window. The declaration says nothing
- * about PCI identity and nothing about what the guest programmed; a device
- * that does not make it is corrected, which is the safe default for an
- * ordinary little-endian card.
+ * The model's native lane representation with DMA swapping disabled. A
+ * self-ordered device already uses the guest's byte order in that case;
+ * ordinary PCI models need the crossed-lane correction. The programmed DMA
+ * swap reverses either baseline. This declaration also selects the existing
+ * register-window lane mapping. It describes neither PCI identity nor a
+ * register region's endianness or the format of a DMA descriptor.
  */
 #define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
 
