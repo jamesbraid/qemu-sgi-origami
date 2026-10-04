@@ -680,7 +680,8 @@ static bool sgi_soft_texture_format(uint32_t format)
 {
     return format == SGI_GL_ALPHA || format == SGI_GL_LUMINANCE ||
            format == SGI_GL_LUMINANCE_ALPHA || format == SGI_GL_INTENSITY ||
-           format == SGI_GL_RGB || format == SGI_GL_RGBA;
+           format == SGI_GL_RGB || format == SGI_GL_RGBA ||
+           format == SGI_GL_DEPTH_COMPONENT;
 }
 
 static bool sgi_soft_texture_wrap(uint32_t wrap)
@@ -693,6 +694,10 @@ static bool sgi_soft_texture_wrap(uint32_t wrap)
 static uint32_t sgi_soft_texture_internal_format(uint32_t format)
 {
     switch (format) {
+    case SGI_GL_DEPTH_COMPONENT16_SGIX:
+    case SGI_GL_DEPTH_COMPONENT24_SGIX:
+    case SGI_GL_DEPTH_COMPONENT32_SGIX:
+        return SGI_GL_DEPTH_COMPONENT;
     case SGI_GL_ALPHA4: case SGI_GL_ALPHA8:
     case SGI_GL_ALPHA12: case SGI_GL_ALPHA16:
         return SGI_GL_ALPHA;
@@ -766,6 +771,23 @@ static bool sgi_soft_texture_border_supported(const SGIGLTexImage *im,
     return border <= 1 && (!border || callback);
 }
 
+static bool sgi_soft_texture_shadow_supported(const SGIGLTexImage *im,
+                                               uint32_t format)
+{
+    if ((im->shadow_compare &&
+         im->shadow_compare != SGI_GL_TEXTURE_LEQUAL_R_SGIX &&
+         im->shadow_compare != SGI_GL_TEXTURE_GEQUAL_R_SGIX) ||
+        (im->shadow_compare &&
+         (!isfinite(im->shadow_ambient) || im->shadow_ambient < 0 ||
+          im->shadow_ambient > 1))) {
+        return false;
+    }
+    /* SGIX_depth_texture alone does not define a texture environment. */
+    return format != SGI_GL_DEPTH_COMPONENT ||
+           (im->shadow_compare && !sgi_soft_texture_sharpen(im->mag_filter) &&
+            !sgi_soft_texture_detail(im->mag_filter));
+}
+
 static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
                                      bool report)
 {
@@ -803,7 +825,8 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
     if (!base) {
         goto incomplete;
     }
-    if (!sgi_soft_texture_border_supported(im, base) ||
+    if (!sgi_soft_texture_shadow_supported(im, base->base_format) ||
+        !sgi_soft_texture_border_supported(im, base) ||
         sgi_soft_texture_internal_format(base->internal_format) !=
         base->base_format || !sgi_soft_texture_format(base->base_format) ||
         (r->st->texture_env_mode == SGI_GL_DECAL &&
@@ -839,7 +862,8 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         if (im->one_dimensional && l->height != 1) {
             goto unsupported;
         }
-        if (!sgi_soft_texture_border_supported(im, l) ||
+        if (!sgi_soft_texture_shadow_supported(im, l->base_format) ||
+            !sgi_soft_texture_border_supported(im, l) ||
             !sgi_soft_texture_format(l->base_format) ||
             sgi_soft_texture_internal_format(l->internal_format) !=
             l->base_format) {
@@ -942,7 +966,8 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
         for (int k = 0; k < 4; k++) {
             border_finite &= isfinite(im->border_color[k]);
         }
-        if (!sgi_soft_texture_border_supported(im, NULL) ||
+        if (!sgi_soft_texture_shadow_supported(im, im->base_format) ||
+            !sgi_soft_texture_border_supported(im, NULL) ||
             !border_finite ||
             !sgi_soft_texture_format(im->base_format) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
@@ -994,7 +1019,10 @@ static bool sgi_soft_texture_vertex_valid(const SGISoftDraw *r,
     valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
             v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
     for (int k = 0; k < 4; k++) {
-        if (!r->texture->one_dimensional || k == 0 || k == 3) {
+        if (!r->texture->one_dimensional || k == 0 || k == 3 ||
+            (k == 2 && r->texture->shadow_compare &&
+             (r->texture_base ? r->texture_base->base_format :
+              r->texture->base_format) == SGI_GL_DEPTH_COMPONENT)) {
             valid &= isfinite(v->attr[SGI_GL_V_TEXCOORD + k]);
         }
     }
@@ -1027,10 +1055,20 @@ static void sgi_soft_texture_components(uint32_t format, double v[4])
     }
 }
 
+static void sgi_soft_texture_shadow(const SGIGLTexImage *im, double depth,
+                                     double reference, double out[4])
+{
+    bool pass = im->shadow_compare == SGI_GL_TEXTURE_LEQUAL_R_SGIX ?
+                depth <= reference : depth >= reference;
+
+    out[0] = out[1] = out[2] = pass ? 1 : im->shadow_ambient;
+    out[3] = 1;
+}
+
 static bool sgi_soft_texture_tap(const SGISoftDraw *r,
                                   const SGIGLTexLevel *level,
                                   int64_t x, int64_t y, int64_t z,
-                                 double out[4])
+                                  double reference, double out[4])
 {
     const SGIGLTexImage *im = r->texture;
     uint32_t width = level ? level->width : im->width;
@@ -1056,7 +1094,11 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
             for (int k = 0; k < 4; k++) {
                 out[k] = MIN(MAX(im->border_color[k], 0), 1);
             }
-            sgi_soft_texture_components(format, out);
+            if (format == SGI_GL_DEPTH_COMPONENT) {
+                sgi_soft_texture_shadow(im, out[0], reference, out);
+            } else {
+                sgi_soft_texture_components(format, out);
+            }
             return true;
         }
         /* Signed indices cover the stored faces, edges and corners. */
@@ -1100,6 +1142,10 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
             goto read_failure;
         }
     }
+    if (format == SGI_GL_DEPTH_COMPONENT) {
+        sgi_soft_texture_shadow(im, rgba / (double)UINT32_MAX, reference, out);
+        return true;
+    }
     for (int k = 0; k < 4; k++) {
         out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
     }
@@ -1141,6 +1187,8 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
     uint32_t depth = im->volume ?
                      (level ? level->depth : im->depth) : 1;
 
+    double reference = rr;
+
     memset(texel, 0, 4 * sizeof(*texel));
     s = sgi_soft_texture_axis(s, width, im->wrap_s);
     t = im->one_dimensional ? 0 :
@@ -1162,7 +1210,7 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
             im->wrap_r != SGI_GL_CLAMP_TO_BORDER) {
             z = depth - 1;
         }
-        return sgi_soft_texture_tap(r, level, x, y, z, texel);
+        return sgi_soft_texture_tap(r, level, x, y, z, reference, texel);
     }
     double u = width * s - 0.5;
     double v = im->one_dimensional ? 0 : height * t - 0.5;
@@ -1183,7 +1231,7 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
                     continue;
                 }
                 if (!sgi_soft_texture_tap(r, level, x + i, y + j, z + k,
-                                          tap)) {
+                                          reference, tap)) {
                     return false;
                 }
                 for (int channel = 0; channel < 4; channel++) {
@@ -1440,10 +1488,12 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     }
     s = frag->texcoord[0] / q;
     t = im->one_dimensional ? 0 : frag->texcoord[1] / q;
-    if (im->volume) {
+    if (im->volume || (format == SGI_GL_DEPTH_COMPONENT &&
+                       im->shadow_compare)) {
         rr = frag->texcoord[2] / q;
     }
-    if (!isfinite(s) || !isfinite(t) || !isfinite(rr)) {
+    if (!isfinite(s) || !isfinite(t) || !isfinite(rr) ||
+        (format == SGI_GL_DEPTH_COMPONENT && (rr < 0 || rr > 1))) {
         sgi_soft_texture_report(r, 2, "invalid projected coordinates, "
                                 "fragment dropped");
         return false;
@@ -1491,6 +1541,9 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
     }
     if (im->post_filter) {
         im->post_filter(im->opaque, texel);
+    }
+    if (format == SGI_GL_DEPTH_COMPONENT) {
+        format = SGI_GL_LUMINANCE;
     }
     for (int k = 0; k < 4; k++) {
         bool alpha = k == 3;

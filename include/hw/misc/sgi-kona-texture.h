@@ -18,6 +18,8 @@ typedef struct SGIKonaTextureParams {
     uint32_t filter_curve_slot;
     int32_t detail_level;
     uint32_t detail_mode;
+    uint32_t shadow_compare;
+    double shadow_ambient;
 } SGIKonaTextureParams;
 
 typedef struct SGIKonaTextureLevel {
@@ -76,7 +78,10 @@ void sgi_kona_texture_init(SGIKonaTextureState *s);
 void sgi_kona_texture_reset(SGIKonaTextureState *s);
 void sgi_kona_texture_cleanup(SGIKonaTextureState *s);
 void sgi_kona_texture_defaults(SGIKonaTextureParams *p);
-/* A complete normalized image replaces one level transactionally. */
+/*
+ * A complete normalized image replaces one level transactionally.
+ * DEPTH_COMPONENT pixels are unsigned normalized 32-bit values, not RGBA.
+ */
 bool sgi_kona_texture_upload(SGIKonaTextureState *s, uint32_t handle,
                             uint32_t level, uint32_t width, uint32_t height,
                             uint32_t base_format, uint32_t internal_format,
