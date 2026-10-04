@@ -445,6 +445,18 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     return true;
 }
 
+bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
+                                    const uint32_t record[22],
+                                    SGIKonaTextureParams *params)
+{
+    /* Only the base-zero, repeat interior profile is established. */
+    if ((bind[1] >> 28) != 1 || (bind[3] & 0xff0) ||
+        params->base_level || ((bind[2] >> 5) & 7) > 1) {
+        return false;
+    }
+    return sgi_kona_gl_texture_sampler(bind, record, params);
+}
+
 void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
                                             uint32_t *width, uint32_t *height,
                                             uint32_t *depth)

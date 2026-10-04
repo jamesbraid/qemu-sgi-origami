@@ -49,6 +49,7 @@ typedef struct SGIKonaTextureObject {
     SGIGLTexImage image;
     const double *filter_curve;
     uint32_t native_width, native_height, native_depth;
+    bool native_one_dimensional;
     uint32_t native_count, native_format;
     bool native_format_valid;
     bool native_internal_valid;
@@ -94,6 +95,8 @@ bool sgi_kona_texture_native_table(SGIKonaTextureState *s, uint32_t handle,
                                   const uint32_t table[16]);
 bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
+bool sgi_kona_texture_native_dimensions_1d(SGIKonaTextureState *s,
+                                           uint32_t handle, uint32_t width);
 /* Optional emitted physical size for base-zero, mode-zero repeat interiors. */
 bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
                                    uint32_t physical_size);

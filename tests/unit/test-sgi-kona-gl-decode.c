@@ -746,6 +746,44 @@ static void test_texture_detail_sampler(void)
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
 }
 
+static void test_texture_sampler_1d(void)
+{
+    uint32_t bind[5] = { 0, 0x10000000, 0x24, 1, 0 };
+    uint32_t record[22] = { 0, 0x1010, 256 << 10 };
+    SGIKonaTextureParams p = { .min_lod = -1000, .max_lod = 1000 };
+    SGIKonaTextureParams original;
+
+    g_assert_true(sgi_kona_gl_texture_sampler_1d(bind, record, &p));
+    g_assert_cmpuint(p.min_filter, ==, SGI_GL_LINEAR);
+    original = p;
+    for (unsigned k = 0; k < 5; k++) {
+        uint32_t bad[5];
+
+        memcpy(bad, bind, sizeof(bad));
+        switch (k) {
+        case 0:
+            bad[1] = 0x20000000;
+            break;
+        case 1:
+            bad[3] |= 0x10;
+            break;
+        case 2:
+            bad[3] |= 0x100;
+            break;
+        case 3:
+            bad[3] |= 0x1000;
+            break;
+        case 4:
+            bad[2] = 3 << 5;
+            break;
+        }
+        g_assert_false(sgi_kona_gl_texture_sampler_1d(bad, record, &p));
+        g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
+    }
+    p.base_level = 1;
+    g_assert_false(sgi_kona_gl_texture_sampler_1d(bind, record, &p));
+}
+
 static void test_texture_volume_sampler(void)
 {
     uint32_t bind[5] = { 7, 0x30000000, 0, 0x123 };
@@ -1182,6 +1220,8 @@ int main(int argc, char **argv)
                     test_texture_detail_sampler);
     g_test_add_func("/sgi-kona-gl-decode/texture-volume-sampler",
                     test_texture_volume_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-sampler-1d",
+                    test_texture_sampler_1d);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
