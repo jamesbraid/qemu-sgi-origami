@@ -8329,7 +8329,7 @@ static void test_texture_3d_errors(void)
     texture_error_assert("unsupported texture state", 0);
     texture_3d_error_init();
     enable(&texture_error_scene.c, SGI_GL_TEXTURE_2D, true);
-    texture_error_assert("simultaneous 2D and 3D texturing", 0);
+    texture_error_assert("simultaneous texture targets", 0);
     texture_3d_error_init();
     texture_error_image.volume = false;
     texture_error_assert("3D texturing requires a volume image", 0);

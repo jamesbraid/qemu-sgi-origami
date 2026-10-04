@@ -136,8 +136,8 @@ done:
 }
 
 static const uint8_t texture_pixels[16] = {
-    0, 0, 0, 128, 255, 0, 128, 128,
-    0, 255, 128, 128, 255, 255, 255, 128,
+    0, 0, 0, 127, 255, 0, 128, 127,
+    0, 255, 128, 127, 255, 255, 255, 127,
 };
 
 static double texture_axis(double c, SGIRendererTextureWrap wrap)
@@ -187,7 +187,7 @@ static bool texture_apply(void *opaque, const double coord[4], double colour[4])
             for (unsigned c = 0; c < 4; c++) {
                 double value = px < 0 || px > 1 || py < 0 || py > 1 ?
                                t->border[c] :
-                               texture_pixels[(py * 2 + px) * 4 + c] / 255.0;
+                               t->texels[(py * 2 + px) * 4 + c] / 255.0;
 
                 texel[c] += weight * value;
             }
@@ -212,7 +212,8 @@ static bool texture_apply(void *opaque, const double coord[4], double colour[4])
 static void test_shader_texture(gconstpointer opaque)
 {
     unsigned input = GPOINTER_TO_UINT(opaque);
-    unsigned mode = input >= 8 ? input - 8 : input;
+    bool precision = input == 14;
+    unsigned mode = precision ? 4 : input >= 8 ? input - 8 : input;
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
     QemuEGLDisplayLease *provider = NULL;
     SGIRendererTexture texture = {
@@ -229,6 +230,7 @@ static void test_shader_texture(gconstpointer opaque)
     g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
     SGIRenderer *renderer;
     Error *err = NULL;
+    uint8_t boundary_texels[sizeof(texture_pixels)];
 
     if (!node) {
         qtest_prereq_missing("SGI_RENDER_NODE",
@@ -241,10 +243,19 @@ static void test_shader_texture(gconstpointer opaque)
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
     g_assert_null(err);
+
+    memcpy(boundary_texels, texture_pixels, sizeof(boundary_texels));
+    if (precision) {
+        for (unsigned i = 3; i < sizeof(boundary_texels); i += 4) {
+            boundary_texels[i] = 128;
+        }
+        texture.texels = boundary_texels;
+    }
     texture.opaque = &texture;
     request->texture = &texture;
     request->clip[2] = request->clip[3] = 127;
-    request->vertices[1][0] = request->vertices[2][1] = 128;
+    /* An odd subpixel denominator avoids exact byte-rounding ties. */
+    request->vertices[1][0] = request->vertices[2][1] = 127.25;
     for (unsigned i = 0; i < 3; i++) {
         double q = 1 << i;
 
@@ -253,16 +264,27 @@ static void test_shader_texture(gconstpointer opaque)
         request->texcoord[i][0] = (i == 1 ? 1.25 : -0.25) * q;
         request->texcoord[i][1] = (i == 2 ? 1.25 : -0.25) * q;
         request->texcoord[i][3] = q;
-        if (input >= 8) {
+        if (input >= 8 && !precision) {
             request->clip_planes = 1u << mode;
             request->clip_distance[i][mode] = (i == 1 ? 64 : -64) * q;
         }
         memcpy(request->colour[i], (double[]) { 0.5, 0.25, 0.75, 0.5 },
                sizeof(request->colour[i]));
     }
-    g_assert_true(sgi_renderer_draw(renderer, request, &err));
-    g_assert_null(err);
-    g_assert_true(sgi_renderer_staging_valid(request));
+    if (!sgi_renderer_draw(renderer, request, &err)) {
+        if (!precision) {
+            g_error("Renderer draw failed: %s",
+                    err ? error_get_pretty(err) : "no error detail");
+        }
+        g_assert_nonnull(err);
+        g_assert_cmpstr(error_get_pretty(err), ==,
+                        "Invalid SGI OpenGL renderer staging");
+        g_assert_false(sgi_renderer_staging_valid(request));
+        error_free(err);
+    } else {
+        g_assert_null(err);
+        g_assert_true(sgi_renderer_staging_valid(request));
+    }
     sgi_renderer_free(renderer);
     egl_cleanup_session(provider);
 }
@@ -303,7 +325,10 @@ static void test_shader_output(void)
             request->rgb[c] = rgb & (1 << c) ? 255 : 0;
         }
         memset(request->rgba, 0xa5, sizeof(request->rgba));
-        g_assert_true(sgi_renderer_draw(renderer, request, &err));
+        if (!sgi_renderer_draw(renderer, request, &err)) {
+            g_error("Renderer draw failed: %s",
+                    err ? error_get_pretty(err) : "no error detail");
+        }
         g_assert_null(err);
         g_assert_true(sgi_renderer_staging_valid(request));
         g_assert_cmpuint(request->generation, ==, rgb + 1);
@@ -312,12 +337,16 @@ static void test_shader_output(void)
     request->clip[1] = 25;
     request->clip[2] = 90;
     request->clip[3] = 80;
-    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    if (!sgi_renderer_draw(renderer, request, &err)) {
+        g_error("Renderer draw failed: %s",
+                err ? error_get_pretty(err) : "no error detail");
+    }
     g_assert_null(err);
     g_assert_true(sgi_renderer_staging_valid(request));
     memset(request, 0, sizeof(*request));
     request->smooth = true;
-    request->vertices[1][0] = request->vertices[2][1] = 128;
+    /* An odd subpixel denominator avoids exact byte-rounding ties. */
+    request->vertices[1][0] = request->vertices[2][1] = 127.25;
     request->clip[2] = request->clip[3] = 127;
     for (unsigned i = 0; i < 3; i++) {
         request->vertices[i][3] = 1;
@@ -327,14 +356,20 @@ static void test_shader_output(void)
         for (unsigned i = 0; i < 3; i++) {
             request->inverse_w[i] = mode ? 1 << i : 1;
         }
-        g_assert_true(sgi_renderer_draw(renderer, request, &err));
+        if (!sgi_renderer_draw(renderer, request, &err)) {
+            g_error("Renderer draw failed: %s",
+                    err ? error_get_pretty(err) : "no error detail");
+        }
         g_assert_null(err);
         g_assert_true(sgi_renderer_staging_valid(request));
     }
     egl_cleanup_session(provider);
     g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
     /* The worker must survive after provider display globals are cleared. */
-    g_assert_true(sgi_renderer_draw(renderer, request, &err));
+    if (!sgi_renderer_draw(renderer, request, &err)) {
+        g_error("Renderer draw failed: %s",
+                err ? error_get_pretty(err) : "no error detail");
+    }
     g_assert_null(err);
     g_assert_true(sgi_renderer_staging_valid(request));
     sgi_renderer_free(renderer);
@@ -519,7 +554,10 @@ static void test_worker_fault(gconstpointer opaque)
             g_assert_false(sgi_renderer_draw(renderer, request, &err));
             error_free(err);
         } else {
-            g_assert_true(sgi_renderer_draw(renderer, request, &err));
+            if (!sgi_renderer_draw(renderer, request, &err)) {
+                g_error("Renderer draw failed: %s",
+                        err ? error_get_pretty(err) : "no error detail");
+            }
             g_assert_null(err);
             if (failure == 5) {
                 epoxy_eglMakeCurrent = fail_unbind;
@@ -6154,6 +6192,8 @@ int main(int argc, char **argv)
         g_test_add_data_func(path, GUINT_TO_POINTER(8 + plane),
                              test_shader_texture);
     }
+    g_test_add_data_func("/sgi-renderer-gl/texture-precision-refusal",
+                        GUINT_TO_POINTER(14), test_shader_texture);
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);
     g_test_add_data_func("/sgi-renderer-gl/shader-failure",

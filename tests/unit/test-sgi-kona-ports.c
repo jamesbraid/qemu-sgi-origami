@@ -248,6 +248,7 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x131, 1 }, { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
     { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 }, { 0x15f, 1 },
     { 0x160, 6 }, { 0x161, 24 }, { 0x138, 2 },
+    { 0x151, 24 }, { 0x15a, 12 },
 };
 
 /*
