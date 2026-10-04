@@ -12897,7 +12897,8 @@ static void test_renderer_smooth(gconstpointer opaque)
     g_autofree Expected *expected = g_new(Expected, 1);
 
     if (gpu && !node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
     s = gpu ? qtest_initf(MACHINE_ARGS " -global sgi-kona.host-gpu=on"
