@@ -658,6 +658,14 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
     return type < ARRAY_SIZE(widths) ? components * widths[type] : 0;
 }
 
+uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type)
+{
+    /* Depth has one normalized component and no packed colour types. */
+    return format == 13 && type <= 6 ?
+           sgi_kona_gl_texture_pixel_bytes(0, type) :
+           sgi_kona_gl_texture_pixel_bytes(format, type);
+}
+
 static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
                                     const uint32_t *source, bool swap_bytes,
                                     double values[4])
@@ -1064,7 +1072,7 @@ bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
          alignment != 4 && alignment != 8)) {
         return false;
     }
-    l.pixel_bytes = sgi_kona_gl_texture_pixel_bytes(header[2], header[3]);
+    l.pixel_bytes = sgi_kona_gl_native_pixel_bytes(header[2], header[3]);
     if (!l.pixel_bytes) {
         return false;
     }

@@ -323,6 +323,8 @@ typedef struct SGIKonaGLPixelZoom {
 typedef struct SGIKonaGLPixelTransfer {
     uint32_t scale[4];
     uint32_t bias[4];
+    uint32_t depth_scale;
+    uint32_t depth_bias;
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {

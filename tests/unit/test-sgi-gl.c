@@ -1793,6 +1793,97 @@ static void test_draw_pixels_double_refusal(void)
                                                      1, 1, NULL));
 }
 
+static void test_draw_pixels_depth_transfer(void)
+{
+    const double image[] = { 0.25, 0.75, 2147483647.0 / 4294967295.0 };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    c.raster_pos[2] = 1;
+    c.raster_color[0] = c.raster_color[2] = 0;
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    c.cur.depth_range[0] = c.cur.depth_range[1] = 0;
+    g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1, image,
+                                                    1, 1, -1, 1));
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0xbfffff);
+    g_assert_cmphex(p.depth[planes_index(11, 20)], ==, 0x400000);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0x00ff00);
+    g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 1, 1, image + 2,
+                      1, 1, -4294967296.0f, 2147483648.0f));
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0x800000);
+    c.cur.depth_mask = 0;
+    g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 1, 1, image,
+                                                    1, 1, 1, 0));
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0x800000);
+}
+
+static void test_draw_pixels_depth_zoom(void)
+{
+    const double image[] = { 0.25, 0.75 };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10.25;
+    c.raster_pos[1] = 20.25;
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    c.cur.scissor_test = 1;
+    c.cur.scissor[0] = 7;
+    c.cur.scissor[1] = 20;
+    c.cur.scissor[2] = 2;
+    c.cur.scissor[3] = 1;
+    g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1, image,
+                                                    -2, 2, 1, 0));
+    g_assert_cmphex(p.depth[planes_index(7, 20)], ==, 0xbfffff);
+    g_assert_cmphex(p.depth[planes_index(8, 20)], ==, 0x400000);
+    g_assert_cmphex(p.depth[planes_index(9, 20)], ==, 0);
+    g_assert_cmphex(p.depth[planes_index(8, 21)], ==, 0);
+}
+
+static void test_draw_pixels_depth_refusal(void)
+{
+    double image[] = { 0.25, NAN };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    g_assert_false(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1, image,
+                                                     1, 1, 1, 0));
+    image[1] = 0.75;
+    g_assert_false(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1, image,
+                                                     1, 1, INFINITY, 0));
+    g_assert_cmpuint(rec.ops, ==, 0);
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+    c.raster_valid = 0;
+    g_assert_true(sgi_gl_draw_pixels_depth_transfer(&c, &sink, 2, 1, NULL,
+                                                    1, 1, 1, 0));
+}
+
 static void test_draw_pixels_window_and_scissor(void)
 {
     static const uint32_t image[] = {
@@ -12030,6 +12121,11 @@ int main(int argc, char **argv)
                     test_draw_pixels_float_refusal);
     g_test_add_func("/sgi-gl/draw-pixels/double-precision",
                     test_draw_pixels_double_precision);
+    g_test_add_func("/sgi-gl/depth-pixels/transfer",
+                    test_draw_pixels_depth_transfer);
+    g_test_add_func("/sgi-gl/depth-pixels/zoom", test_draw_pixels_depth_zoom);
+    g_test_add_func("/sgi-gl/depth-pixels/refusal",
+                    test_draw_pixels_depth_refusal);
     g_test_add_func("/sgi-gl/draw-pixels/double-refusal",
                     test_draw_pixels_double_refusal);
     return g_test_run();
