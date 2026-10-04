@@ -1619,6 +1619,22 @@ static void test_alternate_flash(gconstpointer data)
     qtest_quit(qts);
 }
 
+static void test_flash_bios_strap(void)
+{
+    QTestState *qts = octane_start_args("-machine flash-strap=1");
+    uint32_t word;
+    uint64_t wide;
+
+    g_assert_cmpuint(memtx_readl(qts, FLASH, &word), ==, MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_readl(qts, FLASH + FLASH_SELECT_SIZE, &word), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(word, ==, 0x12345678);
+    /* Crossing into a fitted select does not complete an absent-select read. */
+    g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 4, &wide),
+                     ==, MEMTX_DECODE_ERROR);
+    qtest_quit(qts);
+}
+
 static QTestState *octane_start_flash(const char *path,
                                      unsigned select, unsigned strap)
 {
@@ -4149,6 +4165,7 @@ int main(int argc, char **argv)
                         test_alternate_flash);
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
                         test_alternate_flash);
+    qtest_add_func("/octane/flash-bios-strap", test_flash_bios_strap);
     qtest_add_data_func("/octane/flash-select0-strap0", GUINT_TO_POINTER(0),
                         test_flash);
     qtest_add_data_func("/octane/flash-select0-strap1", GUINT_TO_POINTER(1),
