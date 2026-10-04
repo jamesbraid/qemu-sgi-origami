@@ -746,6 +746,51 @@ static void test_texture_detail_sampler(void)
     g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
 }
 
+static void test_texture_native_layout(void)
+{
+    static const struct {
+        uint32_t storage, layout;
+    } families[] = {
+        { 0xd, 0x2200 }, { 0xe, 0x2200 }, { 8, 0x2200 },
+        { 0x30, 0x2181 },
+    };
+    uint32_t h[20] = { [0] = SGI_GL_TEXTURE_2D };
+
+    for (unsigned k = 0; k < ARRAY_SIZE(families); k++) {
+        for (unsigned bank = 0; bank < 2; bank++) {
+            for (unsigned dma = 0; dma < 2; dma++) {
+                h[6] = dma;
+                h[9] = families[k].storage;
+                h[17] = families[k].layout | (bank << 3) | (dma << 2);
+                g_assert_true(sgi_kona_gl_texture_native_layout(h));
+                h[17] ^= 4;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] ^= 5;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = (families[k].storage == 0x30 ? 0x2201 : 0x2180) |
+                        (bank << 3) | (dma << 2);
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+            }
+        }
+    }
+    h[0] = SGI_GL_TEXTURE_1D;
+    h[6] = 0;
+    h[9] = 0xd;
+    h[17] = 0x2200;
+    g_assert_true(sgi_kona_gl_texture_native_layout(h));
+    h[0] = SGI_GL_TEXTURE_3D;
+    g_assert_false(sgi_kona_gl_texture_native_layout(h));
+    h[0] = SGI_GL_TEXTURE_2D;
+    h[17] = 0x2240;
+    g_assert_false(sgi_kona_gl_texture_native_layout(h));
+    h[17] = 0x2200;
+    h[9] = 0xff;
+    g_assert_false(sgi_kona_gl_texture_native_layout(h));
+    h[9] = 0xd;
+    h[6] = 2;
+    g_assert_false(sgi_kona_gl_texture_native_layout(h));
+}
+
 static void test_texture_sampler_1d(void)
 {
     uint32_t bind[5] = { 0, 0x10000000, 0x24, 1, 0 };
@@ -1246,6 +1291,8 @@ int main(int argc, char **argv)
                     test_texture_volume_sampler);
     g_test_add_func("/sgi-kona-gl-decode/texture-sampler-1d",
                     test_texture_sampler_1d);
+    g_test_add_func("/sgi-kona-gl-decode/texture-native-layout",
+                    test_texture_native_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",

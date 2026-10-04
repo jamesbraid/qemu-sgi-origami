@@ -114,6 +114,9 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
                                     const uint32_t record[22],
                                     SGIKonaTextureParams *params);
 
+/* Validate supported ordinary native storage families and transport flags. */
+bool sgi_kona_gl_texture_native_layout(const uint32_t header[20]);
+
 /* Volume records use fourteen mipmap words or four nonmipmap words. */
 bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
                                          const uint32_t *record, bool mipmapped,

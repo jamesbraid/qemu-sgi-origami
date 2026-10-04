@@ -445,6 +445,30 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     return true;
 }
 
+bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
+{
+    uint32_t layout;
+
+    if ((h[0] != SGI_GL_TEXTURE_1D && h[0] != SGI_GL_TEXTURE_2D) || h[6] > 1) {
+        return false;
+    }
+    switch (h[9]) {
+    case 0xd:
+    case 0xe:
+    case 8:
+        layout = 0x2200;
+        break;
+    case 0x30:
+        layout = 0x2181;
+        break;
+    default:
+        return false;
+    }
+    /* Allocation bank selection is independent of logical mipmap parity. */
+    layout |= h[6] << 2;
+    return (h[17] & ~8u) == layout;
+}
+
 bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
                                     const uint32_t record[22],
                                     SGIKonaTextureParams *params)
