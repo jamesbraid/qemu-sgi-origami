@@ -37,6 +37,10 @@
 #include "system/address-spaces.h"
 #include "system/system.h"
 #include "system/block-backend.h"
+#include "hw/block/flash.h"
+#include "migration/blocker.h"
+#include "migration/register.h"
+#include "system/runstate.h"
 #include "target/mips/cpu.h"
 #include "hw/mips/sgi/sn-catalogue.h"
 
@@ -52,7 +56,7 @@
 #define OCTANE_GRAPHICS_WIDGET 11
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
-#define OCTANE_FLASH_SIZE (2 * MiB)
+#define OCTANE_FLASH_SIZE MiB
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_WIDGET 0x18000000ULL
 #define OCTANE_BANK_UNIT (32 * MiB)
@@ -76,7 +80,7 @@ typedef struct OctaneMachineState {
     MemoryRegion graphics_fabric;
     MemoryRegion graphics_route;
     MemoryRegion graphics_long;
-    char *flash_profile;
+    Error *flash_migration_blocker;
     char *flash_drive;
     uint64_t flash_select;
     uint64_t flash_strap;
@@ -129,20 +133,6 @@ static void octane_set_graphics_widget(Object *obj, Visitor *v,
     }
     s->graphics_widget = value;
     s->graphics_widget_set = true;
-}
-
-static char *octane_get_flash_profile(Object *obj, Error **errp)
-{
-    return g_strdup(((OctaneMachineState *)obj)->flash_profile);
-}
-
-static void octane_set_flash_profile(Object *obj, const char *value,
-                                     Error **errp)
-{
-    OctaneMachineState *s = (OctaneMachineState *)obj;
-
-    g_free(s->flash_profile);
-    s->flash_profile = g_strdup(value);
 }
 
 static char *octane_get_flash_drive(Object *obj, Error **errp)
@@ -264,55 +254,6 @@ static const MemoryRegionOps octane_high_guard_ops = {
               .unaligned = true },
 };
 
-static uint64_t octane_flash_read(void *opaque, hwaddr addr, unsigned size)
-{
-    const uint8_t *image = opaque;
-
-    return lduw_be_p(image + addr);
-}
-
-static MemTxResult octane_flash_write(void *opaque, hwaddr addr,
-                                      uint64_t value, unsigned size,
-                                      MemTxAttrs attrs)
-{
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "octane: write to read-only firmware at 0x%" HWADDR_PRIx
-                  "\n", addr);
-    return MEMTX_ERROR;
-}
-
-static const MemoryRegionOps octane_flash_ops = {
-    .read = octane_flash_read,
-    .write_with_attrs = octane_flash_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 2,
-    .valid.max_access_size = 2,
-    .impl.min_access_size = 2,
-    .impl.max_access_size = 2,
-};
-
-static uint64_t octane_blank_flash_read(void *opaque, hwaddr addr,
-                                        unsigned size)
-{
-    return 0xffff;
-}
-
-static void octane_blank_flash_write(void *opaque, hwaddr addr,
-                                     uint64_t value, unsigned size)
-{
-    qemu_log_mask(LOG_UNIMP, "octane: unsupported alternate flash write "
-                  "at 0x%" HWADDR_PRIx " value 0x%" PRIx64 "\n",
-                  addr, value);
-}
-
-static const MemoryRegionOps octane_blank_flash_ops = {
-    .read = octane_blank_flash_read,
-    .write = octane_blank_flash_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 2, .max_access_size = 2 },
-    .impl = { .min_access_size = 2, .max_access_size = 2 },
-};
-
 static void octane_reset(MachineState *machine, ResetType type)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
@@ -412,6 +353,18 @@ static void octane_fit_pci(MachineState *machine, SGIBridgeState *bridge)
     pci_realize_and_unref(pci, bus, &error_fatal);
 }
 
+static int octane_flash_load_setup(QEMUFile *f, void *opaque, Error **errp)
+{
+    error_setg(errp,
+               "octane: migration with persistent boot flash is not supported");
+    return -EINVAL;
+}
+
+/* loadvm does not consult migration blockers, even for existing snapshots. */
+static const SaveVMHandlers octane_flash_load_handlers = {
+    .load_setup = octane_flash_load_setup,
+};
+
 static void octane_init_common(MachineState *machine, bool octane2)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
@@ -423,7 +376,6 @@ static void octane_init_common(MachineState *machine, bool octane2)
     MemoryRegion *physical = g_new0(MemoryRegion, 1);
     MemoryRegion *attr0 = g_new0(MemoryRegion, 1);
     MemoryRegion *firmware = NULL;
-    MemoryRegion *alternate_flash = NULL;
     DeviceState *flash_chip = NULL;
     MemoryRegion *proxy = g_new0(MemoryRegion, 1);
     MemoryRegion *proxy_route = g_new0(MemoryRegion, 1);
@@ -436,8 +388,6 @@ static void octane_init_common(MachineState *machine, bool octane2)
     g_autofree char *path = NULL;
     int64_t size;
     int loaded;
-    uint8_t *flash_image = NULL;
-    bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
     bool mgras = sgi_mgras_board_known(s->graphics_board);
     bool vpro = !strcmp(s->graphics_board, "vpro");
     bool graphics = mgras || vpro;
@@ -470,67 +420,67 @@ static void octane_init_common(MachineState *machine, bool octane2)
                           MIPS_CPU_TYPE_NAME("R12000"))) {
         error_setg(&error_fatal, "octane2 requires an R12000 CPU");
     }
-    if (sharp_flash) {
-        DeviceState *chip;
-        BlockBackend *blk;
+    if (s->flash_select > 1 || s->flash_strap > 1) {
+        error_setg(&error_fatal,
+                   "octane flash-select and flash-strap must be 0 or 1");
+    }
+    if (!!machine->firmware == !!s->flash_drive) {
+        error_setg(&error_fatal, "octane requires either -bios or flash-drive");
+    }
+    flash_chip = qdev_new(TYPE_PFLASH_CFI01);
+    object_property_add_child(OBJECT(machine), "boot-flash",
+                              OBJECT(flash_chip));
+    /* Compatibility geometry and identifiers; the fitted part is unknown. */
+    qdev_prop_set_string(flash_chip, "name", "octane.boot-flash");
+    qdev_prop_set_uint32(flash_chip, "num-blocks", 16);
+    qdev_prop_set_uint64(flash_chip, "sector-length", 64 * KiB);
+    qdev_prop_set_uint8(flash_chip, "width", 2);
+    qdev_prop_set_uint8(flash_chip, "device-width", 2);
+    qdev_prop_set_bit(flash_chip, "big-endian", true);
+    qdev_prop_set_uint16(flash_chip, "id0", 0x00b0);
+    qdev_prop_set_uint16(flash_chip, "id1", 0x66a8);
+    if (s->flash_drive) {
+        BlockBackend *blk = blk_by_name(s->flash_drive);
 
-        if (machine->firmware || !s->flash_drive ||
-            s->flash_select > 1 || s->flash_strap > 1) {
-            error_setg(&error_fatal, "sharp flash requires flash-drive, "
-                       "flash-select=0|1 and flash-strap=0|1; "
-                       "do not combine it with -bios");
+        if (runstate_check(RUN_STATE_INMIGRATE)) {
+            error_setg(&error_fatal,
+                       "octane: migration with persistent boot flash is not supported");
         }
-        blk = blk_by_name(s->flash_drive);
         if (!blk) {
             error_setg(&error_fatal, "no flash drive named '%s'",
                        s->flash_drive);
         }
-        chip = qdev_new("lh28f800su");
-        object_property_add_child(OBJECT(machine), "sharp-flash", OBJECT(chip));
-        qdev_prop_set_drive_err(chip, "drive", blk, &error_fatal);
-        /* Flash is already out of reset when the CPU starts. */
-        qdev_prop_set_bit(chip, "initial-rp-high", true);
-        sysbus_realize(SYS_BUS_DEVICE(chip), &error_fatal);
-        firmware = sysbus_mmio_get_region(SYS_BUS_DEVICE(chip), 0);
-        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 0), 1);
-        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 1), 1);
-        qemu_set_irq(qdev_get_gpio_in_named(chip, "pins", 2), 1);
-        flash_chip = chip;
-    } else {
-        if (strcmp(s->flash_profile, "raw") || s->flash_drive ||
-            s->flash_select != UINT64_MAX ||
-            s->flash_strap != UINT64_MAX) {
-            error_setg(&error_fatal, "raw flash cannot take Sharp flash "
-                       "properties");
+        if (blk_getlength(blk) != OCTANE_FLASH_SIZE) {
+            error_setg(&error_fatal, "octane boot flash must be exactly 1 MiB");
         }
-        if (!machine->firmware) {
-            error_setg(&error_fatal, "octane requires -bios with a raw image "
-                                     "of at most 2 MiB");
-        }
+        qdev_prop_set_drive_err(flash_chip, "drive", blk, &error_fatal);
+        error_setg(&s->flash_migration_blocker,
+                   "octane: migration with persistent boot flash is not supported");
+        migrate_add_blocker(&s->flash_migration_blocker, &error_fatal);
+        register_savevm_live("octane-flash-storage",
+                             VMSTATE_INSTANCE_ID_ANY, 0,
+                             &octane_flash_load_handlers, s);
+    }
+    sgi_bridge_connect_cfi_flash(SGI_BRIDGE(bridge), PFLASH_CFI01(flash_chip));
+    sysbus_realize(SYS_BUS_DEVICE(flash_chip), &error_fatal);
+    firmware = sysbus_mmio_get_region(SYS_BUS_DEVICE(flash_chip), 0);
+    if (machine->firmware) {
+        uint8_t *storage = memory_region_get_ram_ptr(firmware);
+
         path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
         size = path ? get_image_size(path, NULL) : -1;
-        if (size < 0) {
-            error_setg(&error_fatal, "octane cannot read firmware image '%s'",
+        if (size <= 0 || size > OCTANE_FLASH_SIZE) {
+            error_setg(&error_fatal, "octane firmware '%s' must contain "
+                       "1 to 1 MiB bytes",
                        machine->firmware);
         }
-        if (size > OCTANE_FLASH_SIZE) {
-            error_setg(&error_fatal, "octane firmware image '%s' exceeds 2 MiB",
-                       machine->firmware);
-        }
-        flash_image = g_malloc(OCTANE_FLASH_SIZE);
-        memset(flash_image, 0xff, OCTANE_FLASH_SIZE);
-        loaded = load_image_size(path, flash_image, OCTANE_FLASH_SIZE);
+        memset(storage, 0xff, OCTANE_FLASH_SIZE);
+        loaded = load_image_size(path, storage, OCTANE_FLASH_SIZE);
         if (loaded != size) {
             error_setg(&error_fatal, "octane cannot load firmware image '%s'",
                        machine->firmware);
         }
-        firmware = g_new0(MemoryRegion, 1);
-        memory_region_init_io(firmware, OBJECT(machine), &octane_flash_ops,
-                              flash_image, "octane.flash", OCTANE_FLASH_SIZE);
-        alternate_flash = g_new0(MemoryRegion, 1);
-        memory_region_init_io(alternate_flash, OBJECT(machine),
-                              &octane_blank_flash_ops, NULL,
-                              "octane.alternate-flash", OCTANE_FLASH_SIZE);
+        memory_region_flush_rom_device(firmware, 0, OCTANE_FLASH_SIZE);
     }
 
     cpuclk = clock_new(OBJECT(machine), "cpu-refclk");
@@ -620,38 +570,13 @@ static void octane_init_common(MachineState *machine, bool octane2)
                          octane_board_record(s, "system-board")->serial);
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(proxy),
                              &error_fatal);
-    if (!sharp_flash || s->flash_select == 0) {
-        object_property_set_link(OBJECT(bridge), "flash", OBJECT(firmware),
-                                 &error_fatal);
-    }
-    if (sharp_flash && s->flash_select == 1) {
-        object_property_set_link(OBJECT(bridge), "flash-select1",
-                                 OBJECT(firmware), &error_fatal);
-    } else if (!sharp_flash) {
-        object_property_set_link(OBJECT(bridge), "flash-select1",
-                                 OBJECT(alternate_flash), &error_fatal);
-    }
-    if (sharp_flash) {
-        qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
-        qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
-    }
+    object_property_set_link(OBJECT(bridge),
+                             s->flash_select ? "flash-select1" : "flash",
+                             OBJECT(firmware), &error_fatal);
+    qdev_prop_set_bit(bridge, "flash-select", s->flash_strap);
+    qdev_prop_set_bit(bridge, "flash-reject-invalid-writes", true);
     sysbus_realize(SYS_BUS_DEVICE(bridge), &error_fatal);
-    if (sharp_flash) {
-        if (!sgi_bridge_install_flash_device_read_view(
-                SGI_BRIDGE(bridge), firmware, &error_fatal)) {
-            return;
-        }
-        qdev_connect_gpio_out_named(flash_chip, "array-read", 0,
-            qdev_get_gpio_in_named(bridge, "flash-array-read", 0));
-        /* Re-drive the established level after wiring the derived read view. */
-        qemu_set_irq(qdev_get_gpio_in_named(flash_chip, "pins", 2), 1);
-        object_unref(OBJECT(flash_chip));
-    } else if (!sgi_bridge_install_flash_read_view(SGI_BRIDGE(bridge),
-                                                  flash_image,
-                                                  OCTANE_FLASH_SIZE,
-                                                  &error_fatal)) {
-        return;
-    }
+    object_unref(OBJECT(flash_chip));
 
     object_property_add_child(OBJECT(machine), "crossbow", OBJECT(xbow));
     qdev_prop_set_uint32(xbow, "revision",
@@ -796,11 +721,6 @@ static void octane_instance_init_common(Object *obj, const char *product)
     object_property_set_description(obj, "graphics-widget",
                                     "Crossbow port of the graphics board, "
                                     "9 to 12 (default 11)");
-    s->flash_profile = g_strdup("raw");
-    s->flash_select = UINT64_MAX;
-    s->flash_strap = UINT64_MAX;
-    object_property_add_str(obj, "flash-profile", octane_get_flash_profile,
-                            octane_set_flash_profile);
     object_property_add_str(obj, "flash-drive", octane_get_flash_drive,
                             octane_set_flash_drive);
     object_property_add_uint64_ptr(obj, "flash-select", &s->flash_select,
@@ -838,7 +758,8 @@ static void octane_instance_finalize(Object *obj)
 
     g_free(s->topology_name);
     g_free(s->graphics_board);
-    g_free(s->flash_profile);
+    unregister_savevm(NULL, "octane-flash-storage", s);
+    migrate_del_blocker(&s->flash_migration_blocker);
     g_free(s->flash_drive);
 }
 

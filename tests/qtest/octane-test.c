@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
-/* Graphics-free Octane profile: synthetic RAM and raw flash policy. */
+/* Graphics-free Octane profile: synthetic RAM and CFI01 boot flash. */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
@@ -1563,8 +1563,6 @@ static void test_flash_and_pci(void)
     QTestState *qts = octane_start();
     uint32_t value;
     uint64_t last;
-    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
 
     g_assert_cmpuint(memtx_readl(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
@@ -1578,26 +1576,20 @@ static void test_flash_and_pci(void)
     g_assert_cmphex(qtest_readl(qts, FLASH + 1), ==, 0x345678ff);
     g_assert_cmphex(qtest_readq(qts, FLASH + 1), ==,
                     0x345678ffffffffffULL);
-    /* QEMU splits this unaligned read across the two flash selects. */
+    g_assert_cmphex(qtest_readl(qts, FLASH + MiB), ==, 0x12345678);
     g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 7,
-                                    &last), ==, MEMTX_OK);
-    g_assert_cmphex(last, ==, UINT64_MAX);
-    /* Bridge drops writes while flash write enable is clear. */
-    g_assert_cmpuint(memtx_writel(qts, FLASH, 0), ==, MEMTX_OK);
+                                    &last), ==, MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_writew(qts, FLASH, 0x90), ==, MEMTX_ERROR);
     g_assert_cmpuint(memtx_readl(qts, FLASH, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0x12345678);
     g_assert_cmphex(qtest_readb(qts, FLASH), ==, 0x12);
     qtest_writel(qts, BRIDGE_REG(0x020),
                  qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_writeb(qts, FLASH, 0);
-    qtest_writew(qts, FLASH, 0);
-    g_assert_cmpuint(memtx_writel(qts, FLASH, 0), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_writeb(qts, FLASH, 0x90), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(qts, FLASH, 0x90909090), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
-    g_clear_pointer(&mtree, g_free);
-    mtree = qtest_hmp(qts, "info mtree -f");
-    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
     g_assert_cmphex(qtest_readl(qts, CFG(0)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(1)), ==, 0x10201077);
     g_assert_cmphex(qtest_readl(qts, CFG(2)), ==, 0x000310a9);
@@ -1616,67 +1608,49 @@ static void test_alternate_flash(gconstpointer data)
     bool octane2 = GPOINTER_TO_INT(data);
     QTestState *qts = octane2 ? octane2_start_args("") : octane_start();
     uint16_t word;
-    uint32_t primary;
 
     g_assert_cmpuint(memtx_readw(qts, FLASH + FLASH_SELECT_SIZE, &word),
-                     ==, MEMTX_OK);
-    g_assert_cmphex(word, ==, 0xffff);
-    g_assert_cmpuint(memtx_readl(qts, FLASH, &primary), ==, MEMTX_OK);
-    g_assert_cmphex(primary, ==, 0x12345678);
-
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    g_assert_cmpuint(memtx_writew(qts, FLASH + FLASH_SELECT_SIZE, 0x1234),
-                     ==, MEMTX_OK);
-    g_assert_cmpuint(memtx_readw(qts, FLASH + FLASH_SELECT_SIZE, &word),
-                     ==, MEMTX_OK);
-    g_assert_cmphex(word, ==, 0xffff);
-    g_assert_cmpuint(memtx_readl(qts, FLASH, &primary), ==, MEMTX_OK);
-    g_assert_cmphex(primary, ==, 0x12345678);
+                     ==, MEMTX_DECODE_ERROR);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
+    qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
+    g_assert_cmpuint(memtx_writew(qts, FLASH + FLASH_SELECT_SIZE, 0x90),
+                     ==, MEMTX_DECODE_ERROR);
+    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x12345678);
     qtest_quit(qts);
 }
 
-static QTestState *octane_start_sharp(const char *path, const char *marker,
-                                      unsigned select, unsigned strap)
+static QTestState *octane_start_flash(const char *path,
+                                     unsigned select, unsigned strap)
 {
     g_autofree char *image = g_shell_quote(path);
 
-    QTestState *qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M octane,flash-profile=sharp-lh28f800su,"
-        "flash-select=%u,flash-strap=%u,flash-drive=flash0 "
-        "-m 128M -cpu R10000 "
-        "-drive if=none,id=flash0,file=%s,format=raw",
-        select, strap, image);
-
-    /* The explicit RP rise has a 400 ns recovery interval. */
-    qtest_clock_step(qts, 401);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    return qts;
+    return qtest_initf(
+        MEMTX_TEST_DEVICE "-M octane,flash-select=%u,flash-strap=%u,"
+        "flash-drive=flash0 -m 128M -cpu R10000 "
+        "-drive if=none,id=flash0,file=%s,format=raw", select, strap, image);
 }
 
-static void test_sharp_flash(gconstpointer data)
+static void test_flash(gconstpointer data)
 {
     unsigned select = GPOINTER_TO_UINT(data) >> 1;
     unsigned strap = GPOINTER_TO_UINT(data) & 1;
     bool lower = select == strap;
     uint64_t base = FLASH + (lower ? 0 : FLASH_SELECT_SIZE);
     uint64_t absent = FLASH + (lower ? FLASH_SELECT_SIZE : 0);
-    g_autofree char *dir = g_dir_make_tmp("octane-sharp-XXXXXX", NULL);
+    g_autofree char *dir = g_dir_make_tmp("octane-flash-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
+    g_autofree char *image = g_malloc(MiB);
+    g_autofree char *stored = NULL;
+    gsize size;
     QTestState *qts;
     uint16_t word;
     uint64_t wide;
-    uint8_t stored[2];
 
-    memset(image, 0xff, 1 * MiB);
-    image[0] = 0x12;
-    image[1] = 0x34;
-    image[64 * KiB] = 0xab;
-    image[64 * KiB + 1] = 0xcd;
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = octane_start_sharp(path, marker, select, strap);
+    memset(image, 0xff, MiB);
+    stw_be_p(image, 0x1234);
+    stw_be_p(image + 64 * KiB, 0xabcd);
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    qts = octane_start_flash(path, select, strap);
     g_assert_cmpuint(memtx_readw(qts, absent, &word), ==,
                      MEMTX_DECODE_ERROR);
     g_assert_cmpuint(memtx_readw(qts, base, &word), ==, MEMTX_OK);
@@ -1687,219 +1661,82 @@ static void test_sharp_flash(gconstpointer data)
                     UINT64_C(0x1234ffffffffffff));
     g_assert_cmpuint(memtx_readq(qts, FLASH + FLASH_SELECT_SIZE - 4,
                                     &wide), ==, MEMTX_DECODE_ERROR);
-    g_assert_cmphex(qtest_readw(qts, base + 1 * MiB), ==, 0x1234);
-    g_assert_cmpuint(memtx_writew(qts, base, 0x90), ==, MEMTX_ERROR);
+    g_assert_cmphex(qtest_readw(qts, base + MiB), ==, 0x1234);
+    g_assert_cmpuint(memtx_readq(qts, base + MiB - 4, &wide), ==, MEMTX_OK);
+    g_assert_cmphex(wide, ==, UINT64_C(0xffffffff1234ffff));
+    g_assert_cmpuint(memtx_writew(qts, base, 0x9090), ==, MEMTX_ERROR);
     g_assert_cmphex(qtest_readw(qts, base), ==, 0x1234);
     qtest_writel(qts, BRIDGE_REG(0x020),
                  qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    g_assert_cmpuint(memtx_writel(qts, base, 0x90), ==, MEMTX_ERROR);
-    g_assert_cmpuint(memtx_writew(qts, base + 1, 0x90), ==, MEMTX_ERROR);
-    qtest_writew(qts, base + 1 * MiB, 0x90);
+    g_assert_cmpuint(memtx_writeb(qts, base, 0x90), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writel(qts, base, 0x90909090), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writew(qts, base + 1, 0x9090), ==, MEMTX_ERROR);
+    g_assert_cmpuint(memtx_writew(qts, absent, 0x9090), ==,
+                     MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_writeq(qts, base + MiB - 4,
+                                 UINT64_C(0x9090909090909090)), ==,
+                     MEMTX_ERROR);
+    qtest_writew(qts, base + MiB, 0x9090);
     g_assert_cmphex(qtest_readw(qts, base), ==, 0x00b0);
     g_assert_cmphex(qtest_readw(qts, base + 2), ==, 0x66a8);
-    g_assert_cmphex(qtest_readb(qts, base), ==, 0);
-    g_assert_cmphex(qtest_readb(qts, base + 1), ==, 0xb0);
-    g_assert_cmphex(qtest_readl(qts, base), ==, 0x00b066a8);
-    g_assert_cmpuint(memtx_readq(qts, base, &wide), ==, MEMTX_ERROR);
-    g_assert_cmphex(qtest_readw(qts, base + 1 * MiB), ==, 0x00b0);
-    qtest_writew(qts, base, 0x70);
-    g_assert_cmphex(qtest_readw(qts, base), ==, 0x0080);
-    g_assert_cmphex(qtest_readb(qts, base + 1), ==, 0x80);
-    g_assert_cmphex(qtest_readl(qts, base), ==, 0x00800080);
-    g_assert_cmphex(qtest_readq(qts, base + 1 * MiB), ==,
-                    UINT64_C(0x0080008000800080));
-    qtest_writew(qts, base + 1 * MiB, 0x71);
-    g_assert_cmphex(qtest_readw(qts, base + 2), ==, 0x0080);
-    g_assert_cmphex(qtest_readw(qts, base + 4), ==, 0x0086);
-    g_assert_cmphex(qtest_readl(qts, base + 2), ==, 0x00800086);
-
-    qtest_writew(qts, base, 0xff);
-    qtest_writew(qts, base + 1 * MiB + 0x20, 0x40);
-    qtest_writew(qts, base + 1 * MiB + 0x20, 0x1234);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0);
-    qtest_clock_step(qts, 8000);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x80);
-    qtest_writew(qts, base, 0xff);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1234);
-    g_assert_cmphex(qtest_readw(qts, base + 1 * MiB + 0x20), ==, 0x1234);
-    qtest_writew(qts, base, 0x90);
-    qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readw(qts, base), ==, 0x00b0);
-    g_assert_cmpuint(memtx_writew(qts, base, 0xff), ==, MEMTX_ERROR);
-    qtest_quit(qts);
-
-    qts = octane_start_sharp(path, marker, select, strap);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1234);
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_writew(qts, base + 64 * KiB, 0x20);
-    qtest_writew(qts, base + 64 * KiB, 0xd0);
-    qtest_clock_step(qts, 700000000);
-    g_assert_cmphex(qtest_readw(qts, base), ==, 0x80);
-    qtest_writew(qts, base, 0xff);
-    g_assert_cmphex(qtest_readw(qts, base + 64 * KiB), ==, 0xffff);
-    g_assert_cmphex(qtest_readw(qts, base), ==, 0x1234);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1234);
-    qtest_quit(qts);
-    qts = octane_start_sharp(path, marker, select, strap);
-    g_assert_cmphex(qtest_readw(qts, base + 64 * KiB), ==, 0xffff);
-    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1234);
-    qtest_quit(qts);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    {
-        FILE *file = fopen(path, "rb");
-
-        g_assert_nonnull(file);
-        g_assert_cmpint(fseek(file, 0x20, SEEK_SET), ==, 0);
-        g_assert_cmpuint(fread(stored, 1, sizeof(stored), file), ==,
-                         sizeof(stored));
-        fclose(file);
+    g_assert_cmphex(qtest_readw(qts, base + MiB), ==, 0x00b0);
+    /* Sustained ID/status reads must never expose cached array bytes. */
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmphex(qtest_readw(qts, base), ==, 0x00b0);
     }
-    g_assert_cmphex(stored[0], ==, 0x12);
-    g_assert_cmphex(stored[1], ==, 0x34);
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
+    qtest_writew(qts, base, 0x7070);
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmphex(qtest_readw(qts, base), ==, 0x0080);
+    }
+    qtest_writew(qts, base, 0xffff);
+    /* Cached and callback reads agree through both aliases. */
+    for (unsigned i = 0; i < 64; i++) {
+        g_assert_cmphex(qtest_readw(qts, base + (i & 1) * MiB), ==, 0x1234);
+    }
 
-static void sharp_assert_read_view(QTestState *qts, bool enabled)
-{
-    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    g_autofree char *expected = g_strdup_printf(
-        ", %s): sgi-bridge.flash-read", enabled ? "romd" : "i/o");
-
-    g_assert_nonnull(strstr(mtree, expected));
-}
-
-static void test_sharp_flash_view_transitions(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("sharp-view-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    QTestState *qts;
-
-    memset(image, 0xff, 1 * MiB);
-    image[64 * KiB] = 0xab;
-    image[64 * KiB + 1] = 0xcd;
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = octane_start_sharp(path, marker, 0, 0);
-    sharp_assert_read_view(qts, true);
-    g_assert_cmpuint(memtx_writew(qts, FLASH, 0x90), ==, MEMTX_ERROR);
-    sharp_assert_read_view(qts, true);
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_writew(qts, FLASH, 0x90);
-    sharp_assert_read_view(qts, false);
-    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x00b066a8);
-    qtest_writew(qts, FLASH, 0x70);
-    sharp_assert_read_view(qts, false);
-    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x80);
-    qtest_writew(qts, FLASH, 0x71);
-    sharp_assert_read_view(qts, false);
-    g_assert_cmphex(qtest_readl(qts, FLASH + 2), ==, 0x00800086);
-    qtest_writew(qts, FLASH, 0xff);
-    sharp_assert_read_view(qts, true);
-    qtest_writew(qts, FLASH + 0x20, 0x40);
-    qtest_writew(qts, FLASH + 0x20, 0x1234);
-    sharp_assert_read_view(qts, false);
-    qtest_clock_step(qts, 8000);
-    sharp_assert_read_view(qts, false);
-    qtest_writew(qts, FLASH, 0xff);
-    sharp_assert_read_view(qts, true);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1234);
-    qtest_writew(qts, FLASH + 64 * KiB, 0x20);
-    qtest_writew(qts, FLASH + 64 * KiB, 0xd0);
-    sharp_assert_read_view(qts, false);
-    qtest_writew(qts, FLASH, 0xb0);
-    qtest_writew(qts, FLASH, 0xff);
-    sharp_assert_read_view(qts, true);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 64 * KiB), ==, 0xabcd);
-    qtest_writew(qts, FLASH, 0xd0);
-    sharp_assert_read_view(qts, false);
-    qtest_clock_step(qts, 700000000);
-    qtest_writew(qts, FLASH, 0xff);
-    sharp_assert_read_view(qts, true);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 64 * KiB), ==, 0xffff);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1234);
+    /* Opcode-shaped data must complete the setup, not change read mode. */
+    qtest_writew(qts, base, 0x4040);
+    qtest_writew(qts, base + MiB + 0x20, 0x1290);
+    qtest_writew(qts, base, 0x7070);
+    g_assert_cmphex(qtest_readw(qts, base), ==, 0x80);
+    qtest_writew(qts, base, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1290);
+    g_assert_cmphex(qtest_readw(qts, base + MiB + 0x20), ==, 0x1290);
+    qtest_writew(qts, base, 0x9090);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readw(qts, base), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1290);
+    g_assert_cmpuint(memtx_writew(qts, base, 0x9090), ==, MEMTX_ERROR);
     qtest_quit(qts);
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
 
-static void test_sharp_flash_unrealize_access(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("sharp-unrealize-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    QTestState *qts;
-    MemTxResult setup, data;
-    uint16_t value;
-
-    memset(image, 0xff, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = octane_start_sharp(path, marker, 0, 0);
-    sharp_assert_read_view(qts, true);
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_qmp_assert_success(qts,
-        "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
-        "'property':'realized','value':false}}");
-    sharp_assert_read_view(qts, false);
-    setup = memtx_writew(qts, FLASH + 0x20, 0x40);
-    data = memtx_writew(qts, FLASH + 0x20, 0x1234);
-    g_assert_cmpuint(setup, ==, MEMTX_ERROR);
-    g_assert_cmpuint(data, ==, MEMTX_ERROR);
-    g_assert_cmpuint(memtx_readw(qts, FLASH, &value), ==, MEMTX_ERROR);
-    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 0);
-    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 1);
-    qtest_clock_step(qts, 700000000);
-    sharp_assert_read_view(qts, false);
-    g_assert_cmpuint(memtx_writew(qts, FLASH, 0xff), ==, MEMTX_ERROR);
-    g_assert_cmpuint(memtx_readw(qts, FLASH, &value), ==, MEMTX_ERROR);
+    qts = octane_start_flash(path, select, strap);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1290);
+    qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
+    qtest_writew(qts, base + MiB + 64 * KiB, 0x2020);
+    qtest_writew(qts, base + MiB + 64 * KiB, 0xd0d0);
+    qtest_writew(qts, base, 0x7070);
+    g_assert_cmphex(qtest_readw(qts, base), ==, 0x80);
+    qtest_writew(qts, base, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, base + 64 * KiB), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, base + MiB + 64 * KiB), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, base), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1290);
     qtest_quit(qts);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-static void test_sharp_flash_initial_rp(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("sharp-initial-rp-XXXXXX", NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    QTestState *qts;
-    uint16_t value;
-
-    memset(image, 0xab, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = qtest_initf(
-        MEMTX_TEST_DEVICE
-        "-M octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0 "
-        "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,format=raw",
-        path);
-    /* Board power-up does not synthesize an RP transition at time zero. */
-    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xabab);
-    sharp_assert_read_view(qts, true);
-    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 0);
-    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xffff);
-    sharp_assert_read_view(qts, false);
-    qtest_set_irq_in(qts, "/machine/sharp-flash", "pins", 2, 1);
-    qtest_clock_step(qts, 399);
-    sharp_assert_read_view(qts, false);
-    g_assert_cmpuint(memtx_readw(qts, FLASH, &value), ==, MEMTX_ERROR);
-    qtest_clock_step(qts, 1);
-    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xabab);
-    sharp_assert_read_view(qts, true);
+    qts = octane_start_flash(path, select, strap);
+    g_assert_cmphex(qtest_readw(qts, base + 64 * KiB), ==, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, base + 0x20), ==, 0x1290);
     qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &stored, &size, NULL));
+    g_assert_cmpuint(size, ==, MiB);
+    g_assert_cmphex(lduw_be_p(stored + 0x20), ==, 0x1290);
+    g_assert_cmphex(lduw_be_p(stored + 64 * KiB), ==, 0xffff);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void test_sharp_flash_execute(gconstpointer data)
+static void test_flash_execute(void)
 {
-    bool icount = GPOINTER_TO_UINT(data);
+    const uint64_t address = FLASH;
     static const uint32_t code[] = {
         0x400a6000, 0x354a0080, 0x408a6000, /* Status.KX = 1 */
         0, 0, 0, 0,
@@ -1908,7 +1745,7 @@ static void test_sharp_flash_execute(gconstpointer data)
         0x340a1357, 0xad0a0000,             /* RAM[0x4000] = 0x1357 */
         0x65090008, 0x01200008, 0,          /* Loop in RAM during programming */
     };
-    g_autofree char *dir = g_dir_make_tmp("sharp-execute-XXXXXX", NULL);
+    g_autofree char *dir = g_dir_make_tmp("flash-execute-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
     g_autofree char *image = g_malloc(1 * MiB);
     QTestState *qts;
@@ -1917,24 +1754,20 @@ static void test_sharp_flash_execute(gconstpointer data)
     for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
         stl_be_p(image + 4 * i, code[i]);
     }
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M %s,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0 "
-        "-m %uM -cpu %s -drive if=none,id=flash0,file=%s,format=raw "
-        "-accel tcg,thread=single -S %s", icount ? "octane2" : "octane",
-        icount ? 256 : 128,
-        icount ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
-                 "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
-                 "r12000-scache-block-words=32" : "R10000", path,
-        icount ? "-icount shift=3,align=off,sleep=off -rtc clock=host" : "");
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+        "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+        "-drive if=none,id=flash0,file=%s,format=raw "
+        "-accel tcg,thread=single -S", path);
     qtest_writel(qts, RAM + 0x4008, 0x1000ffff);
     qtest_writel(qts, RAM + 0x400c, 0);
     for (unsigned pass = 0; pass < 2; pass++) {
         uint32_t result = 0;
+        uint64_t entry_pc;
         int64_t deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
 
         qtest_writel(qts, RAM + 0x4000, 0);
+        entry_pc = octane_cpu_pc(qts);
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
         do {
             result = qtest_readl(qts, RAM + 0x4000);
@@ -1944,26 +1777,27 @@ static void test_sharp_flash_execute(gconstpointer data)
             g_usleep(1000);
         } while (g_get_monotonic_time() < deadline);
         qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+        if (result != (pass ? 0x0357 : 0x1357)) {
+            g_autofree char *registers = qtest_hmp(qts, "info registers");
+
+            g_test_message("flash execution pass %u, entry PC 0x%" PRIx64
+                           ": %s", pass, entry_pc, registers);
+        }
         g_assert_cmphex(result, ==, pass ? 0x0357 : 0x1357);
         if (!pass) {
             qtest_writel(qts, BRIDGE_REG(0x020),
                          qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
             qtest_writew(qts, FLASH, 0x90);
-            g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x00b066a8);
+            g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x00b0);
+            g_assert_cmphex(qtest_readw(qts, FLASH + 2), ==, 0x66a8);
             qtest_writew(qts, FLASH, 0xff);
-            g_assert_cmphex(qtest_readl(qts, FLASH), ==, code[0]);
-            qtest_writew(qts, FLASH + 50, 0x40);
-            qtest_writew(qts, FLASH + 50, 0x0357);
-            qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-            deadline = g_get_monotonic_time() + G_TIME_SPAN_SECOND;
-            while (qtest_readw(qts, FLASH) != 0x80) {
-                g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-                g_usleep(1000);
-            }
-            qtest_qmp_assert_success(qts, "{'execute':'stop'}");
-            g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x00800080);
+            g_assert_cmphex(qtest_readl(qts, address), ==, code[0]);
+            qtest_writew(qts, address + 50, 0x40);
+            qtest_writew(qts, address + 50, 0x0357);
+            qtest_writew(qts, FLASH, 0x70);
+            g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x80);
             qtest_writew(qts, FLASH, 0xff);
-            g_assert_cmphex(qtest_readl(qts, FLASH + 48), ==, 0x340a0357);
+            g_assert_cmphex(qtest_readl(qts, address + 48), ==, 0x340a0357);
             qtest_system_reset(qts);
         }
     }
@@ -1972,450 +1806,237 @@ static void test_sharp_flash_execute(gconstpointer data)
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void sharp_cpu_wait_result(QTestState *qts, unsigned sequence,
-                                  uint32_t expected)
+static void test_flash_cpu_program_benchmark(void)
 {
-    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
-    uint32_t result, observed;
-
-    qtest_writel(qts, RAM + 0x5000, 0);
-    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    do {
-        observed = qtest_readl(qts, RAM + 0x5004);
-        result = qtest_readl(qts, RAM + 0x5000);
-        if (observed == sequence && result == expected) {
-            break;
-        }
-        g_usleep(1000);
-    } while (g_get_monotonic_time() < deadline);
-    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
-    g_assert_cmphex(result, ==, expected);
-    g_assert_cmpuint(observed, ==, sequence);
-}
-
-static void sharp_cpu_refetch(QTestState *qts, bool repeat, unsigned sequence,
-                              uint32_t expected)
-{
-    qtest_writel(qts, RAM + 0x5020, repeat ? 0xbfd10000 : 0xbfc10000);
-    /* Jump to the RAM return code. */
-    qtest_writel(qts, RAM + 0x4010, 0x08001010);
-    sharp_cpu_wait_result(qts, sequence, expected);
-}
-
-static unsigned sharp_assert_cached_execution(QTestState *qts)
-{
-    g_autofree char *jit = qtest_hmp(qts, "info jit");
-    const char *size_line = strstr(jit, "TB avg target size");
-    const char *hash_line = strstr(jit, "TB hash buckets");
-    const char *flush_line = strstr(jit, "TB flush count");
-    size_t average, maximum, used, total;
-    unsigned flushes;
-
-    g_assert_nonnull(size_line);
-    g_assert_nonnull(hash_line);
-    g_assert_nonnull(flush_line);
-    g_assert_cmpint(sscanf(size_line, "TB avg target size %zu max=%zu",
-                          &average, &maximum), ==, 2);
-    g_assert_cmpint(sscanf(hash_line, "TB hash buckets %zu/%zu",
-                          &used, &total), ==, 2);
-    g_assert_cmpint(sscanf(flush_line, "TB flush count %u", &flushes), ==, 1);
-    g_test_message("array fetch: max TB %zu bytes, buckets %zu/%zu, flushes %u",
-                   maximum, used, total, flushes);
-    /* The RAM loop, return code and reset jump are at most 16 bytes. */
-    g_assert_cmpuint(maximum, >, 16);
-    g_assert_cmpuint(used, >, 0);
-    return flushes;
-}
-
-static void sharp_cpu_complete_flash(QTestState *qts, unsigned timeout)
-{
-    int64_t started = g_get_monotonic_time();
-    int64_t deadline = started + timeout * G_TIME_SPAN_SECOND;
-    uint64_t count = qtest_readq(qts, HEART + 0x20000);
-
-    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    while (qtest_readw(qts, FLASH) != 0x80) {
-        if (g_get_monotonic_time() >= deadline) {
-            g_autofree char *registers = qtest_hmp(qts, "info registers");
-
-            g_test_message("flash wait timed out: HEART count %" PRIu64
-                           " -> %" PRIu64, count,
-                           qtest_readq(qts, HEART + 0x20000));
-            g_test_message("%s", registers);
-            g_assert_not_reached();
-        }
-        g_usleep(1000);
-    }
-    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
-    g_test_message("flash wait: HEART advanced %" PRIu64
-                   " counts in %" PRIi64 " us",
-                   qtest_readq(qts, HEART + 0x20000) - count,
-                   g_get_monotonic_time() - started);
-    qtest_writew(qts, FLASH, 0xff);
-}
-
-static void test_sharp_flash_cached_execute(gconstpointer data)
-{
-    bool icount = GPOINTER_TO_UINT(data);
-    static const uint32_t code[] = {
+    const unsigned words = 32768;
+    static const uint32_t boot[] = {
         0x400a6000, 0x354a0080, 0x408a6000, /* Status.KX = 1 */
         0, 0, 0, 0,
         0x3c089600, 0x0008403c,
-        0x3c092000, 0x35295000, 0x01094025, /* t0 = RAM + 0x5000, XKPHYS */
-        0x340a1357,                         /* t2 = result */
-        0x3c0c1000, 0x358cfffd, 0xad0cf010, /* Restore the RAM loop branch. */
-        0x8d0d0004, 0x25ad0001,             /* t5 = next result sequence */
-        0x6509f008, 0x01200008, 0,          /* Return to the RAM loop. */
+        0x3c092000, 0x35294000, 0x01094025,
+        0x01000008, 0,                    /* Jump to XKPHYS RAM + 0x4000. */
     };
-    g_autofree char *dir = g_dir_make_tmp("sharp-cached-XXXXXX", NULL);
+    static const uint32_t code[] = {
+        0x3c089600, 0x0008403c,
+        0x3c092000, 0x35295000, 0x01094025, /* Results at RAM + 0x5000. */
+        0x3c09bfc3, 0x652a0002,             /* Array starts past sector. */
+        0x340b0000, 0x340c8000,
+        0x340d4040, 0x340e7070, 0x340fffff, 0x34100080,
+        0x3971a55a,                       /* Halfword = i ^ 0xa55a. */
+        0xa52d0000, 0xa5510000, 0xa52e0000,
+        0x95320000, 0x1650000d, 0,          /* Bad status jumps to error 2. */
+        0xa52f0000, 0x95520000,
+        0x1651000c, 0,                    /* Bad readback jumps to error 3. */
+        0x256b0001, 0x156cfff3, 0x654a0002,
+        0xad0b0004, 0x34090001, 0xad090000, /* Completed word count, success. */
+        0x1000ffff, 0,
+        0x340c0002, 0x10000002, 0,
+        0x340c0003,
+        0xad0b0004, 0xad120008, 0xad11000c, 0xad0c0000,
+        0x1000ffff, 0,
+    };
+    g_autofree char *dir =
+        g_dir_make_tmp("octane-flash-cpu-bench-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
+    g_autofree char *quoted = g_shell_quote(path);
+    g_autofree char *image = g_malloc(MiB);
+    uint8_t ram_code[sizeof(code)];
     QTestState *qts;
-    unsigned flushes;
+    uint32_t result = 0;
+    int64_t started, elapsed, deadline;
 
-    memset(image, 0xff, 1 * MiB);
-    stl_be_p(image, 0x3c0bbfc1);
-    stl_be_p(image + 4, 0x01600008);
-    stl_be_p(image + 8, 0);
-    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
-        stl_be_p(image + 64 * KiB + 4 * i, code[i]);
-        stl_be_p(image + 0x380 + 4 * i, i == 12 ? 0x340abeef : code[i]);
+    memset(image, 0xff, MiB);
+    for (unsigned i = 0; i < G_N_ELEMENTS(boot); i++) {
+        stl_be_p(image + 4 * i, boot[i]);
     }
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = qtest_initf(
-        MEMTX_TEST_DEVICE "-M %s,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0 "
-        "-m %uM -cpu %s -drive if=none,id=flash0,file=%s,format=raw "
-        "-accel tcg,thread=single -S %s", icount ? "octane2" : "octane",
-        icount ? 256 : 128,
-        icount ? "R12000,r12000-prid=0xe35,r12000-fpu-id=0x900,"
-                 "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152,"
-                 "r12000-scache-block-words=32" : "R10000", path,
-        icount ? "-icount shift=3,align=off,sleep=off -rtc clock=host" : "");
-    /* Result data has no translated code on its page. */
-    qtest_writel(qts, RAM + 0x5004, 0);
-    qtest_writel(qts, RAM + 0x4008, 0xad0a0000);
-    qtest_writel(qts, RAM + 0x400c, 0xad0d0004);
-    qtest_writel(qts, RAM + 0x4010, 0x1000fffd);
-    qtest_writel(qts, RAM + 0x4014, 0);
-    qtest_writel(qts, RAM + 0x4040, 0x8d0b0020);
-    qtest_writel(qts, RAM + 0x4044, 0x01600008);
-    qtest_writel(qts, RAM + 0x4048, 0);
-    sharp_cpu_wait_result(qts, 1, 0x1357);
-    sharp_cpu_refetch(qts, true, 2, 0x1357);
-    flushes = sharp_assert_cached_execution(qts);
-
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_writew(qts, FLASH + 64 * KiB + 50, 0x40);
-    qtest_writew(qts, FLASH + 64 * KiB + 50, 0x0357);
-    sharp_cpu_complete_flash(qts, 5);
-    g_assert_cmphex(qtest_readl(qts, FLASH + 64 * KiB + 48), ==, 0x340a0357);
-    sharp_cpu_refetch(qts, false, 3, 0x0357);
-    sharp_cpu_refetch(qts, true, 4, 0x0357);
-    g_assert_cmpuint(sharp_assert_cached_execution(qts), ==, flushes);
-
-    qtest_writew(qts, FLASH + 1 * MiB + 64 * KiB, 0x20);
-    qtest_writew(qts, FLASH + 1 * MiB + 64 * KiB, 0xd0);
-    sharp_cpu_complete_flash(qts, 30);
-    g_assert_cmphex(qtest_readl(qts, FLASH + 64 * KiB), ==, UINT32_MAX);
-    g_assert_cmphex(qtest_readl(qts, FLASH), ==, 0x3c0bbfc1);
-    /* Erased instructions trap to the unchanged block-zero handler. */
-    sharp_cpu_refetch(qts, false, 5, 0xbeef);
-    sharp_cpu_refetch(qts, true, 6, 0xbeef);
-    g_assert_cmpuint(sharp_assert_cached_execution(qts), ==, flushes);
-    qtest_quit(qts);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-static void test_sharp_flash_migration_rejected(void)
-{
-    g_autofree char *dir = g_dir_make_tmp("octane-sharp-migrate-XXXXXX",
-                                         NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc0(1 * MiB);
-    QTestState *qts;
-    int64_t deadline;
-
-    memset(image, 0xff, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = octane_start_sharp(path, marker, 0, 0);
-    qtest_qmp_assert_success(qts,
-        "{'execute':'migrate','arguments':{'uri':'exec:cat >/dev/null'}}");
-    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
-    for (;;) {
-        QDict *result = qtest_qmp_assert_success_ref(qts,
-            "{'execute':'query-migrate'}");
-        const char *status = qdict_get_str(result, "status");
-        bool failed = !strcmp(status, "failed");
-
-        if (failed) {
-            g_assert_cmpstr(qdict_get_str(result, "error-desc"), ==,
-                            "pre-save failed: lh28f800su");
-        }
-        qobject_unref(result);
-        if (failed) {
+    for (unsigned i = 0; i < G_N_ELEMENTS(code); i++) {
+        stl_be_p(ram_code + 4 * i, code[i]);
+    }
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+        "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+        "-drive if=none,id=flash0,file=%s,format=raw "
+        "-accel tcg,thread=single -S -icount shift=3,align=off,sleep=off "
+        "-rtc clock=host", quoted);
+    qtest_memwrite(qts, RAM + 0x4000, ram_code, sizeof(ram_code));
+    qtest_writel(qts, RAM + 0x5000, 0);
+    qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
+    started = g_get_monotonic_time();
+    deadline = started + 30 * G_TIME_SPAN_SECOND;
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    do {
+        result = qtest_readl(qts, RAM + 0x5000);
+        if (result) {
             break;
         }
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        g_usleep(10000);
+    } while (g_get_monotonic_time() < deadline);
+    elapsed = g_get_monotonic_time() - started;
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    if (result != 1) {
+        g_test_message("CPU batch: result %u, word %u, "
+                       "read 0x%x, expected 0x%x",
+                       result, qtest_readl(qts, RAM + 0x5004),
+                       qtest_readl(qts, RAM + 0x5008),
+                       qtest_readl(qts, RAM + 0x500c));
     }
+    g_assert_cmpuint(result, ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, RAM + 0x5004), ==, words);
+    g_test_message("TCG flash-drive, icount shift=3: %u halfword programs in %"
+                   PRIi64 " us, %.1f words/s, MALLOC_PERTURB_=%s",
+                   words, elapsed,
+                   words * (double)G_TIME_SPAN_SECOND / MAX(elapsed, 1),
+                   g_getenv("MALLOC_PERTURB_") ?: "unset");
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void sharp_flash_restore_attempt(void)
+static void test_flash_migration_rejected(void)
 {
-    g_autofree char *dir = g_dir_make_tmp("sharp-restore-XXXXXX", NULL);
+    g_autofree char *dir = g_dir_make_tmp("octane-flash-migrate-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *state = g_build_filename(dir, "state", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    g_autofree char *uri = g_strdup_printf("exec:cat >%s", state);
-    QTestState *from;
-    QTestState *to;
-    g_autofree char *stored = NULL;
-    gsize size;
+    g_autofree char *image = g_malloc(MiB);
+    g_autoptr(QDict) reply = NULL;
+    g_autofree char *snapshot_error = NULL;
+    QDict *error;
+    QTestState *qts;
 
-    memset(image, 0xab, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    from = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
-                      "-device lh28f800su-test-device,id=fixture");
-    qtest_clock_step(from, 401);
-    qtest_writew(from, 0x50000000, 0x20);
-    qtest_writew(from, 0x50000000, 0xd0);
-    sgi_migrate_stopped(from, uri);
-    qtest_quit(from);
-    to = qtest_initf(
-        MEMTX_TEST_DEVICE
-        "-M none -cpu R10000 "
-        "-device lh28f800su-test-device,id=fixture -incoming defer "
-        "-drive if=none,id=flash0,file=%s,format=raw "
-        "-global lh28f800su.drive=flash0 ", path);
-    g_free(g_steal_pointer(&uri));
-    uri = g_strdup_printf("exec:cat %s", state);
-    qtest_set_expected_status(to, EXIT_FAILURE);
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    qtest_wait_qemu(to);
-    qtest_quit(to);
-    g_assert_true(g_file_get_contents(path, &stored, &size, NULL));
-    g_assert_cmpuint(size, ==, 1 * MiB);
-    g_assert_cmpmem(stored, size, image, 1 * MiB);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    g_assert_cmpint(g_unlink(state), ==, 0);
+    memset(image, 0xff, MiB);
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    qts = octane_start_flash(path, 0, 0);
+    reply = qtest_qmp(qts,
+        "{'execute':'migrate','arguments':{'uri':'exec:cat >/dev/null'}}");
+    error = qdict_get_qdict(reply, "error");
+    g_assert_nonnull(error);
+    g_assert_nonnull(strstr(qdict_get_str(error, "desc"),
+                           "migration with persistent boot flash"));
+    snapshot_error = qtest_hmp(qts, "savevm flash-blocked");
+    g_assert_nonnull(strstr(snapshot_error,
+                           "migration with persistent boot flash"));
+    qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void test_sharp_flash_restore_rejected(void)
+static void test_flash_restore_rejected(void)
 {
-    if (g_test_subprocess()) {
-        sharp_flash_restore_attempt();
-        return;
+    g_autofree char *dir = g_dir_make_tmp("octane-flash-restore-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
+    g_autofree char *image = g_malloc(MiB);
+    g_autofree char *snapshot = g_build_filename(dir, "snapshot.qcow2", NULL);
+    g_autofree char *extra = NULL;
+    g_autofree char *reply = NULL;
+    QTestState *qts;
+    g_autofree char *drive = g_strdup_printf(
+        "if=none,id=flash0,file=%s,format=raw", path);
+    g_autofree char *file = g_strdup_printf("file:%s", path);
+    const char *incoming[] = { "defer", file };
+
+    memset(image, 0xff, MiB);
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    for (unsigned i = 0; i < G_N_ELEMENTS(incoming); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "octane,flash-drive=flash0", "-m",
+            "128M", "-cpu", "R10000", "-drive", drive, "-incoming",
+            incoming[i], "-display", "none", "-qmp", "stdio", NULL
+        };
+
+        assert_launch_rejected(args, "migration with persistent boot flash");
     }
-    g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
-    g_test_trap_assert_passed();
-    g_test_trap_assert_stderr("*restore with persistent backing "
-                             "is unsupported*");
+    /* A snapshot made without backing must also be refused when reopened. */
+    g_assert_true(mkimg(snapshot, "qcow2", 1));
+    extra = g_strdup_printf("-drive if=none,id=snap,file=%s,format=qcow2",
+                             snapshot);
+    qts = octane_start_args(extra);
+    reply = qtest_hmp(qts, "savevm flash-restore");
+    g_assert_cmpstr(reply, ==, "");
+    qtest_quit(qts);
+    g_clear_pointer(&reply, g_free);
+    qts = qtest_initf(MEMTX_TEST_DEVICE
+                      "-M octane,flash-drive=flash0 -m 128M -cpu R10000 "
+                      "-drive %s,readonly=on %s", drive, extra);
+    reply = qtest_hmp(qts, "loadvm flash-restore");
+    g_test_message("snapshot load response: %s", reply);
+    g_assert_nonnull(strstr(reply, "migration with persistent boot flash"));
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(snapshot), ==, 0);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void test_sharp_flash_storage_rejections(void)
+static void test_flash_storage_rejections(void)
 {
-    g_autofree char *dir = g_dir_make_tmp("octane-sharp-storage-XXXXXX",
-                                         NULL);
+    g_autofree char *dir = g_dir_make_tmp("octane-flash-storage-XXXXXX", NULL);
     g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    g_autofree char *machine = g_strdup(
-        "octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-        "flash-strap=0,flash-drive=flash0");
+    g_autofree char *image = g_malloc(MiB);
     g_autofree char *drive = g_strdup_printf(
         "if=none,id=flash0,file=%s,format=raw", path);
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine, "-m", "128M", "-cpu",
-        "R10000", "-drive", drive, "-display", "none", "-qmp", "stdio",
-        NULL
+        qtest_qemu_binary(NULL), "-M", "octane,flash-drive=flash0", "-m",
+        "128M", "-cpu", "R10000", "-drive", drive, "-display", "none",
+        "-qmp", "stdio", NULL
     };
-    memset(image, 0xff, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    g_assert_cmpint(truncate(path, 1 * MiB - 512), ==, 0);
+
+    memset(image, 0xff, MiB);
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    g_assert_cmpint(truncate(path, MiB - 512), ==, 0);
     assert_launch_rejected(args, "exactly 1 MiB");
-    g_assert_cmpint(truncate(path, 1 * MiB), ==, 0);
-
-    {
-        const char *options[] = {
-            "cache=unsafe", NULL
-        };
-
-        for (unsigned i = 0; options[i]; i++) {
-            g_autofree char *unsafe = g_strdup_printf("%s,%s", drive,
-                                                       options[i]);
-            const char *bad[] = {
-                qtest_qemu_binary(NULL), "-M", machine, "-m", "128M",
-                "-cpu", "R10000", "-drive", unsafe, "-display", "none",
-                "-qmp", "stdio", NULL
-            };
-
-            assert_launch_rejected(bad, "requires backend flushing");
-        }
-    }
+    g_assert_cmpint(truncate(path, MiB + 512), ==, 0);
+    assert_launch_rejected(args, "exactly 1 MiB");
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
-static void test_sharp_flash_backend_error(gconstpointer data)
+static void test_flash_backend_error(void)
 {
-    const char *event = data;
     g_autofree char *dir = NULL;
     g_autofree char *path = NULL;
     g_autofree char *config = NULL;
     g_autofree char *image = NULL;
 
     if (g_test_subprocess()) {
-        bool erase = !strcmp(event, "partial_erase");
-        bool final_flush = !strcmp(event, "final_flush");
         g_autofree char *drive = g_strdup_printf(
-            "blkdebug:%s:%s", g_getenv("SHARP_DEBUG_CONFIG"),
-            g_getenv("SHARP_WORKING_IMAGE"));
-        g_autofree char *quoted_drive = g_shell_quote(drive);
-        g_autofree char *args = g_strdup_printf(
-            MEMTX_TEST_DEVICE
-            "-M octane,flash-profile=sharp-lh28f800su,flash-select=0,"
-            "flash-strap=0,flash-drive=flash0 "
-            "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,"
-            "format=raw%s",
-            quoted_drive, erase ? ",file.max-transfer=512" : "");
-        QTestState *qts;
-        uint16_t old = erase ? 0 : 0xffff;
-        QDict *status;
+            "blkdebug:%s:%s", g_getenv("OCTANE_DEBUG_CONFIG"),
+            g_getenv("OCTANE_WORKING_IMAGE"));
+        g_autofree char *quoted = g_shell_quote(drive);
+        QTestState *qts = qtest_initf(
+            MEMTX_TEST_DEVICE "-M octane,flash-drive=flash0 "
+            "-m 128M -cpu R10000 -drive if=none,id=flash0,file=%s,format=raw",
+            quoted);
+        g_autoptr(QDict) status = NULL;
 
-        qts = qtest_init(args);
-        qtest_clock_step(qts, 401);
         qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-        qtest_writel(qts, BRIDGE_REG(0x020),
-                     qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-        if (final_flush) {
-            qtest_qmp_assert_success(qts,
-                "{'execute':'x-qemu-io','arguments':{'device':'flash0',"
-                "'command':'write -P 0xff 0 512'}}");
-        } else {
-            qtest_writew(qts, FLASH + 0x20, erase ? 0x20 : 0x40);
-            qtest_writew(qts, FLASH + 0x20, erase ? 0xd0 : 0x1234);
-            qtest_clock_step(qts, erase ? 700000000 : 8000);
-            status = qtest_qmp_assert_success_ref(qts,
-                "{'execute':'query-status'}");
-            g_assert_cmpstr(qdict_get_str(status, "status"), ==, "io-error");
-            g_assert_false(qdict_get_bool(status, "running"));
-            qobject_unref(status);
-            g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0);
-            qtest_writew(qts, FLASH, 0xff);
-            g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, old);
-            sharp_assert_read_view(qts, false);
-            g_assert_cmpuint(memtx_writew(qts, FLASH, 0x40), ==,
-                             MEMTX_ERROR);
-        }
-        if (!strcmp(event, "failed_unrealize")) {
-            qtest_qmp_assert_success(qts,
-                "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
-                "'property':'realized','value':false}}");
-            sharp_assert_read_view(qts, false);
-        }
-        qtest_set_expected_status(qts, EXIT_FAILURE);
-        qtest_qmp_assert_success(qts, "{'execute':'quit'}");
-        qtest_wait_qemu(qts);
+        qtest_writel(qts, BRIDGE_REG(0x020), FLASH_WRITE_EN);
+        qtest_writew(qts, FLASH + 0x20, 0x40);
+        qtest_writew(qts, FLASH + 0x20, 0x1234);
+        status = qtest_qmp_assert_success_ref(qts,
+            "{'execute':'query-status'}");
+        g_assert_true(qdict_get_bool(status, "running"));
+        g_assert_cmpstr(qdict_get_str(status, "status"), ==, "running");
+        qtest_writew(qts, FLASH, 0xff);
+        g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1234);
         qtest_quit(qts);
         return;
     }
 
-    dir = g_dir_make_tmp("octane-sharp-error-XXXXXX", NULL);
+    dir = g_dir_make_tmp("octane-flash-error-XXXXXX", NULL);
     path = g_build_filename(dir, "working.raw", NULL);
     config = g_build_filename(dir, "blkdebug.conf", NULL);
-    image = g_malloc(1 * MiB);
-    memset(image, !strcmp(event, "partial_erase") ? 0 : 0xff, 1 * MiB);
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    {
-        const char *debug_event = !strcmp(event, "failed_unrealize") ?
-                                  "write_aio" :
-                                  !strcmp(event, "final_flush") ?
-                                  "flush_to_disk" :
-                                  !strcmp(event, "partial_erase") ?
-                                  "write_aio" : event;
-        g_autofree char *rules = g_strdup_printf(
-            "[inject-error]\nevent = \"%s\"\n"
-            "errno = \"5\"\nonce = \"on\"\n",
-            debug_event);
-        if (!strcmp(event, "partial_erase")) {
-            char *partial = g_strconcat(rules, "sector = \"1\"\n", NULL);
-            g_free(g_steal_pointer(&rules));
-            rules = partial;
-        }
-        g_assert_true(g_file_set_contents(config, rules, -1, NULL));
-    }
-    g_setenv("SHARP_WORKING_IMAGE", path, true);
-    g_setenv("SHARP_DEBUG_CONFIG", config, true);
+    image = g_malloc(MiB);
+    memset(image, 0xff, MiB);
+    g_assert_true(g_file_set_contents(path, image, MiB, NULL));
+    g_assert_true(g_file_set_contents(config,
+        "[inject-error]\nevent = \"write_aio\"\n"
+        "errno = \"5\"\nonce = \"on\"\n", -1, NULL));
+    g_setenv("OCTANE_WORKING_IMAGE", path, true);
+    g_setenv("OCTANE_DEBUG_CONFIG", config, true);
     g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
     g_test_trap_assert_passed();
-    g_test_trap_assert_stderr("*persistent flash I/O failed*");
-    if (!strcmp(event, "partial_erase")) {
-        g_autofree char *contents = NULL;
-        gsize size;
-
-        g_assert_true(g_file_get_contents(path, &contents, &size, NULL));
-        g_assert_cmphex((uint8_t)contents[0x20], ==, 0xff);
-        g_assert_cmphex((uint8_t)contents[512], ==, 0);
-        g_assert_cmphex((uint8_t)contents[64 * KiB], ==, 0);
-    }
+    g_test_trap_assert_stderr("*Could not update PFLASH:*");
+    g_unsetenv("OCTANE_WORKING_IMAGE");
+    g_unsetenv("OCTANE_DEBUG_CONFIG");
     g_assert_cmpint(g_unlink(config), ==, 0);
-    g_assert_cmpint(g_unlink(path), ==, 0);
-    g_assert_cmpint(g_rmdir(dir), ==, 0);
-}
-
-static void test_sharp_flash_shutdown_pending(gconstpointer data)
-{
-    unsigned pending = GPOINTER_TO_UINT(data);
-    bool suspend = pending == 1;
-    bool program = pending == 2;
-    g_autofree char *dir = g_dir_make_tmp("octane-sharp-pending-XXXXXX",
-                                         NULL);
-    g_autofree char *path = g_build_filename(dir, "working.raw", NULL);
-    g_autofree char *marker = g_build_filename(dir, "working.invalid", NULL);
-    g_autofree char *image = g_malloc(1 * MiB);
-    QTestState *qts;
-
-    memset(image, 0xff, 1 * MiB);
-    image[0x20] = 0x56;
-    image[0x21] = 0x78;
-    image[64 * KiB] = 0xab;
-    image[64 * KiB + 1] = 0xcd;
-    g_assert_true(g_file_set_contents(path, image, 1 * MiB, NULL));
-    qts = octane_start_sharp(path, marker, 0, 0);
-    qtest_writel(qts, BRIDGE_REG(0x020),
-                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
-    qtest_writew(qts, FLASH + 0x20, program ? 0x40 : 0x20);
-    qtest_writew(qts, FLASH + 0x20, program ? 0x1230 : 0xd0);
-    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0);
-    if (suspend) {
-        qtest_writew(qts, FLASH, 0xb0);
-        g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0xc0);
-    }
-    if (pending == 3) {
-        qtest_qmp_assert_success(qts,
-            "{'execute':'qom-set','arguments':{'path':'/machine/sharp-flash',"
-            "'property':'realized','value':false}}");
-        qtest_clock_step(qts, 700000000);
-        sharp_assert_read_view(qts, false);
-    }
-    qtest_quit(qts);
-    g_assert_false(g_file_test(marker, G_FILE_TEST_EXISTS));
-    qts = octane_start_sharp(path, marker, 0, 0);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x5678);
-    g_assert_cmphex(qtest_readw(qts, FLASH + 64 * KiB), ==, 0xabcd);
-    qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
@@ -3568,21 +3189,25 @@ static void test_firmware_rejections(void)
 
     g_assert_true(g_spawn_sync(NULL, (char **)absent, NULL, 0, NULL, NULL,
                                NULL, &error_output, &status, NULL));
+    g_test_message("no firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "requires -bios"));
+    g_assert_nonnull(strstr(error_output,
+                           "requires either -bios or flash-drive"));
     g_clear_pointer(&error_output, g_free);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, 2 * 1024 * 1024 + 1), ==, 0);
+    g_assert_cmpint(ftruncate(fd, MiB + 1), ==, 0);
     close(fd);
     g_assert_true(g_spawn_sync(NULL, (char **)missing, NULL, 0, NULL, NULL,
                                NULL, &error_output, &status, NULL));
+    g_test_message("missing firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "cannot read firmware image"));
+    g_assert_nonnull(strstr(error_output, "must contain 1 to 1 MiB bytes"));
     g_clear_pointer(&error_output, g_free);
     g_assert_true(g_spawn_sync(NULL, (char **)too_large, NULL, 0, NULL, NULL,
                                NULL, &error_output, &status, NULL));
+    g_test_message("oversized firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
-    g_assert_nonnull(strstr(error_output, "exceeds 2 MiB"));
+    g_assert_nonnull(strstr(error_output, "must contain 1 to 1 MiB bytes"));
     g_assert_cmpint(unlink(oversized), ==, 0);
 }
 
@@ -4524,51 +4149,25 @@ int main(int argc, char **argv)
                         test_alternate_flash);
     qtest_add_data_func("/octane2/alternate-flash", GINT_TO_POINTER(1),
                         test_alternate_flash);
-    qtest_add_data_func("/octane/sharp-select0-strap0", GUINT_TO_POINTER(0),
-                        test_sharp_flash);
-    qtest_add_data_func("/octane/sharp-select0-strap1", GUINT_TO_POINTER(1),
-                        test_sharp_flash);
-    qtest_add_data_func("/octane/sharp-select1-strap0", GUINT_TO_POINTER(2),
-                        test_sharp_flash);
-    qtest_add_data_func("/octane/sharp-select1-strap1", GUINT_TO_POINTER(3),
-                        test_sharp_flash);
-    qtest_add_func("/octane/sharp-view-transitions",
-                   test_sharp_flash_view_transitions);
-    qtest_add_func("/octane/sharp-unrealize-access",
-                   test_sharp_flash_unrealize_access);
-    qtest_add_func("/octane/sharp-initial-rp", test_sharp_flash_initial_rp);
-    qtest_add_data_func("/octane/sharp-execute", GUINT_TO_POINTER(0),
-                        test_sharp_flash_execute);
-    qtest_add_data_func("/octane2/sharp-execute-icount", GUINT_TO_POINTER(1),
-                        test_sharp_flash_execute);
-    qtest_add_data_func("/octane/sharp-execute-cached", GUINT_TO_POINTER(0),
-                        test_sharp_flash_cached_execute);
-    qtest_add_data_func("/octane2/sharp-execute-repeat-cached",
-                        GUINT_TO_POINTER(1), test_sharp_flash_cached_execute);
-    qtest_add_func("/octane/sharp-persistent-migration-rejected",
-                   test_sharp_flash_migration_rejected);
-    qtest_add_func("/octane/sharp-persistent-restore-rejected",
-                   test_sharp_flash_restore_rejected);
-    qtest_add_func("/octane/sharp-storage-rejections",
-                   test_sharp_flash_storage_rejections);
-    qtest_add_data_func("/octane/sharp-failed-unrealize", "failed_unrealize",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-backend-write-error", "write_aio",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-backend-flush-error", "flush_to_disk",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-backend-partial-erase", "partial_erase",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-final-flush-error", "final_flush",
-                        test_sharp_flash_backend_error);
-    qtest_add_data_func("/octane/sharp-unrealize-busy", GUINT_TO_POINTER(3),
-                        test_sharp_flash_shutdown_pending);
-    qtest_add_data_func("/octane/sharp-shutdown-program", GUINT_TO_POINTER(2),
-                        test_sharp_flash_shutdown_pending);
-    qtest_add_data_func("/octane/sharp-shutdown-busy", GUINT_TO_POINTER(0),
-                        test_sharp_flash_shutdown_pending);
-    qtest_add_data_func("/octane/sharp-shutdown-suspended", GUINT_TO_POINTER(1),
-                        test_sharp_flash_shutdown_pending);
+    qtest_add_data_func("/octane/flash-select0-strap0", GUINT_TO_POINTER(0),
+                        test_flash);
+    qtest_add_data_func("/octane/flash-select0-strap1", GUINT_TO_POINTER(1),
+                        test_flash);
+    qtest_add_data_func("/octane/flash-select1-strap0", GUINT_TO_POINTER(2),
+                        test_flash);
+    qtest_add_data_func("/octane/flash-select1-strap1", GUINT_TO_POINTER(3),
+                        test_flash);
+    qtest_add_func("/octane/flash-persistent-migration-rejected",
+                   test_flash_migration_rejected);
+    qtest_add_func("/octane/flash-persistent-restore-rejected",
+                   test_flash_restore_rejected);
+    qtest_add_func("/octane/flash-execute", test_flash_execute);
+    qtest_add_func("/octane/flash-cpu-program-benchmark-cross-sector",
+                   test_flash_cpu_program_benchmark);
+    qtest_add_func("/octane/flash-storage-rejections",
+                   test_flash_storage_rejections);
+    qtest_add_func("/octane/flash-backend-write-error",
+                   test_flash_backend_error);
     qtest_add_func("/octane/rad-pci", test_rad_pci);
     qtest_add_data_func("/octane/rad-pci-identity", GINT_TO_POINTER(0),
                         test_rad_pci_identity);
