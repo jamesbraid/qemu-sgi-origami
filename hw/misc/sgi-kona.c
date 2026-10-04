@@ -4783,8 +4783,9 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     }
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
-        count > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) || a[7] ||
-        a[3] != 1 || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+        count > SGI_KONA_TEXTURE_BYTES /
+                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(float)) ||
+        a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
         s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
         s->gl[i].cur.texture_3d || p->pixel_zoom_unsupported ||
         p->pixel_transfer_unsupported) {
@@ -4793,6 +4794,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         return layout.payload_words;
     }
     memcpy(u->header, a, 8 * sizeof(uint32_t));
+    u->header[8] = p->unpack_swap_bytes;
     u->row_length = p->unpack_row_length;
     u->skip_rows = p->unpack_skip_rows;
     u->skip_pixels = p->unpack_skip_pixels;
@@ -4816,6 +4818,9 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     uint32_t i = u->context;
     const SGIKonaGLPipe *p;
     g_autofree uint32_t *rgba = NULL;
+    g_autofree float (*rgba_float)[4] = NULL;
+    bool scalar = u->header[3] != 1;
+    uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
         s->gl[i].in_begin || s->gl[i].cur.texture_1d ||
@@ -4824,29 +4829,35 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
         goto out;
     }
     p = &s->gl_pipe[i];
-    rgba = g_try_new(uint32_t, (uint64_t)layout.width * layout.height);
-    if (!rgba) {
+    count = (uint64_t)layout.width * layout.height;
+    if (scalar) {
+        rgba_float = g_try_malloc_n(count, sizeof(*rgba_float));
+    } else {
+        rgba = g_try_new(uint32_t, count);
+    }
+    if (scalar ? !rgba_float : !rgba) {
         goto out;
     }
     for (uint32_t row = 0; row < layout.height; row++) {
         for (uint32_t x = 0; x < layout.width; x++) {
-            uint32_t source = 0;
+            uint32_t source[4] = { 0 };
+            uint64_t at = (uint64_t)x * layout.pixel_bytes;
+            uint32_t pixel = row * layout.width + x;
 
             for (uint32_t k = 0; k < layout.pixel_bytes; k++) {
                 uint8_t byte;
 
-                uint64_t at = (uint64_t)x * layout.pixel_bytes + k;
-
                 if (!sgi_kona_gl_pixels_pio_byte(&layout, u->words, u->count,
-                                                  row, at, &byte)) {
+                                                  row, at + k, &byte)) {
                     goto out;
                 }
-                source |= (uint32_t)byte << (24 - k * 8);
+                source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
             }
-            uint32_t *out = &rgba[row * layout.width + x];
-
-            if (!sgi_kona_gl_texture_pixel_rgba(u->header[2], u->header[3],
-                                                &source, false, out)) {
+            if (scalar ?
+                !sgi_kona_gl_pixel_rgba_float(u->header[2], u->header[3],
+                    source, u->header[8], rgba_float[pixel]) :
+                !sgi_kona_gl_texture_pixel_rgba(u->header[2], u->header[3],
+                    source, false, &rgba[pixel])) {
                 goto out;
             }
         }
@@ -4856,11 +4867,19 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
     }
     sgi_kona_gl_sink(s, &sink);
-    sgi_gl_draw_pixels_rgba_transfer(&s->gl[i], &sink, layout.width,
-                                     layout.height, rgba,
-                                     sgi_kona_gl_float(p->pixel_zoom[0]),
-                                     sgi_kona_gl_float(p->pixel_zoom[1]),
-                                     &transfer);
+    if (scalar) {
+        sgi_gl_draw_pixels_float_transfer(&s->gl[i], &sink, layout.width,
+                                          layout.height, rgba_float,
+                                          sgi_kona_gl_float(p->pixel_zoom[0]),
+                                          sgi_kona_gl_float(p->pixel_zoom[1]),
+                                          &transfer);
+    } else {
+        sgi_gl_draw_pixels_rgba_transfer(&s->gl[i], &sink, layout.width,
+                                         layout.height, rgba,
+                                         sgi_kona_gl_float(p->pixel_zoom[0]),
+                                         sgi_kona_gl_float(p->pixel_zoom[1]),
+                                         &transfer);
+    }
 out:
     sgi_kona_gl_image_clear(s);
 }
@@ -10130,13 +10149,14 @@ static bool sgi_kona_gl_image_valid(const SGIKonaGLImageUpload *u)
     if (u->draw_pixels) {
         SGIKonaGLPixelLayout pixels;
 
-        return u->count && !u->header[8] && !u->lsb_first &&
+        return u->count && u->header[8] <= 1 && !u->lsb_first &&
                u->count <= SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) &&
                u->header[0] <= SGI_KONA_GL_IMAGE_MAX &&
                u->header[1] <= SGI_KONA_GL_IMAGE_MAX &&
                (uint64_t)u->header[0] * u->header[1] <=
-               SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) &&
-               u->header[3] == 1 && !u->header[7] &&
+               SGI_KONA_TEXTURE_BYTES /
+                   (u->header[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(float)) &&
+               !u->header[7] &&
                sgi_kona_gl_pixels_layout(u, &pixels) &&
                pixels.payload_words == u->count &&
                (u->refused || u->context < SGI_KONA_CONTEXTS);

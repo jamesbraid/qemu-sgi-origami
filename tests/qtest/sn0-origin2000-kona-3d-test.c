@@ -5683,6 +5683,134 @@ static void pixel_transfer_set(QTestState *s, uint32_t pname, float value)
     kona_command(s, 0x30, (uint32_t[]) { pname, bits }, 2);
 }
 
+static void test_draw_pixels_scalar_pio(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t types[] = { 0, 2, 3, 4, 5, 6, 3, 6, 0, 6, 6, 6 };
+    static const uint32_t scales[] = { 0xd14, 0xd18, 0xd1a };
+    static const uint32_t biases[] = { 0xd15, 0xd19, 0xd1b };
+    uint32_t h[] = { 2, 1, 6, types[mode], 0, 0, 0, 0 };
+    uint32_t data[8] = { 0 };
+    uint32_t rgb[2] = { 0, 0xffffff };
+    unsigned words = 1;
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    switch (mode) {
+    case 0:
+        data[0] = 0x807f0000;
+        break;
+    case 1:
+        data[0] = 0x80007fff;
+        break;
+    case 2:
+        data[0] = 0x0000ffff;
+        break;
+    case 3:
+        data[0] = 0x80000000;
+        data[1] = 0x7fffffff;
+        words = 2;
+        break;
+    case 4:
+        data[1] = 0xffffffff;
+        words = 2;
+        break;
+    case 5:
+        data[1] = 0x3f800000;
+        words = 2;
+        break;
+    case 6:
+        data[0] = 0x004000c0;
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 1 }, 2);
+        rgb[0] = 0x404040;
+        rgb[1] = 0xbfbfbf;
+        break;
+    case 7:
+        data[0] = 0x0000403e;
+        data[1] = 0x0000403f;
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 1 }, 2);
+        rgb[0] = 0x303030;
+        rgb[1] = 0xbfbfbf;
+        words = 2;
+        break;
+    case 8:
+        data[0] = 0x807f0000;
+        pixel_transfer_set(s, 0xd15, 0.5);
+        pixel_transfer_set(s, 0xd19, 0.5);
+        pixel_transfer_set(s, 0xd1b, 0.5);
+        break;
+    case 9:
+        h[0] = 1;
+        h[2] = 5;
+        data[0] = 0x3fc00000;
+        data[1] = 0xbf000000;
+        data[2] = 0x3f000000;
+        data[3] = 0x3f800000;
+        for (unsigned k = 0; k < 3; k++) {
+            pixel_transfer_set(s, scales[k], 0.5);
+            pixel_transfer_set(s, biases[k], 0.25);
+        }
+        rgb[0] = 0xff0080;
+        words = 4;
+        break;
+    case 10:
+        h[0] = 1;
+        h[2] = 5;
+        data[0] = data[1] = data[2] = 0x3f800000;
+        data[3] = 0x3f000000;
+        pixel_transfer_set(s, 0xd1c, 0.999);
+        kona_command(s, 0xca, (uint32_t[]) { 0x206, 0x3f000000 }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+        words = 4;
+        break;
+    case 11:
+        h[2] = 5;
+        for (unsigned k = 0; k < 8; k++) {
+            data[k] = 0x3f800000;
+        }
+        data[7] = 0x7fc00000;
+        rgb[1] = 0;
+        words = 8;
+        break;
+    }
+    kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    qtest_writel(s, REG_COMMAND, data[0]);
+    if (mode == 7) {
+        dir = g_dir_make_tmp("sn0-kona-scalar-pixels-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    for (unsigned k = 1; k < words; k++) {
+        qtest_writel(s, REG_COMMAND, data[k]);
+    }
+    /* A completed or refused image must leave the next command aligned. */
+    kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
+    expected_clear(e, 0);
+    for (unsigned k = 0; k < h[0]; k++) {
+        unsigned at = ((127 - 64) * 128 + 64 + k) * 3;
+
+        e->rgb[at] = rgb[k] >> 16;
+        e->rgb[at + 1] = rgb[k] >> 8;
+        e->rgb[at + 2] = rgb[k];
+    }
+    assert_window_matches(s, e);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_draw_pixels_transfer(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -8812,6 +8940,19 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                             test_draw_pixels_zoom);
+    }
+    static const char *scalar_pixels_cases[] = {
+        "byte", "short", "ushort", "int", "uint", "float",
+        "ushort-swapped", "float-swapped-migrates", "signed-before-bias",
+        "float-before-transfer", "float-alpha-precision", "late-nan-atomic",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(scalar_pixels_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/scalar-pixels/%s",
+            scalar_pixels_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_draw_pixels_scalar_pio);
     }
     static const char *raw_pixels_cases[] = {
         "rgb-row-gap", "luminance-phase", "luminance-alpha-strided",
