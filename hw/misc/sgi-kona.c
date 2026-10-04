@@ -5330,6 +5330,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         .skip_rows = p->unpack_skip_rows,
         .skip_pixels = p->unpack_skip_pixels,
         .alignment = p->unpack_alignment,
+        .lsb_first = a[3] == 7 && p->unpack_lsb_first,
     };
     bool refused;
     uint64_t count = (uint64_t)a[0] * a[1];
@@ -5436,11 +5437,22 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
                 }
                 source[k / 4] |= (uint32_t)byte << (24 - (k % 4) * 8);
             }
+            if (u->header[3] == 7) {
+                unsigned bit = (x + (u->skip_pixels & 7)) & 7;
+                uint8_t byte;
+
+                if (!sgi_kona_gl_pixels_pio_byte(&layout, u->words, u->count,
+                    row, (x + (u->skip_pixels & 7)) / 8, &byte)) {
+                    goto out;
+                }
+                source[0] = (byte >> (u->lsb_first ? bit : 7 - bit)) & 1;
+            }
             if (stencil_image) {
                 double index;
 
-                if (!sgi_kona_gl_pixel_index(u->header[3], source,
-                                               u->header[8], &index) ||
+                if (!sgi_kona_gl_pixel_index(
+                    u->header[3] == 7 ? 5 : u->header[3], source,
+                    u->header[3] != 7 && u->header[8], &index) ||
                     !sgi_kona_gl_stencil_index(p, index, &rgba[pixel])) {
                     goto out;
                 }
@@ -5449,8 +5461,9 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
             if (indexed_image) {
                 double index;
 
-                if (!sgi_kona_gl_pixel_index(u->header[3], source,
-                                               u->header[8], &index) ||
+                if (!sgi_kona_gl_pixel_index(
+                    u->header[3] == 7 ? 5 : u->header[3], source,
+                    u->header[3] != 7 && u->header[8], &index) ||
                     !sgi_kona_gl_index_rgba(&p->pixel_transfer, index,
                                              rgba_double[pixel])) {
                     goto out;
@@ -7778,7 +7791,7 @@ bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
         !sgi_kona_gl_pixels_dma_layout(u->header, u->row_length,
                                          u->skip_rows, u->skip_pixels,
                                          u->alignment, &d) ||
-        (io & 3) != d.pixels.phase || lines != d.lines ||
+        (io & 3) != d.source_phase || lines != d.lines ||
         per_line != d.line_bytes || pitch != d.pitch ||
         d.span > UINT64_MAX - io) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -7797,6 +7810,13 @@ bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                 return false;
             }
             for (uint32_t k = 0; k < n; k++) {
+                if (u->header[3] == 7 && !d.pixels.strided) {
+                    uint64_t at = offset + k;
+
+                    u->words[at / 4] |= (uint32_t)chunk[k] <<
+                                       (24 - 8 * (at % 4));
+                    continue;
+                }
                 uint32_t row = d.pixels.strided ? line :
                                (offset + k) / d.pixels.stride;
                 uint32_t col = d.pixels.strided ? offset + k :
@@ -11236,7 +11256,8 @@ static bool sgi_kona_gl_image_valid(const SGIKonaGLImageUpload *u)
     if (u->draw_pixels) {
         SGIKonaGLPixelLayout pixels;
 
-        return u->count && u->header[8] <= 1 && !u->lsb_first &&
+        return u->count && u->header[8] <= 1 &&
+               (!u->lsb_first || u->header[3] == 7) &&
                u->count <= SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) &&
                u->header[0] <= SGI_KONA_GL_IMAGE_MAX &&
                u->header[1] <= SGI_KONA_GL_IMAGE_MAX &&

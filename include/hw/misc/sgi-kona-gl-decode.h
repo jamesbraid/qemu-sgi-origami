@@ -226,7 +226,7 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
                                    const double rgba[4], bool swap_bytes,
                                    uint8_t *out, size_t capacity);
 
-/* Ordinary DrawPixels PIO carries raw scalar bytes, including row padding. */
+/* Raw DrawPixels rows include padding; pixel_bytes is zero for bitmaps. */
 typedef struct SGIKonaGLPixelLayout {
     uint32_t width, height, pixel_bytes;
     uint64_t stride, row_bytes, payload_words;
@@ -242,10 +242,10 @@ bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
 typedef struct SGIKonaGLPixelDMALayout {
     SGIKonaGLPixelLayout pixels;
     uint64_t total_bytes, line_bytes, pitch, span;
-    uint32_t lines;
+    uint32_t lines, source_phase;
 } SGIKonaGLPixelDMALayout;
 
-/* Raw DMA omits the PIO word prefixes and independently padded rows. */
+/* Scalar DMA omits PIO prefixes; contiguous bitmap DMA keeps whole words. */
 bool sgi_kona_gl_pixels_dma_layout(const uint32_t header[8],
                                    uint32_t row_length, uint32_t skip_rows,
                                    uint32_t skip_pixels, uint32_t alignment,
