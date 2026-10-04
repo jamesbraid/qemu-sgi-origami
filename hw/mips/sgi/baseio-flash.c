@@ -19,6 +19,7 @@
 #include "qapi/error.h"
 #include "qemu/datadir.h"
 #include "qemu/units.h"
+#include "block/block-global-state.h"
 #include "system/block-backend.h"
 
 #define BASEIO_FLASH_MANUFACTURER 0x01
@@ -77,15 +78,15 @@ PFlashCFI02 *sgi_baseio_flash_new(Object *parent, const char *name,
     flash = qdev_new(TYPE_PFLASH_CFI02);
     object_property_add_child(parent, "flash", OBJECT(flash));
     object_unref(OBJECT(flash));
+    /* A -drive id or, from the machine's io<N>-flash, a block node. */
     if (drive_id) {
-        BlockBackend *blk = blk_by_name(drive_id);
-
-        if (!blk) {
-            error_setg(errp, "no drive named '%s' for the BASEIO PROM flash",
-                       drive_id);
+        if (!blk_by_name(drive_id) && !bdrv_find_node(drive_id)) {
+            error_setg(errp, "no drive or block node named '%s' for the "
+                       "BASEIO PROM flash", drive_id);
             return NULL;
         }
-        if (!qdev_prop_set_drive_err(flash, "drive", blk, errp)) {
+        if (!object_property_set_str(OBJECT(flash), "drive", drive_id,
+                                     errp)) {
             return NULL;
         }
     }

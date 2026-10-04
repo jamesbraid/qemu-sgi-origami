@@ -215,9 +215,15 @@ The machines bind these items today:
 - ``node<N>-flash`` on ``origin200``, ``origin2000``, ``onyx2``,
   ``origin300`` and ``fuel``. A Bedrock node's 16 MiB store holds both
   of its 8 MiB flash positions, lower first.
+- ``io<N>-flash``, the BASEIO PROM flash of an Origin 2000 or Onyx2
+  BaseIO card or an Origin 200 GIGAchannel cabinet, N counting those
+  boards in the topology's order.
 
 The older forms still work but are deprecated, and giving both forms for
-one store is refused: ``-drive if=pflash,unit=N`` for node N's flash.
+one store is refused: ``-drive if=pflash,unit=N`` for node N's flash, and
+``-drive if=none,id=sgi-baseio-flash<B>`` (B the BaseIO card's I/O board
+index) or ``id=sgi-gigachannel-flash<C>`` (C the cabinet) for a BASEIO
+PROM flash.
 
 Serial line order
 =================
