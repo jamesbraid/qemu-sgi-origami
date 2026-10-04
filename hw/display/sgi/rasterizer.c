@@ -781,7 +781,7 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         !isfinite(p->min_lod) || !isfinite(p->max_lod) ||
         p->min_lod > p->max_lod || !border_finite ||
         !sgi_soft_texture_wrap(im->wrap_s) ||
-        !sgi_soft_texture_wrap(im->wrap_t) ||
+        (!im->one_dimensional && !sgi_soft_texture_wrap(im->wrap_t)) ||
         (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
         (im->min_filter != SGI_GL_NEAREST && im->min_filter != SGI_GL_LINEAR &&
          !mipmap) ||
@@ -809,6 +809,9 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
          base->base_format != SGI_GL_RGB && base->base_format != SGI_GL_RGBA)) {
         goto unsupported;
     }
+    if (im->one_dimensional && base->height != 1) {
+        goto unsupported;
+    }
     if (!sgi_soft_texture_dimensions(base->width, base->height) ||
         (im->volume && (!base->depth || base->depth > INT32_MAX ||
                         !is_power_of_2(base->depth)))) {
@@ -831,6 +834,9 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
 
         if (l->level < p->base_level || l->level > last) {
             continue;
+        }
+        if (im->one_dimensional && l->height != 1) {
+            goto unsupported;
         }
         if (!sgi_soft_texture_border_supported(im, l) ||
             !sgi_soft_texture_format(l->base_format) ||
@@ -877,13 +883,23 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
     const SGIGLTexImage *im = r->t->texture;
     const SGIGLDrawState *st = r->st;
 
-    if ((!st->texture_2d && !st->texture_3d) || st->index_bits) {
+    if ((!st->texture_1d && !st->texture_2d && !st->texture_3d) ||
+        st->index_bits) {
         return true;
     }
-    if (st->texture_2d && st->texture_3d) {
+    if (!!st->texture_1d + !!st->texture_2d + !!st->texture_3d > 1) {
         if (report) {
-            qemu_log_mask(LOG_UNIMP, "sgi-gl: simultaneous 2D and 3D texturing "
-                          "is unsupported, draw dropped\n");
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: simultaneous texture targets "
+                          "are unsupported, draw dropped\n");
+        }
+        return false;
+    }
+    if (im && ((im->one_dimensional && im->volume) ||
+               !!st->texture_1d != im->one_dimensional ||
+               (im->one_dimensional && !im->pyramid && im->height != 1))) {
+        if (report) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: incompatible 1D texture image, "
+                          "draw dropped\n");
         }
         return false;
     }
@@ -905,8 +921,9 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
         }
         return false;
     }
-    if (im && (!isfinite(im->lod_scale_s) || !isfinite(im->lod_scale_t) ||
-               im->lod_scale_s < 0 || im->lod_scale_t < 0 ||
+    if (im && (!isfinite(im->lod_scale_s) || im->lod_scale_s < 0 ||
+               (!im->one_dimensional && (!isfinite(im->lod_scale_t) ||
+                                         im->lod_scale_t < 0)) ||
                (im->volume && (!isfinite(im->lod_scale_r) ||
                                im->lod_scale_r < 0)))) {
         if (report) {
@@ -928,7 +945,7 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
             !border_finite ||
             !sgi_soft_texture_format(im->base_format) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
-            !sgi_soft_texture_wrap(im->wrap_t) ||
+            (!im->one_dimensional && !sgi_soft_texture_wrap(im->wrap_t)) ||
             (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
             im->min_filter != im->mag_filter ||
             (im->min_filter != SGI_GL_NEAREST &&
@@ -976,7 +993,9 @@ static bool sgi_soft_texture_vertex_valid(const SGISoftDraw *r,
     valid = isfinite(v->clip[3]) && v->clip[3] > 0 &&
             v->attr[SGI_GL_V_TEXCOORD + 3] > 0;
     for (int k = 0; k < 4; k++) {
-        valid &= isfinite(v->attr[SGI_GL_V_TEXCOORD + k]);
+        if (!r->texture->one_dimensional || k == 0 || k == 3) {
+            valid &= isfinite(v->attr[SGI_GL_V_TEXCOORD + k]);
+        }
     }
     if (!valid) {
         sgi_soft_texture_report(r, 4, "invalid clipped coordinates, "
@@ -1023,7 +1042,7 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
     if (im->wrap_s == SGI_GL_REPEAT) {
         x = (x % width + width) % width;
     }
-    if (im->wrap_t == SGI_GL_REPEAT) {
+    if (!im->one_dimensional && im->wrap_t == SGI_GL_REPEAT) {
         y = (y % height + height) % height;
     }
     if (im->volume && im->wrap_r == SGI_GL_REPEAT) {
@@ -1123,7 +1142,8 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
 
     memset(texel, 0, 4 * sizeof(*texel));
     s = sgi_soft_texture_axis(s, width, im->wrap_s);
-    t = sgi_soft_texture_axis(t, height, im->wrap_t);
+    t = im->one_dimensional ? 0 :
+        sgi_soft_texture_axis(t, height, im->wrap_t);
     if (im->volume) {
         rr = sgi_soft_texture_axis(rr, depth, im->wrap_r);
     }
@@ -1143,7 +1163,8 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
         }
         return sgi_soft_texture_tap(r, level, x, y, z, texel);
     }
-    double u = width * s - 0.5, v = height * t - 0.5;
+    double u = width * s - 0.5;
+    double v = im->one_dimensional ? 0 : height * t - 0.5;
     int64_t x = floor(u), y = floor(v);
     double w = depth * rr - 0.5;
     int64_t z = im->volume ? floor(w) : 0;
@@ -1151,7 +1172,7 @@ static bool sgi_soft_texture_sample(const SGISoftDraw *r,
     double c = im->volume ? w - z : 0;
 
     for (int k = 0; k < (im->volume ? 2 : 1); k++) {
-        for (int j = 0; j < 2; j++) {
+        for (int j = 0; j < (im->one_dimensional ? 1 : 2); j++) {
             for (int i = 0; i < 2; i++) {
                 double weight = (i ? a : 1 - a) * (j ? b : 1 - b) *
                                 (im->volume ? (k ? c : 1 - c) : 1);
@@ -1361,7 +1382,8 @@ static bool sgi_soft_texture_detail_sample(const SGISoftDraw *r,
     if (!sgi_soft_texture_sample(r, base, SGI_GL_LINEAR, s, t, rr, texel)) {
         return false;
     }
-    if (im->volume || im->pyramid->base_level || !detail ||
+    if (im->one_dimensional || im->volume ||
+        im->pyramid->base_level || !detail ||
         detail->level || detail->border || !detail->read_texel ||
         !sgi_soft_texture_dimensions(detail->width, detail->height) ||
         detail->internal_format != base->internal_format ||
@@ -1416,7 +1438,7 @@ static bool sgi_soft_texture(const SGISoftDraw *r, SGISoftFrag *frag)
         return false;
     }
     s = frag->texcoord[0] / q;
-    t = frag->texcoord[1] / q;
+    t = im->one_dimensional ? 0 : frag->texcoord[1] / q;
     if (im->volume) {
         rr = frag->texcoord[2] / q;
     }
@@ -1519,7 +1541,7 @@ static SGIRasterTextureResult sgi_raster_texture_check_draw(
         return SGI_RASTER_TEXTURE_READY;
     }
     if (state->index_bits ||
-        (!state->texture_2d && !state->texture_3d)) {
+        (!state->texture_1d && !state->texture_2d && !state->texture_3d)) {
         return SGI_RASTER_TEXTURE_DISABLED;
     }
     return SGI_RASTER_TEXTURE_INCOMPLETE;
@@ -2175,16 +2197,17 @@ typedef struct SGISoftTexPlane {
 } SGISoftTexPlane;
 
 static void sgi_soft_texture_values(const SGISoftVertex *v, bool volume,
-                                     double value[4])
+                                     bool one_dimensional, double value[4])
 {
     value[0] = v->texcoord[0] * v->inv_w;
-    value[1] = v->texcoord[1] * v->inv_w;
+    value[1] = one_dimensional ? 0 : v->texcoord[1] * v->inv_w;
     value[2] = v->texcoord[3] * v->inv_w;
     value[3] = volume ? v->texcoord[2] * v->inv_w : 0;
 }
 
 static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
-                                   bool volume, SGISoftTexPlane *g)
+                                   bool volume, bool one_dimensional,
+                                   SGISoftTexPlane *g)
 {
     double scale = 1 << sub;
     double x1 = (v[1].x - v[0].x) / scale;
@@ -2202,7 +2225,7 @@ static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
-        sgi_soft_texture_values(&v[i], volume, values[i]);
+        sgi_soft_texture_values(&v[i], volume, one_dimensional, values[i]);
     }
     for (unsigned k = 0; k < 4; k++) {
         double a = values[1][k] - values[0][k];
@@ -2221,7 +2244,7 @@ static bool sgi_soft_texture_plane(const SGISoftVertex v[3], unsigned sub,
 
 static bool sgi_soft_texture_line_gradient(const SGISoftVertex *a,
                                            const SGISoftVertex *b, unsigned sub,
-                                           bool volume,
+                                           bool volume, bool one_dimensional,
                                            double values[4], double delta[4],
                                            double *length)
 {
@@ -2232,8 +2255,8 @@ static bool sgi_soft_texture_line_gradient(const SGISoftVertex *a,
     if (!isfinite(*length)) {
         return false;
     }
-    sgi_soft_texture_values(a, volume, values);
-    sgi_soft_texture_values(b, volume, end);
+    sgi_soft_texture_values(a, volume, one_dimensional, values);
+    sgi_soft_texture_values(b, volume, one_dimensional, end);
     for (unsigned k = 0; k < 4; k++) {
         delta[k] = end[k] - values[k];
         if (!isfinite(values[k]) || !isfinite(delta[k])) {
@@ -2249,7 +2272,9 @@ static bool sgi_soft_texture_coefficients(const SGISoftDraw *r,
     SGISoftTexPlane g;
 
     if (!r->texture_base || sgi_soft_texture_plane(v, r->rules->subpixel_bits,
-                                                r->texture->volume, &g)) {
+                                                r->texture->volume,
+                                                r->texture->one_dimensional,
+                                                &g)) {
         return true;
     }
     sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
@@ -2316,7 +2341,8 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
         return;
     }
     if (r->texture_base &&
-        !sgi_soft_texture_plane(v, sub, r->texture->volume, &gradient)) {
+        !sgi_soft_texture_plane(v, sub, r->texture->volume,
+                                r->texture->one_dimensional, &gradient)) {
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
@@ -2440,6 +2466,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
                 frag.texture_rho = sgi_soft_texture_derivatives(value,
                     gradient.dx, gradient.dy, r->texture_base->width *
                     sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                    r->texture->one_dimensional ? 0 :
                     r->texture_base->height *
                     sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
                     r->texture->volume ? r->texture_base->depth *
@@ -2880,8 +2907,8 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
         return;
     }
     if (r->texture_base && !sgi_soft_texture_line_gradient(&a, &b, sub,
-            r->texture->volume, texture_value, texture_delta,
-            &texture_length)) {
+            r->texture->volume, r->texture->one_dimensional,
+            texture_value, texture_delta, &texture_length)) {
         sgi_soft_texture_report(r, 16, "invalid primitive coefficients, "
                                       "primitive dropped");
         return;
@@ -3044,6 +3071,7 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                     frag.texture_rho = sgi_soft_texture_derivatives(value,
                         texture_delta, zero, r->texture_base->width *
                         sgi_soft_texture_lod_scale(r->texture->lod_scale_s),
+                        r->texture->one_dimensional ? 0 :
                         r->texture_base->height *
                         sgi_soft_texture_lod_scale(r->texture->lod_scale_t),
                         r->texture->volume ? r->texture_base->depth *
@@ -3511,7 +3539,7 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
             if (!sgi_soft_project(r, &poly[(i + 1) % n], &next) ||
                 !sgi_soft_texture_line_gradient(&current, &next,
                     r->rules->subpixel_bits, r->texture->volume,
-                    values, delta, &length)) {
+                    r->texture->one_dimensional, values, delta, &length)) {
                 sgi_soft_texture_report(r, 16,
                     "invalid primitive coefficients, primitive dropped");
                 goto out;
@@ -4011,7 +4039,7 @@ bool sgi_gl_texture_test_plane(const int64_t xy[3][2], unsigned sub,
         v[i].inv_w = iw[i];
         memcpy(v[i].texcoord, coords[i], sizeof(v[i].texcoord));
     }
-    if (!sgi_soft_texture_plane(v, sub, false, &g)) {
+    if (!sgi_soft_texture_plane(v, sub, false, false, &g)) {
         return false;
     }
     memcpy(value, g.value, 3 * sizeof(*value));

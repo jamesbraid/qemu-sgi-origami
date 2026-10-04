@@ -8980,6 +8980,95 @@ static void test_mipmap_post_filter_order(void)
     g_assert_cmpuint(f.post_filter_calls, ==, 1);
 }
 
+static void texture_1d_init(MipmapFixture *f, uint32_t min, uint32_t mag)
+{
+    mipmap_init(f, min, mag, -1000, 1000);
+    enable(&f->scene.c, SGI_GL_TEXTURE_2D, false);
+    enable(&f->scene.c, SGI_GL_TEXTURE_1D, true);
+    f->image.one_dimensional = true;
+    for (unsigned i = 0; i < 3; i++) {
+        f->levels[i].height = f->pixels[i].height = 1;
+    }
+}
+
+static void test_texture_1d_sampling(void)
+{
+    const float colour[4] = { 1, 1, 1, 1 };
+    const float coords[][4] = {
+        { 0.25, -100, 100, 1 }, { 0.25, NAN, NAN, 1 },
+    };
+
+    for (unsigned linear = 0; linear < 2; linear++) {
+        MipmapFixture f;
+        float out[4];
+        uint32_t enabled[4];
+        unsigned count = 0;
+
+        texture_1d_init(&f, linear ? SGI_GL_LINEAR : SGI_GL_NEAREST,
+                             linear ? SGI_GL_LINEAR : SGI_GL_NEAREST);
+        g_assert_true(sgi_gl_get(&f.scene.c, SGI_GL_TEXTURE_1D,
+                                 enabled, &count));
+        g_assert_cmpuint(count, ==, 1);
+        g_assert_cmpuint(enabled[0], ==, 1);
+        f.pixels[0].pixels[0] = 0xff0000ff;
+        f.pixels[0].pixels[1] = 0x0000ffff;
+        f.image.wrap_t = SGI_GL_CLAMP_TO_BORDER;
+        f.image.lod_scale_t = NAN;
+        for (unsigned j = 0; j < ARRAY_SIZE(coords); j++) {
+            g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                          &f.image, coords[j], colour, out));
+            g_assert_cmpfloat_with_epsilon(out[0], linear ? 0.5 : 0, 0.000001);
+            g_assert_cmpfloat_with_epsilon(out[2], linear ? 0.5 : 1, 0.000001);
+        }
+        if (linear) {
+            const float edge[4] = { 0, -100, 100, 1 };
+
+            f.image.wrap_s = SGI_GL_CLAMP;
+            f.image.border_color[2] = f.image.border_color[3] = 1;
+            g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                          &f.image, edge, colour, out));
+            g_assert_cmpfloat_with_epsilon(out[0], 0.5, 0.000001);
+            g_assert_cmpfloat_with_epsilon(out[2], 0.5, 0.000001);
+        }
+        f.levels[0].height = 2;
+        g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur,
+                       &f.image, coords[0], colour, out));
+        sgi_gl_cleanup(&f.scene.c);
+    }
+}
+
+static void texture_1d_vertex(FragScene *f, float x, float y, float s, float t)
+{
+    texture_coord(f, s, t, t, 1);
+    frag_command(f, SGI_GL_OP_VERTEX2F,
+                 (uint32_t[]) { bits(x), bits(y) }, 2);
+}
+
+static void test_texture_1d_footprint(gconstpointer opaque)
+{
+    uint32_t mode = GPOINTER_TO_UINT(opaque);
+
+    for (unsigned minify = 0; minify < 2; minify++) {
+        MipmapFixture f;
+        float span = minify ? 4 : 0;
+
+        texture_1d_init(&f, SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST);
+        frag_command(&f.scene, SGI_GL_OP_BEGIN, (uint32_t[]) { mode }, 1);
+        texture_1d_vertex(&f.scene, -0.484375, -0.484375, 0.25, -1000);
+        texture_1d_vertex(&f.scene, -0.359375, -0.484375, 0.25 + span, 1000);
+        if (mode == SGI_GL_TRIANGLES) {
+            texture_1d_vertex(&f.scene, -0.484375, -0.359375, 0.25, 500);
+        }
+        frag_command(&f.scene, SGI_GL_OP_END, NULL, 0);
+        g_assert_cmphex(frag_pixel(&f.scene, 17,
+                         mode == SGI_GL_TRIANGLES ? 17 : 16), ==,
+                         minify ? 0x0000ff : 0xff0000);
+        g_assert_cmpuint(f.pixels[minify ? 2 : 0].reads, >, 0);
+        g_assert_cmpuint(f.pixels[1].reads, ==, 0);
+        sgi_gl_cleanup(&f.scene.c);
+    }
+}
+
 static bool mipmap_volume_read(void *opaque, uint32_t level, uint32_t x,
                                 uint32_t y, uint32_t z, uint32_t *rgba)
 {
@@ -10778,6 +10867,13 @@ int main(int argc, char **argv)
                         test_texture_volume_r_scale);
     g_test_add_func("/sgi-gl/texture-volume-mipmaps",
                     test_texture_volume_mipmaps);
+    g_test_add_func("/sgi-gl/texture-1d-sampling", test_texture_1d_sampling);
+    g_test_add_data_func("/sgi-gl/texture-1d-triangle-footprint",
+                        GUINT_TO_POINTER(SGI_GL_TRIANGLES),
+                        test_texture_1d_footprint);
+    g_test_add_data_func("/sgi-gl/texture-1d-line-footprint",
+                        GUINT_TO_POINTER(SGI_GL_LINES),
+                        test_texture_1d_footprint);
     g_test_add_func("/sgi-gl/texture-volume-pyramid",
                     test_texture_volume_pyramid);
     g_test_add_data_func("/sgi-gl/texture-volume-triangle-footprint",

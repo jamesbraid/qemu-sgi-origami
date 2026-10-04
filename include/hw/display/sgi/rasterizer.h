@@ -200,8 +200,10 @@ typedef struct SGIGLTexPyramid {
 
 /*
  * One family-owned level-zero image and its texture object's sampler.
- * volume selects 3D sampling, including when depth is one; otherwise depth
- * and wrap_r are ignored. Dimensions count interior texels; row zero has the
+ * volume selects 3D sampling, including when depth is one. one_dimensional
+ * selects S-only sampling with height one; T/R coordinates and derivatives
+ * are ignored. The two flags are mutually exclusive. Otherwise depth and
+ * wrap_r are ignored. Dimensions count interior texels; row zero has the
  * lowest T and slice zero the lowest R. Interior callbacks get in-range
  * indices; stored-border callbacks get signed indices. Both return canonical
  * RRGGBBAA bytes.
@@ -222,12 +224,13 @@ typedef struct SGIGLTexImage {
     bool (*read_texel_3d)(void *opaque, uint32_t x, uint32_t y, uint32_t z,
                           uint32_t *rgba);
     bool volume;
+    bool one_dimensional;
     void *opaque;
     /*
      * NULL selects the level-zero image fields. Otherwise dimensions, format,
      * border and read callbacks come from the selected level. Sampler fields,
-     * volume, opaque and post_filter apply to both interfaces. Volume levels
-     * halve all three interior dimensions.
+     * dimensionality flags, opaque and post_filter apply to both interfaces.
+     * Volume levels halve all three interior dimensions.
      */
     const SGIGLTexPyramid *pyramid;
     /* Required for a 2D image with border == 1; outside the interior only. */
