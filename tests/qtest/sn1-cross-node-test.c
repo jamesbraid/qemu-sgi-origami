@@ -15,6 +15,7 @@
 #include "sgi-test.h"
 #include "sgi-wait.h"
 #include "sgi-mips-emit.h"
+#include "sgi-migrate.h"
 
 #define MACHINE_ARGS "-M origin300,topology=origin300-two-chassis " \
                      "-cpu R14000 -smp 4 -m 1024"
@@ -1486,6 +1487,269 @@ static void test_remote_reader_in_the_directory(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+#define OPTION_CONTROL UINT64_C(0x1f000000)
+
+static void option_control_write(QTestState *qts, uint64_t address,
+                                  uint64_t value)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/opt',"
+        "'property':'offset','value':%" PRIu64 "}}", address - OPTION_CONTROL);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/opt',"
+        "'property':'value','value':%" PRIu64 "}}", value);
+}
+
+static uint64_t option_control_read(QTestState *qts, uint64_t address)
+{
+    g_autoptr(QDict) reply = NULL;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/opt',"
+        "'property':'offset','value':%" PRIu64 "}}", address - OPTION_CONTROL);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':'/machine/peripheral/opt',"
+        "'property':'value'}}");
+    return qdict_get_int(reply, "return");
+}
+
+static uint32_t option_head_pins(QTestState *qts, unsigned node)
+{
+    uint8_t bytes[4];
+    uint64_t base = SPACE_IO + NODE(node ? 2 : 0) + (UINT64_C(0xe) << 24);
+
+    g_assert_true(qtest_memread_cpu(qts, node * 2, base + 0x104,
+                                    bytes, sizeof(bytes)));
+    return ldl_be_p(bytes) & 0xff;
+}
+
+static void option_pin(QTestState *qts, unsigned node, unsigned device,
+                       unsigned pin, bool level)
+{
+    option_control_write(qts, OPTION_CONTROL + node * 0x1000 + 0x400 +
+                 (device - 1) * 0x100 + pin * 0x40 + 32, level);
+}
+
+static QTestState *option_start(bool selected, char **image, const char *extra)
+{
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("sn1-option-storage-XXXXXX", image, &error);
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    g_assert_cmpint(ftruncate(fd, 16 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf(
+        "-M origin300,topology=%s%s -cpu R14000 -smp 4 -m 1G -bios %s "
+        "-drive if=none,id=cfg,file=%s,format=raw "
+        "-device sgi-compute-option-intx-fixture,id=opt%s "
+        "-nodefaults -display none %s",
+        selected ? "origin300-numalink-pci-expansion-experiment" :
+                   "origin300-two-chassis",
+        selected ? ",expansion-storage.0=expansion-enclosure=cfg" : "",
+        prom_path, *image, extra[0] == ',' ? extra : "",
+        extra[0] == '-' ? extra : "");
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    return qts;
+}
+
+static void test_option_intx_pins(const void *data)
+{
+    static const unsigned map[2][4] = { { 1, 5, 1, 5 }, { 2, 6, 2, 6 } };
+    bool selected = GPOINTER_TO_INT(data);
+    g_autofree char *image = NULL;
+    QTestState *qts = option_start(selected, &image, "");
+
+    for (unsigned node = 0; node < 2; node++) {
+        g_assert_cmpuint(option_control_read(qts,
+                         OPTION_CONTROL + node * 0x1000),
+                         ==, selected);
+        for (unsigned device = 1; device <= 3; device++) {
+            for (unsigned pin = 0; pin < 4; pin++) {
+                uint32_t expected = selected && device <= 2 ?
+                    1U << map[device - 1][pin] : 0;
+
+                option_pin(qts, node, device, pin, true);
+                g_assert_cmphex(option_head_pins(qts, node), ==, expected);
+                g_assert_cmphex(option_head_pins(qts, node ^ 1), ==, 0);
+                option_pin(qts, node, device, pin, false);
+                g_assert_cmphex(option_head_pins(qts, node), ==, 0);
+            }
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+}
+
+static void test_option_intx_shared(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts = option_start(true, &image, "");
+
+    for (unsigned node = 0; node < 2; node++) {
+        for (unsigned device = 1; device <= 2; device++) {
+            for (unsigned first = 0; first < 4; first++) {
+                unsigned other = first ^ 2;
+                unsigned input = device + ((first & 1) ? 4 : 0);
+
+                option_pin(qts, node, device, first, true);
+                option_pin(qts, node, device, other, true);
+                option_pin(qts, node, device, first, false);
+                g_assert_cmphex(option_head_pins(qts, node), ==, 1U << input);
+                option_pin(qts, node, device, other, false);
+                g_assert_cmphex(option_head_pins(qts, node), ==, 0);
+            }
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+}
+
+static void test_option_intx_restore(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts = option_start(true, &image, "");
+
+    for (unsigned node = 0; node < 2; node++) {
+        option_pin(qts, node, 1, 0, true);
+        option_pin(qts, node, 1, 2, true);
+        option_control_write(qts, OPTION_CONTROL + node * 0x1000 + 8, 0);
+        g_assert_cmpuint(option_control_read(qts,
+                         OPTION_CONTROL + node * 0x1000 + 8),
+                         ==, 1);
+        g_assert_cmphex(option_head_pins(qts, node), ==, 1U << 1);
+        for (unsigned mismatch = 1; mismatch <= 3; mismatch++) {
+            option_control_write(qts, OPTION_CONTROL + node * 0x1000 + 8,
+                                 mismatch);
+            g_assert_cmpuint(option_control_read(qts,
+                OPTION_CONTROL + node * 0x1000 + 8), ==, 0);
+        }
+        option_pin(qts, node, 1, 0, false);
+        g_assert_cmphex(option_head_pins(qts, node), ==, 1U << 1);
+        option_pin(qts, node, 1, 2, false);
+        g_assert_cmphex(option_head_pins(qts, node), ==, 0);
+    }
+    option_pin(qts, 0, 2, 1, true);
+    option_pin(qts, 1, 2, 1, true);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_qmp_eventwait(qts, "RESET");
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, 0);
+    g_assert_cmphex(option_head_pins(qts, 1), ==, 0);
+    option_pin(qts, 0, 2, 1, true);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, 1U << 6);
+    qtest_quit(qts);
+    g_unlink(image);
+}
+
+static void test_option_intx_changed_map(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts = option_start(true, &image, ",alternate-map=true");
+
+    option_pin(qts, 0, 1, 0, true);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, 1U << 3);
+    option_pin(qts, 0, 1, 2, true);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, (1U << 1) | (1U << 3));
+    option_pin(qts, 1, 1, 0, true);
+    g_assert_cmphex(option_head_pins(qts, 1), ==, 1U << 1);
+    option_pin(qts, 0, 1, 0, false);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, 1U << 1);
+    option_pin(qts, 0, 1, 2, false);
+    g_assert_cmphex(option_head_pins(qts, 0), ==, 0);
+    qtest_quit(qts);
+    g_unlink(image);
+}
+
+static void option_head_write(QTestState *qts, unsigned node, uint64_t offset,
+                              uint32_t value)
+{
+    uint8_t bytes[4];
+    uint64_t base = SPACE_IO + NODE(node ? 2 : 0) + (UINT64_C(0xe) << 24);
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, node * 2, base + offset + 4,
+                                     bytes, sizeof(bytes)));
+}
+
+static void test_option_intx_masked(void)
+{
+    const uint64_t bit = UINT64_C(1) << 20;
+    g_autofree char *image = NULL;
+    QTestState *qts = option_start(true, &image, "");
+
+    bte_cpu_writeq(qts, 0, BEDROCK_LOCAL + 0x681010, 5);
+    bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + 0x681000, 3);
+    for (unsigned source = 0; source < 2; source++) {
+        for (unsigned destination = 0; destination < 2; destination++) {
+            option_head_write(qts, source, XBRIDGE_INT_UPPER,
+                              XBRIDGE_HOST_PORT << 16);
+            option_head_write(qts, source, XBRIDGE_INT_LOWER,
+                              PI_REGISTERS + PI_PENDING_MODIFY);
+            option_head_write(qts, source, XBRIDGE_INT_HOST(1),
+                XBRIDGE_HOST_REGISTER |
+                ((destination ? 2 : 0) << XBRIDGE_HOST_NODE_SHIFT) | 20);
+            option_head_write(qts, source, 0x118, 2);
+            option_head_write(qts, source, XBRIDGE_INT_ENABLE, 0);
+            bte_cpu_writeq(qts, destination * 2, BEDROCK_LOCAL + PI_MASK0_A,
+                           bit);
+            option_pin(qts, source, 1, 0, true);
+            g_assert_cmphex(option_head_pins(qts, source), ==, 2);
+            g_assert_cmphex(pending0(qts, destination * 2) & bit, ==, 0);
+            option_head_write(qts, source, XBRIDGE_INT_ENABLE, 2);
+            g_assert_cmphex(pending0(qts, destination * 2) & bit, ==, 0);
+            option_head_write(qts, source, 0x1c8, 1);
+            g_assert_cmphex(pending0(qts, destination * 2) & bit, ==, bit);
+            g_assert_cmphex(pending0(qts, (destination ^ 1) * 2) & bit, ==, 0);
+            g_assert_cmphex(interrupt_cpu_cause(qts, destination * 2) &
+                            CPU_CAUSE_IRQ0, ==, CPU_CAUSE_IRQ0);
+            option_pin(qts, source, 1, 0, false);
+            g_assert_cmphex(pending0(qts, destination * 2) & bit, ==, 0);
+            g_assert_cmphex(interrupt_cpu_cause(qts, destination * 2) &
+                            CPU_CAUSE_IRQ0, ==, 0);
+            bte_cpu_writeq(qts, destination * 2, BEDROCK_LOCAL + PI_MASK0_A, 0);
+        }
+    }
+    qtest_quit(qts);
+    g_unlink(image);
+}
+
+static void test_option_intx_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-option-migration-XXXXXX",
+                                         &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *from_image = NULL;
+    g_autofree char *to_image = NULL;
+    QTestState *from = option_start(true, &from_image, "");
+    QTestState *to = option_start(true, &to_image, "-incoming defer");
+
+    g_assert_no_error(error);
+    for (unsigned node = 0; node < 2; node++) {
+        option_pin(from, node, 1, 0, true);
+        option_pin(from, node, 1, 2, true);
+    }
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    for (unsigned node = 0; node < 2; node++) {
+        g_assert_cmphex(option_head_pins(to, node), ==, 1U << 1);
+        option_pin(to, node, 1, 0, false);
+        g_assert_cmphex(option_head_pins(to, node), ==, 1U << 1);
+        option_pin(to, node, 1, 2, false);
+        g_assert_cmphex(option_head_pins(to, node), ==, 0);
+    }
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(from_image);
+    g_unlink(to_image);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1533,6 +1797,18 @@ int main(int argc, char **argv)
                         test_bte_memory_route);
     qtest_add_func("sn1/cross-node/bte-data-goes-by-number",
                    test_bte_data_goes_by_number);
+    if (qtest_has_device("sgi-compute-option-intx-fixture")) {
+        qtest_add_data_func("sn1/option-intx/selected-pins",
+                            GINT_TO_POINTER(1), test_option_intx_pins);
+        qtest_add_data_func("sn1/option-intx/unselected-pins",
+                            GINT_TO_POINTER(0), test_option_intx_pins);
+        qtest_add_func("sn1/option-intx/shared-pins", test_option_intx_shared);
+        qtest_add_func("sn1/option-intx/restore", test_option_intx_restore);
+        qtest_add_func("sn1/option-intx/migration", test_option_intx_migration);
+        qtest_add_func("sn1/option-intx/masked", test_option_intx_masked);
+        qtest_add_func("sn1/option-intx/changed-map",
+                       test_option_intx_changed_map);
+    }
     ret = g_test_run();
     g_unlink(prom_path);
     g_free(prom_path);

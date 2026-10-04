@@ -24,6 +24,7 @@
 #include "qemu/module.h"
 #include "origin300-pci-expansion.h"
 #include "sn1-fabric.h"
+#include "pci-intx-wiring.h"
 
 struct SGIOrigin300PciExpansionState {
     SysBusDevice parent_obj;
@@ -465,19 +466,8 @@ bool sgi_origin300_pci_expansion_set_intx_map(
 static uint8_t expansion_intx_levels(SGIOrigin300PciExpansionState *s,
                                      unsigned head)
 {
-    uint8_t levels = 0;
-
-    for (unsigned device = 1; device <= 2; device++) {
-        for (unsigned pin = 0; pin < PCI_NUM_PINS; pin++) {
-            unsigned raw = device * PCI_NUM_PINS + pin;
-            unsigned index = (head * 2 + device - 1) * PCI_NUM_PINS + pin;
-
-            if (s->intx_raw[head] & (1U << raw)) {
-                levels |= 1U << s->intx_map[index];
-            }
-        }
-    }
-    return levels;
+    return sgi_pci_intx_levels(
+        &s->intx_map[head * SGI_PCI_INTX_MAP_SIZE], s->intx_raw[head]);
 }
 
 static void expansion_intx(void *opaque, int line, int level)
@@ -486,7 +476,7 @@ static void expansion_intx(void *opaque, int line, int level)
     unsigned head = line / SGI_XBRIDGE_HEAD_RAW_PCI_IRQS;
     unsigned raw = line % SGI_XBRIDGE_HEAD_RAW_PCI_IRQS;
     unsigned device = raw / PCI_NUM_PINS;
-    uint8_t levels, changed;
+    uint8_t levels;
 
     s->intx_raw[head] = (s->intx_raw[head] & ~(1U << raw)) |
                        (level ? 1U << raw : 0);
@@ -499,13 +489,8 @@ static void expansion_intx(void *opaque, int line, int level)
         return;
     }
     levels = expansion_intx_levels(s, head);
-    changed = levels ^ s->intx_levels[head];
+    sgi_pci_intx_drive(s->intx_outputs[head], s->intx_levels[head], levels);
     s->intx_levels[head] = levels;
-    for (unsigned pin = 0; pin < SGI_XBRIDGE_HEAD_PINS; pin++) {
-        if (changed & (1U << pin)) {
-            qemu_set_irq(s->intx_outputs[head][pin], !!(levels & (1U << pin)));
-        }
-    }
 }
 
 static void expansion_intx_clear(SGIOrigin300PciExpansionState *s)

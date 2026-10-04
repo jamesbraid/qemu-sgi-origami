@@ -1899,6 +1899,77 @@ static void sn1_node_bedrock_reset(void *opaque, int n, int level)
     }
 }
 
+bool sn1_node_set_option_intx_map(SN1NodeState *node,
+                                 const uint8_t map[SGI_PCI_INTX_MAP_SIZE],
+                                 Error **errp)
+{
+    if (DEVICE(node)->realized || node->option_intx_selected) {
+        error_setg(errp, "compute option INTx map must be selected once "
+                   "before realization");
+        return false;
+    }
+    for (unsigned i = 0; i < SGI_PCI_INTX_MAP_SIZE; i++) {
+        if (map[i] >= SGI_PCI_INTX_INPUTS) {
+            error_setg(errp, "compute option INTx map has no head input %u",
+                       map[i]);
+            return false;
+        }
+    }
+    memcpy(node->option_intx_map, map, sizeof(node->option_intx_map));
+    node->option_intx_owner = node->nasid;
+    node->option_intx_selected = 1;
+    return true;
+}
+
+static void sn1_option_intx(void *opaque, int raw, int level)
+{
+    SN1NodeState *node = opaque;
+    unsigned device = raw / PCI_NUM_PINS;
+    uint8_t levels;
+
+    node->option_intx_raw = (node->option_intx_raw & ~(1U << raw)) |
+                           (level ? 1U << raw : 0);
+    if (device != 1 && device != 2) {
+        if (level) {
+            qemu_log_mask(LOG_UNIMP, "sn1-node: compute option device index "
+                          "%u has no experiment INTx map\n", device);
+        }
+        return;
+    }
+    levels = sgi_pci_intx_levels(node->option_intx_map, node->option_intx_raw);
+    sgi_pci_intx_drive(node->option_intx_outputs,
+                       node->option_intx_levels, levels);
+    node->option_intx_levels = levels;
+}
+
+static void sn1_option_intx_clear(SN1NodeState *node)
+{
+    node->option_intx_raw = 0;
+    node->option_intx_levels = 0;
+    if (node->option_intx_inputs) {
+        for (unsigned pin = 0; pin < SGI_PCI_INTX_INPUTS; pin++) {
+            qemu_set_irq(node->option_intx_outputs[pin], 0);
+        }
+    }
+}
+
+static void sn1_option_intx_connect(SN1NodeState *node)
+{
+    if (!node->option_intx_selected) {
+        return;
+    }
+    node->option_intx_inputs = qemu_allocate_irqs(sn1_option_intx, node,
+                                                 SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+    for (unsigned pin = 0; pin < SGI_PCI_INTX_INPUTS; pin++) {
+        node->option_intx_outputs[pin] = qdev_get_gpio_in_named(
+            node->xbridge, "head-e-pin", pin);
+    }
+    for (unsigned raw = 0; raw < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; raw++) {
+        qdev_connect_gpio_out_named(node->xbridge, "head-e-pci-intx", raw,
+                                    node->option_intx_inputs[raw]);
+    }
+}
+
 static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
 {
     size_t i;
@@ -1965,6 +2036,7 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
     if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
         return false;
     }
+    sn1_option_intx_connect(node);
 
     /*
      * Every widget the crossbar decodes: the host's local view (widget zero)
@@ -2033,6 +2105,7 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
                                DeviceState **l1_uart_out,
                                MemoryRegion **l1_uart_region,
                                Error **errp)
+
 {
     Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     DeviceState *l1_uart_dev;
@@ -2212,6 +2285,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         !sn1_node_create_ip45_xbridge(node, errp)) { (mips/sgi: route compute PCI DMA through Numalink)
         return false;
     }
+
 
     /*
      * Each processor's own view, for the Bedrock's processor I/O path; the
@@ -2544,6 +2618,17 @@ static void sn1_node_unrealize(DeviceState *dev)
     SN1NodeState *node = SN1_NODE(dev);
 
     sn1_memory_mappings_stop(node->memory_mappings);
+    sn1_option_intx_clear(node);
+    if (node->option_intx_inputs) {
+        for (unsigned raw = 0; raw < SGI_XBRIDGE_HEAD_RAW_PCI_IRQS; raw++) {
+            qdev_connect_gpio_out_named(node->xbridge, "head-e-pci-intx",
+                                        raw, NULL);
+        }
+        qemu_free_irqs(node->option_intx_inputs,
+                      SGI_XBRIDGE_HEAD_RAW_PCI_IRQS);
+        node->option_intx_inputs = NULL;
+    }
+
 
     if (node->reset_router_ready) {
         memory_listener_unregister(&node->reset_memory_listener);
@@ -2551,7 +2636,7 @@ static void sn1_node_unrealize(DeviceState *dev)
                                     MEMORY_REGION(&node->reset_router));
         address_space_destroy(&node->reset_memory_as);
         address_space_destroy(&node->reset_prom_as);
-    } (sn1: map routed CPU RAM through destination MD)
+    }
     if (node->ni_boot_initialized) {
         address_space_destroy(&node->ni_boot_as);
     }
@@ -2623,12 +2708,40 @@ static const VMStateDescription vmstate_sn1_node_leds = {
     }
 };
 
+static int sn1_node_post_load(void *opaque, int version)
+{
+    SN1NodeState *node = opaque;
+    uint8_t levels;
+
+    (void)version;
+    if (!node->option_intx_selected) {
+        return 0;
+    }
+    levels = sgi_pci_intx_levels(node->option_intx_map, node->option_intx_raw);
+    if (levels != node->option_intx_levels) {
+        return -EINVAL;
+    }
+    /* Equal migrated head levels do not generate a second packet. */
+    for (unsigned pin = 0; pin < SGI_PCI_INTX_INPUTS; pin++) {
+        qemu_set_irq(node->option_intx_outputs[pin], !!(levels & (1U << pin)));
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_sn1_node = {
     .name = "sn1-node",
     .version_id = 2,
     .minimum_version_id = 2,
+    .post_load = sn1_node_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(board_id_word, SN1NodeState),
+        VMSTATE_SINGLE(option_intx_selected, SN1NodeState, 0,
+                       vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT32_EQUAL(option_intx_owner, SN1NodeState),
+        VMSTATE_ARRAY(option_intx_map, SN1NodeState, SGI_PCI_INTX_MAP_SIZE, 0,
+                      vmstate_info_uint8_equal, uint8_t),
+        VMSTATE_UINT32(option_intx_raw, SN1NodeState),
+        VMSTATE_UINT8(option_intx_levels, SN1NodeState),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -2709,6 +2822,7 @@ static void sn1_node_reset_hold(Object *obj, ResetType type)
     SN1NodeState *node = SN1_NODE(obj);
 
     memset(node->led, 0, sizeof(node->led));
+    sn1_option_intx_clear(node);
 }
 
 static SN1FabricEndpoint *sn1_node_endpoint(Object *owner)

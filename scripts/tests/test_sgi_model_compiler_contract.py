@@ -392,6 +392,55 @@ class IP53ConsoleOfferingTests(unittest.TestCase):
 
 
 
+class ComputeOptionIntxTests(unittest.TestCase):
+    def test_catalogue_preserves_compute_option_maps(self):
+        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        topology = json.loads(render_catalogue_json([model]))["topologies"][0]
+        nodes = topology["nodes"]
+        for node in nodes:
+            self.assertEqual(node.get("option-intx-map"),
+                             [1, 5, 1, 5, 2, 6, 2, 6])
+
+    def test_unknown_compute_option_owner_is_refused(self):
+        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model["machine"]["emulation"]["option_intx_maps"]["missing"] = [1] * 8
+        with self.assertRaises(CompileError):
+            compile_model(model)
+
+    def test_selected_experiment_has_independent_option_maps(self):
+        model = _resolved("origin300-numalink-pci-expansion-experiment")
+        model["machine"]["emulation"]["option_intx_maps"] = {
+            "master-bedrock": [1, 5, 1, 5, 2, 6, 2, 6],
+            "slave-bedrock": [2, 6, 2, 6, 1, 5, 1, 5],
+        }
+        nodes = compile_model(model)["nodes"]
+        self.assertEqual(nodes[0].get("option_intx_map"),
+                         [1, 5, 1, 5, 2, 6, 2, 6])
+        self.assertEqual(nodes[1].get("option_intx_map"),
+                         [2, 6, 2, 6, 1, 5, 1, 5])
+
+    def test_ordinary_origin300_has_no_option_map(self):
+        for node in compile_model(_resolved("origin300"))["nodes"]:
+            self.assertNotIn("option_intx_map", node)
+
+    def test_unselected_compute_option_map_is_refused(self):
+        model = _resolved("origin300")
+        model["machine"]["emulation"]["option_intx_maps"] = {
+            "bedrock": [1, 5, 1, 5, 2, 6, 2, 6],
+        }
+        with self.assertRaises(CompileError):
+            compile_model(model)
+
+    def test_invalid_compute_option_map_is_refused(self):
+        for value in ([1] * 7, [8] * 8, [True] * 8):
+            model = _resolved("origin300-numalink-pci-expansion-experiment")
+            model["machine"]["emulation"]["option_intx_maps"] = {
+                "master-bedrock": value,
+            }
+            with self.assertRaises(CompileError):
+                compile_model(model)
+
+
 class BedrockConfigurationTests(unittest.TestCase):
     def catalogue(self, model):
         return json.loads(render_catalogue_json([model]))["topologies"][0]

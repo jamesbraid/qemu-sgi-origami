@@ -1900,7 +1900,8 @@ def _compile_io_assemblies(model: dict, components: dict, peers: list[dict],
         if "intx_map" in raw:
             pins = raw["intx_map"]
             if (not isinstance(pins, list) or len(pins) != 48
-                    or any(type(pin) is not int or not 0 <= pin < 8 for pin in pins)):
+                    or any(type(pin) is not int or not 0 <= pin < 8
+                       for pin in pins)):
                 raise CompileError("I/O assembly requires 48 explicit PCI INTx inputs")
             record["intx_map"] = pins.copy()
         records.append(record)
@@ -3046,12 +3047,35 @@ def compile_model(model: dict, *, reference_construction: bool = False) -> dict:
     if ip53_graph_nodes and len(ip53_graph_nodes) != node_count:
         raise CompileError(
             "mixed IP53 and non-IP53 SN1 nodes are unsupported")
+    option_maps = machine.get("emulation", {}).get("option_intx_maps", {})
+    if not isinstance(option_maps, dict):
+        raise CompileError("compute option INTx maps must be a node map")
+    if (option_maps and model["composition"]["product"] !=
+            "origin300-numalink-pci-expansion-experiment"):
+        raise CompileError("compute option INTx map requires selection of "
+                           "the Origin 300 routed PCI experiment")
+    known_nodes = {entry["component"]["id"] for entry in graph["nodes"]}
+    if set(option_maps) - known_nodes:
+        raise CompileError("compute option INTx map has no node owner")
+    for pins in option_maps.values():
+        if (not isinstance(pins, list) or len(pins) != 8
+                or any(type(pin) is not int or not 0 <= pin < 8
+                       for pin in pins)):
+            raise CompileError("compute option INTx map requires "
+                               "eight head inputs")
+
 
     try:
         ds1742_boards = validate_io9_clock_links(model)
         validate_initialization_policy(model)
         nodes = [_compile_node(model, components, entry, position, node_count)
                  for position, entry in enumerate(graph["nodes"])]
+        for node in nodes:
+            if node["id"] in option_maps:
+                if node["asic_kind"] != "BEDROCK":
+                    raise CompileError("compute option INTx map requires "
+                                       "a Bedrock board")
+                node["option_intx_map"] = option_maps[node["id"]].copy()
         if graph["io_peers"] and generation != "SN1":
             raise CompileError("I/O-only Bedrock peers require generation SN1")
         io_peers = [_compile_io_peer(model, components, entry, node_count + position)

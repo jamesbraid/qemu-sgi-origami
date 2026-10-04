@@ -21,6 +21,7 @@
 #include "qapi/error.h"
 #include "qobject/qlist.h"
 #include "../../hw/mips/sgi/sn1-fabric.h"
+#include "sgi-pci-expansion-ni-fixture.h"
 #include "../../hw/mips/sgi/origin300-pci-expansion.h"
 
 #define TYPE_NI_FIXTURE "sgi-pci-expansion-ni-fixture"
@@ -105,6 +106,17 @@ static void card_write(void *opaque, hwaddr offset, uint64_t value,
         pci_set_irq(PCI_DEVICE(s), s->pin);
         break;
     }
+}
+
+uint64_t sgi_ni_card_read(DeviceState *card, hwaddr offset, unsigned size)
+{
+    return card_read(NI_CARD(card), offset, size);
+}
+
+void sgi_ni_card_write(DeviceState *card, hwaddr offset, uint64_t value,
+                       unsigned size)
+{
+    card_write(NI_CARD(card), offset, value, size);
 }
 
 static const MemoryRegionOps card_ops = {

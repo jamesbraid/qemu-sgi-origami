@@ -252,6 +252,13 @@
           "required": ["machine_name", "display_description", "profile", "lifecycle"],
           "additionalProperties": false,
           "properties": {
+            "option_intx_maps": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array", "minItems": 8, "maxItems": 8,
+                "items": { "type": "integer", "minimum": 0, "maximum": 7 }
+              }
+            },
             "bedrock_nodes": {
               "type": "object",
               "minProperties": 1,

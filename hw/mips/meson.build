@@ -39,7 +39,11 @@ mips_ss.add(when: 'CONFIG_SGI_CATALOGUE',
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sgi/sn1-fabric.c',
-                           'sgi/origin300-pci-expansion.c'))
+                           'sgi/origin300-pci-expansion.c',
+                           'sgi/pci-intx-wiring.c'))
+mips_ss.add(when: ['CONFIG_SGI_SN1', 'CONFIG_SGI_BOARD_TEST',
+                   'CONFIG_TEST_DEVICES'],
+            if_true: files('../../tests/qtest/sn1-option-intx-fixture.c'))
 # The XIO port interface and the two link kinds that connect it:
 # shared by whichever machines build XIO boards or links, so each
 # selects on its own Kconfig symbol rather than either machine's.

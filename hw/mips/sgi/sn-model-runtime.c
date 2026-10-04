@@ -35,6 +35,31 @@ bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp)
     g_autofree bool *assigned = g_new0(bool, MAX(peers, 1));
     g_autofree bool *connected = g_new0(bool, MAX(peers, 1));
 
+    for (const SGIModelNodeList *n = t->nodes; n; n = n->next) {
+        const SGIModelNode *node = n->value;
+
+        if (!node->has_option_intx_map) {
+            continue;
+        }
+        if (strcmp(t->name,
+                   "origin300-numalink-pci-expansion-experiment") ||
+            node->asic_kind != SGI_MODEL_ASIC_KIND_BEDROCK ||
+            QAPI_LIST_LENGTH(node->option_intx_map) != 8) {
+            error_setg(errp, "compute option INTx map requires the selected "
+                       "Origin 300 experiment, a Bedrock board and "
+                       "eight head inputs");
+            return false;
+        }
+        for (const uint8List *pin = node->option_intx_map; pin;
+             pin = pin->next) {
+            if (pin->value >= 8) {
+                error_setg(errp, "compute option INTx map has no head input %u",
+                           pin->value);
+                return false;
+            }
+        }
+    }
+
     if (!peers && !t->io_assemblies && !t->l1_management &&
         !(t->generation == SGI_MODEL_GENERATION_SN1 && routers)) {
         const SGIModelModuleList *module;

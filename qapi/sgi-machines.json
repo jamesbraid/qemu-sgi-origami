@@ -451,6 +451,9 @@
 #
 # @flash: this node's boot flash
 #
+# @option-intx-map: Optional synthetic compute option-board map.
+#     Eight entries for head E, device indexes 1/2, pins A/B/C/D.
+#
 # @slave-role: whether this node answers module-management commands
 #     only through its module's master, never on its own external AUX
 #     line (Origin 2000's per-Hub adapters behind a shared MSC)
@@ -472,7 +475,8 @@
             'accepted-memory-mib': ['uint64'],
             '*accepted-bank-layouts': ['SGIModelBankLayout'],
             'flash': 'SGIModelFlash',
-            'slave-role': 'bool' } }
+            'slave-role': 'bool',
+            '*option-intx-map': ['uint8'] } }
 
 ##
 # @SGIModelRouter:

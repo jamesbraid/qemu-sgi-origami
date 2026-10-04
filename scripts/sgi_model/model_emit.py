@@ -134,6 +134,8 @@ def _node(raw: dict) -> dict:
         "flash": _flash(raw["flash"]),
         "slave-role": raw["slave_role"],
     }
+    if "option_intx_map" in raw:
+        node["option-intx-map"] = raw["option_intx_map"].copy()
     if "bedrock" in raw:
         node["bedrock"] = _kebab_keys(raw["bedrock"])
     if raw.get("board_kind") == "ip53":
