@@ -522,6 +522,24 @@ bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
     return true;
 }
 
+bool sgi_renderer_draw_batch(SGIRenderer *renderer,
+                             SGIRendererRequest *requests, unsigned count,
+                             Error **errp)
+{
+    for (unsigned i = 0; i < count; i++) {
+        if (!sgi_renderer_request_valid(&requests[i])) {
+            error_setg(errp, "Unsupported SGI OpenGL renderer batch request");
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < count; i++) {
+        if (!sgi_renderer_draw(renderer, &requests[i], errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void sgi_renderer_test_fail_draw(SGIRenderer *renderer, unsigned nth_draw)
 {
     renderer->test_draw_countdown = nth_draw;

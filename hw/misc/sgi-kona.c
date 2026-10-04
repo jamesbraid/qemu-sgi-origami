@@ -2349,6 +2349,7 @@ static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
 }
 
 static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
+                                      const float *provoking,
                                       SGIRendererRequest *request,
                                       SGIColourTarget *target)
 {
@@ -2374,7 +2375,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         return false;
     }
     if (d->mode != SGI_GL_TRIANGLES || d->count != 3 || d->back_colors ||
-        d->nmaterials || d->fill_by_triangle || d->polygon_stipple_enabled ||
+        d->nmaterials || d->polygon_stipple_enabled ||
         d->line_stipple_enabled || d->line_phase ||
         (d->polygon_modes && (d->polygon_modes[0] != SGI_GL_FILL ||
                               d->polygon_modes[1] != SGI_GL_FILL)) ||
@@ -2450,10 +2451,11 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
     }
-    /* Flat triangles take the third vertex's colour, as the CPU path does. */
+    if (provoking[SGI_GL_V_COLOR + 3] != 1) {
+        return false;
+    }
     for (unsigned c = 0; c < 3; c++) {
-        float colour = d->vertices[2 * SGI_GL_VERTEX_FLOATS +
-                                   SGI_GL_V_COLOR + c];
+        float colour = provoking[SGI_GL_V_COLOR + c];
 
         if (!isfinite(colour)) {
             return false;
@@ -2468,10 +2470,40 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     return sgi_renderer_request_valid(request);
 }
 
+static unsigned sgi_kona_renderer_indices(const SGIGLDraw *d,
+                                          unsigned indices[2][4])
+{
+    static const unsigned triangle[1][4] = { { 0, 1, 2, 2 } };
+    static const unsigned polygon[1][4] = { { 0, 1, 2, 0 } };
+    static const unsigned quad[2][4] = { { 0, 1, 2, 3 }, { 0, 2, 3, 3 } };
+    static const unsigned strip[2][4] = { { 0, 1, 3, 3 }, { 0, 3, 2, 3 } };
+
+    if (d->count == 3 && d->mode == SGI_GL_TRIANGLES) {
+        memcpy(indices, triangle, sizeof(triangle));
+        return 1;
+    }
+    if (d->count == 3 && d->mode == SGI_GL_POLYGON) {
+        memcpy(indices, polygon, sizeof(polygon));
+        return 1;
+    }
+    if (d->count == 4 && d->mode == SGI_GL_QUADS) {
+        memcpy(indices, quad, sizeof(quad));
+        return 2;
+    }
+    if (d->count == 4 && d->mode == SGI_GL_QUAD_STRIP) {
+        memcpy(indices, strip, sizeof(strip));
+        return 2;
+    }
+    return 0;
+}
+
 static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
 {
-    SGIRendererRequest *request;
+    SGIRendererRequest *requests;
     SGIColourTarget target;
+    unsigned indices[2][4], count;
+    SGIGLDraw triangle = *d;
+    float vertices[3][SGI_GL_VERTEX_FLOATS];
     Error *err = NULL;
     bool success = false;
 
@@ -2480,40 +2512,60 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     }
     assert(bql_locked());
     s->renderer_fallbacks++;
-    if (s->renderer_failed) {
+    count = sgi_kona_renderer_indices(d, indices);
+    if (s->renderer_failed || !count) {
         return false;
     }
-    request = g_try_new0(SGIRendererRequest, 1);
-    if (!request) {
+    requests = g_try_new0(SGIRendererRequest, count);
+    if (!requests) {
         s->renderer_failed = true;
         return false;
     }
-    if (!sgi_kona_renderer_request(s, d, request, &target)) {
-        goto out;
+    triangle.mode = SGI_GL_TRIANGLES;
+    triangle.count = 3;
+    triangle.vertices = &vertices[0][0];
+    for (unsigned i = 0; i < count; i++) {
+        const float *provoking = d->vertices +
+                                 indices[i][3] * SGI_GL_VERTEX_FLOATS;
+
+        for (unsigned v = 0; v < 3; v++) {
+            memcpy(vertices[v], d->vertices +
+                                indices[i][v] * SGI_GL_VERTEX_FLOATS,
+                   sizeof(vertices[v]));
+        }
+        if (!sgi_kona_renderer_request(s, &triangle, provoking,
+                                       &requests[i], &target)) {
+            goto out;
+        }
     }
-    s->renderer_requests++;
+    s->renderer_requests += count;
     if (!s->renderer) {
         s->renderer = sgi_renderer_new(&err);
     }
-    if (!s->renderer || !sgi_renderer_draw(s->renderer, request, &err)) {
+    if (!s->renderer ||
+        !sgi_renderer_draw_batch(s->renderer, requests, count, &err)) {
         s->renderer_failed = true;
         if (err) {
             error_report_err(err);
         }
         goto out;
     }
-    /* BQL keeps the validated target, planes and dirty storage unchanged. */
-    assert(request->generation == s->renderer_generation);
-    for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
-        for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
-            const uint8_t *pixel = request->rgba +
-                                  (y * SGI_RENDERER_SIZE + x) * 4;
+    /* Commit only complete batches, so fallback cannot replay a prefix. */
+    for (unsigned i = 0; i < count; i++) {
+        SGIRendererRequest *request = &requests[i];
 
-            if (pixel[3]) {
-                sgi_kona_gl_store_colour(s, target,
-                    d->state->drawable.origin[0] + x,
-                    d->state->drawable.origin[1] + y,
-                    (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]);
+        assert(request->generation == s->renderer_generation);
+        for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
+            for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
+                const uint8_t *pixel = request->rgba +
+                                      (y * SGI_RENDERER_SIZE + x) * 4;
+
+                if (pixel[3]) {
+                    sgi_kona_gl_store_colour(s, target,
+                        d->state->drawable.origin[0] + x,
+                        d->state->drawable.origin[1] + y,
+                        (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]);
+                }
             }
         }
     }
@@ -2521,7 +2573,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     s->renderer_fallbacks--;
     success = true;
 out:
-    g_free(request);
+    g_free(requests);
     return success;
 }
 

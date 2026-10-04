@@ -200,6 +200,10 @@ bool sgi_renderer_primitive_supported(SGIRenderer *renderer,
                                       Error **errp);
 bool sgi_renderer_clear(SGIRenderer *renderer, SGIRendererClear *clear,
                         Error **errp);
+/* All requests remain staged until the caller commits a successful batch. */
+bool sgi_renderer_draw_batch(SGIRenderer *renderer,
+                             SGIRendererRequest *requests, unsigned count,
+                             Error **errp);
 /*
  * Test-only: fail the nth otherwise successful draw on this renderer.
  * Zero disables injection; arming does not clear a latched failure.

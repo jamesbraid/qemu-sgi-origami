@@ -333,6 +333,88 @@ static void test_input_vertices(void)
     sgi_renderer_free(renderer);
 }
 
+static unsigned batch_failure;
+
+static bool batch_draw(void *opaque, SGIRendererRequest *request, Error **errp)
+{
+    g_autofree SGIRendererRequest *expected = fixture();
+
+    draw_count++;
+    if (draw_count == 2 && batch_failure == 1) {
+        error_setg(errp, "Injected second-request failure");
+        return false;
+    }
+    for (unsigned offset = 0; offset < SGI_RENDERER_BYTES; offset += 4) {
+        if (expected->rgba[offset + 3]) {
+            memcpy(expected->rgba + offset, request->rgb, sizeof(request->rgb));
+        }
+    }
+    memcpy(request->rgba, expected->rgba, sizeof(request->rgba));
+    if (draw_count == 2 && batch_failure == 2) {
+        request->rgba[3] = 255;
+    }
+    return true;
+}
+
+static const SGIRendererOps batch_ops = {
+    .create = generation_create,
+    .draw = batch_draw,
+    .destroy = generation_destroy,
+};
+
+static void test_batch(gconstpointer opaque)
+{
+    unsigned failure = GPOINTER_TO_UINT(opaque);
+    g_autofree SGIRendererRequest *source = fixture();
+    g_autofree SGIRendererRequest *requests = g_new0(SGIRendererRequest, 2);
+    Error *err = NULL;
+    SGIRenderer *renderer;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    requests[0] = requests[1] = *source;
+    requests[1].rgb[0] = 0;
+    requests[1].rgb[1] = 255;
+    if (failure == 3) {
+        requests[1].clip[0] = -1;
+    }
+    batch_failure = failure;
+    sgi_renderer_register_gl(&batch_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_cmpint(sgi_renderer_draw_batch(renderer, requests, 2, &err), ==,
+                    !failure);
+    if (!failure) {
+        g_assert_null(err);
+        g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+        g_assert_true(sgi_renderer_staging_valid(&requests[1]));
+        g_assert_cmpuint(requests[0].rgba[(16 * 128 + 16) * 4], ==, 255);
+        g_assert_cmpuint(requests[1].rgba[(16 * 128 + 16) * 4 + 1], ==, 255);
+    } else {
+        g_assert_nonnull(err);
+        error_free(err);
+        err = NULL;
+        if (failure == 3) {
+            g_assert_cmpuint(draw_count, ==, 0);
+            requests[1].clip[0] = 0;
+            g_assert_true(sgi_renderer_draw_batch(renderer, requests, 2, &err));
+            g_assert_null(err);
+        } else {
+            g_assert_true(sgi_renderer_staging_valid(&requests[0]));
+            g_assert_false(sgi_renderer_draw_batch(renderer, requests, 2,
+                                                   &err));
+            g_assert_nonnull(err);
+            error_free(err);
+        }
+    }
+    g_assert_cmpuint(draw_count, ==, 2);
+    sgi_renderer_free(renderer);
+}
+
 static bool test_draw(void *opaque, SGIRendererRequest *request, Error **errp)
 {
     draw_count++;
@@ -715,6 +797,16 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
+    static const char *batch_cases[] = {
+        "success", "second-backend-failure", "second-staging-failure",
+        "late-invalid-input",
+    };
+    for (unsigned failure = 0; failure < ARRAY_SIZE(batch_cases); failure++) {
+        g_autofree char *path = g_strdup_printf("/sgi-renderer/batch/%s",
+                                                batch_cases[failure]);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(failure), test_batch);
+    }
     g_test_add_func("/sgi-renderer/test-fault/instance",
                     test_instance_draw_failure);
     g_test_add_func("/sgi-renderer/test-fault/order",
