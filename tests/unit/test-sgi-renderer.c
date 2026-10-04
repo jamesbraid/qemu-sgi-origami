@@ -11,6 +11,7 @@
 #ifdef CONFIG_MODULE_UPGRADES
 #include "qemu-version.h"
 #endif
+#include <math.h>
 #include "ui/sgi-renderer.h"
 
 static SGIRendererRequest *fixture(void)
@@ -84,10 +85,66 @@ static void test_request(void)
     g_autofree SGIRendererRequest *request = fixture();
 
     request->vertices[1][0] = 112;
+    g_assert_true(sgi_renderer_request_valid(request));
+    request->rgb[0] = 127;
+    g_assert_true(sgi_renderer_request_valid(request));
+    request->vertices[1][0] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->vertices[1][0] = 128.25f;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->vertices[1][0] = 0.001f;
     g_assert_false(sgi_renderer_request_valid(request));
     request->vertices[1][0] = 111.25f;
-    request->rgb[0] = 127;
+    request->vertices[1][2] = 1;
     g_assert_false(sgi_renderer_request_valid(request));
+    request->vertices[1][2] = 0;
+    request->vertices[1][3] = 0;
+    g_assert_false(sgi_renderer_request_valid(request));
+}
+
+static void test_triangle_coverage(void)
+{
+    static const float vertices[4][3][4] = {
+        { { 0, 0, 0, 1 }, { 4, 0, 0, 1 }, { 0, 4, 0, 1 } },
+        { { 0, 0, 0, 1 }, { 4, 4, 0, 1 }, { 0, 4, 0, 1 } },
+        { { 0, 0, 0, 1 }, { 4, 0, 0, 1 }, { 4, 4, 0, 1 } },
+        { { 0, 0, 0, 1 }, { 2, 2, 0, 1 }, { 4, 4, 0, 1 } },
+    };
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+
+    request->rgb[0] = 17;
+    request->rgb[1] = 63;
+    request->rgb[2] = 191;
+    request->clip[2] = request->clip[3] = 3;
+    for (unsigned mode = 0; mode < 8; mode++) {
+        unsigned shape = mode % 4;
+
+        memset(request->rgba, 0, sizeof(request->rgba));
+        memcpy(request->vertices, vertices[shape], sizeof(request->vertices));
+        if (mode >= 4) {
+            memcpy(request->vertices[1], vertices[shape][2],
+                   sizeof(request->vertices[1]));
+            memcpy(request->vertices[2], vertices[shape][1],
+                   sizeof(request->vertices[2]));
+        }
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                bool covered = shape == 0 ? x + y < 3 :
+                               shape == 1 ? x < y :
+                               shape == 2 ? x >= y : false;
+                uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+
+                if (covered) {
+                    memcpy(pixel, request->rgb, sizeof(request->rgb));
+                    pixel[3] = 255;
+                }
+            }
+        }
+        g_assert_true(sgi_renderer_request_valid(request));
+        g_assert_true(sgi_renderer_staging_valid(request));
+        request->rgba[3] = request->rgba[3] ? 0 : 255;
+        g_assert_false(sgi_renderer_staging_valid(request));
+    }
 }
 
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
@@ -126,7 +183,7 @@ static void test_missing_registration(void)
 #endif
 
 static unsigned draw_count;
-static bool corrupt_colour, corrupt_clip;
+static bool corrupt_colour, corrupt_clip, corrupt_vertices;
 
 static void *generation_create(SGIRenderCreateResult *result, Error **errp)
 {
@@ -140,7 +197,13 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
     g_autofree SGIRendererRequest *expected = fixture();
 
     draw_count++;
-    if (corrupt_clip) {
+    if (corrupt_vertices) {
+        float vertex[4];
+
+        memcpy(vertex, request->vertices[1], sizeof(vertex));
+        memcpy(request->vertices[1], request->vertices[2], sizeof(vertex));
+        memcpy(request->vertices[2], vertex, sizeof(vertex));
+    } else if (corrupt_clip) {
         request->clip[0] = 50;
         for (unsigned y = 0; y < 128; y++) {
             memset(expected->rgba + y * 128 * 4, 0, 50 * 4);
@@ -244,6 +307,28 @@ static void test_input_clip(void)
     err = NULL;
     g_assert_false(sgi_renderer_draw(renderer, request, &err));
     g_assert_cmpuint(draw_count, ==, 1);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
+static void test_input_vertices(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    Error *err = NULL;
+    SGIRenderer *renderer;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    corrupt_vertices = true;
+    sgi_renderer_register_gl(&response_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
     error_free(err);
     sgi_renderer_free(renderer);
 }
@@ -618,6 +703,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/uncovered", test_uncovered);
     g_test_add_func("/sgi-renderer/colour", test_colour);
     g_test_add_func("/sgi-renderer/request", test_request);
+    g_test_add_func("/sgi-renderer/triangle-coverage", test_triangle_coverage);
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
     g_test_add_func("/sgi-renderer/missing-backend", test_missing_backend);
 #endif
@@ -628,6 +714,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/generation", test_generation);
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
+    g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
     g_test_add_func("/sgi-renderer/test-fault/instance",
                     test_instance_draw_failure);
     g_test_add_func("/sgi-renderer/test-fault/order",
