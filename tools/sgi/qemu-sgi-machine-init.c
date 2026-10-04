@@ -285,12 +285,20 @@ static void build_item(const SGIModelStorageItem *item,
     }
 }
 
-/* Write @size bytes to the new file @name in @dirfd and flush them. */
-static bool write_store(int dirfd, const char *name, const uint8_t *buf,
+#ifdef _WIN32
+/* Windows opens nothing inheritable by default; _O_NOINHERIT is the flag. */
+#define STORE_OPEN_FLAGS (O_WRONLY | O_CREAT | O_EXCL | O_BINARY | \
+                          _O_NOINHERIT)
+#else
+#define STORE_OPEN_FLAGS (O_WRONLY | O_CREAT | O_EXCL | O_BINARY | O_CLOEXEC)
+#endif
+
+/* Write @size bytes to the new file @name in @dir and flush them. */
+static bool write_store(const char *dir, const char *name, const uint8_t *buf,
                         size_t size, Error **errp)
 {
-    int fd = openat(dirfd, name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-                    0666);
+    g_autofree char *path = g_strdup_printf("%s/%s", dir, name);
+    int fd = open(path, STORE_OPEN_FLAGS, 0666);
 
     if (fd < 0) {
         error_setg_errno(errp, errno, "cannot create '%s'", name);
@@ -315,6 +323,14 @@ static bool write_store(int dirfd, const char *name, const uint8_t *buf,
 
 static bool sync_directory(const char *path, Error **errp)
 {
+#ifdef _WIN32
+    /*
+     * Windows cannot open a directory as a file descriptor, and NTFS
+     * journals the metadata of the renames and creations made here, so
+     * there is nothing to flush.
+     */
+    return true;
+#else
     int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     int ret;
 
@@ -329,6 +345,7 @@ static bool sync_directory(const char *path, Error **errp)
         return false;
     }
     return true;
+#endif
 }
 
 /*
@@ -338,6 +355,27 @@ static bool sync_directory(const char *path, Error **errp)
  */
 static bool publish_directory(const char *tmp, const char *dir, Error **errp)
 {
+#ifdef _WIN32
+    /* Without MOVEFILE_REPLACE_EXISTING the move fails on an existing @dir. */
+    g_autofree wchar_t *wtmp = g_utf8_to_utf16(tmp, -1, NULL, NULL, NULL);
+    g_autofree wchar_t *wdir = g_utf8_to_utf16(dir, -1, NULL, NULL, NULL);
+
+    if (!wtmp || !wdir) {
+        error_setg(errp, "cannot create '%s': invalid name", dir);
+        return false;
+    }
+    if (!MoveFileExW(wtmp, wdir, 0)) {
+        DWORD err = GetLastError();
+
+        if (err == ERROR_ALREADY_EXISTS || err == ERROR_FILE_EXISTS) {
+            error_setg(errp, "'%s' already exists", dir);
+        } else {
+            error_setg_win32(errp, err, "cannot create '%s'", dir);
+        }
+        return false;
+    }
+    return true;
+#else
 #ifdef RENAME_NOREPLACE
     if (renameat2(AT_FDCWD, tmp, AT_FDCWD, dir, RENAME_NOREPLACE) == 0) {
         return true;
@@ -356,14 +394,18 @@ static bool publish_directory(const char *tmp, const char *dir, Error **errp)
         return false;
     }
     return true;
+#endif
 }
 
-/* Refuse anything already at @dir, a dangling symbolic link included. */
+/*
+ * Refuse anything already at @dir, a dangling symbolic link included. On
+ * Windows g_lstat sees a reparse point as the entry it is.
+ */
 static bool check_absent(const char *dir, Error **errp)
 {
-    struct stat st;
+    GStatBuf st;
 
-    if (lstat(dir, &st) == 0) {
+    if (g_lstat(dir, &st) == 0) {
         error_setg(errp, "'%s' already exists", dir);
         return false;
     }
@@ -394,7 +436,6 @@ static bool create_machine(const SGIModelOffering *offering,
     bool published = false, ok = false;
     time_t seconds = time(NULL);
     struct tm now;
-    int dirfd;
     Error *sync_err = NULL;
 
     chassis = sgi_model_product_topology(sgi_machines(), offering->product,
@@ -463,12 +504,6 @@ static bool create_machine(const SGIModelOffering *offering,
                          "'%s'", dir);
         return false;
     }
-    dirfd = open(tmp, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dirfd < 0) {
-        error_setg_errno(errp, errno, "cannot open '%s'", tmp);
-        rmdir(tmp);
-        return false;
-    }
 
     for (entry = offering->storage; entry; entry = entry->next) {
         const SGIModelStorageItem *item = entry->value;
@@ -478,7 +513,7 @@ static bool create_machine(const SGIModelOffering *offering,
 
         build_item(item, find_input(offering, initial),
                    g_hash_table_lookup(images, initial), t, &now, buf);
-        if (!write_store(dirfd, file, buf, item->size, errp)) {
+        if (!write_store(tmp, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
             goto out;
         }
@@ -503,13 +538,12 @@ out:
         /* Take back every file this run created, and the directory. */
         for (entry = offering->storage; entry; entry = entry->next) {
             g_autofree char *file =
-                g_strdup_printf("%s.raw", entry->value->name);
+                g_strdup_printf("%s/%s.raw", tmp, entry->value->name);
 
-            unlinkat(dirfd, file, 0);
+            unlink(file);
         }
         rmdir(tmp);
     }
-    close(dirfd);
     return ok;
 }
 
@@ -575,8 +609,11 @@ int main(int argc, char **argv)
     }
 
     dir = g_strdup(argv[optind]);
-    /* "new/" names the directory new, not a place inside it. */
-    while (strlen(dir) > 1 && g_str_has_suffix(dir, "/")) {
+    /*
+     * "new/" names the directory new, not a place inside it; on Windows
+     * so does "new\" with its own separator.
+     */
+    while (strlen(dir) > 1 && G_IS_DIR_SEPARATOR(dir[strlen(dir) - 1])) {
         dir[strlen(dir) - 1] = '\0';
     }
 

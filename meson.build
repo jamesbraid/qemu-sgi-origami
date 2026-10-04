@@ -4546,8 +4546,7 @@ if have_tools
              install: true)
 
   # The SGI machine catalogue's QAPI types are generated for system builds.
-  if have_system and host_os != 'windows' and \
-     is_variable('sgi_machines_embed_c')
+  if have_system and is_variable('sgi_machines_embed_c')
     subdir('tools/sgi')
   endif
 
