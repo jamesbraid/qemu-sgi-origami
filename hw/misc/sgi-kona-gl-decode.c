@@ -729,3 +729,93 @@ bool sgi_kona_gl_texture_filter_curve(const uint32_t words[33],
     memcpy(values, decoded, sizeof(decoded));
     return true;
 }
+
+static uint64_t sgi_kona_gl_bitmap_words_before(const SGIKonaGLBitmapLayout *l,
+                                                uint32_t row)
+{
+    uint64_t cycle = 0, tail = 0;
+
+    /* Byte phases repeat after at most four rows. */
+    for (uint32_t i = 0; i < 4; i++) {
+        uint32_t phase = (l->phase + i * l->stride) & 3;
+        uint64_t words = (phase + l->row_bytes + 3) / 4;
+
+        cycle += words;
+        if (i < row % 4) {
+            tail += words;
+        }
+    }
+    return cycle * (row / 4) + tail;
+}
+
+bool sgi_kona_gl_bitmap_pio_layout(const uint32_t header[9],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLBitmapLayout *layout)
+{
+    SGIKonaGLBitmapLayout l = { 0 };
+    uint64_t length, bytes, padding;
+
+    if (!header || !layout || !header[0] || !header[1] ||
+        header[2] > 3 || header[3] || header[4] > 1 ||
+        (alignment != 1 && alignment != 2 &&
+         alignment != 4 && alignment != 8)) {
+        return false;
+    }
+    l.width = header[0];
+    l.height = header[1];
+    length = row_length ? row_length : l.width;
+    bytes = (length + 7) / 8;
+    l.stride = (bytes + alignment - 1) & ~(uint64_t)(alignment - 1);
+    padding = l.stride - bytes;
+    l.strided = padding >= 4 || length != l.width || skip_pixels;
+    if (header[4] != l.strided) {
+        return false;
+    }
+    l.phase = (header[2] + skip_rows * l.stride + skip_pixels / 8) & 3;
+    l.bit_skip = skip_pixels & 7;
+    l.row_bytes = ((uint64_t)l.width + l.bit_skip + 7) / 8;
+    if (l.strided) {
+        l.payload_words = sgi_kona_gl_bitmap_words_before(&l, l.height);
+    } else {
+        uint64_t span = l.height * l.stride - padding;
+
+        l.payload_words = (l.phase + span + 3) / 4;
+    }
+    *layout = l;
+    return true;
+}
+
+bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *l,
+                                 const uint32_t *words, size_t nwords,
+                                 bool lsb_first, uint32_t row, uint32_t byte,
+                                 uint8_t *out)
+{
+    uint64_t first_bit = (uint64_t)byte * 8;
+    uint64_t start;
+    uint8_t value = 0;
+
+    if (!l || !words || !out || row >= l->height || first_bit >= l->width) {
+        return false;
+    }
+    if (l->strided) {
+        uint32_t phase = (l->phase + row * l->stride) & 3;
+
+        start = 4 * sgi_kona_gl_bitmap_words_before(l, row) + phase;
+    } else {
+        start = l->phase + row * l->stride;
+    }
+    for (uint32_t i = 0; i < 8 && first_bit + i < l->width; i++) {
+        uint64_t source_bit = first_bit + i + l->bit_skip;
+        uint64_t pos = start + source_bit / 8;
+        uint32_t raw, bit = source_bit & 7;
+
+        if (pos / 4 >= nwords) {
+            return false;
+        }
+        raw = (words[pos / 4] >> (24 - 8 * (pos & 3))) & 0xff;
+        value |= ((raw >> (lsb_first ? bit : 7 - bit)) & 1) << (7 - i);
+    }
+    *out = value;
+    return true;
+}

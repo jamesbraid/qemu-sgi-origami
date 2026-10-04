@@ -1362,6 +1362,151 @@ static void test_texture_filter_curve_refusal(void)
     g_assert_cmpmem(values, sizeof(values), unchanged, sizeof(unchanged));
 }
 
+static void test_bitmap_pio_contiguous(void)
+{
+    const uint32_t header[9] = { 12, 2, 3, 0, 0 };
+    const uint32_t words[] = { 0xdeadbe80, 0x40ccdda0, 0x10eeeeee };
+    SGIKonaGLBitmapLayout layout;
+    uint8_t out;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 4, &layout));
+    g_assert_cmpuint(layout.payload_words, ==, 3);
+    g_assert_cmpuint(layout.stride, ==, 4);
+    g_assert_cmpuint(layout.phase, ==, 3);
+    g_assert_false(layout.strided);
+    for (uint32_t row = 0; row < 2; row++) {
+        for (uint32_t byte = 0; byte < 2; byte++) {
+            static const uint8_t expected[2][2] = { { 0x80, 0x40 },
+                                                   { 0xa0, 0x10 } };
+
+            g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 3,
+                                                     false, row, byte, &out));
+            g_assert_cmphex(out, ==, expected[row][byte]);
+        }
+    }
+}
+
+static void test_bitmap_pio_skips(void)
+{
+    const uint32_t header[9] = { 9, 2, 1, 0, 1 };
+    const uint32_t words[] = { 0xdead60c0, 0xbeef21a0 };
+    SGIKonaGLBitmapLayout layout;
+    uint8_t out;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 17, 1, 9, 2, &layout));
+    g_assert_cmpuint(layout.payload_words, ==, 2);
+    g_assert_cmpuint(layout.phase, ==, 2);
+    g_assert_cmpuint(layout.bit_skip, ==, 1);
+    g_assert_cmpuint(layout.stride, ==, 4);
+    for (uint32_t row = 0; row < 2; row++) {
+        for (uint32_t byte = 0; byte < 2; byte++) {
+            static const uint8_t expected[2][2] = { { 0xc1, 0x80 },
+                                                   { 0x43, 0 } };
+
+            g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 2,
+                                                     false, row, byte, &out));
+            g_assert_cmphex(out, ==, expected[row][byte]);
+        }
+    }
+}
+
+static void test_bitmap_pio_row_padding(void)
+{
+    const uint32_t header[9] = { 9, 5, 0, 0, 1 };
+    const uint32_t words[] = { 0x80000000, 0xfffffff0, 0x80eeeeee,
+                              0xdead4000, 0xbe200000, 0x10000000 };
+    SGIKonaGLBitmapLayout layout;
+    uint8_t out;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 17, 0, 0, 1, &layout));
+    g_assert_cmpuint(layout.payload_words, ==, 6);
+    g_assert_cmpuint(layout.stride, ==, 3);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 6,
+                                            false, 1, 0, &out));
+    g_assert_cmphex(out, ==, 0xf0);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 6,
+                                            false, 1, 1, &out));
+    g_assert_cmphex(out, ==, 0x80);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 6,
+                                            false, 4, 0, &out));
+    g_assert_cmphex(out, ==, 0x10);
+}
+
+static void test_bitmap_pio_bit_order(void)
+{
+    const uint32_t header[9] = { 3, 1, 0, 0, 0 };
+    const uint32_t word = 0x05ffffff;
+    SGIKonaGLBitmapLayout layout;
+    uint8_t out;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 1, &layout));
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, &word, 1,
+                                            true, 0, 0, &out));
+    g_assert_cmphex(out, ==, 0xa0);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, &word, 1,
+                                            false, 0, 0, &out));
+    g_assert_cmphex(out, ==, 0);
+}
+
+static void test_bitmap_pio_skip_rows_phase(void)
+{
+    const uint32_t header[9] = { 8, 2, 1, 0, 0 };
+    const uint32_t words[] = { 0xdeadaa80, 0x40ffffff };
+    SGIKonaGLBitmapLayout layout;
+    uint8_t out;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 0, 2, 0, 1, &layout));
+    g_assert_cmpuint(layout.phase, ==, 3);
+    g_assert_cmpuint(layout.payload_words, ==, 2);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 2,
+                                            false, 0, 0, &out));
+    g_assert_cmphex(out, ==, 0x80);
+    g_assert_true(sgi_kona_gl_bitmap_pio_byte(&layout, words, 2,
+                                            false, 1, 0, &out));
+    g_assert_cmphex(out, ==, 0x40);
+}
+
+static void test_bitmap_pio_large_counts(void)
+{
+    const uint32_t header[9] = { UINT32_MAX, UINT32_MAX, 3, 0, 0 };
+    SGIKonaGLBitmapLayout layout;
+
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 0, UINT32_MAX, 0,
+                                               8, &layout));
+    g_assert_cmpuint(layout.phase, ==, 3);
+    g_assert_cmpuint(layout.stride, ==, 536870912);
+    g_assert_cmpuint(layout.payload_words, ==, UINT64_C(576460752169205761));
+}
+
+static void test_bitmap_pio_refusals(void)
+{
+    uint32_t header[9] = { 8, 1, 0, 0, 0 };
+    SGIKonaGLBitmapLayout layout = { .payload_words = 77 };
+    const SGIKonaGLBitmapLayout before = layout;
+    uint8_t out = 0xa5;
+    uint32_t word = 0xffffffff;
+
+    g_assert_false(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 3, &layout));
+    header[3] = 1;
+    g_assert_false(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 1, &layout));
+    header[3] = 0;
+    header[2] = 4;
+    g_assert_false(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 1, &layout));
+    header[2] = 0;
+    header[4] = 1;
+    g_assert_false(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 1, &layout));
+    g_assert_cmpmem(&layout, sizeof(layout), &before, sizeof(before));
+    header[4] = 0;
+    g_assert_true(sgi_kona_gl_bitmap_pio_layout(header, 0, 0, 0, 1, &layout));
+    g_assert_false(sgi_kona_gl_bitmap_pio_byte(&layout, &word, 0,
+                                             false, 0, 0, &out));
+    g_assert_false(sgi_kona_gl_bitmap_pio_byte(&layout, &word, 1,
+                                             false, 1, 0, &out));
+    g_assert_false(sgi_kona_gl_bitmap_pio_byte(&layout, &word, 1,
+                                             false, 0, 1, &out));
+    g_assert_cmphex(out, ==, 0xa5);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1419,5 +1564,19 @@ int main(int argc, char **argv)
                     test_texture_filter_curve);
     g_test_add_func("/sgi-kona-gl-decode/texture-filter-curve/refusal",
                     test_texture_filter_curve_refusal);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/contiguous",
+                    test_bitmap_pio_contiguous);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/skips",
+                    test_bitmap_pio_skips);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/row-padding",
+                    test_bitmap_pio_row_padding);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/bit-order",
+                    test_bitmap_pio_bit_order);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/refusals",
+                    test_bitmap_pio_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/skip-rows-phase",
+                    test_bitmap_pio_skip_rows_phase);
+    g_test_add_func("/sgi-kona-gl-decode/bitmap-pio/large-counts",
+                    test_bitmap_pio_large_counts);
     return g_test_run();
 }
