@@ -30,8 +30,8 @@ about a second with or without writable pflash. The menu case below
 uses writable pflash and checks diagnostics separately.
 
 test_four_cpus_reach_the_menu_with_all_diags_passed goes past that
-first line, through a writable boot flash and synthetic
-chassis/board/SPD identity records, to the stock PROM's "ALL DIAGS
+first line, through a writable boot flash and the machine's own
+synthetic node and IO8 identity records, to the stock PROM's "ALL DIAGS
 PASSED" and System Maintenance Menu.
 test_irix_origin300_installed_boot.py checks that same outcome
 for two CPUs while continuing through an installed IRIX boot.
@@ -73,14 +73,11 @@ class Origin300PromMenu(QemuSystemTest):
 
     ASSET_FIRMWARE = LocalAsset(
         lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
-    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
-    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
 
     def boot_to_menu(self, cpus):
         firmware = self.ASSET_FIRMWARE.fetch()
-        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
         machine, argv = lib_origin300.launch_args(
-            firmware, spd_paths, cpus, self.workdir)
+            firmware, cpus, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()

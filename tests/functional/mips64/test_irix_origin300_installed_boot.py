@@ -40,8 +40,6 @@ class IrixOrigin300InstalledBoot(QemuSystemTest):
 
     ASSET_FIRMWARE = LocalAsset(
         lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
-    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
-    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
     ASSET_DISK = LocalAsset(DISK_REL, DISK_SHA256)
 
     @skipBigDataTest()
@@ -49,10 +47,8 @@ class IrixOrigin300InstalledBoot(QemuSystemTest):
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_irix_origin300_installed_boot(self):
         firmware = self.ASSET_FIRMWARE.fetch()
-        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
         disk = self.ASSET_DISK.fetch()
-        machine, args = lib_origin300.launch_args(
-            firmware, spd_paths, 2, self.workdir)
+        machine, args = lib_origin300.launch_args(firmware, 2, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()
