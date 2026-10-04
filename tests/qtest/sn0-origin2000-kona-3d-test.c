@@ -6836,6 +6836,154 @@ static void test_read_pixels_typed_extent(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static const struct {
+    unsigned bytes;
+    uint32_t bits, rgba, red_alpha, blue_alpha;
+} packed_pixel_cases[] = {
+    { 1, 0xa7, 0xb624ffff, 0xe0, 3 },
+    { 2, 0x1357, 0x11335577, 0xf00f, 0xff },
+    { 2, (17 << 11) | (9 << 6) | (3 << 1) | 1,
+      0x8c4a19ff, 0xf801, 0x3f },
+    { 4, 0x12345678, 0x12345678, 0xff0000ff, 0xffff },
+    { 4, (513u << 22) | (257 << 12) | (129 << 2) | 2,
+      0x804020aa, 0xffc00003, 0xfff },
+};
+
+static void packed_pixel_bytes(uint8_t *out, uint32_t bits, unsigned bytes,
+                                 bool swap)
+{
+    for (unsigned k = 0; k < bytes; k++) {
+        out[k] = bits >> (8 * (swap ? k : bytes - 1 - k));
+    }
+}
+
+static void test_packed_pixel_ingress(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque), n = mode % 9;
+    unsigned slot = n < 5 ? n : n - 4;
+    unsigned type = 8 + slot, format = n >= 5 ? 10 : slot ? 5 : 4;
+    bool dma = (mode / 9) & 1, swap = (mode / 9) & 2;
+    unsigned bytes = packed_pixel_cases[slot].bytes;
+    uint32_t pixel = packed_pixel_cases[slot].rgba;
+    uint8_t source[20] = { 0 };
+    uint32_t h[20];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    if (n >= 5) {
+        pixel = (pixel & 0x00ff00ff) | ((pixel & 0xff000000) >> 16) |
+                ((pixel & 0x0000ff00) << 16);
+    }
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf0, swap }, 2);
+    for (unsigned k = 0; k < 4; k++) {
+        packed_pixel_bytes(source + 1 + k * bytes,
+                             packed_pixel_cases[slot].bits, bytes, swap);
+    }
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380001, source + 1, 4 * bytes);
+    }
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a,
+                 (uint32_t[]) { 2, 1, format, type, 1, dma, 0, 0 }, 8);
+    if (dma) {
+        texture_dma_packet(s, 1, 2 * bytes, 2 * bytes, 0);
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    } else {
+        for (unsigned k = 0; k < DIV_ROUND_UP(1 + 2 * bytes, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(source + k * 4));
+        }
+    }
+    expected_clear(e, 0);
+    for (unsigned x = 0; x < 2; x++) {
+        for (unsigned c = 0; c < 3; c++) {
+            e->rgb[((127 - 64) * 128 + 64 + x) * 3 + c] =
+                pixel >> (24 - c * 8);
+        }
+    }
+    assert_window_matches(s, e);
+
+    texture_native_bind(s, 0);
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = format;
+    h[4] = type;
+    h[5] = 1;
+    h[6] = dma;
+    h[17] |= dma ? 4 : 0;
+    kona_command(s, 0x174, h, ARRAY_SIZE(h));
+    if (dma) {
+        texture_dma_packet(s, 1, 4 * bytes, 4 * bytes, 0);
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    } else {
+        for (unsigned k = 0; k < DIV_ROUND_UP(1 + 4 * bytes, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(source + k * 4));
+        }
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2, pixel);
+    }
+    qtest_quit(s);
+}
+
+static void test_packed_pixel_read(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque), n = mode % 9;
+    unsigned slot = n < 5 ? n : n - 4;
+    unsigned type = 8 + slot, format = n >= 5 ? 10 : slot ? 5 : 4;
+    bool dma = (mode / 9) & 1, swap = (mode / 9) & 2;
+    unsigned bytes = packed_pixel_cases[slot].bytes;
+    const uint64_t reason_page = 0x300000, destination = 0x380000;
+    uint32_t bits = n >= 5 ? packed_pixel_cases[slot].blue_alpha :
+                            packed_pixel_cases[slot].red_alpha;
+    uint8_t expected[0x4000], got[0x4000];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 1, 0, 0);
+    kona_command(s, 0x33, (uint32_t[]) { 0xd00, swap }, 2);
+    prepare_refused_reply(s);
+    if (dma) {
+        kona_command_kicked(s, 0x1f1,
+            (uint32_t[]) { physical_page_word(reason_page),
+                           tagged_offset_word(reason_page), 0x4000 }, 3);
+        qtest_writel(s, KONA_REG(0x000034), 0x98000);
+        qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+        qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        read_dma_clear_notifications(s, reason_page);
+        qtest_memset(s, destination, 0xa5, sizeof(got));
+        kona_command(s, 0x1f5,
+            (uint32_t[]) { 0, 0x9003, 4 * bytes, 2 * bytes, 5, 0 }, 6);
+    }
+    kona_command(s, 0x39, (uint32_t[]) { 0, 0, 2, 2, format, type, 3 }, 7);
+    memset(expected, 0xa5, sizeof(expected));
+    if (dma) {
+        assert_reply_unchanged(s);
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x12345678 }, 2);
+        for (unsigned k = 0; k < 4; k++) {
+            packed_pixel_bytes(expected + 3 + (k / 2) * (2 * bytes + 5) +
+                                (k % 2) * bytes, bits, bytes, swap);
+        }
+        qtest_memread(s, destination, got, sizeof(got));
+        g_assert_cmphex(guest_word(s, reason_page), ==, 0x100);
+        g_assert_cmphex(guest_word(s, reason_page + 4), ==, 0x12345678);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0x20);
+        assert_reply_unchanged(s);
+    } else {
+        stl_be_p(expected, 1);
+        for (unsigned k = 0; k < 4; k++) {
+            packed_pixel_bytes(expected + 8 + k * bytes, bits, bytes, swap);
+        }
+        qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+    }
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_quit(s);
+}
+
 static void test_reordered_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -10904,6 +11052,25 @@ int main(int argc, char **argv)
                             test_read_pixels_pack_swap);
         qtest_add_data_func(dma, GUINT_TO_POINTER(134 + type),
                             test_read_pixels_dma);
+    }
+    static const char *packed_names[] = {
+        "rgb-332", "rgba-4444", "rgba-5551", "rgba-8888", "rgba-1010102",
+        "bgra-4444", "bgra-5551", "bgra-8888", "bgra-1010102",
+    };
+    for (unsigned mode = 0; mode < 36; mode++) {
+        g_autofree char *ingress = g_strdup_printf(
+            "sn0/origin2000/kona-3d/packed-ingress/%s-%s%s",
+            packed_names[mode % 9], (mode / 9) & 1 ? "dma" : "pio",
+            (mode / 9) & 2 ? "-swapped" : "");
+        g_autofree char *read = g_strdup_printf(
+            "sn0/origin2000/kona-3d/packed-read/%s-%s%s",
+            packed_names[mode % 9], (mode / 9) & 1 ? "dma" : "pio",
+            (mode / 9) & 2 ? "-swapped" : "");
+
+        qtest_add_data_func(ingress, GUINT_TO_POINTER(mode),
+                            test_packed_pixel_ingress);
+        qtest_add_data_func(read, GUINT_TO_POINTER(mode),
+                            test_packed_pixel_read);
     }
     static const char *reordered_pixels_cases[] = {
         "bgr-pio", "bgra-pio", "bgr-ushort-swapped-dma", "bgra-float-dma",

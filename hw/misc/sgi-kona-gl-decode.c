@@ -600,11 +600,38 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
     return true;
 }
 
+typedef struct SGIKonaGLPackedPixel {
+    uint8_t bytes;
+    uint8_t bits[4];
+} SGIKonaGLPackedPixel;
+
+static const SGIKonaGLPackedPixel *sgi_kona_gl_packed_pixel(uint32_t format,
+                                                          uint32_t type)
+{
+    static const SGIKonaGLPackedPixel types[] = {
+        { 1, { 3, 3, 2, 0 } },
+        { 2, { 4, 4, 4, 4 } },
+        { 2, { 5, 5, 5, 1 } },
+        { 4, { 8, 8, 8, 8 } },
+        { 4, { 10, 10, 10, 2 } },
+    };
+
+    if (type < 8 || type - 8 >= ARRAY_SIZE(types) ||
+        (type == 8 ? format != 4 : (format != 5 && format != 10))) {
+        return NULL;
+    }
+    return &types[type - 8];
+}
+
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 {
     static const uint8_t widths[] = { 1, 1, 2, 2, 4, 4, 4 };
     uint32_t components;
+    const SGIKonaGLPackedPixel *packed = sgi_kona_gl_packed_pixel(format, type);
 
+    if (packed) {
+        return packed->bytes;
+    }
     switch (format) {
     case 0:                     /* RED */
     case 1:                     /* GREEN */
@@ -636,6 +663,8 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
                                     double values[4])
 {
     uint32_t components = sgi_kona_gl_texture_pixel_bytes(format, 1);
+    const SGIKonaGLPackedPixel *packed = sgi_kona_gl_packed_pixel(format, type);
+    uint32_t bits = 0, shift = 0;
     double r, g, b, a;
 
     if (!sgi_kona_gl_texture_pixel_bytes(format, type)) {
@@ -643,6 +672,15 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
     }
     values[0] = values[1] = values[2] = 0;
     values[3] = 1;
+    if (packed) {
+        bits = source[0] >> (8 * (4 - packed->bytes));
+        if (swap_bytes && packed->bytes == 2) {
+            bits = bswap16(bits);
+        } else if (swap_bytes && packed->bytes == 4) {
+            bits = bswap32(bits);
+        }
+        shift = 8 * packed->bytes;
+    }
     for (uint32_t i = 0; i < components; i++) {
         double component;
         uint32_t raw;
@@ -681,8 +719,13 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
             component = value;
             break;
         }
-        default:
-            g_assert_not_reached();
+        default: {
+            uint32_t maximum = (1u << packed->bits[i]) - 1;
+
+            shift -= packed->bits[i];
+            component = ((bits >> shift) & maximum) / (double)maximum;
+            break;
+        }
         }
         values[i] = component;
     }
@@ -1145,6 +1188,7 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
     unsigned components = sgi_kona_gl_texture_pixel_bytes(format, 1);
     unsigned bytes = sgi_kona_gl_texture_pixel_bytes(format, type);
     unsigned size;
+    const SGIKonaGLPackedPixel *pixel = sgi_kona_gl_packed_pixel(format, type);
 
     if (!rgba || !out || !bytes || capacity < bytes) {
         return false;
@@ -1171,6 +1215,28 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
     } else if (format == 9 || format == 10) {
         values[0] = rgba[2];
         values[2] = rgba[0];
+    }
+    if (pixel) {
+        uint32_t bits = 0;
+        unsigned shift = 8 * bytes;
+
+        for (unsigned i = 0; i < components; i++) {
+            uint32_t maximum = (1u << pixel->bits[i]) - 1;
+            double value = CLAMP(values[i], 0.0, 1.0);
+            uint32_t component = floor(value * maximum + 0.5);
+
+            shift -= pixel->bits[i];
+            bits |= component << shift;
+        }
+        if (bytes == 1) {
+            packed[0] = bits;
+        } else if (bytes == 2) {
+            stw_be_p(packed, swap_bytes ? bswap16(bits) : bits);
+        } else {
+            stl_be_p(packed, swap_bytes ? bswap32(bits) : bits);
+        }
+        memcpy(out, packed, bytes);
+        return true;
     }
     for (unsigned i = 0; i < components; i++) {
         double value = CLAMP(values[i], 0.0, 1.0);
