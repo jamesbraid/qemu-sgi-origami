@@ -4,7 +4,9 @@
  * what it refuses and what it leaves behind. All images are synthetic.
  */
 #include "qemu/osdep.h"
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include "qemu/bswap.h"
 #include "hw/rtc/m48t35-ip27.h"
 
@@ -61,7 +63,7 @@ static ToolRun run_tool(const char *first, ...)
 
 static bool run_succeeded(const ToolRun *run)
 {
-    return WIFEXITED(run->status) && WEXITSTATUS(run->status) == 0;
+    return g_spawn_check_exit_status(run->status, NULL);
 }
 
 /* The tool failed, said @message and printed nothing on stdout. */
@@ -307,9 +309,9 @@ static char *create_and_check(const char *stem, const char *machine,
     for (i = 0; i < count; i++) {
         g_autofree char *path = g_strdup_printf("%s/%s.raw", dir,
                                                 stores[i].name);
-        struct stat st;
+        GStatBuf st;
 
-        g_assert_cmpint(lstat(path, &st), ==, 0);
+        g_assert_cmpint(g_lstat(path, &st), ==, 0);
         g_assert_true(S_ISREG(st.st_mode));
         g_assert_cmpuint(st.st_size, ==, stores[i].size);
     }
@@ -573,35 +575,48 @@ static void test_existing_refused(void)
     g_autofree char *parent = scratch_path("existing");
     g_autofree char *dir = g_build_filename(parent, "dir", NULL);
     g_autofree char *file = g_build_filename(parent, "file", NULL);
+    g_autofree char *contents = NULL;
+    unsigned int entries = 2;
+#ifndef _WIN32
+    /* Symbolic links need privileges a Windows test cannot assume. */
     g_autofree char *link = g_build_filename(parent, "link", NULL);
     g_autofree char *dangling = g_build_filename(parent, "dangling", NULL);
-    g_autofree char *contents = NULL;
+#endif
 
     g_assert_cmpint(g_mkdir(parent, 0700), ==, 0);
     g_assert_cmpint(g_mkdir(dir, 0700), ==, 0);
     g_assert_true(g_file_set_contents(file, "keep", -1, NULL));
+#ifndef _WIN32
     g_assert_cmpint(symlink(dir, link), ==, 0);
     g_assert_cmpint(symlink("nowhere", dangling), ==, 0);
+    entries += 2;
+#endif
 
     assert_existing_refused(dir);
     assert_existing_refused(file);
+#ifndef _WIN32
     assert_existing_refused(link);
     assert_existing_refused(dangling);
+#endif
 
     g_assert_cmpuint(count_entries(dir), ==, 0);
     g_assert_true(g_file_get_contents(file, &contents, NULL, NULL));
     g_assert_cmpstr(contents, ==, "keep");
-    g_assert_cmpuint(count_entries(parent), ==, 4);
+    g_assert_cmpuint(count_entries(parent), ==, entries);
+#ifndef _WIN32
     g_assert_cmpint(g_unlink(dangling), ==, 0);
     g_assert_cmpint(g_unlink(link), ==, 0);
+#endif
     g_assert_cmpint(g_unlink(file), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
     g_assert_cmpint(g_rmdir(parent), ==, 0);
 }
 
+#ifndef _WIN32
 /*
  * Cap the files the tool may write well under a flash part, so the first
- * store fails with EFBIG part-way through the run.
+ * store fails with EFBIG part-way through the run. Windows has no
+ * per-process file-size limit, so the case runs on POSIX hosts only.
  */
 static void limit_file_size(gpointer opaque)
 {
@@ -616,7 +631,6 @@ static void test_failure_cleanup(void)
 {
     g_autofree char *parent = scratch_path("failure");
     g_autofree char *dir = g_build_filename(parent, "machine", NULL);
-    g_autofree char *bad = make_image("bad-prom", 4096, 0);
     const char *args[] = {
         "--machine", "origin200,topology=origin200,nodes=1",
         "--boot-prom", boot_prom, dir, NULL,
@@ -628,8 +642,19 @@ static void test_failure_cleanup(void)
     assert_refused(&run, "cannot write 'node0-flash.raw'");
     tool_run_clear(&run);
     g_assert_cmpuint(count_entries(parent), ==, 0);
+    g_assert_cmpint(g_rmdir(parent), ==, 0);
+}
+#endif
 
-    /* An image that does not decode stops the run before any file. */
+/* An image that does not decode stops the run before any file. */
+static void test_bad_image_cleanup(void)
+{
+    g_autofree char *parent = scratch_path("bad-image");
+    g_autofree char *dir = g_build_filename(parent, "machine", NULL);
+    g_autofree char *bad = make_image("bad-prom", 4096, 0);
+    ToolRun run;
+
+    g_assert_cmpint(g_mkdir(parent, 0700), ==, 0);
     {
         g_autofree uint8_t *bytes = g_malloc0(4096);
 
@@ -676,8 +701,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/trailing-slash", test_trailing_slash);
     g_test_add_func("/sgi-machine-init/existing-refused",
                     test_existing_refused);
+#ifndef _WIN32
     g_test_add_func("/sgi-machine-init/failure-cleanup",
                     test_failure_cleanup);
+#endif
+    g_test_add_func("/sgi-machine-init/bad-image-cleanup",
+                    test_bad_image_cleanup);
     boot_prom = make_image("boot-prom", PAYLOAD_SIZE, 0x27);
     ip35_prom = make_image("ip35-prom", IP35_PROM_SIZE, 0x27);
     io_prom = make_image("io-prom", IO_PROM_SIZE, 0x06);
