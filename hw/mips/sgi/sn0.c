@@ -923,6 +923,10 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     DeviceState *flash_dev = qdev_new(TYPE_PFLASH_CFI02);
     if (node->flash_drive) {
         qdev_prop_set_drive(flash_dev, "drive", node->flash_drive);
+    } else if (node->flash_node) {
+        object_property_set_str(OBJECT(flash_dev), "drive", node->flash_node,
+                                &error_fatal);
+        node->flash_drive = blk_by_dev(flash_dev);
     }
     qdev_prop_set_uint32(flash_dev, "num-blocks",
                          flash_reset->size / implementation->sector_size);
