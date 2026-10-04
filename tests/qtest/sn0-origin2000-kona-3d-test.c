@@ -12479,6 +12479,65 @@ static void test_renderer_scissor(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_viewport(gconstpointer opaque)
+{
+    static const int32_t viewports[][4] = {
+        { 0, 0, 256, 256 }, { 16, 32, 64, 48 }, { -32, -16, 192, 160 },
+        { 128, 0, 128, 128 }, { 0, 0, 0, 128 },
+        { 0, 0, 32768, 32768 }, { 0, 0, 16384, 16384 }, { 0, 0, 256, 128 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const int32_t *vp = viewports[mode];
+    uint32_t words[4];
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (mode == 7) {
+        kona_command_kicked(s, 0x1f3,
+            (uint32_t[]) { PROBE_X, PROBE_Y, 0x05670100, 0x05670080,
+                           PROBE_X, PROBE_Y, 256, 128, 0, 0xd, 0 }, 11);
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        words[i] = vp[i];
+    }
+    kona_command(s, 0xe3, words, 4);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     mode == 5 || mode == 7 ? 0 : 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, 0xffffff);
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            if ((int64_t)x >= vp[0] && (int64_t)y >= vp[1] &&
+                (int64_t)x < (int64_t)vp[0] + vp[2] &&
+                (int64_t)y < (int64_t)vp[1] + vp[3]) {
+                unsigned offset = ((127 - y) * 128 + x) * 3;
+
+                expected->rgb[offset] = 255;
+                expected->rgb[offset + 1] = expected->rgb[offset + 2] = 0;
+            }
+        }
+    }
+    assert_window_matches(s, expected);
+    if (mode == 7) {
+        g_autofree uint8_t *frame = kona_screendump(s);
+        const uint8_t *pixel = frame +
+            ((FB_HEIGHT - 1 - PROBE_Y - 64) * FB_WIDTH + PROBE_X + 200) * 3;
+
+        g_assert_cmpuint(pixel[0], ==, 255);
+        g_assert_cmpuint(pixel[1], ==, 0);
+        g_assert_cmpuint(pixel[2], ==, 0);
+    }
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
@@ -13527,6 +13586,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_scissor);
+    }
+    for (unsigned mode = 0; mode < 8; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/viewport/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_viewport);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

@@ -105,7 +105,7 @@ static void test_request(void)
     g_assert_true(sgi_renderer_request_valid(request));
     request->vertices[1][0] = NAN;
     g_assert_false(sgi_renderer_request_valid(request));
-    request->vertices[1][0] = 128.25f;
+    request->vertices[1][0] = 16384.25f;
     g_assert_false(sgi_renderer_request_valid(request));
     request->vertices[1][0] = 0.001f;
     g_assert_false(sgi_renderer_request_valid(request));
@@ -114,6 +114,39 @@ static void test_request(void)
     g_assert_false(sgi_renderer_request_valid(request));
     request->vertices[1][2] = 0;
     request->vertices[1][3] = 0;
+    g_assert_false(sgi_renderer_request_valid(request));
+}
+
+static void test_large_coordinates(void)
+{
+    static const float vertices[3][3][4] = {
+        { { -128, -128, 0, 1 }, { 256, -128, 0, 1 }, { -128, 256, 0, 1 } },
+        { { -16384, -16384, 0, 1 }, { 16384, -16384, 0, 1 },
+          { 16384, 16384, 0, 1 } },
+        { { 256, 256, 0, 1 }, { 512, 256, 0, 1 }, { 256, 512, 0, 1 } },
+    };
+    g_autofree SGIRendererRequest *request = fixture();
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(vertices); mode++) {
+        memcpy(request->vertices, vertices[mode], sizeof(request->vertices));
+        memset(request->rgba, 0, sizeof(request->rgba));
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 0; x < 128; x++) {
+                bool covered = mode == 0 ? x + y < 127 :
+                               mode == 1 ? x >= y : false;
+                uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+
+                if (covered) {
+                    pixel[0] = pixel[3] = 255;
+                }
+            }
+        }
+        g_assert_true(sgi_renderer_request_valid(request));
+        g_assert_true(sgi_renderer_staging_valid(request));
+    }
+    request->vertices[0][0] = -16384.25;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->vertices[0][0] = 16384.25;
     g_assert_false(sgi_renderer_request_valid(request));
 }
 
@@ -802,6 +835,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/colour", test_colour);
     g_test_add_func("/sgi-renderer/request", test_request);
     g_test_add_func("/sgi-renderer/triangle-coverage", test_triangle_coverage);
+    g_test_add_func("/sgi-renderer/large-coordinates", test_large_coordinates);
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
     g_test_add_func("/sgi-renderer/missing-backend", test_missing_backend);
 #endif
