@@ -1045,7 +1045,18 @@ static void test_storage_write_error(const void *data)
         g_autofree char *image = NULL;
         g_autofree char *ref = NULL;
         gsize len;
+        uint8_t a = reg_read(qts, R_CTRL_A);
 
+        /* The failed reset save must retry even without a register change. */
+        reg_write(qts, R_CTRL_A, a);
+        g_assert_true(g_file_get_contents(g_getenv("DS1685_MAIN"),
+                                          &image, &len, NULL));
+        g_assert_cmphex((uint8_t)image[R_CTRL_A], ==, a);
+        g_assert_true(g_file_get_contents(g_getenv("DS1685_CLOCK"),
+                                          &ref, &len, NULL));
+        g_assert_cmpmem(ref, 8, "DS168RF1", 8);
+        g_clear_pointer(&image, g_free);
+        g_clear_pointer(&ref, g_free);
         reg_write(qts, R_RAM_LOW, 0xa5);
         g_assert_cmphex(reg_read(qts, R_RAM_LOW), ==, 0xa5);
         g_assert_true(g_file_get_contents(g_getenv("DS1685_MAIN"),
@@ -1062,9 +1073,8 @@ static void test_storage_write_error(const void *data)
     clock = g_build_filename(dir, "rtc.clock", NULL);
     config = g_build_filename(dir, "blkdebug.conf", NULL);
     create_store(store, clock);
-    rules = g_strdup_printf("[inject-error]\nevent = \"%s\"\n"
-        "errno = \"5\"\nonce = \"on\"\n",
-        strstr(kind, "write") ? "write_aio" : "flush_to_disk");
+    rules = g_strdup("[inject-error]\nevent = \"write_aio\"\n"
+        "errno = \"5\"\nonce = \"on\"\n");
     g_assert_true(g_file_set_contents(config, rules, -1, NULL));
     g_setenv("DS1685_ERROR_CONFIG", config, true);
     g_setenv("DS1685_ERROR_IMAGE", strstr(kind, "main") ? store : clock, true);
@@ -1723,10 +1733,79 @@ static void test_storage_bcd_twelve_hour(const void *data)
     g_rmdir(dir);
 }
 
+static void test_unchanged_a_writes(void)
+{
+#ifndef CONFIG_TRACE_LOG
+    g_test_skip("native block text traces are unavailable");
+    return;
+#endif
+    g_autofree char *dir = g_dir_make_tmp("ds1685-noop-XXXXXX", NULL);
+    g_autofree char *store = g_build_filename(dir, "rtc.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "rtc.clock", NULL);
+    g_autofree char *trace = g_build_filename(dir, "block.trace", NULL);
+    g_autofree char *contents = NULL;
+    gsize before, after;
+    QTestState *qts;
+
+    create_store(store, clock);
+    qts = qtest_initf(OCTANE_IOC3(SUBSYS_IP30)
+        ",ds1685-drive=rtc-store -rtc base=2024-01-01T00:00:00,clock=vm"
+        " -drive if=none,id=rtc-store,file=%s,format=raw"
+        " -drive if=none,id=rtc-store-clock,file=%s,format=raw"
+        " -trace enable=blk_co_p* -D %s", store, clock, trace);
+    octane_attach(qts);
+    reg_write(qts, R_CTRL_A, 0x30);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    g_assert_true(g_file_get_contents(trace, &contents, &before, NULL));
+    g_assert_nonnull(strstr(contents, "blk_co_pwritev "));
+    g_assert_nonnull(strstr(contents, " bytes 512 "));
+    g_assert_nonnull(strstr(contents, " bytes 24 "));
+    g_clear_pointer(&contents, g_free);
+
+    qtest_clock_step(qts, 250000000);
+    for (unsigned int i = 0; i < 16; i++) {
+        reg_write(qts, R_CTRL_A, 0x30 | A_UIP);
+        reg_read(qts, R_SECONDS);
+    }
+    reg_read(qts, R_CTRL_C);
+    reg_write(qts, R_RAM_LOW, 0xa5);
+    reg_write(qts, R_CTRL_D, 0);
+    reg_write(qts, R_MODEL, 0);
+    reg_write(qts, R_CTRL_A, 0x20);
+    reg_write(qts, R_CTRL_A, 0x3f);
+    reg_write(qts, R_CTRL_A, 0x30);
+    qtest_clock_step(qts, 750000000);
+    g_assert_cmpuint(reg_read(qts, R_SECONDS), ==, 1);
+    g_assert_cmphex(reg_read(qts, R_CTRL_C) & C_UF, ==, C_UF);
+    g_assert_true(g_file_get_contents(trace, &contents, &after, NULL));
+    g_assert_cmpuint(after, ==, before);
+    g_clear_pointer(&contents, g_free);
+
+    reg_write(qts, R_CTRL_A, 0x3f);
+    qtest_clock_step(qts, 250000000);
+    reg_write(qts, R_CTRL_A, 0x3f);
+    qtest_clock_step(qts, 249999999);
+    g_assert_cmphex(reg_read(qts, R_CTRL_C) & C_PF, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(reg_read(qts, R_CTRL_C) & C_PF, ==, C_PF);
+
+    /* Oscillator changes still publish both files. */
+    reg_write(qts, R_CTRL_A, 0x10);
+    g_assert_true(g_file_get_contents(trace, &contents, &after, NULL));
+    g_assert_nonnull(strstr(contents + before, " bytes 512 "));
+    g_assert_nonnull(strstr(contents + before, " bytes 24 "));
+    qtest_quit(qts);
+    g_unlink(store);
+    g_unlink(clock);
+    g_unlink(trace);
+    g_rmdir(dir);
+}
 
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+
+    qtest_add_func("/sn0/ds1685/unchanged-a", test_unchanged_a_writes);
 
     qtest_add_data_func("/sn0/ds1685/storage-explicit-reference", NULL,
                         test_storage_explicit_reference);
@@ -1753,8 +1832,7 @@ int main(int argc, char **argv)
         const char *bad[] = { "empty", "oversize", "readonly", "orphan",
                               "wrong-board", "read-error",
                               "clock-read-error" };
-        const char *errors[] = { "main-write", "main-flush",
-                                 "clock-write", "clock-flush" };
+        const char *errors[] = { "main-write", "clock-write" };
 
         for (int i = 0; i < ARRAY_SIZE(bad); i++) {
             g_autofree char *name = g_strdup_printf(

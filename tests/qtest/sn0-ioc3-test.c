@@ -4491,6 +4491,90 @@ static QTestState *rtc_start(const RtcFiles *f, const char *base)
     return qts;
 }
 
+static void test_clock_backing_noop(const void *data)
+{
+    const unsigned int kind = GPOINTER_TO_UINT(data);
+    const unsigned int offset = kind == 2 ? 0x7ff8 : RTC_SENTINEL;
+    const uint8_t value = kind == 2 ? 1 : 0xa5;
+    g_autofree char *dir = g_dir_make_tmp("m48t35-noop-XXXXXX", NULL);
+    g_autofree char *trace = g_build_filename(dir, "block.trace", NULL);
+    g_autofree char *config = g_build_filename(dir, "blkdebug.conf", NULL);
+    g_autofree char *backing = NULL;
+    g_autofree char *contents = NULL;
+    gsize before, after;
+    RtcFiles files;
+    QTestState *qts;
+
+#ifndef CONFIG_TRACE_LOG
+    if (!kind) {
+        g_test_skip("native block text traces are unavailable");
+        g_rmdir(dir);
+        return;
+    }
+#endif
+    if (kind && !g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 15 * G_TIME_SPAN_SECOND, 0);
+        g_test_trap_assert_passed();
+        g_test_trap_assert_stderr("*m48t35:*backing store failed*");
+        g_rmdir(dir);
+        return;
+    }
+    rtc_files_new(&files, true);
+    if (kind) {
+        g_assert_true(g_file_set_contents(config,
+            "[inject-error]\nevent = \"write_aio\"\n"
+            "errno = \"5\"\nonce = \"on\"\n", -1, NULL));
+    }
+    backing = kind ? g_strdup_printf("blkdebug:%s:%s", config, files.image) :
+                     g_strdup(files.image);
+    qts = qtest_initf(RTC_ARGS
+        " -drive if=none,id=sgi-nvram0,file=%s,format=raw"
+        " -drive if=none,id=sgi-nvram0-clock,file=%s,format=raw -D %s %s",
+        backing, files.ref, trace, kind ? "" : "-trace enable=blk_co_p*");
+    sn0_ioc3_attach(qts);
+    qtest_writeb(qts, BYTEBUS_DEV0 + offset, value);
+    if (kind) {
+        g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + offset), ==, value);
+        g_assert_true(g_file_get_contents(files.image, &contents, NULL, NULL));
+        g_assert_cmphex((uint8_t)contents[offset], ==, 0);
+        g_clear_pointer(&contents, g_free);
+        qtest_writeb(qts, BYTEBUS_DEV0 + offset, value);
+    } else {
+        g_assert_true(g_file_get_contents(trace, &contents, &before, NULL));
+        g_assert_nonnull(strstr(contents, "blk_co_pwritev "));
+        g_clear_pointer(&contents, g_free);
+        qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+        for (unsigned int i = 0; i < 7; i++) {
+            qtest_readb(qts, RTC_SECONDS + i);
+        }
+        qtest_writeb(qts, RTC_CONTROL, 0);
+        qtest_writeb(qts, RTC_CONTROL, 0);
+        qtest_writeb(qts, BYTEBUS_DEV0 + offset, value);
+        g_assert_true(g_file_get_contents(trace, &contents, &after, NULL));
+        g_assert_cmpuint(after, ==, before);
+        g_clear_pointer(&contents, g_free);
+        /* Calibration writes and W falling edges still reach the image. */
+        qtest_writeb(qts, RTC_CONTROL, 1);
+        g_assert_true(g_file_get_contents(files.image, &contents, NULL, NULL));
+        g_assert_cmphex((uint8_t)contents[0x7ff8], ==, 1);
+        g_clear_pointer(&contents, g_free);
+        qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE | 1);
+        qtest_writeb(qts, RTC_SECONDS, 0x23);
+        qtest_writeb(qts, RTC_CONTROL, 1);
+    }
+    g_assert_true(g_file_get_contents(files.image, &contents, NULL, NULL));
+    g_assert_cmphex((uint8_t)contents[offset], ==, value);
+    if (!kind) {
+        g_assert_cmphex((uint8_t)contents[0x7ff8], ==, 1);
+        g_assert_cmphex((uint8_t)contents[0x7ff9], ==, 0x23);
+    }
+    qtest_quit(qts);
+    rtc_files_free(&files);
+    g_unlink(trace);
+    g_unlink(config);
+    g_rmdir(dir);
+}
+
 /* Seconds since 1970 of an -rtc base, the clock the reference counts in. */
 static int64_t rtc_base_seconds(const char *base)
 {
@@ -6055,6 +6139,12 @@ int main(int argc, char **argv)
                         test_the_clock_stop_bit_a_guest_writes);
     qtest_add_data_func("sn0/ioc3/each-node-has-its-own-storage", NULL,
                         test_each_node_has_its_own_storage);
+    qtest_add_data_func("sn0/ioc3/clock-backing-noop", NULL,
+                        test_clock_backing_noop);
+    qtest_add_data_func("sn0/ioc3/clock-backing-retry",
+                        GUINT_TO_POINTER(1), test_clock_backing_noop);
+    qtest_add_data_func("sn0/ioc3/clock-control-retry",
+                        GUINT_TO_POINTER(2), test_clock_backing_noop);
     qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,
                         test_the_clock_storage_holds_a_write);
     qtest_add_data_func("sn0/ioc3/ports-are-distinct", NULL,

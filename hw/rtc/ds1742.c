@@ -46,6 +46,8 @@ struct DS1742State {
     uint8_t control, weekday, migration_weekday, staged[8], frozen[8];
     int64_t epoch, reference_ns, migration_epoch;
     bool stopped, frozen_valid;
+    /* Equal writes retry until both backing records are saved. Host-only. */
+    bool storage_failed;
 };
 
 static int64_t ds1742_ns(void)
@@ -115,16 +117,23 @@ static void ds1742_save_clock(DS1742State *s)
     /* Migrated RAM must reach the destination's backing store too. */
     memcpy(image, s->ram, CTRL);
     ds1742_image(s, image + CTRL);
+    s->storage_failed = true;
     if (blk_pwrite(s->blk, 0, sizeof(image), image, 0) < 0) {
         error_report("ds1742: could not save image to backing store");
+        return;
     }
-    if (ds1742_drive_writable(s->clock_blk)) {
+    if (s->clock_blk) {
+        if (!ds1742_drive_writable(s->clock_blk)) {
+            return;
+        }
         memcpy(record, CLOCK_REF_MAGIC, 8);
         stq_le_p(record + 8, ds1742_wall_seconds());
         if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
             error_report("ds1742: could not save clock reference");
+            return;
         }
     }
+    s->storage_failed = false;
 }
 
 static bool ds1742_bcd(uint8_t val, int low, int high)
@@ -250,8 +259,12 @@ static void ds1742_write(void *opaque, hwaddr addr, uint64_t val,
     uint8_t value = val, old, image[8];
 
     if (addr < CTRL) {
+        if (s->ram[addr] == value && !s->storage_failed) {
+            return;
+        }
         s->ram[addr] = value;
         if (s->blk && blk_pwrite(s->blk, addr, 1, &value, 0) < 0) {
+            s->storage_failed = true;
             error_report("ds1742: could not save SRAM byte at 0x%03x",
                          (unsigned)addr);
         }

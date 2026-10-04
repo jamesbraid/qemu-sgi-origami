@@ -114,6 +114,8 @@ struct M48T35State {
 
     /* The saved-time reference for the clock across a stop; see above. */
     BlockBackend *clock_blk;
+    /* Host-only: a byte retry cannot repair an unsaved clock reference. */
+    bool storage_failed;
     VMChangeStateEntry *vmstate_change;
 
     /*
