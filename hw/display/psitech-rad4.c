@@ -351,8 +351,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_RGB_AUX_OL_WAT         0x0f00
 #define RAD4_RGB_AUX_WAT_COUNT      16
 
+#define RAD4_CONF1_MUX_SHIFT        5
+#define RAD4_CONF1_MUX_4TO1_BASIC   0x1
 #define RAD4_CONF1_OVLY_SHIFT       3
 #define RAD4_CONF1_OVLY_MASK        0x3
+#define RAD4_CONF1_OVLY_NONE        0x0
 #define RAD4_CONF1_OVLY_8BIT        0x1
 #define RAD4_CONF1_LWID_MASK        0x7
 #define RAD4_CONF4_FB_WID_SHIFT     3
@@ -675,7 +678,7 @@ typedef struct Rad4WatLayout {
     uint8_t ol_segment;
     uint8_t aux_ol_segment;
     bool aux_ol_msb;
-    bool overlay_8bit;
+    unsigned overlay;
     bool overlay_reported;
 } Rad4WatLayout;
 
@@ -704,7 +707,12 @@ static void rad4_wat_layout(PsitechRad4State *s, Rad4WatLayout *l)
         unsigned fb_wid = (conf4 >> RAD4_CONF4_FB_WID_SHIFT) &
                           RAD4_CONF4_FB_WID_MASK;
 
-        /* Page 32: 1xxx selects all 8 window-ID bits for the frame buffer. */
+        /*
+         * Page 32: 1xxx selects all 8 window-ID bits for the frame buffer.
+         * The document does not say what happens when FB_WID asks for more
+         * bits than CONF/1's LWID provides; this model gives the frame
+         * buffer all of them.
+         */
         l->fb_bits = MIN(fb_wid >= 8 ? 8 : fb_wid, lwid);
         l->ol_bits = lwid - l->fb_bits;
         l->ol_shift = l->fb_bits;
@@ -717,12 +725,26 @@ static void rad4_wat_layout(PsitechRad4State *s, Rad4WatLayout *l)
     l->ol_segment = s->rgb_store[RAD4_RGB_OL_WAT_SEGMENT];
     l->aux_ol_segment = s->rgb_store[RAD4_RGB_AUX_OL_WAT_SEGMENT] & 0xf;
     l->aux_ol_msb = conf4 & RAD4_CONF4_AOW;
-    l->overlay_8bit = ((conf1 >> RAD4_CONF1_OVLY_SHIFT) &
-                       RAD4_CONF1_OVLY_MASK) == RAD4_CONF1_OVLY_8BIT;
+    l->overlay = (conf1 >> RAD4_CONF1_OVLY_SHIFT) & RAD4_CONF1_OVLY_MASK;
+    /*
+     * Only the 4:1 basic serializer's pixel layout (page 9, Table 9) is
+     * modeled; the overlay port of any other mode is reported as an
+     * unimplemented overlay rather than read from the wrong bits.
+     */
+    if (l->overlay != RAD4_CONF1_OVLY_NONE &&
+        (conf1 >> RAD4_CONF1_MUX_SHIFT) != RAD4_CONF1_MUX_4TO1_BASIC) {
+        l->overlay = RAD4_CONF1_OVLY_MASK + 1;
+    }
     l->overlay_reported = false;
 }
 
-/* A WAT address: the window-ID bits, padded above by the segment register. */
+/*
+ * A WAT address: the window-ID bits, padded above by the segment register.
+ * Pages 4, 15 and 32 and Figures 2-3 take the missing bits from the segment
+ * register. The note on page 29 says they are padded with zeros instead;
+ * this model follows the majority, which matches zeros whenever the
+ * segment register is zero, as the shipped X server leaves it.
+ */
 static uint8_t rad4_wat_address(unsigned bits, uint8_t wid, uint8_t segment)
 {
     uint8_t mask = rad4_wid_mask(bits);
@@ -808,11 +830,12 @@ static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
  *
  * The 8-bit overlay port is the pixel word's top byte. PIX_FORM 11, the
  * double-buffered 4-bit overlay, takes buffer A from its low four bits and
- * buffer B from its high four (Table 9 and Table 17). The X'FF comparison
- * against 4-bit data uses the all-ones 4-bit value; the document does not
- * say how it applies to fewer than 8 bits. Overlay formats with an underlay,
- * the 16-bit and variable overlay ports and modes other than Index are not
- * implemented. They are reported once per scanout pass and leave the
+ * buffer B from its high four (Table 9 and Table 17). Transparency compares
+ * the selected buffer's 4-bit value, shifted down, and the X'FF comparison
+ * against 4-bit data uses the all-ones 4-bit value; the document says
+ * neither. Overlay formats with an underlay, serializer modes other than 4:1
+ * basic, the 16-bit and variable overlay ports and modes other than Index are
+ * not implemented. They are reported once per scanout pass and leave the
  * frame-buffer layer showing.
  */
 static bool rad4_overlay_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
@@ -827,10 +850,10 @@ static bool rad4_overlay_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
     uint8_t byte = word >> RAD4_PIXEL_WID_SHIFT;
     uint8_t data, ones;
 
-    if (!(aux & RAD4_AUX_OL_WAT_OL)) {
+    if (l->overlay == RAD4_CONF1_OVLY_NONE || !(aux & RAD4_AUX_OL_WAT_OL)) {
         return false;
     }
-    if (!l->overlay_8bit ||
+    if (l->overlay != RAD4_CONF1_OVLY_8BIT ||
         (pix_form != RAD4_OL_WAT_PIXFORM_8BIT &&
          pix_form != RAD4_OL_WAT_PIXFORM_4BIT) ||
         (pix_form == RAD4_OL_WAT_PIXFORM_8BIT && (wat & RAD4_WAT_BS)) ||

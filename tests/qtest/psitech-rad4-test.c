@@ -145,6 +145,7 @@
 #define RGB_CONF1               0x0001
 #define RGB_CONF4               0x0004
 #define RGB_OL_WAT_SEGMENT      0x0007
+#define RGB_AUX_OL_WAT_SEGMENT  0x0009
 #define RGB_CHROMA_KEY0         0x0010
 #define RGB_CHROMA_MASK0        0x0012
 #define RGB_AUX_OL_WAT          0x0f00
@@ -152,6 +153,9 @@
 #define CONF1_4TO1_OVLY8_LWID8  0x2c
 #define CONF4_SPLIT_FB8         0x45
 #define CONF4_COMMON            0x00
+#define CONF4_COMMON_AOW        0x02
+#define CONF4_SPLIT_FB4         0x24
+#define CONF1_4TO1_OVLY8_LWID4  0x2a
 #define AUX_OL_WAT_CK0_ENABLED  0x28
 #define AUX_OL_WAT_CK0_DISABLED 0x20
 
@@ -1881,6 +1885,14 @@ static void test_overlay_chroma_key_and_opaque(void)
     bar2_write(qts, 20 * TEST_FB_STRIDE + 11 * 4, 0x04abcdefu);
     bar2_write(qts, 20 * TEST_FB_STRIDE + 12 * 4, 0x00abcdefu);
 
+    /*
+     * Key 0 under mask 0x0f: only 0 is transparent. Taking this screendump
+     * first means the key change below repaints only if the scanout
+     * notices the key and mask writes themselves.
+     */
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x112233);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 12, 20), ==, 0xabcdef);
+
     /* Key 4 under mask 0x0e makes both 4 and 5 transparent, and 0 opaque. */
     rgb_write_byte(qts, RGB_CHROMA_KEY0, 0x04);
     rgb_write_byte(qts, RGB_CHROMA_MASK0, 0x0e);
@@ -1926,6 +1938,48 @@ static void test_overlay_wat_addressing(void)
     g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0xabcdef);
     rgb_write_byte(qts, RGB_AUX_OL_WAT + 5, AUX_OL_WAT_CK0_ENABLED);
     g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0x778899);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The other WAT addressing shapes of Figures 2 and 3 (pages 16-17). Split
+ * with 4 bits to the frame buffer, the overlay takes the upper four
+ * window-ID bits for both OL_WAT and AUX_OL_WAT. In common mode with AOW
+ * set, AUX_OL_WAT takes the window ID's upper four bits. With 4 logical
+ * window-ID bits, only the low four reach the tables and the segment
+ * register supplies the rest.
+ */
+static void test_overlay_wat_addressing_shapes(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, WAT_ENTRY(2, 3, 0, 0, 1));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x03, OL_WAT_4BIT_INDEX(4, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x35, OL_WAT_4BIT_INDEX(6, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x75, OL_WAT_4BIT_INDEX(8, 0));
+    rgb_write_lut(qts, 4 * 64 + 5, 0x445566);
+    rgb_write_lut(qts, 6 * 64 + 5, 0x778899);
+    rgb_write_lut(qts, 8 * 64 + 5, 0xaabbcc);
+    bar2_write(qts, 40 * TEST_FB_STRIDE + 10 * 4, 0x35abcdefu);
+
+    /* AUX_OL_WAT 0 enables the overlay; 3 and 5 stay disabled. */
+    rgb_write_byte(qts, RGB_CONF4, CONF4_SPLIT_FB4);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xabcdef);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 3, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0x445566);
+
+    rgb_write_byte(qts, RGB_CONF4, CONF4_COMMON_AOW);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0x778899);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 3, AUX_OL_WAT_CK0_DISABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xabcdef);
+
+    rgb_write_byte(qts, RGB_CONF1, CONF1_4TO1_OVLY8_LWID4);
+    rgb_write_byte(qts, RGB_CONF4, CONF4_COMMON);
+    rgb_write_byte(qts, RGB_OL_WAT_SEGMENT, 0x70);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT_SEGMENT, 0x0);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 5, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xaabbcc);
 
     qtest_quit(qts);
 }
@@ -2087,6 +2141,8 @@ int main(int argc, char **argv)
                    test_overlay_chroma_key_and_opaque);
     qtest_add_func("/psitech-rad4/overlay-wat-addressing",
                    test_overlay_wat_addressing);
+    qtest_add_func("/psitech-rad4/overlay-wat-addressing-shapes",
+                   test_overlay_wat_addressing_shapes);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
