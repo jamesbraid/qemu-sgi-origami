@@ -43,6 +43,8 @@ class IP30CatalogueTests(unittest.TestCase):
             "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
             "r12000-scache-bytes", "r12000-scache-block-words"])
         offering = next(o for o in catalogue["offerings"] if o["product"] == "octane2")
+        self.assertEqual(offering["machine-options"],
+                         "octane2,topology=octane2")
         self.assertNotIn("firmware", offering)
         self.assertEqual(offering["init-inputs"], [
             {"name": "boot-prom", "kind": "ip30-prom", "required": True}])

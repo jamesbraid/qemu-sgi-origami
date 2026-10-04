@@ -650,6 +650,16 @@ def _hardware_inputs(topology: dict) -> list[dict]:
     return sorted(bindings, key=lambda entry: entry["option"])
 
 
+def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
+    """The `-M` value selecting one offering. Octane builds its one HEART
+    node board without a node count, so it has no nodes= property and
+    takes only the topology."""
+    options = f"{machine_name},topology={topology['name']}"
+    if topology["generation"] == "IP30":
+        return options
+    return f"{options},nodes={nodes}"
+
+
 def _offerings_for(model: dict, topology: dict,
                    product_models: dict[str, dict]) -> list[dict]:
     """One offering per node-population row and accepted CPU population
@@ -697,8 +707,8 @@ def _offerings_for(model: dict, topology: dict,
                 "default-topology": default_topology(machine_name, product_models),
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
-                "machine-options": (f"{machine_name},topology="
-                                    f"{configuration_name},nodes={nodes}"),
+                "machine-options": _machine_options(
+                    machine_name, topology, nodes),
                 "cpus-per-node": list(cpu_population),
                 "dimms-per-node": list(dimms_per_node[:nodes]),
                 "smp": sum(cpu_population),
