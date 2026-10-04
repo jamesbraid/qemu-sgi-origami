@@ -1393,6 +1393,60 @@ static void test_draw_pixels_fragment_operations(void)
     g_assert_cmphex(p.colour[0][planes_index(12, 20)], ==, 0x800080);
 }
 
+static void test_draw_pixels_transfer(void)
+{
+    const uint32_t image = 0x4080ff80;
+    SGIGLPixelTransfer transfer = {
+        .scale = { 2, -1, 2, 1 },
+        .bias = { 0.25f, 1, 0, 0 },
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &image, 1, 1, &transfer);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xc07fff);
+
+    /* Transformed alpha, not source alpha, controls the alpha test. */
+    memset(&p, 0, sizeof(p));
+    c.cur.alpha_test = 1;
+    c.cur.alpha_func = SGI_GL_GEQUAL;
+    c.cur.alpha_ref = 0.5f;
+    transfer.scale[3] = 0.25f;
+    transfer.bias[3] = 0.125f;
+    sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &image, 1, 1, &transfer);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+    transfer.bias[3] = 0.75f;
+    sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &image, 1, 1, &transfer);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xc07fff);
+
+    /* Clamp before blending under the existing eight-bit alpha rules. */
+    c.cur.alpha_test = 0;
+    c.cur.blend = 1;
+    c.cur.blend_src = SGI_GL_SRC_ALPHA;
+    c.cur.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    transfer.scale[0] = 0;
+    transfer.bias[0] = 2;
+    transfer.scale[1] = 0;
+    transfer.bias[1] = -1;
+    transfer.scale[2] = 0;
+    transfer.scale[3] = 0;
+    transfer.bias[3] = 0.5f;
+    p.colour[0][planes_index(10, 20)] = 0x0000ff;
+    sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &image, 1, 1, &transfer);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0x80007f);
+    c.cur.blend = 0;
+    sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &image, 1, 1, NULL);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0x4080ff);
+}
+
 static void test_draw_pixels_window_and_scissor(void)
 {
     static const uint32_t image[] = {
@@ -3175,6 +3229,17 @@ static void draw_pixels_refusals(void)
     c.cur.texture_3d = 0;
     sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, NAN, 1);
     sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, 1, INFINITY);
+    for (unsigned k = 0; k < 4; k++) {
+        SGIGLPixelTransfer transfer = { .scale = { 1, 1, 1, 1 } };
+
+        transfer.scale[k] = NAN;
+        sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &pixel, 1, 1,
+                                         &transfer);
+        transfer.scale[k] = 1;
+        transfer.bias[k] = INFINITY;
+        sgi_gl_draw_pixels_rgba_transfer(&c, &sink, 1, 1, &pixel, 1, 1,
+                                         &transfer);
+    }
     c.cur.drawable.bound = false;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
     g_assert_cmpuint(rec.ops, ==, 0);
@@ -3192,6 +3257,7 @@ static void test_draw_pixels_refusals(void)
     g_assert_nonnull(strstr(log, "textured or colour-index"));
     g_assert_nonnull(strstr(log, "glDrawPixels with no window"));
     g_assert_nonnull(strstr(log, "nonfinite glDrawPixels placement"));
+    g_assert_nonnull(strstr(log, "nonfinite pixel transfer"));
     context_init(&c);
     c.raster_valid = 0;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
@@ -11210,6 +11276,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
     g_test_add_func("/sgi-gl/draw-pixels/refusals", test_draw_pixels_refusals);
     g_test_add_func("/sgi-gl/draw-pixels/zoom", test_draw_pixels_zoom);
+    g_test_add_func("/sgi-gl/draw-pixels/transfer", test_draw_pixels_transfer);
     g_test_add_func("/sgi-gl/draw-pixels/placement",
                     test_draw_pixels_placement);
     g_test_add_func("/sgi-gl/draw-pixels/fragment-operations",

@@ -3921,7 +3921,10 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
             }
             rgba = p->rgba[(uint64_t)sy * p->width + (uint32_t)sx];
             for (int k = 0; k < 4; k++) {
-                frag.rgba[k] = ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
+                double component = ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
+
+                frag.rgba[k] = CLAMP(component * p->transfer.scale[k] +
+                                     p->transfer.bias[k], 0.0, 1.0);
             }
             sgi_soft_fragment_at(&r, x, y, p->z, &frag, 1, false);
         }
