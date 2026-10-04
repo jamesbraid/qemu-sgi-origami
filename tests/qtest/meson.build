@@ -61,7 +61,8 @@ slow_qtests = {
   'sn0-module-domain-test': 600,
   'sn0-mscsi-test': 130,
   'sn0-mttcg-test': 390,
-  'sn0-origin2000-kona-3d-test': 990,
+  # Expanded KONA coverage reached 788 of 2,092 cases at 900 s in CI.
+  'sn0-origin2000-kona-3d-test': 3600,
   'sn0-origin2000-kona-bringup-test': 230,
   'sn0-origin2000-kona-fill-test': 360,
   'sn0-origin2000-kona-pixel-test': 710,
