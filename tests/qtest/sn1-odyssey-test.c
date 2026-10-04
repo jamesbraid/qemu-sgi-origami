@@ -7413,6 +7413,101 @@ static void test_texture_current_query_4f(void)
     qtest_quit(qts);
 }
 
+static const uint32_t query_texture_1f[2][2] = {
+    { 0xc380c41f, 0x3f400000 },
+    { 0xc380c41f, 0x3e000000 },
+};
+
+static const uint32_t query_texture_3f[2][4] = {
+    { 0xc380cc23, 0x3f400000, 0x3e800000, 0x3f200000 },
+    { 0xc380cc23, 0x3e000000, 0x3f400000, 0x3f600000 },
+};
+
+static void texture_current_query_short(bool three, bool replay)
+{
+    QTestState *qts = board_start("");
+    unsigned words = three ? 4 : 2;
+
+    push_user_words(qts, query_texture_4f[0], 5);
+    for (unsigned owner = 0; owner < 2; owner++) {
+        const uint32_t *record = three ? query_texture_3f[owner] :
+                                         query_texture_1f[owner];
+
+        if (replay) {
+            /* Original synthetic records use the kernel command port. */
+            for (unsigned i = 0; i < words; i++) {
+                cmd_push(qts, record[i]);
+            }
+        } else {
+            push_user_words(qts, record, words);
+        }
+        texture_current_query(qts, record, words, 2, owner ? 8 : 5, 1);
+    }
+    qtest_system_reset(qts);
+    texture_current_query(qts, (uint32_t[]) { 0xc380c821, 0, 0 },
+                          3, 2, 5, 1);
+    qtest_quit(qts);
+}
+
+static void test_texture_current_query_1f(void)
+{
+    texture_current_query_short(false, false);
+}
+
+static void test_texture_current_query_1f_kernel(void)
+{
+    texture_current_query_short(false, true);
+}
+
+static void test_texture_current_query_3f(void)
+{
+    texture_current_query_short(true, false);
+}
+
+static void test_texture_current_query_3f_kernel(void)
+{
+    texture_current_query_short(true, true);
+}
+
+static void texture_current_query_short_migration(bool three)
+{
+    const uint32_t *record = three ? query_texture_3f[1] : query_texture_1f[1];
+    unsigned words = three ? 4 : 2;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-current-short-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    push_user_words(from, query_texture_4f[0], 5);
+    push_user_words(from, record, words);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    push_user_words(to, query_texture_4f[1], 5);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    texture_current_query(to, record, words, 2, 8, 2);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_texture_current_query_1f_migration(void)
+{
+    texture_current_query_short_migration(false);
+}
+
+static void test_texture_current_query_3f_migration(void)
+{
+    texture_current_query_short_migration(true);
+}
+
 static void texture_current_query_4f_migration(bool defaults)
 {
     const uint32_t initial[] = { 0xc380c821, 0, 0 };
@@ -15249,6 +15344,18 @@ int main(int argc, char **argv)
                    test_texture_current_query_4f_migration);
     qtest_add_func("sn1/odyssey/texture-current-query-4f-migration-defaults",
                    test_texture_current_query_4f_migration_defaults);
+    qtest_add_func("sn1/odyssey/texture-current-query-1f",
+                   test_texture_current_query_1f);
+    qtest_add_func("sn1/odyssey/texture-current-query-1f-kernel",
+                   test_texture_current_query_1f_kernel);
+    qtest_add_func("sn1/odyssey/texture-current-query-1f-migration",
+                   test_texture_current_query_1f_migration);
+    qtest_add_func("sn1/odyssey/texture-current-query-3f",
+                   test_texture_current_query_3f);
+    qtest_add_func("sn1/odyssey/texture-current-query-3f-kernel",
+                   test_texture_current_query_3f_kernel);
+    qtest_add_func("sn1/odyssey/texture-current-query-3f-migration",
+                   test_texture_current_query_3f_migration);
     qtest_add_func("sn1/odyssey/texture-current-query-4f",
                    test_texture_current_query_4f);
     qtest_add_func("sn1/odyssey/query-record-migration",
