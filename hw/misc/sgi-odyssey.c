@@ -4007,6 +4007,7 @@ typedef struct OdysseyTextureChain {
      * this first lets image.opaque serve both that callback and the 3D reader.
      */
     OdysseyTextureVolume volume;
+    OdysseyTextureVolume volumes[SGI_GL_TEX_LEVELS_MAX];
     OdysseyTexture storage[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexLevel levels[SGI_GL_TEX_LEVELS_MAX];
     SGIGLTexPyramid pyramid;
@@ -4067,6 +4068,16 @@ static bool odyssey_texture_read_3d(void *opaque, uint32_t x, uint32_t y,
         .words = volume->words,
     };
     return odyssey_texture_read(&texture, x, y, rgba);
+}
+
+static bool odyssey_texture_read_volume_level(void *opaque, uint32_t level,
+                                              uint32_t x, uint32_t y,
+                                              uint32_t z, uint32_t *rgba)
+{
+    OdysseyTextureChain *chain = opaque;
+
+    return level < ARRAY_SIZE(chain->volumes) &&
+           odyssey_texture_read_3d(&chain->volumes[level], x, y, z, rgba);
 }
 
 static bool odyssey_texture_read_level(void *opaque, uint32_t level,
@@ -4240,10 +4251,23 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint32_t stride_units = entry[1] & 0xfff;
         uint32_t expected_units = ((width + 15) / 16 + 1) & ~1u;
         uint32_t base = entry[0] & 0x1fffffffu;
+        bool mipmap = min >= 0x40;
         uint64_t slice_stride;
 
+        /*
+         * Observed small-volume mip levels follow the preceding level's
+         * slices, with one 128-byte address unit per slice. Larger-volume
+         * packing and nonzero base levels are not established. Keep this
+         * bounded model policy separate from the level-zero address rule.
+         */
         if (first || s->tex_level0 || s->tex_lod[0] || s->tex_lod[1] ||
-            s->tex_sampler[4] != 0x13000000 || s->tex_env[0] > 2 ||
+            (!mipmap && word != 0x13000000) ||
+            (mipmap && (filter != 0x40 || ws || wt ||
+                        (image->base_format != SGI_GL_RGB &&
+                         image->base_format != SGI_GL_RGBA) ||
+                        width > 16 || height > 16 || depth > 16 ||
+                        stride_units != 2 || entry[2] != 1)) ||
+            s->tex_env[0] > 2 ||
             entry[1] != (0x41100000 | stride_units) ||
             entry[2] == 0 || stride_units != expected_units || !base ||
             s->obj_count > SGI_ODYSSEY_OBJECTS ||
@@ -4251,39 +4275,81 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             umul64_overflow(slice_stride, 64, &slice_stride)) {
             goto unsupported;
         }
-        for (uint32_t z = 0; z < depth; z++) {
-            uint64_t offset, slice_base, storage_end;
-            int object;
+        terminal = MAX(MAX(ctz32(width), ctz32(height)), ctz32(depth));
+        count = mipmap && hi > 0 ?
+                MIN(terminal, (hi + 255) / 256) + 1 : 1;
+        if (count > SGI_GL_TEX_LEVELS_MAX) {
+            goto unsupported;
+        }
+        memset(chain, 0, sizeof(*chain));
+        for (uint32_t i = 0; i < count; i++) {
+            uint32_t level_width = MAX(1, width >> i);
+            uint32_t level_height = MAX(1, height >> i);
+            uint32_t level_depth = MAX(1, depth >> i);
+            uint64_t next_base;
 
-            if (umul64_overflow(z, slice_stride, &offset) ||
-                uadd64_overflow(base, offset, &slice_base) ||
-                slice_base > UINT32_MAX) {
+            if (i && (s->tex_levels[i * 3] || s->tex_levels[i * 3 + 1] ||
+                      s->tex_levels[i * 3 + 2])) {
                 goto unsupported;
             }
-            object = odyssey_object_find(s, slice_base);
-            if (object < 0 || s->obj_width[object] != stride_units * 16 ||
-                s->obj_rows[object] < height ||
-                umul64_overflow(height - 1, s->obj_width[object],
-                                &storage_end) ||
-                uadd64_overflow(storage_end, s->obj_offset[object],
-                                &storage_end) ||
-                uadd64_overflow(storage_end, width, &storage_end) ||
-                storage_end > s->obj_used ||
-                storage_end > s->obj_mem.bytes_len / 4) {
-                goto unsupported;
+            for (uint32_t z = 0; z < level_depth; z++) {
+                uint64_t offset, slice_base, storage_end;
+                int object;
+
+                if (umul64_overflow(z, slice_stride, &offset) ||
+                    uadd64_overflow(base, offset, &slice_base) ||
+                    slice_base > UINT32_MAX) {
+                    goto unsupported;
+                }
+                object = odyssey_object_find(s, slice_base);
+                if (object < 0 || s->obj_width[object] != stride_units * 16 ||
+                    s->obj_rows[object] < level_height ||
+                    umul64_overflow(level_height - 1, s->obj_width[object],
+                                    &storage_end) ||
+                    uadd64_overflow(storage_end, s->obj_offset[object],
+                                    &storage_end) ||
+                    uadd64_overflow(storage_end, level_width, &storage_end) ||
+                    storage_end > s->obj_used ||
+                    storage_end > s->obj_mem.bytes_len / 4) {
+                    goto unsupported;
+                }
+            }
+            chain->volumes[i] = (OdysseyTextureVolume) {
+                .s = s, .base = base, .stride_units = stride_units,
+                .level_word2 = entry[2], .width = level_width,
+                .height = level_height, .depth = level_depth,
+                .base_format = image->base_format, .words = s->obj_used,
+            };
+            chain->levels[i] = (SGIGLTexLevel) {
+                .level = i, .width = level_width, .height = level_height,
+                .depth = level_depth, .base_format = image->base_format,
+                .internal_format = image->base_format,
+                .read_texel_3d = odyssey_texture_read_volume_level,
+                .opaque = chain,
+            };
+            if (i + 1 < count) {
+                if (umul64_overflow(level_depth, slice_stride, &next_base) ||
+                    uadd64_overflow(base, next_base, &next_base) ||
+                    next_base > UINT32_MAX) {
+                    goto unsupported;
+                }
+                base = next_base;
             }
         }
-        chain->volume = (OdysseyTextureVolume) {
-            .s = s, .base = base, .stride_units = stride_units,
-            .level_word2 = entry[2], .width = width, .height = height,
-            .depth = depth, .base_format = image->base_format,
-            .words = s->obj_used,
-        };
+        chain->volume = chain->volumes[0];
         image->depth = depth;
         image->volume = true;
         image->wrap_r = SGI_GL_REPEAT;
         image->read_texel_3d = odyssey_texture_read_3d;
         image->opaque = &chain->volume;
+        if (mipmap) {
+            chain->pyramid = (SGIGLTexPyramid) {
+                .levels = chain->levels, .count = count, .base_level = 0,
+                .max_level = count - 1, .min_lod = lo / 256.0,
+                .max_lod = hi / 256.0,
+            };
+            image->pyramid = &chain->pyramid;
+        }
         *resolved = image;
         return true;
     }
