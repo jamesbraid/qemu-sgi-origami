@@ -172,6 +172,7 @@
 #include "qemu/osdep.h"
 #include <math.h>
 #include "qemu/log.h"
+#include "qapi/error.h"
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
@@ -463,6 +464,14 @@ enum {
 #define MGRAS_TEX_SPEC_LEVEL(s)  ((s) & 0xf)
 #define MGRAS_TEX_SPEC_LOG2W(s)  (((s) >> 4) & 0xf)
 #define MGRAS_TEX_SPEC_LOG2H(s)  (((s) >> 8) & 0xf)
+/*
+ * Valid border caches fit in half their disjoint TRAM image bits plus six
+ * texels each: w + h <= w * h + 1, and each image texel uses at least four
+ * bits. Bound the migration array by all TRAM bits and cache slots.
+ */
+#define MGRAS_TEX_BORDER_WORDS_MAX \
+    ((uint64_t)SGI_MGRAS_TRAM_BYTES * 4 + \
+     (uint64_t)SGI_MGRAS_TEX_BORDER_CACHES * 6)
 
 /* Parser payload slots a 0x7c08 block keeps its place in. */
 #define MGRAS_TEX_REC_COUNT      0
@@ -671,9 +680,200 @@ static void mgras_tex_staging_free(SGIMgrasTexture *t)
     t->staged = t->staging_bytes = 0;
 }
 
+static uint32_t mgras_tex_border_pixels(uint32_t w, uint32_t h)
+{
+    return 2 * (w + 2) + 2 * h;
+}
+
+static uint32_t mgras_tex_border_key(uint32_t base, uint32_t level)
+{
+    return (base & 0xff) * SGI_MGRAS_TEX_LEVELS + level;
+}
+
+static void mgras_tex_border_compact(SGIMgrasTexture *t)
+{
+    uint32_t words = 0;
+    uint64_t *data = NULL;
+
+    for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+        words += t->border_count[i];
+    }
+    if (words) {
+        data = g_new(uint64_t, words);
+        words = 0;
+        for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+            if (!t->border_count[i]) {
+                t->border_offset[i] = 0;
+                continue;
+            }
+            memcpy(data + words, t->border_data + t->border_offset[i],
+                   t->border_count[i] * sizeof(*data));
+            t->border_offset[i] = words;
+            words += t->border_count[i];
+        }
+    } else {
+        for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+            t->border_offset[i] = 0;
+        }
+    }
+    g_free(t->border_data);
+    t->border_data = data;
+    t->border_words = words;
+}
+
+static void mgras_tex_border_clear(SGIMgrasTexture *t, uint32_t key)
+{
+    t->border_base[key] = 0;
+    t->border_mode[key] = 0;
+    t->border_width[key] = 0;
+    t->border_height[key] = 0;
+    t->border_offset[key] = 0;
+    t->border_count[key] = 0;
+    t->border_valid_count[key] = 0;
+    t->border_start[key] = 0;
+    t->border_bits[key] = 0;
+}
+
+static bool mgras_tex_border_overlap(uint64_t a, uint64_t asize,
+                                     uint64_t b, uint64_t bsize)
+{
+    return a < b + bsize && b < a + asize;
+}
+
+static void mgras_tex_border_invalidate_range(SGIMgrasTexture *t,
+                                               uint64_t start,
+                                               uint64_t bits)
+{
+    bool compact = false;
+
+    for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+        if (t->border_count[i] &&
+            mgras_tex_border_overlap(start, bits, t->border_start[i],
+                                     t->border_bits[i])) {
+            mgras_tex_border_clear(t, i);
+            compact = true;
+        }
+    }
+    if (compact) {
+        mgras_tex_border_compact(t);
+    }
+}
+
+static void mgras_tex_border_invalidate_tram(SGIMgrasState *s,
+                                               SGIMgrasTexture *keep,
+                                               uint64_t start,
+                                               uint64_t bits)
+{
+    for (uint32_t i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        SGIMgrasTexture *t = &s->gl_context[i].tex;
+
+        if (t != keep) {
+            mgras_tex_border_invalidate_range(t, start, bits);
+        }
+    }
+}
+
+static void mgras_tex_border_reset(SGIMgrasTexture *t)
+{
+    g_free(t->border_data);
+    t->border_data = NULL;
+    t->border_words = 0;
+    memset(t->border_base, 0, sizeof(t->border_base));
+    memset(t->border_mode, 0, sizeof(t->border_mode));
+    memset(t->border_width, 0, sizeof(t->border_width));
+    memset(t->border_height, 0, sizeof(t->border_height));
+    memset(t->border_offset, 0, sizeof(t->border_offset));
+    memset(t->border_count, 0, sizeof(t->border_count));
+    memset(t->border_valid_count, 0, sizeof(t->border_valid_count));
+    memset(t->border_start, 0, sizeof(t->border_start));
+    memset(t->border_bits, 0, sizeof(t->border_bits));
+}
+
+static void mgras_tex_border_prepare(SGIMgrasTexture *t, uint32_t key,
+                                     uint32_t base, uint32_t mode,
+                                     uint32_t w, uint32_t h, uint64_t start,
+                                     uint64_t bits, bool touches_border)
+{
+    uint32_t count = mgras_tex_border_pixels(w, h);
+    bool compact = false;
+
+    for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+        bool same;
+
+        if (!t->border_count[i]) {
+            continue;
+        }
+        same = i == key && t->border_base[i] == base &&
+               t->border_mode[i] == mode && t->border_width[i] == w &&
+               t->border_height[i] == h && t->border_start[i] == start &&
+               t->border_bits[i] == bits;
+        if ((i == key && !same) ||
+            (i != key && mgras_tex_border_overlap(start, bits,
+                                                   t->border_start[i],
+                                                   t->border_bits[i]))) {
+            mgras_tex_border_clear(t, i);
+            compact = true;
+        }
+    }
+    if (compact) {
+        mgras_tex_border_compact(t);
+    }
+    if (!touches_border || t->border_count[key]) {
+        return;
+    }
+    t->border_offset[key] = t->border_words;
+    t->border_count[key] = count;
+    t->border_valid_count[key] = 0;
+    t->border_base[key] = base;
+    t->border_mode[key] = mode;
+    t->border_width[key] = w;
+    t->border_height[key] = h;
+    t->border_start[key] = start;
+    t->border_bits[key] = bits;
+    t->border_data = g_realloc(t->border_data,
+                               (t->border_words + count) *
+                               sizeof(*t->border_data));
+    memset(t->border_data + t->border_words, 0,
+           count * sizeof(*t->border_data));
+    t->border_words += count;
+}
+
+static bool mgras_tex_border_index(uint32_t w, uint32_t h, int32_t x,
+                                   int32_t y, uint32_t *index)
+{
+    uint32_t row = w + 2;
+
+    if (x < -1 || y < -1 || x > (int32_t)w || y > (int32_t)h ||
+        (x >= 0 && x < (int32_t)w && y >= 0 && y < (int32_t)h)) {
+        return false;
+    }
+    if (y == -1) {
+        *index = x + 1;
+    } else if (y == (int32_t)h) {
+        *index = row + h + x + 1;
+    } else if (x == (int32_t)w) {
+        *index = row + y;
+    } else {
+        *index = 2 * row + h + y;
+    }
+    return true;
+}
+
+static void mgras_tex_border_store(SGIMgrasTexture *t, uint32_t key,
+                                   uint32_t index, uint32_t rgba)
+{
+    uint64_t *slot = &t->border_data[t->border_offset[key] + index];
+
+    if (!(*slot & (1ull << 32))) {
+        t->border_valid_count[key]++;
+    }
+    *slot = (1ull << 32) | rgba;
+}
+
 void sgi_mgras_texture_reset(SGIMgrasTexture *t)
 {
     mgras_tex_staging_free(t);
+    mgras_tex_border_reset(t);
     memset(t, 0, sizeof(*t));
 }
 
@@ -1101,6 +1301,8 @@ static void mgras_tram_restore(SGIMgrasState *s, uint32_t kick_byte,
     if (!ok) {
         return;
     }
+    mgras_tex_border_invalidate_tram(
+        s, NULL, first * MGRAS_TRAM_ROW_WORDS * 32, words * 32);
     for (uint64_t i = 0; i < words; i++) {
         memcpy(s->tram + (first * MGRAS_TRAM_ROW_WORDS + i) *
                MGRAS_TRAM_WORD_BYTES, buf + i * k, k);
@@ -1183,6 +1385,9 @@ void sgi_mgras_texture_board_reset(SGIMgrasState *s)
         memset(s->tram, 0, SGI_MGRAS_TRAM_BYTES);
     }
     memset(s->tram_written, 0, sizeof(s->tram_written));
+    for (uint32_t i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        mgras_tex_border_reset(&s->gl_context[i].tex);
+    }
     s->tram_transfer = MGRAS_TRAM_IDLE;
     s->tram_rows = s->tram_words = s->tram_first_row = 0;
     s->tram_read_block = s->tram_load_block = 0;
@@ -1513,6 +1718,13 @@ bool sgi_mgras_texture_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
  * level, converted to the kept format (see "Depth" above), at the place
  * the level's base, TXMIPMAP word and size give it.
  */
+static uint32_t mgras_tex_upload_component(const uint8_t *in, uint32_t n,
+                                           uint32_t size, uint32_t depth);
+static uint32_t mgras_tex_upload_rgba(const uint8_t *in, uint32_t src,
+                                      uint32_t size, uint32_t comps,
+                                      uint32_t depth, uint32_t layout,
+                                      bool abgr, uint32_t texel);
+
 static void mgras_tex_commit(SGIMgrasState *s)
 {
     SGIMgrasTexture *t = mgras_tex(s);
@@ -1529,8 +1741,11 @@ static void mgras_tex_commit(SGIMgrasState *s)
     uint32_t rw = t->load_size & 0xffff, rh = t->load_size >> 16;
     const uint8_t *in = t->staging;
     uint32_t w = 1u << log2w, h = 1u << log2h;
-    bool stored = false;
+    bool stored = false, border_stored = false;
+    bool touches_border;
     uint64_t start;
+    uint64_t image_bits = ((uint64_t)slot << log2w) << log2h;
+    uint32_t border_key = mgras_tex_border_key(t->load_base, level);
 
     if (t->load_volume) {
         uint64_t bytes = (uint64_t)rw * rh * src * size * t->load_depth;
@@ -1568,6 +1783,10 @@ static void mgras_tex_commit(SGIMgrasState *s)
     t->volume_bytes = 0;
     t->volume_width = t->volume_height = t->volume_depth = 0;
     t->volume_base = t->volume_mode = t->volume_level = 0;
+    touches_border = (int32_t)t->load_x < 0 ||
+                     (int32_t)t->load_y < 0 ||
+                     (int64_t)(int32_t)t->load_x + rw > w ||
+                     (int64_t)(int32_t)t->load_y + rh > h;
     if (!mgras_tram_place(t->load_base, t->load_block, log2w, log2h, mode,
                           &start)) {
         /* load_start placed it; only a migrated load can get here. */
@@ -1581,48 +1800,56 @@ static void mgras_tex_commit(SGIMgrasState *s)
      * from the word) and how a clamped read uses them are unknown, so
      * a draw samples the border colour register, not the image's border.
      */
+    mgras_tex_border_invalidate_tram(s, t, start, image_bits);
+    mgras_tex_border_prepare(t, border_key, t->load_base, mode, w, h,
+                             start, image_bits, touches_border);
     for (uint32_t row = 0; row < rh; row++, in += rw * src * size) {
         int64_t ty = (int64_t)(int32_t)t->load_y + row;
 
-        if (ty < 0 || ty >= h) {
-            continue;
-        }
-        for (uint32_t i = 0; i < rw * comps; i++) {
-            /* An ABGR image's components come in reverse order. */
-            uint32_t k = t->load_abgr ? comps - 1 - i % comps : i % comps;
-            uint32_t n = i / comps * src + k;
-            int64_t tx = (int64_t)(int32_t)t->load_x + i / comps;
-            uint64_t bit;
-            uint32_t v;
+        for (uint32_t texel = 0; texel < rw; texel++) {
+            int64_t tx = (int64_t)(int32_t)t->load_x + texel;
+            uint32_t border_index;
 
-            if (tx < 0 || tx >= w) {
+            if (mgras_tex_border_index(w, h, tx, ty, &border_index)) {
+                uint32_t rgba = mgras_tex_upload_rgba(
+                    in, src, size, comps, depth, MGRAS_TEX_LAYOUT(mode),
+                    t->load_abgr, texel);
+
+                mgras_tex_border_store(t, border_key, border_index, rgba);
+                border_stored = true;
+            }
+            if (tx < 0 || tx >= w || ty < 0 || ty >= h) {
                 continue;
             }
-            bit = start + (((uint64_t)ty << log2w) + tx) * slot +
-                  i % comps * depth;
-            if (k >= src) {
-                /* An RGB image's alpha is 1 (OpenGL 1.2.1, 3.6.4). */
-                v = (1u << depth) - 1;
-            } else if (size == 1) {
-                v = depth == 4 ? in[n] >> 4 : in[n];
-            } else {
-                /* Two-byte components: see sgi_mgras_texture_load_start. */
-                uint32_t c = lduw_be_p(&in[2 * n]);
+            for (uint32_t component = 0; component < comps; component++) {
+                uint32_t k = t->load_abgr ? comps - 1 - component : component;
+                uint32_t n = texel * src + k;
+                uint64_t bit;
+                uint32_t v;
 
-                v = depth == 12 ? c >> 4 :
-                    depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
+                bit = start + (((uint64_t)ty << log2w) + tx) * slot +
+                      component * depth;
+                if (k >= src) {
+                    v = (1u << depth) - 1;
+                } else {
+                    v = mgras_tex_upload_component(in, n, size, depth);
+                }
+                mgras_tram_put(s->tram, bit, depth, v);
+                stored = true;
             }
-            mgras_tram_put(s->tram, bit, depth, v);
-            stored = true;
         }
     }
-    if (!stored) {
+    if (!stored && !border_stored) {
         goto done;
     }
-    mgras_tram_mark(s, start, ((uint64_t)slot << log2w) << log2h);
-    t->loaded_levels |= 1u << level;
-    trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
-                                  1u << log2w, 1u << log2h, mode);
+    if (stored) {
+        mgras_tram_mark(s, start, image_bits);
+        t->loaded_levels |= 1u << level;
+        trace_sgi_mgras_texture_level(t->load_base, t->load_block, level,
+                                      1u << log2w, 1u << log2h, mode);
+    }
+    goto done;
+
 done:
     mgras_tex_staging_free(t);
     t->load = 0;
@@ -1638,7 +1865,16 @@ bool sgi_mgras_texture_row(SGIMgrasState *s, const uint8_t *bytes,
     if (!t->staging) {
         return false;
     }
-    take = MIN(n, t->staging_bytes - t->staged);
+    if (n > t->staging_bytes - t->staged) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: texture DMA row exceeds "
+                      "the staged image; nothing stored\n");
+        mgras_tex_staging_free(t);
+        t->load = 0;
+        t->load_volume = t->load_depth = 0;
+        t->load_dma_bytes = 0;
+        return true;
+    }
+    take = n;
     memcpy(t->staging + t->staged, bytes, take);
     t->staged += take;
     if (t->staged == t->staging_bytes) {
@@ -1663,6 +1899,45 @@ void sgi_mgras_texture_abort(SGIMgrasState *s)
  * luminance in red, since the class that reads it is the draw's and the
  * sampler takes the byte it needs.
  */
+static uint32_t mgras_tex_upload_component(const uint8_t *in, uint32_t n,
+                                           uint32_t size, uint32_t depth)
+{
+    if (size == 1) {
+        return depth == 4 ? in[n] >> 4 : in[n];
+    }
+    uint32_t c = lduw_be_p(&in[2 * n]);
+    return depth == 12 ? c >> 4 :
+           depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
+}
+
+static uint32_t mgras_tex_upload_rgba(const uint8_t *in, uint32_t src,
+                                      uint32_t size, uint32_t comps,
+                                      uint32_t depth, uint32_t layout,
+                                      bool abgr, uint32_t texel)
+{
+    uint32_t c[4] = { 0, 0, 0, 0 };
+
+    for (uint32_t i = 0; i < comps; i++) {
+        uint32_t k = abgr ? comps - 1 - i : i;
+        uint32_t n = texel * src + k;
+
+        c[i] = k >= src ? (1u << depth) - 1 :
+               mgras_tex_upload_component(in, n, size, depth);
+        c[i] = depth == 4 ? c[i] * 0x11 :
+               depth == 8 ? c[i] : (c[i] * 255 + 2047) / 4095;
+    }
+    switch (layout) {
+    case MGRAS_TEX_LAYOUT_ONE:
+        return c[0] << 24 | c[0];
+    case MGRAS_TEX_LAYOUT_LA:
+        return c[0] << 24 | c[1];
+    case MGRAS_TEX_LAYOUT_RGB:
+        return c[0] << 24 | c[1] << 16 | c[2] << 8;
+    default:
+        return c[0] << 24 | c[1] << 16 | c[2] << 8 | c[3];
+    }
+}
+
 static bool mgras_tex_read_volume_texel(void *opaque, uint32_t level,
                                         uint32_t x, uint32_t y, uint32_t z,
                                         uint32_t *rgba)
@@ -1781,6 +2056,27 @@ static void mgras_tex_color_table_post_filter(void *opaque, double rgba[4])
 }
 
 /* The sampler's base format for a layout and the class the draw names. */
+static bool mgras_tex_read_border_texel(void *opaque, uint32_t level,
+                                        int32_t x, int32_t y,
+                                        uint32_t *rgba)
+{
+    const SGIMgrasTexView *l = opaque;
+    uint32_t w = 1u << l->log2w, h = 1u << l->log2h, index;
+    uint64_t value;
+
+    if (level != l->level || !l->border_data ||
+        !mgras_tex_border_index(w, h, x, y, &index) ||
+        index >= l->border_count) {
+        return false;
+    }
+    value = l->border_data[l->border_offset + index];
+    if (!(value & (1ull << 32))) {
+        return false;
+    }
+    *rgba = value & UINT32_MAX;
+    return true;
+}
+
 static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
 {
     switch (layout) {
@@ -1880,6 +2176,9 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
 
     log2w = log2w > n ? log2w - n : 0;
     log2h = log2h > n ? log2h - n : 0;
+    view->border_data = NULL;
+    view->level = n;
+    view->border_offset = view->border_count = 0;
     if ((t->texmode2 & MGRAS_TEXMODE2_VOLUME) && t->volume_bytes &&
         n == t->volume_level && t->volume_base == t->base &&
         t->volume_mode == mode) {
@@ -1905,6 +2204,26 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
     view->depth = 1;
     view->volume_data = NULL;
     view->volume_data_extra = NULL;
+    uint32_t border_key = mgras_tex_border_key(t->base, n);
+    uint64_t image_bits = ((uint64_t)mgras_tex_slot_bits(mode) << log2w)
+                          << log2h;
+
+    if (t->border_count[border_key] &&
+        t->border_base[border_key] == t->base &&
+        MGRAS_TEX_LAYOUT(t->border_mode[border_key]) ==
+            MGRAS_TEX_LAYOUT(mode) &&
+        MGRAS_TEX_DEPTH(t->border_mode[border_key]) ==
+            MGRAS_TEX_DEPTH(mode) &&
+        t->border_width[border_key] == (1u << log2w) &&
+        t->border_height[border_key] == (1u << log2h) &&
+        t->border_start[border_key] == view->bit &&
+        t->border_bits[border_key] == image_bits &&
+        t->border_valid_count[border_key] ==
+        t->border_count[border_key]) {
+        view->border_data = t->border_data;
+        view->border_offset = t->border_offset[border_key];
+        view->border_count = t->border_count[border_key];
+    }
     return true;
 }
 
@@ -1946,7 +2265,10 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
             .depth = e->depth,
             .base_format = format,
             .internal_format = format,
+            .border = e->border_data ? 1 : 0,
             .read_texel = mgras_tex_read_texel,
+            .read_border_texel = e->border_data ?
+                                 mgras_tex_read_border_texel : NULL,
             .read_texel_3d = mgras_tex_read_volume_texel,
             .opaque = e,
         };
@@ -2299,6 +2621,71 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         (!t->color_table_active && t->color_table_written)) {
         return false;
     }
+    uint32_t border_words = 0;
+
+    if ((t->border_words && !t->border_data) ||
+        (!t->border_words && t->border_data)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+        uint32_t count = t->border_count[i];
+        uint32_t valid = 0;
+
+        if (!count) {
+            if (t->border_valid_count[i]) {
+                return false;
+            }
+            continue;
+        }
+        if ((i / SGI_MGRAS_TEX_LEVELS) != (t->border_base[i] & 0xff) ||
+            !t->border_width[i] || !t->border_height[i] ||
+            t->border_width[i] > (1u << 15) ||
+            t->border_height[i] > (1u << 15) ||
+            (t->border_width[i] & (t->border_width[i] - 1)) ||
+            (t->border_height[i] & (t->border_height[i] - 1)) ||
+            count != mgras_tex_border_pixels(t->border_width[i],
+                                              t->border_height[i]) ||
+            !t->border_bits[i] ||
+            t->border_start[i] > (uint64_t)SGI_MGRAS_TRAM_BYTES * 8 ||
+            t->border_bits[i] >
+                (uint64_t)SGI_MGRAS_TRAM_BYTES * 8 - t->border_start[i] ||
+            (uint64_t)t->border_offset[i] + count > t->border_words) {
+            return false;
+        }
+        if (MGRAS_TEX_DEPTH(t->border_mode[i]) > MGRAS_TEX_DEPTH_12 ||
+            t->border_bits[i] !=
+            (uint64_t)mgras_tex_slot_bits(t->border_mode[i]) *
+            t->border_width[i] * t->border_height[i]) {
+            return false;
+        }
+        for (uint32_t j = 0; j < count; j++) {
+            uint64_t value = t->border_data[t->border_offset[i] + j];
+
+            if (value >> 33) {
+                return false;
+            }
+            valid += !!(value & (1ull << 32));
+        }
+        if (valid != t->border_valid_count[i]) {
+            return false;
+        }
+        border_words += count;
+        for (uint32_t j = i + 1; j < SGI_MGRAS_TEX_BORDER_CACHES; j++) {
+            if (t->border_count[j] &&
+                (mgras_tex_border_overlap(t->border_start[i],
+                                          t->border_bits[i],
+                                          t->border_start[j],
+                                          t->border_bits[j]) ||
+                 mgras_tex_border_overlap(t->border_offset[i], count,
+                                          t->border_offset[j],
+                                          t->border_count[j]))) {
+                return false;
+            }
+        }
+    }
+    if (border_words != t->border_words) {
+        return false;
+    }
     if (t->load) {
         uint32_t w = 1u << MGRAS_TEX_SPEC_LOG2W(t->load_spec);
         uint32_t h = 1u << MGRAS_TEX_SPEC_LOG2H(t->load_spec);
@@ -2344,6 +2731,62 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
     return true;
 }
 
+static bool mgras_tex_border_words_valid(SGIMgrasTexture *t, Error **errp)
+{
+    uint64_t count = 0;
+
+    if (t->border_words > MGRAS_TEX_BORDER_WORDS_MAX) {
+        error_setg(errp, "sgi-mgras: border cache exceeds migration bound");
+        return false;
+    }
+    for (uint32_t i = 0; i < SGI_MGRAS_TEX_BORDER_CACHES; i++) {
+        count += t->border_count[i];
+        if (count > MGRAS_TEX_BORDER_WORDS_MAX) {
+            error_setg(errp, "sgi-mgras: border cache count exceeds "
+                       "migration bound");
+            return false;
+        }
+    }
+    if (count != t->border_words) {
+        error_setg(errp, "sgi-mgras: border cache word count is inconsistent");
+        return false;
+    }
+    return true;
+}
+
+static bool mgras_tex_border_words_load(QEMUFile *f, void *pv, size_t size,
+                                        const VMStateField *field,
+                                        Error **errp)
+{
+    SGIMgrasTexture *t = (void *)((uint8_t *)pv -
+                                  offsetof(SGIMgrasTexture, border_words));
+
+    if (!vmstate_info_uint32.load(f, pv, size, field, errp)) {
+        return false;
+    }
+    /* This field runs before VARRAY_ALLOC, so reject before allocation. */
+    return mgras_tex_border_words_valid(t, errp);
+}
+
+static bool mgras_tex_border_words_save(QEMUFile *f, void *pv, size_t size,
+                                        const VMStateField *field,
+                                        JSONWriter *vmdesc, Error **errp)
+{
+    SGIMgrasTexture *t = (void *)((uint8_t *)pv -
+                                  offsetof(SGIMgrasTexture, border_words));
+
+    if (!mgras_tex_border_words_valid(t, errp)) {
+        return false;
+    }
+    return vmstate_info_uint32.save(f, pv, size, field, vmdesc, errp);
+}
+
+static const VMStateInfo mgras_tex_border_words_info = {
+    .name = "sgi-mgras-texture-border-words",
+    .load = mgras_tex_border_words_load,
+    .save = mgras_tex_border_words_save,
+};
+
 static int mgras_tex_state_post_load(void *opaque, int version_id)
 {
     SGIMgrasTexture *t = opaque;
@@ -2353,8 +2796,8 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 13,
-    .minimum_version_id = 13,
+    .version_id = 14,
+    .minimum_version_id = 14,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),
@@ -2408,6 +2851,28 @@ static const VMStateDescription vmstate_sgi_mgras_tex = {
         VMSTATE_UINT32(color_table_valid, SGIMgrasTexture),
         VMSTATE_BUFFER(color_table_data, SGIMgrasTexture),
         VMSTATE_BUFFER(volume_data_extra, SGIMgrasTexture),
+        VMSTATE_UINT32_ARRAY_V(border_base, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_mode, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_width, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_height, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_offset, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_count, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT32_ARRAY_V(border_valid_count, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT64_ARRAY_V(border_start, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_UINT64_ARRAY_V(border_bits, SGIMgrasTexture,
+                               SGI_MGRAS_TEX_BORDER_CACHES, 14),
+        VMSTATE_SINGLE(border_words, SGIMgrasTexture, 14,
+                       mgras_tex_border_words_info, uint32_t),
+        VMSTATE_VARRAY_ALLOC(border_data, SGIMgrasTexture, border_words,
+                             14, vmstate_info_uint64, uint64_t),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2441,7 +2906,8 @@ static bool mgras_tex_is_reset(const SGIMgrasTexture *t)
                    t->volume_width | t->volume_height |
                    t->volume_depth | t->volume_base | t->volume_mode |
                    t->volume_level | t->color_table_selector |
-                   t->color_table_written | t->color_table_active |
+                   t->border_words | t->color_table_written |
+                   t->color_table_active |
                    t->color_table_valid;
 
     for (int i = 0; i < SGI_MGRAS_TEX_TABLE; i++) {

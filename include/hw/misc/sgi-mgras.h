@@ -350,6 +350,7 @@ typedef struct SGIMgrasGLPixels {
  */
 #define SGI_MGRAS_TEX_LEVELS 16
 #define SGI_MGRAS_TEX_TABLE 32
+#define SGI_MGRAS_TEX_BORDER_CACHES (256u * SGI_MGRAS_TEX_LEVELS)
 
 /*
  * TRAM: one raster path's 4 MiB in 256 blocks of 16 KiB, each 64 rows of
@@ -380,6 +381,8 @@ typedef struct SGIMgrasTexView {
     uint32_t log2w, log2h;
     uint32_t mode;
     uint32_t depth;
+    const uint64_t *border_data;
+    uint32_t level, border_offset, border_count;
 } SGIMgrasTexView;
 
 /*
@@ -434,6 +437,17 @@ typedef struct SGIMgrasTexture {
     SGIGLTexPyramid pyramid;
     SGIGLTexLevel sampler_levels[SGI_MGRAS_TEX_LEVELS];
     SGIMgrasTexView views[SGI_MGRAS_TEX_LEVELS];
+    uint32_t border_base[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_mode[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_width[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_height[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_offset[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_count[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint32_t border_valid_count[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint64_t border_start[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint64_t border_bits[SGI_MGRAS_TEX_BORDER_CACHES];
+    uint64_t *border_data;
+    uint32_t border_words;
 } SGIMgrasTexture;
 
 /*

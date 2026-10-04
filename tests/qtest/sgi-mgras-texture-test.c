@@ -20,6 +20,10 @@
 #include "sn0-user-image.h"
 #include "sgi-mgras-test.h"
 
+static QTestState *tex_sb_file_migrate_and_restart(QTestState *from,
+                                                    const char *args,
+                                                    const char *uri);
+
 
 /*
  * The class-0x3800 forms and glTexCoord2f, as the IRIX 6.5.30 IP27GR532
@@ -45,6 +49,9 @@ static void gl_vertex3i(QTestState *qts, int32_t x, int32_t y, int32_t z)
 
 static void test_gl_integer_and_texture_forms(void)
 {
+    QTestState *test = qtest_init(MACHINE_ARGS);
+
+    qts = test;
     gl_transform_start(qts);
     gl_clear_color(qts, 0, 0, 0, 1);
     gl_word(qts, GL_CLEAR_COLOR_BUFFER);
@@ -80,6 +87,9 @@ static void test_gl_integer_and_texture_forms(void)
                     gl_bits(30 + GL_RASTER_BIAS));
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_Z, 1), ==, gl_bits(0));
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_quit(test);
+    qts = NULL;
 }
 
 static void test_gl_native_texcoord_current(void)
@@ -88,6 +98,9 @@ static void test_gl_native_texcoord_current(void)
     static const float four[4] = { 0.25f, -0.5f, 2, 0.5f };
     static const float two[4] = { -0.25f, 0.75f, 0, 1 };
     static const float integer[4] = { -3, 5, 7, 1 };
+    QTestState *test = qtest_init(MACHINE_ARGS);
+
+    qts = test;
 
     gl_transform_start(qts);
     gl_texcoord_check(qts, false, initial);
@@ -108,6 +121,9 @@ static void test_gl_native_texcoord_current(void)
     gl_texcoord_check(qts, false, four);
     gl_word(qts, GL_END_OF(GL_BEGIN_LINES));
     gl_texcoord_check(qts, true, initial);
+
+    qtest_quit(test);
+    qts = NULL;
 }
 
 /* T * S preserves homogeneous q: (0.25, 0.5, -1, 2) maps as below. */
@@ -116,6 +132,9 @@ static void test_gl_native_texcoord_raster(void)
     static const float current[4] = { 0.25f, 0.5f, -1, 2 };
     static const float transformed[4] = { 6.5f, -2, 7.5f, 2 };
     static const float changed[4] = { -1, -2, 0, 1 };
+    QTestState *test = qtest_init(MACHINE_ARGS);
+
+    qts = test;
 
     gl_transform_start(qts);
     gl_texcoord4f(qts, current[0], current[1], current[2], current[3]);
@@ -135,13 +154,22 @@ static void test_gl_native_texcoord_raster(void)
     gl_raster_pos2f(qts, 512, 16);
     g_assert_cmphex(gl_query(qts, GL_Q_RASTER_VALID, 1), ==, 0);
     gl_texcoord_check(qts, true, transformed);
+
+    qtest_quit(test);
+    qts = NULL;
 }
 
 static void test_gl_native_texcoord_contexts(void)
 {
-    mgras_reset();
+    QTestState *test = qtest_init(MACHINE_ARGS);
+
+    qts = test;
+    mgras_reset_state(test);
     gl_texcoord_context_setup(qts);
     gl_texcoord_context_check(qts);
+
+    qtest_quit(test);
+    qts = NULL;
 }
 
 /*
@@ -336,20 +364,18 @@ static void test_gl_texture_color_table_migration(gconstpointer data)
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
     GError *err = NULL;
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-mgras-color-table-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
     source_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS,
                                   (char *)data);
     from = tex_start(source_args);
-    dest_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS
-                                " -incoming %s", (char *)data, uri);
-    to = qtest_init(dest_args);
 
     tex_load(from, TEX_TL_MODE_RGBA8, texels);
     tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
@@ -357,7 +383,8 @@ static void test_gl_texture_color_table_migration(gconstpointer data)
     tex_color_table_mode(from, true);
     tex_quad(from);
     g_assert_cmphex(tex_texel_pixel(from, 0, 0), ==, 0x4080c0);
-    sgi_migrate_stopped(from, uri);
+    to = tex_sb_file_migrate_and_restart(from,
+                                            source_args, uri);
 
     tex_color_table_continue(to, 384, 3 * TEX_COLOR_TABLE_ENTRIES - 384);
     tex_bind(to, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
@@ -367,7 +394,7 @@ static void test_gl_texture_color_table_migration(gconstpointer data)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    unlink(path);
     g_rmdir(tmpfs);
 }
 
@@ -381,33 +408,32 @@ static void test_gl_texture_color_table_full_migration(gconstpointer data)
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
     GError *err = NULL;
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-mgras-color-table-full-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
     source_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS,
                                   (char *)data);
     from = tex_start(source_args);
-    dest_args = g_strdup_printf(TEX_COLOR_TABLE_MIGRATION_ARGS
-                                " -incoming %s", (char *)data, uri);
-    to = qtest_init(dest_args);
 
     tex_load(from, TEX_TL_MODE_RGBA8, texels);
     tex_bind(from, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     tex_color_table_upload(from, 3 * TEX_COLOR_TABLE_ENTRIES);
     tex_color_table_mode(from, true);
-    sgi_migrate_stopped(from, uri);
+    to = tex_sb_file_migrate_and_restart(from,
+                                            source_args, uri);
 
     tex_quad(to);
     g_assert_cmphex(tex_texel_pixel(to, 0, 0), ==, 0x7cd765);
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    unlink(path);
     g_rmdir(tmpfs);
 }
 
@@ -645,6 +671,64 @@ static void tex_check_ordinary_4x2(QTestState *t)
                             p[0] << 16 | p[1] << 8 | p[2]);
         }
     }
+}
+
+static void test_gl_texture_pixel_rgba_nearest(gconstpointer data)
+{
+    static const uint32_t box[6] = { 0, 0, 2, 2, 2 << 16 | 2, 0 };
+    static const uint8_t image[16] = {
+        0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+        0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0xff,
+    };
+    static const uint8_t pixels[16] = {
+        0x40, 0x40, 0, 0xff, 0xbf, 0x40, 0, 0xff,
+        0x40, 0xbf, 0, 0xff, 0xbf, 0xbf, 0, 0xff,
+    };
+    static const uint32_t pixel_texgen_state[7] = {
+        0, 0x42010000, 0x14, 1, 0x34000, 0, 2,
+    };
+    static const uint32_t pixel_texgen_mode[1] = { 0x352d };
+    static const uint32_t pixel_texgen_blend[8] = {
+        0x83800, 0x83000, 0x82800, 0x82000,
+        0x81800, 0x81000, 0x80800, 0x40080000,
+    };
+    static const uint32_t expected[4] = {
+        0xff0000, 0x00ff00, 0x0000ff, 0xffff00,
+    };
+    QTestState *t = texture_board_start(data);
+
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SPEC_2X2, image, 2, 2,
+                box, true);
+    tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
+    tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
+    tex_record(t, TEX_TXCLAMPSIZE, 0x4002);
+
+    /* These GE parameter loads precede the public pixel-texture draw. */
+    gl_ge_load(t, GL_GE_ERAM, 0x187, pixel_texgen_state,
+               ARRAY_SIZE(pixel_texgen_state));
+    gl_ge_load(t, GL_GE_ERAM, 0x19b, pixel_texgen_mode,
+               ARRAY_SIZE(pixel_texgen_mode));
+    gl_ge_load(t, GL_GE_ERAM, 0x1ef, pixel_texgen_blend,
+               ARRAY_SIZE(pixel_texgen_blend));
+    gl_pixels_program(t, GL_PIX_4UB, 2, 0, 0, 1, 1, 1);
+    gl_raster_pos2f(t, 0, 0);
+    gl_word(t, GL_PIXELS_HDR);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 0);
+    gl_word(t, 2);
+    gl_word(t, 0);
+    gl_word(t, 1);
+    gl_word(t, 0x4fc5);
+    gl_word(t, 0x98);
+    gl_pixels_dma_on(t, 0, pixels, sizeof(pixels), 8, 2, 8, 0xa7);
+    gl_pixels_fence(t);
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(expected); i++) {
+        g_assert_cmphex(gl_window_pixel(t, i % 2, i / 2), ==, expected[i]);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
 }
 
 static void test_gl_texture_volume_pixel_rgba(gconstpointer data)
@@ -1742,23 +1826,22 @@ static void test_gl_texture_volume_depth4_migration(void)
 {
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
     GError *err = NULL;
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-mgras-volume-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
     source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
     from = tex_start(source_args);
-    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
-                                uri);
-    to = qtest_init(dest_args);
 
     /* Migrate after parsing the depth-four load packet, before its DMA. */
     tex_begin_captured_volume(from, 4);
-    sgi_migrate_stopped(from, uri);
+    to = tex_sb_file_migrate_and_restart(from,
+                                            source_args, uri);
     tex_finish_captured_volume(to, tex_four_slice_migration_image, 4);
     tex_captured_four_slice_state(to);
     tex_quad_volume_z(to, 0.875f);
@@ -1776,7 +1859,7 @@ static void test_gl_texture_volume_depth4_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    unlink(path);
     g_rmdir(tmpfs);
 }
 
@@ -1784,20 +1867,18 @@ static void test_gl_texture_rectangular_volume_migration(void)
 {
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
     GError *err = NULL;
     QTestState *from, *to;
     uint8_t image[4 * 2 * 2 * 4];
 
     tmpfs = g_dir_make_tmp("sn0-mgras-rect-volume-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
     source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
     from = tex_start(source_args);
-    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
-                                uri);
-    to = qtest_init(dest_args);
 
     for (uint32_t z = 0; z < 2; z++) {
         for (uint32_t y = 0; y < 2; y++) {
@@ -1813,7 +1894,8 @@ static void test_gl_texture_rectangular_volume_migration(void)
     }
     gl_transform_start(from);
     tex_load_captured_rect_volume(from, image, 4, 2, 2, false);
-    sgi_migrate_stopped(from, uri);
+    to = tex_sb_file_migrate_and_restart(from,
+                                            source_args, uri);
 
     gl_clear_color(to, 0, 0, 0, 0);
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
@@ -1834,7 +1916,7 @@ static void test_gl_texture_rectangular_volume_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    unlink(path);
     g_rmdir(tmpfs);
 }
 
@@ -1842,20 +1924,18 @@ static void test_gl_texture_captured_volume_64k_migration(void)
 {
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
+    g_autofree char *path = NULL;
     g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
     g_autofree uint8_t *image = NULL;
     GError *err = NULL;
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-mgras-volume-64k-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
     source_args = g_strdup(TEX_VOLUME_MIGRATION_ARGS);
     from = tex_start(source_args);
-    dest_args = g_strdup_printf(TEX_VOLUME_MIGRATION_ARGS " -incoming %s",
-                                uri);
-    to = qtest_init(dest_args);
 
     image = g_malloc(64 * 64 * 4 * 4);
     for (uint32_t z = 0; z < 4; z++) {
@@ -1873,7 +1953,8 @@ static void test_gl_texture_captured_volume_64k_migration(void)
     tex_captured_rect_volume_state(from, 64, 64, 4);
     tex_quad_volume_z(from, 0.875f);
     g_assert_cmphex(gl_window_pixel(from, 32, 24), ==, 0x102043);
-    sgi_migrate_stopped(from, uri);
+    to = tex_sb_file_migrate_and_restart(from,
+                                            source_args, uri);
 
     tex_captured_rect_volume_state(to, 64, 64, 4);
     tex_quad_volume_z(to, 0.875f);
@@ -1881,7 +1962,7 @@ static void test_gl_texture_captured_volume_64k_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    unlink(path);
     g_rmdir(tmpfs);
 }
 
@@ -2726,7 +2807,10 @@ static void test_gl_texture_table_defaults_are_silent(void)
 
 static void test_hq_query_answers_the_texture_matrix(void)
 {
-    mgras_reset();
+    QTestState *test = qtest_init(MACHINE_ARGS);
+
+    qts = test;
+    mgras_reset_state(test);
 
     gl_enter_slot(qts, GL_SLOT_A);
     gl_word(qts, GL_CONTEXT_OPENER);
@@ -2744,6 +2828,9 @@ static void test_hq_query_answers_the_texture_matrix(void)
     gl_word(qts, GL_POP_MATRIX);
     g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE + 12, 0), ==, gl_bits(0));
     g_assert_cmphex(gl_query(qts, GL_Q_TEXTURE_DEPTH, 1), ==, 0xb45);
+
+    qtest_quit(test);
+    qts = NULL;
 }
 
 /*
@@ -4400,13 +4487,518 @@ static void add_texture_board_cases(const char *path, GTestDataFunc fn)
     }
 }
 
+#define TEX_SB_BASE_HDR 0x0000eb04
+#define TEX_SB_CLAMP_BITS 0x00001800
+#define TEX_SB_SPEC 0x110
+#define TEX_SB_TEXSIZE_2X2 0x1111
+#define TEX_SB_BLOCK_REG 0x0e3d
+
+typedef struct TexStoredBorderSample {
+    float s, t;
+} TexStoredBorderSample;
+
+static const uint8_t tex_sb_perimeter[12][4] = {
+    { 17, 31, 47, 255 }, { 37, 71, 109, 255 },
+    { 59, 113, 173, 255 }, { 83, 157, 239, 255 },
+    { 107, 199, 53, 255 }, { 131, 241, 97, 255 },
+    { 157, 61, 139, 255 }, { 181, 103, 191, 255 },
+    { 211, 149, 23, 255 }, { 233, 197, 67, 255 },
+    { 251, 227, 127, 255 }, { 73, 17, 211, 255 },
+};
+
+static const int tex_sb_perimeter_xy[12][2] = {
+    { -1, -1 }, { 0, -1 }, { 1, -1 }, { 2, -1 },
+    { 2, 0 }, { 2, 1 }, { 2, 2 }, { 1, 2 },
+    { 0, 2 }, { -1, 2 }, { -1, 1 }, { -1, 0 },
+};
+
+static const TexStoredBorderSample tex_sb_linear_samples[12] = {
+    { 0, 0.25f }, { 0, 0.75f }, { 1, 0.25f }, { 1, 0.75f },
+    { 0.25f, 0 }, { 0.75f, 0 }, { 0.25f, 1 }, { 0.75f, 1 },
+    { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 },
+};
+
+static void tex_sb_fill(uint8_t image[64], uint8_t core[16], uint8_t salt)
+{
+    static const uint8_t core_rgb[4][3] = {
+        { 255, 0, 0 }, { 0, 255, 0 },
+        { 0, 0, 255 }, { 255, 255, 255 },
+    };
+
+    memset(image, 0, 64);
+    for (unsigned i = 0; i < ARRAY_SIZE(tex_sb_perimeter_xy); i++) {
+        int x = tex_sb_perimeter_xy[i][0];
+        int y = tex_sb_perimeter_xy[i][1];
+        uint8_t *p = &image[4 * ((y + 1) * 4 + x + 1)];
+
+        p[0] = tex_sb_perimeter[i][0] ^ salt;
+        p[1] = tex_sb_perimeter[i][1];
+        p[2] = tex_sb_perimeter[i][2];
+        p[3] = 0xff;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        core[4 * i] = core_rgb[i][0];
+        core[4 * i + 1] = core_rgb[i][1];
+        core[4 * i + 2] = core_rgb[i][2];
+        core[4 * i + 3] = 0xff;
+    }
+    for (unsigned y = 0; y < 2; y++) {
+        for (unsigned x = 0; x < 2; x++) {
+            memcpy(&image[4 * ((y + 1) * 4 + x + 1)],
+                   &core[4 * (y * 2 + x)], 4);
+        }
+    }
+}
+
+static void tex_sb_upload_rect(QTestState *t, const uint8_t *pixels,
+                               uint32_t w, uint32_t h, int32_t x, int32_t y)
+{
+    const uint32_t box[6] = {
+        x, y, w, h, h << 16 | w, 0,
+    };
+
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SB_SPEC, pixels, w, h,
+                box, true);
+}
+
+static void tex_sb_set_base_block(QTestState *t, uint32_t base,
+                                  uint32_t block)
+{
+    const uint32_t ge_block[6] = { 4, 0, 0, block, block - 1, 0 };
+
+    gl_one(t, TEX_SB_BASE_HDR, base);
+    gl_ge_load(t, GL_GE_ERAM, TEX_SB_BLOCK_REG, ge_block,
+               ARRAY_SIZE(ge_block));
+}
+
+static void tex_sb_upload_core(QTestState *t, const uint8_t core[16])
+{
+    tex_sb_upload_rect(t, core, 2, 2, 0, 0);
+}
+
+static void tex_sb_upload_complete(QTestState *t, uint32_t base,
+                                   uint32_t block, uint8_t salt,
+                                   uint8_t image[64], uint8_t core[16])
+{
+    tex_sb_fill(image, core, salt);
+    tex_sb_set_base_block(t, base, block);
+    tex_sb_upload_rect(t, image, 4, 4, -1, -1);
+    tex_sb_upload_core(t, core);
+}
+
+static void tex_sb_bind(QTestState *t, bool linear)
+{
+    uint32_t filters = linear ? TEX_MAG_LINEAR | TEX_MIN_LINEAR : 0;
+
+    tex_bind(t, TEX_TEXMODE1_ON,
+             TEX_TEXMODE2_RGBA8 | TEX_SB_CLAMP_BITS | filters);
+    tex_records(t, (const uint32_t[]) {
+        TEX_TXSIZE, TEX_SB_TEXSIZE_2X2,
+        TEX_TXCLAMPSIZE, 2 << 13 | 2,
+    }, 2);
+    tex_mipmap_word(t, 4);
+}
+
+static uint32_t tex_sb_draw(QTestState *t, float s, float v, bool linear)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    float quad[4][4] = {
+        { 16, 16, s, v }, { 32, 16, s, v },
+        { 32, 32, s, v }, { 16, 32, s, v },
+    };
+
+    tex_sb_bind(t, linear);
+    tex_quad_rect(t, white, (const float (*)[4])quad);
+    return gl_window_pixel(t, 24, 24);
+}
+
+static const uint8_t *tex_sb_texel(const uint8_t image[64], int x, int y)
+{
+    return &image[4 * ((y + 1) * 4 + x + 1)];
+}
+
+static void tex_sb_linear_expected(const uint8_t image[64], float s, float t,
+                                   double want[3])
+{
+    double x = 2.0 * s - 0.5;
+    double y = 2.0 * t - 0.5;
+    int x0 = (int)floor(x), y0 = (int)floor(y);
+    double fx = x - x0, fy = y - y0;
+    double sum[3] = { 0, 0, 0 };
+
+    for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+            const uint8_t *p = tex_sb_texel(image, x0 + dx, y0 + dy);
+            double wx = dx ? fx : 1.0 - fx;
+            double wy = dy ? fy : 1.0 - fy;
+
+            for (int c = 0; c < 3; c++) {
+                sum[c] += wx * wy * p[c] / 255.0;
+            }
+        }
+    }
+    memcpy(want, sum, sizeof(sum));
+}
+
+static void tex_sb_expect_linear(QTestState *t, const uint8_t image[64],
+                                 float s, float v)
+{
+    double want[3];
+    uint32_t got;
+
+    tex_sb_linear_expected(image, s, v, want);
+    got = tex_sb_draw(t, s, v, true);
+    if (abs((int)((got >> 16) & 0xff) - (int)lround(want[0] * 255)) > 1 ||
+        abs((int)((got >> 8) & 0xff) - (int)lround(want[1] * 255)) > 1 ||
+        abs((int)(got & 0xff) - (int)lround(want[2] * 255)) > 1) {
+        g_test_message("stored-border linear sample (s=%.3f,t=%.3f): "
+                       "got #%06x, want %.3f,%.3f,%.3f",
+                       s, v, got, want[0], want[1], want[2]);
+    }
+    tex_expect(got, want[0], want[1], want[2]);
+}
+
+static void tex_sb_expect_nearest(QTestState *t, const uint8_t image[64],
+                                  float s, float v)
+{
+    int x = (int)floor(2.0 * s), y = (int)floor(2.0 * v);
+    const uint8_t *p = tex_sb_texel(image, x, y);
+    uint32_t got = tex_sb_draw(t, s, v, false);
+
+    if (abs((int)((got >> 16) & 0xff) - p[0]) > 1 ||
+        abs((int)((got >> 8) & 0xff) - p[1]) > 1 ||
+        abs((int)(got & 0xff) - p[2]) > 1) {
+        g_test_message("stored-border nearest sample (s=%.3f,t=%.3f): "
+                       "texel (%d,%d), got #%06x, want #%02x%02x%02x",
+                       s, v, x, y, got, (unsigned)p[0],
+                       (unsigned)p[1], (unsigned)p[2]);
+    }
+    tex_expect(got, p[0] / 255.0, p[1] / 255.0, p[2] / 255.0);
+}
+
+static void tex_sb_expect_all_linear(QTestState *t, const uint8_t image[64])
+{
+    for (unsigned i = 0; i < ARRAY_SIZE(tex_sb_linear_samples); i++) {
+        tex_sb_expect_linear(t, image, tex_sb_linear_samples[i].s,
+                             tex_sb_linear_samples[i].t);
+    }
+}
+
+static void test_gl_texture_stored_border_perimeter_samples(gconstpointer data)
+{
+    static const float centers[4] = { -0.25f, 0.25f, 0.75f, 1.0f };
+    QTestState *t = texture_board_start(data);
+    uint8_t image[64], core[16];
+
+    tex_sb_upload_complete(t, 0, 4, 0, image, core);
+    tex_sb_expect_all_linear(t, image);
+    for (unsigned y = 0; y < ARRAY_SIZE(centers); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(centers); x++) {
+            tex_sb_expect_nearest(t, image, centers[x], centers[y]);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void tex_sb_upload_left_strip(QTestState *t, const uint8_t image[64])
+{
+    uint8_t strip[16];
+
+    for (unsigned y = 0; y < 4; y++) {
+        memcpy(&strip[4 * y], &image[4 * 4 * y], 4);
+    }
+    tex_sb_upload_rect(t, strip, 1, 4, -1, -1);
+}
+
+static void tex_sb_upload_other_strips(QTestState *t, const uint8_t image[64])
+{
+    uint8_t strip[16];
+
+    memcpy(&strip[0], &image[4 * 1], 8);
+    tex_sb_upload_rect(t, strip, 2, 1, 0, -1);
+    memcpy(&strip[0], &image[4 * 13], 8);
+    tex_sb_upload_rect(t, strip, 2, 1, 0, 2);
+    for (unsigned y = 0; y < 4; y++) {
+        memcpy(&strip[4 * y], &image[4 * (4 * y + 3)], 4);
+    }
+    tex_sb_upload_rect(t, strip, 1, 4, 2, -1);
+}
+
+static void test_gl_texture_stored_border_partial_and_updates(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64], core[16], replacement[16];
+
+    tex_sb_fill(image, core, 0);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_upload_left_strip(t, image);
+    tex_sb_upload_core(t, core);
+    tex_expect(tex_sb_draw(t, 0.25f, 0, true), 0.5, 0, 0);
+    tex_sb_upload_other_strips(t, image);
+    tex_sb_expect_all_linear(t, image);
+
+    memset(core, 0, sizeof(core));
+    for (unsigned i = 0; i < 4; i++) {
+        core[4 * i] = 0x30 + 0x20 * i;
+        core[4 * i + 1] = 0x90 - 0x10 * i;
+        core[4 * i + 2] = 0x40 + 0x10 * i;
+        core[4 * i + 3] = 0xff;
+    }
+    tex_sb_upload_core(t, core);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            uint8_t *p = &image[4 * ((y + 1) * 4 + x + 1)];
+
+            memcpy(p, &core[4 * (y * 2 + x)], 4);
+        }
+    }
+    tex_sb_expect_all_linear(t, image);
+
+    memcpy(replacement, &image[4 * 4], 4);
+    replacement[0] ^= 0xff;
+    replacement[1] ^= 0x5a;
+    tex_sb_upload_rect(t, replacement, 1, 1, -1, 0);
+    memcpy(&image[4 * 4], replacement, 4);
+    tex_sb_expect_linear(t, image, 0, 0.25f);
+    tex_sb_expect_linear(t, image, 1, 0.75f);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_stored_border_incomplete_absent_and_reset(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64], core[16];
+
+    tex_sb_fill(image, core, 0);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_upload_core(t, core);
+    tex_expect(tex_sb_draw(t, 0, 0.25f, true), 0.5, 0, 0);
+    tex_sb_upload_left_strip(t, image);
+    tex_sb_upload_core(t, core);
+    tex_expect(tex_sb_draw(t, 0, 0.25f, true), 0.5, 0, 0);
+    tex_sb_upload_other_strips(t, image);
+    tex_sb_expect_all_linear(t, image);
+    qtest_system_reset(t);
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_upload_core(t, core);
+    tex_expect(tex_sb_draw(t, 0, 0.25f, true), 0.5, 0, 0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_stored_border_base_context_isolation(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t a[64], acore[16], b[64], bcore[16], c[64], ccore[16];
+
+    tex_sb_upload_complete(t, 0, 4, 0, a, acore);
+    tex_sb_upload_complete(t, 1, 4, 0x40, b, bcore);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_expect_all_linear(t, a);
+    tex_sb_set_base_block(t, 1, 4);
+    tex_sb_expect_all_linear(t, b);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_expect_all_linear(t, a);
+
+    gl_enter_slot(t, GL_SLOT_B);
+    gl_word(t, GL_CONTEXT_OPENER);
+    gl_viewport(t, 0, 0, 128, 128);
+    gl_window_projection(t);
+    tex_sb_upload_complete(t, 2, 4, 0x80, c, ccore);
+    tex_sb_set_base_block(t, 2, 4);
+    tex_sb_expect_all_linear(t, c);
+    gl_enter_slot(t, GL_SLOT_A);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_expect_all_linear(t, a);
+    tex_sb_set_base_block(t, 1, 4);
+    tex_sb_expect_all_linear(t, b);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_stored_border_overlapping_base_invalidates(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t a[64], acore[16], b[64], bcore[16];
+    uint8_t right_strip[16];
+
+    tex_sb_upload_complete(t, 0, 4, 0, a, acore);
+    tex_sb_fill(b, bcore, 0x40);
+    tex_sb_set_base_block(t, 1, 3);
+    for (unsigned y = 0; y < 4; y++) {
+        memcpy(&right_strip[4 * y], &b[4 * (4 * y + 3)], 4);
+    }
+    tex_sb_upload_rect(t, right_strip, 1, 4, 2, -1);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_sb_expect_nearest(t, a, 0.25f, 0.25f);
+    tex_expect(tex_sb_draw(t, 1, 0.25f, true),
+               0, acore[5] / 510.0, 0);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
+static void test_gl_texture_stored_border_bad_upload(void)
+{
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t image[64], core[16], oversized_row[5 * 4];
+    const uint32_t too_wide[6] = { -1, 0, 5, 1, 1 << 16 | 5, 0 };
+
+    tex_sb_upload_complete(t, 0, 4, 0, image, core);
+    tex_sb_expect_linear(t, image, 0, 0.25f);
+
+    memset(oversized_row, 0xa5, sizeof(oversized_row));
+    tex_load_as(t, true, TEX_TL_MODE_RGBA8, TEX_SB_SPEC, oversized_row,
+                5, 1, too_wide, true);
+
+    tex_sb_expect_linear(t, image, 0, 0.25f);
+    qtest_quit(t);
+}
+
+static void tex_sb_file_migration_check_images(QTestState *t,
+                                               const uint8_t a[64],
+                                               const uint8_t b[64],
+                                               const uint8_t c[64])
+{
+    static const float centers[4] = { -0.25f, 0.25f, 0.75f, 1.0f };
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_one(t, TEX_SB_BASE_HDR, 0);
+    tex_sb_expect_all_linear(t, a);
+    for (unsigned y = 0; y < ARRAY_SIZE(centers); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(centers); x++) {
+            tex_sb_expect_nearest(t, a, centers[x], centers[y]);
+        }
+    }
+    gl_one(t, TEX_SB_BASE_HDR, 1);
+    tex_sb_expect_all_linear(t, b);
+    for (unsigned y = 0; y < ARRAY_SIZE(centers); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(centers); x++) {
+            tex_sb_expect_nearest(t, b, centers[x], centers[y]);
+        }
+    }
+    gl_one(t, TEX_SB_BASE_HDR, 0);
+    tex_sb_expect_all_linear(t, a);
+
+    gl_enter_slot(t, GL_SLOT_B);
+    gl_one(t, TEX_SB_BASE_HDR, 2);
+    tex_sb_expect_all_linear(t, c);
+    for (unsigned y = 0; y < ARRAY_SIZE(centers); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(centers); x++) {
+            tex_sb_expect_nearest(t, c, centers[x], centers[y]);
+        }
+    }
+}
+
+static void tex_sb_file_migration_check_empty(QTestState *t,
+                                               const uint8_t image[64])
+{
+    static const float centers[4] = { -0.25f, 0.25f, 0.75f, 1.0f };
+
+    gl_enter_slot(t, GL_SLOT_A);
+    gl_one(t, TEX_SB_BASE_HDR, 0);
+    tex_sb_expect_all_linear(t, image);
+    for (unsigned y = 0; y < ARRAY_SIZE(centers); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(centers); x++) {
+            tex_sb_expect_nearest(t, image, centers[x], centers[y]);
+        }
+    }
+}
+
+static QTestState *tex_sb_file_migrate_and_restart(QTestState *from,
+                                                    const char *args,
+                                                    const char *uri)
+{
+    QTestState *to;
+
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_initf("%s -incoming %s", args, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    return to;
+}
+
+static void test_gl_texture_stored_border_file_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t a[64], acore[16], b[64], bcore[16], c[64], ccore[16];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-stored-border-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    from = tex_start(TEX_ARGS);
+    tex_sb_upload_complete(from, 0, 4, 0, a, acore);
+    tex_sb_upload_complete(from, 1, 4, 0x40, b, bcore);
+    gl_enter_slot(from, GL_SLOT_B);
+    gl_word(from, GL_CONTEXT_OPENER);
+    gl_viewport(from, 0, 0, 128, 128);
+    gl_window_projection(from);
+    tex_sb_upload_complete(from, 2, 4, 0x80, c, ccore);
+    tex_sb_file_migration_check_images(from, a, b, c);
+
+    to = tex_sb_file_migrate_and_restart(from, TEX_ARGS, uri);
+    tex_sb_file_migration_check_images(to, a, b, c);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
+static void tex_sb_fill_uncached_image(uint8_t image[64],
+                                       const uint8_t core[16])
+{
+    memset(image, 0, 64);
+    for (int y = 0; y < 2; y++) {
+        for (int x = 0; x < 2; x++) {
+            memcpy(&image[4 * ((y + 1) * 4 + x + 1)],
+                   &core[4 * (y * 2 + x)], 4);
+        }
+    }
+}
+
+static void test_gl_texture_stored_border_empty_file_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t image[64], core[16];
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-stored-border-empty-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    tex_sb_fill(image, core, 0);
+    tex_sb_fill_uncached_image(image, core);
+    from = tex_start(TEX_ARGS);
+    tex_sb_set_base_block(from, 0, 4);
+    tex_sb_upload_core(from, core);
+    tex_sb_file_migration_check_empty(from, image);
+
+    to = tex_sb_file_migrate_and_restart(from, TEX_ARGS, uri);
+    tex_sb_file_migration_check_empty(to, image);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
-
-    qts = qtest_init(MACHINE_ARGS);
 
 
     qtest_add_func("sn0/origin2000/mgras/"
@@ -4436,6 +5028,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/origin2000/mgras/gl-texture-load-draws-the-level/esi-t",
         "esi-t", test_gl_texture_load_draws_the_level);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-pixel-rgba-nearest/si-t",
+        "si-t", test_gl_texture_pixel_rgba_nearest);
     add_texture_board_cases("sn0/origin2000/mgras/gl-texture-volume-pixel-rgba",
                             test_gl_texture_volume_pixel_rgba);
     add_texture_board_cases(
@@ -4546,6 +5141,39 @@ int main(int argc, char **argv)
                    test_gl_texture_replace_is_modulate);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-env-decal-rgba",
                    test_gl_texture_env_decal_rgba);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-stored-border-perimeter-samples/si-t",
+        "si-t", test_gl_texture_stored_border_perimeter_samples);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-stored-border-perimeter-samples/esi-t",
+        "esi-t", test_gl_texture_stored_border_perimeter_samples);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-stored-border-perimeter-samples/mxi",
+        "mxi", test_gl_texture_stored_border_perimeter_samples);
+    qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-texture-stored-border-perimeter-samples/emxi",
+        "emxi", test_gl_texture_stored_border_perimeter_samples);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-partial-and-updates",
+                   test_gl_texture_stored_border_partial_and_updates);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-incomplete-reset",
+                   test_gl_texture_stored_border_incomplete_absent_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-base-context-isolation",
+                   test_gl_texture_stored_border_base_context_isolation);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-overlap-invalidates",
+                   test_gl_texture_stored_border_overlapping_base_invalidates);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-rejected-upload",
+                   test_gl_texture_stored_border_bad_upload);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-file-migration",
+                   test_gl_texture_stored_border_file_migration);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-texture-stored-border-empty-file-migration",
+                   test_gl_texture_stored_border_empty_file_migration);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-clamp-border-nearest",
                    test_gl_texture_clamp_border_nearest);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-wrap-mixed-axes",
@@ -4591,7 +5219,6 @@ int main(int argc, char **argv)
                    test_mxi_tram_save_shapes);
 
     ret = g_test_run();
-    qtest_quit(qts);
 
     return ret;
 }
