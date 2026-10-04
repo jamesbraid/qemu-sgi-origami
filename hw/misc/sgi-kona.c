@@ -3640,20 +3640,6 @@ refused:
     qemu_log_mask(LOG_UNIMP, "sgi-kona: native CopyPixels profile refused\n");
 }
 
-static bool sgi_kona_gl_pixel_transfer_identity(const SGIKonaGLPipe *p)
-{
-    if (p->pixel_transfer_unsupported) {
-        return false;
-    }
-    for (unsigned k = 0; k < 4; k++) {
-        if (sgi_kona_gl_float(p->pixel_transfer.scale[k]) != 1 ||
-            sgi_kona_gl_float(p->pixel_transfer.bias[k]) != 0) {
-            return false;
-        }
-    }
-    return true;
-}
-
 /*
  * Ordinary small-return colour components use normalized formats 3 through
  * 7 and dense rows at byte 8. The pointer's low bits do not offset the source.
@@ -4467,13 +4453,21 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
 {
     uint32_t base = sgi_kona_texture_storage_base(u->header);
     uint32_t words = sgi_kona_texture_source_words(u);
+    float scale[4] = { 1, 1, 1, 1 }, bias[4] = { 0 };
 
+    if (u->transfer_captured) {
+        for (unsigned k = 0; k < 4; k++) {
+            scale[k] = sgi_kona_gl_float(u->transfer.scale[k]);
+            bias[k] = sgi_kona_gl_float(u->transfer.bias[k]);
+        }
+    }
     for (uint32_t at = 0; at < u->count; at++) {
         uint32_t rgba;
 
-        if (!sgi_kona_gl_texture_pixel_rgba(u->header[3], u->header[4],
-                                            u->pixels + at * words,
-                                            u->swap_bytes, &rgba)) {
+        if (!sgi_kona_gl_texture_pixel_transfer(u->header[3], u->header[4],
+                                                u->pixels + at * words,
+                                                u->swap_bytes, scale, bias,
+                                                &rgba)) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: native texture component is unsupported;"
                           " upload refused\n");
@@ -4751,7 +4745,7 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     framing.source_stride = stride;
     pixels = (uint64_t)h[1] * h[2];
     words = sgi_kona_texture_words(&framing);
-    if (!sgi_kona_gl_pixel_transfer_identity(p)) {
+    if (p->pixel_transfer_unsupported) {
         reason = "native texture pixel transfer unsupported";
     } else if (!sgi_kona_texture_native_header(h) ||
         (h[6] && stride < (uint64_t)h[1] * bytes)) {
@@ -4775,6 +4769,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         u->count = pixels;
         u->source_stride = stride;
         u->swap_bytes = p->unpack_swap_bytes;
+        u->transfer = p->pixel_transfer;
+        u->transfer_captured = true;
         s->texture_state_used = true;
     }
     return h[6] ? 0 : words;
@@ -10583,6 +10579,17 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
     const uint32_t *h = u->header;
     static const uint32_t empty[20];
 
+    if (u->transfer_captured && (!u->count || u->draw_pixels)) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        if (u->transfer_captured ?
+            (!isfinite(sgi_kona_gl_float(u->transfer.scale[k])) ||
+             !isfinite(sgi_kona_gl_float(u->transfer.bias[k]))) :
+            (u->transfer.scale[k] || u->transfer.bias[k])) {
+            return false;
+        }
+    }
     if (!u->count) {
         return !u->complete && !u->source_stride && !u->swap_bytes &&
                !u->draw_pixels && !u->draw_context &&
@@ -10626,6 +10633,11 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_byte(f, u->swap_bytes);
     qemu_put_byte(f, u->draw_pixels);
     qemu_put_be32(f, u->draw_context);
+    qemu_put_byte(f, u->transfer_captured);
+    for (unsigned k = 0; k < 4; k++) {
+        qemu_put_be32(f, u->transfer.scale[k]);
+        qemu_put_be32(f, u->transfer.bias[k]);
+    }
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
@@ -10642,7 +10654,7 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
 {
     SGIKonaTextureUpload *u = pv;
     SGIKonaTextureUpload tmp = { 0 };
-    unsigned complete, swap, draw;
+    unsigned complete, swap, draw, transfer;
 
     uint32_t marker = qemu_get_be32(f);
     uint32_t version = qemu_get_be32(f);
@@ -10661,9 +10673,15 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     draw = qemu_get_byte(f);
     tmp.draw_pixels = draw;
     tmp.draw_context = qemu_get_be32(f);
+    transfer = qemu_get_byte(f);
+    tmp.transfer_captured = transfer;
+    for (unsigned k = 0; k < 4; k++) {
+        tmp.transfer.scale[k] = qemu_get_be32(f);
+        tmp.transfer.bias[k] = qemu_get_be32(f);
+    }
     tmp.complete = complete;
     tmp.swap_bytes = swap;
-    if (complete > 1 || swap > 1 || draw > 1 ||
+    if (complete > 1 || swap > 1 || draw > 1 || transfer > 1 ||
         !sgi_kona_texture_upload_valid(&tmp)) {
         goto invalid;
     }
