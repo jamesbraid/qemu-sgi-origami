@@ -11132,6 +11132,107 @@ static void test_texture_adapter_colour_table(void)
     qtest_quit(qts);
 }
 
+static void texture_adapter_l8_table_alpha(bool rgba)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t sampler = rgba ? 0x11600001 : 0x11500001;
+    const uint32_t setup[] = {
+        0x00010404, 0x02062200, 0x00010405, 0x2410,
+        0x00011c16, 0x08000420, 2, 2, 1, sampler, 0, 0,
+        0x0001141b, 2, 0, 0, 0, 0,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010406, 0, 0x00010c21, 0x639, 0, 0,
+        0xc580d015, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3f000000,
+    };
+    const uint32_t quad[] = {
+        0x00014400, 7,
+        0xc380c821, 0, 0, 0x8080c800, 32, 32,
+        0xc380c821, 0x3f800000, 0, 0x8080c800, 96, 32,
+        0xc380c821, 0x3f800000, 0x3f800000, 0x8080c800, 96, 96,
+        0xc380c821, 0, 0x3f800000, 0x8080c800, 32, 96,
+        0x00014001,
+    };
+    QTestState *qts = board_start("");
+    unsigned mismatches = 0;
+
+    /* Original L8 checker; only the captured table endpoints are sampled. */
+    upload_begin(qts, 0x180000, 2, 0x080024d0, 2, 2);
+    upload_first_header(qts, 0x42);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, 0x00ffff00);
+    upload_end(qts);
+    texture_adapter_window(qts);
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    texture_adapter_bind(qts, 0x180000, sampler, 2);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    for (unsigned plane = 0; plane < 2; plane++) {
+        for (unsigned block = 0; block < 16; block++) {
+            uint32_t words[16] = { 0 };
+
+            /* Unused interior entries are original zero-valued fixtures. */
+            if (block == 0) {
+                words[0] = plane ? (rgba ? 0x00c0bfff : 0x00c0b000) :
+                                   0x00404808;
+            }
+            if (block == 15) {
+                words[15] = plane ? (rgba ? 0x00808000 : 0x00808fff) :
+                                    0x00c0b404;
+            }
+            user_cmd_push(qts, 0x00013e00 | (plane << 4) | block);
+            push_user_words(qts, words, ARRAY_SIZE(words));
+        }
+    }
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, quad, ARRAY_SIZE(quad));
+    for (unsigned y = 32; y < 96; y++) {
+        for (unsigned x = 32; x < 96; x++) {
+            bool high = (x < 64) == (y < 64);
+            uint32_t expected = high ? 0x60204000 : 0x20406000;
+            uint32_t actual = odsy_test_pixel(qts, x, y) & 0xffffff00;
+
+            if (actual != expected) {
+                if (mismatches < 8) {
+                    g_test_message("pixel (%u,%u): expected %08x, got %08x",
+                                   x, y, expected, actual);
+                }
+                mismatches++;
+            }
+        }
+    }
+    g_test_message("L8 %s table blend mismatches %u/4096",
+                   rgba ? "RGBA" : "RGB", mismatches);
+    /* The local LUMINANCE environment policy preserves primary alpha. */
+    user_cmd_push(qts, 0x00010404);
+    user_cmd_push(qts, 0x02042200);
+    push_user_words(qts, quad, ARRAY_SIZE(quad));
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 40), ==, 0xc0408080);
+    g_assert_cmphex(odsy_test_pixel(qts, 80, 40), ==, 0x4080c080);
+    push_user_words(qts, (uint32_t[]) {
+        0xc580d015, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, 0x3e800000,
+    }, 5);
+    push_user_words(qts, quad, ARRAY_SIZE(quad));
+    g_assert_cmphex(odsy_test_pixel(qts, 40, 40), ==, 0xc0408040);
+    g_assert_cmphex(odsy_test_pixel(qts, 80, 40), ==, 0x4080c040);
+    qtest_quit(qts);
+    g_assert_cmpuint(mismatches, ==, 0);
+}
+
+static void test_texture_adapter_l8_table_rgb_alpha(void)
+{
+    texture_adapter_l8_table_alpha(false);
+}
+
+static void test_texture_adapter_l8_table_rgba_alpha(void)
+{
+    texture_adapter_l8_table_alpha(true);
+}
+
 static void test_texture_adapter_colour_table_rgb_basis(void)
 {
     const uint32_t white[4] = {
@@ -15041,6 +15142,10 @@ int main(int argc, char **argv)
                    test_texture_adapter_linear_st);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table",
                    test_texture_adapter_colour_table);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-l8-rgb-alpha",
+                   test_texture_adapter_l8_table_rgb_alpha);
+    qtest_add_func("sn1/odyssey/texture-adapter/colour-table-l8-rgba-alpha",
+                   test_texture_adapter_l8_table_rgba_alpha);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table-rgb-basis",
                    test_texture_adapter_colour_table_rgb_basis);
     qtest_add_func("sn1/odyssey/texture-adapter/colour-table-rgba8-rgb-basis",

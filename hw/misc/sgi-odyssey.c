@@ -4127,7 +4127,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     bool clamp = ws == 2 || wt == 2;
     bool border = ws == 3 || wt == 3;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
-    bool colour_table_l8 = word == 0x11500001 || word == 0x11500003;
+    bool colour_table_l8 = word == 0x11500001 || word == 0x11500003 ||
+                           word == 0x11600001;
     bool colour_table_rgba8_rgb = word == 0x13500001;
     bool colour_table_rgba8_rgba = word == 0x13600001;
     bool colour_table = colour_table_l8 || colour_table_rgba8_rgb ||
@@ -4364,7 +4365,8 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     }
     memset(chain, 0, sizeof(*chain));
     chain->volume.s = s;
-    chain->volume.colour_table_alpha = colour_table_rgba8_rgba;
+    chain->volume.colour_table_alpha = colour_table_rgba8_rgba ||
+                                       word == 0x11600001;
     image->opaque = &chain->volume;
     if (colour_table) {
         image->post_filter = odyssey_texture_colour_table;
