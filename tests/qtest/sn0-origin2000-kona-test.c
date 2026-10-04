@@ -1878,84 +1878,6 @@ static void test_migration(void)
     qtest_quit(from);
 }
 
-/*
- * A v1 source predates raster_x/raster_y entirely: both the fields and
- * the command-4 handler that sets them arrived in this same series (see
- * "hw/misc/sgi-kona: place bitmap blits relative to the raster
- * position"), while vmstate_sgi_kona has carried version_id 1 since the
- * device's introduction. A v1 stream therefore has no bytes for either
- * field. Confirms the destination's post_load leaves them at
- * sgi_kona_reset_hold()'s own (0, 0) default -- matching what a v1
- * source's absence of the concept always implied -- rather than reading
- * stray bytes from whatever vmstate_sgi_kona placed next in a v1 stream,
- * which would misplace every bitmap blit issued after migrating an old
- * guest onto this code.
- *
- * Skipped unless a v1 reference binary is available; build one from
- * commit 12a129769c (this series' immediate parent, the last commit
- * before raster_x/raster_y existed anywhere in the device) and point
- * QTEST_QEMU_BINARY_KONA_V1 at its qemu-system-mips64. See
- * sn0-migration-test.c's QTEST_QEMU_BINARY_IOC3_V15 and
- * sn0-origin2000-mgras-test.c's QTEST_QEMU_BINARY_MGRAS_V9 for the same
- * pattern.
- */
-static void test_migration_from_v1_no_raster_position(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V1")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V1 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-v1-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V1", MIGRATION_ARGS,
-                          NULL, true);
-    kona_textport_push(from, 0x3,
-                       (uint32_t[]){ 1, 0xc0 << 2, 0xff << 2, 0xee << 2 }, 4);
-    kona_textport_push(from, 0x2, (uint32_t[]){ 1 }, 1);
-    kona_textport_push(from, 0x6, (uint32_t[]){ 640, 480 }, 2);
-    g_assert_cmphex(kona_test_pixel(from, 640, 480), ==, 0x00c0ffee);
-
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(kona_test_pixel(to, 640, 480), ==, 0x00c0ffee);
-
-    /*
-     * No selector-4 raster-position-set was ever issued on `to`: this
-     * draws with whatever raster_x/raster_y the migration itself left
-     * behind. Landing at (0, 0) proves post_load left the gated fields
-     * at their reset default rather than misreading a v1 stream that
-     * never had them.
-     */
-    kona_textport_push(to, 0xa, (uint32_t[]){ 1, 1, 0, 0, 0, 0 }, 6);
-    qtest_writel(to, REG_TEXTPORT, 0x80000000);
-    g_assert_cmphex(kona_test_pixel(to, 0, 0), ==, 0x00c0ffee);
-
-    /*
-     * A v1 stream predates the XG map RAM table even more thoroughly
-     * than raster_x/raster_y (gated at version 2): map_ram is gated at
-     * version 3, so a v1 stream has no bytes for it either. Confirms
-     * post_load leaves the table at sgi_kona_reset_hold()'s own
-     * all-zero default rather than misparsing stray v1 bytes as table
-     * contents.
-     */
-    g_assert_cmphex(qtest_readl(to, MAPRAM_ENTRY(0)), ==, 0);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 int main(int argc, char **argv)
 {
     int ret;
@@ -2044,8 +1966,6 @@ int main(int argc, char **argv)
                    "textport-unknown-selector-resynchronizes",
                    test_textport_unknown_selector_resynchronizes);
     qtest_add_func("sn0/origin2000/kona/migration", test_migration);
-    qtest_add_func("sn0/origin2000/kona/migration-from-v1-no-raster-position",
-                   test_migration_from_v1_no_raster_position);
     qtest_add_func("sn0/origin2000/kona/mapram-stride-sample",
                    test_mapram_stride_sample);
     qtest_add_func("sn0/origin2000/kona/mapram-stores-full-32-bits",

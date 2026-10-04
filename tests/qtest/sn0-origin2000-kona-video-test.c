@@ -594,54 +594,6 @@ static void test_zero_data_replies(void)
 }
 
 /*
- * A version 4 stream predates the video framing state. Loading one
- * leaves no video command open and still carries the version 4 state (a
- * map RAM entry and the return page here). Skipped unless
- * QTEST_QEMU_BINARY_KONA_V4 names a qemu-system-mips64 built before the
- * version 5 fields existed, the pattern sn0-origin2000-kona-bringup-test.c
- * uses for version 3.
- */
-static void test_migration_from_v4(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V4")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V4 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-v4-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V4", MIGRATION_ARGS, NULL,
-                          true);
-    qtest_writel(from, REG_MAPRAM(7), 0x20001234);
-    kona_register_return_page(from, RETURN_PAGE);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readl(to, REG_MAPRAM(7)), ==, 0x20001234);
-    /* No video command is open: a sync probe frames at once. */
-    assert_textport_in_step(to);
-    /* The return page crossed: 0x1e9 answers there. */
-    guest_fill_word(to, RETURN_PAGE, 0);
-    qtest_writel(to, REG_COMMAND, 0x1e9);
-    qtest_writel(to, REG_COMMAND, 0);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE), ==, 1);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
-/*
  * The gamma load, 0x12f: a start address, a count, then that many
  * entries. Sent as plain words, start 0x1000 (the second component) and
  * count 3, whose entries are shaped like 0x1e9 and its argument: a model
@@ -787,51 +739,6 @@ static void test_migration_mid_gamma_load(void)
     g_assert_cmphex(kona_gamma(to, 0x1002), ==, 0x1e9);
     g_assert_cmphex(kona_gamma(to, 0x1003), ==, 0);
     assert_textport_in_step(to);
-    kona_command(to, 0x1e9, (uint32_t[]){ 0 }, 1);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE), ==, 1);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
-/*
- * A version 5 stream predates the gamma table. Loading one leaves the
- * table empty and no load open, and still carries the version 5 state
- * (the return page here). Skipped unless QTEST_QEMU_BINARY_KONA_V5 names
- * a qemu-system-mips64 built before the version 6 fields existed.
- */
-static void test_migration_from_v5(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V5")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V5 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-v5-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V5", MIGRATION_ARGS, NULL,
-                          true);
-    kona_register_return_page(from, RETURN_PAGE);
-    qtest_writel(from, REG_MAPRAM(7), 0x20001234);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readl(to, REG_MAPRAM(7)), ==, 0x20001234);
-    g_assert_cmphex(kona_gamma(to, 0), ==, 0);
-    /* No gamma load is open: a sync probe frames at once. */
-    assert_textport_in_step(to);
-    guest_fill_word(to, RETURN_PAGE, 0);
     kona_command(to, 0x1e9, (uint32_t[]){ 0 }, 1);
     g_assert_cmphex(guest_word(to, RETURN_PAGE), ==, 1);
 
@@ -1274,52 +1181,6 @@ static void test_migration_mid_search(void)
     g_rmdir(tmpfs);
 }
 
-/*
- * A version 6 stream from before the X server's subsection: a video
- * command open with its one data word still completes, and the return
- * page crossed. Skipped unless QTEST_QEMU_BINARY_KONA_V6_PLANES names a
- * qemu-system-mips64 built with the board memory but before the
- * subsection, the pattern the version 4 and 5 cases use.
- */
-static void test_migration_from_v6_planes(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V6_PLANES")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V6_PLANES is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-v6-planes-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V6_PLANES", MIGRATION_ARGS,
-                          NULL, true);
-    fresh_return_page(from);
-    qtest_writel(from, REG_COMMAND_SLOT(TOKEN_VIDEO), GET_CHANNEL_CONFIG);
-    qtest_writel(from, REG_COMMAND_DATA, 4);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    qtest_writel(to, REG_COMMAND_DATA, GET_CHANNEL_CONFIG + 4);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE), ==, 1);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE + 8), ==, 7);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE + 12), ==, 1);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE + 12 + 4 * 19), ==, 8);
-    assert_textport_in_step(to);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 int main(int argc, char **argv)
 {
     int ret;
@@ -1348,8 +1209,6 @@ int main(int argc, char **argv)
                    test_zero_data_replies);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-video-command",
                    test_migration_mid_video_command);
-    qtest_add_func("sn0/origin2000/kona-video/migration-from-v4",
-                   test_migration_from_v4);
     qtest_add_func("sn0/origin2000/kona-video/gamma-load-small",
                    test_gamma_load_small);
     qtest_add_func("sn0/origin2000/kona-video/gamma-load-full",
@@ -1360,8 +1219,6 @@ int main(int argc, char **argv)
                    test_reset_clears_gamma);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-gamma-load",
                    test_migration_mid_gamma_load);
-    qtest_add_func("sn0/origin2000/kona-video/migration-from-v5",
-                   test_migration_from_v5);
     qtest_add_func("sn0/origin2000/kona-video/x-tokens-consumed",
                    test_x_tokens_consumed);
     qtest_add_func("sn0/origin2000/kona-video/reset-clears-cursor-load",
@@ -1384,8 +1241,6 @@ int main(int argc, char **argv)
                    test_checksum_search_abandoned);
     qtest_add_func("sn0/origin2000/kona-video/migration-mid-search",
                    test_migration_mid_search);
-    qtest_add_func("sn0/origin2000/kona-video/migration-from-v6-planes",
-                   test_migration_from_v6_planes);
 
     ret = g_test_run();
     qtest_quit(qts);

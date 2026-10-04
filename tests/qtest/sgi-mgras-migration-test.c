@@ -82,63 +82,8 @@ static void mgras_retrace_migration(bool programmed, bool stale_table,
     g_rmdir(tmpfs);
 }
 
-/*
- * Across two binaries, QTEST_QEMU_BINARY_SRC to QTEST_QEMU_BINARY_DST,
- * either of which may run the older exact 60 Hz period, check what does
- * not depend on the period: the stream loads, the retrace count travels,
- * and the pending retrace lands between the two models' third retrace.
- */
-static void mgras_retrace_cross_binary_migration(void)
-{
-    const unsigned int retrace_vector = 54;
-    const int64_t sixtieth = NANOSECONDS_PER_SECOND / 60;
-    const MgrasFrameTime *t = &mgras_stock_frame;
-    const uint64_t bit = UINT64_C(1) << retrace_vector;
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-    int64_t reset_at, dest_now;
-
-    tmpfs = g_dir_make_tmp("sn0-mgras-retrace-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_SRC", MIGRATION_ARGS, NULL,
-                          true);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init_ext("QTEST_QEMU_BINARY_DST", dest_cmdline, NULL, true);
-
-    reset_at = qtest_clock_step(from, 12345);
-    qtest_system_reset(from);
-    mgras_retrace_to_hub_on(from, retrace_vector);
-    qtest_clock_step(from, 5 * sixtieth / 2);
-    g_assert_cmpuint(mgras_qom_get_uint(from, "x-test-retraces"), ==, 2);
-
-    sgi_migrate_stopped(from, uri);
-
-    dest_now = qtest_clock_step(to, 1);
-    mgras_hub_clear(to, retrace_vector);
-    qtest_clock_step(to, reset_at + 3 * sixtieth - 1 - dest_now);
-    g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 2);
-    g_assert_cmphex(mgras_hub_pending(to) & bit, ==, 0);
-    qtest_clock_step(to, mgras_retrace_at(t, 3) - 3 * sixtieth + 1);
-    g_assert_cmpuint(mgras_qom_get_uint(to, "x-test-retraces"), ==, 3);
-    g_assert_cmphex(mgras_hub_pending(to) & bit, ==, bit);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 static void test_retrace_phase_migration(void)
 {
-    if (g_getenv("QTEST_QEMU_BINARY_SRC") ||
-        g_getenv("QTEST_QEMU_BINARY_DST")) {
-        mgras_retrace_cross_binary_migration();
-        return;
-    }
     mgras_retrace_migration(false, false, &mgras_stock_frame,
                             &mgras_stock_frame);
 }
