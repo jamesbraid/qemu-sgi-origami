@@ -2632,13 +2632,14 @@ static void odyssey_ctx_save(SGIOdysseyState *s, uint64_t base)
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
                             ODSY_GL_TEXCOORD_4F, coordinate, 4);
     } else {
+        bool three = (s->tex_mode & ODSY_TEX_MODE_3D) || s->tex_coord_r != 0;
+
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_TEXTURE, 0,
-                            s->tex_mode & ODSY_TEX_MODE_3D ?
-                            ODSY_GL_TEXCOORD_3F : ODSY_GL_TEXCOORD_2F,
-                            s->tex_mode & ODSY_TEX_MODE_3D ?
+                            three ? ODSY_GL_TEXCOORD_3F : ODSY_GL_TEXCOORD_2F,
+                            three ?
                             (uint32_t[3]) { s->tex_coord[0], s->tex_coord[1],
                                            s->tex_coord_r } : s->tex_coord,
-                            s->tex_mode & ODSY_TEX_MODE_3D ? 3 : 2);
+                            three ? 3 : 2);
     }
     for (i = 0; i < 4; i++) {
         odyssey_shadow_ring(s, base, ODSY_HW_ATTR_MATERIAL + i, 0,
