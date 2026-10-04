@@ -1507,6 +1507,8 @@ static void test_native_repeat_interior(void)
     g_assert_true(sgi_kona_texture_native_dimensions(&src, 9, 2, 2));
     g_assert_true(sgi_kona_texture_native_layout(&src, 9, 0x23));
     g_assert_false(sgi_kona_texture_native_layout(&src, 9, 0x2e));
+    g_assert_false(sgi_kona_texture_native_layout(&src, 9, 0x100));
+    g_assert_false(sgi_kona_texture_native_layout(&src, 9, 0x1000));
     g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
     /* The received positive border expands row stride beyond logical width. */
     g_assert_true(sgi_kona_texture_native_upload(&src, h, pixels,
@@ -1551,6 +1553,12 @@ static void test_native_repeat_interior(void)
     stl_be_p(a->data + a->len - 36, 0x2e);
     g_assert_false(load(a, &dst));
     g_byte_array_unref(a);
+    for (unsigned bit = 8; bit <= 12; bit += 4) {
+        a = save(&src);
+        stl_be_p(a->data + a->len - 36, 0x23 | (1u << bit));
+        g_assert_false(load(a, &dst));
+        g_byte_array_unref(a);
+    }
     /* A different exponent plane with the same descriptor cannot shadow it. */
     h[16] = 0x24;
     h[11] = h[12] = h[13] = h[14] = 0;
