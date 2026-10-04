@@ -828,6 +828,40 @@ static bool sgi_soft_texture_dimensions(uint32_t w, uint32_t h)
            is_power_of_2(w) && is_power_of_2(h);
 }
 
+static uint8_t sgi_soft_texture_component_mask(uint32_t format)
+{
+    switch (format) {
+    case SGI_GL_ALPHA:
+        return 1u << 3;
+    case SGI_GL_LUMINANCE: case SGI_GL_INTENSITY:
+        return 1u;
+    case SGI_GL_LUMINANCE_ALPHA:
+        return (1u << 0) | (1u << 3);
+    case SGI_GL_RGB:
+        return 7;
+    case SGI_GL_RGBA:
+        return 15;
+    default:
+        return 0;
+    }
+}
+
+static bool sgi_soft_texture_component_bits_valid(uint32_t format,
+                                                   const uint8_t bits[4])
+{
+    uint8_t mask = sgi_soft_texture_component_mask(format);
+
+    if (!mask) {
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        if ((mask & (1u << k)) && (!bits[k] || bits[k] > 16)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static const SGIGLTexLevel *sgi_soft_texture_level(const SGIGLTexPyramid *p,
                                                   uint32_t level)
 {
@@ -844,8 +878,14 @@ static bool sgi_soft_texture_border_supported(const SGIGLTexImage *im,
 {
     uint32_t border = level ? level->border : im->border;
     bool callback = im->volume ?
-        (level ? !!level->read_border_texel_3d : !!im->read_border_texel_3d) :
-        (level ? !!level->read_border_texel : !!im->read_border_texel);
+        (level ? (level->read_border_texel_3d ||
+                  level->read_border_texel_3d_components) :
+                 (im->read_border_texel_3d ||
+                  im->read_border_texel_3d_components)) :
+        (level ? (level->read_border_texel ||
+                  level->read_border_texel_components) :
+                 (im->read_border_texel ||
+                  im->read_border_texel_components));
 
     return border <= 1 && (!border || callback);
 }
@@ -887,6 +927,12 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
         (im->min_filter != SGI_GL_NEAREST && im->min_filter != SGI_GL_LINEAR &&
          !mipmap) ||
+        (sgi_soft_texture_detail(im->mag_filter) && im->detail_image &&
+         (im->detail_image->read_texel_components ||
+          im->detail_image->read_border_texel_components) &&
+         !sgi_soft_texture_component_bits_valid(
+             im->detail_image->base_format,
+             im->detail_image->component_bits)) ||
         (im->mag_filter != SGI_GL_NEAREST && im->mag_filter != SGI_GL_LINEAR &&
          !sgi_soft_texture_sharpen(im->mag_filter) &&
          !sgi_soft_texture_detail(im->mag_filter))) {
@@ -908,6 +954,11 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         !sgi_soft_texture_border_supported(im, base) ||
         sgi_soft_texture_internal_format(base->internal_format) !=
         base->base_format || !sgi_soft_texture_format(base->base_format) ||
+        ((base->read_texel_components || base->read_texel_3d_components ||
+          base->read_border_texel_components ||
+          base->read_border_texel_3d_components) &&
+         !sgi_soft_texture_component_bits_valid(base->base_format,
+                                                base->component_bits)) ||
         (r->st->texture_env_mode == SGI_GL_DECAL &&
          base->base_format != SGI_GL_RGB && base->base_format != SGI_GL_RGBA)) {
         goto unsupported;
@@ -947,7 +998,12 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         if (!sgi_soft_texture_border_supported(im, l) ||
             !sgi_soft_texture_format(l->base_format) ||
             sgi_soft_texture_internal_format(l->internal_format) !=
-            l->base_format) {
+            l->base_format ||
+            ((l->read_texel_components || l->read_texel_3d_components ||
+              l->read_border_texel_components ||
+              l->read_border_texel_3d_components) &&
+             !sgi_soft_texture_component_bits_valid(l->base_format,
+                                                    l->component_bits))) {
             goto unsupported;
         }
     }
@@ -955,7 +1011,9 @@ static bool sgi_soft_texture_pyramid(SGISoftDraw *r, const SGIGLTexImage *im,
         const SGIGLTexLevel *l = sgi_soft_texture_level(p, id);
         uint32_t shift = id - p->base_level;
 
-        if (!l || (im->volume ? !l->read_texel_3d : !l->read_texel) ||
+        if (!l || (im->volume ?
+                   !(l->read_texel_3d || l->read_texel_3d_components) :
+                   !(l->read_texel || l->read_texel_components)) ||
             (im->volume && l->depth != MAX(1, base->depth >> shift)) ||
             l->width != MAX(1, base->width >> shift) ||
             l->height != MAX(1, base->height >> shift) ||
@@ -1051,6 +1109,17 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
             !sgi_soft_texture_border_supported(im, NULL) ||
             !border_finite ||
             !sgi_soft_texture_format(im->base_format) ||
+            ((im->read_texel_components || im->read_texel_3d_components ||
+              im->read_border_texel_components ||
+              im->read_border_texel_3d_components) &&
+             !sgi_soft_texture_component_bits_valid(im->base_format,
+                                                    im->component_bits)) ||
+            (sgi_soft_texture_detail(im->mag_filter) && im->detail_image &&
+             (im->detail_image->read_texel_components ||
+              im->detail_image->read_border_texel_components) &&
+             !sgi_soft_texture_component_bits_valid(
+                 im->detail_image->base_format,
+                 im->detail_image->component_bits)) ||
             !sgi_soft_texture_wrap(im->wrap_s) ||
             (!im->one_dimensional && !sgi_soft_texture_wrap(im->wrap_t)) ||
             (im->volume && !sgi_soft_texture_wrap(im->wrap_r)) ||
@@ -1072,7 +1141,9 @@ static bool sgi_soft_texture_setup(SGISoftDraw *r, bool report)
             return false;
         }
     }
-    if (!im || (im->volume ? !im->read_texel_3d : !im->read_texel) ||
+    if (!im || (im->volume ?
+                !(im->read_texel_3d || im->read_texel_3d_components) :
+                !(im->read_texel || im->read_texel_components)) ||
         !im->width || !im->height ||
         im->width > INT32_MAX || im->height > INT32_MAX ||
         !is_power_of_2(im->width) || !is_power_of_2(im->height) ||
@@ -1158,6 +1229,8 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
                      (level ? level->depth : im->depth) : 1;
     uint32_t format = level ? level->base_format : im->base_format;
     uint32_t rgba;
+    uint16_t component[4];
+    bool raw_components = false;
 
     if (im->wrap_s == SGI_GL_REPEAT) {
         x = (x % width + width) % width;
@@ -1190,17 +1263,35 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
             goto read_failure;
         }
         if (im->volume) {
-            read = level ? level->read_border_texel_3d &&
-                level->read_border_texel_3d(level->opaque, level->level,
-                                            x, y, z, &rgba) :
-                im->read_border_texel_3d &&
-                im->read_border_texel_3d(im->opaque, x, y, z, &rgba);
+            raw_components = level ? !!level->read_border_texel_3d_components :
+                                    !!im->read_border_texel_3d_components;
+            read = level ?
+                (raw_components ?
+                 level->read_border_texel_3d_components(level->opaque,
+                     level->level, x, y, z, component) :
+                 level->read_border_texel_3d &&
+                 level->read_border_texel_3d(level->opaque, level->level,
+                                             x, y, z, &rgba)) :
+                (raw_components ?
+                 im->read_border_texel_3d_components(im->opaque, x, y, z,
+                                                      component) :
+                 im->read_border_texel_3d &&
+                 im->read_border_texel_3d(im->opaque, x, y, z, &rgba));
         } else {
-            read = level ? level->read_border_texel &&
-                level->read_border_texel(level->opaque, level->level,
-                                         x, y, &rgba) :
-                im->read_border_texel &&
-                im->read_border_texel(im->opaque, x, y, &rgba);
+            raw_components = level ? !!level->read_border_texel_components :
+                                    !!im->read_border_texel_components;
+            read = level ?
+                (raw_components ?
+                 level->read_border_texel_components(level->opaque,
+                     level->level, x, y, component) :
+                 level->read_border_texel &&
+                 level->read_border_texel(level->opaque, level->level,
+                                          x, y, &rgba)) :
+                (raw_components ?
+                 im->read_border_texel_components(im->opaque, x, y,
+                                                   component) :
+                 im->read_border_texel &&
+                 im->read_border_texel(im->opaque, x, y, &rgba));
         }
         if (!read) {
             goto read_failure;
@@ -1209,14 +1300,28 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         bool read;
 
         if (im->volume) {
+            raw_components = level ? !!level->read_texel_3d_components :
+                                    !!im->read_texel_3d_components;
             read = level ?
-                level->read_texel_3d(level->opaque, level->level, x, y, z,
-                                     &rgba) :
-                im->read_texel_3d(im->opaque, x, y, z, &rgba);
+                (raw_components ?
+                 level->read_texel_3d_components(level->opaque, level->level,
+                                                x, y, z, component) :
+                 level->read_texel_3d(level->opaque, level->level, x, y, z,
+                                      &rgba)) :
+                (raw_components ?
+                 im->read_texel_3d_components(im->opaque, x, y, z, component) :
+                 im->read_texel_3d(im->opaque, x, y, z, &rgba));
         } else {
+            raw_components = level ? !!level->read_texel_components :
+                                    !!im->read_texel_components;
             read = level ?
-                level->read_texel(level->opaque, level->level, x, y, &rgba) :
-                im->read_texel(im->opaque, x, y, &rgba);
+                (raw_components ?
+                 level->read_texel_components(level->opaque, level->level,
+                                              x, y, component) :
+                 level->read_texel(level->opaque, level->level, x, y, &rgba)) :
+                (raw_components ?
+                 im->read_texel_components(im->opaque, x, y, component) :
+                 im->read_texel(im->opaque, x, y, &rgba));
         }
 
         if (!read) {
@@ -1224,11 +1329,38 @@ static bool sgi_soft_texture_tap(const SGISoftDraw *r,
         }
     }
     if (format == SGI_GL_DEPTH_COMPONENT) {
+        /* Depth arrives only through the packed callback. */
+        if (raw_components) {
+            goto read_failure;
+        }
         sgi_soft_texture_shadow(im, rgba / (double)UINT32_MAX, reference, out);
         return true;
     }
-    for (int k = 0; k < 4; k++) {
-        out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
+    if (raw_components) {
+        const uint8_t *bits = level ? level->component_bits :
+                                      im->component_bits;
+        uint8_t mask = sgi_soft_texture_component_mask(format);
+
+        if (!sgi_soft_texture_component_bits_valid(format, bits)) {
+            goto read_failure;
+        }
+        for (int k = 0; k < 4; k++) {
+            if (mask & (1u << k)) {
+                uint32_t maximum = (1u << bits[k]) - 1;
+
+                if (component[k] > maximum) {
+                    sgi_soft_texture_report(r, 64,
+                        "component outside declared precision, "
+                        "fragment dropped");
+                    return false;
+                }
+                out[k] = (double)component[k] / maximum;
+            }
+        }
+    } else {
+        for (int k = 0; k < 4; k++) {
+            out[k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
+        }
     }
     sgi_soft_texture_components(format, out);
     return true;
@@ -1514,7 +1646,8 @@ static bool sgi_soft_texture_detail_sample(const SGISoftDraw *r,
     }
     if (im->one_dimensional || im->volume ||
         im->pyramid->base_level || !detail ||
-        detail->level || detail->border || !detail->read_texel ||
+        detail->level || detail->border ||
+        !(detail->read_texel || detail->read_texel_components) ||
         !sgi_soft_texture_dimensions(detail->width, detail->height) ||
         detail->internal_format != base->internal_format ||
         detail->base_format != base->base_format || im->detail_level > 0) {
