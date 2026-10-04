@@ -4381,11 +4381,11 @@ static void assert_texture_staging(QTestState *s, const uint32_t *v,
 
 static void texture_native_bind(QTestState *s, uint32_t handle)
 {
-    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
 
     kona_command(s, 0x1d5,
                  (uint32_t[]) { handle, (2u << 28) | (41 << 12),
-                                0x30 << 14, 0x11, 0 }, 5);
+                                0x30 << 14, 0x11, 1 }, 5);
     kona_command(s, 0x179, record, 22);
 }
 
@@ -4563,11 +4563,11 @@ static void texture_native_format_bind(QTestState *s, unsigned index,
                                        unsigned mag, unsigned channel,
                                        unsigned detail_level)
 {
-    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
     uint32_t bind[5] = {
         0, (2u << 28) | (index << 12) | 7,
         (0x30 << 14) | (mag << 5) | (channel << 26) | (detail_level << 21),
-        0x11, 0,
+        0x11, 1,
     };
 
     kona_command(s, 0x1d5, bind, 5);
@@ -4668,9 +4668,9 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
     uint32_t bind[] = {
         0, (3u << 28) | (41 << 12),
         (0x30 << 14) | (mipmapped ? 3 << 2 : linear ? (1 << 2) | (1 << 5) : 0),
-        0x111, 0,
+        0x111, 1,
     };
-    uint32_t mip[] = { 0, 0x101010, 256u << 10, 0, 0x55, 0x66,
+    uint32_t mip[] = { 0x22, 0x101010, 256u << 10, 0, 0x55, 0x66,
                        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
                        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
 
@@ -4678,7 +4678,7 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
     if (mipmapped) {
         kona_command(s, 0x17b, mip, ARRAY_SIZE(mip));
     } else {
-        kona_command(s, 0x17c, (uint32_t[]) { 0, 0, 0x55, 0x66 }, 4);
+        kona_command(s, 0x17c, (uint32_t[]) { 0x22, 0, 0x55, 0x66 }, 4);
     }
 }
 
@@ -4695,7 +4695,7 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
     h[13] = h[14] = odd ? 0 : 1;
     h[15] = z;
     h[16] = 0x111;
-    h[17] = 0x21c1 | (dma ? 4 : 0) | (odd ? 8 : 0);
+    h[17] = 0x1141 | (dma ? 4 : 0) | (odd ? 8 : 0);
     h[18] = 0x55;
     h[19] = 0x66;
     kona_command(s, 0x174, h, 20);
@@ -5054,18 +5054,18 @@ static void test_texture_native_byte_formats(gconstpointer opaque)
     unsigned c = GPOINTER_TO_UINT(opaque);
     QTestState *s = qtest_init(MACHINE_ARGS);
     uint32_t h[20];
-    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10 };
 
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 1);
     memcpy(h, texture_header, sizeof(h));
     h[3] = cases[c].source;
     h[9] = cases[c].storage;
-    h[17] = 0x2180;
+    h[17] = 0x2200;
     kona_command(s, 0x1d5,
                  (uint32_t[]) { 0, (2u << 28) |
                      ((h[9] == 0xe ? 17 : h[9] == 8 ? 1 : 0) << 12),
-                     h[9] << 14, 0x11, 0 }, 5);
+                     h[9] << 14, 0x11, 1 }, 5);
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     for (unsigned alignment = 1; alignment <= 8; alignment *= 2) {
@@ -5113,11 +5113,71 @@ static void test_texture_native_byte_formats(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_texture_native_family(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    uint32_t h[20];
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10 };
+    uint32_t bind[] = { 0, (2u << 28) | (3 << 12), 0xd << 14, 0x11, 1 };
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x1d5, bind, ARRAY_SIZE(bind));
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = 6;
+    h[4] = 3;
+    h[9] = 0xd;
+    h[17] = 0x2200;
+    kona_command(s, 0x174, h, ARRAY_SIZE(h));
+    qtest_writel(s, REG_COMMAND, 0x40004000);
+    qtest_writel(s, REG_COMMAND, 0x40004000);
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    assert_texture_pixel(s, 0, 0, 0x400000ff);
+    if (mode == 1) {
+        bind[1] = (2u << 28) | (63 << 12);
+    } else if (mode == 2) {
+        bind[4] = 0;
+    } else if (mode == 3) {
+        bind[4] = 2;
+    } else if (mode == 4) {
+        record[0] = 0x43;
+    } else if (mode == 5) {
+        h[17] = 0x2180;
+        kona_command(s, 0x174, h, ARRAY_SIZE(h));
+        qtest_writel(s, REG_COMMAND, 0xffff0000);
+        qtest_writel(s, REG_COMMAND, 0x0000ffff);
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    }
+    kona_command(s, 0x1d5, bind, ARRAY_SIZE(bind));
+    kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    assert_texture_pixel(s, 0, 0, mode >= 1 && mode <= 4 ? 0 : 0x400000ff);
+    if (mode >= 1 && mode <= 4) {
+        bind[1] = (2u << 28) | (3 << 12);
+        bind[4] = 1;
+        record[0] = 0x44;
+        kona_command(s, 0x1d5, bind, ARRAY_SIZE(bind));
+        kona_command(s, 0x179, record, ARRAY_SIZE(record));
+        assert_texture_pixel(s, 0, 0, 0x400000ff);
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
+    gl_triangle_z(s, tri, 0);
+    assert_stencil_colour(s, 0x404040);
+    assert_textport_in_step(s);
+    qtest_quit(s);
+}
+
 static void test_texture_native_rows(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
     uint32_t h[20];
-    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0x44, 0, 0, 0x55 };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10, 0x44, 0, 0, 0x55 };
 
     gl_make_current(s);
     memcpy(h, texture_header, sizeof(h));
@@ -5127,7 +5187,7 @@ static void test_texture_native_rows(void)
     h[18] = 0x55;
     kona_command(s, 0x1d5,
                  (uint32_t[]) { 0, (2u << 28) | (41 << 12),
-                                0x30 << 14, 0x44, 0 }, 5);
+                                0x30 << 14, 0x44, 1 }, 5);
     /* Select the physical descriptor supplied by this upload. */
     kona_command(s, 0x179, record, 22);
     for (unsigned pad = 0; pad < 4; pad++) {
@@ -5201,7 +5261,7 @@ static void test_texture_byte_migrates(gconstpointer opaque)
     GError *err = NULL;
     QTestState *from, *to;
     uint32_t h[20];
-    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10 };
 
     dir = g_dir_make_tmp("sn0-kona-texture-byte-XXXXXX", &err);
     g_assert_no_error(err);
@@ -5213,9 +5273,9 @@ static void test_texture_byte_migrates(gconstpointer opaque)
     h[3] = 4;
     h[5] = 3;
     h[9] = 0xd;
-    h[17] = 0x2180;
+    h[17] = 0x2200;
     kona_command(from, 0x1d5,
-                 (uint32_t[]) { 0, 2u << 28, 0xd << 14, 0x11, 0 }, 5);
+                 (uint32_t[]) { 0, 2u << 28, 0xd << 14, 0x11, 1 }, 5);
     kona_command(from, 0x179, record, 22);
     kona_command(from, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     kona_command(from, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
@@ -5754,7 +5814,7 @@ static void test_texture_native_dma(gconstpointer opaque)
                               qtest_init(MACHINE_ARGS);
     QTestState *to = NULL, *s = from;
     uint32_t h[20];
-    uint32_t record[22] = { 0, 0x101010, 256u << 10 };
+    uint32_t record[22] = { 0x44, 0x101010, 256u << 10 };
     uint32_t total = contiguous ? span : row_bytes * 2;
     uint32_t per_line = contiguous ? span : row_bytes;
     bool refused = fault || (mode >= 3 && mode <= 5) || reset || mode == 10;
@@ -5769,12 +5829,12 @@ static void test_texture_native_dma(gconstpointer opaque)
     h[9] = 0xd;
     h[13] = width - 1;
     h[16] = mode == 11 ? 0x2c : large ? 0x2b : 0x23;
-    h[17] = 0x2184;
+    h[17] = 0x2204;
     record[3] = h[16];
     kona_command(s, 0x1d5,
                  (uint32_t[]) { 0, 2u << 28, 0xd << 14,
                                 mode == 11 ? 0x1c : large ? 0x1b : 0x11,
-                                0 }, 5);
+                                1 }, 5);
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33,
                  (uint32_t[]) { 0xcf2, mode == 10 ? 1 :
@@ -7265,9 +7325,9 @@ static void test_texture_native_1d(gconstpointer opaque)
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool dma = mode == 1 || mode == 3, half = mode == 2 || mode == 3;
     uint32_t h[20], bind[5] = {
-        0, (1u << 28) | (41 << 12), (0x30 << 14) | (1 << 2), 1, 0,
+        0, (1u << 28) | (41 << 12), (0x30 << 14) | (1 << 2), 1, 1,
     };
-    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0x23 };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10, 0x23 };
     uint32_t pixels[] = { 0xff0000ff, 0x0000ffff };
     uint32_t halves[] = { 0xffff0000, 0x0000ffff, 0, 0xffffffff };
     const uint32_t *data = half ? halves : pixels;
@@ -7897,6 +7957,19 @@ int main(int argc, char **argv)
                    test_renderer_excluded_state);
     qtest_add_func("sn0/origin2000/kona-3d/native-bitmap/stale-destination",
                    test_bitmap_stale_destination);
+    static const char *native_family_cases[] = {
+        "luminance16", "depth-format-refused", "comparison-refused",
+        "unknown-comparison-refused", "record-family-refused",
+        "legacy-family-layout-refused",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(native_family_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/texture-family/%s",
+            native_family_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_texture_native_family);
+    }
     static const char *native_bitmap_cases[] = {
         "placement-move", "zoom-ignored", "normalized-bitorder",
         "partial-migrates", "invalid-raster", "zero-image-move",

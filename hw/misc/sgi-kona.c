@@ -4413,7 +4413,6 @@ static bool sgi_kona_texture_native_header(const uint32_t *h)
 {
     bool volume = h[0] == SGI_GL_TEXTURE_3D;
     bool one_dimensional = h[0] == SGI_GL_TEXTURE_1D;
-    uint32_t layout = (volume ? 0x21c0 : 0x2180) | (h[6] << 2);
 
     return (volume || one_dimensional || h[0] == SGI_GL_TEXTURE_2D) &&
            (!one_dimensional || (h[2] == 1 && !h[12] && !h[14] && !h[15])) &&
@@ -4423,7 +4422,7 @@ static bool sgi_kona_texture_native_header(const uint32_t *h)
            (volume ? h[15] < SGI_KONA_GL_IMAGE_MAX : !h[15]) &&
            h[16] <= (volume ? 0xfff : 0xff) && (h[16] & 15) <= 13 &&
            ((h[16] >> 4) & 15) <= 13 && (h[16] >> 8) <= 13 &&
-           ((h[17] & ~1u) == layout || (h[17] & ~1u) == (layout | 8)) &&
+           sgi_kona_gl_texture_native_layout(h) &&
            (uint64_t)h[11] + h[1] - 1 == h[13] &&
            (uint64_t)h[12] + h[2] - 1 == h[14];
 }
@@ -4449,6 +4448,10 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
                                              &base, &internal) ||
         storage != (base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ?
                     0xd : base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
+        !sgi_kona_gl_texture_native_binding_layout(base,
+            volume ? SGI_GL_TEXTURE_3D : one_dimensional ? SGI_GL_TEXTURE_1D :
+                                                         SGI_GL_TEXTURE_2D,
+            s->texture_record[0]) ||
         (volume ?
             ((s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
               s->texture_record_token !=
