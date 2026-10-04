@@ -2776,6 +2776,26 @@ static void fuel_mac_reject(const char *path, const uint8_t *image,
     g_test_trap_assert_stderr("*Fuel MAC EEPROM record is malformed*");
 }
 
+/* A MAC EEPROM image whose checked field holds the twelve digits. */
+static void fuel_mac_image(uint8_t *image, const char *mac)
+{
+    image[3] = 4;
+    image[33] = 16;
+    image[39] = 4;
+    memcpy(image + 40, "MAC ", 4);
+    image[44] = 1;
+    image[45] = 'X';
+    image[46] = 1;
+    image[47] = 'Y';
+    image[49] = 1;
+    image[50] = 'Z';
+    image[53] = 1;
+    image[54] = 'Q';
+    image[70] = 12;
+    memcpy(image + 71, mac, 12);
+    fuel_mac_checksum(image);
+}
+
 static void test_fuel_mac_eeprom(void)
 {
     static const char mac[] = "02A1B2C3D4E5";
@@ -2796,21 +2816,7 @@ static void test_fuel_mac_eeprom(void)
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
-    image[3] = 4;
-    image[33] = 16;
-    image[39] = 4;
-    memcpy(image + 40, "MAC ", 4);
-    image[44] = 1;
-    image[45] = 'X';
-    image[46] = 1;
-    image[47] = 'Y';
-    image[49] = 1;
-    image[50] = 'Z';
-    image[53] = 1;
-    image[54] = 'Q';
-    image[70] = 12;
-    memcpy(image + 71, mac, 12);
-    fuel_mac_checksum(image);
+    fuel_mac_image(image, mac);
     g_assert_true(g_file_set_contents(path, (char *)image, 512, &error));
     g_assert_no_error(error);
     s = qtest_initf("-M none -cpu R10000 -S -device "
@@ -2853,13 +2859,20 @@ static void test_fuel_mac_eeprom(void)
     g_unsetenv("L1_FUEL_MAC_PATH");
 }
 
-static QTestState *start_identity(const char *properties)
+static QTestState *start_identity_args(const char *properties,
+                                       const char *suffix)
 {
     QTestState *s = qtest_initf("-M none -cpu R10000 -S "
-                                "-device sgi-l1,id=l1c,%s" UART, properties);
+                                "-device sgi-l1,id=l1c,%s%s" UART,
+                                properties, suffix);
 
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     return s;
+}
+
+static QTestState *start_identity(const char *properties)
+{
+    return start_identity_args(properties, "");
 }
 
 static void expect_area(QTestState *s, unsigned component, unsigned area,
@@ -3016,6 +3029,121 @@ static void test_identity_mac_text(void)
     qtest_quit(s);
 }
 
+/*
+ * A Fuel system board's node and logic-board areas, written out by hand
+ * from the board-area field layout: placeholder manufacturer and serial,
+ * IP34 030-1707-003 -G, then for component 1 the station address digits
+ * where the IO8 keeps them.
+ */
+static const uint8_t expected_system_node_board[72] = {
+    0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0xc9, 0x53,
+    0x59, 0x4e, 0x54, 0x48, 0x45, 0x54, 0x49, 0x43,
+    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x37, 0x30, 0x37, 0x2d, 0x30, 0x30,
+    0x33, 0x00, 0xc2, 0x2d, 0x47, 0x01, 0x00, 0xc2,
+    0x30, 0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x88,
+};
+
+static const uint8_t expected_system_logic_board[80] = {
+    0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0xc9, 0x53,
+    0x59, 0x4e, 0x54, 0x48, 0x45, 0x54, 0x49, 0x43,
+    0xc4, 0x49, 0x50, 0x33, 0x34, 0xc6, 0x30, 0x30,
+    0x30, 0x30, 0x30, 0x30, 0xcc, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x37, 0x30, 0x37, 0x2d, 0x30, 0x30,
+    0x33, 0x00, 0xc2, 0x2d, 0x47, 0x01, 0x00, 0xc2,
+    0x30, 0x30, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04,
+    0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0x00, 0xcc, 0x30, 0x32, 0x41, 0x31, 0x42, 0x32,
+    0x43, 0x33, 0x44, 0x34, 0x45, 0x35, 0xc1, 0x0b,
+};
+
+/*
+ * A system board answers as component 0 and, with the station address, as
+ * component 1, and still serves the address as request-0x0008 text.
+ */
+static void test_identity_system_board(void)
+{
+    uint8_t reply[129];
+    QTestState *s = start_identity(
+        "node-board-name=IP34,node-board-part=030-1707-003,"
+        "node-board-revision=-G,mac=02:a1:b2:c3:d4:e5,"
+        "mac-record=system-board");
+
+    for (unsigned reset = 0; reset < 2; reset++) {
+        expect_area(s, 0, 1, expected_chassis, sizeof(expected_chassis));
+        expect_area(s, 0, 2, expected_system_node_board,
+                    sizeof(expected_system_node_board));
+        expect_area(s, 1, 1, expected_chassis, sizeof(expected_chassis));
+        expect_area(s, 1, 2, expected_system_logic_board,
+                    sizeof(expected_system_logic_board));
+        expect_area_absent(s, 0, 4);
+        expect_area_absent(s, 2, 2);
+        g_assert_cmpuint(general(s, 8, NULL, 0, 0, reply), ==, 20);
+        g_assert_cmpmem(reply + 7, 12, "02A1B2C3D4E5", 12);
+        qtest_system_reset(s);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * A raw MAC EEPROM's address goes into the component 1 area, over mac=; a
+ * raw board area replaces the synthetic one it names, and only that one.
+ */
+static void test_identity_system_board_overrides(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-system-XXXXXX", &error);
+    g_autofree char *mac_path = NULL, *board_path = NULL;
+    uint8_t image[512] = { 0 }, board[24], reply[129];
+    QTestState *s;
+
+    g_assert_no_error(error);
+    fuel_mac_image(image, "02A1B2C3D4E5");
+    mac_path = g_build_filename(dir, "mac.bin", NULL);
+    g_assert_true(g_file_set_contents(mac_path, (char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    s = start_identity_args(
+        "node-board-name=IP34,node-board-part=030-1707-003,"
+        "node-board-revision=-G,mac=02:00:00:00:00:01,"
+        "mac-record=system-board,fuel-mac-eeprom=", mac_path);
+    expect_area(s, 1, 2, expected_system_logic_board,
+                sizeof(expected_system_logic_board));
+    g_assert_cmpuint(general(s, 8, NULL, 0, 0, reply), ==, 20);
+    g_assert_cmpmem(reply + 7, 12, "02A1B2C3D4E5", 12);
+    qtest_quit(s);
+
+    /* Synthetic bytes owned by this test, summing to zero. */
+    memset(board, 0x5a, sizeof(board));
+    board[sizeof(board) - 1] = 0xea;
+    board_path = g_build_filename(dir, "logic-board.bin", NULL);
+    g_assert_true(g_file_set_contents(board_path, (char *)board,
+                                      sizeof(board), &error));
+    g_assert_no_error(error);
+    s = qtest_initf("-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+                    "\"id\":\"l1c\",\"node-board-name\":\"IP34\","
+                    "\"node-board-part\":\"030-1707-003\","
+                    "\"node-board-revision\":\"-G\","
+                    "\"mac\":\"02:a1:b2:c3:d4:e5\","
+                    "\"mac-record\":\"system-board\","
+                    "\"board-eeprom\":[\"\",\"%s\"]}' "
+                    "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+                    "\"controller\":\"l1c\"}'", board_path);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    expect_area(s, 0, 2, expected_system_node_board,
+                sizeof(expected_system_node_board));
+    expect_area(s, 1, 1, expected_chassis, sizeof(expected_chassis));
+    expect_area(s, 1, 2, board, sizeof(board));
+    qtest_quit(s);
+
+    g_assert_cmpint(g_unlink(mac_path), ==, 0);
+    g_assert_cmpint(g_unlink(board_path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 static void test_identity_rejects(void)
 {
     static const struct {
@@ -3024,7 +3152,12 @@ static void test_identity_rejects(void)
     } cases[] = {
         { "mac=02:00:00:00:00:01", "*L1 mac needs a mac-record*" },
         { "mac=02:00:00:00:00:01,mac-record=other",
-          "*L1 mac-record must be io8-board or mac-text*" },
+          "*L1 mac-record must be io8-board, mac-text or system-board*" },
+        { "mac=02:00:00:00:00:01,mac-record=system-board",
+          "*L1 system-board mac-record needs a node board identity*" },
+        { "node-board-name=IP34,node-board-part=030-1707-003,"
+          "node-board-revision=-G,mac-record=system-board",
+          "*L1 mac-record needs a mac*" },
         { "mac-record=io8-board", "*L1 mac-record needs a mac*" },
         { "mac-record=mac-text", "*L1 mac-record needs a mac*" },
         { "mac=03:00:00:00:00:01,mac-record=io8-board",
@@ -4629,6 +4762,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/identity-raw-override",
                    test_identity_raw_override);
     qtest_add_func("sn1/l1/identity-mac-text", test_identity_mac_text);
+    qtest_add_func("sn1/l1/identity-system-board",
+                   test_identity_system_board);
+    qtest_add_func("sn1/l1/identity-system-board-overrides",
+                   test_identity_system_board_overrides);
     qtest_add_func("sn1/l1/identity-rejects", test_identity_rejects);
     qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);

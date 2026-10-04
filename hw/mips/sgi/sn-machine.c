@@ -507,13 +507,24 @@ static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
 }
 
 /*
+ * The Fuel system board as a real IRIX 6.5.22 inventory prints it at the
+ * node and at both XBridge widgets: IP34, part 030-1707-003, rev -G. The
+ * L1 keeps the printed dashes; the public Linux IP35 series says the
+ * EEPROM stores underscores but reads either form, and IRIX printed
+ * dashes.
+ */
+#define SGI_FUEL_BOARD_NAME "IP34"
+#define SGI_FUEL_BOARD_PART "030-1707-003"
+#define SGI_FUEL_BOARD_REVISION "-G"
+
+/*
  * Gives a node's L1 what its synthetic identity records carry. The station
- * address goes in the IO8 board area on an Origin 300 and the MAC text
- * record on a Fuel; each further node takes the next address, so two
- * chassis' IOC3s differ. An Origin 300 node also gets its node board's
- * identity for its processor count. No Fuel node board identity is
- * established as a default, so Fuel gets none. A raw record supplied for
- * an area still wins inside the L1.
+ * address goes in the IO8 board area on an Origin 300; on a Fuel it goes in
+ * the system board's component 1 area and the MAC text record. Each further
+ * node takes the next address, so two chassis' IOC3s differ. An Origin 300
+ * node also gets its node board's identity for its processor count, and a
+ * Fuel its one system board's. A raw record supplied for an area still wins
+ * inside the L1.
  */
 static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
                                         unsigned int node_index, Error **errp)
@@ -547,12 +558,15 @@ static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
     address = g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0],
                               mac[1], mac[2], mac[3], mac[4], mac[5]);
     qdev_prop_set_string(l1, "mac", address);
-    qdev_prop_set_string(l1, "mac-record",
-                         preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ?
-                         "io8-board" : "mac-text");
     if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8) {
+        qdev_prop_set_string(l1, "mac-record", "system-board");
+        qdev_prop_set_string(l1, "node-board-name", SGI_FUEL_BOARD_NAME);
+        qdev_prop_set_string(l1, "node-board-part", SGI_FUEL_BOARD_PART);
+        qdev_prop_set_string(l1, "node-board-revision",
+                             SGI_FUEL_BOARD_REVISION);
         return true;
     }
+    qdev_prop_set_string(l1, "mac-record", "io8-board");
     processors = sgi_machine_l1_node_processors(s, l1);
     for (size_t i = 0; i < ARRAY_SIZE(sgi_ip45_node_boards); i++) {
         if (sgi_ip45_node_boards[i].processors == processors) {
