@@ -35,6 +35,40 @@ const char *sgi_model_default_topology(const char *product);
  */
 bool sgi_model_check_runtime_endpoints(const SGIModelTopology *t, Error **errp);
 
+/*
+ * Whether @t is one of @product's topologies: topology= is product-scoped,
+ * so a name is @product itself or starts with "@product-".
+ */
+bool sgi_model_topology_matches_product(const SGIModelTopology *t,
+                                        const char *product);
+
+/* @machines' topology named @name if it is one of @product's, or NULL. */
+const SGIModelTopology *sgi_model_product_topology(
+    const SGIMachines *machines, const char *product, const char *name);
+
+/*
+ * The topology a machine builds from chassis @chassis with @nodes node
+ * boards, or with its most node boards when @nodes is zero: the
+ * population view of the matching row. NULL with @errp set when an
+ * endpoint is not implemented, no row fits @nodes, or the row rests on
+ * unknown evidence. The machine and standalone tools resolve through
+ * this one function, so they agree on what a selection builds.
+ */
+const SGIModelTopology *sgi_model_resolve_population(
+    const SGIModelTopology *chassis, unsigned int nodes, Error **errp);
+
+/*
+ * The offering a -M option string selects: "<machine>[,topology=T]
+ * [,nodes=N]", resolved as the machine resolves it, with the product's
+ * default topology from its offerings when topology= is absent. Any other
+ * option is refused, since the catalogue does not describe it. Offerings
+ * of one topology and node count differ only in CPU population, so this
+ * returns the first; its storage and init-inputs describe them all.
+ */
+const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
+                                                  const char *options,
+                                                  Error **errp);
+
 /* @t's node-population row fitting exactly @nodes node boards, or NULL. */
 const SGIModelNodePopulation *sgi_model_find_population(
     const SGIModelTopology *t, unsigned int nodes);

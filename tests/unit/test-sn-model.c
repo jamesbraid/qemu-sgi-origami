@@ -1083,6 +1083,117 @@ static void test_io_peer_runtime_accepts_absent_and_empty(void)
     }
 }
 
+/*
+ * sgi_model_population_view() caches each view by its row's address for
+ * the process lifetime, so every resolution test shares one catalogue that
+ * is never freed: a freed row's address could be reused by a later load.
+ */
+static const SGIMachines *resolution_catalogue(void)
+{
+    static SGIMachines *catalogue;
+
+    if (!catalogue) {
+        catalogue = load_catalogue();
+    }
+    return catalogue;
+}
+
+static const SGIModelOffering *resolve(const char *options, Error **errp)
+{
+    return sgi_model_resolve_options(resolution_catalogue(), options, errp);
+}
+
+static void assert_refused(const char *options, const char *message)
+{
+    Error *err = NULL;
+
+    g_assert_null(resolve(options, &err));
+    g_assert_nonnull(err);
+    g_assert_cmpstr(error_get_pretty(err), ==, message);
+    error_free(err);
+}
+
+/* Every offering's own -M value selects an offering with that value. */
+static void test_resolve_every_offering(void)
+{
+    const SGIModelOfferingList *entry;
+
+    for (entry = resolution_catalogue()->offerings; entry;
+         entry = entry->next) {
+        const SGIModelOffering *offering = entry->value;
+        const SGIModelOffering *resolved =
+            resolve(offering->machine_options, &error_abort);
+
+        g_assert_cmpstr(resolved->machine_options, ==,
+                        offering->machine_options);
+    }
+}
+
+static void test_resolve_selection(void)
+{
+    const SGIModelOffering *offering;
+
+    offering = resolve("origin2000,topology=origin2000-deskside,nodes=2",
+                       &error_abort);
+    g_assert_cmpstr(offering->topology, ==, "origin2000-deskside");
+    g_assert_cmpuint(offering->nodes, ==, 2);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(offering->storage), ==, 5);
+    g_assert_cmpstr(offering->storage->value->name, ==, "node0-flash");
+
+    /* No topology= takes the product's default, no nodes= its largest. */
+    offering = resolve("origin2000", &error_abort);
+    g_assert_cmpstr(offering->machine_options, ==,
+                    "origin2000,topology=origin2000-rack,nodes=4");
+    offering = resolve("origin200,nodes=1", &error_abort);
+    g_assert_cmpstr(offering->machine_options, ==,
+                    "origin200,topology=origin200,nodes=1");
+    offering = resolve("origin300,topology=origin300-two-chassis",
+                       &error_abort);
+    g_assert_cmpuint(offering->nodes, ==, 2);
+}
+
+/* Refusals carry the machine's own wording for the same selection. */
+static void test_resolve_refusals(void)
+{
+    assert_refused("origin2000,nodes=5",
+                   "topology 'origin2000-rack' fits 1, 2, 3 or 4 node "
+                   "boards, not 5");
+    assert_refused("origin200,topology=origin2000-rack",
+                   "origin200 has no topology 'origin2000-rack'");
+    assert_refused("origin2000,topology=origin200",
+                   "origin2000 has no topology 'origin200'");
+    assert_refused("pc", "unknown machine 'pc'");
+    assert_refused("origin2000,nodes=0",
+                   "nodes must be a node board count, not '0'");
+    assert_refused("origin2000,nodes=two",
+                   "nodes must be a node board count, not 'two'");
+    assert_refused("origin2000,baseio-preset=io6g",
+                   "machine option 'baseio-preset' is not part of a "
+                   "catalogue selection; give only the machine, "
+                   "topology= and nodes=");
+    assert_refused("topology=origin200",
+                   "no machine named in 'topology=origin200'");
+}
+
+/* topology= names only the named product's own topologies. */
+static void test_resolve_product_scope(void)
+{
+    const SGIMachines *catalogue = resolution_catalogue();
+    const SGIModelTopologyList *entry;
+
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+
+        g_assert_true(sgi_model_topology_matches_product(t, t->product));
+        g_assert_true(sgi_model_product_topology(catalogue, t->product,
+                                                 t->name) == t);
+    }
+    g_assert_null(sgi_model_product_topology(catalogue, "origin200",
+                                             "origin2000-rack"));
+    g_assert_null(sgi_model_product_topology(catalogue, "origin2000",
+                                             "no-such-topology"));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1121,5 +1232,11 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(2), test_io_peer_runtime_refusal);
     g_test_add_func("/sn-model/io-peer/runtime-accepts-absent-and-empty",
                     test_io_peer_runtime_accepts_absent_and_empty);
+    g_test_add_func("/sn-model/resolve/every-offering",
+                    test_resolve_every_offering);
+    g_test_add_func("/sn-model/resolve/selection", test_resolve_selection);
+    g_test_add_func("/sn-model/resolve/refusals", test_resolve_refusals);
+    g_test_add_func("/sn-model/resolve/product-scope",
+                    test_resolve_product_scope);
     return g_test_run();
 }

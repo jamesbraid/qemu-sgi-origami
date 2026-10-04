@@ -83,34 +83,6 @@ const char *sgi_model_default_topology(const char *product)
     return matches == 1 ? single : NULL;
 }
 
-const SGIModelNodePopulation *sgi_model_find_population(
-    const SGIModelTopology *t, unsigned int nodes)
-{
-    const SGIModelNodePopulationList *entry;
-
-    for (entry = t->node_populations; entry; entry = entry->next) {
-        if (QAPI_LIST_LENGTH(entry->value->nodes) == nodes) {
-            return entry->value;
-        }
-    }
-    return NULL;
-}
-
-const SGIModelNodePopulation *sgi_model_default_population(
-    const SGIModelTopology *t)
-{
-    const SGIModelNodePopulationList *entry;
-    const SGIModelNodePopulation *largest = NULL;
-
-    for (entry = t->node_populations; entry; entry = entry->next) {
-        if (!largest || QAPI_LIST_LENGTH(entry->value->nodes) >
-                        QAPI_LIST_LENGTH(largest->nodes)) {
-            largest = entry->value;
-        }
-    }
-    return largest;
-}
-
 SGIMachines *qmp_query_sgi_machines(Error **errp)
 {
     return QAPI_CLONE(SGIMachines, sgi_machines());
