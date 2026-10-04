@@ -2547,7 +2547,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->fog ||
         (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
                                 SGI_GL_OFFSET_POINT)) ||
-        st->texture_1d || st->texture_3d || st->dither || st->clip_planes ||
+        st->texture_1d || st->texture_3d || st->dither ||
         st->window_matrix_given || st->window_rows_down ||
         !(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
         !(st->depth_range[1] >= 0 && st->depth_range[1] <= 1) ||
@@ -2574,6 +2574,8 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->cull_face_mode != SGI_GL_FRONT_AND_BACK) {
         return false;
     }
+    G_STATIC_ASSERT(SGI_GL_CLIP_PLANES == SGI_RENDERER_CLIP_PLANES);
+    request->clip_planes = st->clip_planes;
     request->texture = texture;
     request->smooth = st->shade_model == SGI_GL_SMOOTH;
     for (unsigned i = 0; i < 3; i++) {
@@ -2605,8 +2607,19 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         window_vertices[i][0] = request->vertices[i][0];
         window_vertices[i][1] = request->vertices[i][1];
         window_vertices[i][2] = request->depth[i];
-        if (request->smooth || texture) {
+        if (request->smooth || texture || st->clip_planes) {
             request->inverse_w[i] = 1.0 / clip_position[3];
+        }
+        for (unsigned p = 0; p < SGI_GL_CLIP_PLANES; p++) {
+            if (st->clip_planes & (1u << p)) {
+                const float *plane = st->clip_plane[p];
+                const double *eye = vertices[i].eye;
+
+                request->clip_distance[i][p] = plane[0] * eye[0] +
+                    plane[1] * eye[1] + plane[2] * eye[2] + plane[3] * eye[3];
+            }
+        }
+        if (request->smooth || texture) {
             for (unsigned c = 0; c < 4; c++) {
                 double value = request->smooth ? vertex[SGI_GL_V_COLOR + c] :
                                provoking[SGI_GL_V_COLOR + c];

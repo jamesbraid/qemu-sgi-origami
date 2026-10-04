@@ -4,6 +4,7 @@
 
 #include "qapi/error.h"
 
+#define SGI_RENDERER_CLIP_PLANES 6
 #define SGI_RENDERER_SIZE 128
 #define SGI_RENDERER_COORD_LIMIT 16384
 #define SGI_RENDERER_BYTES (SGI_RENDERER_SIZE * SGI_RENDERER_SIZE * 4)
@@ -67,6 +68,8 @@ typedef struct SGIRendererRequest {
     double inverse_w[3];      /* Reciprocal clip w. */
     const SGIRendererTexture *texture;
     double texcoord[3][4];
+    uint32_t clip_planes;
+    double clip_distance[3][SGI_RENDERER_CLIP_PLANES];
     double offset;            /* Filled polygon bias in window depth. */
     double depth[3];          /* Normalized depth, linear in window space. */
     int32_t clip[4]; /* Inclusive local rectangle; {0,0,-1,-1} is empty. */

@@ -13247,6 +13247,68 @@ static void test_renderer_volume_clip(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_user_clip(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned plane = mode < 6 ? mode : 0;
+    static const float positions[4][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+    uint32_t equation[9] = {
+        0x3000 + plane, 0x3ff00000, 0, 0, 0, 0, 0,
+        mode == 10 ? 0xc0680000 : mode == 11 ? 0xc0502000 : 0xc0500000, 0,
+    };
+
+    renderer_fixture(s);
+    kona_command(s, 0xb4, equation, ARRAY_SIZE(equation));
+    kona_command(s, 0x24, (uint32_t[]) { 0x3000 + plane }, 1);
+    if (mode == 6) {
+        kona_command(s, 0xb4,
+                     (uint32_t[]) { 0x3005, 0, 0, 0x3ff00000, 0, 0, 0,
+                                    0xc0400000, 0 }, 9);
+        kona_command(s, 0x24, (uint32_t[]) { 0x3005 }, 1);
+    } else if (mode == 9) {
+        kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
+    }
+    gl_begin(s, 7);
+    for (unsigned v = 0; v < 4; v++) {
+        unsigned index = mode == 7 ? (4 - v) % 4 : v;
+        float x = positions[index][0], y = positions[index][1];
+        float w = mode == 8 ? 1 << v : 1;
+
+        if (mode == 9) {
+            kona_command_f(s, 0x63, (float[]) { x / 128, y / 128, 0 }, 3);
+        }
+        kona_command_f(s, 0x94,
+                       (float[]) { x * w, y * w, 0, w }, 4);
+    }
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), >, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    for (unsigned palette = 0; palette < 2; palette++) {
+        expected_clear(expected, palette ? 0x326496 : 0xffffff);
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 64; x < 128; x++) {
+                uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
+
+                if (mode == 10 || (mode == 6 && y < 32)) {
+                    continue;
+                }
+                pixel[0] = mode == 9 ? floor((x + 0.5) * 255 / 128 + 0.5) :
+                                      255;
+                pixel[1] = mode == 9 ? floor((y + 0.5) * 255 / 128 + 0.5) : 0;
+                pixel[2] = 0;
+            }
+        }
+        assert_window_matches(s, expected);
+        kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    }
+    qtest_quit(s);
+}
+
 static const uint32_t renderer_texture_pixels[4] = {
     0xff000000, 0x00ff0055, 0x0000ffaa, 0xffffffff,
 };
@@ -13323,6 +13385,11 @@ static void test_renderer_texture(gconstpointer opaque)
     } else if (mode == 10) {
         kona_command(s, 0xc, (uint32_t[]) { 32, 16, 64, 80 }, 4);
         kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    } else if (mode == 12) {
+        kona_command(s, 0xb4,
+                     (uint32_t[]) { 0x3005, 0x3ff00000, 0, 0, 0, 0, 0,
+                                    0xc0500000, 0 }, 9);
+        kona_command(s, 0x24, (uint32_t[]) { 0x3005 }, 1);
     }
     gl_begin(s, 7);
     for (unsigned v = 0; v < 4; v++) {
@@ -13360,7 +13427,9 @@ static void test_renderer_texture(gconstpointer opaque)
                 double alpha;
                 uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
 
-                if (mode == 10 && (x < 32 || x >= 96 || y < 16 || y >= 96)) {
+                if ((mode == 10 &&
+                     (x < 32 || x >= 96 || y < 16 || y >= 96)) ||
+                    (mode == 12 && x < 64)) {
                     continue;
                 }
                 if (mode == 3) {
@@ -13408,7 +13477,7 @@ static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb60,
-        0xde0, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
+        0xde0, 0x806f, 0xbd0, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -14526,6 +14595,13 @@ int main(int argc, char **argv)
                            test_renderer_volume_clip);
     }
     for (unsigned mode = 0; mode < 12; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/user-clip/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_user_clip);
+    }
+    for (unsigned mode = 0; mode < 13; mode++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/kona-3d/renderer/texture/%u", mode);
 
