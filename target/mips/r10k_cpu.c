@@ -42,6 +42,64 @@ static void mips_r10000_prid_set(Object *obj, Visitor *v, const char *name,
     cpu->r10k_profile->r10000_prid = value;
 }
 
+static void mips_r10k_reset_mode_get(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    R10KCPUProfile *profile = MIPS_CPU(obj)->r10k_profile;
+    uint32_t value = profile ? profile->reset_mode : 0;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mips_r10k_reset_mode_set(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    MIPSCPU *cpu = MIPS_CPU(obj);
+    uint32_t value;
+
+    if (DEVICE(obj)->realized) {
+        error_setg(errp, "%s cannot change after CPU realization", name);
+        return;
+    }
+    if (!visit_type_uint32(v, name, &value, errp)) {
+        return;
+    }
+    if (value & ~0x01ffffffu) {
+        error_setg(errp, "%s uses only Config0 bits 24:0", name);
+        return;
+    }
+    if (!cpu->r10k_profile) {
+        error_setg(errp, "%s unavailable on this CPU model", name);
+        return;
+    }
+    cpu->r10k_profile->reset_mode = value;
+    cpu->r10k_profile->reset_mode_set = true;
+}
+
+/*
+ * A board's processor mode bits replace Config0 bits 24:0 from reset on,
+ * so the secondary-cache size they select is known before realize sizes
+ * the cache arrays. BE still follows the big-endian property at reset.
+ */
+static bool mips_r10k_reset_mode_validate(MIPSCPU *cpu, Error **errp)
+{
+    R10KCPUProfile *profile = cpu->r10k_profile;
+
+    if (!profile || !profile->reset_mode_set) {
+        return true;
+    }
+    profile->cpu_model = g_new(mips_def_t, 1);
+    *profile->cpu_model = *cpu->env.cpu_model;
+    profile->cpu_model->CP0_Config0 =
+        (profile->cpu_model->CP0_Config0 & ~0x01ffffffu) |
+        profile->reset_mode;
+    cpu->env.cpu_model = profile->cpu_model;
+    profile->valid = true;
+    return true;
+}
+
 static const char *const r12000_property_names[R12000_PROFILE_FIELDS] = {
     "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
     "r12000-scache-bytes", "r12000-scache-block-words",
@@ -274,6 +332,13 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
                                   mips_r10000_prid_get, mips_r10000_prid_set,
                                   NULL, NULL);
     }
+    if (!strcmp(def->name, "R10000") || !strcmp(def->name, "R14000")) {
+        object_class_property_add(oc, "reset-mode", "uint32",
+                                  mips_r10k_reset_mode_get,
+                                  mips_r10k_reset_mode_set, NULL, NULL);
+        object_class_property_set_description(oc, "reset-mode",
+            "Board processor mode bits, Config0 bits 24:0 from reset");
+    }
     if (!strcmp(def->name, "R12000")) {
         for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
             object_class_property_add(oc, r12000_property_names[i], "uint32",
@@ -324,7 +389,7 @@ bool mips_r10k_cpu_validate(MIPSCPU *cpu, Error **errp)
     if (!strcmp(name, "R16000")) {
         return mips_r16000_validate(cpu, errp);
     }
-    return true;
+    return mips_r10k_reset_mode_validate(cpu, errp);
 }
 
 void mips_r10k_cpu_realize(MIPSCPU *cpu)

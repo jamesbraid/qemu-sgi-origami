@@ -268,9 +268,7 @@ static const VMStateDescription vmstate_r10k_scache_r14k = {
 
 static uint32_t mips_r10k_scache_capacity(const MIPSCPU *cpu)
 {
-    return cpu->env.r10k ?
-        r10k_scache_capacity(cpu->env.cfg.scache_size,
-            extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3)) : 0;
+    return cpu->env.r10k ? cpu->env.r10k->scache_size : 0;
 }
 
 static bool mips_r12000_profile_active(const MIPSCPU *cpu)
@@ -620,6 +618,12 @@ int mips_r10k_profile_post_load(MIPSCPU *cpu)
     if (mips_r12000_profile_active(cpu) &&
         memcmp(profile->migration_profile, profile->values,
                sizeof(profile->values))) {
+        return -EINVAL;
+    }
+    /* The cache arrays were sized at realize from the reset SS field. */
+    if (env->r10k &&
+        extract32(env->CP0_Config0, CP0C0_R10K_SS, 3) !=
+        extract32(env->cpu_model->CP0_Config0, CP0C0_R10K_SS, 3)) {
         return -EINVAL;
     }
 

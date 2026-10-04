@@ -129,6 +129,8 @@ typedef struct R10KCPUProfile {
     uint32_t migration_r16000_scache_bytes;
     /* Transient: cleared before load, set by the R16000 subsection. */
     bool migration_r16000_profile_seen;
+    uint32_t reset_mode;
+    bool reset_mode_set;
     struct mips_def_t *cpu_model;
     bool valid;
 } R10KCPUProfile;
@@ -217,8 +219,9 @@ typedef struct R10KState {
     uint16_t requester_id;
 
     /*
-     * Secondary-cache storage, allocated dynamically to fitted capacity
-     * (survives reset; buffers are re-zeroed on cold reset).
+     * Secondary-cache storage, allocated at realize to the fitted capacity
+     * in scache_size. That capacity is fixed for the CPU's life: every
+     * index bound uses it, never a re-decoded Config0 SS field.
      */
     uint32_t scache_size;
     uint32_t *scache_taglo;

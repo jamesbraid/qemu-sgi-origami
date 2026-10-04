@@ -1749,6 +1749,149 @@ static void test_r10k_fpu_fast_path(void)
     qtest_quit(qts);
 }
 
+/* ---------------------------------------------------------------- */
+/* Secondary-cache capacity selected by board reset mode            */
+/* ---------------------------------------------------------------- */
+
+/*
+ * R10000 Config0 bits 24:0 as an SN0 board drives them, but with SS = 5
+ * (16 MB, the largest encoding) in place of the 1 MB the CPU definition
+ * defaults to. Index operations at the top of that range must land in
+ * arrays sized for it: a model that sizes from the definition but bounds
+ * by the mode bits writes far past the end of its arrays.
+ */
+#define SCACHE_MODE_16M         0x015a785
+#define SCACHE_TOP_TAG_ADDR     0xffffffff807fff81ULL /* last set, way 1 */
+#define SCACHE_TOP_DATA_ADDR    0xffffffff807ffff9ULL /* last quad, way 1 */
+#define SCACHE_TAGLO            0x5a5a4c00u
+#define SCACHE_TAGHI            0x80000005u
+#define SCACHE_DATA_LO          0x12345678u
+#define SCACHE_DATA_HI          0x7abcdef0u
+#define SCACHE_ECC              0x155u
+
+#define SCACHE_CONFIG_OFF       0x00
+#define SCACHE_TAGLO_OFF        0x08
+#define SCACHE_TAGHI_OFF        0x10
+#define SCACHE_DATA_LO_OFF      0x18
+#define SCACHE_DATA_HI_OFF      0x20
+#define SCACHE_ECC_OFF          0x28
+
+#define CP0_CONFIG              16
+#define CP0_ECC                 26
+#define CP0_TAGLO               28
+#define CP0_TAGHI               29
+
+#define CACHE_S_INDEX_LOAD_TAG  0x07
+#define CACHE_S_INDEX_STORE_TAG 0x0b
+#define CACHE_S_INDEX_LOAD_DATA 0x1b
+#define CACHE_S_INDEX_STORE_DATA 0x1f
+
+static void emit_cache(GuestImage *img, int op, int base)
+{
+    emit(img, OPC_CACHE | (base << 21) | (op << 16));
+}
+
+static void emit_li32(GuestImage *img, int rt, uint32_t value)
+{
+    emit_lui(img, rt, value >> 16);
+    emit_ori(img, rt, rt, value & 0xffff);
+}
+
+static void scache_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+    img.pos = VEC_TLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_XTLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_CACHE_ERROR;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_GENERAL;
+    llsc_emit_fault_stub(&img);
+
+    img.pos = CODE_START;
+    emit_lui(&img, R_S0, STATE_KSEG1_HI);
+    emit_mfc0(&img, R_T0, CP0_CONFIG);
+    emit_sd(&img, R_T0, R_S0, SCACHE_CONFIG_OFF);
+
+    emit_li64(&img, R_S1, SCACHE_TOP_TAG_ADDR);
+    emit_li32(&img, R_T0, SCACHE_TAGLO);
+    emit_mtc0(&img, R_T0, CP0_TAGLO);
+    emit_li32(&img, R_T0, SCACHE_TAGHI);
+    emit_mtc0(&img, R_T0, CP0_TAGHI);
+    emit_cache(&img, CACHE_S_INDEX_STORE_TAG, R_S1);
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO);
+    emit_mtc0(&img, R_ZERO, CP0_TAGHI);
+    emit_cache(&img, CACHE_S_INDEX_LOAD_TAG, R_S1);
+    emit_mfc0(&img, R_T0, CP0_TAGLO);
+    emit_sd(&img, R_T0, R_S0, SCACHE_TAGLO_OFF);
+    emit_mfc0(&img, R_T0, CP0_TAGHI);
+    emit_sd(&img, R_T0, R_S0, SCACHE_TAGHI_OFF);
+
+    emit_li64(&img, R_S1, SCACHE_TOP_DATA_ADDR);
+    emit_li32(&img, R_T0, SCACHE_DATA_LO);
+    emit_mtc0(&img, R_T0, CP0_TAGLO);
+    emit_li32(&img, R_T0, SCACHE_DATA_HI);
+    emit_mtc0(&img, R_T0, CP0_TAGHI);
+    emit_addiu(&img, R_T0, R_ZERO, SCACHE_ECC);
+    emit_mtc0(&img, R_T0, CP0_ECC);
+    emit_cache(&img, CACHE_S_INDEX_STORE_DATA, R_S1);
+    emit_mtc0(&img, R_ZERO, CP0_TAGLO);
+    emit_mtc0(&img, R_ZERO, CP0_TAGHI);
+    emit_mtc0(&img, R_ZERO, CP0_ECC);
+    emit_cache(&img, CACHE_S_INDEX_LOAD_DATA, R_S1);
+    emit_mfc0(&img, R_T0, CP0_TAGLO);
+    emit_sd(&img, R_T0, R_S0, SCACHE_DATA_LO_OFF);
+    emit_mfc0(&img, R_T0, CP0_TAGHI);
+    emit_sd(&img, R_T0, R_S0, SCACHE_DATA_HI_OFF);
+    emit_mfc0(&img, R_T0, CP0_ECC);
+    emit_sd(&img, R_T0, R_S0, SCACHE_ECC_OFF);
+
+    emit_report_and_spin(&img, LLSC_DONE_MAGIC, LLSC_DONE_OFF);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void test_r10k_scache_reset_mode_capacity(void)
+{
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-scache-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    scache_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M malta -m 64M "
+                      "-cpu R10000,reset-mode=0x%x -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", SCACHE_MODE_16M, image);
+    unlink(image);
+    wait_for_done(qts);
+
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + SCACHE_CONFIG_OFF) &
+                    0x01ffffff, ==, SCACHE_MODE_16M);
+    g_assert_cmphex((uint32_t)qtest_readq(qts, STATE_PHYS + SCACHE_TAGLO_OFF),
+                    ==, SCACHE_TAGLO);
+    g_assert_cmphex((uint32_t)qtest_readq(qts, STATE_PHYS + SCACHE_TAGHI_OFF),
+                    ==, SCACHE_TAGHI);
+    g_assert_cmphex((uint32_t)qtest_readq(qts,
+                                          STATE_PHYS + SCACHE_DATA_LO_OFF),
+                    ==, SCACHE_DATA_LO);
+    g_assert_cmphex((uint32_t)qtest_readq(qts,
+                                          STATE_PHYS + SCACHE_DATA_HI_OFF),
+                    ==, SCACHE_DATA_HI);
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + SCACHE_ECC_OFF), ==,
+                    SCACHE_ECC);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1777,6 +1920,8 @@ int main(int argc, char **argv)
                    test_r10k_count_interrupt_delivery);
     qtest_add_func("/sn0/tcg/fpu-fast-path",
                    test_r10k_fpu_fast_path);
+    qtest_add_func("/r10k/scache/reset-mode-capacity",
+                   test_r10k_scache_reset_mode_capacity);
 
     return g_test_run();
 }
