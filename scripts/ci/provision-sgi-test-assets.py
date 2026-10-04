@@ -14,6 +14,15 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 
+def find_test_module(functional, name):
+    """Locate test_<name>.py: MIPS64-specific first, then the generic tests."""
+    for directory in (functional / "mips64", functional / "generic"):
+        module_path = directory / f"test_{name}.py"
+        if module_path.is_file():
+            return module_path
+    return None
+
+
 def selected_assets(source, target_names):
     source = Path(source).resolve()
     functional = source / "tests/functional"
@@ -28,10 +37,8 @@ def selected_assets(source, target_names):
         if not target.startswith(prefix):
             raise ValueError(f"unexpected MIPS64 test target: {target}")
         name = target[len(prefix):]
-        module_path = mips64 / f"test_{name}.py"
-        if not module_path.is_file():
-            module_path = mips64 / "generic" / f"test_{name}.py"
-        if not module_path.is_file():
+        module_path = find_test_module(functional, name)
+        if module_path is None:
             raise ValueError(f"no test module found for {target}")
 
         module_name = f"_nightly_asset_{name}"
