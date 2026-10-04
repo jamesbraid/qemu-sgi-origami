@@ -12741,10 +12741,52 @@ static void test_renderer_logic_op(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_alpha_test(gconstpointer opaque)
+{
+    static const struct {
+        float alpha, ref;
+        int relation;
+    } cases[] = {
+        { 1, 0.999f, 0 }, { 1, 0.997f, 1 },
+        { 0.5f, 0.501f, 0 }, { 0.5f, 0.51f, -1 },
+        { 0, 0, 0 }, { -1, 0, 0 }, { 2, 1, 0 }, { 0.25f, 0.5f, -1 },
+    };
+    static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    unsigned mode = GPOINTER_TO_UINT(opaque), func = mode & 7;
+    unsigned variant = mode / 8;
+    bool kept = passes[func] & (1 << (1 - cases[variant].relation));
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+    uint32_t args[] = { 0x200 + func, fbits(cases[variant].ref) };
+
+    renderer_fixture(s);
+    kona_command(s, 0xca, args, ARRAY_SIZE(args));
+    kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+    /* Only the quad's last vertex supplies the flat fragment alpha. */
+    kona_command_f(s, 0x6b, (float[]) { 1, 0, 0, 1 }, 4);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    kona_command_f(s, 0x6b,
+                   (float[]) { 1, 0, 0, cases[variant].alpha }, 4);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, kept ? 0xff0000 : 0xffffff);
+    assert_window_matches(s, expected);
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    expected_clear(expected, kept ? 0xff0000 : 0x326496);
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
-        0xbc0, 0xb71, 0xb90, 0xbe2, 0xb60,
+        0xb71, 0xb90, 0xbe2, 0xb60,
         0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
@@ -12787,7 +12829,7 @@ static void test_renderer_excluded_state(void)
     }
     qtest_system_reset(s);
     renderer_fixture(s);
-    kona_command_f(s, 0x6b, (float[]){ 1, 0, 0, 0.5 }, 4);
+    kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
     renderer_triangle(s);
     renderer_assert_image(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
@@ -13823,6 +13865,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_logic_op);
+    }
+    for (unsigned mode = 0; mode < 64; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/alpha-test/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_alpha_test);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

@@ -2414,13 +2414,16 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     }
     if (st->shade_model != SGI_GL_FLAT ||
         (st->colour_mask & ~15) ||
-        st->alpha_test || st->depth_test || st->stencil_test ||
+        st->depth_test || st->stencil_test ||
         (st->blend && !logic_op) || st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return false;
+    }
+    if (st->alpha_test && st->alpha_func > SGI_GL_ALWAYS) {
         return false;
     }
     if (logic_op &&
@@ -2436,9 +2439,6 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         const float *vertex = d->vertices + i * SGI_GL_VERTEX_FLOATS;
         double eye[4] = { 0 }, clip_position[4], window[3];
 
-        if (vertex[SGI_GL_V_COLOR + 3] != 1) {
-            return false;
-        }
         for (unsigned row = 0; row < 4; row++) {
             for (unsigned k = 0; k < 4; k++) {
                 eye[row] += st->modelview[k * 4 + row] * (double)vertex[k];
@@ -2467,7 +2467,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
     }
-    if (provoking[SGI_GL_V_COLOR + 3] != 1) {
+    if (!isfinite(provoking[SGI_GL_V_COLOR + 3])) {
         return false;
     }
     for (unsigned c = 0; c < 3; c++) {
@@ -2489,6 +2489,12 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     request->generation = s->renderer_generation;
     if (!sgi_renderer_request_tile(request, tx, ty, width, height, bounds)) {
         return false;
+    }
+    if (st->alpha_test &&
+        !sgi_raster_alpha_test(&sgi_kona_gl_rules, st->alpha_func,
+                               provoking[SGI_GL_V_COLOR + 3], st->alpha_ref)) {
+        request->clip[0] = request->clip[1] = 0;
+        request->clip[2] = request->clip[3] = -1;
     }
     return !st->cull_face || sgi_renderer_request_cull(request,
         st->front_face == SGI_GL_CW,

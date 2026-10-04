@@ -390,6 +390,13 @@ static bool sgi_soft_compare(uint32_t func, uint32_t value, uint32_t ref)
     }
 }
 
+bool sgi_raster_alpha_test(const SGIRasterRules *r, uint32_t func,
+                           double alpha, double ref)
+{
+    return sgi_soft_compare(func, sgi_soft_alpha_test(r, alpha),
+                            sgi_soft_alpha_test(r, ref));
+}
+
 /* Whether the planes have a stencil buffer, and its largest value. */
 static bool sgi_soft_stencil_max(const SGIRasterRules *rules,
                                  const SGIRasterTarget *t, uint32_t *max)
@@ -1826,9 +1833,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
      * stored alpha width, independently of the colour mask (4.1.4, 2.13.9).
      */
     if (r->st->alpha_test && !r->st->index_bits &&
-        !sgi_soft_compare(r->st->alpha_func,
-                          sgi_soft_alpha_test(r->rules, f->rgba[3]),
-                          sgi_soft_alpha_test(r->rules, r->st->alpha_ref))) {
+        !sgi_raster_alpha_test(r->rules, r->st->alpha_func,
+                               f->rgba[3], r->st->alpha_ref)) {
         return;
     }
     if (!r->st->index_bits && t->store_rgba && r->rgba_read &&
