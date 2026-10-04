@@ -1145,6 +1145,24 @@ static void sgi_kona_gl_image_clear(SGIKonaState *s);
 
 static void sgi_kona_texture_upload_clear(SGIKonaState *s);
 
+static void sgi_kona_gl_read_dma_clear(SGIKonaState *s)
+{
+    g_free(s->gl_read_dma.data);
+    memset(&s->gl_read_dma, 0, sizeof(s->gl_read_dma));
+}
+
+static void sgi_kona_gl_read_dma_refuse(SGIKonaState *s)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+
+    if (d->active) {
+        g_clear_pointer(&d->data, g_free);
+        d->count = 0;
+        memset(d->header, 0, sizeof(d->header));
+        d->refused = true;
+    }
+}
+
 static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
                                       uint32_t page, uint32_t offset)
 {
@@ -1155,6 +1173,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
     int slot = SGI_KONA_CONTEXT_NONE;
 
     sgi_kona_x_read_invalidate(s);
+    sgi_kona_gl_read_dma_refuse(s);
     offset &= 0xfff;
     for (int i = 0; i < SGI_KONA_CONTEXTS; i++) {
         c = &s->contexts[i];
@@ -1363,6 +1382,7 @@ static void sgi_kona_post_reason(SGIKonaState *s, uint32_t token,
 static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
 {
     sgi_kona_x_read_invalidate(s);
+    sgi_kona_gl_read_dma_refuse(s);
     trace_sgi_kona_context_deactivate(index);
     if (s->context_current == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -3640,13 +3660,15 @@ refused:
 }
 
 /*
- * Ordinary small-return colour components use normalized formats 3 through
- * 7 and dense rows at byte 8. The pointer's low bits do not offset the source.
+ * Ordinary colour reads stage dense rows for either return transport.
+ * The pointer's low bits do not offset the framebuffer source.
  * The selected logical bank supplies direct RGB at drawable-local lower-
  * left coordinates, bottom-first. Unsupported visuals/bindings, indexed
  * pixels and clipped rectangles receive no reply.
  */
-static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
+static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
+                                      uint32_t limit, uint8_t **out_data,
+                                      uint32_t *out_count)
 {
     int i = s->context_current;
     int32_t x0 = args[0], y0 = args[1];
@@ -3664,13 +3686,13 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
     if (i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels with no current"
                       " context; no reply\n");
-        return;
+        return false;
     }
     p = &s->gl_pipe[i];
-    if (p->pixel_transfer_unsupported) {
+    if (s->gl[i].in_begin || p->pixel_transfer_unsupported) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
                       " unsupported; no reply\n");
-        return;
+        return false;
     }
     for (unsigned k = 0; k < 4; k++) {
         scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
@@ -3678,30 +3700,26 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
         if (!isfinite(scale[k]) || !isfinite(bias[k])) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels nonfinite"
                           " transfer; no reply\n");
-            return;
+            return false;
         }
     }
     if (!sgi_kona_gl_texture_pixel_bytes(format, type) || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
                       " is not modelled; no reply\n", format, type, args[6]);
-        return;
+        return false;
     }
     /* Check the complete dense extent before allocating or writing. */
     pixel_bytes = sgi_kona_gl_texture_pixel_bytes(format, type);
     row = (uint64_t)w * pixel_bytes;
     if ((int32_t)w <= 0 || (int32_t)h <= 0 ||
-        row > SGI_KONA_SMALL_RETURN_BYTES ||
-        h > SGI_KONA_SMALL_RETURN_BYTES / row || (w == 8 && h == 1)) {
+        row > limit || h > limit / row || (w == 8 && h == 1)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
-                      PRIu32 " has an unsupported small extent; no reply\n",
+                      PRIu32 " has an unsupported extent; no reply\n",
                       w, h);
-        return;
+        return false;
     }
     len = row * h;
-    if (len > SGI_KONA_RETURN_PAGE_BYTES - 8) {
-        return;
-    }
     win = &s->gl_window[i];
     px = (int64_t)win->x + x0;
     py = (int64_t)win->y + y0;
@@ -3712,7 +3730,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
         px + w > SGI_KONA_FB_WIDTH || py + h > SGI_KONA_FB_HEIGHT) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has no supported"
                       " pixel source; no reply\n");
-        return;
+        return false;
     }
     /* One unsupported tag refuses the whole rectangle before any write. */
     for (uint32_t r = 0; r < h; r++) {
@@ -3722,7 +3740,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
                     px + c, py + r) != SGI_KONA_TAG_DIRECT) {
                 qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels has an"
                               " indexed source; no reply\n");
-                return;
+                return false;
             }
         }
     }
@@ -3746,12 +3764,146 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
             if (!sgi_kona_gl_pixel_pack_double(format, type, rgba,
                                                   p->pack_swap_bytes,
                                          out, pixel_bytes)) {
-                return;
+                return false;
             }
         }
     }
-    trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_PIXELS, format, len);
-    sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 8, data, len);
+    *out_data = g_steal_pointer(&data);
+    *out_count = len;
+    return true;
+}
+
+/* Descriptor word six remains restricted to the established X zero form. */
+static bool sgi_kona_gl_read_dma_descriptor(const SGIKonaGLReadDMA *d,
+                                            uint64_t *io, uint64_t *pitch,
+                                            uint32_t *lines)
+{
+    const uint32_t *a = d->descriptor;
+    uint64_t span;
+
+    if ((a[1] & ~0xfffu) != 0x9000 || !a[2] || a[2] > 64 * MiB ||
+        !a[3] || a[3] > a[2] || a[2] % a[3] || (int32_t)a[4] < 0 ||
+        a[5]) {
+        return false;
+    }
+    *io = ((uint64_t)a[0] << 12) | (a[1] & 0xfff);
+    *lines = a[2] / a[3];
+    *pitch = (uint64_t)a[3] + a[4];
+    span = (uint64_t)(*lines - 1) * *pitch + a[3];
+    return span <= 64 * MiB && span <= UINT64_MAX - *io;
+}
+
+static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
+                                        const uint32_t *h)
+{
+    uint64_t io, pitch, row, total;
+    uint32_t lines, pixel_bytes;
+
+    pixel_bytes = sgi_kona_gl_texture_pixel_bytes(h[4], h[5]);
+    if (!pixel_bytes || (int32_t)h[2] <= 0 || (int32_t)h[3] <= 0 ||
+        h[2] > SGI_KONA_FB_WIDTH || h[3] > SGI_KONA_FB_HEIGHT ||
+        (h[2] == 8 && h[3] == 1) || h[6] > 3 ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) ||
+        (io & 3) != h[6]) {
+        return false;
+    }
+    row = (uint64_t)h[2] * pixel_bytes;
+    total = row * h[3];
+    return d->descriptor[2] == total &&
+           ((d->descriptor[3] == total && !d->descriptor[4]) ||
+            d->descriptor[3] == row);
+}
+
+static void sgi_kona_gl_read_dma_start(SGIKonaState *s, const uint32_t *a)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    uint64_t io, pitch;
+    uint32_t lines;
+
+    sgi_kona_gl_read_dma_clear(s);
+    d->active = true;
+    d->context = s->context_current;
+    memcpy(d->descriptor, a, sizeof(d->descriptor));
+    if (d->context == SGI_KONA_CONTEXT_NONE ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: read DMA descriptor refused\n");
+        d->refused = true;
+    }
+}
+
+static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    g_autofree uint8_t *data = NULL;
+    uint32_t count;
+
+    if (d->active) {
+        if (d->refused || d->count || d->context != s->context_current ||
+            !sgi_kona_gl_read_dma_layout(d, args) ||
+            !sgi_kona_gl_read_payload(s, args, 64 * MiB, &data, &count)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: ReadPixels DMA refused\n");
+            sgi_kona_gl_read_dma_refuse(s);
+            return;
+        }
+        memcpy(d->header, args, sizeof(d->header));
+        d->count = count;
+        d->data = g_steal_pointer(&data);
+    } else if (sgi_kona_gl_read_payload(s, args, SGI_KONA_SMALL_RETURN_BYTES,
+                                         &data, &count)) {
+        trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_PIXELS, args[4], count);
+        sgi_kona_post_return(s, SGI_KONA_CMD_GL_READ_PIXELS, 8, data, count);
+    }
+}
+
+static bool sgi_kona_device_write(SGIKonaState *s, uint64_t device,
+                                   const uint8_t *buf, uint32_t len,
+                                   bool validate);
+
+static void sgi_kona_gl_read_dma_finish(SGIKonaState *s, const uint32_t *a)
+{
+    SGIKonaGLReadDMA *d = &s->gl_read_dma;
+    uint64_t io, pitch;
+    uint32_t lines;
+    uint8_t reason[16];
+
+    if (!d->active || d->refused || !d->count || a[0] != 0x100 ||
+        d->context != s->context_current || !s->reason_page_valid ||
+        !sgi_kona_gl_read_dma_layout(d, d->header) ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
+        goto refused;
+    }
+    /* An absent later map must not leave an earlier row partly written. */
+    for (uint32_t row = 0; row < lines; row++) {
+        if (!sgi_kona_device_write(s, io + row * pitch, NULL,
+                                     d->descriptor[3], true)) {
+            goto refused;
+        }
+    }
+    for (uint32_t row = 0; row < lines; row++) {
+        if (!sgi_kona_device_write(s, io + row * pitch,
+                                     d->data + row * d->descriptor[3],
+                                     d->descriptor[3], false)) {
+            goto refused;
+        }
+    }
+    stl_be_p(reason, 0x100);
+    stl_be_p(reason + 4, a[1]);
+    stl_be_p(reason + 8, 0);
+    stl_be_p(reason + 12, 0);
+    if (!sgi_kona_host_write(s, s->reason_page, reason, sizeof(reason))) {
+        goto refused;
+    }
+    trace_sgi_kona_reason_post(SGI_KONA_CMD_SELECT_FEED_FINISH, 0x100,
+                               s->reason_page);
+    s->int_cause |= SGI_KONA_INT_CAUSE_GE;
+    sgi_kona_raise_vector(s, false);
+    sgi_kona_gl_read_dma_clear(s);
+    return;
+
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: incomplete or failed read DMA;"
+                  " no completion posted\n");
+    sgi_kona_gl_read_dma_clear(s);
 }
 
 /* Native descriptors authorize layout; the source mapping authorizes values. */
@@ -6968,6 +7120,43 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
     return true;
 }
 
+/* Use the same map RAM and fabric as input DMA, splitting at page edges. */
+static bool sgi_kona_device_write(SGIKonaState *s, uint64_t device,
+                                   const uint8_t *buf, uint32_t len,
+                                   bool validate)
+{
+    const uint64_t page = 1u << SGI_KONA_MAPRAM_PAGE_SHIFT;
+
+    while (len) {
+        uint64_t host;
+        hwaddr where;
+        bool mapped;
+        uint32_t chunk = MIN(MIN(len, 4096), page - (device & (page - 1)));
+
+        if ((device >> SGI_KONA_MAPRAM_PAGE_SHIFT) >=
+            sgi_kona_mapram_entry_count(s) ||
+            !sgi_kona_command_page(s, "DMA write", device >> 12,
+                                    device & 0xfff, &host, &mapped) ||
+            !mapped ||
+            !sgi_kona_fabric_compose(s, s->fabric_hub_widget, host, &where) ||
+            (validate ? !dma_memory_valid(&s->fabric_as, where, chunk,
+                                           DMA_DIRECTION_FROM_DEVICE,
+                                           MEMTXATTRS_UNSPECIFIED) :
+             !sgi_kona_host_write(s, host, buf, chunk))) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: DMA write of %u bytes"
+                          " at device address 0x%" PRIx64 " failed\n",
+                          chunk, device);
+            return false;
+        }
+        device += chunk;
+        if (!validate) {
+            buf += chunk;
+        }
+        len -= chunk;
+    }
+    return true;
+}
+
 bool sgi_kona_pixels_dma_waiting(SGIKonaState *s)
 {
     const SGIKonaGLImageUpload *u = &s->gl_image_upload;
@@ -7515,6 +7704,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         if (args[0] == 0x103 && s->context_current != SGI_KONA_CONTEXT_NONE) {
             unsigned i = s->context_current;
 
+            sgi_kona_gl_read_dma_refuse(s);
             memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
             sgi_kona_gl_set_drawable(s, i);
             sgi_scanout_invalidate_all(&s->scanout);
@@ -7564,11 +7754,10 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
     case SGI_KONA_CMD_SELECT_FEED_START:
+        sgi_kona_gl_read_dma_start(s, args);
+        break;
     case SGI_KONA_CMD_SELECT_FEED_FINISH:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: select-feed packet 0x%x framed;"
-                      " DMA read not modelled\n", selector);
-        trace_sgi_kona_command_unmodelled(selector, argc);
+        sgi_kona_gl_read_dma_finish(s, args);
         break;
     case SGI_KONA_CMD_DMA_PACKET:
     case SGI_KONA_CMD_DMA_LIST_WRITE:
@@ -7627,6 +7816,12 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         sgi_kona_x_pixel_setup(s, args);
         break;
     case SGI_KONA_CMD_X_PIXEL_READ:
+        if (s->gl_read_dma.active) {
+            sgi_kona_gl_read_dma_refuse(s);
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: X read DMA unsupported;"
+                          " no reply\n");
+            break;
+        }
         sgi_kona_x_pixel_read(s, args);
         break;
     case SGI_KONA_CMD_X_PIXEL_WRITE:
@@ -8010,6 +8205,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         s->gl_data_remaining || sgi_kona_dma_calls_open(s) ||
         s->x_pixel_remaining || s->x_stipple_store_remaining) {
         sgi_kona_x_read_invalidate(s);
+        sgi_kona_gl_read_dma_refuse(s);
     }
     if (s->kernel_port.framing) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -9289,6 +9485,7 @@ static void sgi_kona_instance_finalize(Object *obj)
     SGIKonaState *s = SGI_KONA(obj);
 
     sgi_kona_texture_cleanup(&s->textures);
+    sgi_kona_gl_read_dma_clear(s);
     sgi_kona_gl_image_clear(s);
     sgi_kona_texture_upload_clear(s);
     sgi_kona_renderer_stop(s);
@@ -9477,6 +9674,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->x_stipple_store_height = 0;
     s->x_stipple_store_remaining = 0;
     sgi_kona_x_read_invalidate(s);
+    sgi_kona_gl_read_dma_clear(s);
     memset(s->x_write_mem.bytes, 0, s->x_write_mem.bytes_len);
     sgi_kona_x_write_clear(s);
     memset(s->x_pixel_setup, 0, sizeof(s->x_pixel_setup));
@@ -9576,6 +9774,8 @@ static bool sgi_kona_arm_high_count_valid(void *opaque, int version_id)
 static int sgi_kona_cursor_pre_load(void *opaque)
 {
     SGIKonaState *s = opaque;
+
+    sgi_kona_gl_read_dma_clear(s);
 
     sgi_kona_texture_reset(&s->textures);
     sgi_kona_texture_upload_clear(s);
@@ -10722,6 +10922,118 @@ static const VMStateDescription vmstate_sgi_kona_cursor = {
     },
 };
 
+static bool sgi_kona_gl_read_dma_valid(const SGIKonaGLReadDMA *d)
+{
+    uint64_t io, pitch;
+    uint32_t lines;
+
+    if (d->refused) {
+        return !d->count;
+    }
+    if (d->context < 0 || d->context >= SGI_KONA_CONTEXTS ||
+        !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines)) {
+        return false;
+    }
+    return !d->count || (d->count == d->descriptor[2] &&
+                         sgi_kona_gl_read_dma_layout(d, d->header));
+}
+
+static bool sgi_kona_gl_read_dma_save(QEMUFile *f, void *pv, size_t size,
+                                      const VMStateField *field,
+                                      JSONWriter *vmdesc, Error **errp)
+{
+    SGIKonaGLReadDMA *d = pv;
+
+    for (unsigned k = 0; k < 6; k++) {
+        qemu_put_be32(f, d->descriptor[k]);
+    }
+    for (unsigned k = 0; k < 7; k++) {
+        qemu_put_be32(f, d->header[k]);
+    }
+    qemu_put_be32(f, d->context);
+    qemu_put_byte(f, d->refused);
+    qemu_put_be32(f, d->count);
+    if (d->count) {
+        qemu_put_buffer(f, d->data, d->count);
+    }
+    if (qemu_file_get_error(f)) {
+        error_setg(errp, "KONA read DMA could not be saved");
+        return false;
+    }
+    return true;
+}
+
+static bool sgi_kona_gl_read_dma_load(QEMUFile *f, void *pv, size_t size,
+                                      const VMStateField *field, Error **errp)
+{
+    SGIKonaGLReadDMA *d = pv, tmp = { .active = true };
+    unsigned refused;
+
+    for (unsigned k = 0; k < 6; k++) {
+        tmp.descriptor[k] = qemu_get_be32(f);
+    }
+    for (unsigned k = 0; k < 7; k++) {
+        tmp.header[k] = qemu_get_be32(f);
+    }
+    tmp.context = qemu_get_be32(f);
+    refused = qemu_get_byte(f);
+    tmp.refused = refused;
+    tmp.count = qemu_get_be32(f);
+    if (refused > 1 || !sgi_kona_gl_read_dma_valid(&tmp) ||
+        qemu_file_get_error(f)) {
+        goto invalid;
+    }
+    if (tmp.count) {
+        tmp.data = g_malloc(tmp.count);
+        if (qemu_get_buffer(f, tmp.data, tmp.count) != tmp.count ||
+            qemu_file_get_error(f)) {
+            goto invalid;
+        }
+    }
+    g_free(d->data);
+    *d = tmp;
+    return true;
+
+invalid:
+    g_free(tmp.data);
+    error_setg(errp, "KONA read DMA has invalid descriptor or staged data");
+    return false;
+}
+
+static const VMStateInfo vmstate_sgi_kona_gl_read_dma_data = {
+    .name = "sgi-kona-gl-read-dma-data",
+    .load = sgi_kona_gl_read_dma_load,
+    .save = sgi_kona_gl_read_dma_save,
+};
+
+static bool sgi_kona_gl_read_dma_needed(void *opaque)
+{
+    return ((SGIKonaState *)opaque)->gl_read_dma.active;
+}
+
+static int sgi_kona_gl_read_dma_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+    const SGIKonaGLReadDMA *d = &s->gl_read_dma;
+
+    return !sgi_kona_gl_read_dma_valid(d) ||
+           (!d->refused && (d->context != s->context_current ||
+                            !s->contexts[d->context].valid)) ? -EINVAL : 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_read_dma = {
+    .name = TYPE_SGI_KONA "/gl-read-dma",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_read_dma_needed,
+    .post_load = sgi_kona_gl_read_dma_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_SINGLE(gl_read_dma, SGIKonaState, 0,
+                        vmstate_sgi_kona_gl_read_dma_data, SGIKonaGLReadDMA),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_kona_x_read_needed(void *opaque)
 {
     SGIKonaState *s = opaque;
@@ -11205,6 +11517,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_gl_raw_bitmap,
         &vmstate_sgi_kona_gl_raw_pixels,
         &vmstate_sgi_kona_x_read,
+        &vmstate_sgi_kona_gl_read_dma,
         NULL
     },
 };
