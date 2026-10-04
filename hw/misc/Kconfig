@@ -373,7 +373,7 @@ config SGI_BRIDGE_DMA_TEST
     bool
     select SGI_DMA_BUFFER
     default y if SGI_DEVICES
-    depends on PCI
+    depends on TEST_DEVICES && PCI
 
 config SGI_L1
     bool
@@ -384,10 +384,12 @@ config SGI_XIO_TEST_TARGET
     select SGI_XIO_PORT
     select SGI_BEDROCK_IO
     default y if SGI_DEVICES
+    depends on TEST_DEVICES
 
 config SGI_IOMMU_NOTIFIER_TEST
     bool
     default y if SGI_DEVICES
+    depends on TEST_DEVICES
 
 config SGI_BEDROCK_NI
     bool
