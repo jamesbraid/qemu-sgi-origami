@@ -170,7 +170,7 @@ static const Recipe recipes[] = {
       0, NULL, 0x3000 },
     { "fuel", "-M fuel,board-id-word=0x4abc,"
               "ioc3-subsystem-id=0xc30a,"
-              "l1-type-code=0x61,bedrock-revision=0x2",
+              "l1-type-code=0x41,bedrock-revision=0x2",
               0x1686a8, prepare_fuel },
 };
 

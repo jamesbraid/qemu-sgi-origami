@@ -338,7 +338,7 @@ static QTestState *fuel_parallel_start(char **prom_path, const char *extra)
     quoted = g_shell_quote(*prom_path);
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,"
+                      "l1-type-code=0x41,"
                       "bedrock-revision=0x2 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
                       quoted, extra);
