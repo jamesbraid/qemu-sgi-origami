@@ -156,10 +156,10 @@ typedef struct SGIRasterOp {
 /*
  * A vertex is 24 floats: position xyzw, colour rgba, normal xyz, the
  * material index as a uint32 bit pattern, texture coordinate strq, fog
- * coordinate, the edge flag as a uint32 bit pattern, the colour index, a
- * pad and the back colour rgba. With lighting enabled the colour is the
- * vertex's lit front colour and the back colour its lit back colour
- * (OpenGL 1.2.1, 2.13.1); a draw says whether it carries back colours.
+ * coordinate, the edge flag as a uint32 bit pattern, the front and back
+ * colour indices and the back colour rgba. With lighting enabled these carry
+ * the lit front and back values (OpenGL 1.2.1, 2.13.1); a draw says whether
+ * it carries back-face values.
  */
 #define SGI_GL_VERTEX_FLOATS    24
 #define SGI_GL_V_POSITION       0
@@ -170,6 +170,7 @@ typedef struct SGIRasterOp {
 #define SGI_GL_V_FOG            16
 #define SGI_GL_V_EDGE           17
 #define SGI_GL_V_INDEX          18
+#define SGI_GL_V_BACK_INDEX     19
 #define SGI_GL_V_BACK_COLOR     20
 
 /* OpenGL 1.2 enumerants the state holds. */
@@ -960,9 +961,9 @@ typedef struct SGIGLDraw {
     const float *materials;
     uint32_t nmaterials;
     /*
-     * True when the vertices carry a back colour that a back-facing
-     * polygon takes instead of the colour: two-sided lighting (2.13.1).
-     * Points and lines always take the colour.
+     * True when the vertices carry back-face colour or index values for a
+     * back-facing polygon: two-sided lighting (2.13.1). Points and lines
+     * always take the front value.
      */
     bool back_colors;
     const SGIGLDrawState *state;

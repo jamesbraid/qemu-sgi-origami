@@ -2626,6 +2626,198 @@ static void assert_rgba(const float *got, float r, float g, float b,
 }
 
 /*
+ * Color-index lighting uses material indexes and luminance-weighted light
+ * intensities (OpenGL 1.2.1, 2.13.5). With d=0.5 and s=0.25, indexes
+ * (2, 6, 10) produce 2 + 0.5*0.75*4 + 0.25*8 = 5.5.
+ */
+static void test_lighting_color_index(void)
+{
+    SGIGLContext c;
+    SGIRasterTarget target;
+    SGIGLDraw draw;
+    Planes p = { 0 };
+    float verts[3][SGI_GL_VERTEX_FLOATS];
+    uint32_t pos[3][3] = {
+        { bits(-0.5f), bits(-0.5f), bits(0) },
+        { bits(0.5f), bits(-0.5f), bits(0) },
+        { bits(0), bits(0.5f), bits(0) },
+    };
+    uint32_t word[3];
+
+    lit_init(&c);
+    sgi_gl_set_index_mode(&c, 8);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE,
+                  0.5f, 0.5f, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_SPECULAR,
+                  0.25f, 0.25f, 0.25f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_COLOR_INDEXES, 2, 6, 10, 0);
+    three(&c, SGI_GL_OP_NORMAL3F, 0, 0, 1);
+    for (int i = 0; i < 3; i++) {
+        sgi_gl_capture_vertex(&c, SGI_GL_TRIANGLES, pos[i], 3, verts[i]);
+        g_assert_cmpfloat_with_epsilon(verts[i][SGI_GL_V_INDEX], 5.5f,
+                                       LIT_EPSILON);
+    }
+
+    /* Ambient RGBA state and RGBA material colours do not replace indexes. */
+    light_model(&c, SGI_GL_LIGHT_MODEL_AMBIENT, 1, 0.5f, 0.25f, 1);
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_AMBIENT, 1, 0.5f, 0.25f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT, SGI_GL_AMBIENT,
+                  1, 0, 0, 1);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos[0], 3, verts[0]);
+    g_assert_cmpfloat_with_epsilon(verts[0][SGI_GL_V_INDEX], 5.5f,
+                                   LIT_EPSILON);
+
+    /* d=1 and s=0.25 give c=5.5, which the sm=4 cap reduces to 4. */
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE, 1, 1, 1, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_COLOR_INDEXES, 2, 6, 4, 0);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos[0], 3, verts[0]);
+    g_assert_cmpfloat_with_epsilon(verts[0][SGI_GL_V_INDEX], 4.0f,
+                                   LIT_EPSILON);
+
+    /* Two-sided lighting uses the back indexes and reversed normal. */
+    light_command(&c, SGI_GL_OP_LIGHT, 0, SGI_GL_DIFFUSE,
+                  0.5f, 0.5f, 0.5f, 1);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_COLOR_INDEXES, 2, 6, 10, 0);
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK,
+                  SGI_GL_COLOR_INDEXES, 4, 8, 12, 0);
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 1, 0, 0, 0);
+    /*
+     * A zero direction product disables specular as well as diffuse.
+     */
+    three(&c, SGI_GL_OP_NORMAL3F, 1, 0, 0);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos[0], 3, verts[0]);
+    g_assert_cmpfloat_with_epsilon(verts[0][SGI_GL_V_INDEX], 2.0f,
+                                   LIT_EPSILON);
+    g_assert_cmpfloat_with_epsilon(verts[0][SGI_GL_V_BACK_INDEX], 4.0f,
+                                   LIT_EPSILON);
+    three(&c, SGI_GL_OP_NORMAL3F, 0, 0, 1);
+    for (int i = 0; i < 3; i++) {
+        sgi_gl_capture_vertex(&c, SGI_GL_TRIANGLES, pos[i], 3, verts[i]);
+        g_assert_cmpfloat_with_epsilon(verts[i][SGI_GL_V_INDEX], 5.5f,
+                                       LIT_EPSILON);
+        g_assert_cmpfloat_with_epsilon(verts[i][SGI_GL_V_BACK_INDEX], 4.0f,
+                                       LIT_EPSILON);
+    }
+
+    /* The rasterizer selects the back index for a clockwise polygon. */
+    c.cur.viewport[0] = c.cur.viewport[1] = 0;
+    c.cur.viewport[2] = W;
+    c.cur.viewport[3] = H;
+    c.cur.shade_model = SGI_GL_FLAT;
+    target = planes_target(&p);
+    draw = (SGIGLDraw) {
+        .mode = SGI_GL_TRIANGLES,
+        .count = 3,
+        .vertices = &verts[0][0],
+        .back_colors = true,
+        .state = &c.cur,
+    };
+    sgi_soft_draw(&rules_supported, &target, &draw);
+    g_assert_cmphex(p.colour[0][planes_index(W / 2, H / 2)], ==, 5);
+    memset(&p, 0, sizeof(p));
+    /* Reverse winding while preserving each vertex's front and back values. */
+    {
+        float reverse[3][SGI_GL_VERTEX_FLOATS];
+
+        memcpy(reverse[0], verts[2], sizeof(reverse[0]));
+        memcpy(reverse[1], verts[1], sizeof(reverse[1]));
+        memcpy(reverse[2], verts[0], sizeof(reverse[2]));
+        draw.vertices = &reverse[0][0];
+        sgi_soft_draw(&rules_supported, &target, &draw);
+    }
+    g_assert_cmphex(p.colour[0][planes_index(W / 2, H / 2)], ==, 4);
+
+    /* glRasterPos receives the lit front index. */
+    /* Disabled lighting restores the current index. */
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat_with_epsilon(
+        get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), 5.5f, LIT_EPSILON);
+    word[0] = bits(23);
+    command(&c, NULL, SGI_GL_OP_INDEXF, word, 1);
+    enable(&c, SGI_GL_LIGHTING, false);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos[0], 3, verts[0]);
+    g_assert_cmpfloat(verts[0][SGI_GL_V_INDEX], ==, 23);
+    word[0] = bits(0), word[1] = bits(0), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), ==, 23);
+}
+
+/*
+ * Lighting masks each integer index before interpolation and keeps its
+ * fraction (OpenGL 1.2.1, 2.13.6). At pixel (32, 32), masked vertex values
+ * 0.5, 255.5 and 255.5 interpolate to 197.7265625; interpolating first
+ * would produce 255.7265625.
+ */
+static void test_lighting_color_index_mask_before_interpolation(void)
+{
+    SGIGLContext c;
+    SGIRasterTarget target;
+    SGIGLDraw draw;
+    Planes p = { 0 };
+    float verts[3][SGI_GL_VERTEX_FLOATS];
+    uint32_t pos[3][3] = {
+        { bits(-0.5f), bits(-0.5f), bits(0) },
+        { bits(0.5f), bits(-0.5f), bits(0) },
+        { bits(0), bits(0.5f), bits(0) },
+    };
+    const float front[] = { 256.5f, 255.5f, 255.5f };
+    const float back[] = { 512.25f, 511.25f, 511.25f };
+    uint32_t word[3];
+
+    lit_init(&c);
+    sgi_gl_set_index_mode(&c, 8);
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 1, 0, 0, 0);
+    for (int i = 0; i < 3; i++) {
+        light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                      SGI_GL_COLOR_INDEXES, front[i], 600, 600, 0);
+        light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_BACK,
+                      SGI_GL_COLOR_INDEXES, back[i], 700, 700, 0);
+        sgi_gl_capture_vertex(&c, SGI_GL_TRIANGLES, pos[i], 3, verts[i]);
+    }
+    g_assert_cmpfloat(verts[0][SGI_GL_V_INDEX], ==, 0.5f);
+    g_assert_cmpfloat(verts[1][SGI_GL_V_INDEX], ==, 255.5f);
+    g_assert_cmpfloat(verts[0][SGI_GL_V_BACK_INDEX], ==, 0.25f);
+    g_assert_cmpfloat(verts[1][SGI_GL_V_BACK_INDEX], ==, 255.25f);
+
+    /* Raster positions apply the same conversion to their lit front index. */
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_COLOR_INDEXES, front[0], 600, 600, 0);
+    word[0] = bits(-0.5f), word[1] = bits(-0.5f), word[2] = bits(0);
+    command(&c, NULL, SGI_GL_OP_RASTER_POS3F, word, 3);
+    g_assert_cmpfloat(get_float(&c, SGI_GL_CURRENT_RASTER_INDEX, 0), ==, 0.5f);
+
+    /* The existing signed-integer mask maps -0.5 to 255.5. */
+    light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                  SGI_GL_COLOR_INDEXES, -0.5f, 1, 1, 0);
+    sgi_gl_capture_vertex(&c, SGI_GL_POINTS, pos[0], 3, verts[0]);
+    g_assert_cmpfloat(verts[0][SGI_GL_V_INDEX], ==, 255.5f);
+
+    light_model(&c, SGI_GL_LIGHT_MODEL_TWO_SIDE, 0, 0, 0, 0);
+    c.cur.viewport[0] = c.cur.viewport[1] = 0;
+    c.cur.viewport[2] = W;
+    c.cur.viewport[3] = H;
+    c.cur.shade_model = SGI_GL_SMOOTH;
+    target = planes_target(&p);
+    draw = (SGIGLDraw) {
+        .mode = SGI_GL_TRIANGLES,
+        .count = 3,
+        .vertices = &verts[0][0],
+        .state = &c.cur,
+    };
+    for (int i = 0; i < 3; i++) {
+        light_command(&c, SGI_GL_OP_MATERIAL, SGI_GL_FRONT,
+                      SGI_GL_COLOR_INDEXES, front[i], 600, 600, 0);
+        sgi_gl_capture_vertex(&c, SGI_GL_TRIANGLES, pos[i], 3, verts[i]);
+    }
+    sgi_soft_draw(&rules_supported, &target, &draw);
+    g_assert_cmphex(p.colour[0][planes_index(W / 2, H / 2)], ==, 197);
+}
+
+/*
  * The ambient terms alone: material ambient (0.4, 0.2, 0.1) times the
  * light model's (0.25, 0.5, 1) is (0.1, 0.1, 0.1), and times light 0's
  * (0.5, 0.5, 0.5) adds (0.2, 0.1, 0.05). Alpha is the material's diffuse
@@ -12916,6 +13108,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/lighting-ambient-and-emission",
                     test_lighting_ambient_and_emission);
     g_test_add_func("/sgi-gl/lighting-diffuse", test_lighting_diffuse);
+    g_test_add_func("/sgi-gl/lighting-color-index",
+                    test_lighting_color_index);
+    g_test_add_func("/sgi-gl/lighting-color-index-mask-before-interpolation",
+                    test_lighting_color_index_mask_before_interpolation);
     g_test_add_func("/sgi-gl/lighting-specular", test_lighting_specular);
     g_test_add_func("/sgi-gl/lighting-attenuation",
                     test_lighting_attenuation);
