@@ -1390,7 +1390,7 @@ static void test_texture_swap_bytes(void)
     g_assert_cmphex(rgba, ==, 0);
     for (uint32_t format = 0; format < 10; format++) {
         for (uint32_t type = 0; type < 9; type++) {
-            if (format > 7 || type > 6) {
+            if ((format > 7 && format != 9 && format != 10) || type > 6) {
                 rgba = 0x12345678;
                 g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
                                                               cases[6].source,
@@ -2252,6 +2252,73 @@ static void test_pixel_single_channel_pack(void)
     }
 }
 
+static void test_pixel_bgr_decode(void)
+{
+    const uint32_t integer_source[] = {
+        0x10203040, 0x50607080, 0x90a0b0c0, 0xd0e0f000,
+    };
+    const uint32_t float_source[] = {
+        0x3e000000, 0x3f000000, 0x3f600000, 0x3e800000,
+    };
+    static const unsigned components[] = { 3, 4 };
+
+    for (uint32_t type = 0; type < 7; type++) {
+        const uint32_t *source = type == 6 ? float_source : integer_source;
+
+        for (unsigned swap = 0; swap < (type == 6 ? 1 : 2); swap++) {
+            double original[4];
+
+            g_assert_true(sgi_kona_gl_pixel_rgba_double(5, type, source,
+                                                       swap, original));
+            for (uint32_t format = 9; format <= 10; format++) {
+                double rgba[4];
+                unsigned size = sgi_kona_gl_texture_pixel_bytes(3, type);
+
+                g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, type),
+                                 ==, components[format - 9] * size);
+                g_assert_true(sgi_kona_gl_pixel_rgba_double(format, type,
+                                                           source, swap,
+                                                           rgba));
+                g_assert_cmpfloat(rgba[0], ==, original[2]);
+                g_assert_cmpfloat(rgba[1], ==, original[1]);
+                g_assert_cmpfloat(rgba[2], ==, original[0]);
+                g_assert_cmpfloat(rgba[3], ==, format == 9 ? 1 : original[3]);
+            }
+        }
+    }
+}
+
+static void test_pixel_bgr_pack(void)
+{
+    const double rgba[] = { 0.125, 0.5, 0.875, 0.25 };
+    static const unsigned order[] = { 2, 1, 0, 3 };
+    uint8_t full[16], out[16];
+
+    for (uint32_t type = 0; type < 7; type++) {
+        unsigned size = sgi_kona_gl_texture_pixel_bytes(3, type);
+
+        for (unsigned swap = 0; swap < 2; swap++) {
+            g_assert_true(sgi_kona_gl_pixel_pack_double(5, type, rgba, swap,
+                                                       full, sizeof(full)));
+            for (uint32_t format = 9; format <= 10; format++) {
+                unsigned count = format == 9 ? 3 : 4;
+
+                memset(out, 0xa5, sizeof(out));
+                g_assert_true(sgi_kona_gl_pixel_pack_double(format, type,
+                                                           rgba, swap,
+                                                           out, sizeof(out)));
+                for (unsigned k = 0; k < count; k++) {
+                    g_assert_cmpmem(out + k * size, size,
+                                    full + order[k] * size, size);
+                }
+                for (unsigned k = count * size; k < sizeof(out); k++) {
+                    g_assert_cmphex(out[k], ==, 0xa5);
+                }
+            }
+        }
+    }
+}
+
 static void test_pixel_pack_types(void)
 {
     const float rgba[4] = { 0, 0.5f, 1, 0.25f };
@@ -2543,6 +2610,8 @@ int main(int argc, char **argv)
                     test_pixel_single_channel_transfer);
     g_test_add_func("/sgi-kona-gl-decode/single-channel/pack",
                     test_pixel_single_channel_pack);
+    g_test_add_func("/sgi-kona-gl-decode/bgr/decode", test_pixel_bgr_decode);
+    g_test_add_func("/sgi-kona-gl-decode/bgr/pack", test_pixel_bgr_pack);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/types",
                     test_pixel_pack_types);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/expansion-and-swap",
