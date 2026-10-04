@@ -57,6 +57,9 @@
 #define PFLASH_BE          0
 #define PFLASH_SECURE      1
 
+/* Same short read run used by CFI02 to resume cached array reads. */
+#define PFLASH_LAZY_ROMD_THRESHOLD 42
+
 struct PFlashCFI01 {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -71,6 +74,9 @@ struct PFlashCFI01 {
     uint32_t features;
     uint8_t wcycle; /* if 0, the flash is read normally */
     bool ro;
+    unsigned array_reads; /* Host-only hint, not chip state. */
+    const MemoryRegionOps *bus_ops;
+    void *bus_opaque;
     uint8_t cmd;
     uint8_t status;
     uint16_t ident0;
@@ -252,7 +258,14 @@ static void pflash_set_to_read_array_mode(PFlashCFI01 *pfl)
      */
     pfl->wcycle = 0;
     pfl->cmd = 0x00;
-    memory_region_rom_device_set_romd(&pfl->mem, true);
+    /*
+     * A bus programming loop may verify only one word before the next command.
+     * Leave these reads on callbacks; like CFI02, sustained reads restore ROMD.
+     * The chip enters array mode immediately regardless of this caching hint.
+     */
+    if (!pfl->bus_ops) {
+        memory_region_rom_device_set_romd(&pfl->mem, true);
+    }
 }
 
 static uint32_t pflash_data_read(PFlashCFI01 *pfl, hwaddr offset,
@@ -285,6 +298,11 @@ static uint32_t pflash_read(PFlashCFI01 *pfl, hwaddr offset,
         pflash_set_to_read_array_mode(pfl);
         /* fall through to read code */
     case 0x00: /* This model reset value for READ_ARRAY (not CFI compliant) */
+        if (pfl->bus_ops && !pfl->wcycle &&
+            !memory_region_is_romd(&pfl->mem) &&
+            ++pfl->array_reads > PFLASH_LAZY_ROMD_THRESHOLD) {
+            memory_region_rom_device_set_romd(&pfl->mem, true);
+        }
         /* Flash area read */
         ret = pflash_data_read(pfl, offset, width, be);
         break;
@@ -394,6 +412,11 @@ static void pflash_update(PFlashCFI01 *pfl, int offset,
 {
     int offset_end;
     int ret;
+
+    if (pfl->bus_ops) {
+        /* Bus aliases can execute this array through cached ROMD reads. */
+        memory_region_flush_rom_device(&pfl->mem, offset, size);
+    }
     if (pfl->blk) {
         offset_end = offset + size;
         /* widen to sector boundaries */
@@ -474,6 +497,7 @@ static void pflash_write(PFlashCFI01 *pfl, hwaddr offset,
     cmd = value;
 
     trace_pflash_io_write(pfl->name, offset, width, value, pfl->wcycle);
+    pfl->array_reads = 0;
     if (!pfl->wcycle) {
         /* Set the device in I/O access mode */
         memory_region_rom_device_set_romd(&pfl->mem, false);
@@ -691,6 +715,27 @@ static MemTxResult pflash_mem_write_with_attrs(void *opaque, hwaddr addr, uint64
     }
 }
 
+/* Bus adapters enforce writes while retaining ROMD reads. */
+void pflash_cfi01_set_bus_ops(PFlashCFI01 *pfl,
+                             const MemoryRegionOps *ops, void *opaque)
+{
+    g_assert(!DEVICE(pfl)->realized);
+    pfl->bus_ops = ops;
+    pfl->bus_opaque = opaque;
+}
+
+MemTxResult pflash_cfi01_read(PFlashCFI01 *pfl, hwaddr addr, uint64_t *value,
+                             unsigned size, MemTxAttrs attrs)
+{
+    return pflash_mem_read_with_attrs(pfl, addr, value, size, attrs);
+}
+
+MemTxResult pflash_cfi01_write(PFlashCFI01 *pfl, hwaddr addr, uint64_t value,
+                              unsigned size, MemTxAttrs attrs)
+{
+    return pflash_mem_write_with_attrs(pfl, addr, value, size, attrs);
+}
+
 static const MemoryRegionOps pflash_cfi01_ops = {
     .read_with_attrs = pflash_mem_read_with_attrs,
     .write_with_attrs = pflash_mem_write_with_attrs,
@@ -822,8 +867,8 @@ static void pflash_cfi01_realize(DeviceState *dev, Error **errp)
 
     memory_region_init_rom_device(
         &pfl->mem, OBJECT(dev),
-        &pflash_cfi01_ops,
-        pfl,
+        pfl->bus_ops ? pfl->bus_ops : &pflash_cfi01_ops,
+        pfl->bus_ops ? pfl->bus_opaque : pfl,
         pfl->name, total_len, errp);
     if (*errp) {
         return;
@@ -879,6 +924,9 @@ static void pflash_cfi01_system_reset(DeviceState *dev)
 
     trace_pflash_reset(pfl->name);
     pflash_set_to_read_array_mode(pfl);
+    /* Reset fetches must start cached, even without any prior data reads. */
+    pfl->array_reads = 0;
+    memory_region_rom_device_set_romd(&pfl->mem, true);
     /*
      * The WSM ready timer occurs at most 150ns after system reset.
      * This model deliberately ignores this delay.
@@ -1033,6 +1081,7 @@ static int pflash_post_load(void *opaque, int version_id)
      * ROMD mode is not in the VMState; derive it from the migrated
      * cmd and wcycle.  Only (wcycle == 0, cmd == 0x00) is read-array.
      */
+    pfl->array_reads = 0;
     if (pfl->wcycle == 0 && pfl->cmd == 0x00) {
         memory_region_rom_device_set_romd(&pfl->mem, true);
     } else {
