@@ -7349,6 +7349,23 @@ static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
     s->x_boxes_have = 0;
 }
 
+static bool sgi_kona_x_relative_coordinates(uint32_t *words, unsigned count)
+{
+    int x = 0, y = 0;
+
+    /* Relative packets use a fresh absolute anchor in the model. */
+    for (unsigned i = 0; i < count; i++) {
+        x += (int16_t)(words[i] >> 16);
+        y += (int16_t)words[i];
+        if (x < INT16_MIN || x > INT16_MAX ||
+            y < INT16_MIN || y > INT16_MAX) {
+            return false;
+        }
+        words[i] = ((uint32_t)(uint16_t)x << 16) | (uint16_t)y;
+    }
+    return true;
+}
+
 /* Endpoint and Bresenham tie rules are the documented solid-line policy. */
 static bool sgi_kona_x_segment(SGIKonaState *s, uint32_t first,
                                uint32_t last, bool endpoint, bool commit)
@@ -7383,7 +7400,10 @@ static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
     uint32_t vertices[SGI_KONA_X_BOX_RUN_WORDS + 7];
     unsigned count = s->x_boxes_have + argc;
     bool segments = token == SGI_KONA_CMD_X_SEGMENT;
-    bool endpoint = token != SGI_KONA_CMD_X_LINE6;
+    bool relative = token == SGI_KONA_CMD_X_RELATIVE_LINE ||
+                    token == SGI_KONA_CMD_X_RELATIVE_LINE6;
+    bool endpoint = token != SGI_KONA_CMD_X_LINE6 &&
+                    token != SGI_KONA_CMD_X_RELATIVE_LINE6;
     bool moved = false;
     SGIXGC gc;
 
@@ -7401,6 +7421,11 @@ static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
     }
     memcpy(vertices, s->x_boxes, s->x_boxes_have * sizeof(*vertices));
     memcpy(vertices + s->x_boxes_have, args, argc * sizeof(*vertices));
+    if (relative && !sgi_kona_x_relative_coordinates(vertices, count)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: relative X line coordinate"
+                      " overflow; run dropped\n");
+        goto done;
+    }
     for (unsigned i = 1; i < count; i++) {
         moved |= vertices[i] != vertices[0];
     }
@@ -7427,27 +7452,18 @@ static void sgi_kona_x_relative_points(SGIKonaState *s,
 {
     uint32_t points[SGI_KONA_X_BOX_RUN_WORDS + 6];
     unsigned count = s->x_boxes_have + argc;
-    int x = 0, y = 0;
 
     if (count > ARRAY_SIZE(points)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: relative X point run too long; dropped\n");
         goto done;
     }
-    /* Each sender batch includes its own absolute first coordinate. */
-    for (unsigned i = 0; i < count; i++) {
-        uint32_t word = i < s->x_boxes_have ? s->x_boxes[i] :
-                        args[i - s->x_boxes_have];
-
-        x += (int16_t)(word >> 16);
-        y += (int16_t)word;
-        if (x < INT16_MIN || x > INT16_MAX ||
-            y < INT16_MIN || y > INT16_MAX) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: relative X point coordinate"
-                          " overflow; run dropped\n");
-            goto done;
-        }
-        points[i] = ((uint32_t)(uint16_t)x << 16) | (uint16_t)y;
+    memcpy(points, s->x_boxes, s->x_boxes_have * sizeof(*points));
+    memcpy(points + s->x_boxes_have, args, argc * sizeof(*points));
+    if (!sgi_kona_x_relative_coordinates(points, count)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: relative X point coordinate"
+                      " overflow; run dropped\n");
+        goto done;
     }
     if (sgi_kona_x_point_words(s, points, count, false, false)) {
         sgi_kona_x_point_words(s, points, count, false, true);
@@ -8645,6 +8661,8 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_SEGMENT:
     case SGI_KONA_CMD_X_LINE:
     case SGI_KONA_CMD_X_LINE6:
+    case SGI_KONA_CMD_X_RELATIVE_LINE:
+    case SGI_KONA_CMD_X_RELATIVE_LINE6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT:
     case SGI_KONA_CMD_X_BACKGROUND_POINT6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT24:
@@ -8842,14 +8860,9 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_SEGMENT:
     case SGI_KONA_CMD_X_LINE:
     case SGI_KONA_CMD_X_LINE6:
+    case SGI_KONA_CMD_X_RELATIVE_LINE:
+    case SGI_KONA_CMD_X_RELATIVE_LINE6:
         sgi_kona_x_lines(s, selector, args, argc);
-        break;
-    case 0x15d:
-    case 0x15e:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-kona: unsupported X drawing token 0x%x\n",
-                      selector);
-        trace_sgi_kona_command_unmodelled(selector, argc);
         break;
     case SGI_KONA_CMD_X_DID_MAP:
         if (args[0] < ARRAY_SIZE(s->desktop_map)) {
