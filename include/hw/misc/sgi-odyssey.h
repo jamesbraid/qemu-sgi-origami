@@ -60,6 +60,8 @@ OBJECT_DECLARE_TYPE(SGIOdysseyState, SGIOdysseyClass, SGI_ODYSSEY)
 /* The texture level table's entries (0x0e80 .. 0x0ebf). */
 #define SGI_ODYSSEY_TEX_LEVELS 64
 #define SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES 256
+#define SGI_ODYSSEY_TEX_DETAIL_FUNCTION_BLOCKS 16
+#define SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES 256
 #define SGI_ODYSSEY_GL_ENTRIES 4
 #define SGI_ODYSSEY_GL_LIGHTS 8
 #define SGI_ODYSSEY_GL_LIGHT_COLOURS 25
@@ -286,6 +288,8 @@ struct SGIOdysseyState {
      */
     uint32_t tex_colour_table[2][SGI_ODYSSEY_TEX_COLOUR_TABLE_ENTRIES];
     uint32_t tex_colour_table_valid[2];
+    uint32_t tex_detail_function[SGI_ODYSSEY_TEX_DETAIL_FUNCTION_ENTRIES];
+    uint32_t tex_detail_function_valid;
     uint32_t tex_env[5];
     uint32_t tex_levels[SGI_ODYSSEY_TEX_LEVELS * 3];
     uint32_t tex_level0;
