@@ -3530,36 +3530,35 @@ static bool sgi_kona_gl_copy_read(void *opaque, int32_t x, int32_t y,
     return true;
 }
 
-static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
+static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
+                                           int32_t x, int32_t y,
+                                           uint32_t width, uint32_t height,
+                                           SGIKonaGLCopySource *source)
 {
-    int i = s->context_current, bank;
-    int32_t x = a[0], y = a[1];
-    uint32_t width = a[2], height = a[3], selection;
     const SGIKonaGLPipe *p;
     const SGIKonaGLWindow *w;
-    SGIKonaGLCopySource source;
-    SGIGLPixelTransfer transfer;
-    SGIGLSink sink;
+    uint32_t selection;
+    int bank;
     int64_t px, py;
 
-    if (i == SGI_KONA_CONTEXT_NONE) {
-        goto refused;
-    }
-    if (s->gl[i].in_begin) {
-        sgi_kona_gl_set_error(s, 0x502);
-        goto refused;
+    if (i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin) {
+        return false;
     }
     p = &s->gl_pipe[i];
     w = &s->gl_window[i];
-    /* The unqueried producer form does not establish its flag's meaning. */
-    if (a[4] || a[5] != 0x1800 || a[6] != 0x80000000 ||
-        p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
-        sgi_kona_gl_float(p->pixel_zoom[0]) != 1 ||
-        sgi_kona_gl_float(p->pixel_zoom[1]) != 1 ||
+    if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
+        !isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
+        !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])) ||
         s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
         s->gl[i].cur.texture_3d || !width || !height ||
         (uint64_t)width * height > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
-        goto refused;
+        return false;
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        if (!isfinite(sgi_kona_gl_float(p->pixel_transfer.scale[k])) ||
+            !isfinite(sgi_kona_gl_float(p->pixel_transfer.bias[k]))) {
+            return false;
+        }
     }
     bank = sgi_kona_gl_read_bank(s, i, &selection);
     px = (int64_t)w->x + x;
@@ -3568,17 +3567,73 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         (uint64_t)x + width > w->width || (uint64_t)y + height > w->height ||
         px < 0 || py < 0 || px + width > SGI_KONA_FB_WIDTH ||
         py + height > SGI_KONA_FB_HEIGHT) {
+        return false;
+    }
+    *source = (SGIKonaGLCopySource) { .s = s, .window = w, .bank = bank };
+    return true;
+}
+
+static void sgi_kona_gl_copy_overlap(SGIKonaState *s, const uint32_t *a)
+{
+    SGIKonaGLCopySource source;
+    int32_t x = a[0], y = a[1];
+    uint8_t flags[4] = { 0 };
+    uint32_t rgba;
+
+    if (!sgi_kona_gl_copy_source_ready(s, s->context_current, x, y,
+                                       a[2], a[3], &source)) {
         goto refused;
     }
-    source = (SGIKonaGLCopySource) { .s = s, .window = w, .bank = bank };
+    for (uint32_t row = 0; row < a[3]; row++) {
+        for (uint32_t col = 0; col < a[2]; col++) {
+            if (!sgi_kona_gl_copy_read(&source, x + col, y + row, &rgba)) {
+                goto refused;
+            }
+        }
+    }
+    /* Model compatibility: a complete snapshot needs no chunk direction. */
+    if (sgi_kona_post_return(s, SGI_KONA_CMD_GL_COPY_OVERLAP,
+                             8, flags, sizeof(flags))) {
+        return;
+    }
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: CopyPixels overlap query refused;"
+                  " no flags published\n");
+}
+
+static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
+{
+    int i = s->context_current;
+    int32_t x = a[0], y = a[1];
+    const SGIKonaGLPipe *p;
+    SGIKonaGLCopySource source;
+    SGIGLPixelTransfer transfer;
+    SGIGLSink sink;
+    float zoom_x, zoom_y;
+
+    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        goto refused;
+    }
+    if (a[4] || a[5] != 0x1800 || (a[6] && a[6] != 0x80000000) ||
+        !sgi_kona_gl_copy_source_ready(s, i, x, y, a[2], a[3], &source)) {
+        goto refused;
+    }
+    p = &s->gl_pipe[i];
+    zoom_x = sgi_kona_gl_float(p->pixel_zoom[0]);
+    zoom_y = sgi_kona_gl_float(p->pixel_zoom[1]);
+    /* The unqueried producer form does not establish its flag's meaning. */
+    if (a[6] == 0x80000000 && (zoom_x != 1 || zoom_y != 1)) {
+        goto refused;
+    }
     for (unsigned k = 0; k < 4; k++) {
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
     }
     sgi_kona_gl_sink(s, &sink);
-    if (sgi_gl_copy_pixels_rgba_transfer(&s->gl[i], &sink, x, y, width, height,
+    if (sgi_gl_copy_pixels_rgba_transfer(&s->gl[i], &sink, x, y, a[2], a[3],
                                          sgi_kona_gl_copy_read, &source,
-                                         1, 1, &transfer)) {
+                                         zoom_x, zoom_y, &transfer)) {
         return;
     }
 refused:
@@ -5410,6 +5465,13 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                               " 0x%" PRIx32 "; reads refused\n", args[0]);
             }
         }
+        return;
+    case SGI_KONA_CMD_GL_COPY_OVERLAP:
+        sgi_kona_gl_copy_overlap(s, args);
+        return;
+    case SGI_KONA_CMD_GL_COPY_CONVOLUTION:
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: CopyPixels convolution query"
+                      " has an unknown response field; no reply\n");
         return;
     case SGI_KONA_CMD_GL_COPY_PIXELS:
         sgi_kona_gl_copy_pixels(s, args);

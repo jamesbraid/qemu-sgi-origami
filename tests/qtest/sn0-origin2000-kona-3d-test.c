@@ -5898,7 +5898,7 @@ static void test_copy_pixels(gconstpointer opaque)
     uint32_t copy[] = { 64, 64, 2, 2, 0, 0x1800, 0x80000000 };
     uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
     unsigned dx = mode == 1 ? 65 : 68, dy = mode == 1 ? 64 : 68;
-    bool refused = mode >= 3 && mode <= 14;
+    bool refused = mode >= 4 && mode <= 14;
     g_autofree Expected *e = g_new(Expected, 1);
 
     gl_make_current(s);
@@ -6020,10 +6020,180 @@ static void test_copy_pixels_indexed_source(void)
     qtest_writel(s, KONA_REG(0xc1000c), 0x07000000);
     x_read_fixture_command(s, 0x13a, (uint32_t[]) { 0 }, 1);
     kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    prepare_refused_reply(s);
+    kona_command(s, 0x110, (uint32_t[]) { 0, 0, 3, 2 }, 4);
+    assert_reply_unchanged(s);
     kona_command(s, 0x38,
                  (uint32_t[]) { 0, 0, 3, 2, 0, 0x1800, 0x80000000 }, 7);
     /* The last source's indexed tag must refuse the earlier red pixels too. */
     assert_stencil_colour(s, 0);
+    qtest_quit(s);
+}
+
+static void test_copy_pixels_query(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    GError *err = NULL;
+    const uint32_t source[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
+    uint32_t query[] = { 64, 64, 2, 2 };
+    uint32_t selector = mode == 9 ? 0x115 : 0x110;
+    bool refused = mode >= 4 && mode <= 16;
+    float zx = mode == 1 ? -2 : 2, zy = mode == 1 ? -1 : 3;
+    int dx = mode == 2 ? 65 : 68, dy = mode == 2 ? 64 : 68;
+
+    if (mode == 11) {
+        uint32_t config[10] = { 0, 12 };
+
+        kona_command_kicked(s, 0x1fd,
+                            (uint32_t[]) { physical_page_word(SAVE_AREA),
+                                           tagged_offset_word(SAVE_AREA),
+                                           0x10000 }, 3);
+        kona_command(s, 1, config, ARRAY_SIZE(config));
+        kona_command(s, 2, (uint32_t[]) { 0 }, 1);
+    } else {
+        gl_make_current(s);
+    }
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    for (unsigned k = 0; k < ARRAY_SIZE(source); k++) {
+        qtest_writel(s, REG_COMMAND, source[k]);
+    }
+    kona_command_f(s, 0xa9,
+                   (float[]) { (dx - 64) / 64.0, (dy - 64) / 64.0 }, 2);
+    kona_command_f(s, 0x2f, (float[]) { zx, zy }, 2);
+    if (mode == 3) {
+        pixel_transfer_set(s, 0xd14, 0.5);
+        colours[0] = 0x800000;
+        colours[3] = 0x80ffff;
+    } else if (mode == 4) {
+        query[0] = 127;
+    } else if (mode == 5) {
+        kona_command_f(s, 0x2f, (float[]) { INFINITY, 1 }, 2);
+    } else if (mode == 6) {
+        pixel_transfer_set(s, 0xd14, INFINITY);
+    } else if (mode == 7) {
+        pixel_transfer_set(s, 0xd10, 1);
+    } else if (mode == 8) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xde0 }, 1);
+    } else if (mode == 10) {
+        return_context_deactivate(s);
+    } else if (mode == 12) {
+        kona_command(s, 0x114, (uint32_t[]) { 0xabcdef }, 1);
+    } else if (mode == 13) {
+        kona_command(s, 0x37, (uint32_t[]) { 0x405 }, 1);
+    } else if (mode == 14) {
+        query[2] = UINT32_MAX;
+    } else if (mode == 15) {
+        query[0] = UINT32_MAX;
+    } else if (mode == 16) {
+        query[2] = 0;
+    }
+    prepare_refused_reply(s);
+    if (mode == 17) {
+        kona_command(s, selector, query, 2);
+        dir = g_dir_make_tmp("sn0-kona-copy-query-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+        qtest_writel(s, REG_COMMAND, query[2]);
+        qtest_writel(s, REG_COMMAND, query[3]);
+    } else {
+        kona_command(s, selector, query, ARRAY_SIZE(query));
+    }
+    if (refused) {
+        assert_reply_unchanged(s);
+    } else {
+        assert_reply_posted(s);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
+        qtest_memset(s, RETURN_PAGE, 0, 4);
+        kona_command(s, 0x38,
+                     (uint32_t[]) { query[0], query[1], query[2], query[3],
+                                    0, 0x1800, guest_word(s, RETURN_PAGE + 8) },
+                     7);
+    }
+    expected_clear(e, 0);
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned at = ((127 - (64 + k / 2)) * 128 + 64 + k % 2) * 3;
+
+        e->rgb[at] = source[k] >> 24;
+        e->rgb[at + 1] = source[k] >> 16;
+        e->rgb[at + 2] = source[k] >> 8;
+    }
+    if (!refused) {
+        for (unsigned k = 0; k < 4; k++) {
+            int x0 = dx + (k % 2) * zx, x1 = x0 + zx;
+            int y0 = dy + (k / 2) * zy, y1 = y0 + zy;
+
+            for (int y = MIN(y0, y1); y < MAX(y0, y1); y++) {
+                for (int x = MIN(x0, x1); x < MAX(x0, x1); x++) {
+                    unsigned at = ((127 - y) * 128 + x) * 3;
+
+                    e->rgb[at] = colours[k] >> 16;
+                    e->rgb[at + 1] = colours[k] >> 8;
+                    e->rgb[at + 2] = colours[k];
+                }
+            }
+        }
+    }
+    assert_window_matches(s, e);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_copy_query_context_pages(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+    const uint64_t page_b = RETURN_PAGE + 0x20000;
+    uint32_t config[10] = { 0, 12 };
+    const uint32_t query[] = { 64, 64, 2, 2 };
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0x2f, (float[]) { 2, 3 }, 2);
+    return_context_deactivate(s);
+    attrib_context_fresh(s, save_b);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]) { physical_page_word(page_b),
+                                       tagged_offset_word(page_b), 0x4000 }, 3);
+    kona_command(s, 1, config, ARRAY_SIZE(config));
+    kona_command(s, 2, (uint32_t[]) { 0 }, 1);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0x2f, (float[]) { -1, 2 }, 2);
+    prepare_refused_reply(s);
+    qtest_memset(s, page_b, 0xa5, 0x4000);
+    qtest_memset(s, page_b, 0, 4);
+    kona_command(s, 0x110, query, ARRAY_SIZE(query));
+    assert_reply_unchanged(s);
+    g_assert_cmphex(guest_word(s, page_b), ==, 1);
+    g_assert_cmphex(guest_word(s, page_b + 8), ==, 0);
+    g_assert_cmphex(guest_word(s, page_b + 4), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(s, page_b + 12), ==, 0xa5a5a5a5);
+    qtest_memset(s, page_b, 0xa5, 0x4000);
+    qtest_memset(s, page_b, 0, 4);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    kona_command(s, 0x110, query, ARRAY_SIZE(query));
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 0);
+    g_assert_cmphex(guest_word(s, page_b), ==, 0);
+    g_assert_cmphex(guest_word(s, page_b + 8), ==, 0xa5a5a5a5);
     qtest_quit(s);
 }
 
@@ -8469,8 +8639,24 @@ int main(int argc, char **argv)
                    test_raw_bitmap_large);
     qtest_add_func("sn0/origin2000/kona-3d/copy-pixels/indexed-source-refused",
                    test_copy_pixels_indexed_source);
+    static const char *copy_query_cases[] = {
+        "positive-zoom", "negative-zoom", "overlap-snapshot", "transfer",
+        "clipped-source", "nonfinite-zoom", "nonfinite-transfer", "map-color",
+        "texture", "convolution-refused", "no-context", "unregistered-page",
+        "unknown-read-binding", "unavailable-back", "huge-width", "negative-x",
+        "empty-width", "packet-migrates",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(copy_query_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/copy-query/%s", copy_query_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_copy_pixels_query);
+    }
+    qtest_add_func("sn0/origin2000/kona-3d/copy-query/context-pages",
+                   test_copy_query_context_pages);
     static const char *copy_pixels_cases[] = {
-        "color", "overlap", "transfer", "queried-zero-flags-refused",
+        "color", "overlap", "transfer", "queried-zero-flags",
         "unknown-flags-refused", "split-refused", "depth-refused",
         "nonidentity-zoom-refused", "begin-refused", "map-color-refused",
         "clipped-source-refused", "invalid-raster", "texture-refused",

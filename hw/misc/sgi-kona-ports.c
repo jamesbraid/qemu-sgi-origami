@@ -391,6 +391,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_DRAW_PIXELS, 8 },     /* the header; rows follow */
     { SGI_KONA_CMD_GL_READ_PIXELS, 7 },
     { SGI_KONA_CMD_GL_COPY_PIXELS, 7 },
+    { SGI_KONA_CMD_GL_COPY_OVERLAP, 4 },
+    { SGI_KONA_CMD_GL_COPY_CONVOLUTION, 4 },
     { SGI_KONA_CMD_GL_GET, 1 },
     { SGI_KONA_CMD_GL_PUSH_ATTRIB, 1 },
     { SGI_KONA_CMD_GL_POP_ATTRIB, 1 },
