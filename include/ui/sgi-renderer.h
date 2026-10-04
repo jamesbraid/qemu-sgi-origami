@@ -20,7 +20,7 @@ typedef struct SGIRendererRequest {
     uint64_t generation;
     float vertices[3][4];
     uint8_t rgb[3];
-    int32_t clip[4]; /* Inclusive local ownership rectangle. */
+    int32_t clip[4]; /* Inclusive local rectangle; {0,0,-1,-1} is empty. */
     uint8_t rgba[SGI_RENDERER_BYTES];
 } SGIRendererRequest;
 
