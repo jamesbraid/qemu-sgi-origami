@@ -7088,10 +7088,11 @@ static void test_raw_bitmap(gconstpointer opaque)
 static void test_raw_bitmap_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool refused = mode >= 4;
+    bool refused = (mode >= 4 && mode < 16) || mode >= 23;
+    bool extended = mode >= 16;
     uint32_t h[] = { 32, 2, 0, 1, 0, 0, 0, fbits(3), fbits(4) };
-    const uint8_t bytes[] = { 0x82, 0, 0, 0, 0x40, 0, 0, 0 };
-    uint32_t total = sizeof(bytes), line = total, gap = 0;
+    uint8_t bytes[12] = { 0x82, 0, 0, 0, 0x40, 0, 0, 0 };
+    uint32_t total = 8, line = total, gap = 0;
     uint64_t io = mode == 6 ? 1 : 0;
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
     g_autofree Expected *e = g_new(Expected, 1);
@@ -7129,6 +7130,72 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
         h[4] = 1;
         kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 1 }, 2);
     }
+    if (extended) {
+        memset(bytes, 0xaa, sizeof(bytes));
+        h[0] = 9;
+        if (mode == 16) {
+            h[2] = 1;
+            bytes[1] = 0x81;
+            bytes[2] = 0x80;
+            bytes[5] = 0x42;
+            bytes[6] = 0;
+        } else if (mode == 17) {
+            total = line = 4;
+            kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+            bytes[0] = 0x81;
+            bytes[1] = 0x80;
+            bytes[2] = 0x42;
+            bytes[3] = 0;
+        } else {
+            h[4] = 1;
+            total = 4;
+            line = 2;
+            gap = 2;
+            if (mode == 18 || mode == 22) {
+                h[2] = mode == 22 ? 2 : 1;
+                io = mode == 22 ? 3 : 1;
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 32 }, 2);
+                if (mode == 22) {
+                    h[0] = 8;
+                    kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 9 }, 2);
+                }
+                bytes[0] = mode == 22 ? 0x40 : 0x81;
+                bytes[1] = 0x80;
+                bytes[4] = mode == 22 ? 0x21 : 0x42;
+                bytes[5] = 0;
+            } else {
+                h[0] = 8;
+                gap = 1;
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 24 }, 2);
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf3, 1 }, 2);
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 9 }, 2);
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+                kona_command(s, 0x33, (uint32_t[]) { 0xcf1, mode == 20 }, 2);
+                bytes[0] = mode == 20 ? 0x02 : 0x40;
+                bytes[1] = mode == 20 ? 0x01 : 0x80;
+                bytes[3] = mode == 20 ? 0x84 : 0x21;
+                bytes[4] = 0;
+            }
+        }
+    }
+    if (mode >= 23) {
+        h[0] = 9;
+        h[2] = 1;
+        h[4] = 1;
+        total = 4;
+        line = 2;
+        gap = 2;
+        io = mode == 23 ? 0 : 1;
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 32 }, 2);
+        if (mode == 24) {
+            total = 6;
+            line = 3;
+            gap = 1;
+        } else if (mode == 25) {
+            kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 131072 }, 2);
+            gap = 16382;
+        }
+    }
     qtest_writel(s, KONA_REG(0x100000), mode == 9 ? 0 : 0x20000380);
     qtest_memwrite(s, 0x380000 + io, bytes, sizeof(bytes));
     if (mode == 7) {
@@ -7141,7 +7208,7 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
         return_context_deactivate(s);
         return_context_restore(s, SAVE_AREA);
     }
-    if (mode == 3) {
+    if (mode == 3 || mode == 21) {
         dir = g_dir_make_tmp("sn0-kona-bitmap-dma-XXXXXX", &err);
         g_assert_no_error(err);
         uri = g_strdup_printf("unix:%s/migrate.sock", dir);
@@ -7149,15 +7216,19 @@ static void test_raw_bitmap_dma(gconstpointer opaque)
         sgi_migrate_stopped(from, uri);
         s = to;
     }
-    if (mode < 12) {
+    if (mode < 12 || extended) {
         texture_dma_packet(s, io, total, line, gap);
     }
     g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
     expected_clear(e, 0);
     if (!refused) {
         for (unsigned y = 0; y < 2; y++) {
-            for (unsigned x = 0; x < 8; x++) {
-                if (bytes[y * 4] & (mode == 1 ? 1 << x : 0x80 >> x)) {
+            for (unsigned x = 0; x < (extended ? h[0] : 8); x++) {
+                uint8_t bits = extended ?
+                               (x == 8 ? (y ? 0 : 0x80) :
+                                         (y ? 0x42 : 0x81)) : bytes[y * 4];
+
+                if (bits & (mode == 1 ? 1 << x : 0x80 >> (x & 7))) {
                     e->rgb[((127 - (64 + y)) * 128 + 64 + x) * 3] = 255;
                 }
             }
@@ -9957,7 +10028,8 @@ int main(int argc, char **argv)
         "partial-migrates", "invalid-raster", "zero-image-move",
         "zero-image-invalid-raster", "begin-refused", "no-context",
         "incomplete-texture", "malformed-count", "nonfinite-origin",
-        "raw-refused", "raster-depth", "clipped", "zero-image-textured",
+        "pending-raw-replaced", "raster-depth", "clipped",
+        "zero-image-textured",
         "partial-context-aborted", "contexts", "oversize-drained",
         "oversize-drain-migrates", "word-padding-ignored",
     };
@@ -10018,8 +10090,13 @@ int main(int argc, char **argv)
         "msb", "lsb", "skip-rows", "pending-migrates", "short-descriptor",
         "gap-refused", "unaligned-address", "late-unmapped-page",
         "context-changed", "unmapped-source", "invalid-placement",
-        "strided-descriptor", "narrow-width", "strided-source",
-        "source-phase", "pixel-skips",
+        "strided-descriptor", "pending-narrow-replaced",
+        "pending-strided-replaced", "pending-phase-replaced",
+        "pending-skips-replaced", "contiguous-prefix", "contiguous-padding",
+        "strided-phase", "strided-bit-skips", "strided-lsb",
+        "strided-pending-migrates", "strided-whole-byte-skip",
+        "strided-phase-refused", "strided-descriptor-refused",
+        "strided-late-unmapped",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(bitmap_dma_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
