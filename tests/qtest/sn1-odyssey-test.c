@@ -10591,6 +10591,271 @@ static void test_texture_one_dimensional_wide_stored_upload(void)
     texture_one_dimensional_stored_upload(true);
 }
 
+static const uint32_t public_border_1d_width8[] = {
+    0xf01020ff, 0x203458ff, 0x64e0ccff, 0xa88c40ff,
+    0xec38b4ff, 0x30e428ff, 0x74909cff, 0xb83c10ff,
+    0xfce884ff, 0x20e050ff,
+};
+
+static const uint32_t public_border_1d_width64[] = {
+    0xf01020ff, 0x203458ff, 0x64e0ccff, 0xa88c40ff,
+    0xec38b4ff, 0x30e428ff, 0x74909cff, 0xb83c10ff,
+    0xfce884ff, 0x4094f8ff, 0x84406cff, 0xc8ece0ff,
+    0x0c9854ff, 0x5044c8ff, 0x94f03cff, 0xd89cb0ff,
+    0x1c4824ff, 0x60f498ff, 0xa4a00cff, 0xe84c80ff,
+    0x2cf8f4ff, 0x70a468ff, 0xb450dcff, 0xf8fc50ff,
+    0x3ca8c4ff, 0x805438ff, 0xc400acff, 0x08ac20ff,
+    0x4c5894ff, 0x900408ff, 0xd4b07cff, 0x185cf0ff,
+    0x5c0864ff, 0xa0b4d8ff, 0xe4604cff, 0x280cc0ff,
+    0x6cb834ff, 0xb064a8ff, 0xf4101cff, 0x38bc90ff,
+    0x7c6804ff, 0xc01478ff, 0x04c0ecff, 0x486c60ff,
+    0x8c18d4ff, 0xd0c448ff, 0x1470bcff, 0x581c30ff,
+    0x9cc8a4ff, 0xe07418ff, 0x24208cff, 0x68cc00ff,
+    0xac7874ff, 0xf024e8ff, 0x34d05cff, 0x787cd0ff,
+    0xbc2844ff, 0x00d4b8ff, 0x44802cff, 0x882ca0ff,
+    0xccd814ff, 0x108488ff, 0x5430fcff, 0x98dc70ff,
+    0xdc88e4ff, 0x20e050ff,
+};
+
+static const uint32_t public_border_2d_4x2[4][6] = {
+    { 0xf01020ff, 0x10f030ff, 0x2010f0ff, 0xf0e010ff,
+      0x1020f0ff, 0xe010c0ff },
+    { 0x1030f0ff, 0x0c2454ff, 0x2c6494ff, 0x58a0d0ff,
+      0x80dc10ff, 0xf010c0ff },
+    { 0x10f0e0ff, 0xc01c3cff, 0xe04c6cff, 0xf8889cff,
+      0x44c4ecff, 0xe01080ff },
+    { 0xf02010ff, 0x20f010ff, 0x1020f0ff, 0xe010f0ff,
+      0xe020a0ff, 0x10e0e0ff },
+};
+
+static void texture_public_border_upload_1d(QTestState *qts, bool wide)
+{
+    const uint32_t *pixels = wide ? public_border_1d_width64 :
+                                    public_border_1d_width8;
+    unsigned count = wide ? ARRAY_SIZE(public_border_1d_width64) :
+                            ARRAY_SIZE(public_border_1d_width8);
+
+    upload_begin_at(qts, 0x16a800, wide ? 6 : 4, 0x080024d0, 15, count, 1);
+    upload_first_header(qts, 0x4b);
+    for (unsigned i = 0; i < count; ) {
+        /* Width 64 uses synthetic four-texel transport chunks. */
+        unsigned n = MIN(count - i, wide ? 4 : 16);
+
+        user_cmd_push(qts, ODSY_IMAGE_BURST(n, ODSY_IMAGE_FMT_RGB));
+        push_user_words(qts, &pixels[i], n);
+        i += n;
+    }
+    upload_end(qts);
+}
+
+static void texture_public_border_upload_2d(QTestState *qts, unsigned rows)
+{
+    upload_begin_xy(qts, 0x16a800, 4, 0x080024d0, 15, 15, 6, rows);
+    for (unsigned row = 0; row < rows; row++) {
+        upload_row(qts, 0x4b, public_border_2d_4x2[row], 6);
+    }
+    upload_end(qts);
+}
+
+static void texture_public_border_assert_1d(QTestState *qts, bool wide)
+{
+    const uint32_t *pixels = wide ? public_border_1d_width64 :
+                                    public_border_1d_width8;
+    unsigned count = wide ? ARRAY_SIZE(public_border_1d_width64) :
+                            ARRAY_SIZE(public_border_1d_width8);
+
+    for (unsigned x = 0; x < count; x++) {
+        g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800, 15 + x, 0), ==,
+                        pixels[x]);
+    }
+}
+
+static void test_texture_public_border_copied_rows(void)
+{
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_1d(qts, false);
+    texture_public_border_assert_1d(qts, false);
+    qtest_quit(qts);
+
+    qts = board_start("");
+    texture_public_border_upload_1d(qts, true);
+    texture_public_border_assert_1d(qts, true);
+    qtest_quit(qts);
+
+    qts = board_start("");
+    texture_public_border_upload_2d(qts, 4);
+    for (unsigned y = 0; y < ARRAY_SIZE(public_border_2d_4x2); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(public_border_2d_4x2[0]); x++) {
+            g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800,
+                                                  15 + x, 15 + y), ==,
+                            public_border_2d_4x2[y][x]);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void texture_public_border_sample_1d(QTestState *qts, bool wide,
+                                             bool linear)
+{
+    const uint32_t expected[2][2][4] = {
+        {
+            { 0x203458ff, 0xa88c40ff, 0xb83c10ff, 0xfce884ff },
+            { 0x88223cff, 0x86b686ff, 0x966656ff, 0x8ee46aff },
+        },
+        {
+            { 0x203458ff, 0x60f498ff, 0xe07418ff, 0xdc88e4ff },
+            { 0x88223cff, 0x3e9e5eff, 0xbe9e5eff, 0x7eb49aff },
+        },
+    };
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2408,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, wide ? 0x41100006 : 0x41100004, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+    };
+    const uint32_t sampler[] = {
+        0x00011c16, wide ? 0x08001800 : 0x08000c00,
+        wide ? 64 : 8, 1, 1,
+        linear ? 0x03002022 : 0x03002000,
+        0x00101505, 0x01f0ffff,
+    };
+    const float coords[4] = { 0.0f, 0.25f, 0.75f, 1.0f };
+
+    texture_public_border_upload_1d(qts, wide);
+    texture_public_border_assert_1d(qts, wide);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    for (unsigned i = 0; i < ARRAY_SIZE(coords); i++) {
+        texture_adapter_point(qts, 24 + 24 * i, 64, coords[i], 0.5f);
+        g_assert_cmphex(odsy_test_pixel(qts, 24 + 24 * i, 64), ==,
+                        expected[wide][linear][i]);
+    }
+}
+
+static void test_texture_public_border_1d_width8_nearest(void)
+{
+    QTestState *qts = board_start("");
+    texture_public_border_sample_1d(qts, false, false);
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_1d_width8_linear(void)
+{
+    QTestState *qts = board_start("");
+    texture_public_border_sample_1d(qts, false, true);
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_1d_width64_nearest(void)
+{
+    QTestState *qts = board_start("");
+    texture_public_border_sample_1d(qts, true, false);
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_1d_width64_linear(void)
+{
+    QTestState *qts = board_start("");
+    texture_public_border_sample_1d(qts, true, true);
+    qtest_quit(qts);
+}
+
+static void texture_public_border_sample_2d(bool linear)
+{
+    const uint32_t expected[2][4][4] = {
+        {
+            { 0x0c2454ff, 0x2c6494ff, 0x80dc10ff, 0x80dc10ff },
+            { 0x0c2454ff, 0x2c6494ff, 0x80dc10ff, 0x80dc10ff },
+            { 0xc01c3cff, 0xe04c6cff, 0x44c4ecff, 0x44c4ecff },
+            { 0xc01c3cff, 0xe04c6cff, 0x44c4ecff, 0x44c4ecff },
+        },
+        {
+            { 0x475565ff, 0x1a6282ff, 0x769f78ff, 0x9847a0ff },
+            { 0x0e2aa2ff, 0x1c4474ff, 0x6cbe70ff, 0xb87668ff },
+            { 0x68868eff, 0xd03454ff, 0x9ea6c4ff, 0x926ab6ff },
+            { 0x78874fff, 0x745e6aff, 0xbf5fc6ff, 0x8575bbff },
+        },
+    };
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2410,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, 0x41100004, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+    };
+    const uint32_t sampler[] = {
+        0x00011c16, 0x08000820, 4, 2, 1,
+        linear ? 0x03002822 : 0x03002800,
+        0x00101202, 0x01303fff,
+    };
+    const float coords[4] = { 0.0f, 0.25f, 0.75f, 1.0f };
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_2d(qts, 4);
+    for (unsigned y = 0; y < ARRAY_SIZE(public_border_2d_4x2); y++) {
+        for (unsigned x = 0; x < ARRAY_SIZE(public_border_2d_4x2[0]); x++) {
+            g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800,
+                                                  15 + x, 15 + y), ==,
+                            public_border_2d_4x2[y][x]);
+        }
+    }
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    for (unsigned row = 0; row < ARRAY_SIZE(coords); row++) {
+        for (unsigned column = 0; column < ARRAY_SIZE(coords); column++) {
+            int x = 16 + 28 * column;
+            int y = 16 + 28 * row;
+
+            texture_adapter_point(qts, x, y, coords[column], coords[row]);
+            g_assert_cmphex(odsy_test_pixel(qts, x, y), ==,
+                            expected[linear][row][column]);
+        }
+    }
+    qtest_quit(qts);
+}
+
+static void test_texture_public_border_2d_nearest(void)
+{
+    texture_public_border_sample_2d(false);
+}
+
+static void test_texture_public_border_2d_linear(void)
+{
+    texture_public_border_sample_2d(true);
+}
+
+static void test_texture_public_border_2d_incomplete(void)
+{
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2410,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, 0x41100004, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+    };
+    const uint32_t sampler[] = {
+        0x00011c16, 0x08000820, 4, 2, 1, 0x03002800,
+        0x00101202, 0x01303fff,
+    };
+    QTestState *qts = board_start("");
+
+    texture_public_border_upload_2d(qts, 3);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+    texture_adapter_point(qts, 10, 10, 0.75f, 0.75f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+    qtest_quit(qts);
+}
+
 static void texture_two_dimensional_border_upload(QTestState *qts,
                                                    bool stored, bool truncated)
 {
@@ -10758,11 +11023,13 @@ static void test_texture_two_dimensional_missing_border_row(void)
     texture_two_dimensional_border_upload(qts, true, true);
     texture_adapter_window(qts);
     push_user_words(qts, setup, ARRAY_SIZE(setup));
+    odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
     texture_adapter_point_rgba(qts, 4, 4, 0.25f, 0.25f, white);
+    odsy_test_pixel_write(qts, 5, 4, 0x234567ff);
     texture_adapter_point_rgba(qts, 5, 4, 1.0f, 1.0f, white);
-    /* Missing-image resolution preserves primary colour for the whole draw. */
-    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0xffffffff);
-    g_assert_cmphex(odsy_test_pixel(qts, 5, 4), ==, 0xffffffff);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 5, 4), ==, 0x234567ff);
     qtest_quit(qts);
 }
 
@@ -14029,6 +14296,33 @@ static void test_buffers_migration(void)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+static void test_texture_public_border_1d_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-texture-border-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    texture_public_border_sample_1d(from, false, false);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    texture_adapter_point(to, 24, 64, 0.0f, 0.5f);
+    g_assert_cmphex(odsy_test_pixel(to, 24, 64), ==, 0x203458ff);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 /*
  * A DMA transfer to the screen and a BEGIN 0xa image raster both reach the
  * buffer the drawing mask names and leave the other untouched.
@@ -15957,6 +16251,33 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "one-dimensional-wide-stored-linear",
                    test_texture_one_dimensional_wide_stored_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-copies",
+                   test_texture_public_border_copied_rows);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-width8-nearest",
+                   test_texture_public_border_1d_width8_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-migration",
+                   test_texture_public_border_1d_migration);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-width8-linear",
+                   test_texture_public_border_1d_width8_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-width64-nearest",
+                   test_texture_public_border_1d_width64_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-1d-width64-linear",
+                   test_texture_public_border_1d_width64_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-2d-nearest",
+                   test_texture_public_border_2d_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-2d-linear",
+                   test_texture_public_border_2d_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "public-stored-border-2d-incomplete",
+                   test_texture_public_border_2d_incomplete);
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "two-dimensional-border-upload",
                    test_texture_two_dimensional_border_upload);
