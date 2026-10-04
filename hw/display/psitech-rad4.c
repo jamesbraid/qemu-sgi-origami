@@ -314,10 +314,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_WAT_PIXFORM_SHIFT    4
 #define RAD4_WAT_PIXFORM_MASK     0x3
 #define RAD4_WAT_PIXFORM_8BPP     0x0
+#define RAD4_WAT_PIXFORM_12BPP    0x1
+#define RAD4_WAT_PIXFORM_16BPP    0x2
+#define RAD4_WAT_PIXFORM_24BPP    0x3
 #define RAD4_WAT_BS               (1u << 3)
 #define RAD4_WAT_MODE_SHIFT       1
 #define RAD4_WAT_MODE_MASK        0x3
 #define RAD4_WAT_MODE_INDEX       0x0
+#define RAD4_WAT_MODE_GREY        0x1
 #define RAD4_WAT_MODE_TRUE        0x3
 #define RAD4_WAT_TR               (1u << 0)
 #define RAD4_OL_WAT_PIXFORM_8BIT  0x0
@@ -778,45 +782,109 @@ static uint32_t rad4_lut_rgb(PsitechRad4State *s, uint16_t wat, uint8_t index)
 }
 
 /*
+ * Widen an @bits-wide color component to 8 bits by repeating it from the most
+ * significant end, as page 21's Table 18 does for every Direct RGB width:
+ * 3 bits R2R1R0 become R2R1R0R2R1R0R2R1, 6 bits G5..G0 become G5..G0G5G4.
+ */
+static uint8_t rad4_widen(uint32_t value, unsigned bits)
+{
+    uint32_t out = 0;
+    int shift = 8 - bits;
+
+    value &= (1u << bits) - 1;
+    for (; shift > -(int)bits; shift -= bits) {
+        out |= shift >= 0 ? value << shift : value >> -shift;
+    }
+    return out & 0xff;
+}
+
+static uint32_t rad4_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+/*
  * Interpret one raw 32-bit framebuffer word's frame-buffer layer, per its
- * FB_WAT entry (IBM RGB561 Architecture
- * p.47). True color mode bypasses the color LUT and presents the pixel data
- * directly (same document p.20, Figure
- * 5): this model's raw word is already 0x00RRGGBB in that mode, so pass it
- * through unmodified. Index mode looks the
- * low byte up in the color LUT through the start-address formula in Table 1
- * (p.2): LUT[START_ADDR * 64 + index].
- * Grey Scale and Direct RGB modes, and Index mode with a PIX_FORM other than
- * 8bpp, are not exercised by the
- * qualified guest workload and are traced rather than guessed at.
+ * FB_WAT entry (IBM RGB561 Architecture pages 9, 19-21 and 47).
+ *
+ * PIX_FORM selects the pixel width and BS which of the word's two buffers it
+ * comes from: under the 4:1 basic serializer (Table 9) an 8-bit pixel is
+ * bits 0-7 for buffer A and 8-15 for B, a 12-bit pixel 0-11 or 12-23 and a
+ * 16-bit pixel 0-15 or 16-31; a 24-bit pixel is bits 0-23. Index mode looks
+ * an 8-bit pixel up in the color LUT through Table 1's start-address
+ * formula, LUT[START_ADDR * 64 + index]. Grey Scale mode presents an 8-bit
+ * pixel to all three DAC inputs. True color mode bypasses the LUT: a 24-bit
+ * pixel is already 0x00RRGGBB, and narrower pixels split into components at
+ * Table 16's positions (R3G3B2, R4G4B4 and R5G6B5) and widen through Table
+ * 18's bypass conversion.
+ *
+ * Index and Grey Scale pixels other than 8 bits, Direct RGB mode and the BGR
+ * component order CONF/3 can select are not exercised by the qualified
+ * guest workload and are traced rather than guessed at.
  */
 static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
                                uint8_t fb_addr)
 {
     uint16_t wat = s->fb_wat[fb_addr];
     unsigned mode = (wat >> RAD4_WAT_MODE_SHIFT) & RAD4_WAT_MODE_MASK;
+    unsigned pix_form = (wat >> RAD4_WAT_PIXFORM_SHIFT) &
+                        RAD4_WAT_PIXFORM_MASK;
+    bool buffer_b = wat & RAD4_WAT_BS;
+    uint32_t pixel;
 
-    if (mode == RAD4_WAT_MODE_INDEX) {
-        unsigned pix_form = (wat >> RAD4_WAT_PIXFORM_SHIFT) &
-                            RAD4_WAT_PIXFORM_MASK;
-
-        if (pix_form != RAD4_WAT_PIXFORM_8BPP) {
-            qemu_log_mask(LOG_UNIMP,
-                         "psitech-rad4: FB_WAT PIX_FORM %u for entry 0x%02x "
-                         "in Index mode is unimplemented; treating pixel "
-                         "data as an 8-bit index regardless\n",
-                         pix_form, fb_addr);
-        }
-        return rad4_lut_rgb(s, wat, word & 0xff);
+    switch (pix_form) {
+    case RAD4_WAT_PIXFORM_8BPP:
+        pixel = (word >> (buffer_b ? 8 : 0)) & 0xff;
+        break;
+    case RAD4_WAT_PIXFORM_12BPP:
+        pixel = (word >> (buffer_b ? 12 : 0)) & 0xfff;
+        break;
+    case RAD4_WAT_PIXFORM_16BPP:
+        pixel = (word >> (buffer_b ? 16 : 0)) & 0xffff;
+        break;
+    default:
+        pixel = word & 0x00ffffffu;
+        break;
     }
 
-    if (mode != RAD4_WAT_MODE_TRUE) {
+    if (mode == RAD4_WAT_MODE_TRUE) {
+        switch (pix_form) {
+        case RAD4_WAT_PIXFORM_8BPP:
+            return rad4_rgb(rad4_widen(pixel >> 5, 3),
+                            rad4_widen(pixel >> 2, 3),
+                            rad4_widen(pixel, 2));
+        case RAD4_WAT_PIXFORM_12BPP:
+            return rad4_rgb(rad4_widen(pixel >> 8, 4),
+                            rad4_widen(pixel >> 4, 4),
+                            rad4_widen(pixel, 4));
+        case RAD4_WAT_PIXFORM_16BPP:
+            return rad4_rgb(rad4_widen(pixel >> 11, 5),
+                            rad4_widen(pixel >> 5, 6),
+                            rad4_widen(pixel, 5));
+        default:
+            return pixel;
+        }
+    }
+
+    if (mode != RAD4_WAT_MODE_INDEX && mode != RAD4_WAT_MODE_GREY) {
         qemu_log_mask(LOG_UNIMP,
                      "psitech-rad4: FB_WAT color mode %u for entry 0x%02x is "
                      "unimplemented; treating as direct pass-through\n",
                      mode, fb_addr);
+        return word & 0x00ffffffu;
     }
-    return word & 0x00ffffffu;
+    if (pix_form != RAD4_WAT_PIXFORM_8BPP) {
+        qemu_log_mask(LOG_UNIMP,
+                     "psitech-rad4: FB_WAT PIX_FORM %u for entry 0x%02x "
+                     "in color mode %u is unimplemented; treating pixel "
+                     "data as 8 bits regardless\n",
+                     pix_form, fb_addr, mode);
+        pixel &= 0xff;
+    }
+    if (mode == RAD4_WAT_MODE_GREY) {
+        return rad4_rgb(pixel, pixel, pixel);
+    }
+    return rad4_lut_rgb(s, wat, pixel);
 }
 
 /*
