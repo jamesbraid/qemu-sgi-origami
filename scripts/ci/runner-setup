@@ -3,9 +3,35 @@
 # sibling containers instead of a path inside the job container.
 set -eu
 
+# Remove child containers whose job container has gone. A job killed
+# outright never runs its own cleanup, and its child would otherwise hold
+# the daemon until the child's deadline. List the children before the
+# running containers: a child exists only once its parent was running, so
+# a parent still running is certain to be in the later list.
+reap_orphans() {
+  local children running id parent
+
+  if ! children=$(docker ps -a --filter label=ci.parent \
+                  --format '{{.ID}} {{.Label "ci.parent"}}') ||
+     ! running=$(docker ps --no-trunc --filter status=running \
+                 --format '{{.ID}}'); then
+    echo 'Could not list containers; leaving child containers alone.' >&2
+    return 0
+  fi
+  while read -r id parent; do
+    [ -n "$id" ] || continue
+    if [ -n "$parent" ] && printf '%s\n' "$running" | grep -qxF "$parent"; then
+      continue
+    fi
+    echo "removing child container $id of finished job ${parent:-unknown}"
+    docker rm -f "$id" >/dev/null || true
+  done <<< "$children"
+}
+
 case "${1-}" in
   volume)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"
+    reap_orphans
     volume=$(docker inspect "$(hostname)" \
       --format '{{range .Mounts}}{{if eq .Destination "'"$PWD"'"}}{{.Name}}{{end}}{{end}}')
     if [ -z "$volume" ]; then
@@ -47,9 +73,13 @@ case "${1-}" in
     trap 'exit 130' INT
     trap 'exit 143' TERM
     # The daemon owns this sibling. Its deadline must survive losing this shell.
+    # Bash runs a trap only once a foreground command returns, so wait on a
+    # background client: a signal then interrupts the wait and removes the
+    # child at once.
     docker run --rm --name "$child" --label "ci.parent=$parent" \
       --ulimit core=0:0 --entrypoint /usr/bin/timeout "${options[@]}" \
-      "$IMAGE_ID" --signal=TERM --kill-after=30s "${remaining}s" "$@"
+      "$IMAGE_ID" --signal=TERM --kill-after=30s "${remaining}s" "$@" &
+    wait "$!"
     ;;
   check)
     : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
