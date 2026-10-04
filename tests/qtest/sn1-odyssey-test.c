@@ -8183,8 +8183,8 @@ static void test_command_fifo_gl_window_restore(void)
  * both among the words each textured draw or upload also pushes, and
  * leaves their contents unknown.
  */
-static void upload_begin(QTestState *qts, uint32_t base, uint32_t wunits,
-                         uint32_t fmt, uint32_t w, uint32_t h)
+static void upload_begin_at(QTestState *qts, uint32_t base, uint32_t wunits,
+                            uint32_t fmt, uint32_t x, uint32_t w, uint32_t h)
 {
     const uint32_t words[] = {
         0x00011453, 1, 0, 0, 0, 0,
@@ -8195,15 +8195,21 @@ static void upload_begin(QTestState *qts, uint32_t base, uint32_t wunits,
         ODSY_CMD_DID_COMPARE, 0, 0,
         ODSY_CMD_DEST_SELECT, base, wunits, fmt, 0,
         ODSY_REG_WRITE_MASK, 0x01ffffff,
-        0x0001081d, w, h,
+        0x0001081d, (x << 12) | (x + w), h,
         ODSY_CMD_IMAGE_STATE,
         ODSY_CMD_GL_BEGIN, ODSY_CMD_IMAGE_PRIMITIVE,
         ODSY_CMD_IMAGE_BOX, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000,
-        0, 0, 0, coord_bits(w), coord_bits(h), 0,
+        coord_bits(x), 0, 0, coord_bits(x + w), coord_bits(h), 0,
         ODSY_CMD_GL_VERTEX_2I, 0, 0,
     };
 
     push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void upload_begin(QTestState *qts, uint32_t base, uint32_t wunits,
+                         uint32_t fmt, uint32_t w, uint32_t h)
+{
+    upload_begin_at(qts, base, wunits, fmt, 0, w, h);
 }
 
 /* The upload's end and the screen select a draw after it sends. */
@@ -10361,36 +10367,46 @@ static void test_texture_one_dimensional_mode(void)
     qtest_quit(qts);
 }
 
-static void texture_one_dimensional_clamp(bool linear)
+static void texture_one_dimensional_clamp(bool linear, bool stored)
 {
-    const uint32_t pixels[2] = { 0xe02060ff, 0x4040e0ff };
+    const uint32_t pixels[4] = {
+        0x20c040ff, 0xe02060ff, 0x4040e0ff, 0xc0a020ff,
+    };
     const uint32_t nearest[4] = {
         0xe02060ff, 0xe02060ff, 0x4040e0ff, 0x4040e0ff,
     };
     const uint32_t filtered[4] = {
         0x7838a8ff, 0xe02060ff, 0x4040e0ff, 0x2848e8ff,
     };
+    const uint32_t stored_filtered[4] = {
+        0x807050ff, 0xe02060ff, 0x4040e0ff, 0x807080ff,
+    };
     const uint32_t coords[4] = { 0, 0x3e800000, 0x3f400000, 0x3f800000 };
     const unsigned starts[4] = { 16, 40, 64, 88 };
     const uint32_t setup[] = {
         0x00010404, 0x02042200, 0x00010405, 0x2408,
         0x00011013, 0, 0, 0x3100, 0,
-        0x00010e80, 0x16a800, 0x41100002, 0,
+        0x00010e80, 0x16a800, stored ? 0x41100004 : 0x41100002, 0,
         0x00010406, 0,
         0x0001141b, 1, 0, 0, 0, 0,
     };
     uint32_t sampler[] = {
         0x00011c16, 0x08000400, 2, 1, 1,
-        linear ? 0x13002022 : 0x13002000, 0x00101505, 0x00f0ffff,
+        stored ? (linear ? 0x03002022 : 0x03002000) :
+                 (linear ? 0x13002022 : 0x13002000),
+        0x00101505, stored ? 0x01f0ffff : 0x00f0ffff,
     };
     QTestState *qts = board_start("");
     unsigned mismatches = 0;
 
-    /* Original public interior texels use the existing canonical upload. */
-    upload_begin(qts, 0x16a800, 2, 0x080024d0, 2, 1);
-    upload_first_header(qts, 0x4b);
-    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
-    push_user_words(qts, pixels, ARRAY_SIZE(pixels));
+    /* Captured PIO geometry preserves the original public texel order. */
+    upload_begin_at(qts, 0x16a800, stored ? 4 : 2, 0x080024d0,
+                    stored ? 15 : 0, stored ? 4 : 2, 1);
+    push_user_words(qts, (uint32_t[]) {
+        0x00004570, stored ? 0x0f41104b : 0x0f21104b, 0x00000071,
+        stored ? 0x00015011 : 0x00014811,
+    }, 4);
+    push_user_words(qts, stored ? pixels : pixels + 1, stored ? 4 : 2);
     upload_end(qts);
     texture_adapter_window(qts);
     push_depth_clear(qts, 0, 0, 0, 0);
@@ -10416,7 +10432,8 @@ static void texture_one_dimensional_clamp(bool linear)
             for (unsigned i = 0; i < ARRAY_SIZE(starts); i++) {
                 if (x >= starts[i] && x < starts[i] + 16 &&
                     y >= 48 && y < 80) {
-                    expected = linear ? filtered[i] : nearest[i];
+                    expected = linear ? (stored ? stored_filtered[i] :
+                                                 filtered[i]) : nearest[i];
                 }
             }
             if (actual != expected) {
@@ -10428,18 +10445,46 @@ static void texture_one_dimensional_clamp(bool linear)
             }
         }
     }
-    g_test_message("1D %s clamp mismatches %u/16384",
+    g_test_message("1D %s %s clamp mismatches %u/16384",
+                   stored ? "stored" : "zero-border",
                    linear ? "linear" : "nearest", mismatches);
-    /* Stored-border flags and unknown high fields stay unsupported. */
+    /* Unknown flag pairs, filters and high fields stay unsupported. */
     for (unsigned bad = 0; bad < 3; bad++) {
         sampler[5] = bad == 0 ? (linear ? 0x03002022 : 0x03002000) :
                      bad == 1 ? 0x13002020 :
                      linear ? 0x13002022 : 0x13002000;
-        sampler[7] = bad == 0 ? 0x01f0ffff :
-                     bad == 2 ? 0x02f0ffff : 0x00f0ffff;
+        sampler[7] = bad == 2 ? 0x02f0ffff : 0x00f0ffff;
         push_user_words(qts, sampler, ARRAY_SIZE(sampler));
         odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
         texture_adapter_point(qts, 10, 10, 0.25f, 0.5f);
+        g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+    }
+    if (stored) {
+        const uint32_t unsupported_levels[][4] = {
+            { 0x00010e80, 0x16a800, 0x41100000, 0 },
+            { 0x00010e80, 0x16a800, 0x41100002, 0 },
+            { 0x00010e80, 0x16a800, 0x41100006, 0 },
+            { 0x00010e80, 0x16a800, 0x41100004, 1 },
+        };
+
+        sampler[5] = linear ? 0x03002022 : 0x03002000;
+        sampler[7] = 0x01f0ffff;
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        for (unsigned i = 0; i < ARRAY_SIZE(unsupported_levels); i++) {
+            push_user_words(qts, unsupported_levels[i], 4);
+            odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+            texture_adapter_point(qts, 10, 10, 0.0f, 0.5f);
+            g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+        }
+        push_user_words(qts, (uint32_t[]) {
+            0x00010e80, 0x16a800, 0x41100004, 0,
+        }, 4);
+        /* The captured placement does not establish a wider-image rule. */
+        sampler[1] = 0x08000800;
+        sampler[2] = 4;
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+        texture_adapter_point(qts, 10, 10, 0.0f, 0.5f);
         g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
     }
     qtest_quit(qts);
@@ -10448,12 +10493,53 @@ static void texture_one_dimensional_clamp(bool linear)
 
 static void test_texture_one_dimensional_clamp_nearest(void)
 {
-    texture_one_dimensional_clamp(false);
+    texture_one_dimensional_clamp(false, false);
 }
 
 static void test_texture_one_dimensional_clamp_linear(void)
 {
-    texture_one_dimensional_clamp(true);
+    texture_one_dimensional_clamp(true, false);
+}
+
+static void test_texture_one_dimensional_stored_nearest(void)
+{
+    texture_one_dimensional_clamp(false, true);
+}
+
+static void test_texture_one_dimensional_stored_linear(void)
+{
+    texture_one_dimensional_clamp(true, true);
+}
+
+static void test_texture_one_dimensional_stored_upload(void)
+{
+    const uint32_t pixels[4] = {
+        0x20c040ff, 0xe02060ff, 0x4040e0ff, 0xc0a020ff,
+    };
+    const uint32_t sampler[] = {
+        0x00010405, 8,
+        0x00011c16, 0x08001800, 64, 1, 1, 0x13000000, 0, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+        0x00010e80, 0x16a800, 0x41100004, 0,
+        0x00010406, 0,
+    };
+    QTestState *qts = board_start("");
+
+    /* Literal public PIO box, row pitch, group header and four RGBA words. */
+    upload_begin_at(qts, 0x16a800, 4, 0x080024d0, 15, 4, 1);
+    push_user_words(qts, (uint32_t[]) {
+        0x00004570, 0x0f41104b, 0x00000071, 0x00015011,
+    }, 4);
+    push_user_words(qts, pixels, ARRAY_SIZE(pixels));
+    upload_end(qts);
+    texture_adapter_window(qts);
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    /* Ordinary sampling checks the copy independently of stored borders. */
+    for (unsigned i = 0; i < ARRAY_SIZE(pixels); i++) {
+        texture_adapter_point(qts, 10 + i, 10, (15.5f + i) / 64, 0.5f);
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + i, 10), ==, pixels[i]);
+    }
+    qtest_quit(qts);
 }
 
 static void test_texture_chain_height_one(void)
@@ -15502,6 +15588,12 @@ int main(int argc, char **argv)
                    test_texture_one_dimensional_clamp_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-clamp-linear",
                    test_texture_one_dimensional_clamp_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-nearest",
+                   test_texture_one_dimensional_stored_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-linear",
+                   test_texture_one_dimensional_stored_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-stored-upload",
+                   test_texture_one_dimensional_stored_upload);
     qtest_add_func("sn1/odyssey/texture-adapter/height-one",
                    test_texture_chain_height_one);
     qtest_add_func("sn1/odyssey/texture-adapter/construction",
