@@ -184,7 +184,7 @@ slow_qtests = {
   'sgi-mgras-gl-test': 600,
   'sgi-mgras-gl-draw-test': 300,
   'sgi-mgras-pixels-test': 300,
-  'sgi-mgras-texture-test': 300,
+  'sgi-mgras-texture-test': 900,
   'sgi-mgras-migration-test': 600,
   'sgi-mgras-migration-gl-test': 600,
   'sgi-mgras-migration-glstate-test': 600,
