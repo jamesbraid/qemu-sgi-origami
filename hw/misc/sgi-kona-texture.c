@@ -657,6 +657,61 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
     return true;
 }
 
+static bool texture_native_read_border(void *opaque, uint32_t level,
+                                       int32_t x, int32_t y, uint32_t *rgba)
+{
+    const SGIKonaTextureLevel *l = opaque;
+    const SGIKonaTextureNativeImage *n = l->native_border;
+    uint32_t sx, sy;
+    uint64_t at;
+
+    if (!n || x < -1 || y < -1 || x > (int32_t)l->width ||
+        y > (int32_t)l->height ||
+        (x >= 0 && x < l->width && y >= 0 && y < l->height)) {
+        return false;
+    }
+    sx = x < 0 ? (1u << (n->header[16] & 15)) - 1 : x;
+    sy = y < 0 ? (1u << ((n->header[16] >> 4) & 15)) - 1 : y;
+    /* A shared plane's interior coverage cannot establish a negative border. */
+    if ((n->image.pixels == l->pixels &&
+         ((x < 0 && sx < l->width) || (y < 0 && sy < l->height))) ||
+        sx >= n->image.width || sy >= n->image.height) {
+        return false;
+    }
+    at = (uint64_t)sy * n->image.width + sx;
+    if (!native_covered(n->coverage, at)) {
+        return false;
+    }
+    *rgba = n->image.pixels[at];
+    if (l->base_format == SGI_GL_RGB) {
+        *rgba |= 0xff;
+    }
+    return true;
+}
+
+static bool texture_native_uses_border(uint32_t wrap)
+{
+    return wrap == SGI_GL_CLAMP || wrap == SGI_GL_CLAMP_TO_BORDER;
+}
+
+static const SGIKonaTextureNativeImage *texture_native_border_image(
+    const SGIKonaTextureObject *o, const SGIKonaTextureNativeImage *interior,
+    unsigned level)
+{
+    uint32_t h[20];
+    uint32_t width = MAX(1u, o->native_width >> level);
+    uint32_t height = MAX(1u, o->native_height >> level);
+
+    memcpy(h, interior->header, sizeof(h));
+    h[16] = MIN(ctz32(width) + 1, 3) | (MIN(ctz32(height) + 1, 2) << 4);
+    for (unsigned k = 0; k < o->native_count; k++) {
+        if (texture_native_key(o->native[k].header, h)) {
+            return &o->native[k];
+        }
+    }
+    return NULL;
+}
+
 static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
                                    uint32_t y, uint32_t z, uint32_t *rgba)
 {
@@ -683,8 +738,10 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
     uint32_t geometry = MAX(ps - (int)level, 3) |
                         (MAX(pt - (int)level, 2) << 4);
 
-    if (o->params.base_level || o->params.wrap_s != SGI_GL_REPEAT ||
-        o->params.wrap_t != SGI_GL_REPEAT || !o->native_width ||
+    if (o->params.base_level || !o->native_width ||
+        (o->native_one_dimensional &&
+         (texture_native_uses_border(o->params.wrap_s) ||
+          texture_native_uses_border(o->params.wrap_t))) ||
         (n->header[17] & 0x60) || n->header[16] != geometry ||
         width > n->image.width || height > n->image.height) {
         return false;
@@ -711,6 +768,7 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
         return 0;
     }
     for (unsigned level = 0; level < limit; level++) {
+        SGIKonaTextureNativeImage *interior = NULL;
         SGIKonaTextureLevel *image = NULL;
         uint32_t descriptor = o->native_table[level];
         bool ambiguous = false;
@@ -753,6 +811,7 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                     break;
                 }
                 image = &n->image;
+                interior = n;
             }
         }
         if (ambiguous) {
@@ -764,6 +823,10 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             }
         } else if (image) {
             SGIKonaTextureLevel *view = &o->native_view[count];
+            bool border = !volume && !o->native_one_dimensional &&
+                o->native_layout_valid &&
+                (texture_native_uses_border(o->params.wrap_s) ||
+                 texture_native_uses_border(o->params.wrap_t));
 
             *view = *image;
             if (!volume && o->native_layout_valid) {
@@ -775,7 +838,11 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 view->base_format = o->native_base_format;
                 view->internal_format = o->native_internal_format;
             }
+            view->native_border = border ?
+                texture_native_border_image(o, interior, level) : NULL;
             o->view[count++] = (SGIGLTexLevel) {
+                .border = border,
+                .read_border_texel = border ? texture_native_read_border : NULL,
                 .level = level, .width = view->width, .height = view->height,
                 .depth = view->depth,
                 .base_format = view->base_format,

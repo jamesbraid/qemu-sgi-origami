@@ -25,6 +25,7 @@ typedef struct SGIKonaTextureLevel {
     uint32_t *pixels;
     /* Borrowed views may use logical dimensions over a larger backing. */
     uint32_t stride_width;
+    const struct SGIKonaTextureNativeImage *native_border;
 } SGIKonaTextureLevel;
 
 #define SGI_KONA_TEXTURE_TABLE_LEVELS 16u
@@ -97,7 +98,7 @@ bool sgi_kona_texture_native_dimensions(SGIKonaTextureState *s, uint32_t handle,
                                        uint32_t width, uint32_t height);
 bool sgi_kona_texture_native_dimensions_1d(SGIKonaTextureState *s,
                                            uint32_t handle, uint32_t width);
-/* Optional emitted physical size for base-zero, mode-zero repeat interiors. */
+/* Optional emitted physical size for base-zero, mode-zero interiors. */
 bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
                                    uint32_t physical_size);
 bool sgi_kona_texture_native_volume_dimensions(SGIKonaTextureState *s,
