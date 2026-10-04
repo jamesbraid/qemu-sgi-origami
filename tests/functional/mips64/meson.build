@@ -19,8 +19,8 @@ test_mips64_timeouts = {
   'sn1_l1_reset' : 900,
   # Three methods in this script: the original two first-line-only
   # smoke boots (about a second each) plus a four-CPU boot through a
-  # writable boot flash and the chassis/board/SPD identity records
-  # (lib_origin300.py) to the stock PROM's own "ALL DIAGS PASSED" and
+  # writable boot flash (lib_origin300.py) and the machine's synthetic
+  # identity records to the stock PROM's own "ALL DIAGS PASSED" and
   # System Maintenance Menu. The installed IRIX test checks the same
   # outcome for two CPUs. Before that test absorbed the two-CPU menu
   # boot, all four methods took 72s (2026-09-22); the four-CPU menu

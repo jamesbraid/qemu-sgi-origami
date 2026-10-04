@@ -896,7 +896,8 @@ FLAVOURS = {
              r'IOC3/IOC4 external interrupts: 1\b'),
         ),
         # The IO8 has no Ethernet-address part; the address comes from the
-        # brick's board record, which lib_origin300 writes with this one.
+        # brick's board record, which the machine builds from the mac=
+        # lib_origin300 passes.
         ethernets=(Ethernet('ef0', '08:00:69:12:34:56', '10.0.2'),),
         # Line 0 is the L1, the system console; lines 1 and 2 are the
         # IOC3's ports A and B.
@@ -984,15 +985,13 @@ def launch_args(flavour, row, assets, paths, quick_prom=False):
             '-smp', str(row.cpus), '-m', str(row.mem)]
     if flavour.populations:
         machine, o300 = lib_origin300.launch_args_two_chassis(
-            assets['firmware'], assets['origin300_spd'],
-            flavour.populations, paths['scratch'])
+            assets['firmware'], flavour.populations, paths['scratch'])
     elif flavour.origin300:
         machine, o300 = lib_origin300.launch_args(
-            assets['firmware'], assets['origin300_spd'], row.cpus,
-            paths['scratch'])
+            assets['firmware'], row.cpus, paths['scratch'])
     if flavour.origin300:
-        # Keep the boot flash and identity records; this module picks the
-        # processor, memory and accelerator itself.
+        # Keep the boot flash and mac=; this module picks the processor,
+        # memory and accelerator itself.
         for flag in ('-accel', '-cpu', '-smp', '-m'):
             index = o300.index(flag)
             del o300[index:index + 2]

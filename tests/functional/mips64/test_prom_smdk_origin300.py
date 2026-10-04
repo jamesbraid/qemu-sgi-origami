@@ -95,8 +95,6 @@ if QemuSystemTest is not None:
             self.deadline = started + self.row.budget
             self.populations = POPULATIONS[row_id]
             self.firmware = self.ASSET_FIRMWARE.fetch()
-            self.spd_paths = (self.ASSET_SPD_3.fetch(),
-                              self.ASSET_SPD_5.fetch())
             self.package = {
                 name: getattr(self, asset_name).fetch()
                 for name, asset_name in self.PACKAGE_ASSETS.items()
@@ -130,12 +128,10 @@ if QemuSystemTest is not None:
                           lambda data: bound_end_pass(data, diag.passes))
             if len(self.populations) > 1:
                 machine, argv = lib_origin300.launch_args_two_chassis(
-                    self.firmware, self.spd_paths,
-                    self.populations, scratch)
+                    self.firmware, self.populations, scratch)
             else:
                 machine, argv = lib_origin300.launch_args(
-                    self.firmware, self.spd_paths,
-                    self.populations[0], scratch)
+                    self.firmware, self.populations[0], scratch)
             vm = self.get_vm(name=f'{self.row.id}-{name}')
             vm.set_machine(machine)
             vm.set_console()
@@ -196,8 +192,6 @@ if QemuSystemTest is not None:
         """Attach test_<row_id> to cls: one population's diagnostics."""
 
         cls.ASSET_FIRMWARE = LocalAsset(*lib_origin300.ASSET_SPECS[0])
-        cls.ASSET_SPD_3 = LocalAsset(*lib_origin300.ASSET_SPECS[1])
-        cls.ASSET_SPD_5 = LocalAsset(*lib_origin300.ASSET_SPECS[2])
 
         row = manifest_row(row_id)
         package_assets = {}

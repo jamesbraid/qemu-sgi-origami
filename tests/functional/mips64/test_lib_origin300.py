@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
-# Unit tests for lib_origin300: the synthesized identity records and the
-# machine properties that carry them
+# Unit tests for lib_origin300: the machine properties and boot flash it
+# hands an Origin 300 launch
 #
 # SPDX-License-Identifier: BSD-3-Clause
 """
@@ -10,48 +10,12 @@ the boot flash from a stand-in payload, so they patch the reviewed seed
 digests that a real firmware image would have to match.
 """
 
-import hashlib
 import os
 import tempfile
 import unittest
 from unittest import mock
 
 import lib_origin300 as lib
-
-
-def _sha256(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-class IdentityRecordTests(unittest.TestCase):
-
-    # Stable SHA-256 fixtures for the generated chassis and board records.
-    def test_the_node_records_match_the_project_builders(self):
-        self.assertEqual(
-            _sha256(lib._build_node_chassis_eeprom_record()),
-            '1a1d69a51ffd994593aca8f754d85c46'
-            '360b81c08044fc852d0f4dfd0dd59b05')
-        self.assertEqual(
-            _sha256(lib._build_node_board_eeprom_record(2)),
-            'd423543d1e31228f35a1c5de84886c5e'
-            '4379027735c805ffc026341d4dfbd6a7')
-        self.assertEqual(
-            _sha256(lib._build_node_board_eeprom_record(4)),
-            '5cdea5248cd97b84471714a33910c272'
-            '92f0463c58b5453150ee1673a5d135a5')
-
-    def test_each_node_board_names_its_processor_count(self):
-        self.assertIn(b'IP45_2CPU', lib._build_node_board_eeprom_record(2))
-        self.assertIn(b'IP45_4CPU', lib._build_node_board_eeprom_record(4))
-
-    def test_a_record_sums_to_zero_in_whole_units(self):
-        record = lib._build_node_board_eeprom_record(4)
-        self.assertEqual(sum(record) & 0xff, 0)
-        self.assertEqual(len(record), record[1] * 8)
-
-    def test_no_node_board_carries_three_processors(self):
-        with self.assertRaisesRegex(ValueError, '3 processors'):
-            lib._build_node_board_eeprom_record(3)
 
 
 class LaunchTests(unittest.TestCase):
@@ -61,16 +25,9 @@ class LaunchTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = self.tmp.name
         self.firmware = os.path.join(root, lib.FIRMWARE_REL)
-        self.spd_paths = []
-        for rel, contents in ((lib.FIRMWARE_REL, b'\x00' * 4096),
-                              (lib.SPD_INPUTS[0][1], b'\x01' * 256),
-                              (lib.SPD_INPUTS[1][1], b'\x02' * 256)):
-            path = os.path.join(root, rel)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'wb') as out:
-                out.write(contents)
-            if rel != lib.FIRMWARE_REL:
-                self.spd_paths.append(path)
+        os.makedirs(os.path.dirname(self.firmware), exist_ok=True)
+        with open(self.firmware, 'wb') as out:
+            out.write(b'\x00' * 4096)
         self.scratch = os.path.join(root, 'scratch')
         os.makedirs(self.scratch)
         # The stand-in firmware cannot match the reviewed boot-flash digest.
@@ -86,29 +43,35 @@ class LaunchTests(unittest.TestCase):
         return dict(option.split('=', 1)
                     for option in machine.split(',')[1:])
 
-    def test_one_chassis_carries_the_node_board_record(self):
-        machine, _argv = lib.launch_args(self.firmware, self.spd_paths, 2,
-                                         self.scratch)
-        props = self._props(machine)
-        with open(props['board-eeprom.0'], 'rb') as record:
-            self.assertEqual(record.read(),
-                             lib._build_node_board_eeprom_record(2))
-        with open(props['chassis-eeprom.0'], 'rb') as record:
-            self.assertEqual(record.read(),
-                             lib._build_node_chassis_eeprom_record())
+    def test_one_chassis_names_only_its_mac(self):
+        machine, argv = lib.launch_args(self.firmware, 2, self.scratch)
+        self.assertTrue(machine.startswith('origin300,'))
+        self.assertEqual(self._props(machine), {'mac': lib.NETWORK_MAC})
+        self.assertEqual(argv[argv.index('-smp') + 1], '2')
+        self.assertIn(f'if=pflash,index=0,file='
+                      f'{self.scratch}/ip35-boot-flash.raw,format=raw', argv)
 
-    def test_the_pair_gives_each_node_its_own_board_record(self):
+    def test_the_pair_adds_its_topology_and_second_flash(self):
         machine, argv = lib.launch_args_two_chassis(
-            self.firmware, self.spd_paths, (4, 2), self.scratch)
-        props = self._props(machine)
-        with open(props['board-eeprom.0'], 'rb') as record:
-            self.assertIn(b'IP45_4CPU', record.read())
-        with open(props['board-eeprom.2'], 'rb') as record:
-            self.assertIn(b'IP45_2CPU', record.read())
-        self.assertEqual(props['chassis-eeprom.2'], props['chassis-eeprom.0'])
-        self.assertNotEqual(props['board-eeprom.3'], props['board-eeprom.1'])
-        self.assertEqual(props['topology'], 'origin300-two-chassis')
+            self.firmware, (4, 2), self.scratch)
+        self.assertEqual(self._props(machine), {
+            'mac': lib.NETWORK_MAC,
+            'topology': 'origin300-two-chassis',
+            'population': '4:2'})
         self.assertEqual(argv[argv.index('-smp') + 1], '6')
+        self.assertEqual(argv[argv.index('-m') + 1], '1024M')
+        self.assertIn(f'if=pflash,index=1,file='
+                      f'{self.scratch}/node1/ip35-boot-flash.raw,format=raw',
+                      argv)
+
+    def test_no_identity_or_spd_file_is_written(self):
+        lib.launch_args_two_chassis(self.firmware, (4, 4), self.scratch)
+        written = sorted(os.path.relpath(os.path.join(where, name),
+                                         self.scratch)
+                         for where, _dirs, names in os.walk(self.scratch)
+                         for name in names)
+        self.assertEqual(written, ['ip35-boot-flash.raw',
+                                   'node1/ip35-boot-flash.raw'])
 
 
 if __name__ == '__main__':

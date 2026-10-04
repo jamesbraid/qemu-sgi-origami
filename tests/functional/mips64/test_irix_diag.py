@@ -154,8 +154,6 @@ IP35_DIAG_DISK_SPEC = (
     FLAVOURS['origin300'].disk,
     '150cf2c125cb3bd55764acfeec00804899ff3140cc536cf63a254765faa29390')
 DIAG_MEDIUM_SPEC = (MEDIUM_REL, MEDIUM_SHA256)
-IP35_SPD_3_SPEC = lib_origin300.SPD_INPUTS[0][1:]
-IP35_SPD_5_SPEC = lib_origin300.SPD_INPUTS[1][1:]
 
 
 class _Console(IrixConsole):
@@ -203,9 +201,6 @@ if QemuSystemTest is not None:
                 'disk': self.ASSET_DISK.fetch(),
                 'medium': self.ASSET_MEDIUM.fetch(),
             }
-            if flavour.origin300:
-                self.assets['origin300_spd'] = (
-                    self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
             scratch = self.scratch_file()
             os.makedirs(scratch, exist_ok=True)
             self.paths = {name: os.path.join(scratch, leaf)

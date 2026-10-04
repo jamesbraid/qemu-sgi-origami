@@ -30,16 +30,13 @@ class Origin300TwoChassisProm(QemuSystemTest):
     timeout = 1200
     ASSET_FIRMWARE = LocalAsset(
         lib_origin300.FIRMWARE_REL, lib_origin300.FIRMWARE_SHA256)
-    ASSET_SPD_3 = LocalAsset(*lib_origin300.SPD_INPUTS[0][1:])
-    ASSET_SPD_5 = LocalAsset(*lib_origin300.SPD_INPUTS[1][1:])
 
     @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
     def test_eight_cpus_on_two_nodes_reach_the_menu(self):
         populations = (4, 4)
         firmware = self.ASSET_FIRMWARE.fetch()
-        spd_paths = (self.ASSET_SPD_3.fetch(), self.ASSET_SPD_5.fetch())
         machine, argv = lib_origin300.launch_args_two_chassis(
-            firmware, spd_paths, populations, self.workdir)
+            firmware, populations, self.workdir)
 
         self.set_machine('origin300')
         self.vm.set_console()
