@@ -6569,6 +6569,40 @@ static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
     s->x_boxes_have = 0;
 }
 
+static void sgi_kona_x_relative_points(SGIKonaState *s,
+                                       const uint32_t *args, unsigned argc)
+{
+    uint32_t points[SGI_KONA_X_BOX_RUN_WORDS + 6];
+    unsigned count = s->x_boxes_have + argc;
+    int x = 0, y = 0;
+
+    if (count > ARRAY_SIZE(points)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: relative X point run too long; dropped\n");
+        goto done;
+    }
+    /* Each sender batch includes its own absolute first coordinate. */
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t word = i < s->x_boxes_have ? s->x_boxes[i] :
+                        args[i - s->x_boxes_have];
+
+        x += (int16_t)(word >> 16);
+        y += (int16_t)word;
+        if (x < INT16_MIN || x > INT16_MAX ||
+            y < INT16_MIN || y > INT16_MAX) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: relative X point coordinate"
+                          " overflow; run dropped\n");
+            goto done;
+        }
+        points[i] = ((uint32_t)(uint16_t)x << 16) | (uint16_t)y;
+    }
+    if (sgi_kona_x_point_words(s, points, count, false, false)) {
+        sgi_kona_x_point_words(s, points, count, false, true);
+    }
+done:
+    s->x_boxes_have = 0;
+}
+
 /* The words of an X pixel setup, in send order. */
 enum {
     SGI_KONA_X_SETUP_MODE,
@@ -7744,6 +7778,8 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_POINT:
     case SGI_KONA_CMD_X_POINT6:
     case SGI_KONA_CMD_X_POINT24:
+    case SGI_KONA_CMD_X_RELATIVE_POINT:
+    case SGI_KONA_CMD_X_RELATIVE_POINT6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT:
     case SGI_KONA_CMD_X_BACKGROUND_POINT6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT24:
@@ -7933,8 +7969,10 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_BACKGROUND_POINT24:
         sgi_kona_x_points(s, args, argc, true);
         break;
-    case 0x14f:
-    case 0x150:
+    case SGI_KONA_CMD_X_RELATIVE_POINT:
+    case SGI_KONA_CMD_X_RELATIVE_POINT6:
+        sgi_kona_x_relative_points(s, args, argc);
+        break;
     case 0x159:
     case 0x15b:
     case 0x15c:
