@@ -3549,8 +3549,7 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
     if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])) ||
-        s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
-        s->gl[i].cur.texture_3d || !width || !height ||
+        !width || !height ||
         (uint64_t)width * height > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
         return false;
     }
@@ -4877,8 +4876,7 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
         return a[5] ? 0 : layout.payload_words;
     }
     refused = a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
-        s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
-        s->gl[i].cur.texture_3d || p->pixel_zoom_unsupported ||
+        p->pixel_zoom_unsupported ||
         p->pixel_transfer_unsupported;
     if (refused) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels profile refused; %s\n",
@@ -4914,9 +4912,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
-        s->gl[i].in_begin || s->gl[i].cur.texture_1d ||
-        s->gl[i].cur.texture_2d || s->gl[i].cur.texture_3d ||
-        !sgi_kona_gl_pixels_layout(u, &layout)) {
+        s->gl[i].in_begin || !sgi_kona_gl_pixels_layout(u, &layout)) {
         goto out;
     }
     p = &s->gl_pipe[i];
@@ -5058,8 +5054,6 @@ static uint32_t sgi_kona_gl_bitmap_open(SGIKonaState *s, int i,
     u->count = a[7];
     u->context = i;
     u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
-                 s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
-                 s->gl[i].cur.texture_3d ||
                  !a[0] || (a[0] & 7) || !a[1] ||
                  a[0] > SGI_KONA_GL_IMAGE_MAX ||
                  a[1] > SGI_KONA_GL_IMAGE_MAX ||
@@ -5082,8 +5076,7 @@ static void sgi_kona_gl_bitmap_done(SGIKonaState *s)
     SGIGLSink sink;
 
     if (u->count && !u->refused && s->context_current == i &&
-        !s->gl[i].in_begin && !s->gl[i].cur.texture_1d &&
-        !s->gl[i].cur.texture_2d && !s->gl[i].cur.texture_3d &&
+        !s->gl[i].in_begin &&
         sgi_gl_bitmap_place(&s->gl[i], a[0], a[1],
                             sgi_kona_gl_float(a[2]), sgi_kona_gl_float(a[3]),
                             sgi_kona_gl_float(a[4]) - sgi_kona_gl_float(a[2]),
@@ -5188,8 +5181,6 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     u->context = i;
     u->count = layout.payload_words;
     u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
-                 s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
-                 s->gl[i].cur.texture_3d ||
                  !sgi_kona_gl_bitmap_position_valid(a + 5, false);
     if (u->refused) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap profile refused; %s\n",
@@ -5213,9 +5204,7 @@ static bool sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
     g_autofree uint8_t *bytes = NULL;
 
     if (!u->count || u->refused || i != s->context_current ||
-        s->gl[i].in_begin || s->gl[i].cur.texture_1d ||
-        s->gl[i].cur.texture_2d || s->gl[i].cur.texture_3d ||
-        !sgi_kona_gl_raw_bitmap_layout(u, &layout)) {
+        s->gl[i].in_begin || !sgi_kona_gl_raw_bitmap_layout(u, &layout)) {
         goto out;
     }
     row_bytes = DIV_ROUND_UP(layout.width, 8);
