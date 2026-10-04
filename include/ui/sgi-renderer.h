@@ -213,6 +213,8 @@ void sgi_renderer_test_fail_draw(SGIRenderer *renderer, unsigned nth_draw);
 void sgi_renderer_free(SGIRenderer *renderer);
 bool sgi_renderer_request_valid(const SGIRendererRequest *request);
 bool sgi_renderer_staging_valid(const SGIRendererRequest *request);
+bool sgi_renderer_request_cull(SGIRendererRequest *request, bool clockwise,
+                                bool cull_front, bool cull_back);
 /* Translate snapped window vertices and inclusive ownership into one tile. */
 bool sgi_renderer_request_tile(SGIRendererRequest *request,
                                 int64_t x, int64_t y, unsigned width,

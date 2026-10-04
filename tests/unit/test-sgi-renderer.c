@@ -220,6 +220,46 @@ static void test_tile_invalid(void)
     g_assert_true(sgi_renderer_staging_valid(request));
 }
 
+static void test_culling(void)
+{
+    for (unsigned mode = 0; mode < 16; mode++) {
+        g_autofree SGIRendererRequest *request = fixture();
+        bool reverse = mode & 1, clockwise = mode & 2;
+        bool cull_front = mode & 4, cull_back = mode & 8;
+        bool front = reverse == clockwise;
+        bool culled = front ? cull_front : cull_back;
+        float vertices[3][4];
+
+        if (reverse) {
+            float vertex[4];
+
+            memcpy(vertex, request->vertices[1], sizeof(vertex));
+            memcpy(request->vertices[1], request->vertices[2],
+                   sizeof(vertex));
+            memcpy(request->vertices[2], vertex, sizeof(vertex));
+        }
+        memcpy(vertices, request->vertices, sizeof(vertices));
+        g_assert_true(sgi_renderer_request_cull(request, clockwise,
+                                               cull_front, cull_back));
+        g_assert_cmpmem(request->vertices, sizeof(request->vertices),
+                        vertices, sizeof(vertices));
+        g_assert_cmpint(request->clip[2], ==, culled ? -1 : 127);
+        if (culled) {
+            memset(request->rgba, 0, sizeof(request->rgba));
+        }
+        g_assert_true(sgi_renderer_staging_valid(request));
+    }
+    g_autofree SGIRendererRequest *request = fixture();
+
+    memcpy(request->vertices[1], request->vertices[0],
+           sizeof(request->vertices[1]));
+    memset(request->rgba, 0, sizeof(request->rgba));
+    g_assert_true(sgi_renderer_request_cull(request, false, false, false));
+    g_assert_true(sgi_renderer_staging_valid(request));
+    request->vertices[0][0] = NAN;
+    g_assert_false(sgi_renderer_request_cull(request, false, true, true));
+}
+
 static void test_triangle_coverage(void)
 {
     static const float vertices[4][3][4] = {
@@ -913,6 +953,7 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sgi-renderer/tiles/partial", GUINT_TO_POINTER(2),
                          test_tiles);
     g_test_add_func("/sgi-renderer/tiles/invalid", test_tile_invalid);
+    g_test_add_func("/sgi-renderer/culling", test_culling);
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
     g_test_add_func("/sgi-renderer/missing-backend", test_missing_backend);
 #endif
