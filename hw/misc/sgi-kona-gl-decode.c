@@ -379,7 +379,7 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
      * Their border storage is not established by this sampler record.
      */
     if (!min_filter[min] || (mag > 1 && (mag < 3 || mag > 5)) ||
-        (bind[3] & 0x7000) ||
+        (bind[3] & 0x7000) || (bind[2] & 0xc00) ||
         !scale_s || !scale_t) {
         return false;
     }

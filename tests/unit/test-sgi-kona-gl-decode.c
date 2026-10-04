@@ -604,6 +604,16 @@ static void test_texture_sampler(void)
         g_assert_cmpmem(&p, sizeof(p), &original, sizeof(original));
     }
     bind[3] = 0;
+    for (unsigned mode = 1; mode <= 3; mode++) {
+        p = original;
+        p.base_level = 0;
+        SGIKonaTextureParams before = p;
+
+        bind[2] = (4 << 2) | (mode << 10);
+        g_assert_false(sgi_kona_gl_texture_sampler(bind, record, &p));
+        g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
+    }
+    bind[2] = 4 << 2;
     for (unsigned lo = 1; lo < 64; lo++) {
         p = original;
         p.base_level = 0;
