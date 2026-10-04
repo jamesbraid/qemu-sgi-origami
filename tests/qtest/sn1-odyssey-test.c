@@ -8183,8 +8183,9 @@ static void test_command_fifo_gl_window_restore(void)
  * both among the words each textured draw or upload also pushes, and
  * leaves their contents unknown.
  */
-static void upload_begin_at(QTestState *qts, uint32_t base, uint32_t wunits,
-                            uint32_t fmt, uint32_t x, uint32_t w, uint32_t h)
+static void upload_begin_xy(QTestState *qts, uint32_t base, uint32_t wunits,
+                            uint32_t fmt, uint32_t x, uint32_t y,
+                            uint32_t w, uint32_t h)
 {
     const uint32_t words[] = {
         0x00011453, 1, 0, 0, 0, 0,
@@ -8195,15 +8196,22 @@ static void upload_begin_at(QTestState *qts, uint32_t base, uint32_t wunits,
         ODSY_CMD_DID_COMPARE, 0, 0,
         ODSY_CMD_DEST_SELECT, base, wunits, fmt, 0,
         ODSY_REG_WRITE_MASK, 0x01ffffff,
-        0x0001081d, (x << 12) | (x + w), h,
+        0x0001081d, (x << 12) | (x + w), (y << 12) | (y + h),
         ODSY_CMD_IMAGE_STATE,
         ODSY_CMD_GL_BEGIN, ODSY_CMD_IMAGE_PRIMITIVE,
         ODSY_CMD_IMAGE_BOX, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000,
-        coord_bits(x), 0, 0, coord_bits(x + w), coord_bits(h), 0,
+        coord_bits(x), coord_bits(y), 0,
+        coord_bits(x + w), coord_bits(y + h), 0,
         ODSY_CMD_GL_VERTEX_2I, 0, 0,
     };
 
     push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void upload_begin_at(QTestState *qts, uint32_t base, uint32_t wunits,
+                            uint32_t fmt, uint32_t x, uint32_t w, uint32_t h)
+{
+    upload_begin_xy(qts, base, wunits, fmt, x, 0, w, h);
 }
 
 static void upload_begin(QTestState *qts, uint32_t base, uint32_t wunits,
@@ -10581,6 +10589,201 @@ static void test_texture_one_dimensional_stored_upload(void)
 static void test_texture_one_dimensional_wide_stored_upload(void)
 {
     texture_one_dimensional_stored_upload(true);
+}
+
+static void texture_two_dimensional_border_upload(QTestState *qts,
+                                                   bool stored, bool truncated)
+{
+    const uint32_t pixels[4][4] = {
+        { 0xf01020ff, 0x10f020ff, 0x2010f0ff, 0xf0e010ff },
+        { 0x1040f0ff, 0x405060ff, 0x708090ff, 0xe01080ff },
+        { 0x10f0e0ff, 0xa0b0c0ff, 0xd0e0f0ff, 0xf010e0ff },
+        { 0xf02010ff, 0x20f010ff, 0x1020f0ff, 0xe010f0ff },
+    };
+    const uint32_t zero_pixels[2][2] = {
+        { 0x405060ff, 0x708090ff }, { 0xa0b0c0ff, 0xd0e0f0ff },
+    };
+    unsigned origin = stored ? 15 : 0, size = stored ? 4 : 2;
+    unsigned rows = size - truncated;
+
+    upload_begin_xy(qts, 0x16a800, stored ? 4 : 2, 0x080024d0,
+                    origin, origin, size, rows);
+    for (unsigned row = 0; row < rows; row++) {
+        push_user_words(qts, (uint32_t[]) {
+            0x00004570, stored ? 0x0f41104b : 0x0f21104b, 0x00000071,
+            stored ? 0x00015011 : 0x00014811,
+        }, 4);
+        push_user_words(qts, stored ? pixels[row] : zero_pixels[row], size);
+    }
+    upload_end(qts);
+    /* Verify every authored row independently of texture sampling. */
+    for (unsigned y = 0; y < rows; y++) {
+        for (unsigned x = 0; x < size; x++) {
+            g_assert_cmphex(odsy_test_object_texel(qts, 0x16a800,
+                                                  origin + x, origin + y), ==,
+                            stored ? pixels[y][x] : zero_pixels[y][x]);
+        }
+    }
+}
+
+static void test_texture_two_dimensional_border_upload(void)
+{
+    for (unsigned stored = 0; stored < 2; stored++) {
+        QTestState *qts = board_start("");
+
+        texture_two_dimensional_border_upload(qts, stored, false);
+        qtest_quit(qts);
+    }
+}
+
+static void texture_two_dimensional_clamp(bool linear, bool stored)
+{
+    const uint32_t nearest[16] = {
+        0x405060ff, 0x405060ff, 0x708090ff, 0x708090ff,
+        0x405060ff, 0x405060ff, 0x708090ff, 0x708090ff,
+        0xa0b0c0ff, 0xa0b0c0ff, 0xd0e0f0ff, 0xd0e0f0ff,
+        0xa0b0c0ff, 0xa0b0c0ff, 0xd0e0f0ff, 0xd0e0f0ff,
+    };
+    const uint32_t zero_linear[16] = {
+        0x1c2c3cff, 0x283848ff, 0x405060ff, 0x283848ff,
+        0x283848ff, 0x405060ff, 0x708090ff, 0x405060ff,
+        0x586878ff, 0xa0b0c0ff, 0xd0e0f0ff, 0x708090ff,
+        0x344454ff, 0x586878ff, 0x708090ff, 0x405060ff,
+    };
+    const uint32_t stored_linear[16] = {
+        0x546464ff, 0x28a040ff, 0x4848c0ff, 0x986084ff,
+        0x2848a8ff, 0x405060ff, 0x708090ff, 0xa84888ff,
+        0x58d0d0ff, 0xa0b0c0ff, 0xd0e0f0ff, 0xe078e8ff,
+        0x70ac70ff, 0x60d068ff, 0x7080f0ff, 0xac48ecff,
+    };
+    const uint32_t coords[4] = { 0, 0x3e800000, 0x3f400000, 0x3f800000 };
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2410,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, stored ? 0x41100004 : 0x41100002, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+    };
+    uint32_t sampler[] = {
+        0x00011c16, 0x08000420, 2, 2, 1,
+        stored ? (linear ? 0x03002822 : 0x03002800) :
+                 (linear ? 0x13002822 : 0x13002800),
+        0x00101202, stored ? 0x01303fff : 0x00303fff,
+    };
+    QTestState *qts = board_start("");
+    unsigned mismatches = 0;
+
+    texture_two_dimensional_border_upload(qts, stored, false);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    push_user_words(qts, (uint32_t[]) {
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    }, 4);
+    for (unsigned row = 0; row < 4; row++) {
+        for (unsigned col = 0; col < 4; col++) {
+            unsigned x = 8 + col * 28, y = 8 + row * 28;
+
+            push_user_words(qts, (uint32_t[]) {
+                0x00014400, 7, 0xc380c821, coords[col], coords[row],
+                0x8080c800, x, y,
+                0x8080c800, x + 16, y,
+                0x8080c800, x + 16, y + 16,
+                0x8080c800, x, y + 16, 0x00014001,
+            }, 18);
+        }
+    }
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            uint32_t expected = 0x000000ff, actual = odsy_test_pixel(qts, x, y);
+
+            if (x >= 8 && y >= 8 && x < 108 && y < 108 &&
+                (x - 8) % 28 < 16 && (y - 8) % 28 < 16) {
+                unsigned i = ((y - 8) / 28) * 4 + (x - 8) / 28;
+
+                expected = !linear ? nearest[i] :
+                           stored ? stored_linear[i] : zero_linear[i];
+            }
+            if (actual != expected) {
+                if (mismatches < 8) {
+                    g_test_message("pixel (%u,%u): expected %08x, got %08x",
+                                   x, y, expected, actual);
+                }
+                mismatches++;
+            }
+        }
+    }
+    g_test_message("2D %s %s clamp mismatches %u/16384",
+                   stored ? "stored" : "zero-border",
+                   linear ? "linear" : "nearest", mismatches);
+    /* Unpaired flags, unknown filters and high fields stay unsupported. */
+    for (unsigned bad = 0; bad < 3; bad++) {
+        sampler[5] = bad == 0 ? (linear ? 0x03002822 : 0x03002800) :
+                     bad == 1 ? 0x13002820 :
+                     linear ? 0x13002822 : 0x13002800;
+        sampler[7] = bad == 2 ? 0x02303fff : 0x00303fff;
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
+        texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
+        g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
+    }
+    sampler[1] = 0x08000840;
+    sampler[2] = sampler[3] = 4;
+    sampler[5] = linear ? 0x03002822 : 0x03002800;
+    sampler[7] = 0x01303fff;
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    odsy_test_pixel_write(qts, 4, 4, 0x123456ff);
+    texture_adapter_point(qts, 4, 4, 0.0f, 0.0f);
+    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0x123456ff);
+    qtest_quit(qts);
+    g_assert_cmpuint(mismatches, ==, 0);
+}
+
+static void test_texture_two_dimensional_missing_border_row(void)
+{
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2410,
+        0x00011c16, 0x08000420, 2, 2, 1, 0x03002822, 0x00101202, 0x01303fff,
+        0x00010e80, 0x16a800, 0x41100004, 0,
+        0x00010406, 0, 0x0001141b, 1, 0, 0, 0, 0,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    const uint32_t white[4] = {
+        ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start("");
+
+    /* Synthetic incomplete backing omits the captured upper border row. */
+    texture_two_dimensional_border_upload(qts, true, true);
+    texture_adapter_window(qts);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    texture_adapter_point_rgba(qts, 4, 4, 0.25f, 0.25f, white);
+    texture_adapter_point_rgba(qts, 5, 4, 1.0f, 1.0f, white);
+    /* Missing-image resolution preserves primary colour for the whole draw. */
+    g_assert_cmphex(odsy_test_pixel(qts, 4, 4), ==, 0xffffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 5, 4), ==, 0xffffffff);
+    qtest_quit(qts);
+}
+
+static void test_texture_two_dimensional_clamp_nearest(void)
+{
+    texture_two_dimensional_clamp(false, false);
+}
+
+static void test_texture_two_dimensional_clamp_linear(void)
+{
+    texture_two_dimensional_clamp(true, false);
+}
+
+static void test_texture_two_dimensional_stored_nearest(void)
+{
+    texture_two_dimensional_clamp(false, true);
+}
+
+static void test_texture_two_dimensional_stored_linear(void)
+{
+    texture_two_dimensional_clamp(true, true);
 }
 
 static void test_texture_chain_height_one(void)
@@ -15644,6 +15847,24 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/texture-adapter/"
                    "one-dimensional-wide-stored-linear",
                    test_texture_one_dimensional_wide_stored_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-border-upload",
+                   test_texture_two_dimensional_border_upload);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-clamp-nearest",
+                   test_texture_two_dimensional_clamp_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-clamp-linear",
+                   test_texture_two_dimensional_clamp_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-stored-nearest",
+                   test_texture_two_dimensional_stored_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-stored-linear",
+                   test_texture_two_dimensional_stored_linear);
+    qtest_add_func("sn1/odyssey/texture-adapter/"
+                   "two-dimensional-missing-border-row",
+                   test_texture_two_dimensional_missing_border_row);
     qtest_add_func("sn1/odyssey/texture-adapter/height-one",
                    test_texture_chain_height_one);
     qtest_add_func("sn1/odyssey/texture-adapter/construction",
