@@ -1842,13 +1842,28 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     return false;
 }
 
+static void r4k_flush_tlb_range(CPUState *cs, target_ulong addr,
+                                target_ulong pagesize)
+{
+    /* Keep frequently replaced small pages free of broader TLB eviction. */
+    if (pagesize <= 4 * TARGET_PAGE_SIZE) {
+        for (target_ulong offset = 0; offset < pagesize;
+             offset += TARGET_PAGE_SIZE) {
+            tlb_flush_page(cs, addr + offset);
+        }
+    } else {
+        tlb_flush_range_by_mmuidx(cs, addr, pagesize,
+                                  (1U << NB_MMU_MODES) - 1, TARGET_LONG_BITS);
+    }
+}
+
 void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
 {
     CPUState *cs = env_cpu(env);
     mips_tlb_flush_caches(env);
     r4k_tlb_t *tlb;
     target_ulong addr;
-    target_ulong end;
+    target_ulong pagesize;
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = env->CP0_MemoryMapID;
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
@@ -1880,6 +1895,7 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
 
     /* 1k pages are not supported. */
     mask = tlb->PageMask | ~(TARGET_PAGE_MASK << 1);
+    pagesize = (mask >> 1) + 1;
     if (tlb->V0) {
         addr = tlb->VPN & ~mask;
 #if defined(TARGET_MIPS64)
@@ -1887,11 +1903,7 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
             addr |= 0x3FFFFF0000000000ULL;
         }
 #endif
-        end = addr | (mask >> 1);
-        while (addr < end) {
-            tlb_flush_page(cs, addr);
-            addr += TARGET_PAGE_SIZE;
-        }
+        r4k_flush_tlb_range(cs, addr, pagesize);
     }
     if (tlb->V1) {
         addr = (tlb->VPN & ~mask) | ((mask >> 1) + 1);
@@ -1900,10 +1912,6 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra)
             addr |= 0x3FFFFF0000000000ULL;
         }
 #endif
-        end = addr | mask;
-        while (addr - 1 < end) {
-            tlb_flush_page(cs, addr);
-            addr += TARGET_PAGE_SIZE;
-        }
+        r4k_flush_tlb_range(cs, addr, pagesize);
     }
 }

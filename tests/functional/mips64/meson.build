@@ -336,6 +336,8 @@ benchmarks_mips64_system = ['irix_performance']
 
 subdir('roms')
 if sgi_roms_available
+  benchmarks_mips64_system += ['mips_tlb_performance']
+  test_mips64_timeouts += {'mips_tlb_performance': 1200}
   tests_mips64_system_thorough += ['sgi_roms']
   test_mips64_timeouts += {'sgi_roms': 18000}
   tests_mips64_system_thorough += ['timer_stall']
