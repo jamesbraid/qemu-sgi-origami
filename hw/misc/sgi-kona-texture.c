@@ -321,7 +321,7 @@ bool sgi_kona_texture_native_upload(SGIKonaTextureState *s,
     height = MAX(n ? n->image.height : 0, h[14] + 1);
     depth = volume ? MAX(n ? n->image.depth : 0, h[15] + 1) : 1;
     if (!native_volume_dimensions(width, height, depth) ||
-        (o && o->native_width && (!o->native_layout_valid || volume) &&
+        (o && o->native_width && !o->native_layout_valid &&
          (width > o->native_width || height > o->native_height ||
           (volume && o->native_depth && depth > o->native_depth))) ||
         (n && (n->image.base_format != base_format ||
@@ -452,14 +452,12 @@ bool sgi_kona_texture_native_dimensions_1d(SGIKonaTextureState *s,
 bool sgi_kona_texture_native_layout(SGIKonaTextureState *s, uint32_t handle,
                                    uint32_t physical_size)
 {
-    SGIKonaTextureObject *o;
+    SGIKonaTextureObject *o = texture_object(s, handle, false);
 
-    if ((physical_size & ~0xffu) || (physical_size & 15) > 13 ||
-        ((physical_size >> 4) & 15) > 13) {
-        return false;
-    }
-    o = texture_object(s, handle, false);
-    if (!o || !o->native_width || o->native_depth) {
+    if (!o || !o->native_width ||
+        (physical_size & ~(o->native_depth ? 0xfffu : 0xffu)) ||
+        (physical_size & 15) > 13 || ((physical_size >> 4) & 15) > 13 ||
+        (physical_size >> 8) > 13) {
         return false;
     }
     o->native_layout = physical_size;
@@ -721,7 +719,9 @@ static bool texture_native_read_3d(void *opaque, uint32_t level, uint32_t x,
     if (x >= l->width || y >= l->height || z >= l->depth || !l->pixels) {
         return false;
     }
-    *rgba = l->pixels[((size_t)z * l->height + y) * l->width + x];
+    *rgba = l->pixels[((size_t)z * (l->stride_height ? l->stride_height :
+                                  l->height) + y) *
+                     (l->stride_width ? l->stride_width : l->width) + x];
     if (l->base_format == SGI_GL_RGB) {
         *rgba |= 0xff;
     }
@@ -732,24 +732,33 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
                                       const SGIKonaTextureNativeImage *n,
                                       unsigned level)
 {
+    bool volume = o->native_depth != 0;
     uint32_t width = MAX(1u, o->native_width >> level);
     uint32_t height = MAX(1u, o->native_height >> level);
+    uint32_t depth = volume ? MAX(1u, o->native_depth >> level) : 1;
     int ps = o->native_layout & 15;
     int pt = (o->native_layout >> 4) & 15;
+    int pr = (o->native_layout >> 8) & 15;
     uint32_t geometry = MAX(ps - (int)level, 3) |
-                        (MAX(pt - (int)level, 2) << 4);
+                        (MAX(pt - (int)level, volume ? 1 : 2) << 4);
 
+    if (volume) {
+        geometry |= MAX(pr - (int)level, 1) << 8;
+    }
     if (o->params.base_level || !o->native_width ||
-        (n->header[17] & 0x60) || n->header[16] != geometry ||
-        width > n->image.width || height > n->image.height) {
+        (n->header[17] & 0x60) != (volume ? 0x40 : 0) ||
+        n->header[16] != geometry || width > n->image.width ||
+        height > n->image.height || depth > n->image.depth) {
         return false;
     }
-    for (uint32_t y = 0; y < height; y++) {
-        uint64_t row = (uint64_t)y * n->image.width;
+    for (uint32_t z = 0; z < depth; z++) {
+        for (uint32_t y = 0; y < height; y++) {
+            uint64_t row = ((uint64_t)z * n->image.height + y) * n->image.width;
 
-        for (uint32_t x = 0; x < width; x++) {
-            if (!native_covered(n->coverage, row + x)) {
-                return false;
+            for (uint32_t x = 0; x < width; x++) {
+                if (!native_covered(n->coverage, row + x)) {
+                    return false;
+                }
             }
         }
     }
@@ -781,7 +790,8 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                     ((h[17] >> 3) & 1) == (level & 1) &&
                     h[18] == o->native_table[level & ~1u] &&
                     h[19] == o->native_table[(level & ~1u) + 1] &&
-                    n->image.depth == MAX(1u, o->native_depth >> level);
+                    (o->native_layout_valid ||
+                     n->image.depth == MAX(1u, o->native_depth >> level));
             } else {
                 matches = h[0] == (o->native_one_dimensional ?
                                   SGI_GL_TEXTURE_1D : SGI_GL_TEXTURE_2D) &&
@@ -792,14 +802,13 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
 
             matches = matches &&
                       (!o->native_format_valid || h[9] == o->native_format);
-            if (!volume && o->native_layout_valid) {
+            if (o->native_layout_valid) {
                 matches = matches && texture_native_interior(o, n, level);
             } else {
                 matches = matches && n->covered == native_pixels(n) &&
                           texture_dimensions(n->image.width, n->image.height);
             }
-            if (matches && o->native_width &&
-                (volume || !o->native_layout_valid)) {
+            if (matches && o->native_width && !o->native_layout_valid) {
                 matches = n->image.width == MAX(1u, o->native_width >> level) &&
                           n->image.height == MAX(1u, o->native_height >> level);
             }
@@ -827,8 +836,10 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                   texture_native_uses_border(o->params.wrap_t)));
 
             *view = *image;
-            if (!volume && o->native_layout_valid) {
+            if (o->native_layout_valid) {
                 view->stride_width = image->width;
+                view->stride_height = image->height;
+                view->depth = volume ? MAX(1u, o->native_depth >> level) : 1;
                 view->width = MAX(1u, o->native_width >> level);
                 view->height = MAX(1u, o->native_height >> level);
             }
@@ -1359,10 +1370,12 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         valid = qemu_get_be32(f);
         o->native_layout = qemu_get_be32(f);
-        if (valid > 3 || (o->native_layout & ~0xffu) ||
+        if (valid > 3 ||
+            (o->native_layout & ~(o->native_depth ? 0xfffu : 0xffu)) ||
             (o->native_layout & 15) > 13 ||
             ((o->native_layout >> 4) & 15) > 13 ||
-            ((valid & 1) && (o->native_depth || !o->native_width)) ||
+            (o->native_layout >> 8) > 13 ||
+            ((valid & 1) && !o->native_width) ||
             ((valid & 2) && (o->native_depth || !o->native_width ||
                              o->native_height != 1))) {
             goto invalid;

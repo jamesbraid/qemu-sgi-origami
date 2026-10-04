@@ -5440,13 +5440,14 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
         (volume ?
             !sgi_kona_texture_native_volume_dimensions(&s->textures, handle,
                                                         width, height, depth) :
-            (!(one_dimensional ?
+            !(one_dimensional ?
                sgi_kona_texture_native_dimensions_1d(&s->textures, handle,
                                                        width) :
                sgi_kona_texture_native_dimensions(&s->textures, handle, width,
-                                                    height)) ||
-             !sgi_kona_texture_native_layout(&s->textures, handle,
-                                              s->texture_record[3]))) ||
+                                                    height))) ||
+        !sgi_kona_texture_native_layout(&s->textures, handle,
+            s->texture_record[volume && s->texture_record_token ==
+                SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT ? 1 : 3]) ||
         !sgi_kona_texture_bind(&s->textures, handle, &params)) {
         sgi_kona_texture_bind(&s->textures, UINT32_MAX, NULL);
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture binding refused for"

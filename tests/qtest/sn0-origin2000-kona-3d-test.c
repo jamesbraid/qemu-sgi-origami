@@ -4831,7 +4831,7 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
         (0x30 << 14) | (mipmapped ? 3 << 2 : linear ? (1 << 2) | (1 << 5) : 0),
         0x111, 1,
     };
-    uint32_t mip[] = { 0x22, 0x101010, 256u << 10, 0, 0x55, 0x66,
+    uint32_t mip[] = { 0x22, 0x101010, 256u << 10, 0x113, 0x55, 0x66,
                        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
                        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
 
@@ -4839,7 +4839,7 @@ static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
     if (mipmapped) {
         kona_command(s, 0x17b, mip, ARRAY_SIZE(mip));
     } else {
-        kona_command(s, 0x17c, (uint32_t[]) { 0x22, 0, 0x55, 0x66 }, 4);
+        kona_command(s, 0x17c, (uint32_t[]) { 0x22, 0x113, 0x55, 0x66 }, 4);
     }
 }
 
@@ -4856,7 +4856,7 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
     h[7] = 0;
     h[13] = h[14] = odd ? 0 : 1;
     h[15] = z;
-    h[16] = 0x111;
+    h[16] = 0x113;
     h[17] = 0x1141 | (dma ? 4 : 0) | (odd ? 8 : 0);
     h[18] = 0x55;
     h[19] = 0x66;
@@ -4867,9 +4867,10 @@ static void test_texture_native_volume(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool linear = mode == 1, dma = mode == 2, missing = mode == 4;
-    bool mipmapped = mode == 5 || mode == 6;
+    bool mipmapped = mode == 5 || mode == 6, mismatch = mode == 9;
     g_autofree char *log = NULL, *found = NULL;
-    QTestState *s = missing ? kona_init_logged(&log) : qtest_init(MACHINE_ARGS);
+    QTestState *s = missing || mismatch ? kona_init_logged(&log) :
+                                       qtest_init(MACHINE_ARGS);
     QTestState *from = NULL;
     g_autofree char *dir = NULL, *uri = NULL;
     GError *error = NULL;
@@ -4922,9 +4923,13 @@ static void test_texture_native_volume(gconstpointer opaque)
             sgi_migrate_stopped(from, uri);
         }
     }
+    if (mismatch) {
+        kona_command(s, 0x17c,
+                     (uint32_t[]) { 0x22, 0x114, 0x55, 0x66 }, 4);
+    }
     kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
-    if (mode >= 7) {
+    if (mode == 7 || mode == 8) {
         bool enabled = mode == 7;
 
         kona_command(s, enabled ? 0x24 : 0x25,
@@ -4951,8 +4956,8 @@ static void test_texture_native_volume(gconstpointer opaque)
     } else {
         kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
         gl_triangle_z(s, tri, 0);
-        assert_stencil_colour(s, missing ? 0xffffff : 0xff0000);
-        if (!missing) {
+        assert_stencil_colour(s, missing || mismatch ? 0xffffff : 0xff0000);
+        if (!missing && !mismatch) {
             kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.75 }, 3);
             gl_triangle_z(s, tri, 0);
             assert_stencil_colour(s, 0x0000ff);
@@ -4966,7 +4971,7 @@ static void test_texture_native_volume(gconstpointer opaque)
     }
     assert_textport_in_step(s);
     qtest_quit(s);
-    if (missing) {
+    if (missing || mismatch) {
         found = kona_log_read(log);
         g_assert_nonnull(strstr(found, "incomplete texture image pyramid, "
                                       "texturing disabled for draw"));
@@ -8090,7 +8095,7 @@ static void test_bitmap_texture_dimensions(gconstpointer opaque)
         h[7] = 0;
         h[14] = volume ? 1 : 0;
         h[15] = z;
-        h[16] = volume ? 0x111 : 0x23;
+        h[16] = volume ? 0x113 : 0x23;
         h[17] = (volume ? 0x1141 : 0x2181) | (dma ? 4 : 0);
         h[18] = volume ? 0x55 : 0;
         h[19] = volume ? 0x66 : 0;
@@ -12830,6 +12835,7 @@ int main(int argc, char **argv)
     static const char *volume_cases[] = {
         "nearest", "linear", "dma", "migrate-partial", "missing-slice",
         "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
+        "physical-mismatch",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {
