@@ -620,55 +620,79 @@ static void test_credit_uncounted_store_returns_nothing(void)
 int main(int argc, char **argv)
 {
     int ret;
+    bool list_mode = false;
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        if (g_str_equal(argv[i], "-l") ||
+            g_str_equal(argv[i], "--list")) {
+            list_mode = true;
+            break;
+        }
+    }
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/pending-mask-and-reassert",
-                   test_pending_mask_and_reassert);
-    qtest_add_func("sn0/origin2000/mgras/general-interrupt-vector",
-                   test_general_interrupt_vector);
-    qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-vector",
-                   test_retrace_interrupt_vector);
-    qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-needs-vc3-enable",
-                   test_retrace_interrupt_needs_vc3_enable);
-    qtest_add_func("sn0/origin2000/mgras/retrace-period-and-phase",
-                   test_retrace_period_and_phase);
-    qtest_add_func("sn0/origin2000/mgras/retrace-period-follows-vc3-tables",
-                   test_retrace_period_follows_vc3_tables);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "retrace-short-frame-runs-stock-period",
-                   test_retrace_short_frame_runs_stock_period);
-    qtest_add_func("sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
-                   test_irq_enable_set_and_clear_ports);
-    qtest_add_func("sn0/origin2000/mgras/swap-command-raises-interrupt-10",
-                   test_swap_command_raises_interrupt_10);
-    qtest_add_func("sn0/origin2000/mgras/swap-command-needs-enable",
-                   test_swap_command_needs_enable);
-    qtest_add_func("sn0/origin2000/mgras/swap-keeps-context-switch-enable",
-                   test_swap_keeps_context_switch_enable);
-    qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
-                   test_widget_error_interrupt_vector);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pending-mask-and-reassert",
+        test_pending_mask_and_reassert, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/general-interrupt-vector",
+        test_general_interrupt_vector, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-interrupt-vector",
+        test_retrace_interrupt_vector, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-interrupt-needs-vc3-enable",
+        test_retrace_interrupt_needs_vc3_enable, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-period-and-phase",
+        test_retrace_period_and_phase, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-period-follows-vc3-tables",
+        test_retrace_period_follows_vc3_tables, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-short-frame-runs-stock-period",
+        test_retrace_short_frame_runs_stock_period, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
+        test_irq_enable_set_and_clear_ports, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/swap-command-raises-interrupt-10",
+        test_swap_command_raises_interrupt_10, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/swap-command-needs-enable",
+        test_swap_command_needs_enable, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/swap-keeps-context-switch-enable",
+        test_swap_keeps_context_switch_enable, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/widget-error-interrupt-vector",
+        test_widget_error_interrupt_vector, false);
     /* The credit cases run a processor. */
-    if (qtest_has_accel("tcg")) {
-        qtest_add_func("sn0/origin2000/mgras/"
-                       "credit-burst-returns-to-allocation",
-                       test_credit_burst_returns_to_allocation);
-        qtest_add_func("sn0/origin2000/mgras/"
-                       "credit-doubleword-store-returns-one-credit",
-                       test_credit_doubleword_store_returns_one_credit);
-        qtest_add_func("sn0/origin2000/mgras/"
-                       "credit-return-names-the-boards-widget",
-                       test_credit_return_names_the_boards_widget);
-        qtest_add_func("sn0/origin2000/mgras/"
-                       "credit-uncounted-store-returns-nothing",
-                       test_credit_uncounted_store_returns_nothing);
+    if (list_mode || qtest_has_accel("tcg")) {
+        mgras_qtest_add_func(
+            "sn0/origin2000/mgras/credit-burst-returns-to-allocation",
+            test_credit_burst_returns_to_allocation, false);
+        mgras_qtest_add_func(
+            "sn0/origin2000/mgras/"
+            "credit-doubleword-store-returns-one-credit",
+            test_credit_doubleword_store_returns_one_credit, false);
+        mgras_qtest_add_func(
+            "sn0/origin2000/mgras/credit-return-names-the-boards-widget",
+            test_credit_return_names_the_boards_widget, false);
+        mgras_qtest_add_func(
+            "sn0/origin2000/mgras/"
+            "credit-uncounted-store-returns-nothing",
+            test_credit_uncounted_store_returns_nothing, false);
     }
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

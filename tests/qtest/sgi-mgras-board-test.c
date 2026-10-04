@@ -1894,133 +1894,197 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/identity-and-aperture",
-                   test_identity_and_aperture);
-    qtest_add_func("sn0/origin2000/mgras/widget-reserved-halves-raz-wi",
-                   test_widget_reserved_halves_raz_wi);
-    qtest_add_func("sn0/origin2000/mgras/widget-control-is-plain-storage",
-                   test_widget_control_is_plain_storage);
-    qtest_add_func("sn0/origin2000/mgras/generic-bringup-step",
-                   test_generic_bringup_step);
-    qtest_add_func("sn0/origin2000/mgras/bus-status-reads-settled",
-                   test_bus_status_reads_settled);
-    qtest_add_func("sn0/origin2000/mgras/reset-registers-are-plain-storage",
-                   test_reset_registers_are_plain_storage);
-    qtest_add_func("sn0/origin2000/mgras/i2c-probe-loopback",
-                   test_i2c_probe_loopback);
-    qtest_add_func("sn0/origin2000/mgras/i2c-strobe-byte-read",
-                   test_i2c_strobe_byte_read);
-    qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
-                   test_repp_sync_handshake);
-    qtest_add_func("sn0/origin2000/mgras/repp-status-byte-writes",
-                   test_repp_status_byte_writes);
-    qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-reads-back",
-                   test_xmap_buf_select_reads_back);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-routes-xmap-two-re",
-                        "ssi", test_pp1_select_routes_xmap_on_two_re_board);
-    qtest_add_data_func(
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/identity-and-aperture",
+        test_identity_and_aperture, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/widget-reserved-halves-raz-wi",
+        test_widget_reserved_halves_raz_wi, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/widget-control-is-plain-storage",
+        test_widget_control_is_plain_storage, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/generic-bringup-step",
+        test_generic_bringup_step, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/bus-status-reads-settled",
+        test_bus_status_reads_settled, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/reset-registers-are-plain-storage",
+        test_reset_registers_are_plain_storage, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/i2c-probe-loopback",
+        test_i2c_probe_loopback, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/i2c-strobe-byte-read",
+        test_i2c_strobe_byte_read, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/repp-sync-handshake",
+        test_repp_sync_handshake, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/repp-status-byte-writes",
+        test_repp_status_byte_writes, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/xmap-buf-select-reads-back",
+        test_xmap_buf_select_reads_back, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-routes-xmap-two-re",
+        "ssi",
+        test_pp1_select_routes_xmap_on_two_re_board, false);
+    mgras_qtest_add_data_func(
         "sn0/origin2000/mgras/pp1-select-routes-xmap-two-re/essi",
-        "essi", test_pp1_select_routes_xmap_on_two_re_board);
-    qtest_add_func("sn0/origin2000/mgras/pp1-select-absent-pp1-one-re",
-                   test_pp1_select_absent_pp1_on_one_re_board);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-scanout-follows-first-pp1",
-                        "ssi", test_pp1_scanout_follows_first_pp1);
-    qtest_add_data_func(
+        "essi",
+        test_pp1_select_routes_xmap_on_two_re_board, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pp1-select-absent-pp1-one-re",
+        test_pp1_select_absent_pp1_on_one_re_board, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-scanout-follows-first-pp1",
+        "ssi",
+        test_pp1_scanout_follows_first_pp1, false);
+    mgras_qtest_add_data_func(
         "sn0/origin2000/mgras/pp1-scanout-follows-first-pp1/essi",
-        "essi", test_pp1_scanout_follows_first_pp1);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-all-reads-first-pp1",
-                        "ssi", test_pp1_select_all_reads_first_pp1);
-    qtest_add_data_func(
+        "essi",
+        test_pp1_scanout_follows_first_pp1, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-all-reads-first-pp1",
+        "ssi",
+        test_pp1_select_all_reads_first_pp1, false);
+    mgras_qtest_add_data_func(
         "sn0/origin2000/mgras/pp1-select-all-reads-first-pp1/essi",
-        "essi", test_pp1_select_all_reads_first_pp1);
-    qtest_add_data_func("sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3",
-                        "ssi", test_pp1_select_ignores_bits_7_to_3);
-    qtest_add_data_func(
+        "essi",
+        test_pp1_select_all_reads_first_pp1, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3",
+        "ssi",
+        test_pp1_select_ignores_bits_7_to_3, false);
+    mgras_qtest_add_data_func(
         "sn0/origin2000/mgras/pp1-select-ignores-bits-7-to-3/essi",
-        "essi", test_pp1_select_ignores_bits_7_to_3);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/pp1-select-leaves-sync-registers-shared",
-        "ssi", test_pp1_select_leaves_sync_registers_shared);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/pp1-select-leaves-sync-registers-shared/essi",
-        "essi", test_pp1_select_leaves_sync_registers_shared);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/ssi",
-        "ssi", test_two_re_board_draws_one_set_of_planes);
-    qtest_add_data_func(
-        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/essi",
-        "essi", test_two_re_board_draws_one_set_of_planes);
-    qtest_add_func("sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
-                   test_xmap_revision_and_fifo_capacity);
-    qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
-                   test_xmap_buf_select_write);
-    qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
-                   test_visual_register_read_widths);
-    qtest_add_func("sn0/origin2000/mgras/visual-register-write-widths",
-                   test_visual_register_write_widths);
-    qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
-                   test_hq_status_bringup_bit);
-    qtest_add_func("sn0/origin2000/mgras/hq-status-hiwater-poll-bit",
-                   test_hq_status_hiwater_poll_bit);
-    qtest_add_func("sn0/origin2000/mgras/hq-status-independent-of-error",
-                   test_hq_status_independent_of_sticky_error);
-    qtest_add_func("sn0/origin2000/mgras/hq-status-re-sync-after-request",
-                   test_hq_status_re_sync_after_request);
-    qtest_add_func("sn0/origin2000/mgras/dac-address-byte-port",
-                   test_dac_address_byte_port);
-    qtest_add_func("sn0/origin2000/mgras/dac-register-file-matches-ide-reset",
-                   test_dac_register_file_matches_ide_reset);
-    qtest_add_func("sn0/origin2000/mgras/vc3-registers-read-back",
-                   test_vc3_registers_read_back);
-    qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
-                   test_dac_lut_load);
-    qtest_add_func("sn0/origin2000/mgras/dac-gamma-identity-ramp-noop",
-                   test_dac_gamma_identity_ramp_leaves_colors_unchanged);
-    qtest_add_func("sn0/origin2000/mgras/dac-gamma-curve-applies-to-scanout",
-                   test_dac_gamma_curve_applies_to_scanout);
-    qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
-                   test_write_path_fixes_dont_raise_the_sticky_error);
-    qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
-                   test_board_bringup_scratch_registers);
-    qtest_add_func("sn0/origin2000/mgras/vc3-arg-byte-write",
-                   test_vc3_arg_byte_write);
-    qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
-                   test_board_bringup_byte_poll_bit_position);
-    qtest_add_func("sn0/origin2000/mgras/unresolved-revision-byte-read",
-                   test_unresolved_revision_byte_read);
-    qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",
-                   test_board_info_byte_read_does_not_raise_error);
-    qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
-                   test_hq_upload_and_readback);
-    qtest_add_func("sn0/origin2000/mgras/reset-clears-context-acks",
-                   test_reset_clears_context_acknowledgements);
-    qtest_add_func("sn0/origin2000/mgras/cursor-position-origin",
-                   test_cursor_position_origin);
-    qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
-                   test_cursor_composites_when_enabled);
-    qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
-                   test_vc3_sram_round_trip);
-    qtest_add_func("sn0/origin2000/mgras/vc3-register-file",
-                   test_vc3_register_file);
-    qtest_add_func("sn0/origin2000/mgras/board-default-is-si",
-                   test_board_default_is_si);
-    qtest_add_func("sn0/origin2000/mgras/board-ge-revision-until-query",
-                   test_board_ge_revision_until_query);
-    qtest_add_func("sn0/origin2000/mgras/board-unknown-refused",
-                   test_board_unknown_refused);
-    qtest_add_func("sn0/origin2000/mgras/dac-mode-byte-readback",
-                   test_dac_mode_byte_readback);
-    qtest_add_func("sn0/origin2000/mgras/board-record-absent",
-                   test_board_record_absent);
+        "essi",
+        test_pp1_select_ignores_bits_7_to_3, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/"
+        "pp1-select-leaves-sync-registers-shared",
+        "ssi",
+        test_pp1_select_leaves_sync_registers_shared, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/"
+        "pp1-select-leaves-sync-registers-shared/essi",
+        "essi",
+        test_pp1_select_leaves_sync_registers_shared, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/"
+        "ssi",
+        "ssi",
+        test_two_re_board_draws_one_set_of_planes, false);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/two-re-board-draws-one-set-of-planes/"
+        "essi",
+        "essi",
+        test_two_re_board_draws_one_set_of_planes, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/xmap-revision-and-fifo-capacity",
+        test_xmap_revision_and_fifo_capacity, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/xmap-buf-select-write",
+        test_xmap_buf_select_write, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/visual-register-read-widths",
+        test_visual_register_read_widths, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/visual-register-write-widths",
+        test_visual_register_write_widths, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-status-bringup-bit",
+        test_hq_status_bringup_bit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-status-hiwater-poll-bit",
+        test_hq_status_hiwater_poll_bit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-status-independent-of-error",
+        test_hq_status_independent_of_sticky_error, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-status-re-sync-after-request",
+        test_hq_status_re_sync_after_request, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-address-byte-port",
+        test_dac_address_byte_port, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-register-file-matches-ide-reset",
+        test_dac_register_file_matches_ide_reset, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/vc3-registers-read-back",
+        test_vc3_registers_read_back, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-lut-load",
+        test_dac_lut_load, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-gamma-identity-ramp-noop",
+        test_dac_gamma_identity_ramp_leaves_colors_unchanged, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-gamma-curve-applies-to-scanout",
+        test_dac_gamma_curve_applies_to_scanout, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
+        test_write_path_fixes_dont_raise_the_sticky_error, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-bringup-scratch-registers",
+        test_board_bringup_scratch_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/vc3-arg-byte-write",
+        test_vc3_arg_byte_write, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
+        test_board_bringup_byte_poll_bit_position, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/unresolved-revision-byte-read",
+        test_unresolved_revision_byte_read, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-info-byte-read-no-error",
+        test_board_info_byte_read_does_not_raise_error, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-upload-readback",
+        test_hq_upload_and_readback, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/reset-clears-context-acks",
+        test_reset_clears_context_acknowledgements, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/cursor-position-origin",
+        test_cursor_position_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/cursor-composites-when-enabled",
+        test_cursor_composites_when_enabled, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/vc3-sram-round-trip",
+        test_vc3_sram_round_trip, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/vc3-register-file",
+        test_vc3_register_file, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-default-is-si",
+        test_board_default_is_si, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-ge-revision-until-query",
+        test_board_ge_revision_until_query, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-unknown-refused",
+        test_board_unknown_refused, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dac-mode-byte-readback",
+        test_dac_mode_byte_readback, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-record-absent",
+        test_board_record_absent, false);
     for (size_t i = 0; i < ARRAY_SIZE(mgras_board_record_expect); i++) {
         const MgrasBoardRecordExpect *e = &mgras_board_record_expect[i];
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/board-record/%s", e->board);
 
-        qtest_add_data_func(path, e, test_board_record);
+        mgras_qtest_add_data_func(
+            path,
+            e,
+            test_board_record, false);
     }
     for (size_t i = 0; i < ARRAY_SIZE(mgras_board_expect); i++) {
         const MgrasBoardExpect *e = &mgras_board_expect[i];
@@ -2040,11 +2104,12 @@ int main(int argc, char **argv)
         g_autofree char *pp1s = g_strdup_printf(
             "sn0/origin2000/mgras/board-pp1s-follow-re-count/%s", e->board);
 
-        qtest_add_data_func(path, e, test_board_identity);
+        mgras_qtest_add_data_func(path, e, test_board_identity, false);
         if (every) {
-            qtest_add_data_func(screen, e,
-                                test_board_screen_fits_row_buffers);
-            qtest_add_data_func(pp1s, e, test_board_pp1s_follow_re_count);
+            mgras_qtest_add_data_func(
+                screen, e, test_board_screen_fits_row_buffers, false);
+            mgras_qtest_add_data_func(
+                pp1s, e, test_board_pp1s_follow_re_count, false);
         }
         if (every && e->implemented && (!strcmp(e->board, "si") ||
                                         !strcmp(e->board, "ssi") ||
@@ -2053,8 +2118,10 @@ int main(int argc, char **argv)
                 "sn0/origin2000/mgras/rdram-data-same-for-each-re/%s",
                 e->board);
 
-            qtest_add_data_func(rdram, e,
-                                test_board_rdram_data_same_for_each_re);
+            mgras_qtest_add_data_func(
+                rdram,
+                e,
+                test_board_rdram_data_same_for_each_re, false);
         }
         if (every && e->implemented && (!strcmp(e->board, "si") ||
                                         !strcmp(e->board, "ssi") ||
@@ -2067,32 +2134,47 @@ int main(int argc, char **argv)
                 "sn0/origin2000/mgras/mapping-port-raster-write/%s",
                 e->board);
 
-            qtest_add_data_func(re4, e,
-                                test_board_re4_status_reports_selected_re);
-            qtest_add_data_func(mapping, e,
-                                test_board_mapping_port_raster_write);
+            mgras_qtest_add_data_func(
+                re4,
+                e,
+                test_board_re4_status_reports_selected_re, false);
+            mgras_qtest_add_data_func(
+                mapping,
+                e,
+                test_board_mapping_port_raster_write, false);
         }
         if (!e->implemented &&
             (g_test_slow() || !strcmp(e->board, "si-t"))) {
             g_autofree char *refused = g_strdup_printf(
                 "sn0/origin2000/mgras/board-refused/%s", e->board);
 
-            qtest_add_data_func(refused, e, test_board_refused);
+            mgras_qtest_add_data_func(
+                refused,
+                e,
+                test_board_refused, false);
         }
     }
-    qtest_add_func("sn0/origin2000/mgras/re4-status-keeps-revision-bits",
-                   test_board_re4_status_keeps_revision_bits);
-    qtest_add_func("sn0/origin2000/mgras/board-inventory-registers",
-                   test_board_inventory_registers);
-    qtest_add_func("sn0/origin2000/mgras/int-dest-alt-offset-aliases",
-                   test_int_dest_alt_offset_aliases);
-    qtest_add_func("sn0/origin2000/mgras/hq-config-and-enable-registers",
-                   test_hq_config_and_enable_registers);
-    qtest_add_func("sn0/origin2000/mgras/hq-vector-registers",
-                   test_hq_vector_registers);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re4-status-keeps-revision-bits",
+        test_board_re4_status_keeps_revision_bits, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/board-inventory-registers",
+        test_board_inventory_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/int-dest-alt-offset-aliases",
+        test_int_dest_alt_offset_aliases, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-config-and-enable-registers",
+        test_hq_config_and_enable_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-vector-registers",
+        test_hq_vector_registers, true);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

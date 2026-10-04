@@ -33,22 +33,24 @@ static void test_gl_deep_slots_migrate(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-slots-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
     from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
                                    " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_deep_scene(from);
     gl_draw_buffer(from, 8);
     gl_clear_color(from, 1, 0, 1, 1);
     gl_word(from, GL_CLEAR_COLOR_BUFFER);
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(mgras_test_slot_pixel(to, 1, 300, 300), ==, 0xff00ff);
     g_assert_cmphex(mgras_test_slot_pixel(to, 0, 300, 300), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -85,11 +87,10 @@ static void test_gl_pixels_float_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-float-pixels-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
     gl_viewport(from, 0, 0, 128, 128);
@@ -107,29 +108,47 @@ static void test_gl_pixels_float_migration(void)
 
     sgi_migrate_stopped(from, uri);
 
-    for (unsigned which = 0; which < 2; which++) {
-        QTestState *s = which ? to : from;
+    uint32_t source_pixels[3][3];
 
-        for (unsigned i = 4; i < 6; i++) {
-            gl_word(s, values[i]);
-        }
-        gl_pixels_row(s, 0, values + 6, 6);
-        gl_pixels_fence(s);
-        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
+    for (unsigned i = 4; i < 6; i++) {
+        gl_word(from, values[i]);
     }
+    gl_pixels_row(from, 0, values + 6, 6);
+    gl_pixels_fence(from);
+    g_assert_cmphex(mgras_qom_get_uint(from, "x-test-error"), ==, 0);
     for (unsigned y = 0; y < 3; y++) {
         for (unsigned x = 0; x < 3; x++) {
             uint32_t pixel = gl_window_pixel(from, x, y);
 
+            source_pixels[y][x] = pixel;
             g_assert_cmphex(pixel, ==, x < 2 && y < 2 ? expected[y][x] : 0);
-            g_assert_cmphex(gl_window_pixel(to, x, y), ==, pixel);
+        }
+    }
+
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    for (unsigned i = 4; i < 6; i++) {
+        gl_word(to, values[i]);
+    }
+    gl_pixels_row(to, 0, values + 6, 6);
+    gl_pixels_fence(to);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 3; x++) {
+            uint32_t pixel = gl_window_pixel(to, x, y);
+
+            g_assert_cmphex(pixel, ==, x < 2 && y < 2 ? expected[y][x] : 0);
+            g_assert_cmphex(pixel, ==, source_pixels[y][x]);
         }
     }
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
+
 
 static void test_gl_pixels_migration(void)
 {
@@ -141,11 +160,10 @@ static void test_gl_pixels_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-pixels-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -157,6 +175,9 @@ static void test_gl_pixels_migration(void)
     gl_word(from, 0x0009000a);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_word(to, 0x00090000);
     gl_pixels_fence(to);
@@ -173,7 +194,7 @@ static void test_gl_pixels_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 #define TEX_MIGRATION_ARGS MIGRATION_ARGS " -global sgi-mgras.board=si-t " \
@@ -289,14 +310,16 @@ static void test_gl_volume_texture_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-volume-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
     from = tex_start(TEX_MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     tex_migration_load_captured_volume(from, slices, 2);
     tex_migration_check_volume(from, expected);
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_clear_color(to, 0, 0, 0, 0);
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
@@ -304,7 +327,7 @@ static void test_gl_volume_texture_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -325,11 +348,10 @@ static void test_gl_texture_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-texture-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = tex_start(TEX_MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     tex_texels(texels);
     tex_load(from, TEX_TL_MODE_RGBA4, texels);
@@ -348,6 +370,9 @@ static void test_gl_texture_migration(void)
     tex_record(from, 0x18a, 0x3c040045);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_clear_color(to, 0, 0, 0, 0);
     gl_word(to, GL_CLEAR_COLOR_BUFFER);
@@ -392,7 +417,7 @@ static void test_gl_texture_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -412,10 +437,9 @@ static void test_gl_texture_missing_mip_level_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-missing-mip-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
     from = tex_start(TEX_MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(TEX_MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     memset(level0, 0xff, sizeof(level0));
     tex_load_fmt(from, true, TEX_TL_MODE_RGBA8, 0x220, level0, 4, 4, 4, 4,
@@ -426,6 +450,9 @@ static void test_gl_texture_missing_mip_level_migration(void)
     g_assert_cmphex(gl_window_pixel(from, 24, 24), ==, 0xffffff);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_word(to, TEX_ON);
     tex_quad(to);
@@ -433,7 +460,7 @@ static void test_gl_texture_missing_mip_level_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -539,17 +566,19 @@ static void test_context_ack_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-context-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_PREFIX, 0);
     qtest_writel(from, REG_ENTRY, MGRAS_ENTRY_WORD);
     qtest_writel(from, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
         qtest_writel(to, REG_CONTEXT_COMMAND, i);
@@ -559,7 +588,8 @@ static void test_context_ack_migration(void)
     qtest_writel(to, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
+    g_rmdir(tmpfs);
 }
 
 static void test_context_payload_migration(void)
@@ -573,11 +603,10 @@ static void test_context_payload_migration(void)
     tmpfs = g_dir_make_tmp("sn0-mgras-context-payload-migration-XXXXXX",
                            &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_PREFIX, 0);
     qtest_writel(from, REG_ENTRY, MGRAS_ENTRY_WORD);
@@ -589,6 +618,9 @@ static void test_context_payload_migration(void)
     }
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int i = 3; i < MGRAS_CONTEXT_WORDS; i++) {
         qtest_writel(to, REG_CONTEXT_COMMAND, i);
@@ -599,7 +631,8 @@ static void test_context_payload_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -621,11 +654,10 @@ static void test_gl_state_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     mgras_enter_gl_window(from, 256, 640, 128, 128, 0x11);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
@@ -643,6 +675,9 @@ static void test_gl_state_migration(void)
     }
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int i = 12; i < 16; i++) {
         gl_float(to, shift[i]);
@@ -674,7 +709,7 @@ static void test_gl_state_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -703,10 +738,9 @@ static void test_gl_polygon_stipple_upload_migration(void)
     }
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-stipple-migration-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_transform_start(from);
     gl_width_clear(from);
@@ -716,6 +750,9 @@ static void test_gl_polygon_stipple_upload_migration(void)
     }
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     for (int row = 17; row < ARRAY_SIZE(rows); row++) {
         gl_word(to, gl_stipple_reverse32(rows[row]));
@@ -735,7 +772,7 @@ static void test_gl_polygon_stipple_upload_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -755,11 +792,10 @@ static void test_gl_context_table_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-contexts-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -779,6 +815,9 @@ static void test_gl_context_table_migration(void)
     gl_word(from, 0x00001000);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(gl_attribute_query(to, 15) & 0x01c00000, ==, 0);
 
@@ -795,7 +834,7 @@ static void test_gl_context_table_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -978,16 +1017,18 @@ static void test_gl_longest_block_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-block-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_INLINE_BLOCK | 2 << 22 | 0xfffff);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_word(to, MGRAS_FENCE_TOKEN);
     g_assert_cmphex(qtest_readl(to, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
@@ -995,7 +1036,7 @@ static void test_gl_longest_block_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -1014,11 +1055,10 @@ static void test_gl_open_primitive_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-primitive-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -1038,6 +1078,9 @@ static void test_gl_open_primitive_migration(void)
     gl_vertex2f(from, 20.875f, 20.25f);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_vertex2f(to, 20.25f, 20.875f);
     gl_word(to, GL_END_TRIANGLES);
@@ -1050,7 +1093,7 @@ static void test_gl_open_primitive_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -1111,11 +1154,10 @@ static void test_gl_eviction_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-eviction-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_eviction_contexts(from);
     gl_enter_slot(from, GL_SLOT_DEFAULT);
@@ -1125,6 +1167,9 @@ static void test_gl_eviction_migration(void)
     gl_eram_kick(from, 0, GL_EVICT_CHUNK * 4, GL_ERAM_WRITE_KICK);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_word(to, GL_ERAM_WRITE_HDR);
     gl_word(to, GL_EVICT_TO);
@@ -1136,7 +1181,7 @@ static void test_gl_eviction_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 int main(int argc, char **argv)
@@ -1145,56 +1190,78 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-float-migration",
-                   test_gl_pixels_float_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-pixels-migration",
-                   test_gl_pixels_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-migration-rejects-"
-                   "load-past-tram",
-                   test_gl_texture_migration_rejects_load_past_tram);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-migration",
-                   test_gl_texture_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-volume-texture-migration",
-                   test_gl_volume_texture_migration);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-texture-missing-mip-level-migration",
-                   test_gl_texture_missing_mip_level_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-deep-slots-migrate",
-                   test_gl_deep_slots_migrate);
-    qtest_add_func("sn0/origin2000/mgras/gl-eviction-migration",
-                   test_gl_eviction_migration);
-    qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
-                   test_context_ack_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-state-migration",
-                   test_gl_state_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/upload-migration",
-                   test_gl_polygon_stipple_upload_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-texture-matrix-migration",
-                   test_gl_texture_matrix_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-longest-block-migration",
-                   test_gl_longest_block_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-context-table-migration",
-                   test_gl_context_table_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-read-buffer-context-switch",
-                   test_gl_read_buffer_context_switch);
-    qtest_add_func("sn0/origin2000/mgras/gl-open-primitive-migration",
-                   test_gl_open_primitive_migration);
-    qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
-                   test_context_payload_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/hidden-migration",
-                    test_gl_native_stipple_hidden_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/loop-migration",
-                    test_gl_native_stipple_loop_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-texcoord/migration",
-                    test_gl_native_texcoord_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/migration",
-                    test_gl_native_polygon_migration);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-float-migration",
+        test_gl_pixels_float_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-migration",
+        test_gl_pixels_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-texture-migration-rejects-load-past-tram",
+        test_gl_texture_migration_rejects_load_past_tram, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-migration",
+        test_gl_texture_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-volume-texture-migration",
+        test_gl_volume_texture_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-texture-missing-mip-level-migration",
+        test_gl_texture_missing_mip_level_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-deep-slots-migrate",
+        test_gl_deep_slots_migrate, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-eviction-migration",
+        test_gl_eviction_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/context-ack-migration",
+        test_context_ack_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-state-migration",
+        test_gl_state_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/upload-migration",
+        test_gl_polygon_stipple_upload_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-matrix-migration",
+        test_gl_texture_matrix_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-longest-block-migration",
+        test_gl_longest_block_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-context-table-migration",
+        test_gl_context_table_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-read-buffer-context-switch",
+        test_gl_read_buffer_context_switch, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-open-primitive-migration",
+        test_gl_open_primitive_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/context-payload-migration",
+        test_context_payload_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/hidden-migration",
+        test_gl_native_stipple_hidden_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/loop-migration",
+        test_gl_native_stipple_loop_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-texcoord/migration",
+        test_gl_native_texcoord_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/migration",
+        test_gl_native_polygon_migration, false);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

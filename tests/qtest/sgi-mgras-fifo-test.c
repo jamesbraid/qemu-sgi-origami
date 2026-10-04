@@ -3678,208 +3678,291 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "rgb-pixel-words-read-back-unchanged",
-                   test_rgb_pixel_words_read_back_unchanged);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "packedcolor-matches-fillcolor-channels",
-                   test_packedcolor_matches_fillcolor_channels);
-    qtest_add_func("sn0/origin2000/mgras/ge-upload-readback",
-                   test_ge_upload_and_readback);
-    qtest_add_func("sn0/origin2000/mgras/ge-upload-slots-independent",
-                   test_ge_upload_slots_do_not_cross_contaminate);
-    qtest_add_func("sn0/origin2000/mgras/ge-upload-rearm-rereads",
-                   test_ge_upload_rearm_rereads_from_start);
-    qtest_add_func("sn0/origin2000/mgras/prefix-register-reads-back",
-                   test_prefix_register_reads_back);
-    qtest_add_func("sn0/origin2000/mgras/prefix-rewrite-after-entry-selection",
-                   test_prefix_rewrite_after_entry_selection_does_not_poison_context);
-    qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
-                   test_context_recognizer_ordering);
-    qtest_add_func("sn0/origin2000/mgras/second-switch-restarts-word-count",
-                   test_second_context_switch_restarts_word_count);
-    qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",
-                   test_entry_requires_prefix);
-    qtest_add_func("sn0/origin2000/mgras/context-command-after-image",
-                   test_context_command_after_image_is_ordinary_token);
-    qtest_add_func("sn0/origin2000/mgras/fifo-occupancy-always-drained",
-                   test_fifo_occupancy_always_drained);
-    qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
-                   test_direct_fill_and_reset);
-    qtest_add_func("sn0/origin2000/mgras/logic-op-truth-table",
-                   test_logic_op_truth_table);
-    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-rect",
-                   test_logic_op_xor_twice_restores_rect);
-    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-line",
-                   test_logic_op_xor_twice_restores_line);
-    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-span",
-                   test_logic_op_xor_twice_restores_span);
-    qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
-                   test_fill_mask_reads_colormasklsbsa);
-    qtest_add_func("sn0/origin2000/mgras/wid-from-display-id-table",
-                   test_wid_from_display_id_table);
-    qtest_add_func("sn0/origin2000/mgras/fill-color-reads-fillcolor-registers",
-                   test_fill_color_reads_fillcolor_registers);
-    qtest_add_func("sn0/origin2000/mgras/ir-alias-execute-paints-nothing",
-                   test_ir_alias_execute_paints_nothing);
-    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
-                   test_direct_glyph_row);
-    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-h-only",
-                   test_direct_glyph_row_char_h_only);
-    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-l-execute",
-                   test_direct_glyph_row_char_l_execute);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "direct-glyph-row-ci8-reads-red-channel",
-                   test_direct_glyph_row_ci8_reads_red_channel);
-    qtest_add_func("sn0/origin2000/mgras/direct-byte-row",
-                   test_direct_byte_row);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "direct-byte-row-pitch-from-padding-field",
-                   test_direct_byte_row_pitch_from_padding_field);
-    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs",
-                   test_direct_byte_row_pairs);
-    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs-row-pad-bits",
-                   test_direct_byte_row_pairs_row_pad_bits);
-    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-with-row-pad-bits",
-                   test_direct_byte_row_with_row_pad_bits);
-    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-seed-packing",
-                   test_direct_byte_row_seed_packing);
-    qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
-                   test_display_surface_conversion);
-    qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",
-                   test_reset_refreshes_display_surface);
-    qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
-                   test_pseudocolor_scanout_looks_up_cmap);
-    qtest_add_func("sn0/origin2000/mgras/cmap-high-byte-packing",
-                   test_cmap_high_byte_packing);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "pixel-format-tag-resolves-independently",
-                   test_pixel_format_tag_resolves_independently);
-    qtest_add_func("sn0/origin2000/mgras/rgb12-fill-packs-four-bit-channels",
-                   test_rgb12_fill_packs_four_bit_channels);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "rgb12-line-and-glyph-take-top-nibbles",
-                   test_rgb12_line_and_glyph_take_top_nibbles);
-    qtest_add_func("sn0/origin2000/mgras/rgb12-pixel-word-reads-red-low",
-                   test_rgb12_pixel_word_reads_red_low);
-    qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
-                   test_target_first_cmap_visual_selection);
-    qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",
-                   test_masked_out_paint_keeps_the_visual);
-    qtest_add_func("sn0/origin2000/mgras/paint-variants-refresh-the-surface",
-                   test_paint_variants_refresh_the_surface);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "cmap-selector-addresses-the-right-slot",
-                   test_cmap_selector_addresses_the_right_slot);
-    qtest_add_func("sn0/origin2000/mgras/cmap-selector-start-entry",
-                   test_cmap_selector_start_entry);
-    qtest_add_func("sn0/origin2000/mgras/fifo-lowater-interrupt",
-                   test_fifo_lowater_interrupt);
-    qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
-                   test_fifo_threshold_registers);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "hq-attribute-queries-set-flag-after-arguments",
-                   test_hq_attribute_queries_set_flag_after_arguments);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "hq-attribute-query-answers-normal-and-edge-flag",
-                   test_hq_attribute_query_answers_normal_and_edge_flag);
-    qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
-                   test_hq_flags_set_and_clear);
-    qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
-                   test_hq_flags_fence_token_sets_bit);
-    qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-isolated",
-                   test_hq_flags_fence_token_isolated);
-    qtest_add_func("sn0/origin2000/mgras/fifo-3-byte-payload-is-one-word",
-                   test_fifo_three_byte_payload_takes_one_word);
-    qtest_add_func("sn0/origin2000/mgras/fifo-6-byte-payload-is-two-words",
-                   test_fifo_six_byte_payload_takes_two_words);
-    qtest_add_func("sn0/origin2000/mgras/sched-arg-4-round-trip",
-                   test_sched_arg_4_round_trip);
-    qtest_add_func("sn0/origin2000/mgras/command-accepts-hq-config-words",
-                   test_command_accepts_hq_config_words);
-    qtest_add_func("sn0/origin2000/mgras/context-write-after-completion",
-                   test_context_write_accepted_after_completion);
-    qtest_add_func("sn0/origin2000/mgras/command-fifo-state-write-headers",
-                   test_command_fifo_state_write_headers);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "command-fifo-state-write-headers-not-yet-consumed",
-                   test_command_fifo_state_write_headers_not_yet_consumed);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "command-fifo-skips-unaligned-and-oversized-state",
-                   test_command_fifo_skips_unaligned_and_oversized_state);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "command-fifo-unrecognized-class-resyncs",
-                   test_command_fifo_unrecognized_class_resyncs);
-    qtest_add_func("sn0/origin2000/mgras/re-point-execute",
-                   test_re_point_execute);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-point-execute-after-bounded-payload",
-                   test_re_point_execute_after_bounded_payload);
-    qtest_add_func("sn0/origin2000/mgras/re-line-execute",
-                   test_re_line_execute);
-    qtest_add_func("sn0/origin2000/mgras/re-line-chains-from-re-point",
-                   test_re_line_chains_from_re_point);
-    qtest_add_func("sn0/origin2000/mgras/re-point-ci8-reads-red-channel",
-                   test_re_point_ci8_reads_red_channel);
-    qtest_add_func("sn0/origin2000/mgras/re-line-ci8-reads-red-channel",
-                   test_re_line_ci8_reads_red_channel);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-line-opaque-stipple-starts-at-line",
-                   test_re_line_opaque_stipple_starts_at_line);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-line-transparent-stipple-keeps-clear-bits",
-                   test_re_line_transparent_stipple_keeps_clear_bits);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-point-execute-applies-xywin-origin",
-                   test_re_point_execute_applies_xywin_origin);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-line-execute-applies-xywin-origin",
-                   test_re_line_execute_applies_xywin_origin);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-line-execute-ignores-zero-x-field-xywin",
-                   test_re_line_execute_ignores_zero_x_field_xywin);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-point-execute-rejects-out-of-range-xywin-origin",
-                   test_re_point_execute_rejects_out_of_range_xywin_origin);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "re-line-execute-rejects-out-of-range-xywin-origin",
-                   test_re_line_execute_rejects_out_of_range_xywin_origin);
-    qtest_add_func("sn0/origin2000/mgras/fill-honours-clip-rectangle",
-                   test_fill_honours_clip_rectangle);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "overlay-fill-honours-clip-rectangle",
-                   test_overlay_fill_honours_clip_rectangle);
-    qtest_add_func("sn0/origin2000/mgras/re-line-clip-follows-xywin-origin",
-                   test_re_line_clip_follows_xywin_origin);
-    qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
-                   test_re_char_h_execute);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-wide",
-                   test_public_fifo_glyph_wide);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-narrow",
-                   test_public_fifo_glyph_narrow);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/xor",
-                   test_public_fifo_xor);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/fill",
-                   test_public_fifo_fill);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/"
-                   "unsupported-execute-selectors",
-                   test_public_fifo_unsupported_execute_selectors);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-widths",
-                   test_public_fifo_glyph_widths);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/unsupported",
-                   test_public_fifo_unsupported);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-mask",
-                   test_public_fifo_glyph_mask);
-    qtest_add_func("sn0/origin2000/mgras/public-fifo/glyph-validity",
-                   test_public_fifo_glyph_validity);
-    qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
-                   test_fifo_re_blockcopy_unsupported);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/rgb-pixel-words-read-back-unchanged",
+        test_rgb_pixel_words_read_back_unchanged, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "packedcolor-matches-fillcolor-channels",
+        test_packedcolor_matches_fillcolor_channels, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ge-upload-readback",
+        test_ge_upload_and_readback, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ge-upload-slots-independent",
+        test_ge_upload_slots_do_not_cross_contaminate, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ge-upload-rearm-rereads",
+        test_ge_upload_rearm_rereads_from_start, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prefix-register-reads-back",
+        test_prefix_register_reads_back, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/prefix-rewrite-after-entry-selection",
+        test_prefix_rewrite_after_entry_selection_does_not_poison_context,
+        true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/context-recognizer-ordering",
+        test_context_recognizer_ordering, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/second-switch-restarts-word-count",
+        test_second_context_switch_restarts_word_count, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/entry-requires-prefix",
+        test_entry_requires_prefix, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/context-command-after-image",
+        test_context_command_after_image_is_ordinary_token, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-occupancy-always-drained",
+        test_fifo_occupancy_always_drained, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-fill-and-reset",
+        test_direct_fill_and_reset, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/logic-op-truth-table",
+        test_logic_op_truth_table, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/logic-op-xor-twice-restores-rect",
+        test_logic_op_xor_twice_restores_rect, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/logic-op-xor-twice-restores-line",
+        test_logic_op_xor_twice_restores_line, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/logic-op-xor-twice-restores-span",
+        test_logic_op_xor_twice_restores_span, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
+        test_fill_mask_reads_colormasklsbsa, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/wid-from-display-id-table",
+        test_wid_from_display_id_table, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fill-color-reads-fillcolor-registers",
+        test_fill_color_reads_fillcolor_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/ir-alias-execute-paints-nothing",
+        test_ir_alias_execute_paints_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-glyph-row",
+        test_direct_glyph_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-glyph-row-char-h-only",
+        test_direct_glyph_row_char_h_only, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-glyph-row-char-l-execute",
+        test_direct_glyph_row_char_l_execute, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "direct-glyph-row-ci8-reads-red-channel",
+        test_direct_glyph_row_ci8_reads_red_channel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-byte-row",
+        test_direct_byte_row, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "direct-byte-row-pitch-from-padding-field",
+        test_direct_byte_row_pitch_from_padding_field, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-byte-row-pairs",
+        test_direct_byte_row_pairs, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-byte-row-pairs-row-pad-bits",
+        test_direct_byte_row_pairs_row_pad_bits, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-byte-row-with-row-pad-bits",
+        test_direct_byte_row_with_row_pad_bits, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/direct-byte-row-seed-packing",
+        test_direct_byte_row_seed_packing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-surface-conversion",
+        test_display_surface_conversion, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/reset-refreshes-display-surface",
+        test_reset_refreshes_display_surface, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
+        test_pseudocolor_scanout_looks_up_cmap, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/cmap-high-byte-packing",
+        test_cmap_high_byte_packing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "pixel-format-tag-resolves-independently",
+        test_pixel_format_tag_resolves_independently, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/rgb12-fill-packs-four-bit-channels",
+        test_rgb12_fill_packs_four_bit_channels, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/rgb12-line-and-glyph-take-top-nibbles",
+        test_rgb12_line_and_glyph_take_top_nibbles, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/rgb12-pixel-word-reads-red-low",
+        test_rgb12_pixel_word_reads_red_low, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/target-first-cmap-visual-selection",
+        test_target_first_cmap_visual_selection, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",
+        test_masked_out_paint_keeps_the_visual, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/paint-variants-refresh-the-surface",
+        test_paint_variants_refresh_the_surface, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "cmap-selector-addresses-the-right-slot",
+        test_cmap_selector_addresses_the_right_slot, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/cmap-selector-start-entry",
+        test_cmap_selector_start_entry, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-lowater-interrupt",
+        test_fifo_lowater_interrupt, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-threshold-registers",
+        test_fifo_threshold_registers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "hq-attribute-queries-set-flag-after-arguments",
+        test_hq_attribute_queries_set_flag_after_arguments, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "hq-attribute-query-answers-normal-and-edge-flag",
+        test_hq_attribute_query_answers_normal_and_edge_flag, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-flags-set-and-clear",
+        test_hq_flags_set_and_clear, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
+        test_hq_flags_fence_token_sets_bit, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-flags-fence-token-isolated",
+        test_hq_flags_fence_token_isolated, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-3-byte-payload-is-one-word",
+        test_fifo_three_byte_payload_takes_one_word, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-6-byte-payload-is-two-words",
+        test_fifo_six_byte_payload_takes_two_words, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/sched-arg-4-round-trip",
+        test_sched_arg_4_round_trip, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/command-accepts-hq-config-words",
+        test_command_accepts_hq_config_words, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/context-write-after-completion",
+        test_context_write_accepted_after_completion, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/command-fifo-state-write-headers",
+        test_command_fifo_state_write_headers, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "command-fifo-state-write-headers-not-yet-consumed",
+        test_command_fifo_state_write_headers_not_yet_consumed, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "command-fifo-skips-unaligned-and-oversized-state",
+        test_command_fifo_skips_unaligned_and_oversized_state, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "command-fifo-unrecognized-class-resyncs",
+        test_command_fifo_unrecognized_class_resyncs, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-point-execute",
+        test_re_point_execute, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "re-point-execute-after-bounded-payload",
+        test_re_point_execute_after_bounded_payload, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-execute",
+        test_re_line_execute, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-chains-from-re-point",
+        test_re_line_chains_from_re_point, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-point-ci8-reads-red-channel",
+        test_re_point_ci8_reads_red_channel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-ci8-reads-red-channel",
+        test_re_line_ci8_reads_red_channel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-opaque-stipple-starts-at-line",
+        test_re_line_opaque_stipple_starts_at_line, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "re-line-transparent-stipple-keeps-clear-bits",
+        test_re_line_transparent_stipple_keeps_clear_bits, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-point-execute-applies-xywin-origin",
+        test_re_point_execute_applies_xywin_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-execute-applies-xywin-origin",
+        test_re_line_execute_applies_xywin_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "re-line-execute-ignores-zero-x-field-xywin",
+        test_re_line_execute_ignores_zero_x_field_xywin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "re-point-execute-rejects-out-of-range-xywin-origin",
+        test_re_point_execute_rejects_out_of_range_xywin_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "re-line-execute-rejects-out-of-range-xywin-origin",
+        test_re_line_execute_rejects_out_of_range_xywin_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fill-honours-clip-rectangle",
+        test_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/overlay-fill-honours-clip-rectangle",
+        test_overlay_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-line-clip-follows-xywin-origin",
+        test_re_line_clip_follows_xywin_origin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/re-char-h-execute",
+        test_re_char_h_execute, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-wide",
+        test_public_fifo_glyph_wide, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-narrow",
+        test_public_fifo_glyph_narrow, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/xor",
+        test_public_fifo_xor, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/fill",
+        test_public_fifo_fill, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/"
+        "unsupported-execute-selectors",
+        test_public_fifo_unsupported_execute_selectors, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-widths",
+        test_public_fifo_glyph_widths, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/unsupported",
+        test_public_fifo_unsupported, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-mask",
+        test_public_fifo_glyph_mask, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/public-fifo/glyph-validity",
+        test_public_fifo_glyph_validity, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
+        test_fifo_re_blockcopy_unsupported, true);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

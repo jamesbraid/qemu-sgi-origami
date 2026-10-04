@@ -3770,255 +3770,350 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "hq-query-answers-viewport-shade-and-clear-colour",
-                   test_hq_query_answers_viewport_shade_and_clear_colour);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-depth-range",
-                   test_hq_query_answers_the_depth_range);
-    qtest_add_func("sn0/origin2000/mgras/hq-query-answers-the-stack-depths",
-                   test_hq_query_answers_the_stack_depths);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "hq-query-answers-lights-and-materials",
-                   test_hq_query_answers_lights_and_materials);
-    qtest_add_func("sn0/origin2000/mgras/inline-block-uses-20-bit-length",
-                   test_inline_block_uses_20_bit_length);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-fills-the-window",
-                   test_gl_clear_fills_the_window);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-small-window",
-                   test_gl_clear_captured_front_buffer_pixel);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-wid15-mode404",
-                   test_gl_clear_captured_wid15_mode404);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-1x1",
-                   test_gl_clear_captured_readpixels_1x1);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "1x1-ordinary-format",
-                   test_gl_clear_captured_readpixels_1x1_ordinary_format);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "alpha-zero",
-                   test_gl_clear_captured_readpixels_alpha_zero);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "back-buffer",
-                   test_gl_clear_captured_readpixels_back_buffer);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "alpha-masks",
-                   test_gl_clear_captured_readpixels_alpha_masks);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "reset-alpha",
-                   test_gl_clear_captured_readpixels_reset_alpha);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "alpha-migration",
-                   test_gl_clear_captured_readpixels_alpha_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-2x2",
-                   test_gl_clear_captured_readpixels_2x2);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "malformed-bounds",
-                   test_gl_clear_captured_readpixels_rejects_malformed_bounds);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-captured-readpixels-"
-                   "requires-bracket",
-                   test_gl_clear_captured_readpixels_requires_bracket);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-ignores-the-viewport",
-                   test_gl_clear_ignores_the_viewport);
-    qtest_add_func("sn0/origin2000/mgras/gl-clear-needs-the-window-rectangle",
-                   test_gl_clear_needs_the_window_rectangle);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-takes-every-enabled-rectangle",
-                   test_gl_clip_takes_every_enabled_rectangle);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-ignores-disabled-rectangles",
-                   test_gl_clip_ignores_disabled_rectangles);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-null-and-many-draw-nothing",
-                   test_gl_clip_null_and_many_draw_nothing);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-clear-shows-through-a-direct-colour-display-id",
-                   test_gl_clear_shows_through_a_direct_colour_display_id);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-flat-triangle-matches-the-reference",
-                   test_gl_flat_triangle_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/gl-flat-triangle-moved-vertex",
-                   test_gl_flat_triangle_moved_vertex);
-    qtest_add_func("sn0/origin2000/mgras/gl-flat-triangle-reversed-winding",
-                   test_gl_flat_triangle_reversed_winding);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-flat-triangle-takes-the-third-vertex-colour",
-                   test_gl_flat_triangle_takes_the_third_vertex_colour);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-triangle-snaps-to-the-nearest-subpixel",
-                   test_gl_triangle_snaps_to_the_nearest_subpixel);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-triangle-shared-edge-centres-drawn-once",
-                   test_gl_triangle_shared_edge_centres_drawn_once);
-    qtest_add_func("sn0/origin2000/mgras/gl-triangle-bounded-by-the-viewport",
-                   test_gl_triangle_bounded_by_the_viewport);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-triangle-behind-the-eye-is-clipped",
-                   test_gl_triangle_behind_the_eye_is_clipped);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-depth-matches-the-reference",
-                   test_gl_depth_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-depth-rounds-to-24-bits",
-                   test_gl_depth_rounds_to_24_bits);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-depth-writes-only-when-tested-and-masked-in",
-                   test_gl_depth_writes_only_when_tested_and_masked_in);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-depth-func-follows-the-enum",
-                   test_gl_depth_func_follows_the_enum);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-clear-depth-sets-the-plane",
-                   test_gl_clear_depth_sets_the_plane);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-triangle-clipped-at-the-far-plane",
-                   test_gl_triangle_clipped_at_the_far_plane);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-smooth-matches-the-reference",
-                   test_gl_smooth_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-smooth-rounds-to-the-nearest-step",
-                   test_gl_smooth_rounds_to_the_nearest_step);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-smooth-is-perspective-correct",
-                   test_gl_smooth_is_perspective_correct);
-    qtest_add_func("sn0/origin2000/mgras/gl-deep-bit2-draws/ssi",
-                   test_gl_deep_bit2_draws_ssi);
-    qtest_add_func("sn0/origin2000/mgras/gl-deep-bit2-draws/si",
-                   test_gl_deep_bit2_draws_si);
-    qtest_add_func("sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
-                   test_gl_color_bytes_unpack_red_first);
-    qtest_add_func("sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
-                   test_gl_vertex2i_matches_the_reference);
-    qtest_add_func("sn0/origin2000/mgras/gl-rotate-about-a-general-axis",
-                   test_gl_rotate_about_a_general_axis);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-quad-splits-from-its-first-vertex",
-                   test_gl_quad_splits_from_its_first_vertex);
-    qtest_add_func("sn0/origin2000/mgras/gl-strip-spans-a-context-switch",
-                   test_gl_strip_spans_a_context_switch);
-    qtest_add_func("sn0/origin2000/mgras/gl-swap-tmesh-makes-a-fan",
-                   test_gl_swap_tmesh_makes_a_fan);
-    qtest_add_func("sn0/origin2000/mgras/gl-line-leaves-out-its-last-pixel",
-                   test_gl_line_leaves_out_its_last_pixel);
-    qtest_add_func("sn0/origin2000/mgras/gl-line-bounded-by-the-viewport",
-                   test_gl_line_bounded_by_the_viewport);
-    qtest_add_func("sn0/origin2000/mgras/gl-line-depth-and-colour-follow-t",
-                   test_gl_line_depth_and_colour_follow_t);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "hq-query-answers-viewport-shade-and-clear-colour",
+        test_hq_query_answers_viewport_shade_and_clear_colour, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-depth-range",
+        test_hq_query_answers_the_depth_range, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-the-stack-depths",
+        test_hq_query_answers_the_stack_depths, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/hq-query-answers-lights-and-materials",
+        test_hq_query_answers_lights_and_materials, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/inline-block-uses-20-bit-length",
+        test_inline_block_uses_20_bit_length, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-fills-the-window",
+        test_gl_clear_fills_the_window, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-captured-small-window",
+        test_gl_clear_captured_front_buffer_pixel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-captured-wid15-mode404",
+        test_gl_clear_captured_wid15_mode404, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-captured-readpixels-1x1",
+        test_gl_clear_captured_readpixels_1x1, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-1x1-ordinary-format",
+        test_gl_clear_captured_readpixels_1x1_ordinary_format, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-alpha-zero",
+        test_gl_clear_captured_readpixels_alpha_zero, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-back-buffer",
+        test_gl_clear_captured_readpixels_back_buffer, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-alpha-masks",
+        test_gl_clear_captured_readpixels_alpha_masks, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-reset-alpha",
+        test_gl_clear_captured_readpixels_reset_alpha, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-alpha-migration",
+        test_gl_clear_captured_readpixels_alpha_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-captured-readpixels-2x2",
+        test_gl_clear_captured_readpixels_2x2, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-malformed-bounds",
+        test_gl_clear_captured_readpixels_rejects_malformed_bounds, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-captured-readpixels-requires-bracket",
+        test_gl_clear_captured_readpixels_requires_bracket, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-ignores-the-viewport",
+        test_gl_clear_ignores_the_viewport, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-needs-the-window-rectangle",
+        test_gl_clear_needs_the_window_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-takes-every-enabled-rectangle",
+        test_gl_clip_takes_every_enabled_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-ignores-disabled-rectangles",
+        test_gl_clip_ignores_disabled_rectangles, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-null-and-many-draw-nothing",
+        test_gl_clip_null_and_many_draw_nothing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-clear-shows-through-a-direct-colour-display-id",
+        test_gl_clear_shows_through_a_direct_colour_display_id, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-flat-triangle-matches-the-reference",
+        test_gl_flat_triangle_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-flat-triangle-moved-vertex",
+        test_gl_flat_triangle_moved_vertex, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-flat-triangle-reversed-winding",
+        test_gl_flat_triangle_reversed_winding, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-flat-triangle-takes-the-third-vertex-colour",
+        test_gl_flat_triangle_takes_the_third_vertex_colour, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-triangle-snaps-to-the-nearest-subpixel",
+        test_gl_triangle_snaps_to_the_nearest_subpixel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-triangle-shared-edge-centres-drawn-once",
+        test_gl_triangle_shared_edge_centres_drawn_once, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-triangle-bounded-by-the-viewport",
+        test_gl_triangle_bounded_by_the_viewport, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-triangle-behind-the-eye-is-clipped",
+        test_gl_triangle_behind_the_eye_is_clipped, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-depth-matches-the-reference",
+        test_gl_depth_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-depth-rounds-to-24-bits",
+        test_gl_depth_rounds_to_24_bits, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-depth-writes-only-when-tested-and-masked-in",
+        test_gl_depth_writes_only_when_tested_and_masked_in, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-depth-func-follows-the-enum",
+        test_gl_depth_func_follows_the_enum, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clear-depth-sets-the-plane",
+        test_gl_clear_depth_sets_the_plane, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-triangle-clipped-at-the-far-plane",
+        test_gl_triangle_clipped_at_the_far_plane, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-smooth-matches-the-reference",
+        test_gl_smooth_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-smooth-rounds-to-the-nearest-step",
+        test_gl_smooth_rounds_to_the_nearest_step, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-smooth-is-perspective-correct",
+        test_gl_smooth_is_perspective_correct, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-deep-bit2-draws/ssi",
+        test_gl_deep_bit2_draws_ssi, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-deep-bit2-draws/si",
+        test_gl_deep_bit2_draws_si, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
+        test_gl_color_bytes_unpack_red_first, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-vertex2i-matches-the-reference",
+        test_gl_vertex2i_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-rotate-about-a-general-axis",
+        test_gl_rotate_about_a_general_axis, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-quad-splits-from-its-first-vertex",
+        test_gl_quad_splits_from_its_first_vertex, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-strip-spans-a-context-switch",
+        test_gl_strip_spans_a_context_switch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-swap-tmesh-makes-a-fan",
+        test_gl_swap_tmesh_makes_a_fan, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-line-leaves-out-its-last-pixel",
+        test_gl_line_leaves_out_its_last_pixel, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-line-bounded-by-the-viewport",
+        test_gl_line_bounded_by_the_viewport, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-line-depth-and-colour-follow-t",
+        test_gl_line_depth_and_colour_follow_t, true);
     for (size_t i = 0; i < ARRAY_SIZE(gl_prim_cases); i++) {
         g_autofree char *path = g_strdup_printf(
             "sn0/origin2000/mgras/gl-reference/%s", gl_prim_cases[i].name);
 
-        qtest_add_data_func(path, &gl_prim_cases[i],
-                            test_gl_prim_matches_the_reference);
+        mgras_qtest_add_data_func(
+            path,
+            &gl_prim_cases[i],
+            test_gl_prim_matches_the_reference, true);
     }
-    qtest_add_func("sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
-                   test_gl_triangle_spans_a_context_switch);
-    qtest_add_func("sn0/origin2000/mgras/gl-lit-triangle-matches-the-equation",
-                   test_gl_lit_triangle_matches_the_equation);
-    qtest_add_func("sn0/origin2000/mgras/gl-light-enables-select-the-lights",
-                   test_gl_light_enables_select_the_lights);
-    qtest_add_func("sn0/origin2000/mgras/gl-normalize-enable",
-                   test_gl_normalize_enable);
-    qtest_add_func("sn0/origin2000/mgras/gl-normal-forms-convert",
-                   test_gl_normal_forms_convert);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-two-sided-lighting-lights-the-back",
-                   test_gl_two_sided_lighting_lights_the_back);
-    qtest_add_func("sn0/origin2000/mgras/gl-cull-face-culls-by-facing",
-                   test_gl_cull_face_culls_by_facing);
-    qtest_add_func("sn0/origin2000/mgras/gl-scissor-bounds-draws-and-clears",
-                   test_gl_scissor_bounds_draws_and_clears);
-    qtest_add_func("sn0/origin2000/mgras/gl-alpha-test-discards",
-                   test_gl_alpha_test_discards);
-    qtest_add_func("sn0/origin2000/mgras/gl-stencil-masks-drawing",
-                   test_gl_stencil_masks_drawing);
-    qtest_add_func("sn0/origin2000/mgras/gl-stencil-incr-and-decr-codes",
-                   test_gl_stencil_incr_and_decr_codes);
-    qtest_add_func("sn0/origin2000/mgras/gl-stencil-clear-keeps-depth",
-                   test_gl_stencil_clear_keeps_depth);
-    qtest_add_func("sn0/origin2000/mgras/gl-blend-mixes-with-the-window",
-                   test_gl_blend_mixes_with_the_window);
-    qtest_add_func("sn0/origin2000/mgras/gl-blend-uses-destination-alpha",
-                   test_gl_blend_uses_destination_alpha);
-    qtest_add_func("sn0/origin2000/mgras/gl-logic-op-combines-with-the-window",
-                   test_gl_logic_op_combines_with_the_window);
-    qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-keeps-channels",
-                   test_gl_colour_mask_keeps_channels);
-    qtest_add_func("sn0/origin2000/mgras/gl-fog-index-integer-endpoints",
-                   test_gl_fog_index_integer_endpoints);
-    qtest_add_func("sn0/origin2000/mgras/gl-fog-blends-toward-the-fog-colour",
-                   test_gl_fog_blends_toward_the_fog_colour);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-offset-moves-depth",
-                   test_gl_polygon_offset_moves_depth);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-clips-in-eye-space",
-                   test_gl_clip_plane_clips_in_eye_space);
-    qtest_add_func("sn0/origin2000/mgras/gl-line-point-state-answers",
-                   test_gl_line_point_state_answers);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-triangle-spans-a-context-switch",
+        test_gl_triangle_spans_a_context_switch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-lit-triangle-matches-the-equation",
+        test_gl_lit_triangle_matches_the_equation, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-light-enables-select-the-lights",
+        test_gl_light_enables_select_the_lights, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-normalize-enable",
+        test_gl_normalize_enable, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-normal-forms-convert",
+        test_gl_normal_forms_convert, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-two-sided-lighting-lights-the-back",
+        test_gl_two_sided_lighting_lights_the_back, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-cull-face-culls-by-facing",
+        test_gl_cull_face_culls_by_facing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-scissor-bounds-draws-and-clears",
+        test_gl_scissor_bounds_draws_and_clears, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-alpha-test-discards",
+        test_gl_alpha_test_discards, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-stencil-masks-drawing",
+        test_gl_stencil_masks_drawing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-stencil-incr-and-decr-codes",
+        test_gl_stencil_incr_and_decr_codes, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-stencil-clear-keeps-depth",
+        test_gl_stencil_clear_keeps_depth, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-blend-mixes-with-the-window",
+        test_gl_blend_mixes_with_the_window, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-blend-uses-destination-alpha",
+        test_gl_blend_uses_destination_alpha, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-logic-op-combines-with-the-window",
+        test_gl_logic_op_combines_with_the_window, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-mask-keeps-channels",
+        test_gl_colour_mask_keeps_channels, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-fog-index-integer-endpoints",
+        test_gl_fog_index_integer_endpoints, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-fog-blends-toward-the-fog-colour",
+        test_gl_fog_blends_toward_the_fog_colour, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-offset-moves-depth",
+        test_gl_polygon_offset_moves_depth, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-plane-clips-in-eye-space",
+        test_gl_clip_plane_clips_in_eye_space, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-line-point-state-answers",
+        test_gl_line_point_state_answers, true);
 
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/parameters",
-                    test_gl_native_stipple_parameters);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/polygon",
-                    test_gl_native_stipple_polygon);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/no-write",
-                    test_gl_native_stipple_no_write);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/unbound",
-                    test_gl_native_stipple_unbound);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/axes",
-                    test_gl_native_stipple_axes);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/pairs",
-                    test_gl_native_stipple_pairs);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/masks",
-                    test_gl_native_stipple_masks);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/contexts",
-                    test_gl_native_stipple_contexts);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/loop",
-                    test_gl_native_stipple_loop);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-stipple/empty-binding",
-                    test_gl_native_stipple_empty_binding);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/stipple-applied",
-                    test_gl_native_polygon_stipple_applied);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/renders-patterns",
-                   test_gl_polygon_stipple_renders_patterns);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/bad-lengths",
-                   test_gl_polygon_stipple_rejects_bad_packet_lengths);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/begin-end",
-                   test_gl_polygon_stipple_rejects_begin_end_upload);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/contexts",
-                   test_gl_polygon_stipple_is_context_local);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-stipple/all-board-families",
-                   test_gl_polygon_stipple_all_board_families);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/facing",
-                   test_gl_native_polygon_facing);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/clipped-boundary",
-                    test_gl_native_polygon_clipped_boundary);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/deferred",
-                    test_gl_native_polygon_deferred);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/contexts",
-                    test_gl_native_polygon_contexts);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/disposal",
-                    test_gl_native_polygon_disposal);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/failed-restore",
-                    test_gl_native_polygon_failed_restore);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/edge-flags",
-                   test_gl_native_polygon_edge_flags);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/point",
-                   test_gl_native_polygon_point);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-polygon/line",
-                   test_gl_native_polygon_line);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/points",
-                   test_gl_native_width_points);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/lines",
-                   test_gl_native_width_lines);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/rejected-inside-begin",
-                   test_gl_native_width_rejected_inside_begin);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/contexts",
-                   test_gl_native_width_contexts);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/scissor",
-                   test_gl_native_width_scissor);
-    qtest_add_func("sn0/origin2000/mgras/gl-native-width/targets",
-                   test_gl_native_width_targets);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/parameters",
+        test_gl_native_stipple_parameters, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/polygon",
+        test_gl_native_stipple_polygon, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/no-write",
+        test_gl_native_stipple_no_write, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/unbound",
+        test_gl_native_stipple_unbound, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/axes",
+        test_gl_native_stipple_axes, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/pairs",
+        test_gl_native_stipple_pairs, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/masks",
+        test_gl_native_stipple_masks, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/contexts",
+        test_gl_native_stipple_contexts, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/loop",
+        test_gl_native_stipple_loop, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-stipple/empty-binding",
+        test_gl_native_stipple_empty_binding, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/stipple-applied",
+        test_gl_native_polygon_stipple_applied, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/renders-patterns",
+        test_gl_polygon_stipple_renders_patterns, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/bad-lengths",
+        test_gl_polygon_stipple_rejects_bad_packet_lengths, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/begin-end",
+        test_gl_polygon_stipple_rejects_begin_end_upload, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/contexts",
+        test_gl_polygon_stipple_is_context_local, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-stipple/all-board-families",
+        test_gl_polygon_stipple_all_board_families, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/facing",
+        test_gl_native_polygon_facing, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/clipped-boundary",
+        test_gl_native_polygon_clipped_boundary, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/deferred",
+        test_gl_native_polygon_deferred, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/contexts",
+        test_gl_native_polygon_contexts, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/disposal",
+        test_gl_native_polygon_disposal, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/failed-restore",
+        test_gl_native_polygon_failed_restore, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/edge-flags",
+        test_gl_native_polygon_edge_flags, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/point",
+        test_gl_native_polygon_point, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-polygon/line",
+        test_gl_native_polygon_line, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/points",
+        test_gl_native_width_points, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/lines",
+        test_gl_native_width_lines, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/rejected-inside-begin",
+        test_gl_native_width_rejected_inside_begin, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/contexts",
+        test_gl_native_width_contexts, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/scissor",
+        test_gl_native_width_scissor, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-native-width/targets",
+        test_gl_native_width_targets, true);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }

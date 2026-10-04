@@ -36,11 +36,10 @@ static void test_gl_raster_position_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-raster-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_A);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -54,6 +53,9 @@ static void test_gl_raster_position_migration(void)
     gl_raster_pos2f(from, 2, 0);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(gl_query(to, GL_Q_RASTER_VALID, 1), ==, 0);
     g_assert_cmphex(gl_query(to, GL_Q_RASTER_X, 1), ==,
@@ -72,7 +74,7 @@ static void test_gl_raster_position_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -90,11 +92,10 @@ static void test_gl_colour_index_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-ci-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_B);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -110,6 +111,9 @@ static void test_gl_colour_index_migration(void)
     gl_indexs(from, 0x17);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(gl_attribute_query(to, 4), ==, gl_bits(0x17));
     gl_window_rect(to, 10, 10, 20, 20);
@@ -122,7 +126,7 @@ static void test_gl_colour_index_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -140,11 +144,10 @@ static void test_gl_colour_index_bank_one_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-ci-bank-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_colour_index_back_buffer(from);
     gl_indexs(from, 0x13);
@@ -156,6 +159,9 @@ static void test_gl_colour_index_bank_one_migration(void)
     qtest_writel(from, REG_XMAP_BUF_SELECT, 1u << 14);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(mgras_test_display_pixel(to, 256 + 15, 383 - 20), ==,
                     0x0000ff);
@@ -164,7 +170,7 @@ static void test_gl_colour_index_bank_one_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -183,11 +189,10 @@ static void test_gl_colour_index_and_bitmap_migration(void)
 
     tmpfs = g_dir_make_tmp("sn0-mgras-gl-index-XXXXXX", &err);
     g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
 
     from = qtest_init(MIGRATION_ARGS);
     dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_cmdline);
 
     gl_enter_slot(from, GL_SLOT_B);
     gl_word(from, GL_CONTEXT_OPENER);
@@ -207,6 +212,9 @@ static void test_gl_colour_index_and_bitmap_migration(void)
     gl_word(from, 0xffff0000);
 
     sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    to = qtest_init(dest_cmdline);
+    sgi_wait_migration_status(to, "completed", 30);
 
     gl_word(to, 0x0000ffff);
     for (int x = 20; x < 36; x++) {
@@ -227,7 +235,7 @@ static void test_gl_colour_index_and_bitmap_migration(void)
     g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
-    qtest_quit(from);
+    g_remove(uri + sizeof("file:") - 1);
     g_rmdir(tmpfs);
 }
 
@@ -773,53 +781,73 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
 
-    qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_add_func("sn0/origin2000/mgras/gl-raster-position-migration",
-                   test_gl_raster_position_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-colour-index-migration",
-                   test_gl_colour_index_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-colour-index-bank-one-migration",
-                   test_gl_colour_index_bank_one_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-depth-range-migration",
-                   test_gl_depth_range_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-dither-migration",
-                   test_gl_dither_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-lighting-migration",
-                   test_gl_lighting_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-light-enables-migration",
-                   test_gl_light_enables_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-cull-migration",
-                   test_gl_cull_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-scissor-migration",
-                   test_gl_scissor_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-alpha-migration",
-                   test_gl_alpha_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-stencil-migration",
-                   test_gl_stencil_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-blend-migration",
-                   test_gl_blend_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-logic-op-migration",
-                   test_gl_logic_op_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-colour-mask-migration",
-                   test_gl_colour_mask_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-fog-migration",
-                   test_gl_fog_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-polygon-offset-migration",
-                   test_gl_polygon_offset_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-plane-migration",
-                   test_gl_clip_plane_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-clip-query-migration",
-                   test_gl_clip_query_migration);
-    qtest_add_func("sn0/origin2000/mgras/gl-line-point-migration",
-                   test_gl_line_point_migration);
-    qtest_add_func("sn0/origin2000/mgras/"
-                   "gl-colour-index-and-bitmap-migration",
-                   test_gl_colour_index_and_bitmap_migration);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-raster-position-migration",
+        test_gl_raster_position_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-index-migration",
+        test_gl_colour_index_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-index-bank-one-migration",
+        test_gl_colour_index_bank_one_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-depth-range-migration",
+        test_gl_depth_range_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-dither-migration",
+        test_gl_dither_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-lighting-migration",
+        test_gl_lighting_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-light-enables-migration",
+        test_gl_light_enables_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-cull-migration",
+        test_gl_cull_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-scissor-migration",
+        test_gl_scissor_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-alpha-migration",
+        test_gl_alpha_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-stencil-migration",
+        test_gl_stencil_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-blend-migration",
+        test_gl_blend_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-logic-op-migration",
+        test_gl_logic_op_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-mask-migration",
+        test_gl_colour_mask_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-fog-migration",
+        test_gl_fog_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-polygon-offset-migration",
+        test_gl_polygon_offset_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-plane-migration",
+        test_gl_clip_plane_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-clip-query-migration",
+        test_gl_clip_query_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-line-point-migration",
+        test_gl_line_point_migration, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-colour-index-and-bitmap-migration",
+        test_gl_colour_index_and_bitmap_migration, false);
 
     ret = g_test_run();
-    qtest_quit(qts);
+    if (qts) {
+        qtest_quit(qts);
+        qts = NULL;
+    }
 
     return ret;
 }
