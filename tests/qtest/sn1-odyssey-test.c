@@ -11146,6 +11146,153 @@ static void test_texture_adapter_luminance_alpha(void)
     qtest_quit(qts);
 }
 
+static void volume_mipmap_upload(QTestState *qts, int missing)
+{
+    const uint32_t colours[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffff00ff,
+    };
+    uint32_t base = 0x16a800;
+    unsigned object = 0;
+
+    /* Public 8-cube probe: successive mip levels occupy successive slices. */
+    for (unsigned level = 0, size = 8; level < 4; level++, size >>= 1) {
+        uint32_t pixels[64];
+
+        for (unsigned i = 0; i < size * size; i++) {
+            pixels[i] = colours[level];
+        }
+        for (unsigned z = 0; z < size; z++, base += 0x80, object++) {
+            if (object == missing) {
+                continue;
+            }
+            texture_adapter_upload_3d_slice(qts, base, pixels, size, size);
+            g_assert_cmphex(odsy_test_object_texel(qts, base, size - 1,
+                                                   size - 1), ==,
+                            colours[level]);
+            g_assert_cmphex(odsy_test_object_texel(qts, base, size, 0), ==, 0);
+        }
+    }
+}
+
+static void volume_mipmap_bind(QTestState *qts)
+{
+    const uint32_t words[] = {
+        0x00010404, 0x02042200,
+        0x00010405, 0x2420,
+        0x00011c16, 0x08000c63, 8, 8, 8, 0x12800040, 0, 0,
+        0x0001141b, 2, 0, 0, 0, 0,
+        0x00011013, 0, 0, 0x3100, 0x0f00,
+        0x00010e80, 0x16a800, 0x41100002, 1,
+        0x00010406, 0,
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    };
+
+    texture_adapter_window(qts);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void volume_mipmap_native_quad(QTestState *qts)
+{
+    const uint32_t matrix[16] = {
+        ODSY_F_ONE, 0, 0, 0,
+        0, 0xbf800000, 0, 0x42fffe00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, ODSY_F_ONE,
+    };
+    const uint32_t words[] = {
+        0x33008000, 0x290080f3, 0x2a008100, 0x2c00810c,
+        ODSY_CMD_GL_BEGIN, 7,
+        0xc380cc23, 0, 0, 0x3f000000, 0x8080c800, 32, 32,
+        0xc380cc23, 0x41400000, 0, 0x3f000000, 0x8080c800, 96, 32,
+        0xc380cc23, 0x41400000, 0x41400000, 0x3f000000,
+        0x8080c800, 96, 96,
+        0xc380cc23, 0, 0x41400000, 0x3f000000, 0x8080c800, 32, 96,
+        ODSY_CMD_GL_END,
+    };
+
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
+static void test_texture_adapter_volume_mipmap_nearest(void)
+{
+    const uint32_t colours[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffff00ff,
+    };
+    QTestState *qts = board_start("");
+
+    volume_mipmap_upload(qts, -1);
+    volume_mipmap_bind(qts);
+    volume_mipmap_native_quad(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 64, 64), ==, colours[1]);
+    g_assert_cmphex(odsy_test_pixel(qts, 31, 64), ==, ODSY_PLANE_BLUE);
+    g_assert_cmphex(odsy_test_pixel(qts, 96, 64), ==, ODSY_PLANE_BLUE);
+    texture_adapter_window(qts);
+    for (unsigned level = 0; level < 4; level++) {
+        const uint32_t lod[] = { 0x00011013, 0, 0, level << 8, level << 8 };
+
+        push_user_words(qts, lod, ARRAY_SIZE(lod));
+        texture_adapter_point_3d_rgba(qts, 10 + level, 10,
+                                     0.99f, 0.99f, 0.99f,
+                                     (const uint32_t[]) {
+                                         ODSY_F_ONE, ODSY_F_ONE,
+                                         ODSY_F_ONE, ODSY_F_ONE,
+                                     });
+        g_assert_cmphex(odsy_test_pixel(qts, 10 + level, 10), ==,
+                        colours[level]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_texture_adapter_volume_mipmap_missing_slice(void)
+{
+    const unsigned missing[] = { 7, 11, 13, 14 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(missing); i++) {
+        QTestState *qts = board_start("");
+
+        volume_mipmap_upload(qts, missing[i]);
+        volume_mipmap_bind(qts);
+        odsy_test_pixel_write(qts, 64, 64, 0x12345678);
+        volume_mipmap_native_quad(qts);
+        g_assert_cmphex(odsy_test_pixel(qts, 64, 64), ==, 0x12345678);
+        qtest_quit(qts);
+    }
+}
+
+static void test_texture_adapter_volume_mipmap_state_restore(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-volume-mipmap-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    volume_mipmap_upload(from, -1);
+    volume_mipmap_bind(from);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    volume_mipmap_native_quad(to);
+    g_assert_cmphex(odsy_test_pixel(to, 64, 64), ==, 0x00ff00ff);
+    qtest_system_reset(to);
+    volume_mipmap_bind(to);
+    odsy_test_pixel_write(to, 64, 64, 0x12345678);
+    volume_mipmap_native_quad(to);
+    g_assert_cmphex(odsy_test_pixel(to, 64, 64), ==, 0x12345678);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_texture_adapter_level_zero_3d(void)
 {
     const uint32_t slice_colours[4] = {
@@ -14513,6 +14660,12 @@ int main(int argc, char **argv)
                    test_texture_adapter_scalar_components);
     qtest_add_func("sn1/odyssey/texture-adapter/luminance-alpha",
                    test_texture_adapter_luminance_alpha);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-nearest",
+                   test_texture_adapter_volume_mipmap_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-missing-slice",
+                   test_texture_adapter_volume_mipmap_missing_slice);
+    qtest_add_func("sn1/odyssey/texture-adapter/volume-mipmap-state-restore",
+                   test_texture_adapter_volume_mipmap_state_restore);
     qtest_add_func("sn1/odyssey/texture-adapter/level-zero-3d",
                    test_texture_adapter_level_zero_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-r",
