@@ -512,21 +512,27 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         qemu_set_irq(s->cpu_enable_out[1], s->cpu_enable[1]);
         return;
     /*
-     * The header ties a store here to a per-processor NMI, but no public
-     * source gives the trigger predicate. The stock PROM's stores of 0x100 at
-     * these offsets, once read as NMI stores, go to the Hub-special remote
-     * register window, whose low block does not reach this register file; no
-     * known guest writes here. The model therefore delivers no CPU NMI from
-     * an ordinary MMIO store; a modelled NMI reaches the processor over the
-     * s->nmi line from the external L1 controller (its nmi command). The
-     * store is kept observable and otherwise inert.
-    */
+     * A store to NMI A or B sends that slot's processor a non-maskable
+     * interrupt. The header ties the register to a per-processor NMI but
+     * gives no trigger predicate. Linux's SEND_NMI, mainline for the Hub
+     * and in the public IP35 series (patch 14/38) for this PI, stores 1 to
+     * interrupt another CPU for its crash dump; its one caller builds only
+     * with REAL_NMI_SIGNAL, which no tree defines. The model takes bit 0 as
+     * the trigger and fires once per store, an approximation: what other
+     * bits do, whether a store of 0 retracts anything, and whether a
+     * disabled slot takes the NMI are unknown, so a store without bit 0 is
+     * logged and otherwise inert.
+     */
     case PI_NMI_A:
     case PI_NMI_B:
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: NMI register 0x%" HWADDR_PRIx
-                      " store of 0x%" PRIx64 " delivers no NMI; the L1 "
-                      "controller drives the processor's NMI line\n",
-                      offset, value);
+        if (!(value & 1)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: NMI register 0x%"
+                          HWADDR_PRIx " store of 0x%" PRIx64 " has bit 0 "
+                          "clear and delivers no NMI\n", offset, value);
+            return;
+        }
+        trace_sgi_bedrock_pi_nmi(s->interface, offset == PI_NMI_B, value);
+        qemu_irq_pulse(s->nmi[offset == PI_NMI_B]);
         return;
     case PI_PENDING_MODIFY:
     case PI_PENDING_ALIAS:

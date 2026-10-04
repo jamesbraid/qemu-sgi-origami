@@ -818,27 +818,43 @@ static void test_request_buffer_timeout(void)
 }
 
 /*
- * A store to NMI A or B delivers no NMI: the trigger predicate is in no
- * public source, and the stock PROM's 0x100 init store to both offsets
- * demonstrably does not fire one (a MIPS NMI vectors to the reset vector, so
- * a self-NMI would reset-loop the single-node PROM, which boots). The store
- * is inert at this register and the processor's NMI line stays low; a
- * modelled NMI arrives over that line from the L1 controller instead.
+ * A store with bit 0 set to NMI A or B pulses that slot's NMI line once, the
+ * store Linux's SEND_NMI makes. The trigger predicate is in no public
+ * source; a store with bit 0 clear, such as the 0x100 the stock PROM sends
+ * to the Hub-special window at the same offsets, stays inert.
  */
 static void test_nmi(void)
 {
-    QTestState *s = start("");
+    QTestState *s = start_processors(4, "");
 
     qtest_irq_intercept_out_named(s, BEDROCK_PATH, "nmi");
     for (unsigned pi = 0; pi < 2; pi++) {
         qtest_writeq(s, PI(pi, NMI_A), 0x100);
-        qtest_writeq(s, PI(pi, NMI_B), UINT64_MAX);
+        qtest_writeq(s, PI(pi, NMI_B), UINT64_MAX - 1);
         qtest_writeq(s, PI(pi, NMI_A), 0);
     }
     for (unsigned line = 0; line < 4; line++) {
         g_assert_cmpuint(qtest_get_irq_raise_count(s, line), ==, 0);
-        g_assert_false(qtest_get_irq(s, line));
     }
+
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned slot = 0; slot < 2; slot++) {
+            unsigned target = pi * 2 + slot;
+
+            qtest_writeq(s, PI(pi, slot ? NMI_B : NMI_A),
+                         target & 1 ? UINT64_MAX : 1);
+            for (unsigned line = 0; line < 4; line++) {
+                g_assert_cmpuint(qtest_get_irq_raise_count(s, line), ==,
+                                 line <= target);
+                /* An edge: the line does not stay asserted. */
+                g_assert_false(qtest_get_irq(s, line));
+            }
+        }
+    }
+    /* Each store is its own NMI. */
+    qtest_writeq(s, PI(1, NMI_B), 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 3), ==, 2);
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 2), ==, 1);
     qtest_quit(s);
 }
 
