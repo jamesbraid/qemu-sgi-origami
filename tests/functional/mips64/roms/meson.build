@@ -34,11 +34,18 @@ if sgi_roms_available
       sgi_timerstall_rom = rom_target
     endif
   endforeach
+  # The benchmark repeats each replacement many times; the correctness
+  # test runs the same checks a few times over each page size.
   sgi_tlbmaint_roms = []
+  sgi_tlbmaint_check_roms = []
   foreach name, config : {'4k': ['0', '4096', '65536'],
                           '16k': ['0x6000', '16384', '65536'],
                           '64k': ['0x1e000', '65536', '8192'],
-                          '16m': ['0x1ffe000', '16777216', '128']}
+                          '16m': ['0x1ffe000', '16777216', '128'],
+                          '4k-check': ['0', '4096', '16'],
+                          '16k-check': ['0x6000', '16384', '16'],
+                          '64k-check': ['0x1e000', '65536', '16'],
+                          '16m-check': ['0x1ffe000', '16777216', '16']}
     elf = custom_target('sgi-rom-tlbmaint-' + name + '-elf',
       input: files('tlbmaint.c'), output: 'tlbmaint-' + name + '.elf',
       command: [sgi_rom_cc, sgi_rom_flags,
@@ -48,13 +55,19 @@ if sgi_roms_available
                 '-T', meson.current_source_dir() / 'lib/rom.ld',
                 sgi_rom_lib, '@INPUT@', '-o', '@OUTPUT@'],
       depend_files: [sgi_rom_lib, sgi_rom_headers], build_by_default: false)
-    sgi_tlbmaint_roms += custom_target('sgi-rom-tlbmaint-' + name,
+    rom = custom_target('sgi-rom-tlbmaint-' + name,
       input: elf, output: 'tlbmaint-' + name + '.bin',
       command: [sgi_rom_objcopy, '-O', 'binary', '@INPUT@', '@OUTPUT@'],
       build_by_default: false)
+    if name.endswith('-check')
+      sgi_tlbmaint_check_roms += rom
+    else
+      sgi_tlbmaint_roms += rom
+    endif
   endforeach
   test_mips64_system_extra_deps += {
     'mips_tlb_performance': sgi_tlbmaint_roms,
+    'mips_tlb_replacement': sgi_tlbmaint_check_roms,
   }
   alias_target('sgi-roms', sgi_rom_targets)
   test_mips64_system_extra_deps += {'sgi_roms': sgi_rom_targets}

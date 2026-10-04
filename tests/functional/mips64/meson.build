@@ -342,6 +342,8 @@ if sgi_roms_available
   test_mips64_timeouts += {'sgi_roms': 18000}
   tests_mips64_system_thorough += ['timer_stall']
   test_mips64_timeouts += {'timer_stall': 360}
+  tests_mips64_system_thorough += ['mips_tlb_replacement']
+  test_mips64_timeouts += {'mips_tlb_replacement': 300}
   test_mips64_system_extra_deps += {'timer_stall': sgi_timerstall_rom}
 endif
 
