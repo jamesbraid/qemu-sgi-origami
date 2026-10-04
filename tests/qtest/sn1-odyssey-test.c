@@ -13252,6 +13252,23 @@ static void rgba_rect(QTestState *qts, float r, float g, float b, float a,
     push_user_words(qts, words, ARRAY_SIZE(words));
 }
 
+static void push_native_float_quad(QTestState *qts, uint32_t r, uint32_t g,
+                                   uint32_t b, float x0, float y0,
+                                   float x1, float y1)
+{
+    const uint32_t words[] = {
+        ODSY_GL_COLOR_3F, r, g, b,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_QUADS,
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x0), bitmap_rect_float(y0),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x1), bitmap_rect_float(y0),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x1), bitmap_rect_float(y1),
+        ODSY_GL_VERTEX_2F, bitmap_rect_float(x0), bitmap_rect_float(y1),
+        ODSY_CMD_GL_END,
+    };
+
+    push_user_words(qts, words, ARRAY_SIZE(words));
+}
+
 static void test_rgba_clear_masks(void)
 {
     const uint32_t masks[] = { 1, 2, 4, 8, 7, 0 };
@@ -13341,6 +13358,95 @@ static void test_rgba_pattern_origin_ownership(void)
     rgba_rect(qts, 0, 0, 0, 0, 10, 10, 14, 14);
     g_assert_cmphex(odsy_test_pixel(qts, 311, 211), ==, 0x0a141e00);
     qtest_quit(qts);
+}
+
+static void test_rgba_pattern_float_rectangle(void)
+{
+    const uint32_t pattern[32] = {
+        [21] = (1u << 10) | (1u << 20),
+        [20] = 1u << 13,
+        [18] = 1u << 12,
+    };
+    const uint32_t matrix[16] = {
+        ODSY_F_ONE, 0, 0, 0,
+        0, ODSY_F_ONE, 0, 0,
+        0, 0, 0x4f7fffc0, 0x4f7fffc0,
+        0, 0, 0, ODSY_F_ONE,
+    };
+    QTestState *qts = board_start("");
+
+    push_window_transform(qts, matrix);
+    push_block_16(qts, ODSY_F_ONE);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    set_reg(qts, ODSY_CMD_PATTERN_MODE, 0);
+    push_native_float_quad(qts, 0, 0, ODSY_F_ONE, 10, 10, 24, 14);
+    pattern_load(qts, pattern);
+    set_reg(qts, ODSY_CMD_PATTERN_SHAPE, 0);
+    set_reg(qts, ODSY_CMD_PATTERN_MODE, 0x02042210);
+    user_cmd_push(qts, 0x00010405);
+    user_cmd_push(qts, 0x2000);
+    push_native_float_quad(qts, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
+
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 11), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 13), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 13), ==, 0x0000ffff);
+
+    push_native_float_quad(qts, 0, ODSY_F_ONE, 0, 20, 10, 24, 14);
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 21, 10), ==, 0x0000ffff);
+    push_native_float_quad(qts, ODSY_F_ONE, ODSY_F_ONE, 0, 12, 10, 22, 14);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 11), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 20, 10), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 15, 11), ==, 0x0000ffff);
+    set_reg(qts, ODSY_CMD_PATTERN_MODE, 0x02042200);
+    push_native_float_quad(qts, 0, ODSY_F_ONE, ODSY_F_ONE, 12, 10, 22, 14);
+    g_assert_cmphex(odsy_test_pixel(qts, 15, 11), ==, 0x00ffffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 11), ==, 0x00ffffff);
+
+    qtest_system_reset(qts);
+    bitmap_rect_depth_window(qts);
+    push_native_float_quad(qts, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0xff0000ff);
+    qtest_quit(qts);
+}
+
+static void test_rgba_pattern_float_rectangle_migration(void)
+{
+    const uint32_t pattern[32] = {
+        [21] = 1u << 10,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-pattern-stipple-XXXXXX", &path,
+                             &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    bitmap_rect_depth_window(from);
+    push_native_float_quad(from, 0, 0, ODSY_F_ONE, 10, 10, 14, 14);
+    pattern_load(from, pattern);
+    set_reg(from, ODSY_CMD_PATTERN_SHAPE, 0);
+    set_reg(from, ODSY_CMD_PATTERN_MODE, 0x02042210);
+    user_cmd_push(from, 0x00010405);
+    user_cmd_push(from, 0x2000);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    push_native_float_quad(to, ODSY_F_ONE, 0, 0, 10, 10, 14, 14);
+    g_assert_cmphex(odsy_test_pixel(to, 10, 10), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_test_pixel(to, 11, 10), ==, 0x0000ffff);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void four_float_triangle(QTestState *qts, const uint32_t *colour,
@@ -15429,6 +15535,10 @@ int main(int argc, char **argv)
                    test_rgba_material_masks);
     qtest_add_func("sn1/odyssey/rgba/pattern-origin-ownership",
                    test_rgba_pattern_origin_ownership);
+    qtest_add_func("sn1/odyssey/rgba/pattern-float-rectangle",
+                   test_rgba_pattern_float_rectangle);
+    qtest_add_func("sn1/odyssey/rgba/pattern-float-rectangle-migration",
+                   test_rgba_pattern_float_rectangle_migration);
     qtest_add_func("sn1/odyssey/rgba/index-transitions",
                    test_rgba_index_transitions);
     qtest_add_func("sn1/odyssey/rgba/four-float-alpha",
