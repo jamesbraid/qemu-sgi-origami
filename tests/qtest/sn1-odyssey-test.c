@@ -10361,6 +10361,101 @@ static void test_texture_one_dimensional_mode(void)
     qtest_quit(qts);
 }
 
+static void texture_one_dimensional_clamp(bool linear)
+{
+    const uint32_t pixels[2] = { 0xe02060ff, 0x4040e0ff };
+    const uint32_t nearest[4] = {
+        0xe02060ff, 0xe02060ff, 0x4040e0ff, 0x4040e0ff,
+    };
+    const uint32_t filtered[4] = {
+        0x7838a8ff, 0xe02060ff, 0x4040e0ff, 0x2848e8ff,
+    };
+    const uint32_t coords[4] = { 0, 0x3e800000, 0x3f400000, 0x3f800000 };
+    const unsigned starts[4] = { 16, 40, 64, 88 };
+    const uint32_t setup[] = {
+        0x00010404, 0x02042200, 0x00010405, 0x2408,
+        0x00011013, 0, 0, 0x3100, 0,
+        0x00010e80, 0x16a800, 0x41100002, 0,
+        0x00010406, 0,
+        0x0001141b, 1, 0, 0, 0, 0,
+    };
+    uint32_t sampler[] = {
+        0x00011c16, 0x08000400, 2, 1, 1,
+        linear ? 0x13002022 : 0x13002000, 0x00101505, 0x00f0ffff,
+    };
+    QTestState *qts = board_start("");
+    unsigned mismatches = 0;
+
+    /* Original public interior texels use the existing canonical upload. */
+    upload_begin(qts, 0x16a800, 2, 0x080024d0, 2, 1);
+    upload_first_header(qts, 0x4b);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(2, ODSY_IMAGE_FMT_RGB));
+    push_user_words(qts, pixels, ARRAY_SIZE(pixels));
+    upload_end(qts);
+    texture_adapter_window(qts);
+    push_depth_clear(qts, 0, 0, 0, 0);
+    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+    push_user_words(qts, (uint32_t[]) {
+        ODSY_GL_COLOR_3F, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ONE,
+    }, 4);
+    for (unsigned i = 0; i < ARRAY_SIZE(starts); i++) {
+        push_user_words(qts, (uint32_t[]) {
+            0x00014400, 7, 0xc380c41f, coords[i],
+            0x8080c800, starts[i], 48,
+            0x8080c800, starts[i] + 16, 48,
+            0x8080c800, starts[i] + 16, 80,
+            0x8080c800, starts[i], 80, 0x00014001,
+        }, 17);
+    }
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            uint32_t expected = 0x000000ff;
+            uint32_t actual = odsy_test_pixel(qts, x, y);
+
+            for (unsigned i = 0; i < ARRAY_SIZE(starts); i++) {
+                if (x >= starts[i] && x < starts[i] + 16 &&
+                    y >= 48 && y < 80) {
+                    expected = linear ? filtered[i] : nearest[i];
+                }
+            }
+            if (actual != expected) {
+                if (mismatches < 8) {
+                    g_test_message("pixel (%u,%u): expected %08x, got %08x",
+                                   x, y, expected, actual);
+                }
+                mismatches++;
+            }
+        }
+    }
+    g_test_message("1D %s clamp mismatches %u/16384",
+                   linear ? "linear" : "nearest", mismatches);
+    /* Stored-border flags and unknown high fields stay unsupported. */
+    for (unsigned bad = 0; bad < 3; bad++) {
+        sampler[5] = bad == 0 ? (linear ? 0x03002022 : 0x03002000) :
+                     bad == 1 ? 0x13002020 :
+                     linear ? 0x13002022 : 0x13002000;
+        sampler[7] = bad == 0 ? 0x01f0ffff :
+                     bad == 2 ? 0x02f0ffff : 0x00f0ffff;
+        push_user_words(qts, sampler, ARRAY_SIZE(sampler));
+        odsy_test_pixel_write(qts, 10, 10, 0x123456ff);
+        texture_adapter_point(qts, 10, 10, 0.25f, 0.5f);
+        g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x123456ff);
+    }
+    qtest_quit(qts);
+    g_assert_cmpuint(mismatches, ==, 0);
+}
+
+static void test_texture_one_dimensional_clamp_nearest(void)
+{
+    texture_one_dimensional_clamp(false);
+}
+
+static void test_texture_one_dimensional_clamp_linear(void)
+{
+    texture_one_dimensional_clamp(true);
+}
+
 static void test_texture_chain_height_one(void)
 {
     const uint32_t words[] = {
@@ -15403,6 +15498,10 @@ int main(int argc, char **argv)
                    test_texture_chain_integer_quads);
     qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-mode",
                    test_texture_one_dimensional_mode);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-clamp-nearest",
+                   test_texture_one_dimensional_clamp_nearest);
+    qtest_add_func("sn1/odyssey/texture-adapter/one-dimensional-clamp-linear",
+                   test_texture_one_dimensional_clamp_linear);
     qtest_add_func("sn1/odyssey/texture-adapter/height-one",
                    test_texture_chain_height_one);
     qtest_add_func("sn1/odyssey/texture-adapter/construction",

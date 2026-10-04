@@ -4127,6 +4127,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     uint32_t ws = (word >> 12) & 3, wt = (word >> 10) & 3;
     bool clamp = ws == 2 || wt == 2;
     bool border = ws == 3 || wt == 3;
+    bool one_d_clamp =
+        (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                        ODSY_TEX_MODE_3D)) == ODSY_TEX_MODE_1D &&
+        height == 1 && depth == 1 && !s->tex_level0 &&
+        (word == 0x13002000 || word == 0x13002022);
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
     bool colour_table_l8 = word == 0x11500001 || word == 0x11500003 ||
                            word == 0x11600001;
@@ -4185,13 +4190,16 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                               (ctz32(height) << 5) |
                               (three_d ? ctz32(depth) : 0)) ||
         ws > 3 || wt > 3 ||
-        (!border && (s->tex_sampler[5] || s->tex_sampler[6])) ||
+        (!border && !one_d_clamp &&
+         (s->tex_sampler[5] || s->tex_sampler[6])) ||
+        (one_d_clamp &&
+         ((s->tex_sampler[5] | s->tex_sampler[6]) & 0xff000000)) ||
         (border && (ws != 3 || wt != 3 ||
                     width_word != (0x00fc0000 | width) ||
                     height_word != (0x00fc0000 | height) ||
                     ((s->tex_sampler[5] | s->tex_sampler[6]) &
                      0xff000000))) ||
-        ((clamp || border) &&
+        ((clamp || border) && !one_d_clamp &&
          ((clamp && (ws != 2 || wt != 2)) ||
           (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                           ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
@@ -4234,10 +4242,12 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     image->wrap_s = border ? SGI_GL_CLAMP_TO_BORDER :
                     ws == 2 ? SGI_GL_CLAMP :
                     ws ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
-    image->wrap_t = border ? SGI_GL_CLAMP_TO_BORDER :
+    /* A 1D image must not acquire a T-axis border tap during filtering. */
+    image->wrap_t = one_d_clamp ? SGI_GL_CLAMP_TO_EDGE :
+                    border ? SGI_GL_CLAMP_TO_BORDER :
                     wt == 2 ? SGI_GL_CLAMP :
                     wt ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
-    if (border) {
+    if (border || one_d_clamp) {
         image->border_color[0] = ((s->tex_sampler[5] >> 12) & 0xfff) /
                                  4095.0f;
         image->border_color[1] = (s->tex_sampler[5] & 0xfff) / 4095.0f;
