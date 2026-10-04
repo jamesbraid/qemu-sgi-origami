@@ -416,6 +416,39 @@ static void octane_storage_backing(OctaneMachineState *s, const char *product,
     }
 }
 
+/*
+ * The R12000 identity and reset word from the catalogue, each kept only
+ * where -cpu R12000,<property>= did not already give one. PRId and FPU
+ * identification are inferred from one kernel's inventory record; the
+ * reset word, and the cache geometry its SS and SB fields select, are an
+ * emulator approximation (docs/datasheets/ip30-r12000.md).
+ */
+static void octane_r12000_profile(DeviceState *dev,
+                                  const SGIModelProcessor *processor)
+{
+    uint32_t mode = processor->mode_bits;
+    const struct {
+        const char *name;
+        uint32_t value;
+    } fields[] = {
+        { "r12000-prid", processor->prid },
+        { "r12000-fpu-id", processor->fpu_prid },
+        { "r12000-reset-mode", mode },
+        { "r12000-scache-bytes", processor->cache_mib * MiB },
+        /* Config SB, bit 13, selects 32-word rather than 16-word blocks. */
+        { "r12000-scache-block-words", mode & (1u << 13) ? 32 : 16 },
+    };
+
+    g_assert(processor->has_prid && processor->has_fpu_prid &&
+             processor->has_mode_bits);
+    for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
+        if (!qdev_find_global_prop(OBJECT(dev), fields[i].name)) {
+            object_property_set_uint(OBJECT(dev), fields[i].name,
+                                     fields[i].value, &error_fatal);
+        }
+    }
+}
+
 static void octane_init_common(MachineState *machine, bool octane2)
 {
     OctaneMachineState *s = (OctaneMachineState *)machine;
@@ -547,7 +580,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
         qdev_connect_clock_in(dev, "clk-in", cpuclk);
         object_property_set_bool(OBJECT(dev), "big-endian", true,
                                  &error_fatal);
-        /* The required R12000 fields come from the caller's -cpu profile. */
+        octane_r12000_profile(dev, processor);
         qdev_realize(dev, NULL, &error_fatal);
         cpu = MIPS_CPU(dev);
     } else {

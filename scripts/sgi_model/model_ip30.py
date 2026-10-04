@@ -3,11 +3,51 @@
 
 from .model_shared import _integer, _required, _validate_integer, num
 
-R12000_PROPERTIES = (
-    "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-    "r12000-scache-bytes", "r12000-scache-block-words",
-)
+# R12000 Config fields (NEC VR10000 Series User's Manual, U10278EJ4V0UM00,
+# Config register): BE bit 15, SS bits 18:16, SB bit 13.
+R12000_CONFIG_BE = 1 << 15
+R12000_CONFIG_SS_SHIFT = 16
+R12000_CONFIG_SB = 1 << 13
 BOARD_ROLES = ("processor", "system-board", "frontplane", "power-supply")
+
+
+def _r12000_profile(model, cpu, processor):
+    """The R12000 identity and reset word the machine gives its CPU unless
+    the operator overrides them: PRId and FPU identification from the CPU
+    component, the reset-mode word from the processors catalogue entry for
+    the selected clock and cache, as R14000's is. Secondary-cache bytes
+    and block words follow from that word's SS and SB fields, which must
+    agree with the catalogued cache size.
+    """
+    from .model_compile import CompileError
+
+    identity = cpu.get("identity", {})
+    prid = num(_required(identity, "processor_identification", cpu["id"]))
+    fpu_prid = num(_required(identity, "fpu_identification", cpu["id"]))
+    if prid & ~0xffff or prid & 0xff00 != 0x0e00:
+        raise CompileError("IP30 R12000 identity requires implementation 0x0e")
+    _validate_integer(fpu_prid, 32, "IP30 R12000 FPU identification")
+    clock_mhz = processor["clock_hz"] // 1000000
+    variant = next((v for entry in model.get("processors", [])
+                    if entry.get("part") == "r12000"
+                    for v in entry.get("variants", [])
+                    if v.get("clock_mhz") == clock_mhz
+                    and v.get("cache_mib") == processor["cache_mib"]), None)
+    if variant is None or "reset_mode_bits" not in variant:
+        raise CompileError(
+            f"no catalogued r12000 {clock_mhz} MHz/{processor['cache_mib']} "
+            "MiB variant carries reset_mode_bits")
+    mode = num(variant["reset_mode_bits"])
+    if mode & ~0x01ffffff:
+        raise CompileError("IP30 R12000 reset_mode_bits exceeds 25 bits")
+    if not mode & R12000_CONFIG_BE:
+        raise CompileError("IP30 R12000 reset_mode_bits must select big-endian")
+    # SS encodes 512 KiB << SS: 1 MiB is 001, 2 MiB is 010.
+    if ((mode >> R12000_CONFIG_SS_SHIFT) & 7 !=
+            processor["cache_mib"].bit_length()):
+        raise CompileError("IP30 R12000 reset_mode_bits SS disagrees with "
+                           "the catalogued cache size")
+    return {"prid": prid, "fpu_prid": fpu_prid, "mode_bits": mode}
 
 
 def compile_heart_node(model, components, entry):
@@ -32,15 +72,7 @@ def compile_heart_node(model, components, entry):
         "cache_mib": _integer(identity, "cache_mib", cpu["id"], 16),
     }
     if part == "r12000":
-        properties = identity.get("required_properties")
-        if (not isinstance(properties, list) or
-                len(properties) != len(R12000_PROPERTIES) or
-                set(properties) != set(R12000_PROPERTIES)):
-            raise CompileError("R12000 requires all five explicit profile properties")
-        if any(field in identity for field in
-               ("processor_identification", "fpu_identification", "cache_clock_mhz")):
-            raise CompileError("IP30 R12000 identity and cache clocks are operator inputs")
-        processor["required_properties"] = properties
+        processor.update(_r12000_profile(model, cpu, processor))
     else:
         processor["prid"] = num(_required(identity, "processor_identification", cpu["id"]))
         if processor["prid"] & ~255 != 0x900:

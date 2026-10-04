@@ -60,6 +60,50 @@ static void test_identity(gconstpointer data)
     qtest_quit(qts);
 }
 
+static uint32_t cpu_property(QTestState *qts, const char *name)
+{
+    g_autoptr(QDict) cpus = qtest_qmp(qts, "{'execute':'query-cpus-fast'}");
+    QDict *cpu = qobject_to(QDict,
+                            qlist_peek(qdict_get_qlist(cpus, "return")));
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,'property':%s}}",
+        qdict_get_str(cpu, "qom-path"), name);
+
+    return qdict_get_int(reply, "return");
+}
+
+/*
+ * A plain Octane2 takes its R12000 profile from the catalogue: PRId and
+ * FPU identification from one kernel's inventory record, and the
+ * approximated reset word with the 2 MiB, 32-word cache it selects. A
+ * -cpu property still overrides its own field.
+ */
+static void test_octane2_identity(gconstpointer data)
+{
+    bool override = GPOINTER_TO_INT(data);
+    g_autofree char *quoted = g_shell_quote(image_path);
+    uint32_t expected = override ? 0xe24 : 0xe35;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    qts = qtest_initf("-M octane2 %s -bios %s -nic none -accel tcg -S",
+                      override ? "-cpu R12000,r12000-prid=0xe24" : "",
+                      quoted);
+    read_identity(qts, expected);
+    g_assert_cmphex(cpu_property(qts, "r12000-prid"), ==, expected);
+    g_assert_cmphex(cpu_property(qts, "r12000-fpu-id"), ==, 0x900);
+    g_assert_cmphex(cpu_property(qts, "r12000-reset-mode"), ==, 0x1aa683);
+    g_assert_cmpuint(cpu_property(qts, "r12000-scache-bytes"), ==,
+                     2 * 1024 * 1024);
+    g_assert_cmpuint(cpu_property(qts, "r12000-scache-block-words"), ==, 32);
+    qtest_system_reset(qts);
+    read_identity(qts, expected);
+    qtest_quit(qts);
+}
+
 static void test_invalid_identity(void)
 {
     const char *profiles[] = {
@@ -185,6 +229,10 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, image, sizeof(image)), ==, sizeof(image));
     close(fd);
     qtest_add_data_func("/r10000/identity/octane", "octane", test_identity);
+    qtest_add_data_func("/r10000/identity/octane2", GINT_TO_POINTER(0),
+                        test_octane2_identity);
+    qtest_add_data_func("/r10000/identity/octane2-override",
+                        GINT_TO_POINTER(1), test_octane2_identity);
     if (qtest_has_machine("malta")) {
         qtest_add_data_func("/r10000/identity/default", "malta", test_identity);
         qtest_add_func("/r10000/identity/invalid", test_invalid_identity);

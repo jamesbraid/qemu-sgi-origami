@@ -62,13 +62,11 @@
 #
 # @cache-mib: secondary cache size
 #
-# @required-properties: QOM inputs an operator must supply when this
-#     selected processor profile has no established default
-#
 # @mode-bits: the CP0_Config0-derived mode word the flash
 #     configuration block and the board latch both compare against,
 #     computed once by the catalogue compiler from this
-#     assembly's other fields
+#     assembly's other fields; for an IP30 R12000, the Config bits
+#     24:0 its CPU samples at cold reset
 #
 # Since: 11.2
 ##
@@ -80,8 +78,7 @@
             'clock-hz': 'uint64',
             '*cache-clock-hz': 'uint64',
             'cache-mib': 'uint16',
-            '*mode-bits': 'uint32',
-            '*required-properties': ['str'] } }
+            '*mode-bits': 'uint32' } }
 
 ##
 # @SGIModelCpuSlot:
@@ -1468,15 +1465,12 @@
 #
 # @cache-mib: secondary cache size
 #
-# @required-properties: explicit per-CPU QOM properties supplied by
-#     the operator
-#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelOfferingProcessor',
   'data': { 'part': 'str',
             'clock-hz': 'uint64',
-            'cache-mib': 'uint16', '*required-properties': ['str'] } }
+            'cache-mib': 'uint16' } }
 
 ##
 # @SGIModelSmdkTftpMode:
