@@ -110,6 +110,9 @@ void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
 bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
                                  SGIKonaTextureParams *params);
+bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
+                                    const uint32_t record[22],
+                                    SGIKonaTextureParams *params);
 
 /* Volume records use fourteen mipmap words or four nonmipmap words. */
 bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
