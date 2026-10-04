@@ -2726,7 +2726,9 @@ static void rad4_exit(PCIDevice *dev)
 
 /*
  * Whether migrated state that indexes arrays or feeds shifts is in range:
- * every state the device itself can reach passes.
+ * every state the device itself can reach passes. A completed recognition
+ * leaves rec_index equal to its sequence's length, so the longest sequence's
+ * length is itself a valid value.
  */
 static bool rad4_migrated_state_valid(PsitechRad4State *s)
 {
@@ -2737,7 +2739,7 @@ static bool rad4_migrated_state_valid(PsitechRad4State *s)
     }
     if (s->mode >= RAD4_MODE_COUNT ||
         s->rec_state < RAD4_REC_UNARMED || s->rec_state > RAD4_REC_FAILED ||
-        s->rec_index >= longest ||
+        s->rec_index > longest ||
         s->eeprom_address >= RAD4_EEPROM_WORDS ||
         s->rgb_reserved_phase >= RAD4_COLOR_LUT_CYCLES) {
         return false;
