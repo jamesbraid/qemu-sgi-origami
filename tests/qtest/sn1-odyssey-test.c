@@ -6130,6 +6130,9 @@ static void test_command_fifo_gl_polygon_mode(void)
  * the rasterizer's own sub-pixel rounding convention.
  */
 #define ODSY_REG_LINE_POINT_SIZE 0x0001084a
+#define ODSY_REG_PATTERN_MODE 0x00010404
+#define ODSY_MODE_POINT_SMOOTH (1u << 0)
+#define ODSY_MODE_LINE_SMOOTH (1u << 1)
 
 static void set_line_point_size(QTestState *qts, uint32_t line_width,
                                 uint32_t point_size)
@@ -6191,6 +6194,46 @@ static unsigned odsy_count_yellow(QTestState *qts, uint32_t x0, uint32_t x1,
     return n;
 }
 
+static unsigned odsy_count_partial_red_over_blue(QTestState *qts,
+                                                 uint32_t x0, uint32_t x1,
+                                                 uint32_t y0, uint32_t y1)
+{
+    unsigned n = 0;
+    uint32_t x, y;
+
+    for (y = y0; y <= y1; y++) {
+        for (x = x0; x <= x1; x++) {
+            uint32_t pixel = odsy_test_pixel(qts, x, y);
+
+            if (pixel != ODSY_PLANE_BLUE && pixel != ODSY_PLANE_RED) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+static void assert_red_over_blue_coverage(QTestState *qts, uint32_t x,
+                                          uint32_t y)
+{
+    uint32_t pixel = odsy_test_pixel(qts, x, y);
+    uint32_t red = (pixel >> 24) & 0xff;
+    uint32_t green = (pixel >> 16) & 0xff;
+    uint32_t blue = (pixel >> 8) & 0xff;
+
+    g_assert_cmpuint(red, >=, 198);
+    g_assert_cmpuint(red, <=, 202);
+    g_assert_cmpuint(green, ==, 0);
+    g_assert_cmpuint(blue, >=, 53);
+    g_assert_cmpuint(blue, <=, 57);
+}
+
+static void set_smoothing(QTestState *qts, uint32_t bits)
+{
+    user_cmd_push(qts, ODSY_REG_PATTERN_MODE);
+    user_cmd_push(qts, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND | bits);
+}
+
 static void test_command_fifo_gl_line_point_size(void)
 {
     /* A horizontal line and a point, both centred on local (64, 64). */
@@ -6226,6 +6269,81 @@ static void test_command_fifo_gl_line_point_size(void)
     push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ZERO);
     push_point_3f(qts, ODSY_F_ONE, ODSY_F_ONE, ODSY_F_ZERO, centre_point);
     g_assert_cmpuint(odsy_count_yellow(qts, 316, 323, 316, 323), ==, 16);
+
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_point_smoothing(void)
+{
+    static const uint32_t centre_point[3] = {
+        0x00000000, 0x00000000, 0xbf000000,
+    };
+    QTestState *qts = board_start("");
+    static const uint32_t sample_x[] = { 319, 320, 319, 320 };
+    static const uint32_t sample_y[] = { 319, 319, 320, 320 };
+    unsigned i;
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
+    set_blend(qts, 0x639, 0, 0);
+    set_line_point_size(qts, 0x80, 0x100);
+
+    set_smoothing(qts, 0);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_point_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, centre_point);
+    for (i = 0; i < ARRAY_SIZE(sample_x); i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, sample_x[i], sample_y[i]), ==,
+                        ODSY_PLANE_RED);
+    }
+
+    set_smoothing(qts, ODSY_MODE_POINT_SMOOTH);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_point_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, centre_point);
+    for (i = 0; i < ARRAY_SIZE(sample_x); i++) {
+        assert_red_over_blue_coverage(qts, sample_x[i], sample_y[i]);
+    }
+
+    set_smoothing(qts, 0);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_point_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, centre_point);
+    for (i = 0; i < ARRAY_SIZE(sample_x); i++) {
+        g_assert_cmphex(odsy_test_pixel(qts, sample_x[i], sample_y[i]), ==,
+                        ODSY_PLANE_RED);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_line_smoothing(void)
+{
+    static const uint32_t diagonal_line[6] = {
+        0xbe800000, 0xbe800000, 0xbf000000,
+        0x3e800000, 0x3e800000, 0xbf000000,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_BLEND);
+    set_blend(qts, 0x639, 0, 0);
+    set_line_point_size(qts, 0x80, 0x80);
+
+    set_smoothing(qts, 0);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, diagonal_line);
+    g_assert_cmpuint(odsy_count_partial_red_over_blue(qts, 296, 344, 296, 344),
+                     ==, 0);
+
+    set_smoothing(qts, ODSY_MODE_LINE_SMOOTH);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, diagonal_line);
+    g_assert_cmpuint(odsy_count_partial_red_over_blue(qts, 296, 344, 296, 344),
+                     >, 0);
+
+    set_smoothing(qts, 0);
+    push_depth_clear(qts, ODSY_F_ZERO, ODSY_F_ZERO, ODSY_F_ONE, ODSY_F_ONE);
+    push_line_3f(qts, ODSY_F_ONE, ODSY_F_ZERO, ODSY_F_ZERO, diagonal_line);
+    g_assert_cmpuint(odsy_count_partial_red_over_blue(qts, 296, 344, 296, 344),
+                     ==, 0);
 
     qtest_quit(qts);
 }
@@ -16825,6 +16943,10 @@ int main(int argc, char **argv)
                    test_command_fifo_gl_polygon_mode);
     qtest_add_func("sn1/odyssey/command-fifo-gl-line-point-size",
                    test_command_fifo_gl_line_point_size);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-point-smoothing",
+                   test_command_fifo_gl_point_smoothing);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-line-smoothing",
+                   test_command_fifo_gl_line_smoothing);
     qtest_add_func("sn1/odyssey/command-fifo-gl-line-stipple",
                    test_command_fifo_gl_line_stipple);
     qtest_add_func("sn1/odyssey/command-fifo-gl-line-stipple-migration",
