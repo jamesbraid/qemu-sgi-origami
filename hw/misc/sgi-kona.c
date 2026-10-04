@@ -3655,8 +3655,8 @@ static bool sgi_kona_gl_pixel_transfer_identity(const SGIKonaGLPipe *p)
 }
 
 /*
- * Ordinary small-return RGB/RGBA components use normalized formats 4/5
- * and dense rows at byte 8. The pointer's low bits do not offset the source.
+ * Ordinary small-return colour components use normalized formats 3 through
+ * 7 and dense rows at byte 8. The pointer's low bits do not offset the source.
  * The selected logical bank supplies direct RGB at drawable-local lower-
  * left coordinates, bottom-first. Unsupported visuals/bindings, indexed
  * pixels and clipped rectangles receive no reply.
@@ -3696,8 +3696,7 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
             return;
         }
     }
-    if ((format != 4 && format != 5) ||
-        (type != 1 && type != 3 && type != 6) || args[6] > 3) {
+    if (!sgi_kona_gl_texture_pixel_bytes(format, type) || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
                       " is not modelled; no reply\n", format, type, args[6]);
@@ -3753,13 +3752,13 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
                 ((rgb >> 8) & 255) / 255.0,
                 (rgb & 255) / 255.0, 1,
             };
-            float rgba[4];
+            double rgba[4];
             uint8_t *out = data + r * row + c * pixel_bytes;
 
             for (unsigned k = 0; k < 4; k++) {
-                rgba[k] = CLAMP(source[k] * scale[k] + bias[k], 0.0, 1.0);
+                rgba[k] = source[k] * scale[k] + bias[k];
             }
-            if (!sgi_kona_gl_pixel_pack(format, type, rgba, false,
+            if (!sgi_kona_gl_pixel_pack_double(format, type, rgba, false,
                                          out, pixel_bytes)) {
                 return;
             }
