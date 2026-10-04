@@ -2064,6 +2064,13 @@ bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
     if (!c->raster_valid) {
         return false;
     }
+    if (!isfinite(c->raster_pos[0]) || !isfinite(c->raster_pos[1]) ||
+        !isfinite(xorig) || !isfinite(yorig) ||
+        !isfinite(xmove) || !isfinite(ymove)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: nonfinite bitmap placement "
+                      "dropped\n");
+        return false;
+    }
     /* Beyond 2^30 a corner lies off any plane; keep it there. */
     b->x = MIN(MAX(floor((double)c->raster_pos[0] - xorig), -0x40000000),
                0x40000000);

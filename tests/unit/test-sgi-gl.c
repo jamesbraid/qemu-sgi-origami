@@ -1122,6 +1122,32 @@ static void test_bitmap(void)
                       10.5f);
 }
 
+static void test_bitmap_nonfinite_placement(void)
+{
+    static const float invalid[] = { NAN, INFINITY, -INFINITY };
+    SGIGLContext c;
+
+    for (int k = 0; k < ARRAY_SIZE(invalid); k++) {
+        for (int field = 0; field < 6; field++) {
+            float value[] = { 10, 20, 2, 3, 12, -1.5f };
+            SGIGLBitmap b = { .x = 42, .y = 43, .width = 44, .height = 45 };
+            const SGIGLBitmap before = b;
+            uint32_t position[2];
+
+            context_init(&c);
+            value[field] = invalid[k];
+            c.raster_pos[0] = value[0];
+            c.raster_pos[1] = value[1];
+            memcpy(position, c.raster_pos, sizeof(position));
+            g_assert_false(sgi_gl_bitmap_place(&c, 10, 2, value[2], value[3],
+                                               value[4], value[5], &b));
+            g_assert_cmpmem(&b, sizeof(b), &before, sizeof(before));
+            g_assert_cmpmem(c.raster_pos, sizeof(position),
+                            position, sizeof(position));
+        }
+    }
+}
+
 /*
  * A bitmap's fragments are bounded by the window, not the viewport, and
  * pass the depth test at the raster position's depth.
@@ -11274,6 +11300,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/index-value", test_index_value);
     g_test_add_func("/sgi-gl/index-draw", test_index_draw);
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
+    g_test_add_func("/sgi-gl/bitmap-nonfinite-placement",
+                    test_bitmap_nonfinite_placement);
     g_test_add_func("/sgi-gl/draw-pixels/refusals", test_draw_pixels_refusals);
     g_test_add_func("/sgi-gl/draw-pixels/zoom", test_draw_pixels_zoom);
     g_test_add_func("/sgi-gl/draw-pixels/transfer", test_draw_pixels_transfer);
