@@ -7,12 +7,18 @@
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "sgi-launch.h"
 
 #define SN0_FLASH_SIZE (1024 * 1024)
 #define SN0_FLASH_BASE UINT64_C(0x1fc00000)
 #define SN0_FLASH_MARK 0x100
 #define SN0_FLASH_PROBE 0x8000
+
+#define O2K_DESKSIDE "origin2000,topology=origin2000-deskside,nodes=2"
+#define O2K_DESKSIDE_SIZE "-smp 4 -m 512M"
+#define O200_GIGACHANNEL "origin200,topology=origin200-gigachannel"
 
 /* Origin 300's 16 MiB two-position flash and the PROM image -bios takes. */
 #define SN1_FLASH_SIZE (16 * 1024 * 1024)
@@ -123,8 +129,8 @@ static void test_sn0_node_flash_per_node(void)
     g_autofree char *node0 = blockdev("n0", path0);
     g_autofree char *node1 = blockdev("n1", path1);
     QTestState *qts = qtest_initf(
-        "-M origin2000,topology=origin2000-deskside,nodes=2,"
-        "node0-flash=n0,node1-flash=n1 -smp 4 -m 512M "
+        "-M " O2K_DESKSIDE ",node0-flash=n0,node1-flash=n1 "
+        O2K_DESKSIDE_SIZE " "
         "-blockdev %s -blockdev %s", node0, node1);
 
     g_assert_cmphex(sn0_flash_read(qts, 0, SN0_FLASH_MARK), ==, 0x10);
@@ -320,6 +326,108 @@ static void test_sn1_node_flash_refusals(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+/*
+ * The canonical path of the device a block backend whose node is @node, or
+ * whose drive id is @node, is attached to; NULL when none is.
+ */
+static char *attached_device(QTestState *qts, const char *node)
+{
+    QDict *response = qtest_qmp(qts, "{'execute': 'query-block'}");
+    QList *blocks = qdict_get_qlist(response, "return");
+    const QListEntry *entry;
+    char *path = NULL;
+
+    QLIST_FOREACH_ENTRY(blocks, entry) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        QDict *inserted = qdict_get_qdict(block, "inserted");
+
+        if (!qdict_haskey(block, "qdev") || !inserted) {
+            continue;
+        }
+        if (g_str_equal(qdict_get_str(block, "device"), node) ||
+            g_str_equal(qdict_get_str(inserted, "node-name"), node)) {
+            path = g_strdup(qdict_get_str(block, "qdev"));
+            break;
+        }
+    }
+    qobject_unref(response);
+    return path;
+}
+
+static void assert_attached_to(QTestState *qts, const char *node,
+                               const char *suffix)
+{
+    g_autofree char *path = attached_device(qts, node);
+
+    g_assert_nonnull(path);
+    g_assert_true(g_str_has_suffix(path, suffix));
+}
+
+/* The io0-flash binding reaches the BaseIO card's and cabinet's part. */
+static void test_io_flash_bound(void)
+{
+    g_autofree char *path = make_store("io0", SN0_FLASH_SIZE, 0x06);
+    g_autofree char *node = blockdev("io0", path);
+    QTestState *qts = qtest_initf("-M " O2K_DESKSIDE ",io0-flash=io0 "
+                                  O2K_DESKSIDE_SIZE " -blockdev %s", node);
+
+    assert_attached_to(qts, "io0", "/flash");
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M " O200_GIGACHANNEL ",io0-flash=io0 -blockdev %s",
+                      node);
+    assert_attached_to(qts, "io0", "io7/flash");
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_io_flash_legacy_drive(void)
+{
+    g_autofree char *path = make_store("io0-legacy", SN0_FLASH_SIZE, 0x06);
+    QTestState *qts = qtest_initf(
+        "-M " O2K_DESKSIDE " " O2K_DESKSIDE_SIZE " -drive if=none,"
+        "id=sgi-baseio-flash0,file=%s,format=raw", path);
+
+    assert_attached_to(qts, "sgi-baseio-flash0", "/flash");
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M " O200_GIGACHANNEL " -drive if=none,"
+                      "id=sgi-gigachannel-flash0,file=%s,format=raw", path);
+    assert_attached_to(qts, "sgi-gigachannel-flash0", "io7/flash");
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_io_flash_refusals(void)
+{
+    g_autofree char *small = make_store("io0-small", SN0_FLASH_SIZE / 2, 0);
+    g_autofree char *right = make_store("io0-right", SN0_FLASH_SIZE, 0);
+    g_autofree char *small_node = blockdev("io0", small);
+    g_autofree char *right_node = blockdev("io0", right);
+    /* Outside qtest the machine wants a PROM before it builds the I/O. */
+    g_autofree char *prom = make_store("io0-prom", 4096, 0);
+    g_autofree char *legacy = g_strdup_printf(
+        "if=none,id=sgi-gigachannel-flash0,file=%s,format=raw", small);
+    const char *both[] = {
+        qtest_qemu_binary(NULL), "-M", O200_GIGACHANNEL ",io0-flash=io0",
+        "-bios", prom, "-display", "none", "-S", "-qmp", "stdio",
+        "-blockdev", right_node, "-drive", legacy, NULL,
+    };
+
+    assert_rejected(O200_GIGACHANNEL ",io0-flash=io0", "-blockdev",
+                    small_node, "origin200: io0-flash is 524288 bytes; it "
+                    "must be exactly 1048576");
+    assert_rejected("origin200,io0-flash=io0", "-blockdev", right_node,
+                    "origin200: topology 'origin200' with 1 node board has "
+                    "no io0-flash");
+    assert_launch_rejected(both, "origin200: io0-flash and -drive "
+                           "id=sgi-gigachannel-flash0 both back the same "
+                           "BASEIO PROM flash");
+    g_assert_cmpint(g_unlink(small), ==, 0);
+    g_assert_cmpint(g_unlink(right), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -347,6 +455,12 @@ int main(int argc, char **argv)
                    test_sn1_node_flash_legacy_drive);
     qtest_add_func("/sgi-machine-storage/sn1-node-flash/refusals",
                    test_sn1_node_flash_refusals);
+    qtest_add_func("/sgi-machine-storage/io-flash/bound",
+                   test_io_flash_bound);
+    qtest_add_func("/sgi-machine-storage/io-flash/legacy-drive",
+                   test_io_flash_legacy_drive);
+    qtest_add_func("/sgi-machine-storage/io-flash/refusals",
+                   test_io_flash_refusals);
     ret = g_test_run();
     g_assert_cmpint(g_rmdir(directory), ==, 0);
     g_free(directory);

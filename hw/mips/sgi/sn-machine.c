@@ -1677,6 +1677,61 @@ static bool sgi_machine_attach_xio_card(
     return true;
 }
 
+/* The block node or drive bound to item @name, or NULL. */
+static const char *sgi_machine_storage_node(SGIMachineState *s,
+                                            const char *name)
+{
+    return s->storage ? g_hash_table_lookup(s->storage, name) : NULL;
+}
+
+/*
+ * The catalogue's io<N>-flash name for @record's BASEIO PROM flash: N
+ * counts the topology's boards that fit the part, in io_boards order.
+ */
+static char *sgi_machine_io_flash_name(const SGIModelTopology *t,
+                                       const SGIModelIoBoard *record)
+{
+    const SGIModelIoBoardList *entry;
+    unsigned int index = 0;
+
+    for (entry = t->io_boards; entry && entry->value != record;
+         entry = entry->next) {
+        switch (entry->value->preset) {
+        case SGI_MODEL_IO_BOARD_PRESET_IO6:
+        case SGI_MODEL_IO_BOARD_PRESET_IO6G:
+        case SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL:
+            index++;
+            break;
+        default:
+            break;
+        }
+    }
+    return g_strdup_printf("io%u-flash", index);
+}
+
+/*
+ * The BASEIO PROM flash backing for @record: its io<N>-flash binding or
+ * the legacy drive @legacy names, refusing both at once.
+ */
+static bool sgi_machine_io_flash_backing(SGIMachineState *s,
+                                         const SGIModelTopology *t,
+                                         const SGIModelIoBoard *record,
+                                         BlockBackend *legacy,
+                                         const char **backing, Error **errp)
+{
+    g_autofree char *name = sgi_machine_io_flash_name(t, record);
+    const char *node = sgi_machine_storage_node(s, name);
+
+    if (node && legacy) {
+        error_setg(errp, "%s: %s and -drive id=%s both back the same BASEIO "
+                   "PROM flash", MACHINE_GET_CLASS(s)->name, name,
+                   blk_name(legacy));
+        return false;
+    }
+    *backing = legacy ? blk_name(legacy) : node;
+    return true;
+}
+
 static bool sgi_machine_instantiate_baseio_card(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1695,6 +1750,7 @@ static bool sgi_machine_instantiate_baseio_card(
     g_autofree char *flash_id =
         g_strdup_printf("sgi-baseio-flash%u", board_index);
     BlockBackend *flash_blk = blk_by_name(flash_id);
+    const char *flash_backing;
     static const struct {
         unsigned int offset;
         const char *prop;
@@ -1706,6 +1762,11 @@ static bool sgi_machine_instantiate_baseio_card(
     };
     size_t i;
 
+    if (!sgi_machine_io_flash_backing(s, t, record, flash_blk, &flash_backing,
+                                      errp)) {
+        object_unref(OBJECT(dev));
+        return false;
+    }
     sgi_machine_add_xio_board(s, dev, record, board_index, attachment);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (record->has_ioc3_serial) {
@@ -1715,8 +1776,8 @@ static bool sgi_machine_instantiate_baseio_card(
     if (nvram_blk) {
         qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
     }
-    if (flash_blk) {
-        qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
+    if (flash_backing) {
+        qdev_prop_set_string(dev, "flash-drive", flash_backing);
     }
     if (s->io_prom && sgi_baseio_preset_lookup(preset)->bridge_flash) {
         qdev_prop_set_string(dev, "firmware", s->io_prom);
@@ -1794,6 +1855,7 @@ static bool sgi_machine_instantiate_gigachannel(
     unsigned int cabinet = 0;
     g_autofree char *flash_id = NULL;
     BlockBackend *flash_blk;
+    const char *flash_backing;
 
     /*
      * The cabinet's BASEIO PROM flash, by name only: -drive if=none,
@@ -1809,6 +1871,11 @@ static bool sgi_machine_instantiate_gigachannel(
     }
     flash_id = g_strdup_printf("sgi-gigachannel-flash%u", cabinet);
     flash_blk = blk_by_name(flash_id);
+    if (!sgi_machine_io_flash_backing(s, t, record, flash_blk, &flash_backing,
+                                      errp)) {
+        object_unref(OBJECT(dev));
+        return false;
+    }
 
     object_property_add_child(OBJECT(s), SGI_MACHINE_GIGACHANNEL_NAME,
                               OBJECT(dev));
@@ -1818,8 +1885,8 @@ static bool sgi_machine_instantiate_gigachannel(
     qdev_prop_set_uint32(dev, "module", record->module_index);
     sgi_machine_set_board_widget(dev, attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    if (flash_blk) {
-        qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
+    if (flash_backing) {
+        qdev_prop_set_string(dev, "flash-drive", flash_backing);
     }
     if (s->io_prom) {
         qdev_prop_set_string(dev, "firmware", s->io_prom);
@@ -3658,13 +3725,6 @@ static bool sgi_machine_check_storage(SGIMachineState *s,
     return true;
 }
 
-/* The block node or drive bound to item @name, or NULL. */
-static const char *sgi_machine_storage_node(SGIMachineState *s,
-                                            const char *name)
-{
-    return s->storage ? g_hash_table_lookup(s->storage, name) : NULL;
-}
-
 static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -5094,6 +5154,11 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
         g_str_equal(end, "-flash")) {
         return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB ||
                t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
+    }
+    if (g_str_has_prefix(name, "io") &&
+        !qemu_strtoui(name + strlen("io"), &end, 10, &index) &&
+        g_str_equal(end, "-flash")) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
     }
     return false;
 }
