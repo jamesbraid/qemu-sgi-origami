@@ -384,17 +384,38 @@ static void test_byte_lanes(void)
 
 static void test_self_ordered_dma(void)
 {
-    static const uint8_t expected[] = { 0x40, 0x41, 0x42, 0x43,
-                                        0x44, 0x45, 0x46, 0x47 };
+    static const uint8_t native[] = { 0x40, 0x41, 0x42, 0x43,
+                                     0x44, 0x45, 0x46, 0x47 };
+    static const uint8_t reversed[] = { 0x43, 0x42, 0x41, 0x40,
+                                       0x47, 0x46, 0x45, 0x44 };
+    const uint64_t addresses[] = {
+        0x80008000, 0x40008000, 0xa000000000008000ULL,
+    };
     QTestState *qts = transport_start(
         "-global sgi-bridge-dma-test.byte-lane-self-ordered=on");
-    uint8_t actual[sizeof(expected)];
+    uint8_t actual[sizeof(native)];
+    unsigned int n, swap;
 
     reg_write(qts, 0x80, 0xa00000);
-    reg_write(qts, 0x200, 0x3010);
-    dma_fill(qts, 0x80008000, 0x40);
-    qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
-    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    for (n = 0; n < G_N_ELEMENTS(addresses); n++) {
+        for (swap = 0; swap < 2; swap++) {
+            uint64_t address = addresses[n];
+
+            /* Oppose inactive controls to identify the selected source. */
+            reg_write(qts, 0x200,
+                       0x3010 | ((n == 0 ? swap : !swap) << 19));
+            qtest_writeq(qts, BASE + 0x10000 + 8 * 8,
+                         0x8a01 | ((n == 1 ? swap : !swap) << 5));
+            if (n == 2) {
+                address |= (uint64_t)swap << 55;
+            }
+            qtest_memset(qts, TARGET_A + SCRATCH, 0xee, sizeof(actual));
+            dma_fill(qts, address, 0x40);
+            qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
+            g_assert_cmpmem(actual, sizeof(actual),
+                            swap ? reversed : native, sizeof(native));
+        }
+    }
     qtest_quit(qts);
 }
 

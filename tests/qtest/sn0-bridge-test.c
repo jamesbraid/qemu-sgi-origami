@@ -1493,7 +1493,7 @@ static void test_dma_local_space_is_never_swapped(const void *data)
  * a transfer below the translated base crosses no swapper at all, so a ring
  * put there would pass on a model that never read the declaration.
  */
-static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
+static void test_dma_self_ordered_follows_swap_control(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE BOTH_CARDS);
     uint8_t seen[SWAP_LEN];
@@ -1511,11 +1511,7 @@ static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
         g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
     }
 
-    /*
-     * And with the guest asking for the swap the model does not reproduce
-     * for such a card. The declaration is the card's, so the guest cannot
-     * reach past it, and a model keyed on the register would differ here.
-     */
+    /* Its native byte order does not suppress the programmed swap. */
     qtest_writel(qts, REG(BRIDGE_DEVICE(SELF_SLOT)),
                  DEV_MEMORY_SPACE | (CARD_MMIO(SELF_SLOT) >> 20) |
                  DEV_SWAP_DIRECT);
@@ -1523,7 +1519,7 @@ static void test_dma_a_self_ordered_card_is_never_swapped(const void *data)
     card_transfer(qts, SELF_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
     qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
     for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
     }
 
     /* The card beside it, which said nothing: permuted within each word. */
@@ -1584,31 +1580,20 @@ static void test_a_self_ordered_card_reads_narrow_straight(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * And the chip the board actually carries, in a slot no board puts it in.
- * The card above declares itself because a test told it to; this one
- * declares itself because of what it is. An
- * IOC3 added on the command line must be exempt in slot 5 exactly as the
- * board's own is in slot 2. The model reports the decision when a guest
- * asks for a swap it will not reproduce, which is where this reads it.
- */
+/* Both the board's slot and an added IOC3 support programmed DMA swapping. */
 #define SPARE_IOC3_SLOT         5
 #define SPARE_IOC3              " -device sgi-ioc3,addr=" \
                                 stringify(SPARE_IOC3_SLOT)
 
-static void test_an_ioc3_is_exempt_in_any_slot(const void *data)
+static void test_ioc3_dma_swap_is_supported_in_any_slot(const void *data)
 {
-    g_assert_true(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
+    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
                                                 DEV_SWAP_DIRECT));
-    g_assert_true(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
+    g_assert_false(bridge_log_has_the_message_at(SPARE_IOC3, SPARE_IOC3_SLOT,
                                                 DEV_SWAP_TRANSLATED));
 
-    /*
-     * And the board's own controller, in the slot the board really uses.
-     * Nothing on the machine's side names that slot any more, so this is
-     * where the default configuration's exemption is now pinned.
-     */
-    g_assert_true(bridge_log_has_the_message_at("", IOC3_SLOT,
+    /* The board's built-in controller must not log the old limitation. */
+    g_assert_false(bridge_log_has_the_message_at("", IOC3_SLOT,
                                                 DEV_SWAP_DIRECT));
 
     /*
@@ -4135,13 +4120,13 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/dma-a-self-ordered-card-is-never-swapped",
-                        NULL, test_dma_a_self_ordered_card_is_never_swapped);
+    qtest_add_data_func("sn0/bridge/dma-self-ordered-follows-swap-control",
+                        NULL, test_dma_self_ordered_follows_swap_control);
     qtest_add_data_func("sn0/bridge/self-ordered-card-narrow-reads-straight",
                         NULL,
                         test_a_self_ordered_card_reads_narrow_straight);
-    qtest_add_data_func("sn0/bridge/an-ioc3-is-exempt-in-any-slot", NULL,
-                        test_an_ioc3_is_exempt_in_any_slot);
+    qtest_add_data_func("sn0/bridge/ioc3-dma-swap-supported-in-any-slot", NULL,
+                        test_ioc3_dma_swap_is_supported_in_any_slot);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
                         NULL, test_dma_direct_window_reaches_the_second_node);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reads-the-second-node",

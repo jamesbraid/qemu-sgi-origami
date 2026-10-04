@@ -297,7 +297,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
     };
     int widget = -1;
     uint64_t destination;
-    bool swap;
+    bool swap, correction;
     bool rev2 = (REG(s, 0) >> 28) == 2;
 
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
@@ -354,14 +354,13 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
-    entry.target_as = swap || !xbridge_slot_needs_correction(s, dma->slot) ?
-                      &s->endpoint[widget].as :
-                      &s->endpoint[widget].swap_as;
+    /* The native lane representation is the swap-disabled baseline. */
+    correction = xbridge_slot_needs_correction(s, dma->slot) != swap;
+
+    entry.target_as = correction ? &s->endpoint[widget].swap_as :
+                                  &s->endpoint[widget].as;
     entry.translated_addr = destination & ~entry.addr_mask;
     if (s->packet_sender) {
-        unsigned correction = !swap &&
-                              xbridge_slot_needs_correction(s, dma->slot);
-
         entry.target_as = &dma->source[correction].as;
         entry.translated_addr |= (hwaddr)widget << 48;
     }

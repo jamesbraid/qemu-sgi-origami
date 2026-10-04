@@ -1355,7 +1355,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         if (sgi_bridge_is_device_register(addr, &slot)) {
             /* Swap on an exempt slot is not reproduced; say so. */
             if ((*held & (DEV_SWAP_DIRECT | DEV_SWAP_TRANSLATED)) &&
-                !sgi_bridge_slot_needs_correction(s, slot)) {
+                (s->byte_lane_exempt & (1U << slot))) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-bridge: slot %u holds a device this model "
                               "exempts from the DMA byte swap, and the guest "
@@ -2118,25 +2118,25 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
 }
 
 /*
- * Note the inversion: the swap bits enable a swapper that straightens the
- * crossed wiring, and a byte-addressed model is straight through already --
- * so the disabled case is the one that needs work.
+ * Ordinary PCI models need the crossed-lane correction with swapping off.
+ * IOC3 models its swap-disabled view in guest byte order instead. Compose
+ * either native representation with the guest's selected DMA swap control.
  */
 static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot,
                                             hwaddr pci_addr)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+    bool self_ordered = s->self_ordered_slots & (1U << slot);
+    bool swap;
 
-    if (!sgi_bridge_slot_needs_correction(s, slot)) {
+    /* Local space never crosses the swapper; the override is test-only. */
+    if (pci_addr < BRIDGE_PCI_TRANSLATED ||
+        (s->byte_lane_exempt & (1U << slot))) {
         return false;
     }
-    /* Local space never crosses the swapper. */
-    if (pci_addr < BRIDGE_PCI_TRANSLATED) {
-        return false;
-    }
-    /* Both direct windows take one bit, the page-mapped window its own. */
-    return !(dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
-                                                 : DEV_SWAP_DIRECT));
+    swap = dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
+                                               : DEV_SWAP_DIRECT);
+    return self_ordered ? swap : !swap;
 }
 
 /*

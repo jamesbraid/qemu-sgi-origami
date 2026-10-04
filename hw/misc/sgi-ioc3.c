@@ -2278,12 +2278,9 @@ static const Property sgi_ioc3_properties[] = {
 };
 
 /*
- * Read-only, because it is a fact about this model rather than a setting: the
- * ethernet engine reaches its descriptors and buffers with explicit
- * big-endian accessors and the serial blocks place their own byte lanes, so
- * the chip already sees guest memory the way the guest wrote it. A bridge
- * that corrected the bytes on top would reverse every word this device reads.
- * True in whichever slot a board fits the chip into.
+ * IOC3's swap-disabled view uses big-endian DMA structures and unmodified
+ * frame bytes. The bridge composes its programmed DMA swap with that native
+ * representation. This is fixed by the model, not a guest-selectable mode.
  */
 static bool sgi_ioc3_byte_lane_self_ordered(Object *obj, Error **errp)
 {

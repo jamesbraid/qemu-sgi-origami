@@ -9,6 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qemu/bswap.h"
 #include "sgi-migrate.h"
 #include "libqos/pci.h"
 #include "libqos/pci-sgi-bridge.h"
@@ -784,6 +785,134 @@ static void wait_for_rx_consume(QTestState *qts, uint32_t want)
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, want);
+}
+
+/*
+ * The IOC3's public drivers use big-endian descriptors with Bridge swapping
+ * disabled. Enabling the Bridge swap reverses each PCI word, including frame
+ * bytes. Pre-reversed descriptors must therefore produce the same wire frame.
+ */
+static void test_dma_swap_controls(const void *data)
+{
+    const bool translated = GPOINTER_TO_INT(data);
+    const uint64_t bridge = 0x40000000;
+    const uint32_t swap_direct = 1U << 19;
+    const uint32_t swap_translated = 1U << 20;
+    const uint32_t controls[] = {
+        0, swap_direct, swap_translated, swap_direct | swap_translated,
+    };
+    const uint32_t tx_physical = RAM_SCRATCH;
+    const uint32_t payload_physical = RAM_SCRATCH + 0x4000;
+    const uint32_t rx_ring_physical = RAM_SCRATCH + 0x8000;
+    const uint32_t rx_physical = RAM_SCRATCH + 0xc000;
+    enum { LEN = 64 };
+    uint8_t frame[LEN];
+    unsigned int n, i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = i + 0x30;
+    }
+    memset(frame, 0xff, 6);
+
+    for (n = 0; n < 2 * G_N_ELEMENTS(controls); n++) {
+        uint32_t control = controls[n / 2];
+        unsigned int rx_offset = n % 2 ? RXD_BUF_OFFSET : 64;
+        bool swap = control &
+                    (translated ? swap_translated : swap_direct);
+        uint32_t tx = translated ? 0x40000000 : 0x80000000 | tx_physical;
+        uint32_t payload = translated ? 0x40003000 :
+                           0x80000000 | payload_physical;
+        uint32_t rx_ring = translated ? 0x40001000 :
+                           0x80000000 | rx_ring_physical;
+        uint32_t rx = translated ? 0x40002000 : 0x80000000 | rx_physical;
+        uint64_t device_reg = bridge + 0x200 + IOC3_PCI_SLOT * 8 + 4;
+        uint8_t descriptor[128] = { 0 };
+        uint8_t encoded[sizeof(descriptor)];
+        uint8_t pointer[8], encoded_pointer[8], header[8];
+        uint8_t encoded_frame[LEN];
+        uint8_t got[LEN], received[RXD_BUF_OFFSET + LEN + 8];
+        uint8_t expected[sizeof(received)];
+        QTestState *qts;
+        uint32_t device;
+        int sv[2];
+
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        net_socket_set_recv_timeout(sv[0], 2);
+        g_test_message("%s DMA, swap controls 0x%x, receive offset %u",
+                       translated ? "translated" : "direct",
+                       control, rx_offset);
+        qts = ioc3_attach_socket(sv[1], 1);
+        device = qtest_readl(qts, device_reg);
+        qtest_writel(qts, device_reg,
+                     (device & ~(swap_direct | swap_translated)) | control);
+        qtest_writel(qts, bridge + 0x80 + 4, 0);
+        if (translated) {
+            qtest_writeq(qts, bridge + 0x10000, tx_physical | 1);
+            qtest_writeq(qts, bridge + 0x10008, rx_ring_physical | 1);
+            qtest_writeq(qts, bridge + 0x10010, rx_physical | 1);
+            qtest_writeq(qts, bridge + 0x10018, payload_physical | 1);
+        }
+
+        if (n % 2) {
+            stl_be_p(descriptor, LEN | TXD_BUF1_VALID);
+            stl_be_p(descriptor + 4, LEN << TXD_BUF1_LEN_SHIFT);
+            stq_be_p(descriptor + 8, payload);
+            for (i = 0; i < sizeof(encoded_frame); i++) {
+                encoded_frame[i] = frame[swap ? i ^ 3 : i];
+            }
+            qtest_memwrite(qts, payload_physical, encoded_frame,
+                            sizeof(encoded_frame));
+        } else {
+            stl_be_p(descriptor, LEN | TXD_DATA_VALID);
+            stl_be_p(descriptor + 4, LEN);
+            memcpy(descriptor + TXD_DATA_OFFSET, frame, sizeof(frame));
+        }
+        for (i = 0; i < sizeof(encoded); i++) {
+            encoded[i] = descriptor[swap ? i ^ 3 : i];
+        }
+        qtest_memwrite(qts, tx_physical, encoded, sizeof(encoded));
+        ioc3_writel(qts, ENET_TX_RING_LO, tx);
+        ioc3_writel(qts, ENET_TX_PRODUCE, sizeof(descriptor));
+        g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)),
+                         ==, sizeof(frame));
+        g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+
+        stq_be_p(pointer, rx);
+        for (i = 0; i < sizeof(pointer); i++) {
+            encoded_pointer[i] = pointer[swap ? i ^ 3 : i];
+        }
+        qtest_memwrite(qts, rx_ring_physical, encoded_pointer,
+                        sizeof(encoded_pointer));
+        qtest_memset(qts, rx_physical, 0xee, sizeof(received));
+        ioc3_writel(qts, ENET_RX_RING_LO, rx_ring);
+        ioc3_writel(qts, ENET_MAC_CONTROL,
+                     MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
+                     MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(rx_offset / 2));
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        wait_for_rx_consume(qts, 8);
+        qtest_memread(qts, rx_physical, received, sizeof(received));
+        for (i = 0; i < sizeof(header); i++) {
+            header[i] = received[swap ? i ^ 3 : i];
+        }
+        g_assert_cmphex(ldl_be_p(header) & RXH_VALID, ==, RXH_VALID);
+        g_assert_cmphex(ldl_be_p(header) & RXH_BYTECNT_MASK, ==,
+                        (LEN + ETHER_FCS_LEN) << RXH_BYTECNT_SHIFT);
+        g_assert_cmphex(ldl_be_p(header + 4) & RXE_GOODPKT, ==, RXE_GOODPKT);
+        memset(expected, 0xee, sizeof(expected));
+        for (i = 0; i < sizeof(frame); i++) {
+            expected[(rx_offset + i) ^ (swap ? 3 : 0)] = frame[i];
+        }
+        /* QEMU supplies zero bytes for the FCS omitted by its backend. */
+        for (i = 0; i < ETHER_FCS_LEN; i++) {
+            expected[(rx_offset + LEN + i) ^ (swap ? 3 : 0)] = 0;
+        }
+        g_assert_cmpmem(received + sizeof(header),
+                        sizeof(received) - sizeof(header),
+                        expected + sizeof(header),
+                        sizeof(expected) - sizeof(header));
+        ioc3_quit(qts);
+        close(sv[0]);
+    }
 }
 
 /* Three laps: one proves the wrap, three prove it keeps happening. */
@@ -2719,6 +2848,10 @@ int main(int argc, char **argv)
     unsigned int i;
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("sgi-ioc3-eth/dma-direct-swap-controls", NULL,
+                        test_dma_swap_controls);
+    qtest_add_data_func("sgi-ioc3-eth/dma-translated-swap-controls",
+                        GINT_TO_POINTER(1), test_dma_swap_controls);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-timing", NULL,
                         test_dp83843_restart_timing);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-cancel", NULL,
