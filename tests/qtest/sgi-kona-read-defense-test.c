@@ -109,8 +109,8 @@ static void assert_payload(QTestState *s, bool ready)
 {
     static const uint8_t expected[] = {
         0, 0, 0, 1, 0xa5, 0xa5, 0xa5, 0xa5,
-        0, 1, 0x80, 0xff, 0x35, 0x7e,
-        0, 1, 0x80, 0xff, 0x35, 0x7e,
+        0, 1, 0x80, 0xff, 0x35, 0x7e, 0, 0,
+        0, 1, 0x80, 0xff, 0x35, 0x7e, 0, 0,
     };
     uint8_t actual[sizeof(expected)], header[sizeof(expected)];
 
@@ -121,11 +121,11 @@ static void assert_payload(QTestState *s, bool ready)
     qtest_memread(s, PAGE, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), header, sizeof(header));
     g_assert_cmphex(qtest_readl(s, PAGE + sizeof(expected)), ==, 0xa5a5a5a5);
-    g_assert_cmpuint(field(s, FIXTURE_PAYLOAD_BYTES), ==, 12);
-    g_assert_cmpuint(field(s, FIXTURE_PAYLOAD_WRITES), ==, 3);
+    g_assert_cmpuint(field(s, FIXTURE_PAYLOAD_BYTES), ==, 16);
+    g_assert_cmpuint(field(s, FIXTURE_PAYLOAD_WRITES), ==, 4);
     g_assert_cmpuint(field(s, FIXTURE_READY_WRITES), ==, 1);
-    g_assert_cmpuint(field(s, FIXTURE_READY_SEQUENCE), ==, 4);
-    g_assert_cmpuint(field(s, FIXTURE_LAST_PAYLOAD), ==, 16);
+    g_assert_cmpuint(field(s, FIXTURE_READY_SEQUENCE), ==, 5);
+    g_assert_cmpuint(field(s, FIXTURE_LAST_PAYLOAD), ==, 20);
     g_assert_cmphex(field(s, FIXTURE_WIDTHS), ==, 1 << 4);
 }
 
@@ -289,7 +289,7 @@ static void test_ready_failure(void)
     text = read_log(s, log);
     g_assert_nonnull(strstr(text,
         "4-byte write to 0x9000000320000 failed (result 1)"));
-    g_assert_nonnull(strstr(text, "addr 0x320008 len 0xc"));
+    g_assert_nonnull(strstr(text, "addr 0x320008 len 0x10"));
     g_assert_null(strstr(text, "sgi_kona_return_post"));
 
     s = start(NULL);
