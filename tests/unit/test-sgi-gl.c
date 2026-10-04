@@ -7389,6 +7389,49 @@ static void test_texture_sampling(void)
     }
 }
 
+static void test_texture_replace_smooth_coverage(void)
+{
+    TexturePixels pixels = { .pixel = { 0xffffffff, 0xffffffff,
+                                        0xffffffff, 0xffffffff } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIRasterRules smooth_rules = rules_stencil;
+    FragScene point, line;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&point);
+    point.rec.rules = &smooth_rules;
+    enable(&point.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&point, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    point.rec.target.texture = &image;
+    texture_coord(&point, 0.25f, 0.25f, 0, 1);
+    frag_command(&point, SGI_GL_OP_POINT_SIZE, (uint32_t[]) { bits(2.0f) }, 1);
+    enable(&point.c, SGI_GL_POINT_SMOOTH, true);
+    enable(&point.c, SGI_GL_ALPHA_TEST, true);
+    frag_alpha_func(&point, 0x0204 /* GL_GREATER */, 0.5f);
+    frag_command(&point, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&point, 4.25, 3.75);
+    frag_command(&point, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&point, 4, 3), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&point, 3, 4), ==, 0);
+
+    frag_init(&line);
+    line.rec.rules = &smooth_rules;
+    enable(&line.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&line, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    line.rec.target.texture = &image;
+    texture_coord(&line, 0.25f, 0.25f, 0, 1);
+    frag_command(&line, SGI_GL_OP_LINE_WIDTH, (uint32_t[]) { bits(1.5f) }, 1);
+    enable(&line.c, SGI_GL_LINE_SMOOTH, true);
+    enable(&line.c, SGI_GL_ALPHA_TEST, true);
+    frag_alpha_func(&line, 0x0204 /* GL_GREATER */, 0.5f);
+    frag_command(&line, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&line, 1.5, 3.25);
+    wide_vertex(&line, 5.5, 3.25);
+    frag_command(&line, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&line, 3, 3), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&line, 3, 2), ==, 0);
+}
+
 typedef struct Texture3DPixels {
     unsigned post_filter_calls;
     uint32_t pixel[8];
@@ -12428,6 +12471,8 @@ int main(int argc, char **argv)
                     test_mipmap_projective_triangle);
     g_test_add_func("/sgi-gl/texture-coordinates", test_texture_coordinates);
     g_test_add_func("/sgi-gl/texture-sampling", test_texture_sampling);
+    g_test_add_func("/sgi-gl/texture-replace-smooth-coverage",
+                    test_texture_replace_smooth_coverage);
     g_test_add_func("/sgi-gl/texture-border/texels",
                     test_texture_border_texels);
     g_test_add_func("/sgi-gl/texture-border/read-failure",
