@@ -4290,6 +4290,265 @@ static void test_command_fifo_gl_integer_triangle(void)
     qtest_quit(qts);
 }
 
+static void test_command_fifo_gl_integer_points_transform(void)
+{
+    const uint32_t matrix[16] = {
+        0x3fc00000, 0, 0, 0x41c20000,
+        0, 0xbfc00000, 0, 0x42db3e00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t draw[] = {
+        0x00010404, 0x02003200,
+        0x33008000, 0x290080d6, 0x2a0080e0, 0x2c0080ea,
+        ODSY_CMD_GL_BEGIN, 0,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0, 0,
+        0x8080c800, 2, 3,
+        ODSY_GL_COLOR_3F, 0, 0x3f800000, 0,
+        0x8080c800, 10, 4,
+        ODSY_GL_COLOR_3F, 0, 0, 0x3f800000,
+        0x8080c800, 15, 10,
+        ODSY_GL_COLOR_3F, 0x3f800000, 0x3f800000, 0,
+        0x8080c800, 8, 18,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    /* Literal paired public points, full combined transform and depth sign. */
+    push_window_transform(qts, matrix);
+    push_block_16(qts, 0xbf800000);
+    for (unsigned i = 0; i < ARRAY_SIZE(draw); i++) {
+        user_cmd_push(qts, draw[i]);
+    }
+    g_assert_cmphex(odsy_test_pixel(qts, 27, 105), ==, 0xff0000ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 39, 103), ==, 0x00ff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 46, 94), ==, 0x0000ffff);
+    g_assert_cmphex(odsy_test_pixel(qts, 36, 82), ==, 0xffff00ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 4), ==, 0);
+    qtest_quit(qts);
+}
+
+static void integer_transform_pair(unsigned mode)
+{
+    const uint32_t matrix[16] = {
+        0x3fc00000, 0, 0, 0x41c20000,
+        0, 0xbfc00000, 0, 0x42db3e00,
+        0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
+        0, 0, 0, 0x3f800000,
+    };
+    const uint32_t colours[3][5][3] = {
+        { { 0x3f800000, 0, 0 }, { 0, 0x3f800000, 0 },
+          { 0, 0, 0x3f800000 }, { 0x3f800000, 0x3f800000, 0 } },
+        { { 0x3f800000, 0, 0 }, { 0, 0x3f800000, 0 },
+          { 0, 0, 0x3f800000 }, { 0x3f800000, 0x3f800000, 0x3f800000 } },
+        { { 0x3f800000, 0, 0x3f800000 }, { 0x3f800000, 0, 0 },
+          { 0, 0x3f800000, 0 }, { 0, 0, 0x3f800000 },
+          { 0, 0x3f800000, 0x3f800000 } },
+    };
+    const uint32_t xy[3][5][2] = {
+        { { 0, 0 }, { 20, 0 }, { 0, 6 }, { 0, 20 } },
+        { { 0, 0 }, { 20, 0 }, { 20, 20 }, { 0, 20 } },
+        { { 0, 0 }, { 20, 0 }, { 24, 12 }, { 16, 22 }, { 4, 20 } },
+    };
+    unsigned shape = mode == 1 ? 0 : mode == 7 ? 1 : 2;
+    unsigned count = mode == 9 ? 5 : 4;
+
+    /* Matched float control first, then the literal integer vertex shape. */
+    for (unsigned integer = 0; integer < 2; integer++) {
+        QTestState *qts = board_start("");
+
+        push_window_transform(qts, matrix);
+        push_block_16(qts, 0xbf800000);
+        user_cmd_push(qts, 0x00010404);
+        user_cmd_push(qts, 0x02003200);
+        user_cmd_push(qts, 0x33008000);
+        user_cmd_push(qts, 0x290080d6);
+        user_cmd_push(qts, 0x2a0080e0);
+        user_cmd_push(qts, 0x2c0080ea);
+        user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+        user_cmd_push(qts, mode);
+        for (unsigned v = 0; v < count; v++) {
+            user_cmd_push(qts, ODSY_GL_COLOR_3F);
+            for (unsigned c = 0; c < 3; c++) {
+                user_cmd_push(qts, colours[shape][v][c]);
+            }
+            user_cmd_push(qts, integer ? 0x8080c800 : 0x8080c801);
+            for (unsigned axis = 0; axis < 2; axis++) {
+                uint32_t word = xy[shape][v][axis];
+
+                if (!integer) {
+                    float value = word;
+
+                    memcpy(&word, &value, sizeof(word));
+                }
+                user_cmd_push(qts, word);
+            }
+        }
+        user_cmd_push(qts, ODSY_CMD_GL_END);
+        g_test_message("checking %s vertex input",
+                       integer ? "integer" : "float");
+        if (mode == 1) {
+            g_assert_cmphex(odsy_test_pixel(qts, 40, 109), ==, 0x00ff00ff);
+            g_assert_cmphex(odsy_test_pixel(qts, 24, 90), ==, 0xffff00ff);
+        } else {
+            g_assert_cmphex(odsy_test_pixel(qts, 40, 90), ==,
+                            mode == 7 ? 0xffffffff : 0xff00ffff);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_fifo_gl_integer_lines_transform(void)
+{
+    integer_transform_pair(1);
+}
+
+static void test_command_fifo_gl_integer_quads_transform(void)
+{
+    integer_transform_pair(7);
+}
+
+static void test_command_fifo_gl_integer_polygon_transform(void)
+{
+    integer_transform_pair(9);
+}
+
+/* Original translation fixture: (2, 3) becomes (42, 63). */
+static void integer_routing_setup(QTestState *qts, uint32_t mode)
+{
+    const uint32_t matrix[16] = {
+        0x3f800000, 0, 0, 0x42200000,
+        0, 0x3f800000, 0, 0x42700000,
+        0, 0, 0x3f800000, 0,
+        0, 0, 0, 0x3f800000,
+    };
+
+    push_window_transform(qts, matrix);
+    user_cmd_push(qts, 0x00010404);
+    user_cmd_push(qts, mode);
+    user_cmd_push(qts, ODSY_CMD_GL_COLOR_3UB);
+    user_cmd_push(qts, 255);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, 255);
+}
+
+static void integer_routing_point(QTestState *qts)
+{
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, 0);
+    user_cmd_push(qts, ODSY_CMD_GL_VERTEX_2I);
+    user_cmd_push(qts, 2);
+    user_cmd_push(qts, 3);
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+}
+
+static void test_command_fifo_gl_integer_routing_modes(void)
+{
+    const uint32_t modes[] = {
+        0x02003200, 0x02002200, 0x02013200, 0x02003200,
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        QTestState *qts = board_start("");
+
+        integer_routing_setup(qts, modes[i]);
+        if (i == 3) {
+            user_cmd_push(qts, 0x22008001);
+            user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+            user_cmd_push(qts, 7);
+        }
+        integer_routing_point(qts);
+        g_assert_cmphex(odsy_test_pixel(qts, 42, 63), ==,
+                        i == 3 ? 7 : 0xff00ffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 2, 3), ==, 0);
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * Both X11 formats ignore a combined matrix left by a preceding GL draw.
+ * The captured CapNotLast line mode also exercises synthetic points and fills.
+ */
+static void test_command_fifo_x11_integer_after_gl(void)
+{
+    const uint32_t modes[] = { 0x00080000, 0x00100000, 0x02100000 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(modes); i++) {
+        QTestState *qts = board_start("");
+        uint32_t expected = i == 0 ? 7 : 0xff00ffff;
+
+        integer_routing_setup(qts, 0x02003200);
+        integer_routing_point(qts);
+        g_assert_cmphex(odsy_test_pixel(qts, 42, 63), ==, 0xff00ffff);
+        user_cmd_push(qts, 0x00010404);
+        user_cmd_push(qts, modes[i]);
+        if (i == 0) {
+            user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
+            user_cmd_push(qts, 7);
+        }
+        g_test_message("X11 mode 0x%08x", modes[i]);
+        window_origin(qts, 100, 100);
+        integer_routing_point(qts);
+        g_assert_cmphex(odsy_test_pixel(qts, 102, 103), ==, expected);
+        g_assert_cmphex(odsy_test_pixel(qts, 142, 163), ==, 0);
+        user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+        user_cmd_push(qts, ODSY_GL_LINES);
+        vertex2i(qts, 4, 8);
+        vertex2i(qts, 12, 8);
+        user_cmd_push(qts, ODSY_CMD_GL_END);
+        g_assert_cmphex(odsy_test_pixel(qts, 108, 108), ==, expected);
+        for (unsigned mode = 7; mode <= 9; mode += 2) {
+            unsigned x = mode == 7 ? 20 : 30;
+
+            user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+            user_cmd_push(qts, mode);
+            vertex2i(qts, x, 4);
+            vertex2i(qts, x, 12);
+            vertex2i(qts, x + 8, 12);
+            vertex2i(qts, x + 8, 4);
+            user_cmd_push(qts, ODSY_CMD_GL_END);
+            g_assert_cmphex(odsy_test_pixel(qts, 104 + x, 108), ==, expected);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_command_fifo_gl_integer_routing_migration_reset(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-integer-routing-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    integer_routing_setup(from, 0x02003200);
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    integer_routing_point(to);
+    g_assert_cmphex(odsy_test_pixel(to, 42, 63), ==, 0xff00ffff);
+    g_assert_cmphex(odsy_test_pixel(to, 2, 3), ==, 0);
+    qtest_system_reset(to);
+    user_cmd_push(to, ODSY_CMD_GL_COLOR_3UB);
+    user_cmd_push(to, 255);
+    user_cmd_push(to, 0);
+    user_cmd_push(to, 255);
+    integer_routing_point(to);
+    g_assert_cmphex(odsy_test_pixel(to, 2, 3), ==, 0xff00ffff);
+    g_assert_cmphex(odsy_test_pixel(to, 42, 63), ==, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_command_fifo_gl_integer_assemblies(void)
 {
     const uint32_t matrix[16] = {
@@ -14033,6 +14292,21 @@ int main(int argc, char **argv)
                    test_command_fifo_image_raster_colour_index);
     qtest_add_func("sn1/odyssey/command-fifo-gl-crossing-eye",
                    test_command_fifo_gl_crossing_eye);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-points-transform",
+                   test_command_fifo_gl_integer_points_transform);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-lines-transform",
+                   test_command_fifo_gl_integer_lines_transform);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-quads-transform",
+                   test_command_fifo_gl_integer_quads_transform);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-polygon-transform",
+                   test_command_fifo_gl_integer_polygon_transform);
+    qtest_add_func("sn1/odyssey/command-fifo-gl-integer-routing-modes",
+                   test_command_fifo_gl_integer_routing_modes);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-integer-after-gl",
+                   test_command_fifo_x11_integer_after_gl);
+    qtest_add_func("sn1/odyssey/"
+                   "command-fifo-gl-integer-routing-migration-reset",
+                   test_command_fifo_gl_integer_routing_migration_reset);
     qtest_add_func("sn1/odyssey/command-fifo-gl-integer-assemblies",
                    test_command_fifo_gl_integer_assemblies);
     qtest_add_func("sn1/odyssey/command-fifo-gl-integer-triangle",
