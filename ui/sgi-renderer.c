@@ -200,6 +200,10 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
             }
         }
     }
+    if (request->clip[0] == 0 && request->clip[1] == 0 &&
+        request->clip[2] == -1 && request->clip[3] == -1) {
+        return true;
+    }
     if (request->clip[0] < 0 || request->clip[1] < 0 ||
         request->clip[2] >= SGI_RENDERER_SIZE ||
         request->clip[3] >= SGI_RENDERER_SIZE ||
@@ -261,8 +265,10 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
     }
     for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
         for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
-            bool covered = x >= request->clip[0] && x <= request->clip[2] &&
-                           y >= request->clip[1] && y <= request->clip[3] &&
+            bool covered = (int32_t)x >= request->clip[0] &&
+                           (int32_t)x <= request->clip[2] &&
+                           (int32_t)y >= request->clip[1] &&
+                           (int32_t)y <= request->clip[3] &&
                            renderer_covered(vertices, area, x, y);
             const uint8_t *pixel = request->rgba +
                                   (y * SGI_RENDERER_SIZE + x) * 4;

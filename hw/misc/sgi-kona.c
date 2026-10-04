@@ -2411,7 +2411,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
-        st->scissor_test || st->window_matrix_given || st->window_rows_down ||
+        st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         memcmp(st->viewport, viewport, sizeof(viewport))) {
         return false;
@@ -2466,6 +2466,24 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     request->clip[1] = MAX((int64_t)clip->y0 - y, 0);
     request->clip[2] = MIN((int64_t)clip->x1 - x, 127);
     request->clip[3] = MIN((int64_t)clip->y1 - y, 127);
+    if (st->scissor_test) {
+        int64_t x0 = MAX(request->clip[0], st->scissor[0]);
+        int64_t y0 = MAX(request->clip[1], st->scissor[1]);
+        int64_t x1 = MIN(request->clip[2],
+                         (int64_t)st->scissor[0] + st->scissor[2] - 1);
+        int64_t y1 = MIN(request->clip[3],
+                         (int64_t)st->scissor[1] + st->scissor[3] - 1);
+
+        if (x0 > x1 || y0 > y1) {
+            request->clip[0] = request->clip[1] = 0;
+            request->clip[2] = request->clip[3] = -1;
+        } else {
+            request->clip[0] = x0;
+            request->clip[1] = y0;
+            request->clip[2] = x1;
+            request->clip[3] = y1;
+        }
+    }
     request->generation = s->renderer_generation;
     return sgi_renderer_request_valid(request);
 }

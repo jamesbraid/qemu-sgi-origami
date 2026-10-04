@@ -64,6 +64,21 @@ static void test_clip(void)
     g_assert_false(sgi_renderer_request_valid(request));
 }
 
+static void test_empty_clip(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+
+    request->clip[0] = request->clip[1] = 0;
+    request->clip[2] = request->clip[3] = -1;
+    memset(request->rgba, 0, sizeof(request->rgba));
+    g_assert_true(sgi_renderer_request_valid(request));
+    g_assert_true(sgi_renderer_staging_valid(request));
+    request->rgba[3] = 255;
+    g_assert_false(sgi_renderer_staging_valid(request));
+    request->clip[2] = -2;
+    g_assert_false(sgi_renderer_request_valid(request));
+}
+
 static void test_uncovered(void)
 {
     g_autofree SGIRendererRequest *request = fixture();
@@ -782,6 +797,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/sgi-renderer/staging", test_staging);
     g_test_add_func("/sgi-renderer/clip", test_clip);
+    g_test_add_func("/sgi-renderer/empty-clip", test_empty_clip);
     g_test_add_func("/sgi-renderer/uncovered", test_uncovered);
     g_test_add_func("/sgi-renderer/colour", test_colour);
     g_test_add_func("/sgi-renderer/request", test_request);

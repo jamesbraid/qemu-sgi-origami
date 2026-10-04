@@ -12433,11 +12433,57 @@ static void test_renderer_large_polygon(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_scissor(gconstpointer opaque)
+{
+    static const int32_t boxes[][4] = {
+        { 16, 32, 64, 48 }, { -16, -32, 64, 48 },
+        { 128, 0, 1, 128 }, { 0, 0, 0, 128 }, { 0, 0, 128, 0 },
+        { 64, 64, INT32_MAX, INT32_MAX },
+        { INT32_MIN, INT32_MIN, INT32_MAX, INT32_MAX }, { -1, -1, 1, 1 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const int32_t *box = boxes[mode];
+    uint32_t words[4];
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    for (unsigned i = 0; i < 4; i++) {
+        words[i] = box[i];
+    }
+    kona_command(s, 0xc, words, 4);
+    kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, 0xffffff);
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            if ((int64_t)x >= box[0] && (int64_t)y >= box[1] &&
+                (int64_t)x < (int64_t)box[0] + box[2] &&
+                (int64_t)y < (int64_t)box[1] + box[3]) {
+                unsigned offset = ((127 - y) * 128 + x) * 3;
+
+                expected->rgb[offset] = 255;
+                expected->rgb[offset + 1] = expected->rgb[offset + 2] = 0;
+            }
+        }
+    }
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb44, 0xbc0, 0xb71, 0xb90, 0xbe2, 0xbf1, 0xbf2, 0xb60,
-        0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xc11, 0xb41, 0xb42,
+        0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -13474,6 +13520,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_large_polygon);
+    }
+    for (unsigned mode = 0; mode < 8; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/scissor/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_scissor);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
