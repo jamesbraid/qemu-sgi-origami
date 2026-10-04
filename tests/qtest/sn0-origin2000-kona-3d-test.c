@@ -5357,7 +5357,8 @@ static void test_draw_pixels(gconstpointer opaque)
     bool dma = mode == 2 || mode == 3 || mode == 12 || mode == 17 || mode == 19;
     bool padded = mode == 1 || mode == 3;
     bool migrate = mode == 4 || mode == 12 || mode == 13 || mode == 24;
-    bool refused = mode >= 5 && mode < 18 && mode != 12 && mode != 16;
+    bool refused = mode >= 5 && mode < 18 && mode != 12 &&
+                   mode != 15 && mode != 16;
     uint32_t h[] = { 2, 2, 5, 1, padded ? 3 : 0, dma, padded, 0 };
     static const uint32_t plain[] = {
         0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
@@ -5889,6 +5890,147 @@ static void test_draw_pixels_native_dma(gconstpointer opaque)
         kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
         assert_texture_pixel(s, 0, 0, 0xff0000ff);
     }
+    assert_native_query_word(s, 0xb92, 0x207, false);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_native_raster_texture(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool scalar = mode == 1 || mode == 3 || mode == 8 || mode == 13;
+    bool dma = mode == 2 || mode == 3 || mode == 14 || mode == 15;
+    bool bitmap = mode == 4 || mode == 5 || mode == 6 || mode == 17;
+    uint32_t h[] = { 1, 1, 5, scalar ? 6 : 1, 0, dma, 0, 0 };
+    uint32_t source[] = { fbits(1), fbits(1), fbits(1), fbits(1) };
+    uint32_t rgb = mode == 9 || mode == 11 || mode == 15 ? 0 :
+                   mode == 8 ? 0x800060 : mode == 16 ? 0xffffff : 0x00ff00;
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    expected_clear(e, 0);
+    if (mode == 7) {
+        kona_command_f(s, 0xa9, (float[]) { -1, -1 }, 2);
+        kona_command(s, 0x3a, (uint32_t[]) { 1, 1, 5, 1, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, 0xffffffff);
+        memset(e->rgb + (127 * 128) * 3, 255, 3);
+    }
+    if (mode != 16) {
+        texture_native_bind(s, 0);
+        if (mode == 8 || mode == 9) {
+            texture_constant_upload(s, 0, 5,
+                                    mode == 8 ? 0x8040c080 : 0xffffff40);
+        } else {
+            kona_command(s, 0x174, texture_header, ARRAY_SIZE(texture_header));
+            for (unsigned k = 0; k < 4; k++) {
+                qtest_writel(s, REG_COMMAND, texture_source[k]);
+            }
+            kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        }
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    if (mode == 10 || mode == 11) {
+        kona_command_f(s, 0x88, (float[]) { 1.5, 0.5, 0, mode == 11 ? 0 : 2 },
+                       4);
+    } else {
+        kona_command_f(s, 0x80, (float[]) { 0.75, 0.25 }, 2);
+    }
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command_f(s, 0x80, (float[]) { 0.25, 0.75 }, 2);
+    if (mode == 8) {
+        const uint32_t scales[] = { 0xd14, 0xd18, 0xd1a };
+        const uint32_t biases[] = { 0xd15, 0xd19, 0xd1b };
+
+        source[0] = fbits(1.5);
+        source[1] = fbits(-0.5);
+        source[2] = fbits(0.5);
+        for (unsigned c = 0; c < 3; c++) {
+            pixel_transfer_set(s, scales[c], 0.5);
+            pixel_transfer_set(s, biases[c], 0.25);
+        }
+    } else if (mode == 9) {
+        kona_command(s, 0xca, (uint32_t[]) { 0x204, fbits(0.5) }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+    } else if (mode == 17) {
+        pixel_transfer_set(s, 0xd18, 0);
+    }
+    if (bitmap) {
+        if (mode == 6) {
+            kona_command(s, 0x5, (uint32_t[]) { 8, 1, 0, 0, 0, 0, 2, 1 }, 8);
+            qtest_writel(s, REG_COMMAND, 0x80000000);
+        } else {
+            uint32_t raw[] = { mode == 5 ? 32 : 8, 1, 0, mode == 5,
+                               0, 0, 0, 0, 0 };
+
+            kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+            kona_command(s, 0x6, raw, ARRAY_SIZE(raw));
+            if (mode == 5) {
+                qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+                qtest_memwrite(s, 0x380000, (uint8_t[]) { 0x80, 0, 0, 0 }, 4);
+                texture_dma_packet(s, 0, 4, 4, 0);
+                g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+            } else {
+                qtest_writel(s, REG_COMMAND, 0x80000000);
+            }
+        }
+    } else if (mode == 7) {
+        kona_command(s, 0x38,
+                     (uint32_t[]) { 0, 0, 1, 1, 0, 0x1800, 0x80000000 }, 7);
+    } else {
+        kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+        if (!dma) {
+            qtest_writel(s, REG_COMMAND, scalar ? source[0] : 0xffffffff);
+        }
+        if (mode == 15) {
+            return_context_deactivate(s);
+            attrib_context_fresh(s, SAVE_AREA + 0x20000);
+            kona_command_f(s, 0x80, (float[]) { 0.25, 0.75 }, 2);
+            return_context_deactivate(s);
+            return_context_restore(s, SAVE_AREA);
+        }
+        if (mode == 13 || mode == 14) {
+            dir = g_dir_make_tmp("sn0-kona-raster-texture-XXXXXX", &err);
+            g_assert_no_error(err);
+            uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+            to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+            sgi_migrate_stopped(from, uri);
+            s = to;
+        }
+        if (dma) {
+            uint8_t bytes[16];
+            unsigned count = scalar ? 16 : 4;
+
+            memset(bytes, 255, sizeof(bytes));
+            if (scalar) {
+                for (unsigned c = 0; c < 4; c++) {
+                    stl_be_p(bytes + c * 4, source[c]);
+                }
+            }
+            qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+            qtest_memwrite(s, 0x380000, bytes, count);
+            texture_dma_packet(s, 0, count, count, 0);
+            g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==,
+                           mode == 15 ? 0 : 0x100);
+        } else if (scalar) {
+            for (unsigned c = 1; c < 4; c++) {
+                qtest_writel(s, REG_COMMAND, source[c]);
+            }
+        }
+    }
+    e->rgb[((127 - 64) * 128 + 64) * 3] = rgb >> 16;
+    e->rgb[((127 - 64) * 128 + 64) * 3 + 1] = rgb >> 8;
+    e->rgb[((127 - 64) * 128 + 64) * 3 + 2] = rgb;
+    assert_window_matches(s, e);
     assert_native_query_word(s, 0xb92, 0x207, false);
     if (to) {
         qtest_quit(to);
@@ -6834,7 +6976,7 @@ static void test_raw_bitmap(gconstpointer opaque)
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool skips = mode == 2 || mode == 3 || mode == 4;
     bool migrate = mode == 4 || mode == 5;
-    bool refused = mode == 6 || mode == 7 || mode == 8 || mode == 9 ||
+    bool refused = mode == 6 || mode == 8 || mode == 9 ||
                    mode == 11;
     uint32_t h[] = { skips ? 8 : 9, 2, skips ? 1 : 0, 0, 1,
                      fbits(0), fbits(0), fbits(3), fbits(4) };
@@ -7073,7 +7215,7 @@ static void test_copy_pixels(gconstpointer opaque)
     uint32_t copy[] = { 64, 64, 2, 2, 0, 0x1800, 0x80000000 };
     uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
     unsigned dx = mode == 1 ? 65 : 68, dy = mode == 1 ? 64 : 68;
-    bool refused = mode >= 4 && mode <= 14;
+    bool refused = mode >= 4 && mode <= 14 && mode != 12;
     g_autofree Expected *e = g_new(Expected, 1);
 
     gl_make_current(s);
@@ -7218,7 +7360,7 @@ static void test_copy_pixels_query(gconstpointer opaque)
     uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
     uint32_t query[] = { 64, 64, 2, 2 };
     uint32_t selector = mode == 9 ? 0x115 : 0x110;
-    bool refused = mode >= 4 && mode <= 16;
+    bool refused = mode >= 4 && mode <= 16 && mode != 8;
     float zx = mode == 1 ? -2 : 2, zy = mode == 1 ? -1 : 3;
     int dx = mode == 2 ? 65 : 68, dy = mode == 2 ? 64 : 68;
 
@@ -7413,7 +7555,7 @@ static void test_native_bitmap(gconstpointer opaque)
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool migration = mode == 3 || mode == 19;
     bool invalid = mode == 4 || mode == 6;
-    bool refused = mode == 7 || mode == 8 || mode == 9 || mode == 10 ||
+    bool refused = mode == 7 || mode == 8 || mode == 10 ||
                    mode == 11 || mode == 16 || mode == 18 || mode == 19;
     uint32_t h[] = { 8, 8, fbits(0.5), fbits(1.5), fbits(3.5),
                     fbits(5.5), 3, 8 };
@@ -9814,7 +9956,7 @@ int main(int argc, char **argv)
         "placement-move", "zoom-ignored", "normalized-bitorder",
         "partial-migrates", "invalid-raster", "zero-image-move",
         "zero-image-invalid-raster", "begin-refused", "no-context",
-        "textured-refused", "malformed-count", "nonfinite-origin",
+        "incomplete-texture", "malformed-count", "nonfinite-origin",
         "raw-refused", "raster-depth", "clipped", "zero-image-textured",
         "partial-context-aborted", "contexts", "oversize-drained",
         "oversize-drain-migrates", "word-padding-ignored",
@@ -9844,7 +9986,8 @@ int main(int argc, char **argv)
     static const char *copy_query_cases[] = {
         "positive-zoom", "negative-zoom", "overlap-snapshot", "transfer",
         "clipped-source", "nonfinite-zoom", "nonfinite-transfer", "map-color",
-        "texture", "convolution-refused", "no-context", "unregistered-page",
+        "incomplete-texture", "convolution-refused", "no-context",
+        "unregistered-page",
         "unknown-read-binding", "unavailable-back", "huge-width", "negative-x",
         "empty-width", "packet-migrates",
     };
@@ -9861,7 +10004,7 @@ int main(int argc, char **argv)
         "color", "overlap", "transfer", "queried-zero-flags",
         "unknown-flags-refused", "split-refused", "depth-refused",
         "nonidentity-zoom-refused", "begin-refused", "map-color-refused",
-        "clipped-source-refused", "invalid-raster", "texture-refused",
+        "clipped-source-refused", "invalid-raster", "incomplete-texture",
         "no-context", "nonfinite-transfer-refused", "packet-migrates",
         "raster-position-preserved",
     };
@@ -9886,7 +10029,7 @@ int main(int argc, char **argv)
     }
     static const char *raw_bitmap_cases[] = {
         "strided", "contiguous", "skips", "lsb-first", "skips-migrates",
-        "partial-migrates", "begin-refused", "texture-refused",
+        "partial-migrates", "begin-refused", "incomplete-texture",
         "context-aborted", "slot-aborted", "transfer-zoom-ignored",
         "invalid-raster", "oversize-drained", "oversize-drain-migrates",
     };
@@ -10047,6 +10190,22 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(35 + mode),
                            test_draw_pixels_native_dma);
     }
+    static const char *raster_texture_cases[] = {
+        "pixels-pio", "scalar-pio", "pixels-dma", "scalar-dma", "bitmap-pio",
+        "bitmap-dma", "bitmap-inline", "copy-pixels", "transfer-before-texture",
+        "alpha-after-texture", "projective-q", "invalid-q",
+        "raster-coordinate-retained", "partial-pio-migrates",
+        "pending-dma-migrates", "pending-context-refused", "incomplete-image",
+        "bitmap-transfer-independent",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(raster_texture_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/raster-texture/%s",
+            raster_texture_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_raster_texture);
+    }
     static const char *scalar_pixels_cases[] = {
         "byte", "short", "ushort", "int", "uint", "float",
         "ushort-swapped", "float-swapped-migrates", "signed-before-bias",
@@ -10077,7 +10236,7 @@ int main(int argc, char **argv)
         "nonfinite-zoom-refused", "transfer-refused", "imaging-refused",
         "colour-matrix-refused", "begin-refused", "split-refused",
         "scalar-refused", "dma-migrates", "nonfinite-zoom-migrates",
-        "no-context", "texture-refused", "zoom-default-restored",
+        "no-context", "incomplete-texture", "zoom-default-restored",
         "partial-context-aborted", "pio-contiguous-padded",
         "dma-strided-rowlength", "malformed-dimensions",
         "unknown-format", "malformed-source-pad", "malformed-layout",
