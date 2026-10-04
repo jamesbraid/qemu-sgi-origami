@@ -4,6 +4,7 @@
  * table. A changed argument count or layout status therefore fails here.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/misc/sgi-kona-gl-decode.h"
 
 typedef struct Expected {
@@ -1759,6 +1760,87 @@ static void test_pixel_float_conversion(void)
     }
 }
 
+static void test_pixel_pack_types(void)
+{
+    const float rgba[4] = { 0, 0.5f, 1, 0.25f };
+    const uint8_t bytes[] = { 0, 0x80, 0xff, 0x40 };
+    const uint8_t shorts[] = { 0, 0, 0x80, 0, 0xff, 0xff, 0x40, 0 };
+    const uint8_t floats[] = {
+        0, 0, 0, 0, 0x3f, 0, 0, 0,
+        0x3f, 0x80, 0, 0, 0x3e, 0x80, 0, 0,
+    };
+    const uint8_t *expected[] = { bytes, shorts, floats };
+    const uint32_t types[] = { 1, 3, 6 };
+    const unsigned sizes[] = { 1, 2, 4 };
+
+    for (uint32_t format = 4; format <= 5; format++) {
+        for (unsigned k = 0; k < ARRAY_SIZE(types); k++) {
+            uint8_t out[17];
+            unsigned count = (format == 4 ? 3 : 4) * sizes[k];
+
+            memset(out, 0xa5, sizeof(out));
+            g_assert_true(sgi_kona_gl_pixel_pack(format, types[k], rgba,
+                                                false, out, count));
+            g_assert_cmpmem(out, count, expected[k], count);
+            for (unsigned i = count; i < sizeof(out); i++) {
+                g_assert_cmphex(out[i], ==, 0xa5);
+            }
+        }
+    }
+}
+
+static void test_pixel_pack_expansion_and_swap(void)
+{
+    float rgba[4] = { 0, 0, 0, 1 };
+    uint8_t out[16];
+    const uint8_t swapped_short[] = { 0, 0x80, 0, 0, 0, 0, 0xff, 0xff };
+    const uint8_t swapped_float[] = {
+        0, 0, 0, 0x3f, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0x80, 0x3f,
+    };
+
+    for (unsigned v = 0; v < 256; v++) {
+        rgba[0] = v / 255.0f;
+        g_assert_true(sgi_kona_gl_pixel_pack(5, 3, rgba, false,
+                                            out, sizeof(out)));
+        g_assert_cmpuint(((uint32_t)out[0] << 8) | out[1], ==, v * 257);
+        g_assert_cmphex(out[6], ==, 0xff);
+        g_assert_cmphex(out[7], ==, 0xff);
+    }
+    rgba[0] = 0.5f;
+    g_assert_true(sgi_kona_gl_pixel_pack(5, 3, rgba, true, out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(swapped_short), swapped_short,
+                    sizeof(swapped_short));
+    g_assert_true(sgi_kona_gl_pixel_pack(5, 6, rgba, true, out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(swapped_float), swapped_float,
+                    sizeof(swapped_float));
+}
+
+static void test_pixel_pack_refusals(void)
+{
+    float rgba[4] = { 0, 0, 0, 1 };
+    const uint8_t before[16] = { 0xa5 };
+    uint8_t out[16];
+
+    memcpy(out, before, sizeof(out));
+    g_assert_false(sgi_kona_gl_pixel_pack(3, 1, rgba, false, out, sizeof(out)));
+    g_assert_false(sgi_kona_gl_pixel_pack(5, 0, rgba, false, out, sizeof(out)));
+    g_assert_false(sgi_kona_gl_pixel_pack(5, 3, rgba, false, out, 7));
+    for (unsigned k = 0; k < 4; k++) {
+        rgba[k] = INFINITY;
+        g_assert_false(sgi_kona_gl_pixel_pack(5, 6, rgba, false,
+                                             out, sizeof(out)));
+        rgba[k] = k == 3;
+    }
+    g_assert_cmpmem(out, sizeof(out), before, sizeof(before));
+    rgba[0] = -1;
+    rgba[1] = 2;
+    g_assert_true(sgi_kona_gl_pixel_pack(4, 1, rgba, false, out, sizeof(out)));
+    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmphex(out[1], ==, 0xff);
+    g_assert_cmphex(out[2], ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1846,5 +1928,11 @@ int main(int argc, char **argv)
                     test_pixels_pio_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixel-float-conversion",
                     test_pixel_float_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-pack/types",
+                    test_pixel_pack_types);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-pack/expansion-and-swap",
+                    test_pixel_pack_expansion_and_swap);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-pack/refusals",
+                    test_pixel_pack_refusals);
     return g_test_run();
 }
