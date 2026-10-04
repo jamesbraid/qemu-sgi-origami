@@ -695,7 +695,7 @@ static void test_native_negative_lod(void)
         .mode = SGI_GL_TRIANGLES, .count = 3,
         .vertices = &vertices[0][0], .state = &c.cur,
     };
-    uint32_t bind[5] = { 7, 0, 3 << 2, 0, 0 };
+    uint32_t bind[5] = { 7, 0, 3 << 2, 0, 1 };
     uint32_t record[22] = { 0, 0x00101010, 32 << 10 };
     const uint32_t pixels[] = { 0xff0000ff, 0xff0000ff,
                                 0xff0000ff, 0xff0000ff };

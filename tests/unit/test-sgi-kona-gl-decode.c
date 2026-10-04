@@ -547,7 +547,7 @@ static void test_texture_sampler(void)
         SGI_GL_NEAREST_MIPMAP_NEAREST, SGI_GL_NEAREST_MIPMAP_LINEAR,
         SGI_GL_LINEAR_MIPMAP_NEAREST, SGI_GL_LINEAR_MIPMAP_LINEAR, 0,
     };
-    uint32_t bind[5] = { 7, 0, 0, 0, 0 };
+    uint32_t bind[5] = { 7, 0, 0, 0, 1 };
     uint32_t record[22] = { 0, 0x00101010, 256u << 10 };
     SGIKonaTextureParams original = {
         .base_level = 2, .max_level = 5,
@@ -651,7 +651,7 @@ static void test_texture_sharpen_sampler(void)
         SGI_GL_LINEAR_SHARPEN_ALPHA_SGIS,
     };
     const uint32_t channels[] = { 0, 0x04000000, 0x08000000 };
-    uint32_t bind[5] = { 7, 4095, (3 << 2) | (5 << 5) };
+    uint32_t bind[5] = { 7, 4095, (3 << 2) | (5 << 5), 0, 1 };
     uint32_t record[22] = { 0, 0x00101010, 256 << 10 };
     SGIKonaTextureParams original = { .max_level = 5 };
 
@@ -705,7 +705,7 @@ static void test_texture_detail_sampler(void)
         SGI_GL_LINEAR_DETAIL_ALPHA_SGIS,
     };
     const uint32_t channels[] = { 0, 0x04000000, 0x08000000 };
-    uint32_t bind[5] = { 7, 4095, 0 };
+    uint32_t bind[5] = { 7, 4095, 0, 0, 1 };
     uint32_t record[22] = { 0, 0x00101010, 256 << 10 };
     SGIKonaTextureParams original = { .max_level = 5 };
 
@@ -791,6 +791,43 @@ static void test_texture_native_layout(void)
     g_assert_false(sgi_kona_gl_texture_native_layout(h));
 }
 
+static void test_texture_comparison_flag(void)
+{
+    static const uint32_t targets[] = {
+        0x10000000, 0x20000000, 0x30000000,
+    };
+    static const uint32_t refused[] = { 0, 2, UINT32_MAX };
+    uint32_t bind[5] = { 0, 0, 0x24, 0, 1 };
+    uint32_t record[22] = { 0, 0x00101010, 256 << 10 };
+    SGIKonaTextureParams p, before = {
+        .min_lod = -1000, .max_lod = 1000,
+        .lod_scale_s = 9, .lod_scale_t = 7, .lod_scale_r = 5,
+    };
+
+    for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
+        bind[1] = targets[t];
+        for (unsigned k = 0; k < ARRAY_SIZE(refused); k++) {
+            bool accepted;
+
+            bind[4] = refused[k];
+            p = before;
+            if (t == 0) {
+                /* Normalizing unused axes must not erase comparison state. */
+                bind[3] = 0x6000;
+                accepted = sgi_kona_gl_texture_sampler_1d(bind, record, &p);
+            } else if (t == 1) {
+                bind[3] = 0;
+                accepted = sgi_kona_gl_texture_sampler(bind, record, &p);
+            } else {
+                accepted = sgi_kona_gl_texture_volume_sampler(bind, record,
+                                                               false, &p);
+            }
+            g_assert_false(accepted);
+            g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
+        }
+    }
+}
+
 static void test_texture_volume_layout(void)
 {
     static const struct {
@@ -862,7 +899,7 @@ static void test_texture_binding_layout(void)
 
 static void test_texture_sampler_1d(void)
 {
-    uint32_t bind[5] = { 0, 0x10000000, 0x24, 1, 0 };
+    uint32_t bind[5] = { 0, 0x10000000, 0x24, 1, 1 };
     uint32_t record[22] = { 0, 0x1010, 256 << 10 };
     SGIKonaTextureParams p = { .min_lod = -1000, .max_lod = 1000 };
     SGIKonaTextureParams original;
@@ -924,7 +961,7 @@ static void test_texture_sampler_1d(void)
 
 static void test_texture_volume_sampler(void)
 {
-    uint32_t bind[5] = { 7, 0x30000000, 0, 0x123 };
+    uint32_t bind[5] = { 7, 0x30000000, 0, 0x123, 1 };
     uint32_t record[14] = { 0, 0x00402010, 256 << 10 };
     SGIKonaTextureParams original = {
         .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
@@ -986,7 +1023,7 @@ static void test_texture_volume_sampler(void)
 
 static void test_texture_negative_lod(void)
 {
-    uint32_t bind[5] = { 0 };
+    uint32_t bind[5] = { [4] = 1 };
     uint32_t record[22] = { 0, 0x00101010 };
     SGIKonaTextureParams original = { .max_level = 1000 };
 
@@ -1364,6 +1401,8 @@ int main(int argc, char **argv)
                     test_texture_native_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-volume-layout",
                     test_texture_volume_layout);
+    g_test_add_func("/sgi-kona-gl-decode/texture-comparison-flag",
+                    test_texture_comparison_flag);
     g_test_add_func("/sgi-kona-gl-decode/texture-binding-layout",
                     test_texture_binding_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
