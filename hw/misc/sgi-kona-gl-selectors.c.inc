@@ -105,15 +105,10 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
         .argc = 7,
     },
     {
-        /*
-         * Unresolved. Seven computed stores against seven GL parameters, one
-         * of them a client pointer; argument order and store widths are
-         * unknown, and no argument count is established.
-         */
         .selector = 0x39,
         .call = "glReadPixels",
-        .evidence = SGI_KONA_GL_LAYOUT_UNRESOLVED,
-        .argc = 0,
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 7,
     },
     {
         /*
