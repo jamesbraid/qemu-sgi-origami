@@ -7451,7 +7451,7 @@ done:
 static void sgi_kona_x_relative_points(SGIKonaState *s,
                                        const uint32_t *args, unsigned argc)
 {
-    uint32_t points[SGI_KONA_X_BOX_RUN_WORDS + 6];
+    uint32_t points[SGI_KONA_X_BOX_RUN_WORDS + 24];
     unsigned count = s->x_boxes_have + argc;
 
     if (count > ARRAY_SIZE(points)) {
@@ -8659,6 +8659,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_POINT24:
     case SGI_KONA_CMD_X_RELATIVE_POINT:
     case SGI_KONA_CMD_X_RELATIVE_POINT6:
+    case SGI_KONA_CMD_X_RELATIVE_POINT24:
     case SGI_KONA_CMD_X_SEGMENT:
     case SGI_KONA_CMD_X_SEGMENT6:
     case SGI_KONA_CMD_X_LINE:
@@ -8857,6 +8858,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         break;
     case SGI_KONA_CMD_X_RELATIVE_POINT:
     case SGI_KONA_CMD_X_RELATIVE_POINT6:
+    case SGI_KONA_CMD_X_RELATIVE_POINT24:
         sgi_kona_x_relative_points(s, args, argc);
         break;
     case SGI_KONA_CMD_X_SEGMENT:
