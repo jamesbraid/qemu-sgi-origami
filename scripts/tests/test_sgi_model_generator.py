@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "3dc708854def2e02a48d8ca676542b734047b9da27ab9b7916149ed5b12865b2"
+    "73ded0e5c80b2c3c9d598eacca788db7cf0defc7a83c1292def0dab7aac32fbe"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -228,6 +228,30 @@ class StorageTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in offering["storage"]],
                          ["node0-flash", "node1-flash", "nvram0",
                           "nvram0-clock", "nvram1", "nvram1-clock"])
+
+
+class Ip27FirmwareTests(unittest.TestCase):
+    """Every SN0 topology carries its product's IP27 flash configuration
+    values, and no other generation carries any."""
+
+    def test_sn0_topologies_carry_product_values(self):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        expected = {
+            "origin200": {"machine-type": 1, "flash-read-cycles": 15,
+                          "flash-write-cycles": 4},
+            "origin2000": {"machine-type": 0, "flash-read-cycles": 8,
+                           "flash-write-cycles": 1},
+            "onyx2": {"machine-type": 0, "flash-read-cycles": 8,
+                      "flash-write-cycles": 1},
+        }
+        for topology in catalogue["topologies"]:
+            with self.subTest(topology=topology["name"]):
+                if topology["generation"] == "sn0":
+                    self.assertEqual(topology["ip27-firmware"],
+                                     expected[topology["product"]])
+                else:
+                    self.assertNotIn("ip27-firmware", topology)
 
 
 class Origin300TimekeeperTests(unittest.TestCase):

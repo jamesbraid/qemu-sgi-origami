@@ -416,12 +416,20 @@ static SGIModelCpuPopulation console_test_populations[] = {
     { },
 };
 
+/* An IP29 board's flash configuration values, as Origin 200 carries. */
+static SGIModelIp27FirmwareConfig console_test_firmware = {
+    .machine_type = 1,
+    .flash_read_cycles = 15,
+    .flash_write_cycles = 4,
+};
+
 static SGIModelTopology console_test_topology = {
     .name = (char *)"sn-builder-console-test",
     .generation = SGI_MODEL_GENERATION_SN0,
     .description = (char *)"console field serial line reordering test fixture",
     .console = 1,
     .junk_uart = -1,
+    .ip27_firmware = &console_test_firmware,
 };
 
 /*
@@ -586,6 +594,7 @@ static SGIModelTopology bank_test_topology = {
                    "per-bank aliasing",
     .console = 0,
     .junk_uart = -1,
+    .ip27_firmware = &console_test_firmware,
 };
 
 #define TYPE_SN_BUILDER_BANK_TEST MACHINE_TYPE_NAME("sn-builder-bank-test")

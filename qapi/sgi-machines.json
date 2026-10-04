@@ -1175,6 +1175,27 @@
   'data': ['sn0', 'sn1', 'ip30'] }
 
 ##
+# @SGIModelIp27FirmwareConfig:
+#
+# The product values an IP27 PROM's flash configuration block
+# carries.  A machine patches them into whichever configuration block
+# its node boot flash holds, the stock image's or the default
+# template's, and keeps the block's byte sum.
+#
+# @machine-type: the power-on and inventory machine-type code
+#
+# @flash-read-cycles: the boot flash's read wait-state count
+#
+# @flash-write-cycles: the boot flash's write wait-state count
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIp27FirmwareConfig',
+  'data': { 'machine-type': 'uint32',
+            'flash-read-cycles': 'uint32',
+            'flash-write-cycles': 'uint32' } }
+
+##
 # @SGIModelTopology:
 #
 # One chassis a product ships in: its wiring with every node slot
@@ -1232,6 +1253,9 @@
 #     describe the whole chassis, and a row names the part of it that
 #     count fits
 #
+# @ip27-firmware: the product values for the IP27 flash configuration
+#     block; present exactly when the node boards are SN0
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelTopology',
@@ -1253,7 +1277,8 @@
             'controllers': ['SGIModelController'],
             'console': 'int',
             'junk-uart': 'int',
-            'node-populations': ['SGIModelNodePopulation'] } }
+            'node-populations': ['SGIModelNodePopulation'],
+            '*ip27-firmware': 'SGIModelIp27FirmwareConfig' } }
 
 ##
 # @SGIModelConsole:

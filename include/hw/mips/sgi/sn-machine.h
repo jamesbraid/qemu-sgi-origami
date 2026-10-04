@@ -32,17 +32,6 @@ struct SGIMachineClass {
     /* The topology name topology= selects when the user names none. */
     const char *default_topology;
     /*
-     * The boot flash's firmware configuration block carries these three
-     * fields per product (real IP27 PROM layout): a POD/inventory
-     * machine-type code and the flash chip's read/write wait-state counts.
-     * Not carried in the format-2 descriptor: every measured product shares
-     * one processor catalogue and one Hub, but each ships its firmware
-     * identity and flash timing.
-     */
-    uint32_t firmware_machine_type;
-    uint32_t flash_read_cycles;
-    uint32_t flash_write_cycles;
-    /*
      * The SN0 node board's bank wiring and sizes (sn0.h): Origin 200's IP29
      * or Origin 2000's IP27. NULL, as a fixture leaves it, is IP29.
      */

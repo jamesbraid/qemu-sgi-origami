@@ -173,7 +173,11 @@ in rather than merely erased; the three fields a stock PROM's own
 configuration block is expected to carry for this product (two flash
 timings and its machine-type word) are patched into whichever block is
 actually present -- the template's own or a loaded image's --
-preserving every other field and the block's stored checksum.
+preserving every other field and the block's stored checksum. Those
+three values come from the topology's ``ip27-firmware`` record in
+``query-sgi-machines``: machine type 1 with 15 read and 4 write cycles
+on Origin 200, and the stock image's own 0, 8 and 1 on Origin 2000 and
+Onyx2, which therefore leave a stock block unchanged.
 
 ``origin300`` takes ``-bios`` with a stock PROM whose payload is exactly
 the size its one node's flash answers for; there is no per-node
