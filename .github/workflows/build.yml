@@ -29,6 +29,7 @@ jobs:
   build-and-qtest:
     if: ${{ github.server_url != 'https://github.com' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'smoke')) }}
     runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 175
     # Save the current step name for failure reporting.
     env:
       CI_STEP: /tmp/ci-current-step
@@ -105,7 +106,7 @@ jobs:
       - name: find the workspace volume
         run: |
           echo "find the workspace volume" > "$CI_STEP"
-          sh scripts/ci/runner-setup volume
+          bash scripts/ci/runner-setup volume
 
       - name: fetch SGI test assets
         env:
@@ -134,12 +135,12 @@ jobs:
       - name: check the build container can see the checkout
         run: |
           echo "check the build container can see the checkout" > "$CI_STEP"
-          sh scripts/ci/runner-setup check
+          bash scripts/ci/runner-setup check
 
       - name: configure and build QEMU
         run: |
           echo "configure and build QEMU" > "$CI_STEP"
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
               sh -euxc 'git submodule update --init --depth=1; \
                         mkdir -p build-ci; cd build-ci; \
                         ../configure --target-list=mips64-softmmu --disable-docs \
@@ -152,7 +153,7 @@ jobs:
       - name: smoke checks
         run: |
           echo "smoke checks" > "$CI_STEP"
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e PR_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               "$IMAGE_ID" sh -euxc '
@@ -294,6 +295,7 @@ jobs:
   full-suite:
     if: ${{ github.server_url != 'https://github.com' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
     runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 175
     # Save the current step name for failure reporting.
     env:
       CI_STEP: /tmp/ci-current-step
@@ -357,7 +359,7 @@ jobs:
       - name: find the workspace volume
         run: |
           echo "find the workspace volume" > "$CI_STEP"
-          sh scripts/ci/runner-setup volume
+          bash scripts/ci/runner-setup volume
 
       - name: fetch SGI test assets
         env:
@@ -386,12 +388,12 @@ jobs:
       - name: check the build container can see the checkout
         run: |
           echo "check the build container can see the checkout" > "$CI_STEP"
-          sh scripts/ci/runner-setup check
+          bash scripts/ci/runner-setup check
 
       - name: configure and build QEMU
         run: |
           echo "configure and build QEMU" > "$CI_STEP"
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
               sh -euxc 'git submodule update --init --depth=1; \
                         mkdir -p build-ci; cd build-ci; \
                         ../configure --target-list=mips64-softmmu --disable-docs \
@@ -402,7 +404,7 @@ jobs:
       - name: run the SGI test suite
         run: |
           echo "run the SGI test suite" > "$CI_STEP"
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               "$IMAGE_ID" sh -euxc '
             meson=/src/build-ci/pyvenv/bin/meson
