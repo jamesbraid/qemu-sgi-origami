@@ -69,6 +69,8 @@ struct SGIBridgeDMATestState {
     bool dma_r32;
     MemoryRegion dma_view;
     AddressSpace dma_view_as;
+    MemoryRegion *dma_memory;
+    AddressSpace linked_dma_as;
     SGIDMABufferContext dma_context;
     bool memory_only;
     uint32_t result;
@@ -120,6 +122,12 @@ static uint8_t sgi_bridge_dma_test_byte(uint32_t seed, unsigned int i)
     return (uint8_t)(seed + i);
 }
 
+static AddressSpace *sgi_bridge_dma_test_as(SGIBridgeDMATestState *s)
+{
+    return s->dma_memory ? &s->linked_dma_as :
+                          pci_get_address_space(PCI_DEVICE(s));
+}
+
 static MemTxResult dma_view_read(void *opaque, hwaddr addr, uint64_t *value,
                                  unsigned size, MemTxAttrs attrs)
 {
@@ -128,7 +136,7 @@ static MemTxResult dma_view_read(void *opaque, hwaddr addr, uint64_t *value,
     MemTxResult result;
 
     assert(size <= sizeof(bytes));
-    result = address_space_read(pci_get_address_space(PCI_DEVICE(s)),
+    result = address_space_read(sgi_bridge_dma_test_as(s),
                                 addr ^ (4 - size), attrs, bytes, size);
     *value = ldn_be_p(bytes, size);
     return result;
@@ -142,7 +150,7 @@ static MemTxResult dma_view_write(void *opaque, hwaddr addr, uint64_t value,
 
     assert(size <= sizeof(bytes));
     stn_be_p(bytes, size, value);
-    return address_space_write(pci_get_address_space(PCI_DEVICE(s)),
+    return address_space_write(sgi_bridge_dma_test_as(s),
                                addr ^ (4 - size), attrs, bytes, size);
 }
 
@@ -159,7 +167,7 @@ static MemTxResult sgi_bridge_dma_test_transfer(SGIBridgeDMATestState *s,
                                                bool write)
 {
     AddressSpace *as = s->dma_r32 ? &s->dma_view_as :
-                       pci_get_address_space(PCI_DEVICE(s));
+                       sgi_bridge_dma_test_as(s);
     DMADirection dir = write ? DMA_DIRECTION_FROM_DEVICE :
                               DMA_DIRECTION_TO_DEVICE;
     MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
@@ -424,7 +432,13 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
         return;
     }
 
-    sgi_dma_buffer_init_pci(&s->dma_context, dev);
+    if (s->dma_memory) {
+        address_space_init(&s->linked_dma_as, s->dma_memory,
+                            "sgi-bridge-dma-test.linked");
+        sgi_dma_buffer_init_as(&s->dma_context, &s->linked_dma_as);
+    } else {
+        sgi_dma_buffer_init_pci(&s->dma_context, dev);
+    }
     if (s->dma_r32) {
         memory_region_init_io(&s->dma_view, OBJECT(s), &dma_view_ops, s,
                               "sgi-bridge-dma-test.r32", UINT64_MAX);
@@ -464,6 +478,9 @@ static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 
     if (s->dma_r32) {
         address_space_destroy(&s->dma_view_as);
+    }
+    if (s->dma_memory) {
+        address_space_destroy(&s->linked_dma_as);
     }
 }
 
@@ -515,6 +532,8 @@ static const Property sgi_bridge_dma_test_properties[] = {
     DEFINE_PROP_BOOL("plain-dma", SGIBridgeDMATestState, plain_dma, false),
     DEFINE_PROP_BOOL("dma-buffer", SGIBridgeDMATestState, dma_buffer, true),
     DEFINE_PROP_BOOL("dma-r32", SGIBridgeDMATestState, dma_r32, false),
+    DEFINE_PROP_LINK("dma-memory", SGIBridgeDMATestState, dma_memory,
+                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT32("repetitions", SGIBridgeDMATestState, repetitions, 1),
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
 };

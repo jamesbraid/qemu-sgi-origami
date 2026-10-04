@@ -829,8 +829,10 @@ static void test_dma_swap_controls(const void *data)
     const uint32_t payload_physical = RAM_SCRATCH + 0x4000;
     const uint32_t rx_ring_physical = RAM_SCRATCH + 0x8000;
     const uint32_t rx_physical = RAM_SCRATCH + 0xc000;
-    const unsigned lengths[] = { 64, 1024, 1500 };
-    uint8_t frame[1500];
+    const unsigned lengths[] = { 64, 1024, 1500, 1514 };
+    const unsigned offsets[] = { 42, 64, 66 };
+    const unsigned per_control = 2 * G_N_ELEMENTS(offsets);
+    uint8_t frame[1514];
     unsigned int n, i;
 
     for (i = 0; i < sizeof(frame); i++) {
@@ -838,14 +840,14 @@ static void test_dma_swap_controls(const void *data)
     }
     memset(frame, 0xff, 6);
 
-    for (n = 0; n < 4 * G_N_ELEMENTS(controls) * G_N_ELEMENTS(lengths);
-         n++) {
-        unsigned length = lengths[n / (4 * G_N_ELEMENTS(controls))];
-        bool native = !(n % 4 / 2);
+    for (n = 0; n < per_control * G_N_ELEMENTS(controls) *
+                    G_N_ELEMENTS(lengths); n++) {
+        unsigned length = lengths[n / (per_control * G_N_ELEMENTS(controls))];
+        bool native = !(n % per_control / G_N_ELEMENTS(offsets));
         g_autofree char *extra = g_strdup_printf(
             "-global sgi-ioc3-eth.dma-buffer=%s", native ? "off" : "on");
-        uint32_t control = controls[n / 4 % G_N_ELEMENTS(controls)];
-        unsigned int rx_offset = n % 2 ? RXD_BUF_OFFSET : 64;
+        uint32_t control = controls[n / per_control % G_N_ELEMENTS(controls)];
+        unsigned int rx_offset = offsets[n % G_N_ELEMENTS(offsets)];
         bool swap = control &
                     (translated ? swap_translated : swap_direct);
         uint32_t tx = translated ? 0x40000000 : 0x80000000 | tx_physical;
@@ -858,7 +860,7 @@ static void test_dma_swap_controls(const void *data)
         uint8_t descriptor[128] = { 0 };
         uint8_t encoded[sizeof(descriptor)];
         uint8_t pointer[8], encoded_pointer[8], header[8];
-        uint8_t encoded_frame[sizeof(frame)];
+        uint8_t encoded_frame[1516], source_seen[sizeof(encoded_frame)];
         uint8_t got[sizeof(frame)];
         uint8_t received[RXD_BUF_OFFSET + sizeof(frame) + 8];
         uint8_t source_guard[8];
@@ -886,15 +888,18 @@ static void test_dma_swap_controls(const void *data)
             qtest_writeq(qts, bridge + 0x10018, payload_physical | 1);
         }
 
-        if (n % 2 || length > TXD_DATA_SIZE) {
+        if (rx_offset != 64 || length > TXD_DATA_SIZE) {
             stl_be_p(descriptor, length | TXD_BUF1_VALID);
             stl_be_p(descriptor + 4, length << TXD_BUF1_LEN_SHIFT);
             stq_be_p(descriptor + 8, payload);
+            memset(encoded_frame, 0xee, sizeof(encoded_frame));
             for (i = 0; i < length; i++) {
-                encoded_frame[i] = frame[swap ? i ^ 3 : i];
+                encoded_frame[i ^ (swap ? 3 : 0)] = frame[i];
             }
-            qtest_memset(qts, payload_physical - 8, 0xee, length + 16);
-            qtest_memwrite(qts, payload_physical, encoded_frame, length);
+            qtest_memset(qts, payload_physical - 8, 0xee,
+                         ROUND_UP(length, 4) + 16);
+            qtest_memwrite(qts, payload_physical, encoded_frame,
+                            ROUND_UP(length, 4));
         } else {
             stl_be_p(descriptor, length | TXD_DATA_VALID);
             stl_be_p(descriptor + 4, length);
@@ -909,15 +914,18 @@ static void test_dma_swap_controls(const void *data)
         g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)),
                          ==, length);
         g_assert_cmpmem(got, length, frame, length);
-        if (n % 2 || length > TXD_DATA_SIZE) {
-            qtest_memread(qts, payload_physical, got, length);
-            g_assert_cmpmem(got, length, encoded_frame, length);
+        if (rx_offset != 64 || length > TXD_DATA_SIZE) {
+            qtest_memread(qts, payload_physical, source_seen,
+                           ROUND_UP(length, 4));
+            g_assert_cmpmem(source_seen, ROUND_UP(length, 4),
+                            encoded_frame, ROUND_UP(length, 4));
             qtest_memread(qts, payload_physical - 8, source_guard,
                            sizeof(source_guard));
             for (i = 0; i < sizeof(source_guard); i++) {
                 g_assert_cmphex(source_guard[i], ==, 0xee);
             }
-            qtest_memread(qts, payload_physical + length, source_guard,
+            qtest_memread(qts, payload_physical + ROUND_UP(length, 4),
+                           source_guard,
                            sizeof(source_guard));
             for (i = 0; i < sizeof(source_guard); i++) {
                 g_assert_cmphex(source_guard[i], ==, 0xee);
@@ -959,6 +967,115 @@ static void test_dma_swap_controls(const void *data)
                         received_size - sizeof(header));
         ioc3_quit(qts);
         close(sv[0]);
+    }
+}
+
+/* RX runs outside Bridge PIO, so prefix MMIO can change its DMA state. */
+static void test_dma_prefix_side_effects(const void *data)
+{
+    uint8_t frame[64], seen[80], expected[sizeof(seen)];
+    const uint8_t header[] = { 0x11, 0x22, 0x33, 0x44,
+                              0x55, 0x66, 0x77, 0x88 };
+    const uint32_t ring = RAM_SCRATCH + 0x8000;
+    const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
+
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool native = mode & 1, mastering = mode & 2;
+        uint32_t payload = mastering ? 0xc0024002 : 0xc0000082;
+        uint32_t rx = payload - 42;
+        g_autofree char *path = trace_dir ? g_strdup_printf(
+            "%s/ioc3-rx-side-effects-%u.trace", trace_dir, mode) :
+            g_strdup_printf("ioc3-rx-side-effects-%u-%u.trace",
+                            (unsigned)getpid(), g_random_int());
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-ioc3-eth.dma-buffer=%s "
+            "-device sgi-xio-test-target,id=new-ram,size=4K "
+            "-trace enable=memory_region_ops_write,file=%s",
+            native ? "off" : "on", path);
+        g_autofree char *trace = NULL;
+        g_auto(GStrv) lines = NULL;
+        unsigned prefix_callbacks = 0, second_callbacks = 0;
+        QTestState *qts;
+        uint32_t bar;
+        int sv[2];
+
+        memset(frame, 0xa5, sizeof(frame));
+        memset(frame, 0, 6);
+        stl_be_p(frame + 2, mastering ? PCI_COMMAND_MEMORY : 1U << 17);
+        g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+        qts = ioc3_attach_socket_options(sv[1], 1, extra);
+        bar = qpci_config_readl(ioc3_dev, PCI_BASE_ADDRESS_0);
+        qtest_sysbus_mmio_map(qts, "/machine/peripheral/new-ram",
+                              0, 0x60000000);
+        qtest_memset(qts, 0x60000080, 0xee, sizeof(seen));
+        qtest_memwrite(qts, 0x60000058, header, sizeof(header));
+        dma_stl_be(qts, ring, 0);
+        dma_stl_be(qts, ring + 4, rx);
+        ioc3_writel(qts, ENET_MAC_CONTROL,
+                     MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
+                     MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(42 / 2));
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        for (unsigned attempt = 0; attempt < 50; attempt++) {
+            if (mastering ?
+                !(qpci_config_readw(ioc3_dev, PCI_COMMAND) &
+                  PCI_COMMAND_MASTER) :
+                qtest_readl(qts, 0x40000084) == (1U << 17)) {
+                break;
+            }
+            qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+            g_usleep(10000);
+        }
+        if (mastering) {
+            g_assert_cmphex(qpci_config_readw(ioc3_dev, PCI_COMMAND), ==,
+                            PCI_COMMAND_MEMORY);
+            g_assert_cmphex(qpci_config_readl(ioc3_dev, PCI_BASE_ADDRESS_0),
+                            ==, bar);
+        } else {
+            g_assert_cmphex(qtest_readl(qts, 0x40000084), ==, 1U << 17);
+            memset(expected, 0xee, sizeof(expected));
+            memset(expected + 8, 0xa5, sizeof(frame) - 6);
+            memset(expected + 2 + sizeof(frame), 0, ETHER_FCS_LEN);
+            qtest_memread(qts, 0x60000080, seen, sizeof(seen));
+            g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+        }
+        /* Cross the arrival deadline before checking completion state. */
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS + 1);
+        g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+        g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) &
+                        (ENET_INT_RX_TIMER | ENET_INT_RX_THRESHOLD), ==, 0);
+        if (!mastering) {
+            qtest_memread(qts, 0x60000058, seen, sizeof(header));
+            g_assert_cmpmem(seen, sizeof(header), header, sizeof(header));
+            g_assert_cmphex(ldl_be_p(seen) & RXH_VALID, ==, 0);
+        }
+        ioc3_quit(qts);
+        close(sv[0]);
+        /* MMIO headers need a write-attempt check, not a RAM valid-bit read. */
+        g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+        lines = g_strsplit(trace, "\n", -1);
+        for (unsigned i = 0; lines[i]; i++) {
+            uint64_t addr, value;
+            unsigned size;
+
+            if (strstr(lines[i], "name 'sgi-ioc3.pci-dma'") &&
+                sscanf(lines[i], "memory_region_ops_write cpu %*d mr %*s "
+                       "addr 0x%" SCNx64 " value 0x%" SCNx64 " size %u",
+                       &addr, &value, &size) == 3) {
+                g_assert_cmphex(addr, !=, rx);
+                if (addr == payload) {
+                    g_assert_cmpuint(size, ==, 2);
+                    prefix_callbacks++;
+                } else if (addr == payload + 2) {
+                    g_assert_cmpuint(size, ==, 4);
+                    second_callbacks++;
+                }
+            }
+        }
+        g_assert_cmpuint(prefix_callbacks, ==, 1);
+        g_assert_cmpuint(second_callbacks, ==, 1);
+        if (!trace_dir) {
+            g_assert_cmpint(g_unlink(path), ==, 0);
+        }
     }
 }
 
@@ -1692,22 +1809,31 @@ static void test_a_payload_failure_does_not_publish_valid(const void *data)
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = i + 1;
     }
-    qts = ioc3_start(ring, rxbuf, 1);
-    dma_stl_be(qts, rxbuf, 0x11223344);
-    dma_stl_be(qts, rxbuf + 4, 0x55667788);
-    ioc3_writel(qts, ENET_MAC_CONTROL,
-                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
-                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
-    ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO,
-                 pci_dma_address(base & 0xffffc000u));
+    for (unsigned native = 0; native < 2; native++) {
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-ioc3-eth.dma-buffer=%s", native ? "off" : "on");
 
-    tx_one(qts, base, 0, frame, sizeof(frame));
+        qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
+            "-netdev user,id=n0 "
+            "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 %s",
+            IOC3_PCI_SLOT, extra);
+        ioc3_bring_up(qts, ring, rxbuf, 1);
+        dma_stl_be(qts, rxbuf, 0x11223344);
+        dma_stl_be(qts, rxbuf + 4, 0x55667788);
+        ioc3_writel(qts, ENET_MAC_CONTROL,
+                    MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+                    MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+        ioc3_writel(qts, ENET_TX_RING_HI, 0);
+        ioc3_writel(qts, ENET_TX_RING_LO,
+                     pci_dma_address(base & 0xffffc000u));
 
-    g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
-    assert_receive_not_published(qts, rxbuf);
+        tx_one(qts, base, 0, frame, sizeof(frame));
 
-    ioc3_quit(qts);
+        g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
+        assert_receive_not_published(qts, rxbuf);
+
+        ioc3_quit(qts);
+    }
 }
 
 /* The complete payload fits; only the following FCS write crosses RAM. */
@@ -2964,6 +3090,8 @@ int main(int argc, char **argv)
                         test_dma_swap_controls);
     qtest_add_data_func("sgi-ioc3-eth/dma-translated-swap-controls",
                         GINT_TO_POINTER(1), test_dma_swap_controls);
+    qtest_add_data_func("sgi-ioc3-eth/dma-prefix-side-effects", NULL,
+                        test_dma_prefix_side_effects);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-timing", NULL,
                         test_dp83843_restart_timing);
     qtest_add_data_func("sgi-ioc3-eth/dp83843-restart-cancel", NULL,

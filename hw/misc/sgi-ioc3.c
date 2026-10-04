@@ -77,9 +77,20 @@ static bool sgi_ioc3_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     SGIDMABufferRequest composed = *request;
     dma_addr_t length = *len & ~7ULL;
 
-    if (!length || (addr & 7) || attrs.memory || !ctx->provider ||
+    if (!length || attrs.memory || !ctx->provider ||
         !ctx->enabled(ctx->pci_dev)) {
         return false;
+    }
+    if (addr & 7) {
+        length = 8 - (addr & 7);
+        if (request->swap32 || request->max_access_size || *len < length + 8) {
+            return false;
+        }
+        /* Narrow placement and PCI side effects belong to the native view. */
+        *result = address_space_rw(s->dma_as, addr, attrs, buf, length,
+                                   dir == DMA_DIRECTION_FROM_DEVICE);
+        *len = length;
+        return true;
     }
     composed.swap32 ^= true;
     composed.max_access_size = request->max_access_size ?
