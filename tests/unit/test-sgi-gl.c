@@ -7653,6 +7653,48 @@ static void test_texture_prepare_reports_once(void)
     }
 }
 
+/* Direct draw producers have the same environment clamp as context commands. */
+static void test_texture_fragment_precision(void)
+{
+    TexturePixels pixels = { .pixel = { 0xff000080, 0x00ff0040,
+                                         0x0000ffc0, 0xffffffff } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLDrawState st = { .texture_2d = true,
+                          .texture_env_mode = SGI_GL_MODULATE };
+    double coord[4] = { 0.5 - 1.0 / (UINT64_C(1) << 40), 0.25, 0, 1 };
+    double rgba[4] = { 0.123456789, 0.987654321, 0.333333333, 0.75 };
+    double saved[4];
+    g_autoptr(SGIRasterTexture) sampler = NULL;
+
+    g_assert_cmpint(sgi_raster_texture_prepare(&st, &image, &sampler), ==,
+                    SGI_RASTER_TEXTURE_READY);
+    g_assert_nonnull(sampler);
+    g_assert_cmpuint(pixels.reads, ==, 0);
+    g_assert_true(sgi_raster_texture_fragment(sampler, coord, rgba));
+    g_assert_cmpfloat(rgba[0], ==, 0.123456789);
+    g_assert_cmpfloat(rgba[1], ==, 0);
+    g_assert_cmpfloat(rgba[2], ==, 0);
+    g_assert_cmpfloat_with_epsilon(rgba[3], 0.75 * 128 / 255,
+                                   0.00000000000001);
+    memcpy(saved, rgba, sizeof(saved));
+    memcpy(rgba, (double[]) { 0.123456789, 0.987654321, 0.333333333, 0.75 },
+           sizeof(rgba));
+    g_assert_true(sgi_raster_texture_fragment(sampler, coord, rgba));
+    g_assert_cmpmem(rgba, sizeof(rgba), saved, sizeof(saved));
+    coord[3] = 0;
+    g_assert_false(sgi_raster_texture_fragment(sampler, coord, rgba));
+    g_assert_cmpmem(rgba, sizeof(rgba), saved, sizeof(saved));
+    coord[3] = 1;
+    pixels.fail = true;
+    g_assert_false(sgi_raster_texture_fragment(sampler, coord, rgba));
+    g_assert_cmpmem(rgba, sizeof(rgba), saved, sizeof(saved));
+    g_clear_pointer(&sampler, sgi_raster_texture_free);
+    st.texture_2d = false;
+    g_assert_cmpint(sgi_raster_texture_prepare(&st, &image, &sampler), ==,
+                    SGI_RASTER_TEXTURE_DISABLED);
+    g_assert_null(sampler);
+}
+
 static void texture_post_filter(void *opaque, double rgba[4])
 {
     unsigned *calls = opaque;
@@ -12446,6 +12488,8 @@ int main(int argc, char **argv)
                     test_texture_prepare_results);
     g_test_add_func("/sgi-gl/texture-prepare-reports-once",
                     test_texture_prepare_reports_once);
+    g_test_add_func("/sgi-gl/texture-fragment-precision",
+                    test_texture_fragment_precision);
     g_test_add_func("/sgi-gl/texture-environment-clamp",
                     test_texture_environment_clamp);
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);

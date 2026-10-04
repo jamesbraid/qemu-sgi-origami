@@ -117,6 +117,155 @@ static void test_smooth(gconstpointer opaque)
     g_assert_false(sgi_renderer_staging_valid(request));
 }
 
+static const uint8_t texture_pixels[16] = {
+    255, 0, 0, 0, 0, 255, 0, 85, 0, 0, 255, 170, 255, 255, 255, 255,
+};
+
+static bool texture_apply(void *opaque, const double coord[4], double colour[4])
+{
+    unsigned x = floor(coord[0] / coord[3] * 2);
+    unsigned y = floor(coord[1] / coord[3] * 2);
+    const uint8_t *pixel;
+
+    g_assert_cmpuint(x, <, 2);
+    g_assert_cmpuint(y, <, 2);
+    pixel = texture_pixels + (y * 2 + x) * 4;
+    for (unsigned c = 0; c < 4; c++) {
+        colour[c] *= pixel[c] / 255.0;
+    }
+    return true;
+}
+
+static SGIRendererTexture texture_fixture(void)
+{
+    return (SGIRendererTexture) {
+        .width = 2, .height = 2, .format = SGI_RENDERER_TEXTURE_RGBA,
+        .wrap = { SGI_RENDERER_TEXTURE_REPEAT, SGI_RENDERER_TEXTURE_REPEAT },
+        .environment = SGI_RENDERER_TEXTURE_MODULATE,
+        .scale = { 1, 1, 1, 1 }, .texels = texture_pixels,
+        .bytes = sizeof(texture_pixels), .apply = texture_apply,
+    };
+}
+
+static void test_texture(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    SGIRendererTexture texture = texture_fixture();
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    const double flat[4] = { 0.1234, 0.4321, 0.789, 0.75 };
+
+    request->texture = &texture;
+    request->smooth = mode == 1;
+    request->clip[2] = request->clip[3] = 127;
+    request->vertices[1][0] = request->vertices[2][1] = 128;
+    for (unsigned i = 0; i < 3; i++) {
+        double q = mode == 1 ? 1 << i : 1;
+
+        request->vertices[i][3] = 1;
+        request->inverse_w[i] = 1 / q;
+        request->texcoord[i][3] = q;
+        request->texcoord[i][0] = i == 1 ? q : 0;
+        request->texcoord[i][1] = i == 2 ? q : 0;
+        for (unsigned c = 0; c < 4; c++) {
+            request->colour[i][c] = mode == 1 ?
+                                    (c == 3 ? 0.75 : i == c) : flat[c];
+        }
+    }
+    if (mode == 2) {
+        float vertex[4];
+        double coord[4];
+
+        memcpy(vertex, request->vertices[1], sizeof(vertex));
+        memcpy(request->vertices[1], request->vertices[2], sizeof(vertex));
+        memcpy(request->vertices[2], vertex, sizeof(vertex));
+        memcpy(coord, request->texcoord[1], sizeof(coord));
+        memcpy(request->texcoord[1], request->texcoord[2], sizeof(coord));
+        memcpy(request->texcoord[2], coord, sizeof(coord));
+    } else if (mode == 3) {
+        const int64_t bounds[4] = { 0, 0, 127, 127 };
+
+        g_assert_true(sgi_renderer_request_tile(request, 16, 32, 64, 64,
+                                               bounds));
+    }
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            unsigned wx = x + (mode == 3 ? 16 : 0);
+            unsigned wy = y + (mode == 3 ? 32 : 0);
+            bool covered = wx + wy < 127 &&
+                           (mode != 3 || (x < 64 && y < 64));
+            double colour[4];
+            uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+
+            g_assert_cmpint(sgi_renderer_fragment(request, x, y, colour), ==,
+                            covered);
+            if (covered) {
+                unsigned at = (2 * (wy >= 64) + (wx >= 64)) * 4;
+                double weights[3] = { 1 - (wx + wy + 1.0) / 128,
+                                      (wx + 0.5) / 256, (wy + 0.5) / 512 };
+                double sum = weights[0] + weights[1] + weights[2];
+
+                for (unsigned c = 0; c < 4; c++) {
+                    double source = mode == 1 && c < 3 ? weights[c] / sum :
+                                    flat[c];
+                    double expected = source * texture_pixels[at + c] / 255;
+
+                    g_assert_cmpfloat_with_epsilon(colour[c], expected,
+                                                   0.00000000000001);
+                    if (c < 3) {
+                        pixel[c] = floor(expected * 255 + 0.5);
+                    }
+                }
+                pixel[3] = 255;
+            }
+        }
+    }
+    g_assert_true(sgi_renderer_staging_valid(request));
+    request->rgba[(16 * 128 + 16) * 4] ^= 1;
+    g_assert_false(sgi_renderer_staging_valid(request));
+}
+
+static void test_texture_invalid(void)
+{
+    SGIRendererTexture texture = texture_fixture(), saved = texture;
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+
+    request->texture = &texture;
+    request->clip[2] = request->clip[3] = -1;
+    for (unsigned i = 0; i < 3; i++) {
+        request->vertices[i][3] = request->inverse_w[i] = 1;
+        request->texcoord[i][3] = 1;
+    }
+    g_assert_true(sgi_renderer_request_valid(request));
+    texture.bytes--;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    texture.width = 0;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    texture.apply = NULL;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    texture.texels = NULL;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    texture.scale[0] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    texture.environment = SGI_RENDERER_TEXTURE_DECAL;
+    texture.format = SGI_RENDERER_TEXTURE_ALPHA;
+    g_assert_false(sgi_renderer_request_valid(request));
+    texture = saved;
+    request->texcoord[0][3] = 0;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->texcoord[0][3] = -1;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->texcoord[0][3] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->texcoord[0][3] = 1;
+    request->texcoord[0][0] = INFINITY;
+    g_assert_false(sgi_renderer_request_valid(request));
+}
+
 static void test_smooth_invalid(void)
 {
     g_autofree SGIRendererRequest *request = fixture();
@@ -464,6 +613,7 @@ static void test_missing_registration(void)
 
 static unsigned draw_count;
 static bool corrupt_colour, corrupt_clip, corrupt_vertices;
+static bool corrupt_texture;
 static unsigned corrupt_attributes = UINT_MAX;
 
 static void *generation_create(SGIRenderCreateResult *result, Error **errp)
@@ -478,6 +628,11 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
     g_autofree SGIRendererRequest *expected = fixture();
 
     draw_count++;
+    if (corrupt_texture) {
+        SGIRendererTexture *texture = (SGIRendererTexture *)request->texture;
+
+        texture->wrap[0] = SGI_RENDERER_TEXTURE_EDGE;
+    }
     if (corrupt_attributes == 0) {
         request->smooth = false;
     } else if (corrupt_attributes == 1) {
@@ -490,6 +645,12 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
         request->depth[0] = 0.5;
     } else if (corrupt_attributes == 5) {
         request->offset = 0.5;
+    } else if (corrupt_attributes == 6) {
+        request->texcoord[0][0] = 1;
+    } else if (corrupt_attributes == 7) {
+        static const SGIRendererTexture texture;
+
+        request->texture = &texture;
     } else if (corrupt_vertices) {
         float vertex[4];
 
@@ -616,6 +777,41 @@ static void test_input_vertices(void)
         return;
     }
     corrupt_vertices = true;
+    sgi_renderer_register_gl(&response_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
+static bool texture_identity(void *opaque, const double coord[4],
+                               double colour[4])
+{
+    return true;
+}
+
+static void test_input_texture(void)
+{
+    SGIRendererTexture texture = texture_fixture();
+    g_autofree SGIRendererRequest *request = fixture();
+    SGIRenderer *renderer;
+    Error *err = NULL;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    texture.apply = texture_identity;
+    request->texture = &texture;
+    for (unsigned i = 0; i < 3; i++) {
+        request->colour[i][0] = request->colour[i][3] = 1;
+        request->inverse_w[i] = request->texcoord[i][3] = 1;
+    }
+    corrupt_texture = true;
     sgi_renderer_register_gl(&response_ops);
     renderer = sgi_renderer_new(&err);
     g_assert_nonnull(renderer);
@@ -1110,6 +1306,13 @@ int main(int argc, char **argv)
 
         g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_smooth);
     }
+    for (unsigned mode = 0; mode < 4; mode++) {
+        g_autofree char *path = g_strdup_printf("/sgi-renderer/texture/%u",
+                                                mode);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_texture);
+    }
+    g_test_add_func("/sgi-renderer/texture/invalid", test_texture_invalid);
     g_test_add_func("/sgi-renderer/smooth/invalid", test_smooth_invalid);
     g_test_add_func("/sgi-renderer/staging", test_staging);
     g_test_add_func("/sgi-renderer/clip", test_clip);
@@ -1138,7 +1341,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
-    for (unsigned input = 0; input < 6; input++) {
+    g_test_add_func("/sgi-renderer/input-texture", test_input_texture);
+    for (unsigned input = 0; input < 8; input++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-renderer/input-attributes/%u", input);
 
