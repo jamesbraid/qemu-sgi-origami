@@ -3230,6 +3230,43 @@ static void test_firmware_rejections(void)
     g_assert_cmpint(unlink(oversized), ==, 0);
 }
 
+/*
+ * Every Octane offering's -M value starts its machine: a launcher passes
+ * the catalogue's string unchanged, so it may name only properties the
+ * machine has.
+ */
+static void test_catalogue_machine_options(void)
+{
+    QTestState *qts = octane_start();
+    QDict *response = qtest_qmp(qts, "{'execute': 'query-sgi-machines'}");
+    QDict *machines = qdict_get_qdict(response, "return");
+    QList *offerings = qdict_get_qlist(machines, "offerings");
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    const QListEntry *entry;
+    unsigned int started = 0;
+
+    QLIST_FOREACH_ENTRY(offerings, entry) {
+        QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *product = qdict_get_str(offering, "product");
+        bool octane2 = g_str_equal(product, "octane2");
+        QTestState *machine;
+
+        if (!octane2 && !g_str_equal(product, "octane")) {
+            continue;
+        }
+        machine = qtest_initf(MEMTX_TEST_DEVICE "-M %s -m %s -cpu %s "
+                              "-bios %s -S",
+                              qdict_get_str(offering, "machine-options"),
+                              octane2 ? "256M" : "128M",
+                              octane2 ? OCTANE2_CPU : "R10000", quoted);
+        qtest_quit(machine);
+        started++;
+    }
+    g_assert_cmpuint(started, ==, 2);
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
 static void test_pci_bar_separation(void)
 {
     QTestState *qts = octane_start();
@@ -4182,6 +4219,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-ust-migration",
                    test_rad_ust_migration);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
+    qtest_add_func("/octane/catalogue-machine-options",
+                   test_catalogue_machine_options);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
     qtest_add_func("/octane/scsi-dma-to-heart-ram",
                    test_scsi_dma_to_heart_ram);

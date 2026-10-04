@@ -1150,6 +1150,13 @@ static void test_resolve_selection(void)
     offering = resolve("origin300,topology=origin300-two-chassis",
                        &error_abort);
     g_assert_cmpuint(offering->nodes, ==, 2);
+
+    /* Octane has no nodes= property, so its -M value names none. */
+    offering = resolve("octane2", &error_abort);
+    g_assert_cmpstr(offering->machine_options, ==,
+                    "octane2,topology=octane2");
+    offering = resolve("octane", &error_abort);
+    g_assert_cmpstr(offering->machine_options, ==, "octane,topology=octane");
 }
 
 /* Refusals carry the machine's own wording for the same selection. */
