@@ -204,6 +204,87 @@ static void test_flash_configure_patches_model_fields(const void *data)
 }
 
 /*
+ * A configuration block as a stock PROM image ships it: the magic, the
+ * stock image's own values (machine type 0, 8 read and 1 write cycles),
+ * a nonzero checksum adjustment and a filler pattern in every other
+ * field, so a patch that touched anything else would show.
+ */
+static void fill_stock_config_block(uint8_t *config)
+{
+    int i;
+
+    for (i = 0; i < CONFIG_SIZE; i++) {
+        config[i] = 0xa0 + i;
+    }
+    stq_be_p(config + FIELD_MAGIC, CONFIG_MAGIC);
+    stl_be_p(config + FIELD_FPROM_CYC, 8);
+    stl_be_p(config + FIELD_MACHTYPE, 0);
+    stl_be_p(config + FIELD_CHECKSUM, 0x5a);
+    stl_be_p(config + FIELD_FPROM_WR, 1);
+}
+
+static uint8_t config_block_sum(const uint8_t *config)
+{
+    uint8_t sum = 0;
+    int i;
+
+    for (i = 0; i < CONFIG_SIZE; i++) {
+        sum += config[i];
+    }
+    return sum;
+}
+
+/*
+ * Each product patches its own catalogue values into a stock block and
+ * nothing else: Origin 2000 carries the stock image's machine type 0,
+ * 8 read and 1 write cycles, so its block comes back byte for byte as
+ * supplied; Origin 200 carries machine type 1, 15 and 4, and the checksum
+ * adjustment absorbs the difference so the block's byte sum is kept.
+ */
+static void test_flash_configure_product_values(const void *data)
+{
+    bool origin200 = !strcmp(data, "origin200");
+    g_autoptr(GError) error = NULL;
+    uint8_t image[CONFIG_OFFSET + CONFIG_SIZE] = { 0 };
+    uint8_t expected[CONFIG_SIZE];
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    int fd;
+    int i;
+
+    fill_stock_config_block(image + CONFIG_OFFSET);
+    memcpy(expected, image + CONFIG_OFFSET, CONFIG_SIZE);
+    if (origin200) {
+        uint8_t old_sum = config_block_sum(expected);
+
+        stl_be_p(expected + FIELD_CHECKSUM, 0);
+        stl_be_p(expected + FIELD_FPROM_CYC, 15);
+        stl_be_p(expected + FIELD_MACHTYPE, 1);
+        stl_be_p(expected + FIELD_FPROM_WR, 4);
+        stl_be_p(expected + FIELD_CHECKSUM,
+                 (uint8_t)(old_sum - config_block_sum(expected)));
+        g_assert_cmphex(config_block_sum(expected), ==, old_sum);
+    }
+
+    fd = g_file_open_tmp("sn0-address-map-stock-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    qts = qtest_initf("%s -bios %s", origin200 ? "-M origin200" :
+                      "-M origin2000,topology=origin2000-deskside,nodes=1 "
+                      "-smp 2 -m 256M", path);
+    unlink(path);
+
+    for (i = 0; i < CONFIG_SIZE; i++) {
+        g_assert_cmphex(qtest_readb(qts, FLASH_RESET + CONFIG_OFFSET + i),
+                        ==, expected[i]);
+    }
+    qtest_quit(qts);
+}
+
+/*
  * Node zero's own boot windows in a two-node machine, the same shape
  * test_flash_three_views checks for the single-node default. Node one's
  * NASID-qualified boot windows are not checked here: reading them this way
@@ -1626,6 +1707,10 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/address-map/flash-configure-patches-container-payload",
         "container", test_flash_configure_patches_model_fields);
+    qtest_add_data_func("sn0/address-map/flash-configure-origin2000-values",
+                        "origin2000", test_flash_configure_product_values);
+    qtest_add_data_func("sn0/address-map/flash-configure-origin200-values",
+                        "origin200", test_flash_configure_product_values);
     qtest_add_data_func("sn0/address-map/dual-node-boot-windows", NULL,
                         test_dual_node_boot_windows);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,

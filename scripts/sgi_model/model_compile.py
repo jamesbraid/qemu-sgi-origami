@@ -2363,4 +2363,28 @@ def compile_model(model: dict) -> dict:
     management = _compile_l1_management(model, controllers)
     if management is not None:
         topology["l1_management"] = management
+    if generation == "SN0":
+        topology["ip27_firmware"] = _compile_ip27_firmware(model)
     return topology
+
+
+def _compile_ip27_firmware(model: dict) -> dict:
+    """The three product values an IP27 PROM's flash configuration block
+    carries, from the product's own `machine.firmware_config`. Every SN0
+    product authors them, so a missing one is refused rather than left for
+    the machine to default.
+    """
+    firmware = model["machine"].get("firmware_config")
+    if not isinstance(firmware, dict):
+        raise CompileError(
+            "machine.firmware_config is absent; an SN0 configuration needs "
+            "its IP27 flash configuration values")
+    values = {}
+    for field in ("machine_type", "flash_read_cycles", "flash_write_cycles"):
+        value = firmware.get(field)
+        if not isinstance(value, int) or not 0 <= value <= 0xffffffff:
+            raise CompileError(
+                f"machine.firmware_config.{field} must be a 32-bit "
+                "unsigned integer")
+        values[field] = value
+    return values

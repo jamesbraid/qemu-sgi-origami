@@ -2183,6 +2183,11 @@
           "serial": 17592186044425
         }
       ],
+      "ip27-firmware": {
+        "flash-read-cycles": 8,
+        "flash-write-cycles": 1,
+        "machine-type": 0
+      },
       "junk-uart": -1,
       "modules": [
         {

@@ -354,6 +354,8 @@ def _render_topology(topology: dict, machine_name: str) -> dict:
             for record in topology["io_assemblies"]]
     if "l1_management" in topology:
         result["l1-management"] = _kebab_keys(topology["l1_management"])
+    if "ip27_firmware" in topology:
+        result["ip27-firmware"] = _kebab_keys(topology["ip27_firmware"])
     return result
 
 def _node_population(raw: dict) -> dict:

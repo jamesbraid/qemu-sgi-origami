@@ -3419,7 +3419,7 @@ static bool sgi_machine_load_flash(MachineState *machine,
                                    const SGIModelTopology *t,
                                    SGIMachineState *s, Error **errp)
 {
-    const SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
+    const SGIModelIp27FirmwareConfig *firmware = t->ip27_firmware;
     const SGIModelProcessor *cpu;
     SGIIP27FlashValues values;
     g_autoptr(SGIPromImage) image = NULL;
@@ -3439,6 +3439,12 @@ static bool sgi_machine_load_flash(MachineState *machine,
         return sgi_machine_load_bedrock_flash(machine, s, errp);
     }
 
+    if (!firmware) {
+        error_setg(errp, "%s: topology '%s' carries no IP27 flash "
+                   "configuration values", MACHINE_GET_CLASS(machine)->name,
+                   t->name);
+        return false;
+    }
     flash_size = sn0_hub_address_map.flash_reset.size;
     if (machine->firmware) {
         g_autofree char *path =
@@ -3458,9 +3464,9 @@ static bool sgi_machine_load_flash(MachineState *machine,
 
     cpu = sgi_machine_topology_node0(t)->cpu_slots->value->assembly;
     values = (SGIIP27FlashValues) {
-        .machine_type = smc->firmware_machine_type,
-        .read_cycles = smc->flash_read_cycles,
-        .write_cycles = smc->flash_write_cycles,
+        .machine_type = firmware->machine_type,
+        .read_cycles = firmware->flash_read_cycles,
+        .write_cycles = firmware->flash_write_cycles,
         .cpu_mode_bits = cpu->mode_bits,
         .cpu_clock_hz = cpu->clock_hz,
     };
@@ -5705,10 +5711,6 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     smc->product = "origin200";
     smc->default_topology = "origin200";
     smc->node_memory = &sn0_hub_memory;
-    /* sn0-origin200-model.c's own values, real IP27 PROM fields. */
-    smc->firmware_machine_type = 1;
-    smc->flash_read_cycles = 15;
-    smc->flash_write_cycles = 4;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);

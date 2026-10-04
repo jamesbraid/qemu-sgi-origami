@@ -443,6 +443,7 @@ static SGIModelTopology *sgi_model_build_view(const SGIModelTopology *t,
     view->has_io_assemblies = t->has_io_assemblies;
     view->io_assemblies = t->io_assemblies;
     view->l1_management = t->l1_management;
+    view->ip27_firmware = t->ip27_firmware;
     view->console = node_map[t->console];
     view->junk_uart = sgi_model_kept(node_map, node_total, t->junk_uart) ?
                       node_map[t->junk_uart] : -1;
