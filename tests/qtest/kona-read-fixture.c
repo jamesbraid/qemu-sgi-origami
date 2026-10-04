@@ -505,7 +505,7 @@ static void control_write(void *opaque, hwaddr offset, uint64_t value,
             break;
         case 7:
             sgi_plane_store(&k->x_write_mem,
-                sgi_board_memory_plane(&k->x_write_mem, 0), 70, 80, 0x100);
+                sgi_board_memory_plane(&k->x_write_mem, 0), 70, 80, 0x10000);
             break;
         default:
             g_assert_not_reached();
@@ -524,10 +524,11 @@ static void control_write(void *opaque, hwaddr offset, uint64_t value,
         sgi_plane_store(&k->mem,
                        sgi_board_memory_plane(&k->mem, k->plane_front),
                        459, 322, value == FIXTURE_PIXEL_LARGE_INDEX ?
-                                 0x100 : 0x7e);
+                                 0x10000 : 0x7e00);
         sgi_plane_store(&k->mem,
                        sgi_board_memory_plane(&k->mem, k->plane_front_tag),
-                       459, 322, value == FIXTURE_PIXEL_UNKNOWN_TAG ? 99 : 2);
+                       459, 322, value == FIXTURE_PIXEL_UNKNOWN_TAG ?
+                                 99 : SGI_KONA_TAG_X_INDEX16);
         break;
     case FIXTURE_READY_FAULT:
         s->ready_fault = value;
