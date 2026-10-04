@@ -1984,6 +1984,48 @@ static void test_overlay_wat_addressing_shapes(void)
     qtest_quit(qts);
 }
 
+/*
+ * The frame-buffer pixel formats the shipped X server loads into FB_WAT
+ * besides 24-bit true color and 8-bit index (IBM RGB561 Architecture pages
+ * 9 and 19-21, 47): 8-, 12- and 16-bit true color widen R3G3B2, R4G4B4 and
+ * R5G6B5 through Table 18's bypass conversion, Grey Scale shows an 8-bit
+ * pixel on all three components, and buffer select takes a pixel from the
+ * word's upper buffer. The window IDs have a zero low nibble, so no overlay
+ * is involved.
+ */
+static void test_fb_pixel_formats(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t row = 50 * TEST_FB_STRIDE;
+
+    rad4_play_mode0(qts);
+    rgb_write_byte(qts, RGB_CONF1, CONF1_4TO1_OVLY8_LWID8);
+    rgb_write_byte(qts, RGB_CONF4, CONF4_SPLIT_FB8);
+    rgb_write_wat(qts, WAT_BASE, 0x10, WAT_ENTRY(0, 0, 0, 3, 0));
+    rgb_write_wat(qts, WAT_BASE, 0x20, WAT_ENTRY(0, 1, 0, 3, 0));
+    rgb_write_wat(qts, WAT_BASE, 0x30, WAT_ENTRY(0, 2, 0, 3, 0));
+    rgb_write_wat(qts, WAT_BASE, 0x40, WAT_ENTRY(0, 2, 1, 3, 0));
+    rgb_write_wat(qts, WAT_BASE, 0x50, WAT_ENTRY(0, 0, 0, 1, 0));
+    rgb_write_wat(qts, WAT_BASE, 0x60, WAT_ENTRY(1, 0, 1, 0, 0));
+    rgb_write_lut(qts, 64 + 5, 0x123456);
+
+    bar2_write(qts, row + 0 * 4, 0x100000e9u);  /* R 111, G 010, B 01 */
+    bar2_write(qts, row + 1 * 4, 0x20000abcu);
+    bar2_write(qts, row + 2 * 4, 0x30001234u);  /* R 00010, G 010001 */
+    bar2_write(qts, row + 3 * 4, 0x40ab0000u);  /* buffer B is 0x40ab */
+    bar2_write(qts, row + 4 * 4, 0x50000080u);
+    bar2_write(qts, row + 5 * 4, 0x60000500u);  /* buffer B index 5 */
+
+    g_assert_cmphex(rad4_screendump_pixel(qts, 0, 50), ==, 0xff4955);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 1, 50), ==, 0xaabbcc);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 2, 50), ==, 0x1045a5);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 3, 50), ==, 0x42145a);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 4, 50), ==, 0x808080);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 5, 50), ==, 0x123456);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -2143,6 +2185,7 @@ int main(int argc, char **argv)
                    test_overlay_wat_addressing);
     qtest_add_func("/psitech-rad4/overlay-wat-addressing-shapes",
                    test_overlay_wat_addressing_shapes);
+    qtest_add_func("/psitech-rad4/fb-pixel-formats", test_fb_pixel_formats);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
