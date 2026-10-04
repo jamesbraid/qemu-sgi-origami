@@ -2609,8 +2609,8 @@ static void test_mode_recognized(const void *data)
 /*
  * The driver's timing loaders read three option fields of the
  * configuration word: bit 8, bit 10 and the selector in bits 12-13. All 16
- * combinations give mode 9, each through its own sequence where the
- * loaders tell them apart. The selector-2 word rad4setres sends by default
+ * combinations give mode 9, through the eight sequences the loaders tell
+ * apart. The selector-2 word rad4setres sends by default
  * writes 0 as the first word of horizontal bank 3, where the all-zero word
  * writes 0x80 (the write a live guest's rad4setres 9 made), and 0x23 to the
  * sync register.
@@ -2620,24 +2620,42 @@ static void test_mode_option_words(void)
     QTestState *qts = rad4_init();
     const Rad4ModeSequence *zero = mode_sequence(9, 0);
     const Rad4ModeSequence *on_green = mode_sequence(9, OPT_RAD4SETRES);
+    uint32_t covered = 0;
+    int replayed = 0;
 
     g_assert_cmphex(zero->banks[3]->runs[0].value, ==, 0x80);
     g_assert_cmphex(on_green->banks[3]->runs[0].value, ==, 0x00);
     g_assert_cmphex(zero->sync, ==, 0x01);
     g_assert_cmphex(on_green->sync, ==, 0x23);
+    /*
+     * Each distinct sequence once: together they cover all 16 option words,
+     * and replaying a sequence per word would only repeat them.
+     */
     for (uint32_t sel = 0; sel < 4; sel++) {
         for (uint32_t bits = 0; bits < 4; bits++) {
             uint32_t word = OPT_SEL(sel) | (bits & 1 ? OPT_H : 0) |
                             (bits & 2 ? OPT_V : 0);
-            g_autoptr(GArray) events = mode_events_option(9, word);
 
-            if (g_test_verbose()) {
-                g_test_message("option word 0x%04x", word);
-            }
-            play_events(qts, events);
-            check_mode_active(qts, 9);
+            covered |= mode_sequence(9, word)->options;
         }
     }
+    g_assert_cmphex(covered, ==, 0xffff);
+    for (int q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
+        const Rad4ModeSequence *seq = &rad4_sequences[q];
+        g_autoptr(GArray) events = NULL;
+
+        if (seq->mode != 9) {
+            continue;
+        }
+        events = mode_events_spliced(seq, seq, seq);
+        if (g_test_verbose()) {
+            g_test_message("option words 0x%04x", seq->options);
+        }
+        play_events(qts, events);
+        check_mode_active(qts, 9);
+        replayed++;
+    }
+    g_assert_cmpint(replayed, ==, 8);
     qtest_quit(qts);
 }
 
