@@ -164,7 +164,16 @@ layer:
           requires_boot_flash: true
           requires_network_identity: true
           discovery_prerequisites: [io8bt, xbg, launcher]
-        console: ioc3-serial-a
+        # The stock IP35 PROM keeps its console choice in the boot flash,
+        # and a new machine's flash holds only the PROM image. On this
+        # model, PROM 6.210 booted from a fresh 0xff-padded flash reached
+        # its maintenance menu on L1 with both IOC3 serial streams empty;
+        # only "console ioc3" moved later boots to IOC3 serial A. That is
+        # a model observation, not a physical Fuel factory setting.
+        console: l1-uart
+        # IOC3 serial A and B, Serial 1 and 2 on the rear panel, still
+        # carry the console once the PROM selects one of them.
+        ioc3_serial_ports: [ioc3-serial-a, ioc3-serial-b]
         prom_dialogue: ip35-l1-prompt
         default_cpu_model: R14000
         disk_bus: scsi.0
@@ -176,4 +185,4 @@ layer:
         supported_guests: []
         install_media: []
         provenance: derived
-        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 139 to 146: IP34 node board inventory", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections"]
+        sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 139 to 146: IP34 node board inventory", "boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 426 to 525: serial login after console=d", "007-4480-001 printed pages 6 and 28: separate serial and L1 diagnostic connections", "Origami docs/research/fuel-pod-initlog-private-flash-20260927.md at commit 6e052b3ccd: fresh padded flash answers on L1, console ioc3 selects IOC3 serial A", "Origami docs/notebooks/fuel-bringup.md, 2026-09-27 private flash and serial console; 2026-09-30 copied PROM flash retains console sc"]

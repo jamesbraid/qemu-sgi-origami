@@ -1,21 +1,21 @@
 {
   "offerings": [
     {
-      "console": "ioc3-serial-a",
+      "console": "l1-uart",
       "consoles": [
         {
           "argument": "-serial chardev:l1",
-          "kind": "system-controller",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "second-port",
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_b",
           "kind": "second-port",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc3_a",
-          "kind": "console",
           "node": 0
         }
       ],
@@ -145,21 +145,21 @@
       "topology": "fuel-vpro"
     },
     {
-      "console": "ioc3-serial-a",
+      "console": "l1-uart",
       "consoles": [
         {
           "argument": "-serial chardev:l1",
-          "kind": "system-controller",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "second-port",
           "node": 0
         },
         {
           "argument": "-serial chardev:ioc3_b",
           "kind": "second-port",
-          "node": 0
-        },
-        {
-          "argument": "-serial chardev:ioc3_a",
-          "kind": "console",
           "node": 0
         }
       ],

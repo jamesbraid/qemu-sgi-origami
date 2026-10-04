@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "70e093c2d8ca7690a8fbd4786320da8c3f8a4ff54cd0babd23de9cccea5bb70e"
+    "f121fab95bec365927e4d0bf2bc4dce317b73be48116038afe792cbba7857dfc"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -306,6 +306,8 @@ class Origin300TimekeeperTests(unittest.TestCase):
 
 class FuelTests(unittest.TestCase):
     def test_fuel_offerings_keep_all_console_ports(self):
+        """A fresh Fuel flash answers on L1, and IOC3 serial A and B
+        follow it in the machine's serial-line order (A on line 1)."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         offerings = [row for row in catalogue["offerings"]
@@ -313,16 +315,16 @@ class FuelTests(unittest.TestCase):
         self.assertEqual({row["topology"] for row in offerings},
                          {"fuel", "fuel-vpro"})
         expected = [
-            {"kind": "system-controller", "node": 0,
+            {"kind": "console", "node": 0,
              "argument": "-serial chardev:l1"},
             {"kind": "second-port", "node": 0,
-             "argument": "-serial chardev:ioc3_b"},
-            {"kind": "console", "node": 0,
              "argument": "-serial chardev:ioc3_a"},
+            {"kind": "second-port", "node": 0,
+             "argument": "-serial chardev:ioc3_b"},
         ]
         for row in offerings:
             with self.subTest(topology=row["topology"]):
-                self.assertEqual(row["console"], "ioc3-serial-a")
+                self.assertEqual(row["console"], "l1-uart")
                 self.assertEqual(row["consoles"], expected)
 
     def test_fuel_export_has_system_timekeeper(self):

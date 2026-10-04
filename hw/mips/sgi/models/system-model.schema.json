@@ -597,6 +597,12 @@
             "default_cpu_model": { "type": "string", "minLength": 1, "description": "The -cpu argument a launcher passes when none is given, e.g. R10000." },
             "smdk": { "$ref": "#/$defs/smdk-recipe" },
             "console": { "enum": ["ioc3-serial-a", "l1-uart"], "description": "The console port the stock PROM's own command monitor and dialogue use." },
+            "ioc3_serial_ports": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": ["ioc3-serial-a", "ioc3-serial-b"] },
+              "description": "IOC3 serial ports an IP35 launch places after the L1 line, in the machine's serial-line order. Omitted means only the console port when that is IOC3 serial A."
+            },
             "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
             "disk_bus": { "type": "string", "minLength": 1, "description": "Default SCSI bus id guest launchers attach the boot disk to." },
             "netboot_adapter": { "type": "string", "minLength": 1, "description": "Adapter kind the stock PROM's netboot command has been confirmed to drive." },
