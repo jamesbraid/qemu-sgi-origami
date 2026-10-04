@@ -60,6 +60,8 @@ typedef struct SGISoftDraw {
     uint32_t texture_last;
     unsigned *texture_reports;
     uint32_t point_size, line_width;
+    bool point_smooth, line_smooth;
+    double smooth_point_size, smooth_line_width;
     const uint32_t *polygon_stipple;
     uint32_t rgba_mask;
     bool rgba_read;
@@ -1574,7 +1576,8 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
  * (4.2.2).
  */
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
-                                 double z, const SGISoftFrag *frag)
+                                 double z, const SGISoftFrag *frag,
+                                 double coverage, bool antialias)
 {
     const SGIRasterTarget *t = r->t;
     SGISoftFrag fogged = *frag;
@@ -1592,6 +1595,15 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     }
     if (r->st->fog) {
         sgi_soft_fog(r, &fogged, z);
+    }
+    fogged.rgba[3] *= coverage;
+    if (antialias && r->st->index_bits) {
+        uint32_t bits = MIN(4, r->st->index_bits);
+        uint32_t mask = (1u << bits) - 1;
+        uint32_t index = sgi_soft_index(r, fogged.index);
+        uint32_t value = MIN((uint32_t)floor(coverage * (1u << bits)), mask);
+
+        fogged.index = (index & ~mask) | value;
     }
     if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
         return;
@@ -1755,17 +1767,26 @@ static bool sgi_soft_bounds(const SGISoftDraw *r, int *x0, int *y0, int *x1,
  * [n, f] (OpenGL 1.2.1, 2.10.1). A polygon's offset is then added to the
  * window depth, and the sum clamped to [0, 1] (3.5.5).
  */
-static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
-                              double offset, const SGISoftFrag *frag)
+static void sgi_soft_fragment_coverage(const SGISoftDraw *r, int px, int py,
+                                       double z, double offset,
+                                       const SGISoftFrag *frag,
+                                       double coverage, bool antialias)
 {
     double n, f, zw;
 
     sgi_soft_depth_range(r->st, &n, &f);
-    if (!(z >= 0.0 && z <= 1.0)) {
+    if (!(z >= 0.0 && z <= 1.0) || !(coverage > 0.0)) {
         return;
     }
     zw = n + (f - n) * z + offset;
-    sgi_soft_fragment_at(r, px, py, zw >= 1 ? 1 : zw > 0 ? zw : 0, frag);
+    sgi_soft_fragment_at(r, px, py, zw >= 1 ? 1 : zw > 0 ? zw : 0, frag,
+                         coverage, antialias);
+}
+
+static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
+                              double offset, const SGISoftFrag *frag)
+{
+    sgi_soft_fragment_coverage(r, px, py, z, offset, frag, 1, false);
 }
 
 /*
@@ -2480,11 +2501,166 @@ static bool sgi_soft_line_covers(const SGISoftVertex *a,
  * direction; activated standalone lines count across streamed segments.
  * Antialiasing is not modelled.
  */
+typedef struct SGISoftPoint2 {
+    double x, y;
+} SGISoftPoint2;
+
+static unsigned sgi_soft_clip_edge(const SGISoftPoint2 *in, unsigned n,
+                                   SGISoftPoint2 *out, unsigned axis,
+                                   double bound, bool greater)
+{
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < n; i++) {
+        SGISoftPoint2 a = in[i], b = in[(i + 1) % n];
+        double av = axis ? a.y : a.x, bv = axis ? b.y : b.x;
+        bool ai = greater ? av >= bound : av <= bound;
+        bool bi = greater ? bv >= bound : bv <= bound;
+
+        if (ai != bi) {
+            double t = (bound - av) / (bv - av);
+            SGISoftPoint2 p = { a.x + t * (b.x - a.x),
+                                a.y + t * (b.y - a.y) };
+
+            if (axis) {
+                p.y = bound;
+            } else {
+                p.x = bound;
+            }
+            out[count++] = p;
+        }
+        if (bi) {
+            out[count++] = b;
+        }
+    }
+    return count;
+}
+
+static double sgi_soft_polygon_square_area(const SGISoftPoint2 *polygon,
+                                          unsigned n, int x, int y)
+{
+    SGISoftPoint2 a[12], b[12];
+    double area = 0;
+
+    memcpy(a, polygon, n * sizeof(*a));
+    n = sgi_soft_clip_edge(a, n, b, 0, x, true);
+    n = sgi_soft_clip_edge(b, n, a, 0, x + 1, false);
+    n = sgi_soft_clip_edge(a, n, b, 1, y, true);
+    n = sgi_soft_clip_edge(b, n, a, 1, y + 1, false);
+    for (unsigned i = 0; i < n; i++) {
+        const SGISoftPoint2 *p = &a[i], *q = &a[(i + 1) % n];
+
+        area += p->x * q->y - p->y * q->x;
+    }
+    return MIN(1.0, fabs(area) * 0.5);
+}
+
+static double sgi_soft_line_coverage(double ax, double ay, double bx,
+                                     double by, double width, int x, int y)
+{
+    double dx = bx - ax, dy = by - ay, length = hypot(dx, dy);
+    double nx, ny;
+    SGISoftPoint2 rectangle[4];
+
+    if (!(length > 0.0) || !(width > 0.0)) {
+        return 0;
+    }
+    nx = -dy * width / (2 * length);
+    ny = dx * width / (2 * length);
+    rectangle[0] = (SGISoftPoint2) { ax + nx, ay + ny };
+    rectangle[1] = (SGISoftPoint2) { bx + nx, by + ny };
+    rectangle[2] = (SGISoftPoint2) { bx - nx, by - ny };
+    rectangle[3] = (SGISoftPoint2) { ax - nx, ay - ny };
+    return sgi_soft_polygon_square_area(rectangle, ARRAY_SIZE(rectangle), x, y);
+}
+
+static double sgi_soft_circle_integral(double x, double radius)
+{
+    double y = sqrt(MAX(0.0, radius * radius - x * x));
+
+    return 0.5 * (x * y + radius * radius * asin(x / radius));
+}
+
+static double sgi_soft_circle_coverage(double cx, double cy, double radius,
+                                       int x, int y)
+{
+    double cuts[8], area = 0;
+    unsigned n = 0;
+    double lo = MAX(x - cx, -radius), hi = MIN(x + 1 - cx, radius);
+
+    if (!(lo < hi) || !(radius > 0.0)) {
+        return 0;
+    }
+    cuts[n++] = lo;
+    cuts[n++] = hi;
+    for (int edge = 0; edge < 2; edge++) {
+        double yedge = (edge ? y + 1 : y) - cy;
+
+        if (fabs(yedge) < radius) {
+            double root = sqrt(radius * radius - yedge * yedge);
+
+            if (-root > lo && -root < hi) {
+                cuts[n++] = -root;
+            }
+            if (root > lo && root < hi) {
+                cuts[n++] = root;
+            }
+        }
+    }
+    for (unsigned i = 1; i < n; i++) {
+        double value = cuts[i];
+        unsigned j = i;
+
+        while (j && cuts[j - 1] > value) {
+            cuts[j] = cuts[j - 1];
+            j--;
+        }
+        cuts[j] = value;
+    }
+    for (unsigned i = 0; i + 1 < n; i++) {
+        double a = cuts[i], b = cuts[i + 1], mid = (a + b) * 0.5;
+        double circle = sqrt(MAX(0.0, radius * radius - mid * mid));
+        double ymin = y - cy, ymax = y + 1 - cy;
+        double top = MIN(ymax, circle), bottom = MAX(ymin, -circle);
+        double arc = sgi_soft_circle_integral(b, radius) -
+                     sgi_soft_circle_integral(a, radius);
+
+        if (top <= bottom) {
+            continue;
+        }
+        area += (top == circle ? arc : ymax * (b - a)) -
+                (bottom == -circle ? -arc : ymin * (b - a));
+    }
+    return MIN(1.0, MAX(0.0, area));
+}
+
 typedef struct SGISoftLineStipple {
     uint32_t counter;
     uint32_t repeat, pattern;
     bool enabled, consumed;
 } SGISoftLineStipple;
+
+static void sgi_soft_line_vertex_at(const SGISoftVertex *a,
+                                    const SGISoftVertex *b, double t,
+                                    SGISoftVertex *out)
+{
+    double wa = (1 - t) * a->inv_w, wb = t * b->inv_w;
+    double sum = wa + wb;
+
+    out->x = llround(a->x + t * (b->x - a->x));
+    out->y = llround(a->y + t * (b->y - a->y));
+    out->z = a->z + t * (b->z - a->z);
+    out->inv_w = (1 - t) * a->inv_w + t * b->inv_w;
+    for (int k = 0; k < 4; k++) {
+        out->rgba[k] = (wa * a->rgba[k] + wb * b->rgba[k]) / sum;
+        out->texcoord[k] = (wa * a->texcoord[k] + wb * b->texcoord[k]) / sum;
+    }
+    out->index = (wa * a->index + wb * b->index) / sum;
+    out->fog = (wa * a->fog + wb * b->fog) / sum;
+    for (int i = 0; i < SGI_GL_CLIP_PLANES; i++) {
+        out->clip[i] = (wa * a->clip[i] + wb * b->clip[i]) / sum;
+    }
+}
 
 static void sgi_soft_line_projected(const SGISoftDraw *r,
                                     const SGISoftVertex *pa,
@@ -2503,9 +2679,33 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
     double flat[4], len2;
     double texture_value[4], texture_delta[4], texture_length;
     int major0, major1, bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
-
     visible = sgi_soft_bounds(r, &bx0, &by0, &bx1, &by1);
     if ((!visible && !stipple) || (a.x == b.x && a.y == b.y)) {
+        return;
+    }
+    if (r->line_smooth && stipple) {
+        double scale = 1 << sub;
+        double length = hypot((b.x - a.x) / scale, (b.y - a.y) / scale);
+        double segments = ceil(length);
+
+        for (double i = 0; i < segments; i++) {
+            unsigned bit = (stipple->counter / stipple->repeat) % 16;
+            bool keep = !stipple->enabled ||
+                        (stipple->pattern & (1u << bit));
+
+            stipple->counter = (stipple->counter + 1) %
+                               (16 * stipple->repeat);
+            stipple->consumed = true;
+            if (keep) {
+                SGISoftVertex start, end;
+                double t0 = i / length, t1 = MIN((i + 1) / length, 1.0);
+
+                sgi_soft_line_vertex_at(&a, &b, t0, &start);
+                sgi_soft_line_vertex_at(&a, &b, t1, &end);
+                sgi_soft_line_projected(r, &start, &end, provoking, offset,
+                                        NULL, client_clip);
+            }
+        }
         return;
     }
     if (r->texture_base && !sgi_soft_texture_line_gradient(&a, &b, sub,
@@ -2542,6 +2742,14 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
              sub;
     major0--;
     major1++;
+    if (r->line_smooth) {
+        double pad = r->smooth_line_width * 0.5;
+        double l0 = x_major ? a.x : a.y;
+        double l1 = x_major ? b.x : b.y;
+
+        major0 = (int)floor(MIN(l0, l1) / (1 << sub) - pad) - 1;
+        major1 = (int)ceil(MAX(l0, l1) / (1 << sub) + pad) + 1;
+    }
     step = 1;
     if (stipple) {
         /* Count coverage before ownership/scissor, in submitted direction. */
@@ -2579,22 +2787,38 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
         }
         minor0 = (int64_t)floor(MIN(f0, f1) / (1 << sub)) - 1;
         minor1 = (int64_t)floor(MAX(f0, f1) / (1 << sub)) + 1;
+        if (r->line_smooth) {
+            double pad = r->smooth_line_width * 0.5;
+            double q0 = x_major ? a.y : a.x;
+            double q1 = x_major ? b.y : b.x;
+
+            minor0 = (int64_t)floor(MIN(q0, q1) / (1 << sub) - pad) - 1;
+            minor1 = (int64_t)ceil(MAX(q0, q1) / (1 << sub) + pad) + 1;
+        }
         for (int64_t n = minor0; n <= minor1; n++) {
             int64_t base_x = x_major ? m : n, base_y = x_major ? n : m;
             int64_t replica0 = MAX(n, x_major ? by0 : bx0);
-            int64_t replica1 = MIN(n + r->line_width - 1,
-                                   x_major ? by1 : bx1);
+            int64_t replica1 = r->line_smooth ? replica0 :
+                MIN(n + r->line_width - 1, x_major ? by1 : bx1);
 
             bool keep = true;
 
-            if (!sgi_soft_line_covers(&shifted_a, &shifted_b,
-                                      base_x, base_y, sub)) {
+            double coverage = r->line_smooth ?
+                sgi_soft_line_coverage((double)a.x / (1 << sub),
+                    (double)a.y / (1 << sub), (double)b.x / (1 << sub),
+                    (double)b.y / (1 << sub), r->smooth_line_width,
+                    base_x, base_y) :
+                sgi_soft_line_covers(&shifted_a, &shifted_b,
+                                     base_x, base_y, sub) ? 1 : 0;
+
+            if (!(coverage > 0)) {
                 continue;
             }
             if (stipple) {
                 unsigned bit = (stipple->counter / stipple->repeat) % 16;
 
-                keep = !stipple->enabled || (stipple->pattern & (1u << bit));
+                keep = !stipple->enabled ||
+                       (stipple->pattern & (1u << bit));
                 stipple->counter = (stipple->counter + 1) %
                                    (16 * stipple->repeat);
                 stipple->consumed = true;
@@ -2656,8 +2880,9 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
                         out) ?
                         out[4] / texture_length : NAN;
                 }
-                sgi_soft_fragment(r, px, py, a.z + t * (b.z - a.z),
-                                  offset, &frag);
+                sgi_soft_fragment_coverage(r, px, py,
+                    a.z + t * (b.z - a.z), offset, &frag, coverage,
+                    r->line_smooth);
             }
         }
     }
@@ -2721,6 +2946,26 @@ static void sgi_soft_point_projected(const SGISoftDraw *r,
     frag.fog = v.fog;
     frag.texture_rho = 1;
     memcpy(frag.texcoord, v.texcoord, sizeof(frag.texcoord));
+    if (r->point_smooth) {
+        double scale = 1 << sub;
+        double cx = v.x / scale, cy = v.y / scale;
+        double radius = r->smooth_point_size * 0.5;
+
+        x0 = MAX((int64_t)floor(cx - radius), bx0);
+        y0 = MAX((int64_t)floor(cy - radius), by0);
+        x1 = MIN((int64_t)ceil(cx + radius) - 1, bx1);
+        y1 = MIN((int64_t)ceil(cy + radius) - 1, by1);
+        for (int64_t y = y0; y <= y1; y++) {
+            for (int64_t x = x0; x <= x1; x++) {
+                double coverage = sgi_soft_circle_coverage(cx, cy, radius,
+                                                           x, y);
+
+                sgi_soft_fragment_coverage(r, x, y, v.z, offset, &frag,
+                                           coverage, true);
+            }
+        }
+        return;
+    }
     for (int64_t y = y0; y <= y1; y++) {
         for (int64_t x = x0; x <= x1; x++) {
             sgi_soft_fragment(r, x, y, v.z, offset, &frag);
@@ -3109,6 +3354,9 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     SGISoftDraw r = {
         .rules = rules, .t = t, .st = d->state,
         .back_colors = d->back_colors,
+        .point_smooth = d->point_smooth, .line_smooth = d->line_smooth,
+        .smooth_point_size = d->point_size,
+        .smooth_line_width = d->line_width,
         .polygon_stipple = d->polygon_stipple_enabled ?
                            d->polygon_stipple : NULL,
     };
@@ -3300,7 +3548,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
                 py < r.win.y0 - r.win.oy || py > r.win.y1 - r.win.oy) {
                 continue;
             }
-            sgi_soft_fragment_at(&r, px, py, b->z, &frag);
+            sgi_soft_fragment_at(&r, px, py, b->z, &frag, 1, false);
         }
     }
 }

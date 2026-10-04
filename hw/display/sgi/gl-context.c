@@ -1053,6 +1053,8 @@ static void sgi_gl_submit(SGIGLContext *c, const SGIGLSink *sink,
         .state = &c->cur,
         .point_size = c->point_size,
         .line_width = c->line_width,
+        .point_smooth = !!(c->raster_enables & SGI_GL_RASTER_POINT_SMOOTH),
+        .line_smooth = !!(c->raster_enables & SGI_GL_RASTER_LINE_SMOOTH),
         .polygon_modes = c->polygon.enabled ? c->polygon_mode : NULL,
         .line_stipple_enabled = stipple &&
             !!(c->raster_enables & SGI_GL_RASTER_LINE_STIPPLE),
@@ -2366,6 +2368,10 @@ void sgi_gl_command(SGIGLContext *c, const SGIGLSink *sink,
                 .state = &c->cur,
                 .back_colors = sgi_gl_lit(c) && c->light_model_two_side,
                 .point_size = c->point_size, .line_width = c->line_width,
+                .point_smooth =
+                    !!(c->raster_enables & SGI_GL_RASTER_POINT_SMOOTH),
+                .line_smooth =
+                    !!(c->raster_enables & SGI_GL_RASTER_LINE_SMOOTH),
                 .polygon_modes = c->polygon_mode, .fill_by_triangle = true,
                 .polygon_stipple = c->polygon_stipple,
                 .polygon_stipple_enabled =

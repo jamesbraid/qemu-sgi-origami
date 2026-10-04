@@ -3015,6 +3015,8 @@ typedef struct FragScene {
     SGIGLSink sink;
 } FragScene;
 
+static void line_stipple_activate(FragScene *f);
+
 static void frag_init(FragScene *f)
 {
     memset(&f->p, 0, sizeof(f->p));
@@ -4565,6 +4567,138 @@ static void test_raster_state_kept(void)
  * Clip coordinates are compared to within 2^-40 and attributes, which are
  * floats, to within 2^-20.
  */
+static void test_point_smoothing_coverage(void)
+{
+    FragScene f;
+    uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
+
+    frag_init(&f);
+    frag_quad(&f, 0, 0, 1, 1);
+    frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_command(&f, SGI_GL_OP_COLOR4F, red, ARRAY_SIZE(red));
+
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 10, 10);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    enable(&f.c, SGI_GL_POINT_SMOOTH, false);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 30, 10);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&f, 50, 10);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+
+    for (int y = 9; y <= 10; y++) {
+        for (int x = 9; x <= 10; x++) {
+            uint32_t on = frag_pixel(&f, x, y);
+            uint32_t again = frag_pixel(&f, x + 40, y);
+
+            g_assert_cmphex(on, ==, again);
+            g_assert_cmpuint((on >> 16) & 0xff, >, 0);
+            g_assert_cmpuint(on & 0xff, >, 0);
+            g_assert_cmpuint((on >> 8) & 0xff, ==, 0);
+        }
+    }
+    g_assert_cmphex(frag_pixel(&f, 30, 10), ==, 0xff0000);
+    g_assert_cmphex(frag_pixel(&f, 29, 9), ==, 0x0000ff);
+}
+
+static void test_line_smoothing_coverage(void)
+{
+    FragScene f;
+    uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
+
+    frag_init(&f);
+    frag_quad(&f, 0, 0, 1, 1);
+    frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f.c, SGI_GL_BLEND, true);
+    frag_command(&f, SGI_GL_OP_COLOR4F, red, ARRAY_SIZE(red));
+
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 10, 20);
+    wide_vertex(&f, 14, 20);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, false);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 30, 20);
+    wide_vertex(&f, 34, 20);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 50, 20);
+    wide_vertex(&f, 54, 20);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 40, 30);
+    wide_vertex(&f, 40, 30);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+
+    for (int y = 19; y <= 20; y++) {
+        for (int x = 10; x <= 13; x++) {
+            uint32_t on = frag_pixel(&f, x, y);
+            uint32_t again = frag_pixel(&f, x + 40, y);
+
+            g_assert_cmphex(on, ==, again);
+            g_assert_cmpuint((on >> 16) & 0xff, >, 0);
+            g_assert_cmpuint(on & 0xff, >, 0);
+            g_assert_cmpuint((on >> 8) & 0xff, ==, 0);
+        }
+    }
+    g_assert_cmphex(frag_pixel(&f, 31, 19), ==, 0xff0000);
+    g_assert_cmphex(frag_pixel(&f, 31, 20), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 40, 30), ==, 0x0000ff);
+}
+
+static void test_line_smoothing_stipple(void)
+{
+    FragScene f;
+    uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
+    uint32_t stipple[2] = { 2, 1 };
+    uint32_t p;
+
+    frag_init(&f);
+    frag_quad(&f, 0, 0, 1, 1);
+    frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&f.c, SGI_GL_BLEND, true);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    line_stipple_activate(&f);
+    frag_command(&f, SGI_GL_OP_COLOR4F, red, ARRAY_SIZE(red));
+    frag_command(&f, SGI_GL_OP_LINE_STIPPLE, stipple, ARRAY_SIZE(stipple));
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 10.25, 19.5);
+    wide_vertex(&f, 14.25, 19.5);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+
+    /* Adjacent lit rectangles contribute separate alpha fragments. */
+    p = frag_pixel(&f, 11, 19);
+    g_assert_cmpuint((p >> 16) & 0xff, >, 200);
+    g_assert_cmpuint((p >> 16) & 0xff, <, 215);
+    g_assert_cmpuint(p & 0xff, >, 40);
+    g_assert_cmpuint(p & 0xff, <, 55);
+    g_assert_cmpuint((p >> 8) & 0xff, ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 12, 19), ==, 0x004000bf);
+    g_assert_cmphex(frag_pixel(&f, 13, 19), ==, 0x0000ff);
+
+    stipple[0] = 1;
+    stipple[1] = 0xffff;
+    frag_command(&f, SGI_GL_OP_LINE_STIPPLE, stipple, ARRAY_SIZE(stipple));
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&f, 20.25, 30.25);
+    wide_vertex(&f, 24.25, 33.25);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    p = frag_pixel(&f, 21, 31);
+    g_assert_cmpuint((p >> 16) & 0xff, >, 0);
+    g_assert_cmpuint(p & 0xff, >, 0);
+    g_assert_cmpuint((p >> 8) & 0xff, ==, 0);
+}
+
 #define CLIP_EPSILON (1.0 / (1ull << 40))
 #define ATTR_EPSILON (1.0 / (1 << 20))
 
@@ -10220,6 +10354,12 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/polygon-state-begin-guard",
                     test_polygon_state_begin_guard);
     g_test_add_func("/sgi-gl/raster-state-kept", test_raster_state_kept);
+    g_test_add_func("/sgi-gl/point-smoothing-coverage",
+                    test_point_smoothing_coverage);
+    g_test_add_func("/sgi-gl/line-smoothing-coverage",
+                    test_line_smoothing_coverage);
+    g_test_add_func("/sgi-gl/line-smoothing-stipple",
+                    test_line_smoothing_stipple);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
