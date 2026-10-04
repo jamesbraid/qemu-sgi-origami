@@ -6795,6 +6795,117 @@ static void test_indexed_colour_pixels(gconstpointer opaque)
     }
 }
 
+static void test_indexed_texture_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned type = mode < 28 ? mode % 7 : 6;
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    bool dma = (mode < 28 && ((mode / 7) & 1)) || mode == 34 || mode == 40;
+    bool swap = mode < 28 && ((mode / 7) & 2);
+    unsigned stride = (2 * size + 3) & ~3u;
+    unsigned span = stride + 2 * size, words = DIV_ROUND_UP(span, 4);
+    uint32_t h[20], expected[] = { 0xff0000ff, 0x0000ffff };
+    uint8_t bytes[32] = { 0 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    gl_make_current(s);
+    texture_native_bind(s, 0);
+    kona_command(s, 0x174, texture_header, ARRAY_SIZE(texture_header));
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    if (mode != 37) {
+        indexed_colour_maps(s, mode == 28 ? 0x35 : mode == 29 ? 0x36 : 0x34);
+    } else {
+        memset(expected, 0, sizeof(expected));
+    }
+    pixel_transfer_set(s, 0xd10, mode == 38 ? 0 : 1);
+    pixel_transfer_set(s, 0xd14, 0);
+    pixel_transfer_set(s, 0xd19, 1);
+    if (mode == 30) {
+        expected[0] = expected[1] = 0x00ff00ff;
+    } else if (mode == 31) {
+        pixel_transfer_set(s, 0xd12, -1);
+        pixel_transfer_set(s, 0xd13, 1);
+        expected[1] = 0x00ff00ff;
+    }
+    if (mode == 39) {
+        pixel_transfer_set(s, 0xd14, NAN);
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        unsigned at = (k / 2) * stride + (k % 2) * size;
+        uint32_t value = k % 2 ? 52 : 18;
+
+        if (type == 6) {
+            value = mode == 30 ? fbits(k % 2 ? -0.75f : 2.75f) : fbits(value);
+            if (mode == 36 && k == 3) {
+                value = fbits(NAN);
+            }
+        }
+        for (unsigned b = 0; b < size; b++) {
+            bytes[at + b] = value >> (8 * (swap ? b : size - 1 - b));
+        }
+    }
+    memcpy(h, texture_header, sizeof(h));
+    h[3] = 11;
+    h[4] = type;
+    h[6] = dma;
+    h[7] = 0;
+    h[17] |= dma ? 4 : 0;
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf0, swap }, 2);
+    kona_command(s, 0x174, h, ARRAY_SIZE(h));
+    if (!dma) {
+        qtest_writel(s, REG_COMMAND, ldl_be_p(bytes));
+        if (mode == 35 || mode == 41) {
+            for (unsigned k = 1; k < words; k++) {
+                qtest_writel(s, REG_COMMAND, ldl_be_p(bytes + k * 4));
+            }
+        }
+    }
+    if (mode == 40 || mode == 41) {
+        kona_command(s, 0x34, (uint32_t[]) { 0xc72, 2, fbits(1), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, fbits(0));
+    }
+    if ((mode >= 33 && mode <= 35) || mode >= 39) {
+        read_dma_migrate(from, &s, &to, &dir);
+    }
+    if (mode == 40 || mode == 41) {
+        qtest_writel(s, REG_COMMAND, fbits(0));
+    }
+    if (mode == 34) {
+        kona_command(s, 0x34, (uint32_t[]) { 0xc72, 1, fbits(0), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, fbits(0));
+        pixel_transfer_set(s, 0xd12, 10);
+        pixel_transfer_set(s, 0xd13, 10);
+    }
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000, bytes, span);
+        texture_dma_packet(s, 0, span, span, 0);
+    } else if (mode != 35 && mode != 41) {
+        for (unsigned k = 1; k < words; k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(bytes + k * 4));
+        }
+    }
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    for (unsigned k = 0; k < 4; k++) {
+        assert_texture_pixel(s, k % 2, k / 2,
+                             mode == 36 ? texture_source[k] : expected[k % 2]);
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void colour_map_upload(QTestState *s, unsigned component,
                               uint32_t token, const float *values,
                               unsigned count)
@@ -8496,7 +8607,7 @@ static void test_texture_pixel_transfer(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool dma = mode == 1 || mode == 3 || mode == 11;
-    bool migrate = mode == 2 || mode == 3 || mode == 4;
+    bool migrate = mode == 2 || mode == 3 || mode == 4 || mode == 13;
     uint32_t h[20], raw[16], count = 4, expected = 0x80c06080;
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
     g_autofree char *dir = NULL, *uri = NULL;
@@ -8563,6 +8674,9 @@ static void test_texture_pixel_transfer(gconstpointer opaque)
         }
         kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 1 }, 2);
         expected = 0x80bf6080;
+    }
+    if (mode == 13) {
+        pixel_transfer_set(s, 0xd12, NAN);
     }
     kona_command(s, 0x174, h, ARRAY_SIZE(h));
     if (!dma) {
@@ -11925,6 +12039,7 @@ int main(int argc, char **argv)
         "late-nan-atomic", "alpha-storage", "luminance-storage",
         "luminance-alpha-storage", "dma-captured-before-state-change",
         "ushort-swap",
+        "unused-index-transfer-migrates",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(texture_transfer_cases); mode++) {
         g_autofree char *path = g_strdup_printf(
@@ -12039,6 +12154,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_indexed_colour_pixels);
+    }
+    for (unsigned mode = 0; mode < 42; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/indexed-texture-pixels/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_indexed_texture_pixels);
     }
     static const char *stencil_map_names[] = {
         "float", "uint", "ushort", "default", "read", "copy", "attributes",
