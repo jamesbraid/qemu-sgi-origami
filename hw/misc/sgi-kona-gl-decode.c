@@ -449,12 +449,25 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
                                     const uint32_t record[22],
                                     SGIKonaTextureParams *params)
 {
+    SGIKonaTextureParams next = *params;
+    uint32_t ordinary_bind[5], ordinary_record[22];
+
     /* Only the base-zero, repeat interior profile is established. */
     if ((bind[1] >> 28) != 1 || (bind[3] & 0xff0) ||
         params->base_level || ((bind[2] >> 5) & 7) > 1) {
         return false;
     }
-    return sgi_kona_gl_texture_sampler(bind, record, params);
+    memcpy(ordinary_bind, bind, sizeof(ordinary_bind));
+    memcpy(ordinary_record, record, sizeof(ordinary_record));
+    /* A 1D sampler has no T/R footprint or wrapping decision. */
+    ordinary_bind[3] &= ~0x6000u;
+    ordinary_record[1] = (ordinary_record[1] & ~0xff00u) | 0x1000;
+    if (!sgi_kona_gl_texture_sampler(ordinary_bind, ordinary_record, &next)) {
+        return false;
+    }
+    next.lod_scale_t = next.lod_scale_r = 1;
+    *params = next;
+    return true;
 }
 
 void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
