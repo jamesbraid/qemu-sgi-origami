@@ -2268,7 +2268,7 @@ static void assert_native_depth(QTestState *s, uint32_t name,
                                 const uint32_t *words, unsigned count)
 {
     qtest_memset(s, RETURN_PAGE, 0, 4);
-    qtest_memset(s, RETURN_PAGE + 4, 0xa5, 64);
+    qtest_memset(s, RETURN_PAGE + 4, 0xa5, 4 * count + 8);
     kona_command(s, 0x4c, &name, 1);
     assert_reply_posted(s);
     for (unsigned k = 0; k < count; k++) {
@@ -6412,6 +6412,54 @@ static void test_renderer_migration(gconstpointer opaque)
     g_rmdir(tmpfs);
 }
 
+static void assert_colour_matrix_isolated(QTestState *s)
+{
+    uint32_t expected[16] = { F1, 0, 0, 0, 0, F1, 0, 0,
+                              0, 0, F1, 0, 0, 0, 0, F1 };
+
+    expected[12] = fbits(0.25);
+    assert_native_depth(s, 0xba0, (uint32_t[]){ 0x1800 }, 1);
+    kona_command(s, 0xd2, (uint32_t[]){ 0 }, 1);
+    kona_command_f(s, 0xd3, (float[16]){ 0 }, 16);
+    kona_command_f(s, 0xd5, (float[16]){ 0 }, 16);
+    kona_command_f(s, 0xdd, (float[]){ 2, 3, 4 }, 3);
+    kona_command_f(s, 0xdb, (float[]){ 45, 0, 0, 1 }, 4);
+    kona_command_f(s, 0xdf, (float[]){ 1, 2, 3 }, 3);
+    kona_command(s, 0xd9, (uint32_t[]){ 0 }, 1);
+    kona_command(s, 0xd8, (uint32_t[]){ 0 }, 1);
+    assert_native_depth(s, 0xba6, expected, 16);
+    assert_native_depth(s, 0xba3, (uint32_t[]){ 1 }, 1);
+    kona_command(s, 0xd0, (uint32_t[]){ 0x1700 }, 1);
+    assert_native_depth(s, 0xba0, (uint32_t[]){ 0x1700 }, 1);
+    assert_native_depth(s, 0xba6, expected, 16);
+}
+
+static void test_native_colour_matrix(gconstpointer opaque)
+{
+    bool migrate = GPOINTER_TO_INT(opaque);
+    g_autofree char *tmpfs = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL;
+
+    gl_make_current(from);
+    kona_command_f(from, 0xdf, (float[]){ 0.25, 0, 0 }, 3);
+    kona_command(from, 0xd0, (uint32_t[]){ 0x1800 }, 1);
+    if (migrate) {
+        tmpfs = g_dir_make_tmp("sn0-kona-colour-matrix-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        to = qtest_init(args);
+        sgi_migrate_stopped(from, uri);
+    }
+    assert_colour_matrix_isolated(to ? to : from);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(tmpfs);
+    }
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -6890,6 +6938,10 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_renderer_migration);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
+    qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/native",
+                        GINT_TO_POINTER(0), test_native_colour_matrix);
+    qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",
+                        GINT_TO_POINTER(1), test_native_colour_matrix);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
