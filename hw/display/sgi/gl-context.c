@@ -2119,6 +2119,60 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
     sink->raster(sink->opaque, &op);
 }
 
+void sgi_gl_draw_pixels_rgba(SGIGLContext *c, const SGIGLSink *sink,
+                            uint32_t width, uint32_t height,
+                            const uint32_t *rgba)
+{
+    const SGIGLDrawable *d = &c->cur.drawable;
+    SGIRasterOp op = {
+        .kind = SGI_RASTER_PIXELS,
+        .pixels = {
+            .state = &c->cur,
+            .width = width,
+            .height = height,
+            .rgba = rgba,
+            .z = c->raster_pos[2],
+            .distance = c->raster_distance,
+        },
+    };
+    double x, y;
+
+    if (c->in_begin) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-gl: glDrawPixels inside glBegin dropped\n");
+        return;
+    }
+    if (!c->raster_valid || !width || !height) {
+        return;
+    }
+    if (c->cur.index_bits || c->cur.texture_1d || c->cur.texture_2d ||
+        c->cur.texture_3d) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: textured or colour-index "
+                      "glDrawPixels is unsupported; image dropped\n");
+        return;
+    }
+    if (!d->bound || !rgba) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: glDrawPixels with no window or "
+                      "image bound dropped\n");
+        return;
+    }
+    if (!d->clip.n) {
+        return;
+    }
+    /* Unit zoom covers fragment centres on the bottom/left boundaries. */
+    x = ceil((double)c->raster_pos[0] - 0.5);
+    y = ceil((double)c->raster_pos[1] - 0.5);
+    if (!isfinite(x) || !isfinite(y) || x < -(double)UINT32_MAX ||
+        y < -(double)UINT32_MAX || x > INT32_MAX || y > INT32_MAX) {
+        return;
+    }
+    op.pixels.x = x;
+    op.pixels.y = y;
+    op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
+    op.clip = d->clip;
+    sink->raster(sink->opaque, &op);
+}
+
 static bool sgi_gl_hint_mode(uint32_t mode)
 {
     return mode == SGI_GL_DONT_CARE || mode == SGI_GL_FASTEST ||

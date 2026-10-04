@@ -30,6 +30,7 @@ typedef enum SGIRasterKind {
     SGI_RASTER_POINT,
     SGI_RASTER_BLIT,
     SGI_RASTER_BITMAP,
+    SGI_RASTER_PIXELS,
 } SGIRasterKind;
 
 /*
@@ -82,6 +83,16 @@ typedef struct SGIRasterBitmap {
     float distance;
 } SGIRasterBitmap;
 
+/* Unit-zoom, untextured RGBA8 pixel rectangles (OpenGL 1.2.1, 3.6.4). */
+typedef struct SGIRasterPixels {
+    const struct SGIGLDrawState *state;
+    int64_t x, y;               /* window pixel of the lower-left corner */
+    uint32_t width, height;
+    const uint32_t *rgba;       /* 0xRRGGBBAA, bottom row first */
+    float z;                   /* raster position's window depth */
+    float distance;            /* raster position's fog distance */
+} SGIRasterPixels;
+
 /*
  * Only the fields a kind the rasterizer executes needs are here; the
  * others arrive with their kind. Coordinates are plane pixels, the
@@ -121,6 +132,7 @@ typedef struct SGIRasterOp {
     uint32_t clear_index;
     uint32_t index_mask;
     SGIRasterBitmap bitmap;
+    SGIRasterPixels pixels;
 } SGIRasterOp;
 
 /*
@@ -1046,6 +1058,15 @@ bool sgi_gl_bitmap_place(SGIGLContext *c, uint32_t width, uint32_t height,
 void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
                          const SGIGLBitmap *b, uint32_t first,
                          const uint8_t *bytes, uint32_t count);
+/*
+ * Draw tightly packed RGBA8 pixels (0xRRGGBBAA), bottom row first, at the
+ * current raster position with unit pixel zoom and no pixel transfer.
+ * The raster position does not move. Textured and colour-index pixel
+ * rectangles are refused. The sink consumes the image synchronously.
+ */
+void sgi_gl_draw_pixels_rgba(SGIGLContext *c, const SGIGLSink *sink,
+                            uint32_t width, uint32_t height,
+                            const uint32_t *rgba);
 /*
  * The cosine glLightfv stores for a spot cutoff of degrees: -1 for 180,
  * no spot, and otherwise the single-precision cosine.
