@@ -154,4 +154,23 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
 bool sgi_kona_gl_texture_filter_curve(const uint32_t words[33],
                                       double values[64]);
 
+/* Ordinary selector 0x6 PIO framing; source skips are applied by the sender. */
+typedef struct SGIKonaGLBitmapLayout {
+    uint32_t width, height;
+    uint64_t stride, row_bytes, payload_words;
+    uint32_t phase, bit_skip;
+    bool strided;
+} SGIKonaGLBitmapLayout;
+
+/* Unsupported headers or unpack state leave layout unchanged. */
+bool sgi_kona_gl_bitmap_pio_layout(const uint32_t header[9],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLBitmapLayout *layout);
+/* Normalize one byte to MSB-first; missing words leave output unchanged. */
+bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *layout,
+                                 const uint32_t *words, size_t nwords,
+                                 bool lsb_first, uint32_t row, uint32_t byte,
+                                 uint8_t *out);
+
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */
