@@ -922,8 +922,8 @@ enum {
  * a model budget, not the board's memory size: an object that does not fit
  * is refused and reported.
  */
-#define ODSY_OBJ_POOL_BYTES (16 * MiB)
-#define ODSY_OBJ_POOL_WORDS (ODSY_OBJ_POOL_BYTES / 4)
+#define ODSY_OBJ_POOL_BYTES SGI_ODYSSEY_OBJ_POOL_BYTES
+#define ODSY_OBJ_POOL_WORDS SGI_ODYSSEY_OBJ_POOL_WORDS
 #define ODSY_DEST_WIDTH_INDEX 1        /* 0x1017's row length, 16-pixel units */
 #define ODSY_DEST_WIDTH_UNIT 16
 /*
@@ -3372,6 +3372,75 @@ static int odyssey_object_find(SGIOdysseyState *s, uint32_t base)
  * does not exist; a new row length for an existing object discards its
  * storage (its layout changed). -1, reported once, when the table is full.
  */
+static bool odyssey_object_word_valid(const SGIOdysseyState *s,
+                                      uint64_t word)
+{
+    return word < ODSY_OBJ_POOL_WORDS &&
+           (s->obj_valid[word >> 3] & (1u << (word & 7)));
+}
+
+static void odyssey_object_word_set_valid(SGIOdysseyState *s, uint64_t word,
+                                          bool valid)
+{
+    uint8_t mask = 1u << (word & 7);
+
+    assert(word < ODSY_OBJ_POOL_WORDS);
+    if (valid) {
+        s->obj_valid[word >> 3] |= mask;
+    } else {
+        s->obj_valid[word >> 3] &= ~mask;
+    }
+}
+
+static void odyssey_object_valid_range(SGIOdysseyState *s, uint64_t first,
+                                       uint64_t count, bool valid)
+{
+    for (uint64_t i = 0; i < count; i++) {
+        odyssey_object_word_set_valid(s, first + i, valid);
+    }
+}
+
+static void odyssey_object_valid_move(SGIOdysseyState *s, uint64_t source,
+                                      uint64_t dest, uint64_t count)
+{
+    if (dest > source) {
+        for (uint64_t i = count; i > 0; i--) {
+            odyssey_object_word_set_valid(
+                s, dest + i - 1,
+                odyssey_object_word_valid(s, source + i - 1));
+        }
+    } else {
+        for (uint64_t i = 0; i < count; i++) {
+            odyssey_object_word_set_valid(
+                s, dest + i,
+                odyssey_object_word_valid(s, source + i));
+        }
+    }
+}
+
+static bool odyssey_object_region_written(const SGIOdysseyState *s,
+                                          int object, uint32_t x, uint32_t y,
+                                          uint32_t width, uint32_t height)
+{
+    uint64_t row;
+
+    if (x > s->obj_width[object] ||
+        width > s->obj_width[object] - x ||
+        y > s->obj_rows[object] || height > s->obj_rows[object] - y) {
+        return false;
+    }
+    for (uint32_t dy = 0; dy < height; dy++) {
+        row = s->obj_offset[object] +
+              (uint64_t)(y + dy) * s->obj_width[object] + x;
+        for (uint32_t dx = 0; dx < width; dx++) {
+            if (!odyssey_object_word_valid(s, row + dx)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 static int odyssey_object_select(SGIOdysseyState *s, uint32_t base,
                                  uint32_t width)
 {
@@ -3415,14 +3484,19 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
     if (have && s->obj_offset[i] + have == s->obj_used &&
         s->obj_offset[i] + need <= ODSY_OBJ_POOL_WORDS) {
         s->obj_used = s->obj_offset[i] + need;
+        odyssey_object_valid_range(s, s->obj_offset[i] + have,
+                                   need - have, false);
     } else if (s->obj_used + need <= ODSY_OBJ_POOL_WORDS) {
         uint8_t *bytes = s->obj_mem.bytes;
+        uint32_t new_offset = s->obj_used;
 
-        memmove(bytes + (uint64_t)s->obj_used * 4,
+        memmove(bytes + (uint64_t)new_offset * 4,
                 bytes + (uint64_t)s->obj_offset[i] * 4, have * 4);
-        memset(bytes + ((uint64_t)s->obj_used + have) * 4, 0,
+        memset(bytes + ((uint64_t)new_offset + have) * 4, 0,
                (need - have) * 4);
-        s->obj_offset[i] = s->obj_used;
+        odyssey_object_valid_move(s, s->obj_offset[i], new_offset, have);
+        odyssey_object_valid_range(s, new_offset + have, need - have, false);
+        s->obj_offset[i] = new_offset;
         s->obj_used += need;
     } else {
         if (!s->obj_full_reported) {
@@ -3442,12 +3516,14 @@ static bool odyssey_object_rows(SGIOdysseyState *s, int i, uint32_t rows)
 static void odyssey_object_store(SGIOdysseyState *s, int i, uint32_t x,
                                  uint32_t y, uint32_t rgba)
 {
+    uint64_t word;
+
     if (x >= s->obj_width[i] || !odyssey_object_rows(s, i, y + 1)) {
         return;
     }
-    stl_be_p(s->obj_mem.bytes +
-             ((uint64_t)s->obj_offset[i] + (uint64_t)y * s->obj_width[i] + x) *
-             4, rgba);
+    word = (uint64_t)s->obj_offset[i] + (uint64_t)y * s->obj_width[i] + x;
+    stl_be_p(s->obj_mem.bytes + word * 4, rgba);
+    odyssey_object_word_set_valid(s, word, true);
 }
 
 static uint32_t odyssey_object_load(SGIOdysseyState *s, int i, uint32_t x,
@@ -4102,7 +4178,8 @@ static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
     }
     texture = chain->storage[level];
     if (texture.height == 1) {
-        if ((texture.width != 2 && texture.width != 4) || y != 0 ||
+        if ((texture.width != 2 && texture.width != 4 &&
+             texture.width != 8 && texture.width != 64) || y != 0 ||
             !texture.offset || (x != -1 && x != (int32_t)texture.width)) {
             return false;
         }
@@ -4110,9 +4187,12 @@ static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
         texture.width += 2;
         return odyssey_texture_read(&texture, x + 1, 0, rgba);
     }
-    if (texture.width != 2 || texture.height != 2 ||
-        x < -1 || x > 2 || y < -1 || y > 2 ||
-        (x >= 0 && x < 2 && y >= 0 && y < 2) ||
+    if ((texture.width != 2 && texture.width != 4) ||
+        texture.height != 2 || x < -1 ||
+        x > (int32_t)texture.width || y < -1 ||
+        y > (int32_t)texture.height ||
+        (x >= 0 && x < (int32_t)texture.width &&
+         y >= 0 && y < (int32_t)texture.height) ||
         texture.offset < (uint64_t)texture.stride + 1) {
         return false;
     }
@@ -4167,9 +4247,11 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     bool two_d_shape =
         (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                         ODSY_TEX_MODE_3D)) == ODSY_TEX_MODE_2D &&
-        width == 2 && height == 2 && depth == 1 && !s->tex_level0;
+        (width == 2 || width == 4) && height == 2 && depth == 1 &&
+        !s->tex_level0;
     bool stored_border =
-        ((one_d_shape && (width == 2 || width == 4) &&
+        ((one_d_shape && (width == 2 || width == 4 || width == 8 ||
+                          width == 64) &&
           (word == 0x03002000 || word == 0x03002022)) ||
          (two_d_shape && (word == 0x03002800 || word == 0x03002822))) &&
         !(s->tex_sampler[5] & 0xff000000) &&
@@ -4436,15 +4518,19 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint32_t level_width = MAX(1, width >> i);
         uint32_t level_height = MAX(1, height >> i);
         uint32_t stride_units = entry[1] & 0xfff;
-        uint32_t expected_units = stored_border ? 4 :
+        uint32_t expected_units = stored_border ?
+                                  one_d_shape && level_width == 64 ? 6 : 4 :
                                   ((level_width + 15) / 16 + 1) & ~1u;
         uint32_t base = entry[0] & 0x1fffffffu;
         uint32_t interior_x = stored_border ? 16 : 0;
         uint32_t interior_y = two_d_stored ? 16 : 0;
         uint32_t rows = level_height + interior_y + two_d_stored;
+        bool require_backing = stored_border;
         int object;
 
-        if ((stored_border && (entry[1] != 0x41100004 || !base)) ||
+        if ((stored_border &&
+             (entry[1] != (expected_units == 6 ? 0x41100006 :
+                           0x41100004) || !base)) ||
             (two_d_clamp && !stored_border &&
              (filter || s->tex_sampler[5] || s->tex_sampler[6]) &&
              entry[1] != 0x41100002) ||
@@ -4462,6 +4548,9 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             .opaque = chain,
         };
         if (!base || s->obj_count > SGI_ODYSSEY_OBJECTS) {
+            if (require_backing) {
+                goto unsupported;
+            }
             continue;
         }
         object = odyssey_object_find(s, base);
@@ -4474,7 +4563,20 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             uadd64_overflow(end, level_width + stored_border, &end) ||
             end > s->obj_used ||
             end > s->obj_mem.bytes_len / 4) {
+            if (require_backing) {
+                goto unsupported;
+            }
             continue;
+        }
+        if (require_backing) {
+            bool written = odyssey_object_region_written(
+                s, object, interior_x - 1,
+                two_d_stored ? interior_y - 1 : 0,
+                level_width + 2, one_d_shape ? 1 : level_height + 2);
+
+            if (!written) {
+                goto unsupported;
+            }
         }
         chain->storage[i] = (OdysseyTexture) {
             /* Captured stored-border policy uses interior coordinate 16. */
@@ -9290,6 +9392,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     memset(s->obj_width, 0, sizeof(s->obj_width));
     memset(s->obj_offset, 0, sizeof(s->obj_offset));
     memset(s->obj_rows, 0, sizeof(s->obj_rows));
+    memset(s->obj_valid, 0, sizeof(s->obj_valid));
     s->obj_full_reported = false;
     s->board_oob_reported = false;
     s->tex_mode = 0;
@@ -10090,6 +10193,12 @@ static int odyssey_post_load(void *opaque, int version_id)
             s->gl_texture_matrix[i * 5] = ODSY_F32_ONE;
         }
     }
+    if (version_id < 40) {
+        memset(s->obj_valid, 0, sizeof(s->obj_valid));
+        odyssey_object_valid_range(s, 0,
+                                   MIN(s->obj_used, ODSY_OBJ_POOL_WORDS),
+                                   true);
+    }
     if (version_id < 14) {
         s->line_stipple[0] = s->line_stipple[1] = 0xffff;
         s->line_stipple[2] = 0;
@@ -10155,7 +10264,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 39,
+    .version_id = 40,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -10299,6 +10408,8 @@ static const VMStateDescription vmstate_sgi_odyssey = {
                                SGI_ODYSSEY_OBJECTS, 21),
         VMSTATE_UINT32_ARRAY_V(obj_rows, SGIOdysseyState,
                                SGI_ODYSSEY_OBJECTS, 21),
+        VMSTATE_UINT8_ARRAY_V(obj_valid, SGIOdysseyState,
+                              SGI_ODYSSEY_OBJ_VALID_BYTES, 40),
         /* The texture state words and coordinate (v22). */
         VMSTATE_UINT32_V(tex_mode, SGIOdysseyState, 22),
         VMSTATE_UINT32_ARRAY_V(tex_sampler, SGIOdysseyState, 7, 22),
