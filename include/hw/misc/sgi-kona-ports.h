@@ -370,6 +370,7 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_DATA10       0x14b
 #define SGI_KONA_CMD_X_POINT        0x14c
 #define SGI_KONA_CMD_X_POINT6       0x14d
+#define SGI_KONA_CMD_X_POINT24      0x14e
 #define SGI_KONA_CMD_X_RECT         0x152
 #define SGI_KONA_CMD_X_RECT6        0x153
 #define SGI_KONA_CMD_X_BOX          0x154
@@ -377,6 +378,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_SPANS        0x156
 #define SGI_KONA_CMD_X_SPANS2       0x157
 #define SGI_KONA_CMD_X_SPANS6       0x158
+#define SGI_KONA_CMD_X_BACKGROUND_POINT   0x15f
+#define SGI_KONA_CMD_X_BACKGROUND_POINT6  0x160
+#define SGI_KONA_CMD_X_BACKGROUND_POINT24 0x161
 #define SGI_KONA_CMD_WG_FLUSH       0x1ff
 #define SGI_KONA_CMD_VIDEO          0x1a6
 
