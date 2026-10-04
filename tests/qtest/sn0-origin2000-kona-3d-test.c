@@ -4703,7 +4703,8 @@ static void texture_volume_header(QTestState *s, unsigned z, bool dma,
     h[0] = 0x806f;
     h[1] = h[2] = odd ? 1 : 2;
     h[5] = dma ? 3 : 0;
-    h[6] = h[7] = dma;
+    h[6] = dma;
+    h[7] = 0;
     h[13] = h[14] = odd ? 0 : 1;
     h[15] = z;
     h[16] = 0x111;
@@ -4742,7 +4743,7 @@ static void test_texture_native_volume(gconstpointer opaque)
             }
             qtest_memwrite(s, 0x380003, bytes, sizeof(bytes));
             qtest_writel(s, KONA_REG(0x100000), 0x20000380);
-            texture_dma_packet(s, 3, sizeof(bytes), 8, 0);
+            texture_dma_packet(s, 3, sizeof(bytes), sizeof(bytes), 0);
             g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
         } else {
             for (unsigned k = 0; k < 4; k++) {
@@ -4951,7 +4952,7 @@ static void test_texture_native_float(gconstpointer opaque)
     h[4] = 6;
     h[5] = 3;
     h[6] = dma;
-    h[7] = 1;
+    h[7] = !dma;
     if (!dma) {
         kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     }
@@ -4971,7 +4972,7 @@ static void test_texture_native_float(gconstpointer opaque)
         }
         qtest_memwrite(s, 0x380003, bytes, sizeof(bytes));
         qtest_writel(s, KONA_REG(0x100000), 0x20000380);
-        texture_dma_packet(s, 3, sizeof(bytes), 32, 0);
+        texture_dma_packet(s, 3, sizeof(bytes), sizeof(bytes), 0);
         g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
     } else {
         texture_float_rows(s, source, 3, 0, 18);
@@ -5018,7 +5019,7 @@ static void test_texture_float_migration(gconstpointer opaque)
     h[4] = 6;
     h[5] = 3;
     h[6] = dma;
-    h[7] = 1;
+    h[7] = !dma;
     if (!dma) {
         kona_command(from, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     }
@@ -5036,7 +5037,7 @@ static void test_texture_float_migration(gconstpointer opaque)
     if (!dma) {
         texture_float_rows(from, source, 3, 0, mode == 0 ? 7 : 18);
     } else if (mode == 3) {
-        texture_dma_packet(from, 3, sizeof(source), 32, 0);
+        texture_dma_packet(from, 3, sizeof(source), sizeof(source), 0);
     }
     dir = g_dir_make_tmp("sn0-kona-float-XXXXXX", &error);
     g_assert_no_error(error);
@@ -5047,7 +5048,7 @@ static void test_texture_float_migration(gconstpointer opaque)
     if (mode == 0) {
         texture_float_rows(to, source, 3, 7, 18);
     } else if (mode == 2) {
-        texture_dma_packet(to, 3, sizeof(source), 32, 0);
+        texture_dma_packet(to, 3, sizeof(source), sizeof(source), 0);
         g_assert_cmphex(qtest_readl(to, REG_MAILBOX), ==, 0x100);
     }
     kona_command(to, 0x176, (uint32_t[]) { 0 }, 1);
@@ -6818,7 +6819,8 @@ static void test_texture_pixel_transfer(gconstpointer opaque)
     }
     kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
     memcpy(h, texture_header, sizeof(h));
-    h[6] = h[7] = dma;
+    h[6] = dma;
+    h[7] = 0;
     h[17] |= dma ? 4 : 0;
     for (unsigned k = 0; k < 4; k++) {
         raw[k] = 0x4080c080;
@@ -6898,7 +6900,7 @@ static void test_texture_pixel_transfer(gconstpointer opaque)
         }
         qtest_writel(s, KONA_REG(0x100000), 0x20000380);
         qtest_memwrite(s, 0x380000, bytes, count * 4);
-        texture_dma_packet(s, 0, count * 4, count * 2, 0);
+        texture_dma_packet(s, 0, count * 4, count * 4, 0);
     } else if (mode != 4) {
         for (unsigned k = 1; k < count; k++) {
             qtest_writel(s, REG_COMMAND, raw[k]);
@@ -7803,19 +7805,23 @@ static void test_bitmap_stale_destination(void)
 static void test_texture_native_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool contiguous = mode == 0 || mode == 10;
-    bool fault = mode == 2;
+    bool contiguous = mode == 0 || mode == 10 || mode == 6 ||
+                      mode == 11 || mode == 13;
+    bool skips = mode >= 13;
+    bool fault = mode == 2 || mode == 19;
     bool large = mode == 6 || mode == 11;
-    bool migration = mode == 7 || mode == 8;
+    bool migration = mode == 7 || mode == 8 || mode == 16;
     bool reset = mode == 9;
     bool trace = mode == 12;
     uint32_t width = mode == 11 ? 4096 : large ? 2048 : 2;
     uint32_t row_bytes = width * 3;
-    uint32_t stride = mode == 10 ? 3 : contiguous ? 8 :
-                      large ? row_bytes : 9;
+    uint32_t stride = mode == 10 ? 3 : mode == 13 ? 6 :
+                      mode == 19 ? 16384 : large ? row_bytes :
+                      contiguous ? 8 : 9;
     uint32_t span = stride + row_bytes;
     uint64_t host = UINT64_C(0x380000);
-    uint64_t io = fault ? 0x3ffd : 3;
+    uint64_t io = mode == 2 ? 0x3ffd : mode == 13 ? 1 :
+                  mode == 14 || mode == 19 ? 2 : mode == 15 ? 0 : 3;
     g_autofree uint8_t *source = g_malloc0(span);
     g_autofree char *dir = NULL, *uri = NULL;
     GError *err = NULL;
@@ -7827,13 +7833,14 @@ static void test_texture_native_dma(gconstpointer opaque)
     uint32_t record[22] = { 0x44, 0x101010, 256u << 10 };
     uint32_t total = contiguous ? span : row_bytes * 2;
     uint32_t per_line = contiguous ? span : row_bytes;
-    bool refused = fault || (mode >= 3 && mode <= 5) || reset || mode == 10;
+    bool refused = fault || (mode >= 3 && mode <= 5) || reset ||
+                   mode == 10 || mode == 18;
 
     gl_make_current(s);
     memcpy(h, texture_header, sizeof(h));
     h[1] = width;
     h[3] = 4;
-    h[5] = io & 3;
+    h[5] = skips ? 3 : io & 3;
     h[6] = 1;
     h[7] = !contiguous;
     h[9] = 0xd;
@@ -7848,10 +7855,29 @@ static void test_texture_native_dma(gconstpointer opaque)
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33,
                  (uint32_t[]) { 0xcf2, mode == 10 ? 1 :
-                                contiguous ? 2 : large ? width : 3 }, 2);
+                                large ? width : contiguous ? 2 : 3 }, 2);
     kona_command(s, 0x33,
                  (uint32_t[]) { 0xcf5,
-                                mode == 10 ? 1 : contiguous ? 4 : 1 }, 2);
+                                mode == 10 || skips ? (mode == 19 ? 4 : 1) :
+                                contiguous ? 4 : 1 }, 2);
+    if (skips) {
+        kona_command(s, 0x33,
+                     (uint32_t[]) { 0xcf3, mode == 13 || mode == 15 ||
+                                            mode == 16 }, 2);
+        kona_command(s, 0x33,
+                     (uint32_t[]) { 0xcf4, mode == 14 || mode == 16 ||
+                                            mode == 17 || mode == 18 ||
+                                            mode == 19 }, 2);
+        if (mode == 17 || mode == 18) {
+            io = 2;
+        }
+        if (mode == 19) {
+            kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 5461 }, 2);
+        }
+        if (mode == 17) {
+            pixel_transfer_set(s, 0xd14, 0.5);
+        }
+    }
     for (unsigned y = 0; y < 2; y++) {
         for (unsigned x = 0; x < width; x++) {
             source[y * stride + x * 3] = 0x40 + ((y * width + x) & 63);
@@ -7867,17 +7893,25 @@ static void test_texture_native_dma(gconstpointer opaque)
         }
     }
     kona_command(s, 0x174, h, 20);
+    if (skips) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 1 }, 2);
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf3, 0 }, 2);
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 0 }, 2);
+        if (mode == 17) {
+            pixel_transfer_set(s, 0xd14, 0);
+        }
+    }
     if (mode == 3) {
         total = per_line;
     } else if (mode == 4) {
         total += per_line;
-    } else if (mode == 5) {
+    } else if (mode == 5 || mode == 18) {
         io++;
     }
     if (reset) {
         qtest_system_reset(s);
     }
-    if (mode != 7) {
+    if (mode != 7 && mode != 16) {
         texture_dma_packet(s, io, total, per_line,
                            contiguous ? 0 : stride - row_bytes);
         g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
@@ -7890,15 +7924,17 @@ static void test_texture_native_dma(gconstpointer opaque)
         to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
         sgi_migrate_stopped(from, uri);
         s = to;
-        if (mode == 7) {
+        if (mode == 7 || mode == 16) {
             texture_dma_packet(s, io, total, per_line, stride - row_bytes);
             g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
         }
     }
     kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
-    assert_texture_pixel(s, 0, 0, refused ? 0 : 0x400000ff);
+    assert_texture_pixel(s, 0, 0,
+                          refused ? 0 : mode == 17 ? 0x200000ff : 0x400000ff);
     assert_texture_pixel(s, width - 1, 1,
-                          refused ? 0 : (large ? 0x7f0000ff : 0x430000ff));
+                          refused ? 0 : (large ? 0x7f0000ff :
+                                        mode == 17 ? 0x220000ff : 0x430000ff));
     if (to) {
         qtest_quit(to);
         g_rmdir(dir);
@@ -9395,7 +9431,8 @@ static void test_texture_native_1d(gconstpointer opaque)
     h[0] = 0xde0;
     h[2] = 1;
     h[4] = half ? 3 : 1;
-    h[6] = h[7] = dma;
+    h[6] = dma;
+    h[7] = 0;
     h[14] = 0;
     h[17] = 0x2181 | (dma ? 4 : 0);
     kona_command(s, 0x174, h, 20);
@@ -9722,6 +9759,18 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(10), test_texture_native_dma);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/dma/page-boundary",
                         GUINT_TO_POINTER(11), test_texture_native_dma);
+    static const char *texture_dma_skip_cases[] = {
+        "contiguous-row-skips", "whole-pixel-skips", "strided-row-skips",
+        "skips-pending-migrates", "captured-transfer", "skipped-phase-refused",
+        "skipped-late-unmapped",
+    };
+    for (unsigned k = 0; k < ARRAY_SIZE(texture_dma_skip_cases); k++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/texture/dma/%s", texture_dma_skip_cases[k]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(13 + k),
+                            test_texture_native_dma);
+    }
     qtest_add_func("sn0/origin2000/kona-3d/texture/native-draw",
                    test_texture_native_draw);
     qtest_add_func("sn0/origin2000/kona-3d/texture/native-rows",
@@ -10046,10 +10095,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/kona-3d/image-transfer-refusal/map-color",
                         GUINT_TO_POINTER(1), test_native_image_state_refusal);
     qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/skip-rows",
+        "sn0/origin2000/kona-3d/image-transfer-refusal/contradictory-source",
         GUINT_TO_POINTER(2), test_native_image_state_refusal);
     qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/skip-pixels",
+        "sn0/origin2000/kona-3d/image-transfer-refusal/pending-source",
         GUINT_TO_POINTER(3), test_native_image_state_refusal);
     qtest_add_func("sn0/origin2000/kona-3d/raw-bitmap/large-record",
                    test_raw_bitmap_large);
