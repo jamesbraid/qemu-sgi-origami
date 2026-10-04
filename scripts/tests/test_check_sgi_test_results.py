@@ -107,31 +107,30 @@ class CheckSgiTestResults(unittest.TestCase):
 
     def test_allows_listed_qtest_skip_after_normalizing_tap_counter(self):
         suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
-                 'qtest-mips64/sn0-migration-test')
-        case_name = ('99 /mips64/sn0/migration/'
-                     'legacy-count2-before-first-expiry')
+                 'qtest-mips64/bcm570x-test')
+        case_name = '99 /mips64/bcm570x/transmit-vnet-plain'
         self.write_report(f'''<testsuite name="{suite}" tests="1" skipped="1">
           <testcase classname="{suite}"
                     name="{case_name}">
-            <skipped message="QTEST_QEMU_BINARY_IOC3_V15 is not set"/>
+            <skipped message="/dev/net/tun is unavailable"/>
           </testcase>
         </testsuite>''')
-        allowed = {('qtest-mips64/sn0-migration-test',
-                    '/mips64/sn0/migration/legacy-count2-before-first-expiry')}
+        allowed = {('qtest-mips64/bcm570x-test',
+                    '/mips64/bcm570x/transmit-vnet-plain')}
         report = read_report(self.junit, optional_skips=allowed)
-        validate(report, ['qtest-mips64/sn0-migration-test'])
+        validate(report, ['qtest-mips64/bcm570x-test'])
 
     def test_rejects_unlisted_qtest_skip_with_same_suite(self):
         suite = ('qemu.qemu:qtest+qtest-mips64+slow+sgi+sgi-qtest / '
-                 'qtest-mips64/sn0-migration-test')
+                 'qtest-mips64/bcm570x-test')
         self.write_report(f'''<testsuite name="{suite}" tests="1" skipped="1">
           <testcase classname="{suite}"
-                    name="99 /mips64/sn0/migration/unlisted-case">
+                    name="99 /mips64/bcm570x/unlisted-case">
             <skipped message="not an approved prerequisite"/>
           </testcase>
         </testsuite>''')
-        allowed = {('qtest-mips64/sn0-migration-test',
-                    '/mips64/sn0/migration/legacy-count2-before-first-expiry')}
+        allowed = {('qtest-mips64/bcm570x-test',
+                    '/mips64/bcm570x/transmit-vnet-plain')}
         with self.assertRaisesRegex(ResultError, 'skipped testcases'):
             read_report(self.junit, optional_skips=allowed)
 
@@ -164,11 +163,10 @@ class CheckSgiTestResults(unittest.TestCase):
         identity = ('qemu', 'qemu:qtest+qtest-mips64+slow / '
                     'qtest-mips64/cdrom-test')
         identities = checker.read_skip_allowlist(manifest)
-        self.assertEqual(len(identities), 39)
+        self.assertEqual(len(identities), 18)
         self.assertIn(identity, identities)
-        self.assertIn(('qtest-mips64/sn0-migration-test',
-                       '/mips64/sn0/migration/'
-                       'legacy-count2-before-first-expiry'),
+        self.assertIn(('qtest-mips64/bcm570x-test',
+                       '/mips64/bcm570x/transmit-vnet-plain'),
                       identities)
         self.write_report(f'''<testsuite name="qemu" tests="1" skipped="1">
           <testcase classname="qemu"

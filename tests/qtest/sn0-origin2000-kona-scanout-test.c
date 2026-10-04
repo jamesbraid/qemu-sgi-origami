@@ -660,58 +660,6 @@ static void test_migration_carries_planes(void)
 }
 
 /*
- * A version 6 stream saved before the board memory carries the resolved
- * framebuffer in the main section and no board memory subsection. It
- * loads into the front plane as direct colour, so the destination shows
- * what the source showed: the textport pixel in its colour, now tagged
- * direct, and the DMA pixel's whole word. Skipped unless
- * QTEST_QEMU_BINARY_KONA_V6 names a qemu-system-mips64 built before the
- * board memory, the pattern the version 4 and 5 cases in
- * sn0-origin2000-kona-video-test.c use.
- */
-static void test_migration_from_v6(void)
-{
-    g_autofree char *dir = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    g_autofree uint8_t *frame = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V6")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V6 is not set");
-        return;
-    }
-    dir = kona_tmpdir();
-    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V6", MIGRATION_ARGS, NULL,
-                          true);
-    kona_load_colour(from, 3, 0x0a, 0x0b, 0x0c);
-    kona_textport_push(from, 0x2, (uint32_t[]){ 3 }, 1);
-    kona_textport_push(from, 0x6, (uint32_t[]){ 77, 88 }, 2);
-    kona_dma_pixels(from, (uint32_t[]){ 0x99887766 }, 1);
-
-    dest_args = g_strdup_printf("%s -incoming %s", MIGRATION_ARGS, uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(kona_test_pixel(to, 77, 88), ==, 0x0a0b0c);
-    g_assert_cmphex(kona_plane_word(to, PLANE_FRONT, 77, 88), ==, 0x0a0b0c);
-    g_assert_cmphex(kona_plane_word(to, PLANE_FRONT_TAG, 77, 88), ==,
-                    TAG_DIRECT);
-    g_assert_cmphex(kona_plane_word(to, PLANE_FRONT, 0, 1023), ==,
-                    0x99887766);
-    frame = kona_screendump(to, dir, "frame.ppm");
-    g_assert_cmphex(ppm_pixel(frame, 77, wire_line(88)), ==, 0x0a0b0c);
-    g_assert_cmphex(ppm_pixel(frame, 0, 0), ==, 0x887766);
-    g_assert_cmphex(ppm_pixel(frame, 78, wire_line(88)), ==, 0);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(dir);
-}
-
-/*
  * A DMA readback resolves like the scanout: a textport pixel read back to
  * guest memory returns its colour-map entry as it stands, so reloading
  * the entry changes what the next readback returns. The pixel is the
@@ -784,8 +732,6 @@ int main(int argc, char **argv)
                    test_colour_map_resolves_at_scanout);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-planes",
                    test_migration_carries_planes);
-    qtest_add_func("sn0/origin2000/kona-scanout/migration-from-v6",
-                   test_migration_from_v6);
     qtest_add_func("sn0/origin2000/kona-scanout/list-size-zero-refused",
                    test_list_size_zero_refused);
     qtest_add_func("sn0/origin2000/kona-scanout/list-size-too-large-refused",

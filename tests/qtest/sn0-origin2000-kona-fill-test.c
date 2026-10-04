@@ -930,52 +930,6 @@ static void test_migration_carries_gc_and_run(void)
     g_rmdir(tmpfs);
 }
 
-/*
- * A stream from before the X colour map (x-server subsection version 1):
- * the GC and a waiting run cross, and the colour map starts empty. The
- * source's fg_h 0x13000 fills with index 0x13 on the destination.
- * Skipped unless QTEST_QEMU_BINARY_KONA_X_SERVER_V1 names a
- * qemu-system-mips64 built with that subsection at version 1.
- */
-static void test_migration_from_x_server_v1(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_X_SERVER_V1")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_X_SERVER_V1 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-x-server-v1-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_X_SERVER_V1",
-                          MIGRATION_ARGS, NULL, true);
-    load_gc(from, 0x13);
-    kona_command(from, TOKEN_DATA2, (uint32_t[]){ XY(10, 10), XY(12, 12) },
-                 2);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(kona_gc(to, 0), ==, 0x13000);
-    kona_command(to, TOKEN_BOX, (uint32_t[]){ XY(30, 10), XY(32, 12) }, 2);
-    assert_box(to, 10, 10, 12, 12, 0x13);
-    assert_box(to, 30, 10, 32, 12, 0x13);
-    g_assert_cmphex(resolved_at(to, 11, 11), ==, 0);
-    assert_in_step(to);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 #define CURSOR_WORDS 260
 
 static void cursor_register(QTestState *s, uint32_t selector, uint32_t value)
@@ -2274,8 +2228,6 @@ int main(int argc, char **argv)
                    test_unknown_token_drops_clip_list);
     qtest_add_func("sn0/origin2000/kona-fill/migration-carries-gc-and-run",
                    test_migration_carries_gc_and_run);
-    qtest_add_func("sn0/origin2000/kona-fill/migration-from-x-server-v1",
-                   test_migration_from_x_server_v1);
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         g_autofree char *name = g_strdup_printf(

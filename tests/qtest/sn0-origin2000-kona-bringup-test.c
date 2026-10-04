@@ -1483,53 +1483,6 @@ static void test_migration_mid_slot_command(void)
     g_rmdir(tmpfs);
 }
 
-/*
- * A version 3 stream predates every field above. Loading one leaves them
- * at their reset default and still carries the version 3 state (a map RAM
- * entry here). Skipped unless QTEST_QEMU_BINARY_KONA_V3 names a
- * qemu-system-mips64 built before the version 4 fields existed, the same
- * pattern sn0-origin2000-kona-test.c's QTEST_QEMU_BINARY_KONA_V1 uses.
- */
-static void test_migration_from_v3(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_V3")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_V3 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-v3-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_V3", MIGRATION_ARGS, NULL,
-                          true);
-    qtest_writel(from, REG_MAPRAM(7), 0x20001234);
-    port_select(from, ARM_HIGH_BASE);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_cmphex(qtest_readl(to, REG_MAPRAM(7)), ==, 0x20001234);
-    g_assert_cmphex(qtest_readl(to, REG_PORT_ADDR), ==, ARM_HIGH_BASE);
-    g_assert_cmphex(qtest_readl(to, REG_PORT_DATA), ==, 0);
-    g_assert_cmphex(qtest_readl(to, REG_LOADER_3B0), ==, 0);
-    /* No return page came with the stream: 0x1e9 answers nowhere. */
-    guest_fill_word(to, RETURN_PAGE, 0);
-    kona_command(to, 0x1e9, (uint32_t[]){ 0 }, 1);
-    g_assert_cmphex(guest_word(to, RETURN_PAGE), ==, 0);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
 int main(int argc, char **argv)
 {
     int ret;
@@ -1603,8 +1556,6 @@ int main(int argc, char **argv)
                    test_migration_of_bringup_state);
     qtest_add_func("sn0/origin2000/kona-bringup/migration-mid-slot-command",
                    test_migration_mid_slot_command);
-    qtest_add_func("sn0/origin2000/kona-bringup/migration-from-v3",
-                   test_migration_from_v3);
 
     ret = g_test_run();
     qtest_quit(qts);

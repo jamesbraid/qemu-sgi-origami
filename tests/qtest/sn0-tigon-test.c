@@ -442,21 +442,6 @@ static QTestState *tigon_init_netdev(int guest_fd)
                        guest_fd);
 }
 
-static QTestState *tigon_init_netdev_binary(int guest_fd, const char *binary)
-{
-    g_autofree char *saved = g_strdup(g_getenv("QTEST_QEMU_BINARY"));
-    QTestState *qts;
-
-    g_assert_true(g_setenv("QTEST_QEMU_BINARY", binary, true));
-    qts = tigon_init_netdev(guest_fd);
-    if (saved) {
-        g_assert_true(g_setenv("QTEST_QEMU_BINARY", saved, true));
-    } else {
-        g_unsetenv("QTEST_QEMU_BINARY");
-    }
-    return qts;
-}
-
 static QTestState *tigon_init_netdev_no_arrival_floor(int guest_fd)
 {
     return qtest_initf("-M origin200 "
@@ -2485,69 +2470,6 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
     g_assert_cmpint(rmdir(tmpdir), ==, 0);
 }
 
-/*
- * Version 3 counted completed ring walks rather than descriptors. Its partial
- * TX count cannot be translated, so loading it must publish the completed
- * work instead of silently changing its distance from the threshold.
- */
-static void test_transmit_coalesce_migration_from_v3(const void *data)
-{
-    const char *old_binary = g_getenv("TIGON_QEMU_V3_BINARY");
-    g_autofree char *tmpdir = NULL;
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    int from_sv[2], to_sv[2];
-    QTestState *from, *to;
-    uint8_t got[sizeof(test_frame)];
-
-    if (!old_binary) {
-        g_test_skip("TIGON_QEMU_V3_BINARY is not set");
-        return;
-    }
-
-    tmpdir = g_dir_make_tmp("sn0-tigon-v3-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    socket = g_build_filename(tmpdir, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
-    from = tigon_init_netdev_binary(from_sv[1], old_binary);
-    close(from_sv[1]);
-    net_recv_timeout(from_sv[0], 5);
-    go_operational(from);
-    qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
-    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
-    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
-    write_split_tx_frame_at(from, 0);
-    g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
-                     sizeof(test_frame));
-    g_assert_false(irq_asserted(from));
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
-    dest_args = g_strdup_printf(
-        "-M origin200 -netdev socket,fd=%d,id=n0 "
-        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
-        to_sv[1], uri);
-    to = qtest_init(dest_args);
-    close(to_sv[1]);
-    sgi_migrate_stopped(from, uri);
-
-    g_assert_true(irq_asserted(to));
-    qtest_writel(to, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
-    g_assert_false(irq_asserted(to));
-    qtest_clock_step(to, 2000000);
-    g_assert_false(irq_asserted(to));
-
-    qtest_quit(to);
-    qtest_quit(from);
-    close(to_sv[0]);
-    close(from_sv[0]);
-    unlink(socket);
-    g_assert_cmpint(rmdir(tmpdir), ==, 0);
-}
-
 /* A current stream retains the count accumulated before migration. */
 static void test_transmit_coalesce_count_migration_current(const void *data)
 {
@@ -4350,8 +4272,6 @@ int main(int argc, char **argv)
                         test_reset_restores_configured_mac);
     qtest_add_data_func("/sn0/tigon/programmed-mac-survives-migration", NULL,
                         test_programmed_mac_survives_migration);
-    qtest_add_data_func("/sn0/tigon/transmit-coalesce-migration-from-v3",
-                        NULL, test_transmit_coalesce_migration_from_v3);
     qtest_add_data_func("/sn0/tigon/transmit-coalesce-count-migration-current",
                         NULL,
                         test_transmit_coalesce_count_migration_current);

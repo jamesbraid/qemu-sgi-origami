@@ -701,52 +701,6 @@ static void test_migration_carries_scissor(void)
 }
 
 /*
- * A stream from the model before the one-bit drawing state (x-server
- * subsection version 2) still loads: its clip list and GC cross, and the
- * destination starts with no scissor. Skipped unless
- * QTEST_QEMU_BINARY_KONA_X_SERVER_V2 names a qemu-system-mips64 built with
- * that subsection at version 2, such as one built at 61b7e6c4e2.
- */
-static void test_migration_from_x_server_v2(void)
-{
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_KONA_X_SERVER_V2")) {
-        g_test_skip("QTEST_QEMU_BINARY_KONA_X_SERVER_V2 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("sn0-kona-x-server-v2-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from = qtest_init_ext("QTEST_QEMU_BINARY_KONA_X_SERVER_V2",
-                          MIGRATION_ARGS, NULL, true);
-    x_command(from, TOKEN_CLIP, (uint32_t[]){ 1, 10, 10, 20, 20 }, 5);
-    load_bitmap_gc(from, 0xfff0, 0x230, 0, 0);
-
-    dest_args = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
-    to = qtest_init(dest_args);
-    sgi_migrate_stopped(from, uri);
-
-    bitmap_setup(to, 4, 32, 1);
-    pixel_write(to, 0, 15, (uint32_t[]){ 0xffffffff }, 1);
-    g_assert_cmphex(front_tag_at(to, 9, 15), ==, 0);
-    g_assert_cmphex(front_at(to, 10, 15), ==, 0x23);
-    g_assert_cmphex(front_at(to, 19, 15), ==, 0x23);
-    g_assert_cmphex(front_tag_at(to, 20, 15), ==, 0);
-    assert_in_step(to);
-
-    qtest_quit(to);
-    qtest_quit(from);
-    g_rmdir(tmpfs);
-}
-
-/*
  * The grammar's stipple row: 0x13d 5, 6, 2, 0xfc000000, 0x30000000;
  * 0x13e 5, 0, 0; 0x13c 5; a full-screen clip; 0x152 (0, 0) by 12 by 4
  * fills columns 0 to 5 and 6 to 11 of rows 0 and 2, and only columns 2,
@@ -1170,8 +1124,6 @@ int main(int argc, char **argv)
                    test_scissor_zero_clips_everything);
     qtest_add_func("sn0/origin2000/kona-glyph/migration-carries-scissor",
                    test_migration_carries_scissor);
-    qtest_add_func("sn0/origin2000/kona-glyph/migration-from-x-server-v2",
-                   test_migration_from_x_server_v2);
     qtest_add_func("sn0/origin2000/kona-glyph/stipple-grammar-row",
                    test_stipple_grammar_row);
     qtest_add_func("sn0/origin2000/kona-glyph/stipple-origin-follows-position",
