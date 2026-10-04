@@ -122,7 +122,7 @@
           "size": 1048576
         },
         {
-          "initial": "zero",
+          "initial": "ip27-nvram",
           "name": "nvram0",
           "read-only": false,
           "size": 32768
@@ -265,7 +265,7 @@
           "size": 1048576
         },
         {
-          "initial": "zero",
+          "initial": "ip27-nvram",
           "name": "nvram0",
           "read-only": false,
           "size": 32768

@@ -543,6 +543,17 @@ def _timekeeper_board(board: dict, harness: dict) -> bool:
             and any(function["kind"] == "IOC3" for function in board["pci"]))
 
 
+def _timekeeper_initial(board: dict) -> str:
+    """What a new machine's NVRAM for this board's Timekeeper starts
+    from: the fresh IP27 image an unbacked part installs, unless the
+    board's selected system Timekeeper turns that fixture off. An IOC3's
+    own Timekeeper keeps the part's default, which installs it."""
+    timekeeper = board.get("system_timekeeper")
+    if timekeeper and not timekeeper["initial_ip27_fixture"]:
+        return "zero"
+    return "ip27-nvram"
+
+
 def _storage_for(topology: dict, harness: dict, product: dict,
                  fitted: list[int]) -> list[dict]:
     """Every writable persistent store a launch fitting the `fitted` node
@@ -551,7 +562,8 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     PROM flash, then each Timekeeper NVRAM with its clock record. The
     name is the file name, the block node name and the machine property
     a launcher binds the store through. `initial` names what a new
-    machine's store starts from: an `init-inputs` image or zeroes.
+    machine's store starts from: an `init-inputs` image, the fresh IP27
+    Timekeeper image or zeroes.
     """
     generation = topology["generation"]
     storage = []
@@ -577,14 +589,15 @@ def _storage_for(topology: dict, harness: dict, product: dict,
         storage.append({"name": f"io{index}-flash", "size": _IO_FLASH_BYTES,
                         "read-only": False, "initial": "io-prom"})
     if generation == "IP30":
-        nvram_sizes = [(_IP30_NVRAM_BYTES, _IP30_CLOCK_BYTES)]
+        nvram_sizes = [(_IP30_NVRAM_BYTES, _IP30_CLOCK_BYTES, "zero")]
     else:
-        nvram_sizes = [(_TIMEKEEPER_NVRAM_BYTES, _TIMEKEEPER_CLOCK_BYTES)
+        nvram_sizes = [(_TIMEKEEPER_NVRAM_BYTES, _TIMEKEEPER_CLOCK_BYTES,
+                        _timekeeper_initial(board))
                        for board in boards
                        if _timekeeper_board(board, harness)]
-    for index, (size, clock_size) in enumerate(nvram_sizes):
+    for index, (size, clock_size, initial) in enumerate(nvram_sizes):
         storage.append({"name": f"nvram{index}", "size": size,
-                        "read-only": False, "initial": "zero"})
+                        "read-only": False, "initial": initial})
         storage.append({"name": f"nvram{index}-clock", "size": clock_size,
                         "read-only": False, "initial": "zero"})
     return storage

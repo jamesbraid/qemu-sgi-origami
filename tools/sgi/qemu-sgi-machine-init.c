@@ -21,6 +21,7 @@
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/rtc/m48t35-ip27.h"
 
 #define CMD_NAME "qemu-sgi-machine-init"
 
@@ -238,11 +239,11 @@ static SGIPromImage *load_input(const SGIModelInitInput *input,
     }
 }
 
-/* Fill @buf with @item's initial contents. */
+/* Fill @buf with @item's initial contents for a machine created @now. */
 static void build_item(const SGIModelStorageItem *item,
                        const SGIModelInitInput *input,
                        const SGIPromImage *image, const SGIModelTopology *t,
-                       uint8_t *buf)
+                       const struct tm *now, uint8_t *buf)
 {
     const uint8_t *data;
     size_t length;
@@ -251,6 +252,10 @@ static void build_item(const SGIModelStorageItem *item,
     switch (item->initial) {
     case SGI_MODEL_STORAGE_INITIAL_ZERO:
         memset(buf, 0, item->size);
+        return;
+    case SGI_MODEL_STORAGE_INITIAL_IP27_NVRAM:
+        g_assert(item->size == M48T35_SIZE);
+        m48t35_ip27_fresh_image(buf, now);
         return;
     case SGI_MODEL_STORAGE_INITIAL_IO_PROM:
         data = g_bytes_get_data(image->file, &length);
@@ -387,6 +392,8 @@ static bool create_machine(const SGIModelOffering *offering,
     const SGIModelStorageItemList *entry;
     const SGIModelTopology *chassis, *t;
     bool published = false, ok = false;
+    time_t seconds = time(NULL);
+    struct tm now;
     int dirfd;
     Error *sync_err = NULL;
 
@@ -415,7 +422,8 @@ static bool create_machine(const SGIModelOffering *offering,
         SGIPromImage *image;
 
         g_assert(!strchr(item->name, '/'));
-        if (item->initial == SGI_MODEL_STORAGE_INITIAL_ZERO ||
+        if ((item->initial != SGI_MODEL_STORAGE_INITIAL_BOOT_PROM &&
+             item->initial != SGI_MODEL_STORAGE_INITIAL_IO_PROM) ||
             g_hash_table_contains(images, name)) {
             continue;
         }
@@ -446,6 +454,9 @@ static bool create_machine(const SGIModelOffering *offering,
         }
     }
 
+    /* The date an unbacked Timekeeper takes under the default -rtc. */
+    gmtime_r(&seconds, &now);
+
     tmp = g_strdup_printf("%s/.%s.XXXXXX", parent, base);
     if (!g_mkdtemp(tmp)) {
         error_setg_errno(errp, errno, "cannot create a directory beside "
@@ -466,7 +477,7 @@ static bool create_machine(const SGIModelOffering *offering,
         g_autofree char *file = g_strdup_printf("%s.raw", item->name);
 
         build_item(item, find_input(offering, initial),
-                   g_hash_table_lookup(images, initial), t, buf);
+                   g_hash_table_lookup(images, initial), t, &now, buf);
         if (!write_store(dirfd, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
             goto out;
