@@ -102,8 +102,10 @@ typedef struct SGIRasterPixels {
     const double (*rgba_double)[4];
     const double *depth;        /* normalized source, bottom row first */
     const uint32_t *stencil;    /* transferred indices, bottom row first */
+    const uint32_t *index;      /* transferred colour indices */
     float depth_scale, depth_bias;
     float colour[4];            /* raster position colour for depth sources */
+    float colour_index;         /* raster position index for depth sources */
     float z;                   /* raster position's window depth */
     float distance;            /* raster position's fog distance */
     float texcoord[4];
@@ -1106,6 +1108,11 @@ bool sgi_gl_draw_pixels_double_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                         const double (*rgba)[4], float zoom_x,
                                         float zoom_y,
                                         const SGIGLPixelTransfer *transfer);
+/* Transferred colour indices use the context's index fragment operations. */
+bool sgi_gl_draw_pixels_index(SGIGLContext *c, const SGIGLSink *sink,
+                               uint32_t width, uint32_t height,
+                               const uint32_t *index, float zoom_x,
+                               float zoom_y);
 /* Stencil pixels bypass fragments and obey ownership, scissor and mask. */
 bool sgi_gl_draw_pixels_stencil(SGIGLContext *c, const SGIGLSink *sink,
                                  uint32_t width, uint32_t height,

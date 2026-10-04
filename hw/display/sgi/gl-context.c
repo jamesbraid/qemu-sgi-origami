@@ -2304,6 +2304,28 @@ bool sgi_gl_draw_pixels_double_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                                    transfer);
 }
 
+bool sgi_gl_draw_pixels_index(SGIGLContext *c, const SGIGLSink *sink,
+                               uint32_t width, uint32_t height,
+                               const uint32_t *index, float zoom_x,
+                               float zoom_y)
+{
+    SGIRasterOp op;
+    SGIGLPixelRectangleResult result;
+
+    result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
+                                    zoom_x, zoom_y, NULL, false, &op);
+    if (result != SGI_GL_PIXELS_READY) {
+        return result == SGI_GL_PIXELS_EMPTY;
+    }
+    if (!index || !c->cur.index_bits ||
+        (uint64_t)width * height > SIZE_MAX / sizeof(*index)) {
+        return false;
+    }
+    op.pixels.index = index;
+    sink->raster(sink->opaque, &op);
+    return true;
+}
+
 bool sgi_gl_draw_pixels_stencil(SGIGLContext *c, const SGIGLSink *sink,
                                  uint32_t width, uint32_t height,
                                  const uint32_t *stencil, float zoom_x,
@@ -2336,7 +2358,7 @@ bool sgi_gl_draw_pixels_depth_transfer(SGIGLContext *c, const SGIGLSink *sink,
     uint64_t count = (uint64_t)width * height;
 
     result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
-                                    zoom_x, zoom_y, NULL, true, &op);
+                                    zoom_x, zoom_y, NULL, false, &op);
     if (result != SGI_GL_PIXELS_READY) {
         return result == SGI_GL_PIXELS_EMPTY;
     }
@@ -2355,6 +2377,7 @@ bool sgi_gl_draw_pixels_depth_transfer(SGIGLContext *c, const SGIGLSink *sink,
     op.pixels.depth_scale = scale;
     op.pixels.depth_bias = bias;
     memcpy(op.pixels.colour, c->raster_color, sizeof(op.pixels.colour));
+    op.pixels.colour_index = c->raster_index;
     sink->raster(sink->opaque, &op);
     return true;
 }
