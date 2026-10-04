@@ -1204,6 +1204,10 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         (fresh || s->context_current != slot)) {
         sgi_kona_texture_upload_clear(s);
     }
+    if (s->gl_bitmap_upload.count &&
+        (fresh || s->context_current != slot)) {
+        s->gl_bitmap_upload.refused = true;
+    }
     if (fresh) {
         sgi_kona_gl_reset_context(s, slot);
     }
@@ -1377,6 +1381,9 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     }
     if (s->texture_upload.draw_pixels) {
         sgi_kona_texture_upload_clear(s);
+    }
+    if (s->gl_bitmap_upload.count) {
+        s->gl_bitmap_upload.refused = true;
     }
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
@@ -4302,6 +4309,9 @@ static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
         token != SGI_KONA_CMD_GL_DRAW_PIXELS) {
         sgi_kona_texture_upload_clear(s);
     }
+    if (token != SGI_KONA_CMD_GL_BITMAP_INLINE) {
+        memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+    }
     s->gl_data_token = token;
     s->gl_data_remaining = words;
     s->gl_data_have = 0;
@@ -4318,6 +4328,18 @@ static void sgi_kona_gl_data_word(SGIKonaState *s, uint32_t word)
     if (s->gl_data_token == SGI_KONA_CMD_GL_TEX_LOAD ||
         s->gl_data_token == SGI_KONA_CMD_GL_DRAW_PIXELS) {
         sgi_kona_texture_upload_word(s, word);
+    }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_BITMAP_INLINE &&
+        !s->gl_bitmap_upload.refused) {
+        SGIKonaGLBitmapUpload *u = &s->gl_bitmap_upload;
+
+        for (unsigned k = 0; k < 4; k++) {
+            uint32_t at = s->gl_data_have * 4 + k;
+
+            if (at < u->count) {
+                u->bytes[at] = word >> (24 - k * 8);
+            }
+        }
     }
     s->gl_data_have++;
     if (--s->gl_data_remaining == 0) {
@@ -4625,6 +4647,103 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
     sgi_kona_texture_upload_clear(s);
 }
 
+static bool sgi_kona_gl_bitmap_position_valid(const uint32_t *a,
+                                               bool totals)
+{
+    float xo = sgi_kona_gl_float(a[0]), yo = sgi_kona_gl_float(a[1]);
+    float xm = sgi_kona_gl_float(a[2]), ym = sgi_kona_gl_float(a[3]);
+
+    return isfinite(xo) && isfinite(yo) && isfinite(xm) && isfinite(ym) &&
+           (!totals || (isfinite(xm - xo) && isfinite(ym - yo)));
+}
+
+static uint32_t sgi_kona_gl_bitmap_open(SGIKonaState *s, int i,
+                                        const uint32_t *a)
+{
+    SGIKonaGLBitmapUpload *u = &s->gl_bitmap_upload;
+    uint32_t words;
+
+    memset(u, 0, sizeof(*u));
+    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+    }
+    words = DIV_ROUND_UP((uint64_t)a[7], 4);
+    if (!a[7] || a[7] > SGI_KONA_GL_BITMAP_BYTES) {
+        u->refused = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native inline bitmap byte count"
+                      " beyond supported profile; draining framed bytes\n");
+        return words;
+    }
+    memcpy(u->header, a, sizeof(u->header));
+    u->count = a[7];
+    u->context = i;
+    u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+                 s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
+                 s->gl[i].cur.texture_3d ||
+                 !a[0] || (a[0] & 7) || !a[1] ||
+                 a[0] > SGI_KONA_GL_IMAGE_MAX ||
+                 a[1] > SGI_KONA_GL_IMAGE_MAX ||
+                 (uint64_t)(a[0] / 8) * a[1] != a[7] ||
+                 a[6] != words + 1 ||
+                 !sgi_kona_gl_bitmap_position_valid(a + 2, true);
+    if (u->refused) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native inline bitmap refused;"
+                      " draining framed bytes\n");
+    }
+    return words;
+}
+
+static void sgi_kona_gl_bitmap_done(SGIKonaState *s)
+{
+    SGIKonaGLBitmapUpload *u = &s->gl_bitmap_upload;
+    unsigned i = u->context;
+    const uint32_t *a = u->header;
+    SGIGLBitmap b;
+    SGIGLSink sink;
+
+    if (u->count && !u->refused && s->context_current == i &&
+        !s->gl[i].in_begin && !s->gl[i].cur.texture_1d &&
+        !s->gl[i].cur.texture_2d && !s->gl[i].cur.texture_3d &&
+        sgi_gl_bitmap_place(&s->gl[i], a[0], a[1],
+                            sgi_kona_gl_float(a[2]), sgi_kona_gl_float(a[3]),
+                            sgi_kona_gl_float(a[4]) - sgi_kona_gl_float(a[2]),
+                            sgi_kona_gl_float(a[5]) - sgi_kona_gl_float(a[3]),
+                            &b)) {
+        sgi_kona_gl_sink(s, &sink);
+        sgi_gl_bitmap_bytes(&s->gl[i], &sink, &b, 0, u->bytes, u->count);
+    }
+    memset(u, 0, sizeof(*u));
+}
+
+static void sgi_kona_gl_bitmap_move(SGIKonaState *s, int i,
+                                    const uint32_t *a)
+{
+    SGIGLBitmap b;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: native bitmap without context"
+                      " refused\n");
+        return;
+    }
+    if (s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        return;
+    }
+    if (a[0] || a[1] || a[2] || a[3] || a[4]) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: nonzero raw bitmap profile refused;"
+                      " source length unknown, stream recovery unsafe\n");
+        return;
+    }
+    if (!sgi_kona_gl_bitmap_position_valid(a + 5, false)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: nonfinite bitmap movement"
+                      " refused\n");
+        return;
+    }
+    sgi_gl_bitmap_place(&s->gl[i], 0, 0, sgi_kona_gl_float(a[5]),
+                        sgi_kona_gl_float(a[6]), sgi_kona_gl_float(a[7]),
+                        sgi_kona_gl_float(a[8]), &b);
+}
+
 static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
                                            const uint32_t *h)
 {
@@ -4674,6 +4793,9 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
     SGIKonaGLPipe *p = &s->gl_pipe[i];
 
     switch (pname) {
+    case 0x0cf1:                /* GL_UNPACK_LSB_FIRST */
+        /* Native inline bitmaps have already been normalized by the client. */
+        break;
     case 0x0cf0:                /* GL_UNPACK_SWAP_BYTES */
         p->unpack_swap_bytes = value != 0;
         break;
@@ -4908,6 +5030,15 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             sgi_kona_gl_data_open(s, selector, words);
         }
         return;
+    case SGI_KONA_CMD_GL_BITMAP_INLINE:
+        words = sgi_kona_gl_bitmap_open(s, i, args);
+        if (words) {
+            sgi_kona_gl_data_open(s, selector, words);
+        }
+        return;
+    case SGI_KONA_CMD_GL_BITMAP:
+        sgi_kona_gl_bitmap_move(s, i, args);
+        return;
     case SGI_KONA_CMD_GL_DRAW_PIXELS:
         words = sgi_kona_gl_draw_pixels_open(s, i, args);
         if (words) {
@@ -4995,6 +5126,9 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
         } else {
             sgi_kona_texture_upload_clear(s);
         }
+    }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_BITMAP_INLINE) {
+        sgi_kona_gl_bitmap_done(s);
     }
     if (s->gl_data_token == SGI_KONA_CMD_GL_DRAW_PIXELS) {
         sgi_kona_gl_draw_pixels_done(s);
@@ -7253,6 +7387,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
                       PRIu32 " words; partial command dropped\n", token,
                       offset, s->gl_data_token, s->gl_data_remaining);
         sgi_kona_texture_upload_clear(s);
+        memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
         s->gl_data_remaining = 0;
         s->gl_data_token = 0;
         s->gl_data_have = 0;
@@ -8493,6 +8628,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 
     sgi_kona_texture_reset(&s->textures);
     sgi_kona_texture_upload_clear(s);
+    memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
     s->texture_record_token = 0;
@@ -8725,6 +8861,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
 
     sgi_kona_texture_reset(&s->textures);
     sgi_kona_texture_upload_clear(s);
+    memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
     s->texture_record_token = 0;
@@ -8928,7 +9065,8 @@ static int sgi_kona_post_load(void *opaque, int version_id)
          (s->gl_data_token != SGI_KONA_CMD_GL_POLYGON_STIPPLE &&
           s->gl_data_token != SGI_KONA_CMD_GL_POP_LIGHTS &&
           s->gl_data_token != SGI_KONA_CMD_GL_TEX_LOAD &&
-          s->gl_data_token != SGI_KONA_CMD_GL_DRAW_PIXELS))) {
+          s->gl_data_token != SGI_KONA_CMD_GL_DRAW_PIXELS &&
+          s->gl_data_token != SGI_KONA_CMD_GL_BITMAP_INLINE))) {
         return -EINVAL;
     }
     if (s->gl_sync_held &&
@@ -9424,6 +9562,64 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              vmstate_sgi_kona_gl_pixels, SGIKonaGLPipe),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_zoom, SGIKonaGLPipe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_gl_bitmap_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->gl_bitmap_upload.count != 0;
+}
+
+static int sgi_kona_gl_bitmap_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+    const SGIKonaGLBitmapUpload *u = &s->gl_bitmap_upload;
+    uint32_t words = DIV_ROUND_UP(u->count, 4);
+
+    if (!u->count || u->count > SGI_KONA_GL_BITMAP_BYTES ||
+        u->count != u->header[7] ||
+        s->gl_data_token != SGI_KONA_CMD_GL_BITMAP_INLINE ||
+        s->gl_data_have >= words ||
+        s->gl_data_remaining != words - s->gl_data_have ||
+        (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
+                        s->context_current != u->context ||
+                        !s->contexts[u->context].valid ||
+                        !u->header[0] || (u->header[0] & 7) ||
+                        !u->header[1] ||
+                        u->header[0] > SGI_KONA_GL_IMAGE_MAX ||
+                        u->header[1] > SGI_KONA_GL_IMAGE_MAX ||
+                        (uint64_t)(u->header[0] / 8) * u->header[1] !=
+                        u->count ||
+                        u->header[6] != words + 1 ||
+                        !sgi_kona_gl_bitmap_position_valid(u->header + 2,
+                                                           true)))) {
+        return -EINVAL;
+    }
+    for (unsigned at = MIN(s->gl_data_have * 4, u->count);
+         at < sizeof(u->bytes); at++) {
+        if (u->bytes[at]) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_bitmap = {
+    .name = TYPE_SGI_KONA "/gl-bitmap",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_bitmap_needed,
+    .post_load = sgi_kona_gl_bitmap_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gl_bitmap_upload.header, SGIKonaState, 8),
+        VMSTATE_UINT32(gl_bitmap_upload.context, SGIKonaState),
+        VMSTATE_UINT32(gl_bitmap_upload.count, SGIKonaState),
+        VMSTATE_BOOL(gl_bitmap_upload.refused, SGIKonaState),
+        VMSTATE_UINT8_ARRAY(gl_bitmap_upload.bytes, SGIKonaState,
+                            SGI_KONA_GL_BITMAP_BYTES),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -9979,6 +10175,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_mailbox,
         &vmstate_sgi_kona_gl_attrib,
         &vmstate_sgi_kona_textures,
+        &vmstate_sgi_kona_gl_bitmap,
         &vmstate_sgi_kona_x_read,
         NULL
     },
