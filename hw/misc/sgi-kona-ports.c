@@ -386,6 +386,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_TEX_ENVF, 5 },
     { SGI_KONA_CMD_GL_TEX_ENVI, 5 },
     /* Pixels, queries and the attribute stack. */
+    { SGI_KONA_CMD_GL_BITMAP_INLINE, 8 },  /* normalized bits follow */
+    { SGI_KONA_CMD_GL_BITMAP, 9 },         /* raw source transport */
     { SGI_KONA_CMD_GL_DRAW_PIXELS, 8 },     /* the header; rows follow */
     { SGI_KONA_CMD_GL_READ_PIXELS, 7 },
     { SGI_KONA_CMD_GL_GET, 1 },
