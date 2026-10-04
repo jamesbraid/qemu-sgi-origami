@@ -708,23 +708,42 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
     return true;
 }
 
-bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
-                                    const uint32_t *source, bool swap_bytes,
-                                    uint32_t *rgba)
+bool sgi_kona_gl_texture_pixel_transfer(uint32_t format, uint32_t type,
+                                        const uint32_t *source, bool swap_bytes,
+                                        const float scale[4],
+                                        const float bias[4], uint32_t *rgba)
 {
     double values[4];
     uint32_t pixel = 0;
 
-    if (!sgi_kona_gl_pixel_values(format, type, source, swap_bytes, values)) {
+    if (!source || !scale || !bias || !rgba ||
+        !sgi_kona_gl_pixel_values(format, type, source, swap_bytes, values)) {
         return false;
     }
     for (unsigned i = 0; i < 4; i++) {
-        uint32_t component = CLAMP(values[i], 0.0, 1.0) * 255.0 + 0.5;
+        double value;
+        uint32_t component;
 
+        if (!isfinite(scale[i]) || !isfinite(bias[i])) {
+            return false;
+        }
+        value = values[i] * scale[i] + bias[i];
+        component = CLAMP(value, 0.0, 1.0) * 255.0 + 0.5;
         pixel |= component << (24 - i * 8);
     }
     *rgba = pixel;
     return true;
+}
+
+bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+                                    const uint32_t *source, bool swap_bytes,
+                                    uint32_t *rgba)
+{
+    static const float scale[] = { 1, 1, 1, 1 };
+    static const float bias[] = { 0, 0, 0, 0 };
+
+    return sgi_kona_gl_texture_pixel_transfer(format, type, source, swap_bytes,
+                                               scale, bias, rgba);
 }
 
 bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
@@ -955,9 +974,9 @@ bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
     return true;
 }
 
-bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
-                            const float rgba[4], bool swap_bytes,
-                            uint8_t *out, size_t capacity)
+bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
+                                   const double rgba[4], bool swap_bytes,
+                                   uint8_t *out, size_t capacity)
 {
     uint8_t packed[16];
     double values[4];
@@ -1012,4 +1031,20 @@ bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
     }
     memcpy(out, packed, bytes);
     return true;
+}
+
+bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
+                            const float rgba[4], bool swap_bytes,
+                            uint8_t *out, size_t capacity)
+{
+    double values[4];
+
+    if (!rgba) {
+        return false;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        values[i] = rgba[i];
+    }
+    return sgi_kona_gl_pixel_pack_double(format, type, values, swap_bytes,
+                                          out, capacity);
 }

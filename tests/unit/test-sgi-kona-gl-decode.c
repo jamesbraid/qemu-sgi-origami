@@ -1760,6 +1760,68 @@ static void test_pixel_float_conversion(void)
     }
 }
 
+static void test_texture_pixel_transfer_order(void)
+{
+    const uint32_t source[] = {
+        0x3f000000, 0xbf800000, 0x40000000, 0x3f000000,
+    };
+    const float scale[] = { 0.999f, 1, 1, 0.999f };
+    const float bias[] = { 0, 1, -1, 0 };
+    uint32_t rgba = 0xa5a5a5a5;
+
+    g_assert_true(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
+                                                     scale, bias, &rgba));
+    g_assert_cmphex(rgba, ==, 0x7f00ff7f);
+}
+
+static void test_texture_pixel_transfer_expansion(void)
+{
+    const uint32_t source[] = { 0x3f000000, 0x3f000000, 0x3f000000 };
+    const float scale[] = { 0.5f, 1, 2, 0.25f };
+    const float bias[] = { 0, 0, 0, 0 };
+    const float alpha_bias[] = { 0.25f, 0.5f, 1, 0 };
+    uint32_t rgba;
+
+    g_assert_true(sgi_kona_gl_texture_pixel_transfer(6, 6, source, false,
+                                                     scale, bias, &rgba));
+    g_assert_cmphex(rgba, ==, 0x4080ff40);
+    g_assert_true(sgi_kona_gl_texture_pixel_transfer(4, 6, source, false,
+                                                     scale, bias, &rgba));
+    g_assert_cmphex(rgba, ==, 0x4080ff40);
+    g_assert_true(sgi_kona_gl_texture_pixel_transfer(3, 6, source, false,
+                                                     scale, alpha_bias, &rgba));
+    g_assert_cmphex(rgba, ==, 0x4080ff20);
+}
+
+static void test_texture_pixel_transfer_refusals(void)
+{
+    uint32_t source[] = { 0, 0, 0, 0x3f800000 };
+    float scale[] = { 1, 1, 1, 1 };
+    float bias[] = { 0, 0, 0, 0 };
+    uint32_t rgba = 0xa5a5a5a5;
+
+    for (unsigned k = 0; k < 4; k++) {
+        scale[k] = INFINITY;
+        g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
+                                                          scale, bias, &rgba));
+        scale[k] = 1;
+        bias[k] = NAN;
+        g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
+                                                          scale, bias, &rgba));
+        bias[k] = 0;
+    }
+    source[3] = 0x7fc00000;
+    g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
+                                                      scale, bias, &rgba));
+    g_assert_false(sgi_kona_gl_texture_pixel_transfer(2, 6, source, false,
+                                                      scale, bias, &rgba));
+    g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, NULL, false,
+                                                      scale, bias, &rgba));
+    g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
+                                                      NULL, bias, &rgba));
+    g_assert_cmphex(rgba, ==, 0xa5a5a5a5);
+}
+
 static void test_pixel_pack_types(void)
 {
     const float rgba[4] = { 0, 0.5f, 1, 0.25f };
@@ -1870,6 +1932,32 @@ static void test_pixel_pack_channels(void)
         g_assert_cmpmem(out, count, expected[k], count);
         g_assert_cmphex(out[count], ==, 0xa5);
     }
+}
+
+static void test_pixel_pack_double_precision(void)
+{
+    double rgba[] = { 0, 0, 0, 1 };
+    uint8_t out[16];
+
+    for (uint32_t v = 0; v < 256; v++) {
+        uint32_t actual;
+
+        rgba[0] = v / 255.0;
+        g_assert_true(sgi_kona_gl_pixel_pack_double(5, 5, rgba, false,
+                                                    out, sizeof(out)));
+        actual = ((uint32_t)out[0] << 24) | ((uint32_t)out[1] << 16) |
+                 ((uint32_t)out[2] << 8) | out[3];
+        g_assert_cmpuint(actual, ==, v * 16843009u);
+    }
+    rgba[0] = 1e76;
+    rgba[1] = -1e76;
+    rgba[2] = 0.5;
+    g_assert_true(sgi_kona_gl_pixel_pack_double(6, 6, rgba, false,
+                                                out, sizeof(out)));
+    g_assert_cmphex(out[0], ==, 0x3f);
+    g_assert_cmphex(out[1], ==, 0);
+    g_assert_cmphex(out[2], ==, 0);
+    g_assert_cmphex(out[3], ==, 0);
 }
 
 static void test_pixel_pack_refusals(void)
@@ -1984,12 +2072,20 @@ int main(int argc, char **argv)
                     test_pixels_pio_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixel-float-conversion",
                     test_pixel_float_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/order",
+                    test_texture_pixel_transfer_order);
+    g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/expansion",
+                    test_texture_pixel_transfer_expansion);
+    g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/refusals",
+                    test_texture_pixel_transfer_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/types",
                     test_pixel_pack_types);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/expansion-and-swap",
                     test_pixel_pack_expansion_and_swap);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/channels",
                     test_pixel_pack_channels);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-pack/double-precision",
+                    test_pixel_pack_double_precision);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/refusals",
                     test_pixel_pack_refusals);
     return g_test_run();

@@ -147,6 +147,12 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                     const uint32_t *source, bool swap_bytes,
                                     uint32_t *rgba);
 
+/* Apply ordinary pixel transfer before the texture storage quantization. */
+bool sgi_kona_gl_texture_pixel_transfer(uint32_t format, uint32_t type,
+                                        const uint32_t *source, bool swap_bytes,
+                                        const float scale[4],
+                                        const float bias[4], uint32_t *rgba);
+
 /* Retain finite scalar values before pixel transfer, without quantization. */
 bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
                                   const uint32_t *source, bool swap_bytes,
@@ -182,6 +188,11 @@ bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *layout,
 bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
                             const float rgba[4], bool swap_bytes,
                             uint8_t *out, size_t capacity);
+
+/* Preserve read transfer and luminance reduction before final narrowing. */
+bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
+                                   const double rgba[4], bool swap_bytes,
+                                   uint8_t *out, size_t capacity);
 
 /* Ordinary DrawPixels PIO carries raw scalar bytes, including row padding. */
 typedef struct SGIKonaGLPixelLayout {
