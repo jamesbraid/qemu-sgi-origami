@@ -679,6 +679,7 @@ tests/qtest/sgi-command-port-test.c
 tests/qtest/sgi-debug-tools-test.c
 tests/qtest/sgi-ioc3-eth-test.c
 tests/qtest/sgi-kona-read-defense-test.c
+tests/qtest/sgi-l1-identity-vectors.h
 tests/qtest/sgi-l1-test.h
 tests/qtest/sgi-launch.h
 tests/qtest/sgi-mgras-board-test.c

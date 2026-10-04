@@ -8,6 +8,7 @@
 #include "sgi-migrate.h"
 #include "sgi-wait.h"
 #include "sgi-l1-test.h"
+#include "sgi-l1-identity-vectors.h"
 #include <poll.h>
 #include <sys/socket.h>
 
@@ -2828,6 +2829,213 @@ static void test_fuel_mac_eeprom(void)
     g_unsetenv("L1_FUEL_MAC_PATH");
 }
 
+static QTestState *start_identity(const char *properties)
+{
+    QTestState *s = qtest_initf("-M none -cpu R10000 -S "
+                                "-device sgi-l1,id=l1c,%s" UART, properties);
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    return s;
+}
+
+static void expect_area(QTestState *s, unsigned component, unsigned area,
+                        const uint8_t *expected, size_t length)
+{
+    uint8_t reply[131];
+
+    g_assert_cmpuint(eeprom_read(s, component, area, 0, length, reply), ==,
+                     12 + length);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[11], ==, 0x80 | length);
+    g_assert_cmpmem(reply + 12, length, expected, length);
+    /* Nothing follows the area. */
+    g_assert_cmpuint(eeprom_read(s, component, area, length, 1, reply), ==,
+                     6);
+    g_assert_cmphex(reply[4], ==, 0x97);
+}
+
+static void expect_area_absent(QTestState *s, unsigned component,
+                               unsigned area)
+{
+    uint8_t reply[131];
+
+    g_assert_cmpuint(eeprom_read(s, component, area, 0, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+}
+
+/*
+ * Without raw files the controller builds the node and IO8 chassis and
+ * board areas byte for byte as the launcher's Python encoders did.
+ */
+static void test_identity_defaults(void)
+{
+    static const struct {
+        const char *properties;
+        const uint8_t *node;
+        const uint8_t *io8;
+    } cases[] = {
+        { "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+          "node-board-revision=-C,mac=08:00:69:12:34:56,"
+          "mac-record=io8-board",
+          expected_node_board_2cpu, expected_io8_board_default },
+        { "node-board-name=IP45_4CPU,node-board-part=030-1779-001,"
+          "node-board-revision=-C,mac=08:00:69:12:34:57,"
+          "mac-record=io8-board",
+          expected_node_board_4cpu, expected_io8_board_default_next },
+        { "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+          "node-board-revision=-C,mac=02:00:5d:aa:bb:cc,"
+          "mac-record=io8-board",
+          expected_node_board_2cpu, expected_io8_board_custom },
+        { "node-board-name=IP45_4CPU,node-board-part=030-1779-001,"
+          "node-board-revision=-C,mac=02:00:5D:AA:BB:CD,"
+          "mac-record=io8-board",
+          expected_node_board_4cpu, expected_io8_board_custom_next },
+    };
+
+    G_STATIC_ASSERT(sizeof(expected_node_board_2cpu) == 72);
+    G_STATIC_ASSERT(sizeof(expected_node_board_4cpu) == 72);
+    G_STATIC_ASSERT(sizeof(expected_io8_board_default) == 80);
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *s = start_identity(cases[i].properties);
+
+        for (unsigned reset = 0; reset < 2; reset++) {
+            expect_area(s, 0, 1, expected_chassis, sizeof(expected_chassis));
+            expect_area(s, 0, 2, cases[i].node, 72);
+            expect_area(s, 1, 1, expected_chassis, sizeof(expected_chassis));
+            expect_area(s, 1, 2, cases[i].io8, 80);
+            /* No memory record is invented. */
+            expect_area_absent(s, 0, 4);
+            expect_area_absent(s, 2, 2);
+            qtest_system_reset(s);
+        }
+        qtest_quit(s);
+    }
+
+    /* Each record is independent: a node identity alone builds no IO8. */
+    {
+        QTestState *s = start_identity(
+            "node-board-name=IP45_2CPU,node-board-part=030-1780-001,"
+            "node-board-revision=-C");
+
+        expect_area(s, 0, 2, expected_node_board_2cpu, 72);
+        expect_area_absent(s, 1, 1);
+        expect_area_absent(s, 1, 2);
+        qtest_quit(s);
+    }
+    {
+        QTestState *s = start_identity("mac=08:00:69:12:34:56,"
+                                       "mac-record=io8-board");
+
+        expect_area_absent(s, 0, 1);
+        expect_area_absent(s, 0, 2);
+        expect_area(s, 1, 2, expected_io8_board_default, 80);
+        qtest_quit(s);
+    }
+}
+
+/* A raw file still replaces the synthetic area it names, and only that. */
+static void test_identity_raw_override(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-identity-XXXXXX", &error);
+    g_autofree char *board_path = NULL;
+    uint8_t board[24];
+    QTestState *s;
+
+    g_assert_no_error(error);
+    /* Synthetic bytes owned by this test, summing to zero. */
+    memset(board, 0x5a, sizeof(board));
+    board[sizeof(board) - 1] = 0xea;
+    board_path = g_build_filename(dir, "node-board.bin", NULL);
+    g_assert_true(g_file_set_contents(board_path, (char *)board,
+                                      sizeof(board), &error));
+    g_assert_no_error(error);
+
+    s = qtest_initf("-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+                    "\"id\":\"l1c\",\"node-board-name\":\"IP45_2CPU\","
+                    "\"node-board-part\":\"030-1780-001\","
+                    "\"node-board-revision\":\"-C\","
+                    "\"mac\":\"08:00:69:12:34:56\","
+                    "\"mac-record\":\"io8-board\","
+                    "\"board-eeprom\":[\"%s\",\"\"]}' "
+                    "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+                    "\"controller\":\"l1c\"}'", board_path);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    expect_area(s, 0, 1, expected_chassis, sizeof(expected_chassis));
+    expect_area(s, 0, 2, board, sizeof(board));
+    expect_area(s, 1, 1, expected_chassis, sizeof(expected_chassis));
+    expect_area(s, 1, 2, expected_io8_board_default, 80);
+    qtest_quit(s);
+
+    g_assert_cmpint(g_unlink(board_path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/* The Fuel-family MAC text the firmware serves through request 0x0008. */
+static void test_identity_mac_text(void)
+{
+    uint8_t reply[129];
+    QTestState *s;
+
+    s = start_identity("mac=02:a1:b2:c3:d4:e5,mac-record=mac-text");
+    g_assert_cmpuint(general(s, 8, NULL, 0, 0, reply), ==, 20);
+    g_assert_cmpmem(reply + 7, 12, "02A1B2C3D4E5", 12);
+    /* It carries no EEPROM area of its own. */
+    expect_area_absent(s, 0, 2);
+    expect_area_absent(s, 1, 2);
+    qtest_quit(s);
+
+    /* Without a record kind the controller has no MAC text. */
+    s = start();
+    g_assert_cmpuint(general(s, 8, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    qtest_quit(s);
+}
+
+static void test_identity_rejects(void)
+{
+    static const struct {
+        const char *properties;
+        const char *message;
+    } cases[] = {
+        { "mac=02:00:00:00:00:01", "*L1 mac needs a mac-record*" },
+        { "mac=02:00:00:00:00:01,mac-record=other",
+          "*L1 mac-record must be io8-board or mac-text*" },
+        { "mac-record=io8-board", "*L1 mac-record needs a mac*" },
+        { "mac-record=mac-text", "*L1 mac-record needs a mac*" },
+        { "mac=03:00:00:00:00:01,mac-record=io8-board",
+          "*L1 mac must be a nonzero unicast address*" },
+        { "mac=00:00:00:00:00:00,mac-record=io8-board",
+          "*L1 mac must be a nonzero unicast address*" },
+        { "mac=02:00:00:00:00,mac-record=io8-board",
+          "*L1 mac must be a nonzero unicast address*" },
+        { "node-board-name=IP45_2CPU,node-board-part=030-1780-001",
+          "*L1 node board identity needs a name, part and revision*" },
+        { "node-board-name=0123456789012345678901234567890123456789"
+          "012345678901234567890123,node-board-part=x,"
+          "node-board-revision=x",
+          "*L1 node board identity field is too long*" },
+        { "mac=02:00:00:00:00:01,mac-record=mac-text,system-serial=S1",
+          "*L1 MAC text and system-serial conflict*" },
+        { "brick-type=pci-expansion,mac=02:00:00:00:00:01,"
+          "mac-record=io8-board",
+          "*L1 expansion profile has no node identity*" },
+    };
+
+    if (g_test_subprocess()) {
+        qtest_initf("-M none -cpu R10000 -S -device sgi-l1,id=l1c,%s",
+                    g_getenv("L1_IDENTITY_PROPERTIES"));
+        return;
+    }
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_setenv("L1_IDENTITY_PROPERTIES", cases[i].properties, true);
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr(cases[i].message);
+    }
+    g_unsetenv("L1_IDENTITY_PROPERTIES");
+}
+
 /*
  * A synthetic board serial must survive either local task-6 route unchanged.
  */
@@ -4391,6 +4599,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console-short-frames", test_console_short_frames);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
     qtest_add_func("sn1/l1/fuel-mac-eeprom", test_fuel_mac_eeprom);
+    qtest_add_func("sn1/l1/identity-defaults", test_identity_defaults);
+    qtest_add_func("sn1/l1/identity-raw-override",
+                   test_identity_raw_override);
+    qtest_add_func("sn1/l1/identity-mac-text", test_identity_mac_text);
+    qtest_add_func("sn1/l1/identity-rejects", test_identity_rejects);
     qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
     qtest_add_func("sn1/l1/power-cycle", test_power_cycle);
