@@ -10,6 +10,7 @@
  * available for transports that provide one.
  */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/bswap.h"
 #include "qemu/host-utils.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
@@ -951,5 +952,46 @@ bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
         return false;
     }
     *out = words[pos / 4] >> (24 - 8 * (pos & 3));
+    return true;
+}
+
+bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
+                            const float rgba[4], bool swap_bytes,
+                            uint8_t *out, size_t capacity)
+{
+    uint8_t packed[16];
+    unsigned components = format == 4 ? 3 : 4;
+    unsigned size = type == 1 ? 1 : type == 3 ? 2 : 4;
+
+    if (!rgba || !out || (format != 4 && format != 5) ||
+        (type != 1 && type != 3 && type != 6) ||
+        capacity < components * size) {
+        return false;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        if (!isfinite(rgba[i])) {
+            return false;
+        }
+    }
+    for (unsigned i = 0; i < components; i++) {
+        double value = CLAMP(rgba[i], 0.0, 1.0);
+        uint8_t *dest = packed + i * size;
+
+        if (type == 1) {
+            dest[0] = value * 255 + 0.5;
+        } else if (type == 3) {
+            /* Nearest conversion is the model's declared packing policy. */
+            uint16_t bits = value * 65535 + 0.5;
+
+            stw_be_p(dest, swap_bytes ? bswap16(bits) : bits);
+        } else {
+            float component = value;
+            uint32_t bits;
+
+            memcpy(&bits, &component, sizeof(bits));
+            stl_be_p(dest, swap_bytes ? bswap32(bits) : bits);
+        }
+    }
+    memcpy(out, packed, components * size);
     return true;
 }
