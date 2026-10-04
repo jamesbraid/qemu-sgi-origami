@@ -11,10 +11,13 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/baseio-flash.h"
+#include "hw/mips/sgi/initial-flash.h"
+#include "hw/mips/sgi/prom-image.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "qapi/error.h"
+#include "qemu/datadir.h"
 #include "qemu/units.h"
 #include "system/block-backend.h"
 
@@ -24,16 +27,54 @@
 #define BASEIO_FLASH_UNLOCK1      0x2aa
 
 /*
- * The image must be the part's own 1 MB. Without a drive the part is
- * fitted blank and reads as zeros, not the erased 0xff a real
+ * Read and check an original I/O PROM for a part with no drive. The part
+ * stores the file as supplied, so the whole file, not only its decoded
+ * payload, has to fit.
+ */
+static SGIPromImage *sgi_baseio_flash_load(const char *firmware, Error **errp)
+{
+    g_autofree char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, firmware);
+    g_autoptr(SGIPromImage) image = NULL;
+
+    if (!path) {
+        error_setg(errp, "cannot find I/O PROM image '%s'", firmware);
+        return NULL;
+    }
+    image = sgi_prom_image_load(path, SGI_IO6_FLASH_SIZE, errp);
+    if (!image) {
+        return NULL;
+    }
+    if (g_bytes_get_size(image->file) > SGI_IO6_FLASH_SIZE) {
+        error_setg(errp, "I/O PROM image '%s' exceeds flash capacity "
+                   "(%d bytes)", firmware, SGI_IO6_FLASH_SIZE);
+        return NULL;
+    }
+    return g_steal_pointer(&image);
+}
+
+/*
+ * The image must be the part's own 1 MB. A drive's contents take
+ * precedence and firmware is then never read. Without a drive the part
+ * holds firmware's file followed by erased bytes, or with no firmware
+ * either is fitted blank and reads as zeros, not the erased 0xff a real
  * unprogrammed chip would show; the firmware's loader rejects either and
  * falls back to its internal copy.
  */
 PFlashCFI02 *sgi_baseio_flash_new(Object *parent, const char *name,
-                                  const char *drive_id, Error **errp)
+                                  const char *drive_id, const char *firmware,
+                                  Error **errp)
 {
-    DeviceState *flash = qdev_new(TYPE_PFLASH_CFI02);
+    g_autoptr(SGIPromImage) image = NULL;
+    DeviceState *flash;
 
+    if (!drive_id && firmware) {
+        image = sgi_baseio_flash_load(firmware, errp);
+        if (!image) {
+            return NULL;
+        }
+    }
+
+    flash = qdev_new(TYPE_PFLASH_CFI02);
     object_property_add_child(parent, "flash", OBJECT(flash));
     object_unref(OBJECT(flash));
     if (drive_id) {
@@ -66,6 +107,16 @@ PFlashCFI02 *sgi_baseio_flash_new(Object *parent, const char *name,
     qdev_prop_set_string(flash, "name", name);
     if (!sysbus_realize(SYS_BUS_DEVICE(flash), errp)) {
         return NULL;
+    }
+    if (image) {
+        MemoryRegion *array = sysbus_mmio_get_region(SYS_BUS_DEVICE(flash), 0);
+        size_t size;
+        const uint8_t *file = g_bytes_get_data(image->file, &size);
+
+        g_assert(memory_region_size(array) == SGI_IO6_FLASH_SIZE);
+        sgi_io6_initial_flash(memory_region_get_ram_ptr(array),
+                              SGI_IO6_FLASH_SIZE, file, size);
+        memory_region_flush_rom_device(array, 0, SGI_IO6_FLASH_SIZE);
     }
     return PFLASH_CFI02(flash);
 }
