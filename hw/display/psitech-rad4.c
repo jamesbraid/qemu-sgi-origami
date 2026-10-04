@@ -282,8 +282,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  * RAD4_BAR2_RGB_DATA port. This model implements the ranges the qualified
  * guest workload exercises for display: the frame-buffer and overlay window
  * attribute tables (FB_WAT, OL_WAT), the runtime color look-up table they
- * point into and the cursor/cross-hair look-up table. The gamma tables are
- * unimplemented and trace-visible rather than silently accepted.
+ * point into, the cursor/cross-hair look-up table and the red, green and
+ * blue gamma tables.
  */
 #define RAD4_WAT_BASE           0x1000
 #define RAD4_WAT_COUNT          256
@@ -291,6 +291,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_OL_WAT_BASE        0x1400
 #define RAD4_OL_WAT_LAST        (RAD4_OL_WAT_BASE + RAD4_WAT_COUNT - 1)
 #define RAD4_WAT_CYCLES         2
+
+/*
+ * Gamma tables, pages 3 and 27: one 256x10 table per DAC component at
+ * X'3000, X'3400 and X'3800, loaded in the same two cycles as a WAT entry
+ * (Table 2).
+ */
+#define RAD4_GAMMA_BASE         0x3000
+#define RAD4_GAMMA_STRIDE       0x400
+#define RAD4_GAMMA_COUNT        256
 
 #define RAD4_COLOR_LUT_BASE     0x4000
 #define RAD4_COLOR_LUT_COUNT    1024
@@ -348,6 +357,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_RGB_CONF4              0x0004
 #define RAD4_RGB_FB_WAT_SEGMENT     0x0006
 #define RAD4_RGB_OL_WAT_SEGMENT     0x0007
+#define RAD4_RGB_AUX_FB_WAT_SEGMENT 0x0008
 #define RAD4_RGB_AUX_OL_WAT_SEGMENT 0x0009
 #define RAD4_RGB_CHROMA_KEY0        0x0010
 #define RAD4_RGB_CHROMA_MASK0       0x0012
@@ -366,6 +376,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_CONF4_FB_WID_MASK      0xf
 #define RAD4_CONF4_SWE              (1u << 2)
 #define RAD4_CONF4_AOW              (1u << 1)
+#define RAD4_CONF4_AFW              (1u << 0)
+
+/* AUX_FB_WAT and AUX_OL_WAT bit 2, page 46: bypass the gamma tables. */
+#define RAD4_AUX_WAT_GAMMA_BYPASS   (1u << 2)
 
 /* AUX_OL_WAT entry, page 46: CK in bit 5, OL enable in bit 3, OT in bit 0. */
 #define RAD4_AUX_OL_WAT_CK          (1u << 5)
@@ -577,6 +591,7 @@ struct PsitechRad4State {
      */
     uint16_t fb_wat[RAD4_WAT_COUNT];
     uint16_t ol_wat[RAD4_WAT_COUNT];
+    uint16_t gamma[3][RAD4_GAMMA_COUNT];
     uint8_t color_lut[RAD4_COLOR_LUT_COUNT][3];
     uint8_t cursor_lut[RAD4_RGB_CURSOR_LUT_COUNT][3];
     uint8_t rgb_reserved_phase;
@@ -616,6 +631,29 @@ static uint16_t *rad4_wat_entry(PsitechRad4State *s, uint16_t index)
         return &s->ol_wat[index - RAD4_OL_WAT_BASE];
     }
     return NULL;
+}
+
+/* The gamma table entry selected by a multi-cycle port index, or NULL. */
+static uint16_t *rad4_gamma_entry(PsitechRad4State *s, uint16_t index)
+{
+    unsigned table = (index - RAD4_GAMMA_BASE) / RAD4_GAMMA_STRIDE;
+    unsigned entry = (index - RAD4_GAMMA_BASE) % RAD4_GAMMA_STRIDE;
+
+    if (index < RAD4_GAMMA_BASE || table >= 3 || entry >= RAD4_GAMMA_COUNT) {
+        return NULL;
+    }
+    return &s->gamma[table][entry];
+}
+
+/*
+ * The 10-bit, two-cycle entry (a WAT or gamma table entry, Tables 2 and 5)
+ * selected by a multi-cycle port index, or NULL for any other index.
+ */
+static uint16_t *rad4_ten_bit_entry(PsitechRad4State *s, uint16_t index)
+{
+    uint16_t *entry = rad4_wat_entry(s, index);
+
+    return entry ? entry : rad4_gamma_entry(s, index);
 }
 
 /*
@@ -680,6 +718,8 @@ typedef struct Rad4WatLayout {
     uint8_t ol_shift;
     uint8_t fb_segment;
     uint8_t ol_segment;
+    uint8_t aux_fb_segment;
+    bool aux_fb_msb;
     uint8_t aux_ol_segment;
     bool aux_ol_msb;
     unsigned overlay;
@@ -728,6 +768,8 @@ static void rad4_wat_layout(PsitechRad4State *s, Rad4WatLayout *l)
     }
     l->fb_segment = s->rgb_store[RAD4_RGB_FB_WAT_SEGMENT];
     l->ol_segment = s->rgb_store[RAD4_RGB_OL_WAT_SEGMENT];
+    l->aux_fb_segment = s->rgb_store[RAD4_RGB_AUX_FB_WAT_SEGMENT] & 0xf;
+    l->aux_fb_msb = conf4 & RAD4_CONF4_AFW;
     l->aux_ol_segment = s->rgb_store[RAD4_RGB_AUX_OL_WAT_SEGMENT] & 0xf;
     l->aux_ol_msb = conf4 & RAD4_CONF4_AOW;
     l->overlay = (conf1 >> RAD4_CONF1_OVLY_SHIFT) & RAD4_CONF1_OVLY_MASK;
@@ -980,6 +1022,27 @@ static bool rad4_overlay_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
     return true;
 }
 
+/*
+ * Pass a pixel's 8-bit components through the gamma tables, page 3: each
+ * component addresses its own 256x10 table, whose 10-bit entry drives the
+ * DAC. The display surface carries 8 bits per component, so this model
+ * shows each entry's upper 8 bits. That matches the bypass path exactly,
+ * which widens an 8-bit value to 10 bits by appending its 2 most
+ * significant bits.
+ */
+static uint32_t rad4_gamma_rgb(PsitechRad4State *s, uint32_t rgb)
+{
+    return ((uint32_t)(s->gamma[0][(rgb >> 16) & 0xff] >> 2) << 16) |
+           ((uint32_t)(s->gamma[1][(rgb >> 8) & 0xff] >> 2) << 8) |
+           (s->gamma[2][rgb & 0xff] >> 2);
+}
+
+/*
+ * One displayed pixel: the overlay layer where it shows, the frame-buffer
+ * layer otherwise, then the gamma tables unless the layer's auxiliary WAT
+ * entry bypasses them (page 46's GMA and GB bits). The hardware cursor is
+ * composited afterwards and never passes through gamma, as page 3 requires.
+ */
 static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
                                   uint32_t word)
 {
@@ -989,12 +1052,21 @@ static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
     uint8_t ol_addr = rad4_wat_address(l->ol_bits, ol_wid, l->ol_segment);
     uint8_t aux_addr = rad4_aux_wat_address(l->ol_bits, ol_wid,
                                             l->aux_ol_segment, l->aux_ol_msb);
+    uint8_t aux;
     uint32_t rgb;
 
     if (rad4_overlay_to_rgb(s, l, word, ol_addr, aux_addr, &rgb)) {
+        aux = s->rgb_store[RAD4_RGB_AUX_OL_WAT + aux_addr];
+    } else {
+        aux_addr = rad4_aux_wat_address(l->fb_bits, wid, l->aux_fb_segment,
+                                        l->aux_fb_msb);
+        aux = s->rgb_store[RAD4_RGB_AUX_FB_WAT + aux_addr];
+        rgb = rad4_fb_to_rgb(s, l, word, fb_addr);
+    }
+    if (aux & RAD4_AUX_WAT_GAMMA_BYPASS) {
         return rgb;
     }
-    return rad4_fb_to_rgb(s, l, word, fb_addr);
+    return rad4_gamma_rgb(s, rgb);
 }
 
 static void rad4_update_irq(PsitechRad4State *s)
@@ -1934,8 +2006,7 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
          * the frame-buffer window attribute table, the runtime color look-up
          * table and the cursor/cross-hair
          * look-up table are modeled, along with the overlay window attribute
-         * table; the gamma tables reaching this port through other indices
-         * are not handled by this model.
+         * table and the gamma tables.
          */
         uint16_t index = rad4_rgb_index(s);
         uint8_t val = 0;
@@ -1944,8 +2015,8 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
             val = s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
                                [s->rgb_reserved_phase];
             rad4_rgb_reserved_advance(s, index, 3);
-        } else if (rad4_wat_entry(s, index)) {
-            uint16_t wat = *rad4_wat_entry(s, index);
+        } else if (rad4_ten_bit_entry(s, index)) {
+            uint16_t wat = *rad4_ten_bit_entry(s, index);
 
             /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
             val = s->rgb_reserved_phase == 0 ?
@@ -2101,8 +2172,8 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             if (s->rgb_reserved_phase == 0) {
                 rad4_cursor_invalidate(s);
             }
-        } else if (rad4_wat_entry(s, index)) {
-            uint16_t *wat = rad4_wat_entry(s, index);
+        } else if (rad4_ten_bit_entry(s, index)) {
+            uint16_t *wat = rad4_ten_bit_entry(s, index);
 
             /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
             if (s->rgb_reserved_phase == 0) {
@@ -2114,11 +2185,11 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             /*
              * A window's FB_WAT or OL_WAT entry selects how
              * rad4_pixel_to_rgb() interprets every pixel tagged with that
-             * window ID. That changes what the existing scanout data means
-             * without touching s->framebuffer, so the
-             * raw-write dirty tracking above never sees it. Repaint the whole
-             * frame once this entry is fully
-             * written.
+             * window ID, and a gamma entry changes every pixel with that
+             * component value. That changes what the existing scanout data
+             * means without touching s->framebuffer, so the raw-write dirty
+             * tracking above never sees it. Repaint the whole frame once
+             * this entry is fully written.
              */
             if (s->rgb_reserved_phase == 0) {
                 rad4_mark_all_dirty(s);
@@ -2214,10 +2285,21 @@ static void rad4_reset_hold(Object *obj, ResetType type)
      * reset and expects software to reload
      * it. This model zeroes them anyway, matching rgb_store's own
      * unconditional reset just above, for a
-     * deterministic post-reset state.
+     * deterministic post-reset state. The gamma tables are the exception:
+     * zero there would blank every pixel.
      */
     memset(s->fb_wat, 0, sizeof(s->fb_wat));
     memset(s->ol_wat, 0, sizeof(s->ol_wat));
+    /*
+     * The gamma tables start as the linear ramp the bypass path produces,
+     * so a guest that never loads them sees its colors unchanged rather
+     * than a black screen.
+     */
+    for (int i = 0; i < RAD4_GAMMA_COUNT; i++) {
+        uint16_t linear = (i << 2) | (i >> 6);
+
+        s->gamma[0][i] = s->gamma[1][i] = s->gamma[2][i] = linear;
+    }
     memset(s->color_lut, 0, sizeof(s->color_lut));
     memset(s->cursor_lut, 0, sizeof(s->cursor_lut));
     s->rgb_reserved_phase = 0;
@@ -2346,8 +2428,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2374,6 +2456,7 @@ static const VMStateDescription vmstate_psitech_rad4 = {
                                       0x10000),
         VMSTATE_UINT16_ARRAY(fb_wat, PsitechRad4State, RAD4_WAT_COUNT),
         VMSTATE_UINT16_ARRAY(ol_wat, PsitechRad4State, RAD4_WAT_COUNT),
+        VMSTATE_UINT16_2DARRAY(gamma, PsitechRad4State, 3, RAD4_GAMMA_COUNT),
         VMSTATE_UINT8_2DARRAY(color_lut, PsitechRad4State,
                               RAD4_COLOR_LUT_COUNT, 3),
         VMSTATE_UINT8_2DARRAY(cursor_lut, PsitechRad4State,
