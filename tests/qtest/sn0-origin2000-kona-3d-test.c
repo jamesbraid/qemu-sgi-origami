@@ -5249,6 +5249,141 @@ static void texture_dma_packet(QTestState *s, uint64_t io, uint32_t total,
     }
 }
 
+static void draw_pixels_expected(QTestState *s, bool drawn)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+    static const uint32_t rgb[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
+
+    expected_clear(e, 0x000000);
+    if (drawn) {
+        for (unsigned k = 0; k < 4; k++) {
+            unsigned at = ((127 - (64 + k / 2)) * 128 + 64 + k % 2) * 3;
+
+            e->rgb[at] = rgb[k] >> 16;
+            e->rgb[at + 1] = rgb[k] >> 8;
+            e->rgb[at + 2] = rgb[k];
+        }
+    }
+    assert_window_matches(s, e);
+}
+
+static void test_draw_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 2 || mode == 3 || mode == 12 || mode == 17 || mode == 19;
+    bool padded = mode == 1 || mode == 3;
+    bool migrate = mode == 4 || mode == 12 || mode == 13 || mode == 24;
+    bool refused = mode >= 5 && mode < 18 && mode != 12 && mode != 16;
+    uint32_t h[] = { 2, 2, 5, 1, padded ? 3 : 0, dma, padded || dma, 0 };
+    static const uint32_t plain[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    static const uint32_t pad[] = {
+        0xaaaaaaff, 0x0000ff00, 0xff00ffaa,
+        0xaaaaaa00, 0x00ffffff, 0xffffffaa,
+    };
+    static const uint32_t contiguous[] = {
+        0xaaff0000, 0xff00ff00, 0xff0000ff, 0xffffffff, 0xffaaaaaa,
+    };
+    const uint32_t *data = (mode == 18 || mode == 24) ? contiguous :
+                           padded ? pad : plain;
+    unsigned words = (mode == 18 || mode == 24) ? ARRAY_SIZE(contiguous) :
+                     padded ? ARRAY_SIZE(pad) : ARRAY_SIZE(plain);
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *tmpfs = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode == 5 || mode == 13 || mode == 16) {
+        kona_command_f(s, 0x2f, (float[]) { 2, 1 }, 2);
+    } else if (mode == 6) {
+        kona_command(s, 0x30, (uint32_t[]) { 0x0d14, 0x3f800000 }, 2);
+    } else if (mode == 7) {
+        kona_command(s, 0x24, (uint32_t[]) { 0x8011 }, 1);
+    } else if (mode == 8) {
+        kona_command(s, 0xd0, (uint32_t[]) { 0x1800 }, 1);
+        kona_command(s, 0xd2, (uint32_t[]) { 0 }, 1);
+    } else if (mode == 9) {
+        gl_begin(s, 4);
+    } else if (mode == 10) {
+        h[7] = 1;
+    } else if (mode == 11) {
+        h[2] = 1;
+        h[3] = 2;
+    }
+    if (mode >= 20 && mode <= 23) {
+        uint32_t malformed[] = { 2, 2, 5, 1, 0, 0, 0, 0 };
+
+        if (mode == 20) {
+            malformed[0] = UINT32_MAX;
+        } else if (mode == 21) {
+            malformed[2] = UINT32_MAX;
+        } else if (mode == 22) {
+            malformed[4] = 4;
+        } else {
+            malformed[6] = 2;
+        }
+        kona_command(s, 0x3a, malformed, ARRAY_SIZE(malformed));
+    }
+    if (mode == 18 || mode == 24) {
+        h[4] = 1;
+    } else if (mode == 19) {
+        h[6] = 0;
+        kona_command(s, 0x33, (uint32_t[]) { 0x0cf2, 4 }, 2);
+    }
+    if (mode == 14) {
+        return_context_deactivate(s);
+    } else if (mode == 15) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xde0 }, 1);
+    } else if (mode == 16) {
+        kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
+    }
+    kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    if (!dma) {
+        qtest_writel(s, REG_COMMAND, data[0]);
+    }
+    if (mode == 17) {
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    }
+    if (migrate) {
+        tmpfs = g_dir_make_tmp("sn0-kona-draw-pixels-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (dma) {
+        static const uint8_t bytes[] = {
+            0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        };
+
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000 + h[4], bytes, sizeof(bytes));
+        texture_dma_packet(s, h[4], sizeof(bytes), mode == 19 ? 16 : 8, 0);
+    } else {
+        for (unsigned k = 1; k < words; k++) {
+            qtest_writel(s, REG_COMMAND, data[k]);
+        }
+    }
+    if (mode == 9) {
+        gl_end(s);
+    }
+    kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
+    draw_pixels_expected(s, !refused);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (tmpfs) {
+        g_rmdir(tmpfs);
+    }
+}
+
 static void test_texture_native_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -7414,6 +7549,23 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_renderer_migration);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
+    static const char *draw_pixels_cases[] = {
+        "pio", "pio-padded", "dma", "dma-padded", "partial-migrates",
+        "zoom-refused", "transfer-refused", "imaging-refused",
+        "colour-matrix-refused", "begin-refused", "split-refused",
+        "scalar-refused", "dma-migrates", "zoom-refusal-migrates",
+        "no-context", "texture-refused", "zoom-default-restored",
+        "partial-context-aborted", "pio-contiguous-padded",
+        "dma-contiguous-rowlength", "malformed-dimensions",
+        "unknown-format", "malformed-source-pad", "malformed-layout",
+        "contiguous-partial-migrates",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(draw_pixels_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-pixels/%s", draw_pixels_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_draw_pixels);
+    }
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/native",
                         GINT_TO_POINTER(0), test_native_colour_matrix);
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",

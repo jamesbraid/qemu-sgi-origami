@@ -317,6 +317,8 @@ typedef struct SGIKonaGLReturnState {
  */
 typedef struct SGIKonaGLPipe {
     uint32_t pending_error;
+    bool pixel_zoom_unsupported;
+    bool pixel_transfer_unsupported;
     bool unpack_swap_bytes;
     uint32_t unpack_alignment;
     uint32_t unpack_row_length;
@@ -687,6 +689,8 @@ typedef enum SGIKonaBitmapState {
 
 typedef struct SGIKonaTextureUpload {
     uint32_t header[20];
+    bool draw_pixels;
+    uint32_t draw_context;
     uint32_t count;
     uint32_t source_stride;
     uint32_t *pixels;
