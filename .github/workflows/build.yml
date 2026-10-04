@@ -195,10 +195,6 @@ jobs:
                       full = True
           if full:
               selected = set(all_mips64)
-          full_marker = build / "full-qtest-selection"
-          full_marker.unlink(missing_ok=True)
-          if full:
-              full_marker.touch()
           selected &= registered
           if not selected:
               raise SystemExit("no required MIPS64 qtest targets are registered")
@@ -213,14 +209,10 @@ jobs:
             report=$(find /src/build-ci/meson-logs -maxdepth 1 -name "smoke-qtest*.junit.xml" -print)
             test -n "$report"
             test "$(printf "%s\n" "$report" | wc -l)" -eq 1
-            if test -f /src/build-ci/full-qtest-selection; then
-              python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
-                --expect /src/build-ci/expected-qtests.txt \
-                --allow-skips-from /src/tests/qtest/mips64-qtest-optional-skips.txt
-            else
-              python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
-                --expect /src/build-ci/expected-qtests.txt
-            fi
+            # Optional prerequisites do not depend on which binaries are selected.
+            python3 /src/scripts/check-sgi-test-results.py --junit "$report" \
+              --expect /src/build-ci/expected-qtests.txt \
+              --allow-skips-from /src/tests/qtest/mips64-qtest-optional-skips.txt
 
             target=func-mips64-linux_kernel
             printf "%s\n" "LinuxKernel.test_one_cpu" > /src/build-ci/expected-linux.txt
