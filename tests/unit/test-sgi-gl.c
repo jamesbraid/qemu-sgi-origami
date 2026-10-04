@@ -5021,6 +5021,117 @@ static void test_fog(void)
     g_assert_cmpuint(frag_count(&f, 4), ==, W * H);
 }
 
+static void frag_index_smooth_point(FragScene *f, float z)
+{
+    uint32_t word[3];
+
+    word[0] = SGI_GL_POINTS;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(4.25f / 32 - 1);
+    word[1] = bits(3.75f / 32 - 1);
+    word[2] = bits(z);
+    frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    frag_command(f, SGI_GL_OP_END, NULL, 0);
+}
+
+static void frag_index_line(FragScene *f)
+{
+    uint32_t word[3];
+
+    word[0] = SGI_GL_LINES;
+    frag_command(f, SGI_GL_OP_BEGIN, word, 1);
+    word[0] = bits(1.5f / 32 - 1);
+    word[1] = bits(3.25f / 32 - 1);
+    word[2] = 0;
+    frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    word[0] = bits(5.5f / 32 - 1);
+    frag_command(f, SGI_GL_OP_VERTEX3F, word, 3);
+    frag_command(f, SGI_GL_OP_END, NULL, 0);
+}
+
+/* Coverage reaches index writes before masks and logic operations. */
+static void test_index_smooth_coverage(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t word[1];
+    uint32_t partial;
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    sgi_gl_set_index_mode(&f.c, 8);
+    word[0] = bits(0xa0);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_command(&f, SGI_GL_OP_POINT_SIZE,
+                 (uint32_t[]) { bits(3.0f) }, 1);
+    frag_fog(&f, SGI_GL_FOG_MODE, SGI_GL_LINEAR, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_END, 1, 0, 0, 0);
+    frag_fog(&f, SGI_GL_FOG_INDEX, 32, 0, 0, 0);
+    enable(&f.c, SGI_GL_FOG, true);
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    frag_index_smooth_point(&f, -0.5f);
+
+    /* Fog adds 16 first; full coverage sets the low four bits to ones. */
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 0xbf);
+    partial = frag_pixel(&f, 3, 4);
+    g_assert_cmphex(partial & 0xf0, ==, 0xb0);
+    g_assert_cmpuint(partial & 0x0f, >, 0);
+    g_assert_cmpuint(partial & 0x0f, <, 0x0f);
+
+    /* The index mask keeps low coverage bits from replacing the destination. */
+    f.p.colour[0][planes_index(4, 3)] = 0xa5;
+    word[0] = 0xf0;
+    frag_command(&f, SGI_GL_OP_INDEX_MASK, word, 1);
+    frag_index_smooth_point(&f, -0.5f);
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 0xb5);
+
+    /* Logic operations see the coverage-adjusted index. */
+    f.p.colour[0][planes_index(4, 3)] = 0xb5;
+    f.p.colour[0][planes_index(3, 4)] = 0xb5;
+    word[0] = UINT32_MAX;
+    frag_command(&f, SGI_GL_OP_INDEX_MASK, word, 1);
+    word[0] = SGI_GL_CLEAR + 6; /* GL_XOR */
+    frag_command(&f, SGI_GL_OP_LOGIC_OP, word, 1);
+    enable(&f.c, SGI_GL_INDEX_LOGIC_OP, true);
+    frag_index_smooth_point(&f, -0.5f);
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 0x0a);
+    g_assert_cmphex(frag_pixel(&f, 3, 4), ==, (0x05 ^ (partial & 0x0f)));
+
+    /* Disabling smoothing restores the original index, including low bits. */
+    enable(&f.c, SGI_GL_INDEX_LOGIC_OP, false);
+    enable(&f.c, SGI_GL_POINT_SMOOTH, false);
+    word[0] = bits(0xa5);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    memset(&f.p, 0, sizeof(f.p));
+    frag_index_smooth_point(&f, -0.5f);
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 0xb5);
+    g_assert_cmphex(frag_pixel(&f, 3, 4), ==, 0xb5);
+
+    /* The shared path reserves only min(4, m) bits on a 2-bit index. */
+    sgi_gl_set_index_mode(&f.c, 2);
+    word[0] = bits(0);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    enable(&f.c, SGI_GL_FOG, false);
+    enable(&f.c, SGI_GL_POINT_SMOOTH, true);
+    memset(&f.p, 0, sizeof(f.p));
+    frag_index_smooth_point(&f, -0.5f);
+    g_assert_cmphex(frag_pixel(&f, 4, 3), ==, 3);
+
+    /* Line smoothing uses the same coverage-to-index conversion. */
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    sgi_gl_set_index_mode(&f.c, 8);
+    word[0] = bits(0x20);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_command(&f, SGI_GL_OP_LINE_WIDTH,
+                 (uint32_t[]) { bits(1.5f) }, 1);
+    enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+    frag_index_line(&f);
+    g_assert_cmphex(frag_pixel(&f, 3, 3), ==, 0x2f);
+    g_assert_cmphex(frag_pixel(&f, 3, 2), ==, 0x28);
+}
+
 typedef struct FogHook {
     float ret;
     float window_z, eye_z;
@@ -5359,6 +5470,34 @@ static void frag_gradient_quad(FragScene *f)
         wide_vertex(f, xy[i][0], xy[i][1]);
     }
     frag_command(f, SGI_GL_OP_END, word, 0);
+}
+
+/* Color-index polygon coverage uses the same mapping and recovers. */
+static void test_index_polygon_smooth_coverage(void)
+{
+    FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
+    uint32_t word[1] = { bits(0x40) };
+
+    smooth_rules.smooth_primitives = true;
+    frag_init(&f);
+    f.rec.rules = &smooth_rules;
+    sgi_gl_set_index_mode(&f.c, 8);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, true);
+    frag_window_quad(&f, 8.25f, 8.25f, 18.25f, 18.25f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 12, 12), ==, 0x4f);
+    /* The edge pixel has 3/4 coverage: floor(16 * 3/4) = 12. */
+    g_assert_cmphex(frag_pixel(&f, 8, 12), ==, 0x4c);
+    g_assert_cmphex(frag_pixel(&f, 7, 12), ==, 0);
+
+    enable(&f.c, SGI_GL_POLYGON_SMOOTH, false);
+    memset(&f.p, 0, sizeof(f.p));
+    word[0] = bits(0x45);
+    frag_command(&f, SGI_GL_OP_INDEXF, word, 1);
+    frag_window_quad(&f, 8.25f, 8.25f, 18.25f, 18.25f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 12, 12), ==, 0x45);
+    g_assert_cmphex(frag_pixel(&f, 8, 12), ==, 0x45);
 }
 
 static void polygon_smooth_blend_scene(FragScene *f, bool smooth,
@@ -12844,6 +12983,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/alpha-zero-targets", test_alpha_zero_targets);
     g_test_add_func("/sgi-gl/alpha-texture-fog-rejection",
                     test_alpha_texture_fog_rejection);
+    g_test_add_func("/sgi-gl/index-smooth-coverage",
+                    test_index_smooth_coverage);
+    g_test_add_func("/sgi-gl/index-polygon-smooth-coverage",
+                    test_index_polygon_smooth_coverage);
     g_test_add_func("/sgi-gl/polygon-smooth-blend-and-recovery",
                     test_polygon_smooth_blend_and_recovery);
     g_test_add_func("/sgi-gl/polygon-smooth-quad-has-no-fan-diagonal",
