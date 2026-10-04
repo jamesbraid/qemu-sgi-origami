@@ -22,7 +22,7 @@ concurrency:
 jobs:
   functional:
     name: functional
-    timeout-minutes: 200
+    timeout-minutes: 175
     if: ${{ github.server_url != 'https://github.com' }}
     env:
       CI_ASSET_BASE_URL: ${{ vars.CI_ASSET_BASE_URL }}
@@ -83,14 +83,14 @@ jobs:
           echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
 
       - name: find the workspace volume
-        run: sh scripts/ci/runner-setup volume
+        run: bash scripts/ci/runner-setup volume
 
       - name: check the build container can see the checkout
-        run: sh scripts/ci/runner-setup check
+        run: bash scripts/ci/runner-setup check
 
       - name: configure and build QEMU
         run: |
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
               sh -euxc '
                 git submodule update --init --depth=1
                 mkdir -p build-nightly
@@ -104,7 +104,7 @@ jobs:
         env:
           CI_BOT_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
         run: |
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e NIGHTLY_WORKLOAD \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
               -e QEMU_TEST_ALLOW_SLOW=1 \

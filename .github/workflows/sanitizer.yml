@@ -19,6 +19,7 @@ jobs:
   sanitizer-register-suite:
     if: ${{ github.server_url != 'https://github.com' }}
     runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 175
     env:
       CI_STEP: /tmp/ci-current-step
     container:
@@ -61,12 +62,12 @@ jobs:
       - name: find the workspace volume the guest knows
         run: |
           echo "find the workspace volume the guest knows" > "$CI_STEP"
-          sh scripts/ci/runner-setup volume
+          bash scripts/ci/runner-setup volume
 
       - name: check a sibling container can see the checkout
         run: |
           echo "check a sibling container can see the checkout" > "$CI_STEP"
-          sh scripts/ci/runner-setup check
+          bash scripts/ci/runner-setup check
 
       # Configure directly with QEMU's supported options in the ephemeral
       # build-asan directory. Ninja builds the system emulator; the make target
@@ -88,7 +89,7 @@ jobs:
       - name: build the emulator with the sanitizers
         run: |
           echo "build the emulator with the sanitizers" > "$CI_STEP"
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e ASAN_OPTIONS=detect_leaks=0 "$IMAGE_ID" sh -ec '
                   mkdir -p build-asan
                   cd build-asan
@@ -120,7 +121,7 @@ jobs:
         run: |
           echo "run the register suite under the sanitizers" > "$CI_STEP"
           rc=0
-          docker run --rm -v "$WORKSPACE_VOLUME:/src" -w /src \
+          bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e ASAN_OPTIONS=detect_leaks=0 "$IMAGE_ID" \
               sh -c 'make -j$(( $(nproc) < 8 ? $(nproc) : 8 )) -C build-asan \
                   check-qtest-mips64 TIMEOUT_MULTIPLIER=4' \
@@ -141,7 +142,7 @@ jobs:
             # one place for exactly as long as this step runs. Surface it here
             # or the run reports "Fail: 1" and nothing a reader can act on.
             echo "--- meson testlog (the sanitizer's own report) ---"
-            docker run --rm -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
+            bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
                 cat /src/build-asan/meson-logs/testlog.txt > /tmp/qtest-asan-testlog.txt 2>/dev/null \
                 || : > /tmp/qtest-asan-testlog.txt
             # meson writes each test's block when that test finishes, so a failing
