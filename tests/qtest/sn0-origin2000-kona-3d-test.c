@@ -9950,7 +9950,7 @@ static void test_texture_pio_layout(gconstpointer opaque)
     } else if (mode == 6) {
         first = 2;
     } else if (mode == 7) {
-        h[8] = 1;
+        h[15] = 1; /* Known source span with an unsupported 2D destination. */
     } else if (mode == 8) {
         h[7] = 1;
         count = first = 0;
@@ -14800,7 +14800,7 @@ int main(int argc, char **argv)
     static const char *texture_layout_cases[] = {
         "rgb-contiguous-prefix", "rgb-contiguous-row-gap", "rgb-changing-phase",
         "rgb-unpack-skips", "rgb-contiguous-skip-rows", "skips-migrate",
-        "contiguous-migrates", "split-drains", "wrong-layout-refused",
+        "contiguous-migrates", "destination-drains", "wrong-layout-refused",
         "float-contiguous-prefix", "float-contiguous-migrates",
         "float-strided-skips",
     };
