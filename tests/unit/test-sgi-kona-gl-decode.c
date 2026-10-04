@@ -25,6 +25,7 @@ static const Expected subset[] = {
     { 0x1d,  SGI_KONA_GL_LAYOUT_INFERRED,    4, 0x3f800000 },
     { 0x1e,  SGI_KONA_GL_LAYOUT_INFERRED,    1, 0 },     /* glClearStencil */
     { 0x1f,  SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glClearDepth */
+    { 0x38,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 7, 0 },     /* glCopyPixels */
     { 0x39,  SGI_KONA_GL_LAYOUT_UNRESOLVED,  0, 0 },     /* glReadPixels */
     { 0x71,  SGI_KONA_GL_LAYOUT_ESTABLISHED, 1, 0 },     /* glEnd */
     { 0x8c,  SGI_KONA_GL_LAYOUT_INFERRED,    2, 0 },     /* glVertex2f */
@@ -236,6 +237,34 @@ static void test_multi_command_stream(void)
     }
     g_assert_cmpuint(pos, ==, ARRAY_SIZE(stream));
     g_assert_cmpuint(n, ==, ARRAY_SIZE(want));
+}
+
+static void test_copy_pixels_framing(void)
+{
+    const uint32_t stream[] = {
+        0x38, 0x71, 0xc6, 0x1a, 0x1d, 0x90, 0x1800, 0x80000000,
+        0xc6, 1,
+    };
+    SGIKonaGLCommand cmd;
+
+    for (size_t n = 1; n < 8; n++) {
+        g_assert_cmpint(sgi_kona_gl_decode(stream, n, 0, &cmd), ==,
+                        SGI_KONA_GL_DECODE_TRUNCATED);
+        g_assert_cmpuint(cmd.length, ==, 8);
+    }
+    g_assert_cmpint(sgi_kona_gl_decode(stream, ARRAY_SIZE(stream), 0, &cmd),
+                    ==, SGI_KONA_GL_DECODE_OK);
+    g_assert_cmpuint(cmd.length, ==, 8);
+    g_assert_cmpuint(cmd.argc, ==, 7);
+    for (size_t i = 0; i < cmd.argc; i++) {
+        g_assert_cmphex(cmd.args[i], ==, stream[i + 1]);
+    }
+    g_assert_cmpint(sgi_kona_gl_decode(stream, ARRAY_SIZE(stream), 7, &cmd),
+                    ==, SGI_KONA_GL_DECODE_LENGTH_MISMATCH);
+    g_assert_cmpint(sgi_kona_gl_decode(stream + 8, 2, 0, &cmd), ==,
+                    SGI_KONA_GL_DECODE_OK);
+    g_assert_cmphex(cmd.selector, ==, 0xc6);
+    g_assert_cmphex(cmd.args[0], ==, 1);
 }
 
 static void test_result_names(void)
@@ -1521,6 +1550,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-kona-gl-decode/unexpected-argument",
                     test_unexpected_literal_argument);
     g_test_add_func("/sgi-kona-gl-decode/stream", test_multi_command_stream);
+    g_test_add_func("/sgi-kona-gl-decode/copy-pixels-framing",
+                    test_copy_pixels_framing);
     g_test_add_func("/sgi-kona-gl-decode/result-names", test_result_names);
     g_test_add_func("/sgi-kona-gl-decode/query-inventory",
                     test_query_inventory);
