@@ -26,12 +26,13 @@ layer:
       parent: ip30-board
       hardware_kind: r12000
       identity:
-        required_properties:
-        - r12000-prid
-        - r12000-fpu-id
-        - r12000-reset-mode
-        - r12000-scache-bytes
-        - r12000-scache-block-words
+        # Inferred. One running IRIX 6.5.30m Octane2 kernel recorded these
+        # CPU and FPU identity words for its 360 MHz R12000 (chip revision
+        # 3.5); they are kernel inventory state, not raw CP0 or CP1 reads
+        # (docs/datasheets/ip30-r12000.md, O2). The machine's
+        # r12000-prid and r12000-fpu-id properties override them.
+        processor_identification: '0x0e35'
+        fpu_identification: '0x0900'
     - id: heart
       name: heart
       kind: node-asic

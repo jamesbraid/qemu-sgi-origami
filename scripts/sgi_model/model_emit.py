@@ -719,8 +719,6 @@ def _offerings_for(model: dict, topology: dict,
                 "processor": {
                     "part": assembly["kind"], "clock-hz": assembly["clock_hz"],
                     "cache-mib": assembly["cache_mib"],
-                    **({"required-properties": list(assembly["required_properties"])}
-                       if "required_properties" in assembly else {}),
                 },
                 "init-inputs": init_inputs,
                 "storage": storage,

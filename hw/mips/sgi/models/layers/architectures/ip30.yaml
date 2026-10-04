@@ -29,6 +29,17 @@ layer:
       variants:
       - clock_mhz: 360
         cache_mib: 2
+        # Approximation. The module's sampled reset word is unknown; only
+        # SS=010 follows from the reported 2 MiB cache
+        # (docs/datasheets/ip30-r12000.md). This is the word the
+        # emulator's Octane2 qtests have run with: big-endian, SS=010,
+        # SB=1 (32-word blocks), Kseg0 algorithm 3, and the remaining
+        # divisor and mode fields chosen only to be valid encodings.
+        reset_mode_bits: '0x001aa683'
+        notes: >-
+          Emulator compatibility value, not a measured Octane2 reset word.
+          The machine's r12000-reset-mode, r12000-scache-bytes and
+          r12000-scache-block-words properties override it.
       provenance: derived
       sources: *id001
     address_spaces:

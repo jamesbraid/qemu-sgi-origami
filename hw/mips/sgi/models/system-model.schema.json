@@ -1729,7 +1729,6 @@
             "widget_id_64": { "$ref": "#/$defs/address" },
             "widget_status_f_measured": { "type": "boolean" },
             "gpio_classic": { "type": "boolean" },
-            "required_properties": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
             "widget_part": { "$ref": "#/$defs/address" },
             "widget_mfg": { "$ref": "#/$defs/address" },
             "processor_identification": { "$ref": "#/$defs/address" },

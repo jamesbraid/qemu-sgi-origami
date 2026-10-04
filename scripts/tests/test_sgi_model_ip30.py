@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-"""IP30 catalogue records and operator-selected R12000 inputs."""
+"""IP30 catalogue records and the catalogued R12000 profile."""
 
 import copy
 import json
@@ -31,18 +31,18 @@ class IP30CatalogueTests(unittest.TestCase):
         self.assertEqual(node["bank_mib"], [128, 0, 0, 0])
         self.assertEqual(node["cpu_slots"][0]["assembly"]["prid"], 0x927)
 
-    def test_octane2_keeps_all_operator_cpu_inputs(self):
+    def test_octane2_carries_its_r12000_profile(self):
         catalogue = json.loads(render_qemu_inputs(MODELS)[
             "hw/mips/sgi/sgi-machines.json"])
         topology = next(t for t in catalogue["topologies"] if t["name"] == "octane2")
         cpu = topology["nodes"][0]["cpu-slots"][0]["assembly"]
-        self.assertNotIn("prid", cpu)
-        self.assertNotIn("fpu-prid", cpu)
-        self.assertNotIn("mode-bits", cpu)
-        self.assertEqual(cpu["required-properties"], [
-            "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
-            "r12000-scache-bytes", "r12000-scache-block-words"])
+        self.assertEqual(cpu["prid"], 0x0e35)
+        self.assertEqual(cpu["fpu-prid"], 0x0900)
+        self.assertEqual(cpu["mode-bits"], 0x001aa683)
+        self.assertEqual(cpu["cache-mib"], 2)
+        self.assertNotIn("required-properties", cpu)
         offering = next(o for o in catalogue["offerings"] if o["product"] == "octane2")
+        self.assertNotIn("required-properties", offering["processor"])
         self.assertEqual(offering["machine-options"],
                          "octane2,topology=octane2")
         self.assertNotIn("firmware", offering)
@@ -97,26 +97,47 @@ class IP30CatalogueTests(unittest.TestCase):
                 with self.assertRaisesRegex(CompileError, message):
                     compile_model(model)
 
-    def test_r12000_profile_declarations_are_required_and_do_not_supply_defaults(self):
+    @staticmethod
+    def r12000_variant(model):
+        entry = next(p for p in model["processors"] if p["part"] == "r12000")
+        return entry["variants"][0]
+
+    def test_r12000_profile_values_are_required(self):
         source = resolved("octane2")
-        for fault in ("missing", "default"):
-            with self.subTest(fault=fault):
+        for field in ("processor_identification", "fpu_identification",
+                      "reset_mode_bits"):
+            with self.subTest(field=field):
                 model = copy.deepcopy(source)
-                identity = self.component(model, "r12000")["identity"]
-                if fault == "missing":
-                    identity["required_properties"].pop()
+                if field == "reset_mode_bits":
+                    del self.r12000_variant(model)[field]
                 else:
-                    identity["processor_identification"] = "0xe35"
-                with self.assertRaisesRegex(CompileError, "explicit profile|operator inputs"):
+                    del self.component(model, "r12000")["identity"][field]
+                with self.assertRaisesRegex(CompileError, field):
                     compile_model(model)
 
-    def test_r12000_property_declaration_order_is_not_significant(self):
-        model = resolved("octane2")
-        identity = self.component(model, "r12000")["identity"]
-        identity["required_properties"].reverse()
-        self.assertEqual(set(compile_model(model)["nodes"][0]["cpu_slots"][0]
-                             ["assembly"]["required_properties"]),
-                         set(identity["required_properties"]))
+    def test_r12000_profile_values_are_checked(self):
+        source = resolved("octane2")
+        for fault, message in (
+                ("prid", "implementation 0x0e"),
+                ("wide", "25 bits"),
+                ("little", "big-endian"),
+                ("cache", "SS disagrees")):
+            with self.subTest(fault=fault):
+                model = copy.deepcopy(source)
+                variant = self.r12000_variant(model)
+                mode = int(variant["reset_mode_bits"], 0)
+                if fault == "prid":
+                    self.component(model, "r12000")["identity"][
+                        "processor_identification"] = "0x0935"
+                elif fault == "wide":
+                    variant["reset_mode_bits"] = hex(mode | 1 << 25)
+                elif fault == "little":
+                    variant["reset_mode_bits"] = hex(mode & ~(1 << 15))
+                else:
+                    variant["reset_mode_bits"] = hex(mode & ~(7 << 16)
+                                                     | 1 << 16)
+                with self.assertRaisesRegex(CompileError, message):
+                    compile_model(model)
 
     def test_cpu_population_stays_single_processor(self):
         model = resolved("octane")

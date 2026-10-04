@@ -454,14 +454,7 @@
       "processor": {
         "cache-mib": 2,
         "clock-hz": 360000000,
-        "part": "R12000",
-        "required-properties": [
-          "r12000-prid",
-          "r12000-fpu-id",
-          "r12000-reset-mode",
-          "r12000-scache-bytes",
-          "r12000-scache-block-words"
-        ]
+        "part": "R12000"
       },
       "product": "octane2",
       "prom-dialogue": "none",
@@ -11723,15 +11716,11 @@
               "assembly": {
                 "cache-mib": 2,
                 "clock-hz": 360000000,
+                "fpu-prid": 2304,
                 "id": "cpu0",
                 "kind": "R12000",
-                "required-properties": [
-                  "r12000-prid",
-                  "r12000-fpu-id",
-                  "r12000-reset-mode",
-                  "r12000-scache-bytes",
-                  "r12000-scache-block-words"
-                ]
+                "mode-bits": 1746563,
+                "prid": 3637
               },
               "interface": 0,
               "slot": 0
