@@ -995,6 +995,15 @@ foreach dir : target_dirs
       test_args += ['--full']
     endif
 
+    if target_base == 'mips64' and test == 'sn0-bridge-test'
+      benchmark('sgi-bridge-dma-bench', qtest_executables[test],
+                depends: [test_deps, qtest_emulator, emulator_modules],
+                env: qtest_env,
+                args: ['--tap', '-m', 'perf', '-p',
+                       '/mips64/sn0/bridge/dma-buffer-speed'],
+                protocol: 'tap', timeout: 0, suite: ['speed'])
+    endif
+
     test('qtest-@0@/@1@'.format(target_base, test),
          qtest_executables[test],
          depends: [test_deps, qtest_emulator, emulator_modules],

@@ -459,13 +459,12 @@ enum {
     TIGON_MAX_BD_WORDS = 8,
 };
 
-static inline AddressSpace *tigon_descriptor_dma_as(TigonState *s,
-                                                     const char *direction,
-                                                     uint64_t addr,
-                                                     uint32_t len)
+static inline SGIDMABufferContext *
+tigon_descriptor_dma(TigonState *s, const char *direction, uint64_t addr,
+                      uint32_t len)
 {
     trace_tigon_descriptor_dma_route(direction, addr, len);
-    return s->descriptor_as;
+    return &s->descriptor_dma;
 }
 
 /*
@@ -482,9 +481,8 @@ static MemTxResult tigon_dma_read_words(TigonState *s, uint64_t addr,
 
     assert(count > 0 && count <= TIGON_MAX_BD_WORDS);
     bytes = count * sizeof(*words);
-    result = dma_memory_read(tigon_descriptor_dma_as(s, "read", addr, bytes),
-                             addr, words, bytes,
-                             MEMTXATTRS_UNSPECIFIED);
+    result = sgi_dma_buffer_read(
+        tigon_descriptor_dma(s, "read", addr, bytes), addr, words, bytes);
     trace_tigon_dma("read", addr, bytes, result);
     if (result != MEMTX_OK) {
         memset(words, 0, bytes);
@@ -513,10 +511,8 @@ static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
         raw[i] = bigendian ? cpu_to_be32(words[i])
                            : cpu_to_le32(words[i]);
     }
-    result = dma_memory_write(tigon_descriptor_dma_as(s, "write", addr,
-                                                       bytes),
-                              addr, raw, bytes,
-                              MEMTXATTRS_UNSPECIFIED);
+    result = sgi_dma_buffer_write(
+        tigon_descriptor_dma(s, "write", addr, bytes), addr, raw, bytes);
     trace_tigon_dma("write", addr, bytes, result);
     return result;
 }
@@ -836,10 +832,9 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
                       ((uint32_t)s->station_addr.a[4] << 8) |
                       s->station_addr.a[5], bigendian);
 
-    result = dma_memory_write(tigon_descriptor_dma_as(s, "write", addr,
-                                                      sizeof(image)),
-                              addr, image, sizeof(image),
-                              MEMTXATTRS_UNSPECIFIED);
+    result = sgi_dma_buffer_write(
+        tigon_descriptor_dma(s, "write", addr, sizeof(image)),
+        addr, image, sizeof(image));
     trace_tigon_dma("write", addr, sizeof(image), result);
     trace_tigon_stats(addr, s->stat_rx_ucast, s->stat_tx_ucast, result);
     return result;
@@ -2275,7 +2270,7 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
      * The device cannot move buses after realize, so resolve both routes
      * once.
      */
-    s->descriptor_as = pci_get_address_space(dev);
+    sgi_dma_buffer_init_pci(&s->descriptor_dma, dev);
     plain = sgi_bridge_plain_dma_as(dev);
     s->payload_as = plain ? plain : pci_get_address_space(dev);
     trace_tigon_payload_dma_route(plain ? "bridge-plain" : "pci");

@@ -1567,6 +1567,8 @@ F: tests/qtest/xio-test-board.c
 F: tests/qtest/xbridge-assembly-fixture.c
 F: tests/unit/test-sgi-dma.c
 F: tests/unit/test-sgi-kona-*.c
+F: tests/unit/test-dma-buffer.c
+F: tests/bench/dma-bswap32-bench.c
 F: tests/unit/test-sgi-gl.c
 F: tests/unit/sgi-gl-texture-test.h
 F: tests/unit/test-sgi-gl-vmstate.c

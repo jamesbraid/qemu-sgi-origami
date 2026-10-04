@@ -22,6 +22,7 @@
 #include "hw/mips/sgi/net-cable.h"
 #include "hw/mips/sgi/pi-gfx.h"
 #include "system/memory.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_HUB "sgi-hub"
@@ -179,6 +180,7 @@ struct SGIHubState {
      * its processor face, placed in the XIO space, and its packet fabric.
      */
     MemoryRegion ii_packet_face;
+    SGIDMABufferProvider ii_dma_buffer;
     MemoryRegion ii_widget_face;
     MemoryRegion ii_io_out;
     MemoryRegion ii_peer_widget[SGI_HUB_XIO_WIDGETS];

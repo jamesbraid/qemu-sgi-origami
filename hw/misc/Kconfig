@@ -1,3 +1,6 @@
+config SGI_DMA_BUFFER
+    bool
+
 config APPLESMC
     bool
     depends on ISA_BUS
@@ -267,6 +270,7 @@ source macio/Kconfig
 
 config SGI_HUB
     bool
+    select SGI_DMA_BUFFER
     select SGI_PI_GFX
     select AT24C
     select ONEWIRE
@@ -367,6 +371,7 @@ config SGI_ODYSSEY
 
 config SGI_BRIDGE_DMA_TEST
     bool
+    select SGI_DMA_BUFFER
     default y if SGI_DEVICES
     depends on PCI
 

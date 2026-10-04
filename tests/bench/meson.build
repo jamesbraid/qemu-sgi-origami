@@ -22,6 +22,7 @@ benchs = {}
 if have_block
   benchs += {
      'bufferiszero-bench': [],
+     'dma-bswap32-bench': [],
      'benchmark-crypto-hash': [crypto],
      'benchmark-crypto-hmac': [crypto],
      'benchmark-crypto-cipher': [crypto],
@@ -30,7 +31,11 @@ if have_block
 endif
 
 foreach bench_name, deps: benchs
-  exe = executable(bench_name, bench_name + '.c',
+  bench_sources = [bench_name + '.c']
+  if bench_name == 'dma-bswap32-bench'
+    bench_sources += ['../../hw/misc/sgi-dma-bswap.c']
+  endif
+  exe = executable(bench_name, bench_sources,
                    dependencies: [qemuutil] + deps)
   benchmark(bench_name, exe,
             args: ['--tap', '-k'],

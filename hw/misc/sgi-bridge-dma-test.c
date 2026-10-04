@@ -10,6 +10,7 @@
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
@@ -17,8 +18,8 @@
 #define TYPE_SGI_BRIDGE_DMA_TEST "sgi-bridge-dma-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeDMATestState, SGI_BRIDGE_DMA_TEST)
 
-/* Short on purpose: a straddle should cross a boundary by a few bytes. */
-#define SGI_BRIDGE_DMA_TEST_MAX 256
+/* Large enough for page-straddling and synchronous DMA benchmarks. */
+#define SGI_BRIDGE_DMA_TEST_MAX 65536
 
 /* The allocated Red Hat test-device identity. */
 #define SGI_BRIDGE_DMA_TEST_VENDOR PCI_VENDOR_ID_REDHAT
@@ -64,6 +65,12 @@ struct SGIBridgeDMATestState {
     uint16_t device_id;
 
     bool plain_dma;
+    bool dma_buffer;
+    SGIDMABufferContext dma_context;
+    bool memory_only;
+    uint32_t result;
+    uint64_t read_data;
+    uint32_t repetitions;
 
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
@@ -85,6 +92,9 @@ struct SGIBridgeDMATestState {
 /* Little-endian words put 12 34 56 78 on PCI lanes 31:24 through 7:0. */
 #define REG_LANE_FIXED  0x20
 #define REG_LANE_SCRATCH 0x24
+#define REG_RESULT      0x28
+#define REG_READ_DATA   0x2c
+#define REG_READ_DATA_HI 0x30
 #define REG_WINDOW      0x40   /* size of the register block */
 #define IO_WINDOW       0x08   /* size of the I/O-space scratch */
 
@@ -107,12 +117,30 @@ static uint8_t sgi_bridge_dma_test_byte(uint32_t seed, unsigned int i)
     return (uint8_t)(seed + i);
 }
 
+static MemTxResult sgi_bridge_dma_test_transfer(SGIBridgeDMATestState *s,
+                                               hwaddr addr, void *buf,
+                                               bool write)
+{
+    AddressSpace *as = pci_get_address_space(PCI_DEVICE(s));
+    DMADirection dir = write ? DMA_DIRECTION_FROM_DEVICE :
+                              DMA_DIRECTION_TO_DEVICE;
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+
+    attrs.memory = s->memory_only;
+    if (s->dma_buffer) {
+        return sgi_dma_buffer_rw(&s->dma_context, addr, buf, s->length,
+                                  dir, attrs);
+    }
+    dma_barrier(as, dir);
+    return address_space_rw(as, addr, attrs, buf, s->length, write);
+}
+
 static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
 {
-    uint8_t buf[SGI_BRIDGE_DMA_TEST_MAX];
+    g_autofree uint8_t *buf = g_malloc(SGI_BRIDGE_DMA_TEST_MAX);
     unsigned int i;
 
-    if (s->length > sizeof(buf)) {
+    if (s->length > SGI_BRIDGE_DMA_TEST_MAX) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: asked for %u bytes, which is more "
                       "than this device will transfer\n", s->length);
@@ -125,11 +153,17 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
 
     /* One call for the whole transfer: the per-page distinction lives here. */
     if (s->plain_dma) {
-        address_space_write(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
-                            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+        s->result = address_space_write(
+            sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+            MEMTXATTRS_UNSPECIFIED, buf, s->length);
     } else {
-        pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+        for (i = 0; i < s->repetitions; i++) {
+            s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
+        }
     }
+    s->read_data = 0;
+    memcpy(&s->read_data, buf, MIN(s->length, sizeof(s->read_data)));
+    s->read_data = le64_to_cpu(s->read_data);
 }
 
 /*
@@ -138,23 +172,26 @@ static void sgi_bridge_dma_test_go(SGIBridgeDMATestState *s)
  */
 static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
 {
-    uint8_t buf[SGI_BRIDGE_DMA_TEST_MAX];
+    g_autofree uint8_t *buf = g_malloc(SGI_BRIDGE_DMA_TEST_MAX);
     MemTxResult result;
 
-    if (s->length > sizeof(buf)) {
+    if (s->length > SGI_BRIDGE_DMA_TEST_MAX) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bridge-dma-test: asked to copy %u bytes, which is "
                       "more than this device will transfer\n", s->length);
         return;
     }
 
+    memset(buf, 0xa5, SGI_BRIDGE_DMA_TEST_MAX);
     if (s->plain_dma) {
         result = address_space_read(sgi_bridge_plain_dma_as(PCI_DEVICE(s)),
                                     s->source, MEMTXATTRS_UNSPECIFIED, buf,
                                     s->length);
     } else {
-        result = pci_dma_read(PCI_DEVICE(s), s->source, buf, s->length);
+        result = sgi_bridge_dma_test_transfer(s, s->source, buf, false);
     }
+    s->result = result;
+    s->read_data = ldq_le_p(buf);
     /* A read that failed has no data to copy, so nothing is written. */
     if (result != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -163,10 +200,11 @@ static void sgi_bridge_dma_test_copy(SGIBridgeDMATestState *s)
         return;
     }
     if (s->plain_dma) {
-        address_space_write(sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
-                            MEMTXATTRS_UNSPECIFIED, buf, s->length);
+        s->result = address_space_write(
+            sgi_bridge_plain_dma_as(PCI_DEVICE(s)), s->address,
+            MEMTXATTRS_UNSPECIFIED, buf, s->length);
     } else {
-        pci_dma_write(PCI_DEVICE(s), s->address, buf, s->length);
+        s->result = sgi_bridge_dma_test_transfer(s, s->address, buf, true);
     }
 }
 
@@ -190,6 +228,12 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return s->source >> 32;
     case REG_INTERRUPT:
         return s->interrupt;
+    case REG_RESULT:
+        return s->result;
+    case REG_READ_DATA:
+        return (uint32_t)s->read_data;
+    case REG_READ_DATA_HI:
+        return s->read_data >> 32;
     case REG_LANE_FIXED:
         return 0x12345678;
     case REG_LANE_SCRATCH:
@@ -342,6 +386,8 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
         return;
     }
 
+    sgi_dma_buffer_init_pci(&s->dma_context, dev);
+
     /* Say in configuration space which pin this device uses. */
     pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
 
@@ -375,13 +421,15 @@ static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
     s->io_scratch = 0;
     s->lane_scratch = 0;
     s->interrupt = 0;
+    s->result = MEMTX_OK;
+    s->read_data = 0;
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
 static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
         VMSTATE_UINT64(address, SGIBridgeDMATestState),
@@ -392,6 +440,8 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
         VMSTATE_UINT32(length, SGIBridgeDMATestState),
         VMSTATE_UINT32(seed, SGIBridgeDMATestState),
         VMSTATE_UINT32(interrupt, SGIBridgeDMATestState),
+        VMSTATE_UINT32(result, SGIBridgeDMATestState),
+        VMSTATE_UINT64(read_data, SGIBridgeDMATestState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -405,6 +455,9 @@ static const Property sgi_bridge_dma_test_properties[] = {
                        SGI_BRIDGE_DMA_TEST_DEVICE),
     /* Settable, so one card type covers both sides of the exemption. */
     DEFINE_PROP_BOOL("plain-dma", SGIBridgeDMATestState, plain_dma, false),
+    DEFINE_PROP_BOOL("dma-buffer", SGIBridgeDMATestState, dma_buffer, true),
+    DEFINE_PROP_UINT32("repetitions", SGIBridgeDMATestState, repetitions, 1),
+    DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
 };
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)

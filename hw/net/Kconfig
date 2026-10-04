@@ -85,6 +85,7 @@ config SGI_IOC3_ETH
 
 config TIGON
     bool
+    select SGI_DMA_BUFFER
     default y if SGI_DEVICES
     depends on PCI
     select SGI_NET_RX_LATENCY

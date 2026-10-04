@@ -1,3 +1,7 @@
+system_ss.add(when: ['CONFIG_SGI_DMA_BUFFER', 'CONFIG_PCI'],
+              if_true: files('sgi-dma-pci.c'))
+system_ss.add(when: 'CONFIG_SGI_DMA_BUFFER',
+              if_true: files('sgi-dma-buffer.c', 'sgi-dma-bswap.c'))
 system_ss.add(when: 'CONFIG_APPLESMC', if_true: files('applesmc.c'))
 
 system_ss.add(when: 'CONFIG_EDU', if_true: files('edu.c'))

@@ -1151,6 +1151,236 @@ static void test_dma_unaligned_start(const void *data)
     qtest_quit(qts);
 }
 
+/* Large writes and reads must preserve nonadjacent translated pages. */
+static void test_dma_buffer_pages(const void *data)
+{
+    bool native = GPOINTER_TO_INT(data);
+    QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
+                                 ",dma-buffer=%s", native ? "off" : "on");
+    const unsigned length = PAGE_SIZE_4K + 139;
+    const unsigned start = 1;
+    g_autofree uint8_t *seen = g_malloc0(PAGE_SIZE_4K);
+    uint8_t sentinel[PAGE_SIZE_4K];
+
+    memset(sentinel, SWAP_SENTINEL, sizeof(sentinel));
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, 0);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0xa));
+    qtest_writeq(qts, ATE(1), ATE_ENTRY(TARGET_PAGE_B, 0xa));
+    qtest_memwrite(qts, TARGET_PAGE_A, sentinel, sizeof(sentinel));
+    qtest_memwrite(qts, TARGET_PAGE_B, sentinel, sizeof(sentinel));
+    bridge_transfer(qts, PCI_TRANSLATED + start, length, SWAP_SEED);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    for (unsigned page = 0; page < 2; page++) {
+        hwaddr target = page ? TARGET_PAGE_B : TARGET_PAGE_A;
+
+        qtest_memread(qts, target, seen, PAGE_SIZE_4K);
+        for (unsigned i = 0; i < PAGE_SIZE_4K; i++) {
+            unsigned pci = page * PAGE_SIZE_4K + (i ^ 3);
+            uint8_t expected = pci >= start && pci < start + length ?
+                (uint8_t)(SWAP_SEED + pci - start) : SWAP_SENTINEL;
+
+            g_assert_cmpuint(seen[i], ==, expected);
+        }
+    }
+    /* Read with the opposite setting into a local, unswapped destination. */
+    bridge_source_with_swap(qts, DEV_SWAP_TRANSLATED);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                 PCI_TRANSLATED + start);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0x300000);
+    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==, MEMTX_OK);
+    seen = g_realloc(seen, length);
+    qtest_memread(qts, 0x300000, seen, length);
+    for (unsigned i = 0; i < length; i++) {
+        unsigned pci = (start + i) ^ 3;
+        uint8_t expected = pci >= start && pci < start + length ?
+            (uint8_t)(SWAP_SEED + pci - start) : SWAP_SENTINEL;
+
+        g_assert_cmpuint(seen[i], ==, expected);
+    }
+    qtest_quit(qts);
+}
+
+static void test_dma_buffer_speed(const void *data)
+{
+    const unsigned lengths[] = { 16, 64, 1500, 4096, 65536 };
+    const char *trace = g_getenv("QEMU_DMA_BENCH_TRACE");
+
+    for (unsigned swap = 0; swap < 2; swap++) {
+        for (unsigned native = 0; native < 2; native++) {
+            for (unsigned i = 0; i < G_N_ELEMENTS(lengths); i++) {
+                unsigned length = lengths[i];
+                unsigned repeats = trace ? 1 : length < 4096 ? 4096 : 256;
+                g_autofree char *tracing = trace ? g_strdup_printf(
+                    "-trace enable=sgi_hub_ii_*,file=%s/hub-%s-%u-%u.trace",
+                    trace, native ? "native" : "buffer", swap, length) :
+                    g_strdup("");
+                QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
+                    ",dma-buffer=%s,repetitions=%u %s",
+                    native ? "off" : "on", repeats, tracing);
+                int64_t begin, elapsed;
+                uint8_t seen[64];
+
+                bridge_start_the_transfer_source(qts);
+                bridge_source_with_swap(qts, swap ? DEV_SWAP_DIRECT : 0);
+                qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0xaU << 20);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                             0x80000000U | TARGET_PAGE_A);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SEED, SWAP_SEED);
+                if (!trace) {
+                    qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+                }
+                begin = g_get_monotonic_time();
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 1);
+                elapsed = g_get_monotonic_time() - begin;
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                                MEMTX_OK);
+                qtest_memread(qts, TARGET_PAGE_A, seen,
+                               MIN(length, sizeof(seen)));
+                for (unsigned j = 0; j < MIN(length, sizeof(seen)); j++) {
+                    unsigned index = swap ? j : j ^ 3;
+                    g_assert_cmpuint(seen[j], ==, (uint8_t)(SWAP_SEED + index));
+                }
+                g_test_message("%s swap32=%u length=%u repeats=%u us=%" PRId64
+                               " ns/transfer=%.2f MiB/s=%.2f",
+                               native ? "native" : "buffer", !swap, length,
+                               repeats, elapsed,
+                               (double)elapsed * 1000 / repeats,
+                               (double)length * repeats * 1000000 / elapsed /
+                               (1 << 20));
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_dma_buffer_faults(const void *data)
+{
+    for (unsigned native = 0; native < 2; native++) {
+        for (unsigned memory = 0; memory < 2; memory++) {
+            for (unsigned early = 0; early < 3; early++) {
+                QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
+                    ",dma-buffer=%s,memory-only=%s",
+                    native ? "off" : "on", memory ? "on" : "off");
+                uint32_t address = early == 2 ? PCI_TRANSLATED + 128 * 4096 :
+                    PCI_TRANSLATED + (early ? 0 : PAGE_SIZE_4K - 4);
+                uint8_t seen[8];
+                MemTxResult result = memory ? MEMTX_ACCESS_ERROR :
+                                             MEMTX_DECODE_ERROR;
+
+                g_test_message("native=%u memory=%u early=%u",
+                               native, memory, early);
+                bridge_start_the_transfer_source(qts);
+                bridge_source_with_swap(qts, DEV_SWAP_TRANSLATED);
+                qtest_writeq(qts, ATE(0),
+                             early ? 0 : ATE_ENTRY(TARGET_PAGE_A, 0));
+                bridge_fill_sentinel(qts, TARGET_PAGE_A);
+                bridge_transfer(qts, address, sizeof(seen), SWAP_SEED);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                                result);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c), ==,
+                                0x43424140);
+                qtest_memread(qts, TARGET_PAGE_A + PAGE_SIZE_4K - 4, seen, 4);
+                for (unsigned i = 0; i < 4; i++) {
+                    g_assert_cmpuint(seen[i], ==,
+                                     (early || memory) ? SWAP_SENTINEL :
+                                                         SWAP_SEED + i);
+                }
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, address);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0x300000);
+                qtest_memset(qts, 0x300000, SWAP_SENTINEL, sizeof(seen));
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                                result);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c), ==,
+                    (early || memory) ? (memory ? 0xa5a5a5a5 : 0) :
+                                        0x43424140);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x30), ==,
+                                memory ? 0xa5a5a5a5 : 0);
+                qtest_memread(qts, 0x300000, seen, sizeof(seen));
+                for (unsigned i = 0; i < sizeof(seen); i++) {
+                    g_assert_cmpuint(seen[i], ==, SWAP_SENTINEL);
+                }
+                g_assert_cmphex(qtest_readl(qts, REG(0x060)), ==, 0);
+                g_assert_cmphex(qtest_readl(qts, REG(0x068)), ==, 0);
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_dma_buffer_hub_claims(const void *data)
+{
+    for (unsigned native = 0; native < 2; native++) {
+        QTestState *qts = qtest_initf(MACHINE_TWO_NODE DMA_CARD
+                                     ",bus=pci,dma-buffer=%s",
+                                     native ? "off" : "on");
+        uint8_t pattern[64], seen[64];
+
+        for (unsigned i = 0; i < sizeof(pattern); i++) {
+            pattern[i] = SWAP_SEED + i;
+        }
+        g_assert_cmphex(qtest_readl(qts, CFG0(DMA_SLOT, 0)), !=, NO_CARD);
+        bridge_start_the_transfer_source(qts);
+        bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
+        qtest_writel(qts, REG(0x108), 1U << 9);
+        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS, 0x300000);
+        qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, sizeof(pattern));
+        for (unsigned step = 0; step < 4; step++) {
+            uint64_t address = step == 3 ?
+                0xa000000200bc4000ULL : 0xa000000100bc4000ULL;
+            bool claimed = step == 1 || step == 3;
+
+            if (step == 1) {
+                sn0_program_nasid(qts, 1);
+                qtest_memwrite(qts, NODE1_SYS_ADDR, pattern, sizeof(pattern));
+            } else if (step == 2) {
+                sn0_program_nasid(qts, 2);
+            }
+            qtest_memset(qts, 0x300000, SWAP_SENTINEL, sizeof(seen));
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE, address);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE_HI,
+                         address >> 32);
+            qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+            g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                            claimed ? MEMTX_OK : MEMTX_DECODE_ERROR);
+            qtest_memread(qts, 0x300000, seen, sizeof(seen));
+            for (unsigned i = 0; i < sizeof(seen); i++) {
+                g_assert_cmpuint(seen[i], ==,
+                                 claimed ? pattern[i] : SWAP_SENTINEL);
+            }
+            if (!claimed) {
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x2c),
+                                ==, 0);
+                g_assert_cmphex(qtest_readl(qts, REG(0x060)), ==, 0);
+                g_assert_cmphex(qtest_readl(qts, REG(0x068)), ==, 0);
+            }
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_dma_buffer_master_disabled(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE DMA_CARD);
+    uint8_t sentinel[64], seen[64];
+
+    memset(sentinel, SWAP_SENTINEL, sizeof(sentinel));
+    bridge_start_the_transfer_source(qts);
+    bridge_source_with_swap(qts, DEV_SWAP_TRANSLATED);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE_A, 0));
+    qtest_memwrite(qts, TARGET_PAGE_A, sentinel, sizeof(sentinel));
+    qtest_writel(qts, CFG0(DMA_SLOT, 0) + PCI_COMMAND, 2);
+    bridge_transfer(qts, PCI_TRANSLATED, sizeof(sentinel), SWAP_SEED);
+    g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                    MEMTX_DECODE_ERROR);
+    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), sentinel, sizeof(sentinel));
+    qtest_quit(qts);
+}
+
 /*
  * Both swap bits read back clear after reset, which is what makes every test
  * above that does not set them a test of the cleared case rather than of an
@@ -3996,6 +4226,20 @@ int main(int argc, char **argv)
                         test_dma_trailing_partial_word);
     qtest_add_data_func("sn0/bridge/dma-unaligned-start", NULL,
                         test_dma_unaligned_start);
+    if (g_test_perf()) {
+        qtest_add_data_func("sn0/bridge/dma-buffer-speed", NULL,
+                            test_dma_buffer_speed);
+    }
+    qtest_add_data_func("sn0/bridge/dma-buffer-pages", NULL,
+                        test_dma_buffer_pages);
+    qtest_add_data_func("sn0/bridge/dma-native-pages", GINT_TO_POINTER(1),
+                        test_dma_buffer_pages);
+    qtest_add_data_func("sn0/bridge/dma-buffer-faults", NULL,
+                        test_dma_buffer_faults);
+    qtest_add_data_func("sn0/bridge/dma-buffer-hub-claims", NULL,
+                        test_dma_buffer_hub_claims);
+    qtest_add_data_func("sn0/bridge/dma-buffer-master-disabled", NULL,
+                        test_dma_buffer_master_disabled);
     qtest_add_data_func("sn0/bridge/dma-swap-bits-reset-clear", NULL,
                         test_dma_swap_bits_reset_clear);
     qtest_add_data_func("sn0/bridge/dma-exempt-slot-is-never-swapped", NULL,

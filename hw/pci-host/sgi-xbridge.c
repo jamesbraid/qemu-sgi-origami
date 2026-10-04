@@ -379,6 +379,67 @@ static AddressSpace *xbridge_dma_as(PCIBus *bus, void *opaque, int devfn)
     return &s->dma[PCI_SLOT(devfn)].as;
 }
 
+static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
+                                        void *buf, dma_addr_t *len,
+                                        DMADirection dir, MemTxAttrs attrs,
+                                        bool swap32, MemTxResult *result)
+{
+    struct XBridgeDMA *dma = opaque;
+    SGIXBridgeHeadState *s = dma->head;
+    bool write = dir == DMA_DIRECTION_FROM_DEVICE;
+    IOMMUTLBEntry entry;
+    hwaddr translated, length;
+    AddressSpace *target;
+    bool correct;
+
+    if (attrs.memory || s->packet_sender) {
+        return false;
+    }
+    assert(!swap32);
+    entry = xbridge_translate(&dma->iommu, addr,
+                               write ? IOMMU_WO : IOMMU_RO, 0);
+    length = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    if (!(entry.perm & (1 << write))) {
+        length = memory_access_size(&s->denied, length, addr);
+        *result = address_space_rw(&s->denied_as, addr, attrs, buf,
+                                    length, write);
+    } else {
+        translated = (entry.translated_addr & ~entry.addr_mask) |
+                     (addr & entry.addr_mask);
+        correct = entry.target_as->root->ops == &xbridge_swap_ops;
+        target = entry.target_as;
+        if (correct) {
+            struct XBridgeTarget *endpoint = target->root->opaque;
+
+            target = &endpoint->as;
+        }
+        if (!sgi_dma_buffer_try_rw(target, translated, buf, &length, dir,
+                                   attrs, correct, result)) {
+            if (correct) {
+                length = memory_access_size(entry.target_as->root,
+                    MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
+            }
+            *result = address_space_rw(entry.target_as, translated, attrs,
+                                        buf, length, write);
+        }
+    }
+    *len = length;
+    return true;
+}
+
+static const SGIDMABufferProvider *
+xbridge_dma_buffer_provider(Object *owner, MemoryRegion *mr)
+{
+    SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(owner);
+
+    for (unsigned slot = 0; slot < G_N_ELEMENTS(s->dma); slot++) {
+        if (mr == &s->dma[slot].iommu.parent_obj) {
+            return &s->dma[slot].provider;
+        }
+    }
+    return NULL;
+}
+
 static const PCIIOMMUOps xbridge_iommu_ops = {
     .get_address_space = xbridge_dma_as,
 };
@@ -1034,6 +1095,8 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
 
         s->dma[i].head = s;
         s->dma[i].slot = i;
+        s->dma[i].provider.transfer = xbridge_dma_buffer_transfer;
+        s->dma[i].provider.opaque = &s->dma[i];
         if (s->packet_sender) {
             for (unsigned correction = 0; correction < 2; correction++) {
                 struct XBridgeSourceDMA *path = &s->dma[i].source[correction];
@@ -1180,6 +1243,7 @@ static void xbridge_class_init(ObjectClass *oc, const void *data)
     hc->is_hotpluggable_bus = xbridge_is_hotpluggable_bus;
     rc->phases.hold = xbridge_reset_hold;
     device_class_set_props(dc, xbridge_properties);
+    SGI_DMA_BUFFER_CLASS(oc)->get_provider = xbridge_dma_buffer_provider;
 }
 
 static void xbridge_init(Object *obj)
@@ -1204,6 +1268,7 @@ static const TypeInfo xbridge_type = {
     .instance_init = xbridge_init,
     .interfaces = (const InterfaceInfo[]) {
         { TYPE_HOTPLUG_HANDLER },
+        { TYPE_SGI_DMA_BUFFER },
         { },
     },
 };

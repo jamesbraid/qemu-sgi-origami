@@ -2279,6 +2279,61 @@ static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
     return &s->dma[slot].as;
 }
 
+static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
+                                           void *buf, dma_addr_t *len,
+                                           DMADirection dir, MemTxAttrs attrs,
+                                           bool swap32, MemTxResult *result)
+{
+    struct SGIBridgeDeviceDMA *dma = opaque;
+    SGIBridgeState *s = dma->s;
+    bool write = dir == DMA_DIRECTION_FROM_DEVICE;
+    IOMMUTLBEntry entry;
+    hwaddr translated, length;
+    bool correct;
+
+    if (attrs.memory) {
+        return false;
+    }
+    assert(!swap32);
+    entry = sgi_bridge_translate(&dma->iommu, addr,
+                                  write ? IOMMU_WO : IOMMU_RO, 0);
+    length = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    if (!(entry.perm & (1 << write))) {
+        length = memory_access_size(&s->dma_denied, length, addr);
+        *result = address_space_rw(&s->dma_denied_as, addr, attrs, buf,
+                                    length, write);
+    } else {
+        translated = (entry.translated_addr & ~entry.addr_mask) |
+                     (addr & entry.addr_mask);
+        correct = entry.target_as == &s->lane_swap_as;
+        if (!sgi_dma_buffer_try_rw(correct ? &s->fabric_as : entry.target_as,
+                                   translated, buf, &length, dir, attrs,
+                                   correct, result)) {
+            if (correct) {
+                length = memory_access_size(&s->lane_swap,
+                    MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
+            }
+            *result = address_space_rw(entry.target_as, translated, attrs,
+                                        buf, length, write);
+        }
+    }
+    *len = length;
+    return true;
+}
+
+static const SGIDMABufferProvider *
+sgi_bridge_dma_buffer_provider(Object *owner, MemoryRegion *mr)
+{
+    SGIBridgeState *s = SGI_BRIDGE(owner);
+
+    for (unsigned slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+        if (mr == &s->dma[slot].iommu.parent_obj) {
+            return &s->dma[slot].provider;
+        }
+    }
+    return NULL;
+}
+
 static const PCIIOMMUOps sgi_bridge_iommu_ops = {
     .get_address_space = sgi_bridge_device_address_space,
 };
@@ -2630,6 +2685,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
     memory_region_add_subregion(&s->widget, SGI_BRIDGE_CFG0_BASE, &s->cfg0);
 
+    memory_region_init(&s->dma_denied, obj, "sgi-bridge.dma-denied",
+                       UINT64_MAX);
+    address_space_init(&s->dma_denied_as, &s->dma_denied,
+                       "sgi-bridge.dma-denied");
+
     /* One swap region for the chip: per-device decision, shared action. */
     memory_region_init_io(&s->lane_swap, obj, &sgi_bridge_lane_swap_ops, s,
                           "sgi-bridge.lane-swap", UINT64_MAX);
@@ -2649,6 +2709,8 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
 
         s->dma[slot].s = s;
         s->dma[slot].slot = slot;
+        s->dma[slot].provider.transfer = sgi_bridge_dma_buffer_transfer;
+        s->dma[slot].provider.opaque = &s->dma[slot];
         memory_region_init_iommu(&s->dma[slot].iommu,
                                  sizeof(s->dma[slot].iommu),
                                  TYPE_SGI_BRIDGE_IOMMU_MEMORY_REGION, obj,
@@ -2701,6 +2763,7 @@ static void sgi_bridge_unrealize(DeviceState *dev)
         address_space_destroy(&s->dma[slot].as);
     }
     address_space_destroy(&s->lane_swap_as);
+    address_space_destroy(&s->dma_denied_as);
     address_space_destroy(&s->pci_io_as);
     address_space_destroy(&s->pci_mmio_as);
     address_space_destroy(&s->fabric_as);
@@ -2892,6 +2955,7 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
     pc->connect = sgi_bridge_xio_port_connect;
     pc->reset_input = sgi_bridge_xio_port_reset_input;
     pc->request_dropped = sgi_bridge_xio_port_request_dropped;
+    SGI_DMA_BUFFER_CLASS(oc)->get_provider = sgi_bridge_dma_buffer_provider;
 }
 
 static const TypeInfo sgi_bridge_types[] = {
@@ -2903,6 +2967,7 @@ static const TypeInfo sgi_bridge_types[] = {
         .class_init = sgi_bridge_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_HOTPLUG_HANDLER },
+            { TYPE_SGI_DMA_BUFFER },
             { TYPE_SGI_XIO_PORT },
             { },
         },

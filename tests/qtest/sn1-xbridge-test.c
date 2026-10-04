@@ -2,6 +2,7 @@
 /* Standalone PCI head; the fixture does not represent an Origin 300. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "exec/memattrs.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
@@ -265,6 +266,128 @@ static void dma_fill(QTestState *qts, uint64_t address, uint8_t seed)
     card_write(qts, 8, seed);
     g_assert_cmphex(card_read(qts, 4), ==, 8);
     card_write(qts, 0xc, 1);
+}
+
+static void test_dma_buffer_attributes(void)
+{
+    for (unsigned native = 0; native < 2; native++) {
+        for (unsigned memory = 0; memory < 2; memory++) {
+            for (unsigned early = 0; early < 2; early++) {
+                g_autofree char *extra = g_strdup_printf(
+                    "-global sgi-bridge-dma-test.dma-buffer=%s "
+                    "-global sgi-bridge-dma-test.memory-only=%s",
+                    native ? "off" : "on", memory ? "on" : "off");
+                QTestState *qts = transport_start(extra);
+                uint32_t address = 0x40000000 + (early ? 0 : 4092);
+                uint8_t seen[8];
+                MemTxResult result = memory ? MEMTX_ACCESS_ERROR :
+                                             MEMTX_DECODE_ERROR;
+
+                qtest_writeq(qts, BASE + 0x10000, early ? 0 : 0x8a21);
+                qtest_memset(qts, TARGET_A + 0x8ffc, 0xee, sizeof(seen));
+                card_write(qts, 0, address);
+                card_write(qts, 4, sizeof(seen));
+                card_write(qts, 8, 0x40);
+                card_write(qts, 0xc, 1);
+                g_assert_cmphex(card_read(qts, 0x28), ==, result);
+                qtest_memread(qts, TARGET_A + 0x8ffc, seen, sizeof(seen));
+                for (unsigned i = 0; i < sizeof(seen); i++) {
+                    g_assert_cmpuint(seen[i], ==,
+                                     (!early && i < 4) ? 0x40 + i : 0xee);
+                }
+                card_write(qts, 0x14, address);
+                card_write(qts, 0, 0x8000a000);
+                qtest_memset(qts, TARGET_A + 0xa000, 0xee, sizeof(seen));
+                card_write(qts, 0xc, 2);
+                g_assert_cmphex(card_read(qts, 0x28), ==, result);
+                g_assert_cmphex(card_read(qts, 0x2c), ==,
+                    early ? (memory ? 0xa5a5a5a5 : 0) : 0x43424140);
+                g_assert_cmphex(card_read(qts, 0x30), ==,
+                                memory ? 0xa5a5a5a5 : 0);
+                qtest_memread(qts, TARGET_A + 0xa000, seen, sizeof(seen));
+                for (unsigned i = 0; i < sizeof(seen); i++) {
+                    g_assert_cmpuint(seen[i], ==, 0xee);
+                }
+                qtest_quit(qts);
+            }
+        }
+    }
+}
+
+static void test_dma_buffer_memory(void)
+{
+    const char *kinds[] = {
+        "ram", "readonly", "ram-device", "rom-device", "overlap-mmio",
+    };
+
+    for (unsigned kind = 0; kind < G_N_ELEMENTS(kinds); kind++) {
+        for (unsigned native = 0; native < 2; native++) {
+            unsigned length = kind == 4 ? 8 : 64;
+            g_autofree char *extra = g_strdup_printf(
+                "-global sgi-xio-test-target.memory-kind=%s "
+                "-global sgi-bridge-dma-test.dma-buffer=%s",
+                kinds[kind], native ? "off" : "on");
+            QTestState *qts = transport_start(extra);
+            uint8_t expected[64], seen[64];
+
+            for (unsigned i = 0; i < length; i++) {
+                expected[i] = 0x40 + i;
+            }
+            if (kind == 0) {
+                qtest_memwrite(qts, TARGET_A + SCRATCH, expected, length);
+            } else {
+                qtest_sysbus_mmio_map(qts, "/machine/peripheral/targeta", 1,
+                                      TARGET_A + 0x10000);
+            }
+            reg_write(qts, 0x80, 0xa00000);
+            card_write(qts, 0x14, 0x80008000);
+            card_write(qts, 0, 0x80009000);
+            card_write(qts, 4, length);
+            card_write(qts, 0xc, 2);
+            g_assert_cmphex(card_read(qts, 0x28), ==,
+                            kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
+            if (kind == 4) {
+                g_assert_cmphex(card_read(qts, 0x2c), ==, 0x89abcdef);
+                g_assert_cmphex(card_read(qts, 0x30), ==, 0x01234567);
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 48),
+                                 ==, 1);
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
+                                 ==, 8);
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
+                                 ==, 0);
+            } else {
+                g_assert_cmphex(card_read(qts, 0x2c), ==, 0x43424140);
+                g_assert_cmphex(card_read(qts, 0x30), ==, 0x47464544);
+                if (kind != 1 && kind != 3) {
+                    qtest_memread(qts, TARGET_A + 0x9000, seen, length);
+                    g_assert_cmpmem(seen, length, expected, length);
+                }
+            }
+            card_write(qts, 0, 0x80008000);
+            card_write(qts, 8, 0x70);
+            card_write(qts, 0xc, 1);
+            g_assert_cmphex(card_read(qts, 0x28), ==,
+                            kind == 1 ? MEMTX_DECODE_ERROR : MEMTX_OK);
+            /* The real cached write must preserve the caller's source. */
+            g_assert_cmphex(card_read(qts, 0x2c), ==, 0x73727170);
+            g_assert_cmphex(card_read(qts, 0x30), ==, 0x77767574);
+            if (kind == 4) {
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 56),
+                                 ==, 2);
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 64),
+                                 ==, 8);
+                g_assert_cmpuint(qtest_readq(qts, TARGET_A + 0x10000 + 72),
+                                 ==, 0);
+            } else {
+                qtest_memread(qts, TARGET_A + SCRATCH, seen, length);
+                for (unsigned i = 0; i < length; i++) {
+                    g_assert_cmpuint(seen[i], ==,
+                        (kind == 1 || kind == 3 ? 0x40 : 0x70) + i);
+                }
+            }
+            qtest_quit(qts);
+        }
+    }
 }
 
 static void test_dma_routes(void)
@@ -1382,6 +1505,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/config-doubleword", test_config_doubleword);
     qtest_add_func("/sn1/xbridge/config-type1", test_config_type1);
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
+    qtest_add_func("/sn1/xbridge/dma-buffer-memory", test_dma_buffer_memory);
+    qtest_add_func("/sn1/xbridge/dma-buffer-attributes",
+                   test_dma_buffer_attributes);
     qtest_add_func("/sn1/xbridge/interrupt-packets", test_interrupt_packets);
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
     qtest_add_func("/sn1/xbridge/ioc3-pio-swap-controls",
