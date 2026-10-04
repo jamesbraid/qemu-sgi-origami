@@ -6578,6 +6578,116 @@ static void test_stencil_pixels_boundaries(gconstpointer opaque)
     }
 }
 
+static void stencil_map_upload(QTestState *s, uint32_t token,
+                               const uint32_t *values, unsigned count)
+{
+    unsigned capacity = count <= 256 ? 256 : count <= 1024 ? 1024 : 4096;
+
+    kona_command(s, token,
+                 (uint32_t[]) { 0xc71, count, fbits(count - 1), capacity }, 4);
+    for (unsigned k = 0; k < count; k++) {
+        qtest_writel(s, REG_COMMAND, values[k]);
+    }
+}
+
+static void test_stencil_pixel_maps(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t values[] = { 0x71, 0x30, 0x34, 0x3a };
+    uint8_t got[2], expected[] = { 0x34, 0x71 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    gl_make_current_depth(s, 24);
+    stencil_config(s, 8);
+    gl_window_cleared(s, 0, 0, 1);
+    stencil_clear(s, 0xa5, 255);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode == 0 || mode == 16) {
+        for (unsigned k = 0; k < 4; k++) {
+            values[k] = fbits(values[k] + 0.25f);
+        }
+        if (mode == 16) {
+            values[2] = fbits(-2.75f);
+            expected[0] = 0xfd;
+        }
+        stencil_map_upload(s, 0x34, values, 4);
+    } else if (mode == 3 || mode == 15) {
+        expected[0] = expected[1] = 0;
+        if (mode == 15) {
+            gl_begin(s, 0);
+            stencil_map_upload(s, 0x35, values, 4);
+            kona_command(s, 0x71, (uint32_t[]) { 0 }, 1);
+        }
+    } else if (mode == 7) {
+        kona_command(s, 0x35, (uint32_t[]) { 0xc71, 4, fbits(3), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, values[0]);
+        qtest_writel(s, REG_COMMAND, values[1]);
+        read_dma_migrate(from, &s, &to, &dir);
+        qtest_writel(s, REG_COMMAND, values[2]);
+        qtest_writel(s, REG_COMMAND, values[3]);
+    } else if (mode == 8) {
+        kona_command(s, 0x35,
+                     (uint32_t[]) { 0xc71, 4096, fbits(4095), 4096 }, 4);
+        for (unsigned k = 0; k < 4096; k++) {
+            qtest_writel(s, REG_COMMAND, (k ^ 0x5a) & 255);
+        }
+        expected[0] = 0x48;
+        expected[1] = 0x6e;
+    } else {
+        stencil_map_upload(s, mode == 2 ? 0x36 : 0x35, values, 4);
+    }
+    if (mode == 6) {
+        kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+        stencil_map_upload(s, 0x35, (uint32_t[]) { 99 }, 1);
+        read_dma_migrate(from, &s, &to, &dir);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    } else if (mode >= 9 && mode <= 14) {
+        uint32_t count = mode == 9 ? 3 : mode == 11 ? 0 :
+                         mode == 13 ? 4097 : 4;
+        uint32_t header[] = { mode == 10 ? 0xffff : 0xc71, count,
+                              fbits(count - 1), mode == 14 ? 7 : 256 };
+
+        kona_command(s, mode == 12 ? 0x34 : 0x35, header, 4);
+        for (unsigned k = 0; k < count; k++) {
+            qtest_writel(s, REG_COMMAND,
+                         mode == 12 && k == 3 ? fbits(NAN) :
+                         mode == 12 ? fbits(99) : 99);
+        }
+    } else if (mode == 17) {
+        pixel_transfer_set(s, 0xd12, 1);
+        pixel_transfer_set(s, 0xd13, 1);
+        expected[0] = expected[1] = 0x30;
+    }
+    pixel_transfer_set(s, 0xd11, mode == 4 || mode == 5 ? 0 : 1);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 12, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, 0x12340000);
+    if (mode == 4) {
+        pixel_transfer_set(s, 0xd11, 1);
+    } else if (mode == 5) {
+        pixel_transfer_set(s, 0xd11, 1);
+        kona_command(s, 0x38,
+                     (uint32_t[]) { 64, 64, 2, 1, 0, 0x1802, 0x80000000 }, 7);
+    }
+    if (mode != 4) {
+        pixel_transfer_set(s, 0xd11, 0);
+    }
+    pixel_transfer_set(s, 0xd12, 0);
+    pixel_transfer_set(s, 0xd13, 0);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 12, 1, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, 2);
+    g_assert_cmpmem(got, 2, expected, 2);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_stencil_pixels_transport(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -6587,7 +6697,7 @@ static void test_stencil_pixels_transport(gconstpointer opaque)
     bool dma = matrix ? (mode / 7) & 1 : mode == 58;
     bool swap = matrix && ((mode / 7) & 2);
     bool output_swap = matrix && ((mode / 7) & 4);
-    bool refused = mode == 59 || mode == 60;
+    bool refused = mode == 59;
     const uint32_t first = type == 6 ? 0x41900000 : 0x12;
     const uint32_t second = type == 6 ? 0x42500000 : 0x34;
     uint8_t bytes[12] = { 0 }, got[8], expected[8];
@@ -6621,6 +6731,7 @@ static void test_stencil_pixels_transport(gconstpointer opaque)
         }
         if (mode == 60) {
             pixel_transfer_set(s, 0xd11, 1);
+            output[0] = output[1] = 0;
         }
     }
     if (dma) {
@@ -11516,6 +11627,19 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_depth_pixel_boundaries);
+    }
+    static const char *stencil_map_names[] = {
+        "float", "uint", "ushort", "default", "read", "copy", "attributes",
+        "partial-migration", "maximum", "non-power-of-two", "unknown-map",
+        "zero-size", "late-nan", "oversize", "unknown-capacity", "begin",
+        "negative-float", "index-transfer",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(stencil_map_names); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/stencil-maps/%s", stencil_map_names[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_stencil_pixel_maps);
     }
     static const char *stencil_pixel_names[] = {
         "draw-read", "bypass-fragment-tests", "copy-overlap",

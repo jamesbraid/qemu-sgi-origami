@@ -7,6 +7,24 @@
 
 static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
+        .selector = 0x34,
+        .call = "float pixel map header",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
+        .selector = 0x35,
+        .call = "unsigned integer pixel map header",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
+        .selector = 0x36,
+        .call = "unsigned short pixel map header",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
         .selector = 0x17b,
         .call = "volume mipmap binding",
         .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,

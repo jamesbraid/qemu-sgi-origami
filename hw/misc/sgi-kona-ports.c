@@ -387,6 +387,9 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_PIXEL_ZOOM, 2 },
     { SGI_KONA_CMD_GL_PIXEL_TRANSFER, 2 },
     { SGI_KONA_CMD_GL_PIXEL_STORE, 2 },
+    { SGI_KONA_CMD_GL_PIXEL_MAP_F, 4 },
+    { SGI_KONA_CMD_GL_PIXEL_MAP_UI, 4 },
+    { SGI_KONA_CMD_GL_PIXEL_MAP_US, 4 },
     { SGI_KONA_CMD_GL_TEX_ENVF, 5 },
     { SGI_KONA_CMD_GL_TEX_ENVI, 5 },
     /* Pixels, queries and the attribute stack. */
