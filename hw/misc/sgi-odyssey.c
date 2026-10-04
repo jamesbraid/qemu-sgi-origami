@@ -7177,6 +7177,7 @@ static void odyssey_query_update(SGIOdysseyState *s, uint32_t tag)
         record = ODSY_QUERY_NORMAL;
         break;
     case ODSY_GL_TEXCOORD_2F:
+    case ODSY_GL_TEXCOORD_4F:
         record = ODSY_QUERY_TEXCOORD;
         break;
     case 0x2f00c02e:
