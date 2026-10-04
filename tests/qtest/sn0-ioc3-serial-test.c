@@ -61,6 +61,8 @@ static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node_base)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, node_base + BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* Direct PCI DMA targets this node's memory, without the 512 MB step. */
+    qtest_writel(qts, node_base + BRIDGE_BASE + 0x80 + REG_DATA, 0);
     /* As the PROM does at console setup, before any serial DMA. */
     qtest_writel(qts, node_base + IOC3_BASE + 0x28, CHIP_CONTROL_PROM);
 }
@@ -355,6 +357,7 @@ static int portb_accept(int lfd)
 
 /* Rings in guest RAM: TX A, RX A, TX B, RX B, in the fixed order. */
 #define RING_BASE       0x00100000u
+#define RING_DMA_BASE   (0x80000000u | RING_BASE)
 #define RING_SIZE       0x1000u
 #define RING_TX(port)   (RING_BASE + (port) * 2 * RING_SIZE)
 #define RING_RX(port)   (RING_TX(port) + RING_SIZE)
@@ -372,7 +375,7 @@ static void write_transmit_entry(QTestState *qts, uint32_t ring,
 static void enable_dma(QTestState *qts, unsigned int port)
 {
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(port, SDMA_TX_PRODUCE), 0);
     qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), 0);
     qtest_writel(qts, sdma(port, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -513,12 +516,12 @@ static void test_an_index_keeps_only_its_pointer_field(const void *data)
     sn0_ioc3_attach(qts);
 
     /* 1 KB rings: the pointer is bits 3-9. */
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_PRODUCE)), ==, 0x3f8);
 
     /* 4 KB rings: two bits wider, and the same register. */
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_PRODUCE)), ==, 0xff8);
 
@@ -538,7 +541,7 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_CONSUME)), ==,
                     0x800000f8 | 0xf00);
@@ -604,7 +607,7 @@ static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
 
     for (port = 0; port < 2; port++) {
         /* Written through the alias, visible in the main block. */
@@ -1348,7 +1351,7 @@ static void test_a_disabled_engine_walks_nothing(const void *data)
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
     qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
 
@@ -1457,7 +1460,7 @@ static void test_the_size_bit_is_not_part_of_the_address(const void *data)
     set_loopback(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
 
     write_transmit_entry(qts, RING_TX(0), 0, out, control);
@@ -1751,7 +1754,7 @@ static void test_a_ring_only_guest_receives_arriving_characters(
 
     qtest_writel(qts, INT_ENABLE_SET, IRIX_RING_ENABLE_MASK);
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
     /* The miniroot's control value: DMA on, high water four. */
@@ -1796,7 +1799,7 @@ static void test_the_receive_timer_raises_on_expiry(
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -1854,7 +1857,7 @@ static void read_catches_the_receive_timer_up(unsigned int port)
     configure_line(qts, port);
     set_loopback(qts, port);
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(port, SDMA_RX_TIMER), 2);
     qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
     qtest_writel(qts, sdma(port, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -1914,7 +1917,7 @@ static void test_crossing_the_high_water_mark_raises_its_source(
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
     qtest_writel(qts, sdma(0, SDMA_CONTROL),
                  CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
@@ -1959,7 +1962,7 @@ static void test_consuming_below_the_high_water_mark_drops_it(const void *data)
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0);
     qtest_writel(qts, sdma(0, SDMA_CONTROL),
                  CTRL_DMA_ENABLE | CTRL_HIGH_WATER(8));
@@ -2004,7 +2007,7 @@ static void test_a_full_ring_holds_characters(
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 16);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
 
@@ -2086,7 +2089,7 @@ static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
     sn0_ioc3_attach(qts);
     configure_line(qts, 0);
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
 
     /* A character arrives while ring DMA is still off: it waits in the port. */
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
@@ -2127,7 +2130,7 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
     configure_line(qts, 0);
 
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -2211,7 +2214,7 @@ static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
     configure_line(qts, 0);
     set_loopback(qts, 0);
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), consume);
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE);
@@ -2651,7 +2654,7 @@ static void loopback_like_the_board_test(QTestState *qts, unsigned int port)
     qtest_writeb(qts, serial_port(port) + REG_FCR, 0x01);
     set_loopback(qts, port);
     qtest_writel(qts, SDMA_RING_HI, 0);
-    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, SDMA_RING_LO, RING_DMA_BASE | RING_4K);
     qtest_writel(qts, sdma(port, SDMA_CONTROL), CTRL_DMA_ENABLE);
     qtest_writel(qts, sdma(port, SDMA_RX_TIMER), 0xfff);
     qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);

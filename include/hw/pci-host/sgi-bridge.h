@@ -113,16 +113,6 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
 AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 
 /*
- * The model's native lane representation with DMA swapping disabled. A
- * self-ordered device already uses the guest's byte order in that case;
- * ordinary PCI models need the crossed-lane correction. The programmed DMA
- * swap reverses either baseline. This declaration also selects the existing
- * register-window lane mapping. It describes neither PCI identity nor a
- * register region's endianness or the format of a DMA descriptor.
- */
-#define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
-
-/*
  * The whole of the widget's XIO space belongs to this chip. Sized to
  * reach the PIO translated window below, not just the low CSR/cfg0/ssram/
  * small-window region.
@@ -147,7 +137,7 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
  * big-endian-processor-onto-little-endian-PCI-bus path they correct, just
  * reached without a slot's own programmed base. There is no per-device
  * register behind this window, so unlike a per-device window it has no
- * self-ordered exemption. Every access through it is corrected. Only this
+ * test override. Every access through it is corrected. Only this
  * range is modeled; the adjacent 0x80000000-0xffffffff "direct-mapped" DMA
  * range has no equivalent inbound evidence yet.
  *
@@ -281,14 +271,6 @@ struct SGIBridgeState {
 
     /* Where each window aims: an I/O region cannot hold an alias offset. */
     hwaddr device_window_base[SGI_BRIDGE_DEVICES];
-
-    /*
-     * Slots whose device declared itself byte-lane self-ordered, collected as
-     * it was plugged so that every access is one mask test rather than a walk
-     * of the bus. Not migrated: the destination plugs the same devices into
-     * the same slots before any transfer runs.
-     */
-    uint32_t self_ordered_slots;
 
     /* Slots forced exempt whatever is plugged in them: a test override. */
     uint32_t byte_lane_exempt;

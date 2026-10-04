@@ -1471,115 +1471,6 @@ static void test_dma_local_space_is_never_swapped(const void *data)
 }
 
 
-/*
- * The exemption belongs to the card, not to the slot. Two cards of the same
- * type in two slots the board's own controller never occupies: one declares
- * that it orders this chip's byte lanes itself and one says nothing. Holding
- * both in one machine is what makes the answer about the declaration rather
- * than about a slot a board happened to name.
- */
-#define SELF_SLOT               4
-#define PLAIN_SLOT              5
-#define SELF_CARD               " -device sgi-bridge-dma-test,addr=" \
-                                stringify(SELF_SLOT) \
-                                ",byte-lane-self-ordered=on"
-#define PLAIN_CARD              " -device sgi-bridge-dma-test,addr=" \
-                                stringify(PLAIN_SLOT)
-#define BOTH_CARDS              SELF_CARD PLAIN_CARD
-
-/*
- * The direct window, which is where an ethernet engine's descriptors and
- * buffers actually travel. It has to be this window or the translated one:
- * a transfer below the translated base crosses no swapper at all, so a ring
- * put there would pass on a model that never read the declaration.
- */
-static void test_dma_self_ordered_follows_swap_control(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE BOTH_CARDS);
-    uint8_t seen[SWAP_LEN];
-    unsigned int i;
-
-    card_start(qts, SELF_SLOT);
-    card_start(qts, PLAIN_SLOT);
-    bridge_clear_the_direct_map(qts);
-
-    /* The card that orders its own bytes: the guest's stream, as written. */
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-    card_transfer(qts, SELF_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + i));
-    }
-
-    /* Its native byte order does not suppress the programmed swap. */
-    qtest_writel(qts, REG(BRIDGE_DEVICE(SELF_SLOT)),
-                 DEV_MEMORY_SPACE | (CARD_MMIO(SELF_SLOT) >> 20) |
-                 DEV_SWAP_DIRECT);
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-    card_transfer(qts, SELF_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
-    }
-
-    /* The card beside it, which said nothing: permuted within each word. */
-    bridge_fill_sentinel(qts, TARGET_PAGE_A);
-    card_transfer(qts, PLAIN_SLOT, PCI_DIRECT_32 | TARGET_PAGE_A, SWAP_LEN);
-    qtest_memread(qts, TARGET_PAGE_A, seen, sizeof(seen));
-    for (i = 0; i < SWAP_LEN; i++) {
-        g_assert_cmpuint(seen[i], ==, (uint8_t)(SWAP_SEED + (i ^ 3)));
-    }
-
-    qtest_quit(qts);
-}
-
-/*
- * The same decision governs the register windows, so a card outside the slot
- * the board named had its narrow accesses mis-addressed too. The card's
- * 64-bit register block holds a constant whose bytes all differ, and the
- * slot is left 32-bit so that a byte lands on the narrow path: which byte
- * answers says which offset the bridge addressed. Stated, not computed,
- * the four low bytes of 0x0123456789abcdef, which the byte-lane rule reaches
- * at the offset itself or at offset xor three.
- */
-#define CARD_WIDE_MMIO(slot)    (CARD_MMIO(slot) + 0x100000u)
-#define WIDE_LOW_BYTES          { 0xef, 0xcd, 0xab, 0x89 }
-
-static void card_aim_at_its_wide_window(QTestState *qts, unsigned int slot)
-{
-    qtest_writel(qts, CFG0(slot, 0) + PCI_BAR1, CARD_WIDE_MMIO(slot));
-    qtest_writel(qts, CFG0(slot, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
-    qtest_writel(qts, REG(BRIDGE_DEVICE(slot)),
-                 DEV_MEMORY_SPACE | (CARD_WIDE_MMIO(slot) >> 20));
-}
-
-static void test_a_self_ordered_card_reads_narrow_straight(const void *data)
-{
-    static const uint8_t byte[4] = WIDE_LOW_BYTES;
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE BOTH_CARDS);
-    unsigned int i;
-
-    card_aim_at_its_wide_window(qts, SELF_SLOT);
-    card_aim_at_its_wide_window(qts, PLAIN_SLOT);
-
-    for (i = 0; i < 4; i++) {
-        g_assert_cmphex(qtest_readb(qts, WINDOW(SELF_SLOT) + WIDE_FIXED + i),
-                        ==, byte[i]);
-        g_assert_cmphex(qtest_readb(qts, WINDOW(PLAIN_SLOT) + WIDE_FIXED + i),
-                        ==, byte[i ^ 3]);
-    }
-
-    /*
-     * A word is one whole cycle, so the byte lanes do not move it: both
-     * cards read the same word through the same windows. Without this a
-     * window aimed somewhere else would look like a byte-lane answer.
-     */
-    g_assert_cmphex(qtest_readl(qts, WINDOW(SELF_SLOT) + WIDE_FIXED), ==,
-                    qtest_readl(qts, WINDOW(PLAIN_SLOT) + WIDE_FIXED));
-
-    qtest_quit(qts);
-}
-
 /* Both the board's slot and an added IOC3 support programmed DMA swapping. */
 #define SPARE_IOC3_SLOT         5
 #define SPARE_IOC3              " -device sgi-ioc3,addr=" \
@@ -1600,8 +1491,9 @@ static void test_ioc3_dma_swap_is_supported_in_any_slot(const void *data)
      * The same slot with an ordinary card in it, so this is about the chip
      * and not about slot 5 having become exempt some other way.
      */
-    g_assert_false(bridge_log_has_the_message_at(PLAIN_CARD, PLAIN_SLOT,
-                                                 DEV_SWAP_DIRECT));
+    g_assert_false(bridge_log_has_the_message_at(
+        " -device sgi-bridge-dma-test,addr=" stringify(SPARE_IOC3_SLOT),
+        SPARE_IOC3_SLOT, DEV_SWAP_DIRECT));
 }
 
 /*
@@ -4120,11 +4012,6 @@ int main(int argc, char **argv)
                         NULL, test_dma_the_two_swap_bits_are_independent);
     qtest_add_data_func("sn0/bridge/dma-local-space-is-never-swapped", NULL,
                         test_dma_local_space_is_never_swapped);
-    qtest_add_data_func("sn0/bridge/dma-self-ordered-follows-swap-control",
-                        NULL, test_dma_self_ordered_follows_swap_control);
-    qtest_add_data_func("sn0/bridge/self-ordered-card-narrow-reads-straight",
-                        NULL,
-                        test_a_self_ordered_card_reads_narrow_straight);
     qtest_add_data_func("sn0/bridge/ioc3-dma-swap-supported-in-any-slot", NULL,
                         test_ioc3_dma_swap_is_supported_in_any_slot);
     qtest_add_data_func("sn0/bridge/dma-direct-window-reaches-the-second-node",
