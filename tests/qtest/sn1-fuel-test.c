@@ -348,6 +348,21 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     g_assert_cmpstr(qdict_get_str(response, "return"), ==,
                     "02:a1:b2:c3:d4:e5");
     qtest_quit(qts);
+
+    /* The supplied image is a raw override: it wins over mac=. */
+    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
+                      "fuel-ioc3-subsystem-id=0xc30a,"
+                      "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2,"
+                      "fuel-mac-eeprom=%s,mac=02:00:00:00:00:01 "
+                      "-bios %s -S -nic user", path,
+                      (const char *)data);
+    qobject_unref(response);
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/node0/baseio/ioc3','property':'mac'}}");
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    "02:a1:b2:c3:d4:e5");
+    qtest_quit(qts);
     g_setenv("FUEL_MAC_PATH", path, true);
     g_setenv("FUEL_MAC_NIC", "user,mac=02:a1:b2:c3:d4:e5", true);
     g_test_trap_subprocess(NULL, 0, 0);

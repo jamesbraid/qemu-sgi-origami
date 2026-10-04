@@ -64,6 +64,7 @@
 #include "hw/pci/pci.h"
 #include "block/block.h"
 #include "block/graph-lock.h"
+#include "net/util.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/qtest.h"
@@ -336,6 +337,8 @@ struct SGIMachineState {
     uint8_t fuel_bedrock_revision;
     bool fuel_bedrock_revision_set;
     char *fuel_mac_eeprom;
+    /* mac=: node 0's onboard Ethernet address; NULL selects the default. */
+    char *mac;
     strList *controller_board_eeprom;
     strList *controller_chardev;
     strList *controller_brick_serial;
@@ -346,8 +349,9 @@ struct SGIMachineState {
 
 /*
  * The controller holds one identification record per file, in order. The
- * machine names the files and claims nothing about what is in them: no
- * default record, and no record implied by the memory size.
+ * machine names the files and claims nothing about what is in them; a file
+ * replaces the synthetic record the L1 would otherwise build, and no record
+ * is implied by the memory size.
  */
 typedef struct SGIMachineIdentityRecords {
     const char *name;
@@ -427,6 +431,91 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
 }
 
 /*
+ * The onboard Ethernet address when mac= is not given: SGI's 08:00:69 OUI
+ * with a fixed placeholder station part, the value the launcher used.
+ * It is not any machine's factory address.
+ */
+#define SGI_SN1_DEFAULT_MAC "08:00:69:12:34:56"
+
+static bool sgi_machine_parse_mac(const char *text, uint8_t mac[6])
+{
+    return net_parse_macaddr(mac, text) == 0 &&
+           memcmp(mac, "\0\0\0\0\0\0", 6) && !(mac[0] & 1);
+}
+
+/*
+ * The onboard I/O board fitted to a Bedrock node: an IO8 or a Fuel system
+ * board, each on the node's own XBridge.
+ */
+static bool sgi_machine_node_io_preset(const SGIModelTopology *t,
+                                       unsigned int node_index,
+                                       SGIModelIoBoardPreset *preset)
+{
+    g_autofree const SGIModelXioAttachment **attachments = NULL;
+    const SGIModelIoBoardList *entry;
+    size_t count;
+
+    attachments = sgi_model_xio_attachment_array(t->xio_attachments, &count);
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        const SGIModelIoBoard *board = entry->value;
+
+        if (!board->populated || board->attachment >= count ||
+            (board->preset != SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+             board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL) ||
+            attachments[board->attachment]->node_index != node_index ||
+            attachments[board->attachment]->crossbar_index >= 0) {
+            continue;
+        }
+        *preset = board->preset;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Gives a node's L1 the station address its identity record carries: the
+ * IO8 board area on an Origin 300, the MAC text record on a Fuel. Each
+ * further node takes the next address, so two chassis' IOC3s differ. A
+ * raw record supplied for that area still wins inside the L1.
+ */
+static bool sgi_machine_set_l1_mac(SGIMachineState *s, DeviceState *l1,
+                                   unsigned int node_index, Error **errp)
+{
+    SGIModelIoBoardPreset preset;
+    uint8_t mac[6];
+    uint64_t value = 0;
+    g_autofree char *address = NULL;
+
+    if (!s->view || !sgi_machine_node_io_preset(s->view, node_index,
+                                                &preset)) {
+        return true;
+    }
+    if (!sgi_machine_parse_mac(s->mac ? s->mac : SGI_SN1_DEFAULT_MAC, mac)) {
+        error_setg(errp, "mac must be a nonzero unicast address");
+        return false;
+    }
+    for (unsigned int i = 0; i < 6; i++) {
+        value = value << 8 | mac[i];
+    }
+    value = (value + node_index) & MAKE_64BIT_MASK(0, 48);
+    for (unsigned int i = 0; i < 6; i++) {
+        mac[i] = value >> (40 - 8 * i);
+    }
+    if (!memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
+        error_setg(errp, "mac leaves node %u without a unicast address",
+                   node_index);
+        return false;
+    }
+    address = g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x", mac[0],
+                              mac[1], mac[2], mac[3], mac[4], mac[5]);
+    qdev_prop_set_string(l1, "mac", address);
+    qdev_prop_set_string(l1, "mac-record",
+                         preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ?
+                         "io8-board" : "mac-text");
+    return true;
+}
+
+/*
  * Copies the machine's own identity-record file lists onto an L1 device
  * before it is realized. Takes the L1 explicitly because it lives on the
  * node (sgi-sn1-node), while the file lists it reads are machine
@@ -434,6 +523,24 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
  * taking its own share in order; a list that does not divide evenly is
  * refused, since no share of it names one chassis's parts.
  */
+unsigned int sgi_machine_bedrock_node_index(MachineState *machine,
+                                            DeviceState *node)
+{
+    SGIMachineState *s = SGI_MACHINE(machine);
+    unsigned int i;
+
+    for (i = 0; s->bedrock_nodes && i < s->num_nodes; i++) {
+        if (s->bedrock_nodes[i] == node) {
+            return i;
+        }
+    }
+    /*
+     * A qtest fixture that builds its nodes itself has no list; its nodes
+     * are placed at their NASIDs, as sgi-sn1-node assumed before.
+     */
+    return SN1_NODE(node)->nasid;
+}
+
 bool sgi_machine_set_l1_identity_records(MachineState *machine,
                                          DeviceState *l1,
                                          unsigned int node_index,
@@ -473,7 +580,7 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
         }
         qdev_prop_set_array(l1, records->name, files);
     }
-    return true;
+    return sgi_machine_set_l1_mac(s, l1, node_index, errp);
 }
 
 static bool sgi_machine_controller_input(const char *text, bool component,
@@ -3816,7 +3923,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         !sgi_machine_validate_expansion_storage(s, t, errp)) {
         return false;
     }
-    if (sgi_machine_has_identity_records(s)) {
+    if (sgi_machine_has_identity_records(s) || s->mac) {
         g_autofree const SGIModelController **controllers = NULL;
         size_t controller_count;
         bool has_l1 = false;
@@ -3831,8 +3938,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         if (!has_l1) {
-            error_report("%s: chassis-eeprom/board-eeprom/spd-eeprom name "
-                        "an L1 identity controller, which topology '%s' "
+            error_report("%s: chassis-eeprom/board-eeprom/spd-eeprom/mac "
+                        "name an L1 identity controller, which topology '%s' "
                         "does not have", mc->name, t->name);
             exit(EXIT_FAILURE);
         }
@@ -5034,6 +5141,24 @@ static void sgi_machine_set_fuel_mac_eeprom(Object *obj, const char *value,
     s->fuel_mac_eeprom = g_strdup(value);
 }
 
+static char *sgi_machine_get_mac(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->mac);
+}
+
+static void sgi_machine_set_mac(Object *obj, const char *value, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    uint8_t mac[6];
+
+    if (!sgi_machine_parse_mac(value, mac)) {
+        error_setg(errp, "mac must be a nonzero unicast address");
+        return;
+    }
+    g_free(s->mac);
+    s->mac = g_strdup(value);
+}
+
 static void sgi_machine_get_fuel_l1_type_code(Object *obj, Visitor *v,
                                                const char *name, void *opaque,
                                                Error **errp)
@@ -5354,6 +5479,7 @@ static void sgi_machine_instance_finalize(Object *obj)
         g_hash_table_destroy(s->storage);
     }
     g_free(s->fuel_mac_eeprom);
+    g_free(s->mac);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
             obj, (void *)&sgi_machine_identity_records[i]));
@@ -5493,6 +5619,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "fuel-mac-eeprom",
         "Path to a 512-byte Fuel L1 MAC EEPROM image; applicability and "
         "requirements are declared by the selected model");
+
+    object_class_property_add_str(oc, "mac", sgi_machine_get_mac,
+                                  sgi_machine_set_mac);
+    object_class_property_set_description(oc, "mac",
+        "Onboard Ethernet address of node 0, carried in its L1 identity "
+        "record; each further node takes the next address (default "
+        SGI_SN1_DEFAULT_MAC ", a placeholder)");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",

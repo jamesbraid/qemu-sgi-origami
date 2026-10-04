@@ -90,6 +90,14 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
                                          Error **errp);
 
 /*
+ * @node's position in the topology's node list, the index the identity
+ * records and L1 defaults are split by. It need not equal the NASID; a
+ * node the machine did not build from its topology answers its NASID.
+ */
+unsigned int sgi_machine_bedrock_node_index(MachineState *machine,
+                                            DeviceState *node);
+
+/*
  * The -serial lines a Bedrock node takes, a block of this many per node in
  * node order: its L1, then its IO-8's IOC3 port A, port B, and the two record
  * lines. Node 0's block is the one-chassis machine's lines 0 to 4.
