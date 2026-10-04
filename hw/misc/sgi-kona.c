@@ -1467,7 +1467,7 @@ static const struct {
  * reason post: the model answers at once rather than after queued work.
  * With no return page registered it logs and writes nothing.
  */
-static void sgi_kona_post_return(SGIKonaState *s, uint32_t token,
+static bool sgi_kona_post_return(SGIKonaState *s, uint32_t token,
                                  uint32_t offset, const void *data,
                                  uint32_t len)
 {
@@ -1477,15 +1477,17 @@ static void sgi_kona_post_return(SGIKonaState *s, uint32_t token,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-kona: token 0x%x with no return page registered;"
                       " nothing posted\n", token);
-        return;
+        return false;
     }
     if (len && !sgi_kona_host_write(s, s->return_page + offset, data, len)) {
-        return;
+        return false;
     }
     stl_be_p(ready, 1);
     if (sgi_kona_host_write(s, s->return_page, ready, sizeof(ready))) {
         trace_sgi_kona_return_post(token, s->return_page);
+        return true;
     }
+    return false;
 }
 
 static void sgi_kona_answer_config(SGIKonaState *s)
@@ -2005,28 +2007,59 @@ static void sgi_kona_gl_line_distance(SGIKonaState *s)
                          sizeof(words));
 }
 
+/* OpenGL 1.2.1 ordinary errors and TABLE_TOO_LARGE. Zero is no error. */
+static bool sgi_kona_gl_error_valid(uint32_t error)
+{
+    return !error || (error >= 0x500 && error <= 0x505) || error == 0x8031;
+}
+
+static void sgi_kona_gl_set_error(SGIKonaState *s, uint32_t error)
+{
+    int i = s->context_current;
+
+    if (!sgi_kona_gl_error_valid(error)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: unrecognized native GL error 0x%x;"
+                      " pending error unchanged\n", error);
+    } else if (i >= 0 && i < SGI_KONA_CONTEXTS && s->contexts[i].valid &&
+               !s->gl_pipe[i].pending_error) {
+        s->gl_pipe[i].pending_error = error;
+    }
+}
+
 /*
- * The GL client's glGetError, 0x3e and a word the pipe ignores: the library
- * waits without limit for word 0 of the context's return page and then reads
- * the error code from byte 8 (established from the reader). The library
- * does keep the first error it raised itself, but only its generic
- * glGetError reads that field; the KONA glGetError never does and asks
- * the pipe, so the code the client sees comes from the pipe alone. The
- * library sends its own errors to the pipe as 0xe4 and the code.
- *
- * Approximated: the model keeps no error state, drops 0xe4's code, and
- * always answers 0, no error. Returning the first error recorded by 0xe4
- * and clearing it, as glGetError requires, is inferred and not modelled.
- * The guest check is the minimal GLX probe's clear case getting past its
- * glGetError to the next command.
+ * The client reads a big-endian error code at byte eight after ready.
+ * Native errors precede shared draw errors, with both consumed only after
+ * payload and ready writes complete. Errors are independent of attributes.
  */
 static void sgi_kona_gl_get_error(SGIKonaState *s)
 {
+    int i = s->context_current;
+    uint32_t code;
     uint8_t error[4];
 
-    stl_be_p(error, 0);
-    sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_ERROR, 8, error,
-                         sizeof(error));
+    if (!sgi_kona_x_read_current(s) || s->gl[i].in_begin) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: GL error query without a usable"
+                      " current context; pending errors retained\n");
+        return;
+    }
+    code = s->gl_pipe[i].pending_error ? s->gl_pipe[i].pending_error :
+                                       s->gl[i].polygon.error;
+    stl_be_p(error, code);
+    if (!sgi_kona_post_return(s, SGI_KONA_CMD_GL_GET_ERROR, 8, error,
+                              sizeof(error))) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: GL error reply failed;"
+                      " error 0x%x retained\n", code);
+        return;
+    }
+    if (s->gl_pipe[i].pending_error) {
+        s->gl_pipe[i].pending_error = 0;
+    } else {
+        uint32_t consumed;
+
+        bool completed = sgi_gl_consume_error(&s->gl[i], &consumed);
+
+        assert(completed && consumed == code);
+    }
 }
 
 /*
@@ -4568,6 +4601,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_LINE_DISTANCE:
         sgi_kona_gl_line_distance(s);
+        return;
+    case SGI_KONA_CMD_GL_SET_ERROR:
+        sgi_kona_gl_set_error(s, args[0]);
         return;
     case SGI_KONA_CMD_GL_GET_ERROR:
         sgi_kona_gl_get_error(s);
@@ -9047,6 +9083,17 @@ static const VMStateDescription vmstate_sgi_kona_gl_unpack = {
     },
 };
 
+/* Native errors do not belong to the older pipe or attribute layouts. */
+static const VMStateDescription vmstate_sgi_kona_gl_error = {
+    .name = TYPE_SGI_KONA "/gl-error",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(pending_error, SGIKonaGLPipe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
     .version_id = 2,
@@ -9091,7 +9138,8 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
         const SGIKonaGLWindow *w = &s->gl_window[i];
         const SGIKonaGLPipe *p = &s->gl_pipe[i];
 
-        if (w->placed > 1 || w->double_buffered > 1 ||
+        if (!sgi_kona_gl_error_valid(p->pending_error) ||
+            w->placed > 1 || w->double_buffered > 1 ||
             w->displayed_bank > 1 ||
             (p->draw_config_received &&
              ((w->placed &&
@@ -9144,6 +9192,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
         VMSTATE_BOOL(gl_tex_table_refused, SGIKonaState),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_unpack, SGIKonaGLPipe),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
+                             vmstate_sgi_kona_gl_error, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
