@@ -15,11 +15,15 @@
 
 /*
  * Create the part as parent's "flash" child and realize it. drive_id
- * names a -drive whose image fills the part, or is NULL for a part
- * fitted blank. name labels the part's memory region. The caller links
- * the part's MMIO region 0 to its Bridge's "flash" property.
+ * names a -drive whose image fills the part. Without one, firmware names
+ * an original I/O PROM image (raw or in SGI's distribution container) the
+ * part starts out holding, or is NULL for a part fitted blank; firmware
+ * is not read when drive_id is set. name labels the part's memory region.
+ * The caller links the part's MMIO region 0 to its Bridge's "flash"
+ * property.
  */
 PFlashCFI02 *sgi_baseio_flash_new(Object *parent, const char *name,
-                                  const char *drive_id, Error **errp);
+                                  const char *drive_id, const char *firmware,
+                                  Error **errp);
 
 #endif

@@ -14,6 +14,10 @@
  * carries the cabinet's system-controller status word on its second chip
  * select, and on its base chip select the BASEIO PROM flash part when a
  * drive named sgi-gigachannel-flash0 supplies its image; with none, nothing.
+ *
+ * The same part takes an original I/O PROM image through the machine's
+ * io-prom option or the board's firmware property, here and on the Origin
+ * 2000 BaseIO card, whose part sits at the same widget and window.
  */
 
 #include "qemu/osdep.h"
@@ -21,6 +25,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-launch.h"
+#include "sgi-prom-container.h"
 #include "sgi-test.h"
 
 #define IO_SPACE UINT64_C(0x20000000000)
@@ -77,6 +82,29 @@
 #define GIGACHANNEL "-M origin200,topology=origin200-gigachannel"
 #define LOOPBACK "-M origin200,topology=origin200-gigachannel-loopback"
 #define PLAIN "-M origin200"
+
+/*
+ * Both boards that fit the BASEIO PROM part: the machine that builds each
+ * and the options it starts with, and the names the part's drive and the
+ * board's type go by.
+ */
+static const struct {
+    const char *machine;
+    const char *options;
+    const char *drive;
+    const char *board;
+} io_prom_boards[] = {
+    { "origin200,topology=origin200-gigachannel", "",
+      "sgi-gigachannel-flash0", "sgi-gigachannel" },
+    { "origin2000", "-smp 8 -m 256M", "sgi-baseio-flash0", "sgi-xio-baseio" },
+};
+
+/* The BASEIO PROM part's window, at the same widget on both boards. */
+#define IO_PROM_WINDOW (CABINET_WIDGET * XIO_WIDGET_SIZE + FLASH_WINDOW)
+
+/* The synthetic I/O PROM payload, and the drive marker it must not touch. */
+#define IO_PROM_PAYLOAD 0x12345678u
+#define DRIVE_MARKER 0xabcdef01u
 
 /* A 32-bit I/O-space read through CPU 0's own Hub. */
 static uint32_t io_space_read(QTestState *qts, uint64_t offset)
@@ -428,6 +456,220 @@ static void test_fifth_cabinet_slot_refused(void)
     assert_launch_rejected(args, "reserved");
 }
 
+/* A synthetic I/O PROM in the uncompressed distribution container. */
+static char *write_io_prom(void)
+{
+    uint8_t payload[4];
+
+    stl_be_p(payload, IO_PROM_PAYLOAD);
+    return sgi_prom_container_write(payload, sizeof(payload),
+                                    "sn0-io-prom-XXXXXX.img");
+}
+
+/* A 1 MB raw flash image carrying DRIVE_MARKER where the payload would go. */
+static char *write_flash_drive(uint8_t **bytes)
+{
+    g_autoptr(GError) error = NULL;
+    char *path = NULL;
+    int fd;
+
+    *bytes = g_malloc0(FLASH_PART_SIZE);
+    stl_be_p(*bytes + SGI_PROM_CONTAINER_HEADER, DRIVE_MARKER);
+    fd = g_file_open_tmp("sn0-io-prom-drive-XXXXXX.raw", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_file_set_contents(path, (const char *)*bytes,
+                                      FLASH_PART_SIZE, &error));
+    g_assert_no_error(error);
+    return path;
+}
+
+/*
+ * The part holds the container as supplied, header included, not the
+ * decoded payload, and reads erased after it to its last word.
+ */
+static void assert_io_prom_stored(QTestState *qts)
+{
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW + 0x40), ==,
+                    0x4a464b53);
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW +
+                                  SGI_PROM_CONTAINER_HEADER), ==,
+                    IO_PROM_PAYLOAD);
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW +
+                                  SGI_PROM_CONTAINER_HEADER + 4), ==,
+                    0xffffffff);
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW + FLASH_PART_SIZE - 4),
+                    ==, 0xffffffff);
+}
+
+/* io-prom and each board's firmware property seed a part with no drive. */
+static void test_io_prom_seeds_flash(void)
+{
+    g_autofree char *path = write_io_prom();
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(io_prom_boards); i++) {
+        g_autofree char *machine = g_strdup_printf(
+            "-M %s,io-prom=%s %s", io_prom_boards[i].machine, path,
+            io_prom_boards[i].options);
+        g_autofree char *plain = g_strdup_printf(
+            "-M %s %s", io_prom_boards[i].machine, io_prom_boards[i].options);
+        g_autofree char *global = g_strdup_printf(
+            "-global %s.firmware=%s", io_prom_boards[i].board, path);
+        QTestState *qts;
+
+        qts = start(machine, "");
+        assert_io_prom_stored(qts);
+        qtest_quit(qts);
+
+        qts = start(plain, global);
+        assert_io_prom_stored(qts);
+        qtest_quit(qts);
+    }
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/* A raw I/O PROM image is stored as given too. */
+static void test_io_prom_raw_image(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *machine = NULL;
+    uint8_t raw[8];
+    QTestState *qts;
+    int fd;
+
+    stl_be_p(raw, IO_PROM_PAYLOAD);
+    stl_be_p(raw + 4, DRIVE_MARKER);
+    fd = g_file_open_tmp("sn0-io-prom-raw-XXXXXX.img", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_file_set_contents(path, (const char *)raw, sizeof(raw),
+                                      &error));
+    g_assert_no_error(error);
+
+    machine = g_strdup_printf(GIGACHANNEL ",io-prom=%s", path);
+    qts = start(machine, "");
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW), ==, IO_PROM_PAYLOAD);
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW + 4), ==, DRIVE_MARKER);
+    g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW + 8), ==, 0xffffffff);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A drive's contents win over io-prom, and the image is never read: a
+ * missing or malformed one changes nothing, and the drive file is left as
+ * it was.
+ */
+static void test_io_prom_drive_takes_precedence(void)
+{
+    g_autofree char *valid = write_io_prom();
+    g_autofree char *missing = g_strdup_printf("%s.missing", valid);
+    g_autofree char *malformed = NULL;
+    g_autofree uint8_t *bytes = NULL;
+    g_autofree char *drive = write_flash_drive(&bytes);
+    uint8_t bad[SGI_PROM_CONTAINER_HEADER] = { 0 };
+    const char *images[] = { valid, missing, NULL };
+    size_t board, image;
+    int fd;
+
+    stq_be_p(bad + 0x40, 0x4a464b535743534dULL);
+    stq_be_p(bad + 0x48, 99);
+    fd = g_file_open_tmp("sn0-io-prom-bad-XXXXXX.img", &malformed, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_file_set_contents(malformed, (const char *)bad,
+                                      sizeof(bad), NULL));
+    images[2] = malformed;
+
+    for (board = 0; board < ARRAY_SIZE(io_prom_boards); board++) {
+        for (image = 0; image < ARRAY_SIZE(images); image++) {
+            g_autofree char *machine = g_strdup_printf(
+                "-M %s,io-prom=%s %s", io_prom_boards[board].machine,
+                images[image], io_prom_boards[board].options);
+            g_autofree char *extra = g_strdup_printf(
+                "-drive if=none,id=%s,file=%s,format=raw",
+                io_prom_boards[board].drive, drive);
+            g_autofree char *stored = NULL;
+            gsize length;
+            QTestState *qts = start(machine, extra);
+
+            g_assert_cmphex(io_space_read(qts, IO_PROM_WINDOW +
+                                          SGI_PROM_CONTAINER_HEADER), ==,
+                            DRIVE_MARKER);
+            qtest_quit(qts);
+            g_assert_true(g_file_get_contents(drive, &stored, &length, NULL));
+            g_assert_cmpmem(stored, length, bytes, FLASH_PART_SIZE);
+        }
+    }
+    g_assert_cmpint(unlink(valid), ==, 0);
+    g_assert_cmpint(unlink(malformed), ==, 0);
+    g_assert_cmpint(unlink(drive), ==, 0);
+}
+
+/*
+ * With no drive, a missing, malformed or oversized image refuses the
+ * launch on both boards, and io-prom on a topology with no BASEIO flash
+ * part is refused rather than ignored.
+ */
+static void test_io_prom_rejections(void)
+{
+    g_autofree char *valid = write_io_prom();
+    g_autofree char *missing = g_strdup_printf("%s.missing", valid);
+    g_autofree char *malformed = NULL;
+    g_autofree char *oversized = NULL;
+    g_autofree uint8_t *large = g_malloc0(2 * FLASH_PART_SIZE);
+    uint8_t bad[SGI_PROM_CONTAINER_HEADER] = { 0 };
+    struct {
+        const char *path;
+        const char *message;
+    } cases[] = {
+        { missing, "cannot find I/O PROM image" },
+        { NULL, "unsupported SGI PROM container version" },
+        { NULL, "exceeds flash capacity" },
+    };
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", NULL,
+        "-display", "none", "-accel", "qtest", "-qmp", "stdio", NULL,
+    };
+    g_autofree char *plain = g_strdup_printf("origin200,io-prom=%s", valid);
+    size_t board, i;
+    int fd;
+
+    stq_be_p(bad + 0x40, 0x4a464b535743534dULL);
+    stq_be_p(bad + 0x48, 99);
+    fd = g_file_open_tmp("sn0-io-prom-bad-XXXXXX.img", &malformed, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_file_set_contents(malformed, (const char *)bad,
+                                      sizeof(bad), NULL));
+    fd = g_file_open_tmp("sn0-io-prom-large-XXXXXX.img", &oversized, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    g_assert_true(g_file_set_contents(oversized, (const char *)large,
+                                      2 * FLASH_PART_SIZE, NULL));
+    cases[1].path = malformed;
+    cases[2].path = oversized;
+
+    for (board = 0; board < ARRAY_SIZE(io_prom_boards); board++) {
+        for (i = 0; i < ARRAY_SIZE(cases); i++) {
+            g_autofree char *machine = g_strdup_printf(
+                "%s,io-prom=%s", io_prom_boards[board].machine,
+                cases[i].path);
+
+            args[2] = machine;
+            assert_launch_rejected(args, cases[i].message);
+        }
+    }
+    args[2] = plain;
+    assert_launch_rejected(args, "io-prom requires a BASEIO or GIGAchannel");
+
+    g_assert_cmpint(unlink(valid), ==, 0);
+    g_assert_cmpint(unlink(malformed), ==, 0);
+    g_assert_cmpint(unlink(oversized), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -450,5 +692,13 @@ int main(int argc, char **argv)
                    test_card_enumerates_in_each_cabinet_slot);
     qtest_add_func("sn0/gigachannel/fifth-cabinet-slot-refused",
                    test_fifth_cabinet_slot_refused);
+    qtest_add_func("sn0/gigachannel/io-prom-seeds-flash",
+                   test_io_prom_seeds_flash);
+    qtest_add_func("sn0/gigachannel/io-prom-raw-image",
+                   test_io_prom_raw_image);
+    qtest_add_func("sn0/gigachannel/io-prom-drive-takes-precedence",
+                   test_io_prom_drive_takes_precedence);
+    qtest_add_func("sn0/gigachannel/io-prom-rejections",
+                   test_io_prom_rejections);
     return g_test_run();
 }

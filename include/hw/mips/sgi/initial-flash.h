@@ -78,4 +78,15 @@ void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
 void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size);
 
+/* The BASEIO and GIGAchannel I/O PROM flash part. */
+#define SGI_IO6_FLASH_SIZE  0x100000
+
+/*
+ * Fill @flash_size bytes at @flash with @file, the I/O PROM exactly as
+ * supplied -- container header and compressed payload included, the form
+ * the IP27 PROM's loader reads from the part -- and erased bytes after it.
+ */
+void sgi_io6_initial_flash(uint8_t *flash, size_t flash_size,
+                           const uint8_t *file, size_t file_size);
+
 #endif /* HW_MIPS_SGI_INITIAL_FLASH_H */

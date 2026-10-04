@@ -42,10 +42,11 @@
  * flash, the MENET and MSCSI fit any XIO slot and have no flash, and a
  * preset that is not an XIO card is refused. The MENET's chips, and the
  * MSCSI, have no console, record, parallel or clock backend to take; the
- * internal sgi-baseio refuses a parallel id, and this class a flash id,
- * for a preset without the part. "flash-drive"
- * names the image behind the card's own flash part on the Bridge's flash
- * port, the BASEIO PROM the IP27 PROM loads from it. The card fits that
+ * internal sgi-baseio refuses a parallel id, and this class a flash id
+ * or firmware, for a preset without the part. "flash-drive" names the
+ * image behind the card's own flash part on the Bridge's flash port, the
+ * BASEIO PROM the IP27 PROM loads from it; without one, "firmware" names
+ * an original I/O PROM the part starts out holding. The card fits that
  * part, not the sgi-baseio population, so this file places it; the part
  * itself is the one hw/mips/sgi/baseio-flash.c builds, which the
  * GIGAchannel cabinet fits as well.
@@ -81,6 +82,7 @@ struct SGIXioBaseioState {
     char *preset;
     char *nvram_drive_id;
     char *flash_drive_id;
+    char *firmware;
     char *chardev_a_id;
     char *chardev_b_id;
     char *record_a_id;
@@ -132,9 +134,9 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   "XIO widget %u", s->preset, board->slot);
         return false;
     }
-    if (!identity->bridge_flash && s->flash_drive_id) {
+    if (!identity->bridge_flash && (s->flash_drive_id || s->firmware)) {
         error_setg(errp, "sgi-xio-baseio preset '%s' fits no flash part for "
-                  "flash-drive '%s'", s->preset, s->flash_drive_id);
+                   "flash-drive or firmware", s->preset);
         return false;
     }
 
@@ -153,7 +155,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
             board->slot);
 
         s->flash = sgi_baseio_flash_new(OBJECT(s), name, s->flash_drive_id,
-                                        errp);
+                                        s->firmware, errp);
         if (!s->flash) {
             return false;
         }
@@ -231,6 +233,7 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("preset", SGIXioBaseioState, preset),
     DEFINE_PROP_STRING("nvram-drive", SGIXioBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("flash-drive", SGIXioBaseioState, flash_drive_id),
+    DEFINE_PROP_STRING("firmware", SGIXioBaseioState, firmware),
     DEFINE_PROP_STRING("chardev-a", SGIXioBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIXioBaseioState, chardev_b_id),
     DEFINE_PROP_STRING("record-a", SGIXioBaseioState, record_a_id),

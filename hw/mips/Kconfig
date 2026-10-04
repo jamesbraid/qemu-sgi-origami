@@ -165,6 +165,7 @@ config SGI_BASEIO
 config SGI_BASEIO_FLASH
     bool
     select PFLASH_CFI02
+    select SGI_PROM_IMAGE
 
 config SGI_XIO_BASEIO
     bool

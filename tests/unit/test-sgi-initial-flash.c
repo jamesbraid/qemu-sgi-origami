@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Initial IP27 and IP35 boot-flash contents, over synthetic payloads only:
+ * Initial IP27, IP35 and I/O PROM flash contents, over synthetic payloads:
  * no SGI firmware bytes appear here. Offsets and values are repeated as
  * literals rather than taken from the header under test.
  *
@@ -14,6 +14,7 @@
 
 #define IP27_FLASH_SIZE     (1 * MiB)
 #define IP35_FLASH_SIZE     (16 * MiB)
+#define IO6_FLASH_SIZE      (1 * MiB)
 
 #define CONFIG              0x60
 #define CONFIG_SIZE         0x50
@@ -183,6 +184,21 @@ static void test_ip35(void)
     g_assert_cmphex(flash[IP35_LABEL_BACKUP + 0x10], ==, 0xff);
 }
 
+/* The I/O PROM part holds the file as given, then erased bytes. */
+static void test_io6(void)
+{
+    const size_t size = 0x1234;
+    g_autofree uint8_t *file = make_payload(size);
+    g_autofree uint8_t *flash = g_malloc0(IO6_FLASH_SIZE);
+    size_t i;
+
+    sgi_io6_initial_flash(flash, IO6_FLASH_SIZE, file, size);
+    g_assert_cmpmem(flash, size, file, size);
+    for (i = size; i < IO6_FLASH_SIZE; i++) {
+        g_assert_cmphex(flash[i], ==, 0xff);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -190,5 +206,6 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-initial-flash/ip27-template", test_ip27_template);
     g_test_add_func("/sgi-initial-flash/ip27-no-magic", test_ip27_no_magic);
     g_test_add_func("/sgi-initial-flash/ip35", test_ip35);
+    g_test_add_func("/sgi-initial-flash/io6", test_io6);
     return g_test_run();
 }

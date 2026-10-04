@@ -4,7 +4,7 @@ SGI PROM image inputs
 =====================
 
 One decoder, ``hw/mips/sgi/prom-image.c``, reads every PROM image the SGI
-family machines take from the host. It accepts a raw image or SGI's own
+family machines take from the host: ``-bios`` and the I/O PROM below. It accepts a raw image or SGI's own
 single-segment distribution container, uncompressed or gzip, and returns
 both the file as supplied and its decoded payload. It does not choose a
 machine, a guest address or a stored representation; each caller does.
@@ -71,3 +71,23 @@ Machine placement
 The Origin 200 and Origin 2000 copy the decoded payload over their boot
 flash template. The Origin 300 requires a decoded payload of exactly its
 PROM size. Container addresses never choose a guest destination.
+
+I/O PROM flash
+--------------
+
+The Origin 2000 BaseIO card and the Origin 200 GIGAchannel cabinet carry
+the I/O PROM in a 1 MiB CFI flash part, which the IP27 PROM's loader reads
+and decompresses itself. The part therefore holds the original file, not
+the decoded payload: container header, compressed bytes and all, followed
+by erased bytes to the end of the part.
+
+The family machine option ``io-prom=PATH`` gives every such part in the
+topology that image; the boards' own ``firmware`` property does the same
+for one part. The decoder validates the image first, and the whole file
+must fit the part. A topology with no such part refuses ``io-prom``.
+
+A part's ``-drive`` takes precedence. Its contents are used as they are,
+and the image is not opened, so a missing or malformed image does not stop
+a machine whose flash already has its own contents. With neither a drive
+nor an image the part reads as before: absent on the GIGAchannel, blank on
+the BaseIO card.

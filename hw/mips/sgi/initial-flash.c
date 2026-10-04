@@ -123,6 +123,16 @@ void sgi_ip27_initial_flash(uint8_t *flash, size_t flash_size,
     sgi_ip27_flash_configure(flash, values);
 }
 
+void sgi_io6_initial_flash(uint8_t *flash, size_t flash_size,
+                           const uint8_t *file, size_t file_size)
+{
+    g_assert(file_size <= flash_size);
+    memset(flash, 0xff, flash_size);
+    if (file) {
+        memcpy(flash, file, file_size);
+    }
+}
+
 void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size)
 {

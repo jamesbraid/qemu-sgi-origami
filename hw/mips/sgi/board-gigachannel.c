@@ -25,7 +25,8 @@
  * the build shipped as the BaseIO's flash image. Which part SGI fitted is
  * not, so the model fits the BaseIO card's part (hw/mips/sgi/
  * baseio-flash.c), an identity the loader accepts. "flash-drive" names its
- * image. With no drive named nothing is fitted: the base chip select
+ * image; without one, "firmware" names an original I/O PROM the part
+ * starts out holding. With neither nothing is fitted: the base chip select
  * bus-errors, and the PROM retries with its own internal copy and says so
  * on the console, as it would for a cabinet whose part is missing.
  *
@@ -83,6 +84,7 @@ struct SGIGigachannelState {
     uint64_t onewire_serial;
     char *pci_bus_name;
     char *flash_drive_id;
+    char *firmware;
     uint16_t status;
 
     SGIBridgeState *bridge;
@@ -143,12 +145,12 @@ static bool gigachannel_build_widget(SGIXioBoardState *board, Error **errp)
     qdev_prop_set_string(bridge, "board-name", GIGACHANNEL_BOARD_NAME);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
     sgi_xio_board_name_pci_bus(SGI_XIO_BOARD(s), bridge, s->pci_bus_name);
-    if (s->flash_drive_id) {
+    if (s->flash_drive_id || s->firmware) {
         g_autofree char *name =
             g_strdup_printf("sgi-gigachannel.module%u.flash", board->module);
 
         s->flash = sgi_baseio_flash_new(OBJECT(s), name, s->flash_drive_id,
-                                        errp);
+                                        s->firmware, errp);
         if (!s->flash) {
             return false;
         }
@@ -183,6 +185,7 @@ static const Property gigachannel_properties[] = {
                        GIGACHANNEL_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIGigachannelState, pci_bus_name),
     DEFINE_PROP_STRING("flash-drive", SGIGigachannelState, flash_drive_id),
+    DEFINE_PROP_STRING("firmware", SGIGigachannelState, firmware),
     DEFINE_PROP_UINT16("system-controller-status", SGIGigachannelState,
                        status, 0),
 };

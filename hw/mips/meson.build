@@ -21,14 +21,15 @@ mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
-# The PROM image decoder behind the family machines' -bios.
+# The PROM image decoder and the initial flash contents built from it,
+# shared by the family machines' -bios and the BASEIO flash's I/O PROM.
 mips_ss.add(when: 'CONFIG_SGI_PROM_IMAGE',
-            if_true: [files('sgi/prom-image.c'), zlib])
+            if_true: [files('sgi/prom-image.c', 'sgi/initial-flash.c'),
+                      zlib])
 # The family machine base and builder over the compiled catalogue
 # (qapi/sgi-machines.json, embedded and parsed by sgi/sgi-machines.c below).
 mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c',
-                           'sgi/initial-flash.c'))
+            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sgi/sn1-fabric.c',

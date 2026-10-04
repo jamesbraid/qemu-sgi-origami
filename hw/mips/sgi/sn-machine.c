@@ -228,6 +228,9 @@ struct SGIMachineState {
     /* The topology this machine builds: one row of its chassis. */
     const SGIModelTopology *view;
     char *baseio_preset;
+    /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
+    char *io_prom;
+    bool io_prom_used;
 
     unsigned int num_nodes;
     SN0NodeState **nodes;
@@ -1762,6 +1765,10 @@ static bool sgi_machine_instantiate_baseio_card(
     if (flash_blk) {
         qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
     }
+    if (s->io_prom && sgi_baseio_preset_lookup(preset)->bridge_flash) {
+        qdev_prop_set_string(dev, "firmware", s->io_prom);
+        s->io_prom_used = true;
+    }
     for (i = 0; i < ARRAY_SIZE(serial_bindings); i++) {
         Chardev *chr = serial_hd(sgi_machine_compute_serial_line(
             t, attachment->node_index, serial_bindings[i].offset));
@@ -1860,6 +1867,10 @@ static bool sgi_machine_instantiate_gigachannel(
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     if (flash_blk) {
         qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
+    }
+    if (s->io_prom) {
+        qdev_prop_set_string(dev, "firmware", s->io_prom);
+        s->io_prom_used = true;
     }
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
@@ -3204,6 +3215,12 @@ static bool sgi_machine_load_flash(MachineState *machine,
     uint64_t flash_size;
     unsigned int node_index;
 
+    /* Every I/O board is built by now, on both the Hub and Bedrock paths. */
+    if (s->io_prom && !s->io_prom_used) {
+        error_setg(errp, "io-prom requires a BASEIO or GIGAchannel flash "
+                   "board in the selected topology");
+        return false;
+    }
     if (sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         return sgi_machine_load_bedrock_flash(machine, s, errp);
     }
@@ -4708,6 +4725,23 @@ static void sgi_machine_set_baseio_preset(Object *obj, const char *value,
     s->baseio_preset = g_strdup(value);
 }
 
+static char *sgi_machine_get_io_prom(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->io_prom);
+}
+
+static void sgi_machine_set_io_prom(Object *obj, const char *value,
+                                    Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    if (sgi_machine_built("io-prom", errp)) {
+        return;
+    }
+    g_free(s->io_prom);
+    s->io_prom = g_strdup(value);
+}
+
 static bool sgi_machine_get_debug_leds(Object *obj, Error **errp)
 {
     return SGI_MACHINE(obj)->debug_leds;
@@ -5010,6 +5044,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->topology_name);
     g_free(s->population);
     g_free(s->baseio_preset);
+    g_free(s->io_prom);
     g_free(s->fuel_mac_eeprom);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
@@ -5078,6 +5113,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Per-node processor counts in node order, colon-separated (4:2), "
         "naming one of the topology's accepted populations. Needed only "
         "where -smp alone matches more than one.");
+
+    object_class_property_add_str(oc, "io-prom", sgi_machine_get_io_prom,
+                                  sgi_machine_set_io_prom);
+    object_class_property_set_description(oc, "io-prom",
+        "An original I/O PROM image, raw or in SGI's distribution "
+        "container, stored as given in every BASEIO and GIGAchannel flash "
+        "part that has no flash drive. A part with a drive keeps the "
+        "drive's contents and the image is not read.");
 
     object_class_property_add_bool(oc, "debug-leds", sgi_machine_get_debug_leds,
                                    sgi_machine_set_debug_leds);
