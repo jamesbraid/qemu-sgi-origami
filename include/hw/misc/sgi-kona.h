@@ -717,6 +717,8 @@ typedef struct SGIKonaTextureUpload {
     bool swap_bytes; /* captured when the native header arrives */
     bool transfer_captured;
     SGIKonaGLPixelTransfer transfer;
+    bool pio_layout;
+    uint32_t pio_phase;
 } SGIKonaTextureUpload;
 
 typedef struct SGIKonaGLImageUpload {
