@@ -81,6 +81,7 @@ typedef struct SGIRasterBitmap {
     float rgba[4];
     float index;
     float distance;
+    float texcoord[4];
 } SGIRasterBitmap;
 
 /* Initial RGBA pixel-transfer scale and bias (OpenGL 1.2.1, 3.6.5). */
@@ -89,7 +90,7 @@ typedef struct SGIGLPixelTransfer {
     float bias[4];
 } SGIGLPixelTransfer;
 
-/* Untextured RGBA pixel rectangles (OpenGL 1.2.1, 3.6.4). */
+/* RGBA pixel rectangles (OpenGL 1.2.1, 3.6.4). */
 typedef struct SGIRasterPixels {
     const struct SGIGLDrawState *state;
     double x, y;               /* raster position in window coordinates */
@@ -101,6 +102,7 @@ typedef struct SGIRasterPixels {
     const double (*rgba_double)[4];
     float z;                   /* raster position's window depth */
     float distance;            /* raster position's fog distance */
+    float texcoord[4];
 } SGIRasterPixels;
 
 /*
@@ -1071,8 +1073,8 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
 /*
  * Draw tightly packed RGBA8 pixels (0xRRGGBBAA), bottom row first, at the
  * current raster position with unit pixel zoom and no pixel transfer.
- * The raster position does not move. Textured and colour-index pixel
- * rectangles are refused. The sink consumes the image synchronously.
+ * The raster position does not move. Colour-index pixel rectangles are
+ * refused. The sink consumes the image synchronously.
  */
 void sgi_gl_draw_pixels_rgba(SGIGLContext *c, const SGIGLSink *sink,
                             uint32_t width, uint32_t height,

@@ -14,7 +14,7 @@
  * alpha test, the stencil test, the depth test, blending, dithering and
  * the logical operation, and is stored under the write masks through the
  * family's target. What it draws follows OpenGL 1.2.1 for
- * aliased points and lines, polygons, untextured bitmaps and
+ * aliased points and lines, polygons, bitmaps and
  * RGBA8 pixel rectangles,
  * flat or smooth shaded, in RGBA or colour-index mode, from vertex colours
  * the context has already lit, with a back-facing polygon's back colours under
@@ -3829,14 +3829,19 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     SGISoftDraw r = { .rules = rules, .t = t, .st = b->state };
     uint32_t row_bytes = DIV_ROUND_UP(b->width, 8);
     bool rgba_reported = false;
+    unsigned texture_reports = 0;
     SGISoftFrag frag = {
         .rgba = { b->rgba[0], b->rgba[1], b->rgba[2], b->rgba[3] },
+        .texcoord = { b->texcoord[0], b->texcoord[1],
+                      b->texcoord[2], b->texcoord[3] },
         .index = b->index,
         .fog = b->distance,
     };
 
     r.rgba_reported = &rgba_reported;
-    if (!sgi_soft_window(b->state, &r.win) ||
+    r.texture_reports = &texture_reports;
+    if (!sgi_soft_texture_setup(&r, true) ||
+        !sgi_soft_window(b->state, &r.win) ||
         !sgi_soft_check_index(t, b->state->index_bits)) {
         return;
     }
@@ -3871,15 +3876,22 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     const SGIRasterPixels *p = &op->pixels;
     bool image = p->rgba || p->rgba_float || p->rgba_double;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
-    SGISoftFrag frag = { .fog = p->distance };
+    SGISoftFrag frag = {
+        .fog = p->distance,
+        .texcoord = { p->texcoord[0], p->texcoord[1],
+                      p->texcoord[2], p->texcoord[3] },
+    };
     bool rgba_reported = false;
+    unsigned texture_reports = 0;
     double ex = p->x + (double)p->zoom[0] * p->width;
     double ey = p->y + (double)p->zoom[1] * p->height;
     double bx0, by0, bx1, by1;
     int64_t x0, y0, x1, y1;
 
     r.rgba_reported = &rgba_reported;
-    if (!p->width || !p->height || !image ||
+    r.texture_reports = &texture_reports;
+    if (!sgi_soft_texture_setup(&r, true) ||
+        !p->width || !p->height || !image ||
         !isfinite(p->x) || !isfinite(p->y) ||
         !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
         !p->zoom[0] || !p->zoom[1] || !sgi_soft_window(p->state, &r.win)) {

@@ -2121,6 +2121,7 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
         return;
     }
     memcpy(op.bitmap.rgba, c->raster_color, sizeof(op.bitmap.rgba));
+    memcpy(op.bitmap.texcoord, c->raster_texcoord, sizeof(op.bitmap.texcoord));
     op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
     op.clip = d->clip;
     sink->raster(sink->opaque, &op);
@@ -2196,9 +2197,8 @@ static SGIGLPixelRectangleResult sgi_gl_pixel_rectangle(
         }
         op->pixels.transfer = *transfer;
     }
-    if (c->cur.index_bits || c->cur.texture_1d || c->cur.texture_2d ||
-        c->cur.texture_3d) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: textured or colour-index "
+    if (c->cur.index_bits) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: colour-index "
                       "%s is unsupported; image dropped\n", call);
         return SGI_GL_PIXELS_REFUSED;
     }
@@ -2215,6 +2215,8 @@ static SGIGLPixelRectangleResult sgi_gl_pixel_rectangle(
     if (!d->clip.n) {
         return SGI_GL_PIXELS_EMPTY;
     }
+    memcpy(op->pixels.texcoord, c->raster_texcoord,
+           sizeof(op->pixels.texcoord));
     op->ntargets = sgi_gl_draw_targets(&c->cur, op->targets);
     op->clip = d->clip;
     return SGI_GL_PIXELS_READY;
