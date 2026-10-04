@@ -60,6 +60,40 @@ slow_qtests = {
   # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
   # deadlines. Allow startup and teardown headroom beyond those 120s.
   'sn0-qtest-cpu-test': 180,
+  # The KONA register suite timed out at meson's 60 s default in two of
+  # three parallel runs of the KONA suites (60.24 s and 60.30 s).
+  'sn0-origin2000-kona-test': 120,
+  # The KONA bring-up suite starts a machine for most cases. On the
+  # one-node machine it ran 17-47 s beside the other KONA suites.
+  'sn0-origin2000-kona-bringup-test': 120,
+  # The KONA video suite starts a machine for most cases. On the
+  # one-node machine it ran 16-48 s beside the other KONA suites.
+  'sn0-origin2000-kona-video-test': 120,
+  # The KONA scanout suite took 32-33 s of the 60 s default in parallel
+  # runs and carries several migrations.
+  'sn0-origin2000-kona-scanout-test': 120,
+  # The KONA glyph suite took 40 s of the 60 s default alongside the other
+  # KONA suites and carries three migrations.
+  'sn0-origin2000-kona-glyph-test': 120,
+  # The KONA context suite starts a machine for each case and carries
+  # three migrations. On the one-node machine it ran 16-40 s beside the
+  # other KONA suites.
+  'sn0-origin2000-kona-context-test': 120,
+  # The KONA GL suite draws through the shared rasterizer and carries a
+  # migration; it shares one single-node machine between its other cases.
+  'sn0-origin2000-kona-gl-test': 120,
+  # Texture framing covers every partial header and payload migration.
+  # The 120 s budget expired during the eleventh of 168 new positions.
+  'sn0-origin2000-kona-3d-test': 900,
+  # Complete pixel contracts took 165.72 s beside the fill suite.
+  # Allow three times that observed duration for the expanded copy cases.
+  'sn0-origin2000-kona-pixel-test': 500,
+  # Complete fill contracts took 149.27 s beside the pixel suite.
+  # Round three times that observed duration up to 450 seconds.
+  'sn0-origin2000-kona-fill-test': 450,
+  # The KONA X image DMA suite starts a logged machine for each case and
+  # reads back a 256 by 256 image's rows one pixel at a time.
+  'sn0-origin2000-kona-xdma-test': 120,
   # The full 32-reset run took 265s under load. Keep headroom for all cycles.
   'sn0-warm-reset-test': 600,
   # IOC3 shares one machine across every case that wants a plain origin200
@@ -215,6 +249,10 @@ qtest_priorities = {
   'sn1-io8-scsi-test': 60,
   'sn0-ioc3-parallel-test': 60,
   'sn0-fabric-test': 60,
+  # Enlarging the pixel budget must not promote it ahead of other suites.
+  'sn0-origin2000-kona-pixel-test': 60,
+  # Keep the fill suite's scheduling order independent of its larger budget.
+  'sn0-origin2000-kona-fill-test': 60,
   # Keep the Hub suite's scheduling order independent of its larger budget.
   'sn0-hub-test': 240,
   # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
@@ -569,6 +607,19 @@ sn0_machine_qtests = \
                                                    'sn0-mscsi-test',
                                                    'sn0-gigachannel-test',
                                                    'sn0-origin2000-kona-test',
+                                                   'sn0-origin2000-kona-textport-test',
+                                                   'sn0-origin2000-kona-dma-test',
+                                                   'sn0-origin2000-kona-bringup-test',
+                                                   'sn0-origin2000-kona-video-test',
+                                                   'sn0-origin2000-kona-scanout-test',
+                                                   'sn0-origin2000-kona-fill-test',
+                                                   'sn0-origin2000-kona-pixel-test',
+                                                   'sn0-origin2000-kona-glyph-test',
+                                                   'sn0-origin2000-kona-context-test',
+                                                   'sn0-origin2000-kona-gl-test',
+                                                   'sn0-origin2000-kona-3d-test',
+                                                   'sn0-origin2000-kona-xdma-test',
+                                                   'sn0-origin2000-kona-pi-credit-test',
                                                    'sn0-onyx2-test',
                                                    'sn0-display-heads-test'] : [])
 
@@ -601,7 +652,10 @@ sgi_qtests = \
   sn1_xbridge_qtests + \
   sn1_pci_expansion_qtests + \
   sn0_mgras_qtests + \
-  sgi_board_qtests
+  sgi_board_qtests + \
+  (config_all_devices.has_key('CONFIG_SGI_KONA') and
+   config_all_devices.has_key('CONFIG_TEST_DEVICES') ?
+    ['sgi-kona-read-defense-test'] : [])
 
 qtests_mips64 = qtests_mips + sgi_qtests
 

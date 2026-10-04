@@ -56,7 +56,9 @@ system_ss.add(when: 'CONFIG_SGI_MGRAS',
                              'sgi-mgras-display.c', 'sgi-mgras-gl.c',
                              'sgi-mgras-texture.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona.c'))
+system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-texture.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-gl-decode.c'))
+system_ss.add(when: 'CONFIG_SGI_KONA', if_true: files('sgi-kona-dma.c'))
 system_ss.add(when: 'CONFIG_SGI_XIO_TEST_TARGET', if_true: files('sgi-xio-test-target.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_PRCI', if_true: files('sifive_e_prci.c'))
@@ -244,3 +246,6 @@ system_ss.add(when: ['CONFIG_SGI_BOARD_TEST', 'CONFIG_SGI_SN1',
 system_ss.add(when: ['CONFIG_SGI_L1', 'CONFIG_SGI_BIC_BOARD_INTERFACE',
                      'CONFIG_TEST_DEVICES'],
               if_true: files('../../tests/qtest/l1-bic-startup-fixture.c'))
+
+system_ss.add(when: ['CONFIG_SGI_KONA', 'CONFIG_TEST_DEVICES'],
+              if_true: files('../../tests/qtest/kona-read-fixture.c'))

@@ -9,7 +9,9 @@
 #ifndef HW_MISC_SGI_KONA_GL_DECODE_H
 #define HW_MISC_SGI_KONA_GL_DECODE_H
 
-#define SGI_KONA_GL_MAX_ARGS 8
+#include "hw/misc/sgi-kona-texture.h"
+
+#define SGI_KONA_GL_MAX_ARGS 22
 
 typedef enum SGIKonaGLLayoutEvidence {
     /* The selector table records this layout as established. */
@@ -75,5 +77,72 @@ const char *sgi_kona_gl_decode_result_name(SGIKonaGLDecodeResult result);
 
 /* The generated table, exposed for tests that walk every entry. */
 const SGIKonaGLSelectorInfo *sgi_kona_gl_selector_table(size_t *count);
+
+/* Native return metadata does not establish a supported state value. */
+typedef struct SGIKonaGLQueryInfo {
+    uint32_t pname;
+    uint8_t type;
+    uint8_t count;
+} SGIKonaGLQueryInfo;
+
+const SGIKonaGLQueryInfo *sgi_kona_gl_query_lookup(uint32_t pname);
+const SGIKonaGLQueryInfo *sgi_kona_gl_query_table(size_t *count);
+
+/* Values are native representation bits, not client getter conversions. */
+bool sgi_kona_gl_query_serialize(const SGIKonaGLQueryInfo *info,
+                                 const uint64_t *values, unsigned count,
+                                 uint8_t *out, size_t capacity, size_t *length);
+
+/* Unknown flag bits refuse the record without changing either output. */
+bool sgi_kona_gl_texture_transform(uint32_t flags, uint32_t scale,
+                                   uint32_t bias, double scale_rgba[4],
+                                   double bias_rgba[4]);
+
+/*
+ * Decode repeat, ordinary-filter and sharpening sampler fields. Level identity,
+ * border colour and post-filter transforms remain with their owning records.
+ * Unsupported encodings leave every parameter unchanged.
+ */
+/* Level-zero dimensions reconstructed from the emitted logarithms. */
+void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
+                                    uint32_t *height);
+
+bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
+                                 const uint32_t record[22],
+                                 SGIKonaTextureParams *params);
+
+/* Volume records use fourteen mipmap words or four nonmipmap words. */
+bool sgi_kona_gl_texture_volume_sampler(const uint32_t bind[5],
+                                         const uint32_t *record, bool mipmapped,
+                                         SGIKonaTextureParams *params);
+void sgi_kona_gl_texture_volume_dimensions(const uint32_t bind[5],
+                                            uint32_t *width, uint32_t *height,
+                                            uint32_t *depth);
+
+/* Decode supported native internal-format table indexes transactionally. */
+bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
+                                         uint32_t *internal);
+
+/* Native scalar types 0..6; zero bytes for an unknown format or type. */
+uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
+
+/*
+ * Components occupy transport-decoded words, most significant bytes first.
+ * Integer inputs use OpenGL 1.2.1 table 2.6; FLOAT inputs use IEEE binary32.
+ * Byte swapping reverses each multibyte component before conversion.
+ * Produces full RRGGBBAA before destination-format conversion. Finite values
+ * clamp to [0, 1] and round to eight bits for the current model storage
+ * profile. Unsupported forms and nonfinite components leave rgba unchanged.
+ */
+bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+                                    const uint32_t *source, bool swap_bytes,
+                                    uint32_t *rgba);
+
+/*
+ * The first 32 words hold 64 signed mantissa/exponent coefficients. Word 32
+ * is transport padding. Invalid coefficient words leave values unchanged.
+ */
+bool sgi_kona_gl_texture_filter_curve(const uint32_t words[33],
+                                      double values[64]);
 
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

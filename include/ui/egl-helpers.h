@@ -47,7 +47,6 @@ extern EGLContext qemu_egl_rn_ctx;
 extern int qemu_egl_rn_fd;
 extern struct gbm_device *qemu_egl_rn_gbm_dev;
 
-int egl_rendernode_init(const char *rendernode, DisplayGLMode mode);
 bool egl_dmabuf_export_texture(uint32_t tex_id, int *fd, EGLint *offset,
                                EGLint *stride, EGLint *fourcc, int *num_planes,
                                EGLuint64KHR *modifier);
@@ -80,8 +79,24 @@ int qemu_egl_init_dpy_win32(EGLNativeDisplayType dpy, DisplayGLMode mode);
 EGLContext qemu_egl_init_ctx(void);
 bool qemu_egl_has_dmabuf(void);
 
-bool egl_init(const char *rendernode, DisplayGLMode mode, Error **errp);
-void egl_cleanup(void);
+typedef struct QemuEGLDisplayLease QemuEGLDisplayLease;
+
+bool egl_init_session(const char *rendernode, DisplayGLMode mode,
+                      QemuEGLDisplayLease **session, Error **errp);
+void egl_cleanup_session(QemuEGLDisplayLease *session);
+QemuEGLDisplayLease *qemu_egl_display_acquire_existing(DisplayGLMode mode,
+                                                     Error **errp);
+bool qemu_egl_display_acquire_context(QemuEGLDisplayLease **lease,
+                                      Error **errp);
+DisplayGLMode qemu_egl_display_lease_mode(const QemuEGLDisplayLease *lease);
+EGLDisplay qemu_egl_display_lease_display(const QemuEGLDisplayLease *lease);
+EGLConfig qemu_egl_display_lease_config(const QemuEGLDisplayLease *lease);
+uint64_t qemu_egl_display_lease_generation(const QemuEGLDisplayLease *lease);
+bool qemu_egl_display_lease_usable(const QemuEGLDisplayLease *lease);
+void qemu_egl_display_context_created(QemuEGLDisplayLease *lease);
+void qemu_egl_display_context_destroyed(QemuEGLDisplayLease *lease);
+void qemu_egl_display_quarantine(QemuEGLDisplayLease *lease);
+void qemu_egl_display_release(QemuEGLDisplayLease *lease);
 
 const char *qemu_egl_get_error_string(void);
 

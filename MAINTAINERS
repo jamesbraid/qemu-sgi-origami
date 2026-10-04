@@ -1528,6 +1528,7 @@ F: scripts/check-sgi-test-results.py
 F: scripts/sgi-replay-convert.py
 F: scripts/tests/test_check_sgi_test_results.py
 F: tests/docker/dockerfiles/debian-sgi.docker
+F: tests/data/kona/
 F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/qlogic-isp-test.c
@@ -1549,6 +1550,9 @@ F: tests/qtest/sgi-pci-expansion-ni-test.c
 F: tests/qtest/sgi-mgras-*-test.c
 F: tests/qtest/sgi-replay-test.c
 F: tests/data/sgi-replay/
+F: tests/qtest/kona-read-fixture.c
+F: tests/qtest/kona-read-fixture.h
+F: tests/qtest/sgi-kona-read-defense-test.c
 F: tests/qtest/sgi-*.h
 F: tests/qtest/sn0-*
 F: tests/qtest/sn-builder-test.c
@@ -1563,6 +1567,7 @@ F: tests/qtest/ioc3-release-fixture.c
 F: tests/qtest/xio-test-board.c
 F: tests/qtest/xbridge-assembly-fixture.c
 F: tests/unit/test-sgi-dma.c
+F: tests/unit/test-sgi-kona-*.c
 F: tests/unit/test-sgi-gl.c
 F: tests/unit/sgi-gl-texture-test.h
 F: tests/unit/test-sgi-gl-vmstate.c
@@ -1572,6 +1577,11 @@ F: tests/unit/test-sgi-pi-gfx.c
 F: tests/unit/test-sgi-rad1-audio-pcm.c
 F: tests/unit/test-sgi-router.c
 F: tests/unit/test-sgi-scanout.c
+F: tests/unit/test-sgi-renderer*.c
+F: tests/unit/test-sgi-egl-display.c
+F: include/ui/sgi-renderer.h
+F: ui/sgi-renderer.c
+F: tests/unit/test-sgi-x-gc.c
 F: tests/unit/test-sn0-fabric-routed.c
 
 Jazz

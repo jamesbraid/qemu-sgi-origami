@@ -219,6 +219,8 @@ static const DisplayGLCtxOps eglctx_ops = {
     .dpy_gl_ctx_make_current = qemu_egl_make_context_current,
 };
 
+static QemuEGLDisplayLease *egl_session;
+
 static void early_egl_headless_init(DisplayOptions *opts)
 {
     DisplayGLMode mode = DISPLAY_GL_MODE_ON;
@@ -227,7 +229,8 @@ static void early_egl_headless_init(DisplayOptions *opts)
         mode = opts->gl;
     }
 
-    egl_init(opts->u.egl_headless.rendernode, mode, &error_fatal);
+    egl_init_session(opts->u.egl_headless.rendernode, mode,
+                     &egl_session, &error_fatal);
 }
 
 static void egl_headless_init(DisplayState *ds, DisplayOptions *opts)
@@ -281,7 +284,8 @@ static void egl_headless_cleanup(void)
     }
     g_clear_pointer(&egl_dpys, g_ptr_array_unref);
 
-    egl_cleanup();
+    egl_cleanup_session(egl_session);
+    egl_session = NULL;
 }
 
 static QemuDisplay qemu_display_egl = {

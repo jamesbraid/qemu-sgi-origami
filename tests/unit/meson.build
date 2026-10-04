@@ -8,9 +8,10 @@ fork_unit_tests = [
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
   'test-sgi-rad1-audio-pcm',
-  'test-sgi-kona-ports', 'test-sgi-kona-gl-decode',
+  'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
-  'test-sgi-gl-vmstate',
+  'test-sgi-gl-vmstate', 'test-sgi-kona-texture',
+  'test-sgi-renderer', 'test-sgi-egl-display',
 ]
 
 tests = {
@@ -194,20 +195,43 @@ if have_block
   tests += {'test-crypto-pbkdf': [io]}
 endif
 
+if have_system and opengl.found() and gbm.found()
+  tests += {
+    'test-sgi-renderer-gl': ['../../hw/display/sgi/renderer-gl.c',
+                             '../../ui/sgi-renderer.c', '../../ui/egl-helpers.c',
+                             '../../ui/dmabuf.c', '../../util/drm.c',
+                             opengl, gbm, pixman],
+    'test-sgi-egl-display': ['../../ui/egl-helpers.c', '../../ui/egl-context.c',
+                             '../../ui/dmabuf.c',
+                             opengl, gbm, pixman],
+  }
+endif
+
 if have_system
   tests += {
+    'test-sgi-renderer': ['../../ui/sgi-renderer.c'],
     'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
     'test-sgi-bedrock-ni': ['../../hw/misc/sgi-bedrock-ni-regs.c'],
     'test-sgi-pi-gfx': ['../../hw/mips/sgi/pi-gfx.c'],
     'test-sgi-kona-ports': ['../../hw/misc/sgi-command-port.c',
                             '../../hw/misc/sgi-kona-ports.c'],
     'test-sgi-kona-gl-decode': ['../../hw/misc/sgi-kona-gl-decode.c'],
+    'test-sgi-x-gc': ['../../hw/display/sgi/x-gc.c',
+                      '../../hw/display/sgi/board-memory.c', migration, io],
     'test-sgi-memory': ['../../hw/display/sgi/board-memory.c',
                         migration, io],
     'test-sgi-gl': ['../../hw/display/sgi/gl-context.c',
+                    '../../hw/display/sgi/x-gc.c',
                     '../../hw/display/sgi/rasterizer.c',
                     '../../hw/display/sgi/board-memory.c',
                     migration, io],
+    'test-sgi-kona-texture': ['../../hw/misc/sgi-kona-texture.c',
+                              '../../hw/misc/sgi-kona-gl-decode.c',
+                              '../../hw/display/sgi/gl-context.c',
+                              '../../hw/display/sgi/x-gc.c',
+                              '../../hw/display/sgi/rasterizer.c',
+                              '../../hw/display/sgi/board-memory.c',
+                              migration, io],
     'test-sgi-gl-vmstate': ['../../hw/display/sgi/gl-context.c',
                             migration, io],
     'test-sgi-dma': ['../../hw/display/sgi/board-memory.c',

@@ -161,6 +161,7 @@ static const ReplayHead *find_head(const char *codename)
     return NULL;
 }
 
+#define KONA_MAINTENANCE_MENU "maintenance-menu.replay"
 #define DEFAULT_REPLAY    "fill.replay"
 #define MINIMAL_REPLAY    "minimal.replay"
 #define MASKED_READ       "masked-read.replay"
@@ -195,10 +196,15 @@ static const ReplayHead *find_head(const char *codename)
 #define INVALID_DMA_HEX_MISMATCH \
     "invalid-dma-hex-mismatch.replay"
 
+static char *replay_family_fixture_path(const char *family, const char *name)
+{
+    return g_test_build_filename(G_TEST_DIST, "..", "data", family, name,
+                                 NULL);
+}
+
 static char *replay_fixture_path(const char *name)
 {
-    return g_test_build_filename(G_TEST_DIST, "..", "data", "mgras", name,
-                                 NULL);
+    return replay_family_fixture_path("mgras", name);
 }
 
 static uint64_t parse_number(const char *path, unsigned int line,
@@ -880,10 +886,11 @@ static void test_kona_screendump(void)
     g_assert_no_error(error);
     g_assert_cmpuint(length, ==, sizeof(header) - 1 + 1280 * 1024 * 3);
     g_assert_cmpmem(image, sizeof(header) - 1, header, sizeof(header) - 1);
-    g_assert_cmpmem(image + sizeof(header) - 1 + (50 * 1280 + 100) * 3, 3,
-                    "\xff\0\0", 3);
-    g_assert_cmpmem(image + sizeof(header) - 1 + (150 * 1280 + 200) * 3, 3,
-                    "\0\xff\0", 3);
+    /* Textport Y counts upward; PPM rows start at the top. */
+    g_assert_cmpmem(image + sizeof(header) - 1 +
+                    ((1024 - 1 - 50) * 1280 + 100) * 3, 3, "\xff\0\0", 3);
+    g_assert_cmpmem(image + sizeof(header) - 1 +
+                    ((1024 - 1 - 150) * 1280 + 200) * 3, 3, "\0\xff\0", 3);
 
     records = g_strconcat(contents, "\nscreendump points.ppm\n", NULL);
     g_assert_true(g_file_set_contents(fixture, records, -1, &error));
@@ -1588,6 +1595,64 @@ static void test_invalid_no_head(void)
                         "'head CODENAME'*");
 }
 
+static void test_kona_trace_ordering(void)
+{
+    const ReplayHead *head = find_head("sgi-kona");
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *contents = NULL;
+    g_auto(GStrv) lines = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    unsigned count = 0;
+    uint64_t previous = 0;
+    int fd = g_file_open_tmp("sgi-kona-order-XXXXXX.trace", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf("%s %s -D %s", head->machine, head->trace, path);
+    qts = qtest_init(args);
+    /* One original access per event, including internally split doublewords. */
+    qtest_writeq(qts, head->mmio_base + 0x800328, 0x1122334455667788);
+    qtest_readq(qts, head->mmio_base + 0x800328);
+    qtest_writel(qts, head->mmio_base + 0x800328, 0x99aabbcc);
+    qtest_readl(qts, head->mmio_base + 0x800328);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    lines = g_strsplit(contents, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        const char *event = strstr(lines[i], "sgi_kona_pio_");
+        const char *seq;
+        uint64_t sequence;
+
+        if (!event) {
+            continue;
+        }
+        seq = strstr(event, "seq ");
+        g_assert_nonnull(seq);
+        g_assert_cmpint(sscanf(seq, "seq %" SCNu64, &sequence), ==, 1);
+        if (count) {
+            g_assert_cmpuint(sequence, ==, previous + 1);
+        }
+        g_assert_nonnull(strstr(event, count < 2 ? "size 8" : "size 4"));
+        g_assert_nonnull(strstr(event, count % 2 ? "pio_read" : "pio_write"));
+        previous = sequence;
+        count++;
+    }
+    g_assert_cmpuint(count, ==, 4);
+    unlink(path);
+}
+
+static void test_kona_maintenance_menu(void)
+{
+    g_autofree char *path = replay_family_fixture_path(
+        "kona", KONA_MAINTENANCE_MENU);
+
+    run_replay(path, NULL);
+}
+
 static void test_invalid_unknown_head(void)
 {
     test_invalid_header("sgi-replay 2\nhead sgi-nonesuch\n",
@@ -1633,6 +1698,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     if (qtest_has_device("sgi-kona")) {
+        qtest_add_func("sgi-replay/kona/trace-ordering",
+                       test_kona_trace_ordering);
+        qtest_add_func("sgi-replay/kona/maintenance-menu",
+                       test_kona_maintenance_menu);
         qtest_add_func("sgi-replay/kona/ordering", test_kona_ordering);
         qtest_add_func("sgi-replay/kona/checkpoint", test_kona_checkpoint);
         qtest_add_func("sgi-replay/kona/screendump", test_kona_screendump);
