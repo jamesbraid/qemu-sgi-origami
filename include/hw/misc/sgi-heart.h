@@ -24,6 +24,9 @@ struct SGIHeartState {
     qemu_irq processor[5];
     MemoryRegion backing[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
+    MemoryRegion packet_views[HEART_BANKS][HEART_MAX_UNITS];
+    MemoryRegion packet_guards[HEART_BANKS * 2];
+    bool packet_guard_mapped[HEART_BANKS * 2];
     uint64_t capacity[HEART_BANKS];
     uint8_t widget_revision;
     uint64_t widget_id_64;
