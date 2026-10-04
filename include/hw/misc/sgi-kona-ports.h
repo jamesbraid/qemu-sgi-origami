@@ -388,6 +388,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_X_SPANS        0x156
 #define SGI_KONA_CMD_X_SPANS2       0x157
 #define SGI_KONA_CMD_X_SPANS6       0x158
+#define SGI_KONA_CMD_X_SEGMENT      0x159
+#define SGI_KONA_CMD_X_LINE         0x15b
+#define SGI_KONA_CMD_X_LINE6        0x15c
 #define SGI_KONA_CMD_X_BACKGROUND_POINT   0x15f
 #define SGI_KONA_CMD_X_BACKGROUND_POINT6  0x160
 #define SGI_KONA_CMD_X_BACKGROUND_POINT24 0x161
