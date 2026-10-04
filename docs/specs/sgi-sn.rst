@@ -192,6 +192,32 @@ that same sequence indefinitely rather than reaching an interactive
 prompt, because nothing carries its own state across the reset the
 PROM performs early in that sequence.
 
+Writable storage
+================
+
+Every writable store the catalogue's ``storage`` list names for a
+configuration is bound through the machine property of the same name,
+which takes a ``-blockdev`` node name or a ``-drive`` id. The property
+stands for the backing device's own ``drive`` property, as ``pflash0``
+does on the PC machines, but is applied when the builder creates the
+device, since topology= and nodes= decide which devices exist::
+
+  -blockdev driver=raw,node-name=node0-flash,file.driver=file,file.filename=node0-flash.raw \
+  -blockdev driver=raw,node-name=node1-flash,file.driver=file,file.filename=node1-flash.raw \
+  -M origin2000,topology=origin2000-deskside,nodes=2,node0-flash=node0-flash,node1-flash=node1-flash
+
+Before building anything the machine refuses a property the selected
+configuration lists no item for, a name that is no block node or drive,
+and a backing whose size is not the item's size.
+
+The machines bind these items today:
+
+- ``node<N>-flash`` on ``origin200``, ``origin2000`` and ``onyx2``.
+
+The older forms still work but are deprecated, and giving both forms for
+one store is refused: ``-drive if=pflash,unit=N`` for an SN0 node's
+flash.
+
 Serial line order
 =================
 

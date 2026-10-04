@@ -210,7 +210,14 @@ typedef struct SN0NodeState {
     MemoryRegion device_view;
 
     PFlashCFI02 *flash;
+    /*
+     * The flash's backing: a legacy -drive if=pflash backend, or the block
+     * node or drive the machine's node<N>-flash property names, which the
+     * flash's own "drive" property resolves. flash_drive is then the
+     * backend that property attached.
+     */
     BlockBackend *flash_drive;
+    const char *flash_node;
     uint64_t flash_size;
     MemoryRegion flash_reset_view;
     MemoryRegion flash_hub_view;

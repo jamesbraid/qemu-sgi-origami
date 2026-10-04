@@ -62,6 +62,8 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci/pci.h"
+#include "block/block.h"
+#include "block/graph-lock.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/qtest.h"
@@ -231,6 +233,11 @@ struct SGIMachineState {
     /* io-prom: an original I/O PROM image for the BASEIO flash parts. */
     char *io_prom;
     bool io_prom_used;
+    /*
+     * Catalogue storage item name -> the block node or drive its machine
+     * property binds, for every item a property has been set for.
+     */
+    GHashTable *storage;
 
     unsigned int num_nodes;
     SN0NodeState **nodes;
@@ -3535,6 +3542,129 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
     return true;
 }
 
+/* ---- Writable storage: checking what the properties bind ---- */
+
+/* The catalogue's item @name for the configuration @t builds, or NULL. */
+static const SGIModelStorageItem *sgi_machine_storage_item(
+    const SGIMachineClass *smc, const SGIModelTopology *t, const char *name)
+{
+    size_t nodes = QAPI_LIST_LENGTH(t->nodes);
+    const SGIModelOfferingList *entry;
+
+    for (entry = sgi_machines()->offerings; entry; entry = entry->next) {
+        const SGIModelOffering *offering = entry->value;
+        const SGIModelStorageItemList *item;
+
+        if (!smc->product || !g_str_equal(offering->product, smc->product) ||
+            !g_str_equal(offering->topology, t->name) ||
+            offering->nodes != nodes) {
+            continue;
+        }
+        for (item = offering->storage; item; item = item->next) {
+            if (g_str_equal(item->value->name, name)) {
+                return item->value;
+            }
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+static int64_t sgi_machine_node_length(BlockDriverState *bs)
+{
+    GRAPH_RDLOCK_GUARD_MAINLOOP();
+    return bdrv_getlength(bs);
+}
+
+/*
+ * Check every bound item against the catalogue before anything is built:
+ * the configuration must have the item, the node must exist and be the
+ * item's size. A clock record need only hold its record, since the model
+ * keeps it in a small file the block layer rounds up to a whole sector.
+ */
+/* g_ptr_array_sort() order for an array of strings. */
+static gint sgi_machine_compare_names(gconstpointer a, gconstpointer b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static bool sgi_machine_check_storage(SGIMachineState *s,
+                                      const SGIModelTopology *t, Error **errp)
+{
+    const char *product = MACHINE_GET_CLASS(s)->name;
+    g_autoptr(GHashTable) claimed = NULL;
+    g_autoptr(GPtrArray) names = NULL;
+    GHashTableIter iter;
+    gpointer key;
+    guint i;
+
+    if (!s->storage) {
+        return true;
+    }
+    /* In name order, so a refusal names the same items every run. */
+    names = g_ptr_array_new();
+    g_hash_table_iter_init(&iter, s->storage);
+    while (g_hash_table_iter_next(&iter, &key, NULL)) {
+        g_ptr_array_add(names, key);
+    }
+    g_ptr_array_sort(names, sgi_machine_compare_names);
+    claimed = g_hash_table_new(NULL, NULL);
+    for (i = 0; i < names->len; i++) {
+        const char *name = g_ptr_array_index(names, i);
+        const char *node = g_hash_table_lookup(s->storage, name);
+        const SGIModelStorageItem *item =
+            sgi_machine_storage_item(SGI_MACHINE_GET_CLASS(s), t, name);
+        const char *other;
+        BlockDriverState *bs;
+        int64_t length;
+
+        if (!item) {
+            size_t nodes = QAPI_LIST_LENGTH(t->nodes);
+
+            error_setg(errp, "%s: topology '%s' with %zu node board%s has "
+                       "no %s", product, t->name, nodes,
+                       nodes == 1 ? "" : "s", name);
+            return false;
+        }
+        bs = bdrv_lookup_bs(node, node, NULL);
+        if (!bs) {
+            error_setg(errp, "%s: %s names '%s', which is no block node or "
+                       "drive", product, name, node);
+            return false;
+        }
+        /* Two parts writing one node would corrupt each other. */
+        other = g_hash_table_lookup(claimed, bs);
+        if (other) {
+            error_setg(errp, "%s: %s and %s both name '%s'", product, other,
+                       name, node);
+            return false;
+        }
+        g_hash_table_insert(claimed, bs, (gpointer)name);
+        length = sgi_machine_node_length(bs);
+        if (length < 0) {
+            error_setg_errno(errp, -length, "%s: cannot read the size of %s",
+                             product, name);
+            return false;
+        }
+        if (g_str_has_suffix(name, "-clock") ?
+            (uint64_t)length < item->size : (uint64_t)length != item->size) {
+            error_setg(errp, "%s: %s is %" PRId64 " bytes; it must be %s%"
+                       PRIu64, product, name, length,
+                       g_str_has_suffix(name, "-clock") ? "at least " :
+                       "exactly ", item->size);
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The block node or drive bound to item @name, or NULL. */
+static const char *sgi_machine_storage_node(SGIMachineState *s,
+                                            const char *name)
+{
+    return s->storage ? g_hash_table_lookup(s->storage, name) : NULL;
+}
+
 static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -3548,6 +3678,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     g_autofree unsigned int *node_attachment = NULL;
     g_autofree unsigned int *board_attachment = NULL;
     g_autofree BlockBackend **flash_drives = NULL;
+    g_autofree const char **flash_nodes = NULL;
     g_autofree const SGIModelNode **nodes = NULL;
     unsigned int flash_count = 0;
     unsigned int node_count, node_index, board_index;
@@ -3582,7 +3713,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!sgi_machine_resolve_config(s, t, errp)) {
+    if (!sgi_machine_resolve_config(s, t, errp) ||
+        !sgi_machine_check_storage(s, t, errp)) {
         return false;
     }
     if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
@@ -3993,11 +4125,22 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     flash_drives = g_new0(BlockBackend *, node_count);
+    flash_nodes = g_new0(const char *, node_count);
     for (node_index = 0; node_index < node_count; node_index++) {
         DriveInfo *drive = drive_get_by_index(IF_PFLASH, node_index);
+        g_autofree char *name = g_strdup_printf("node%u-flash", node_index);
 
+        flash_nodes[node_index] = sgi_machine_storage_node(s, name);
+        if (drive && flash_nodes[node_index]) {
+            error_setg(errp, "%s: %s and -drive if=pflash,unit=%u both "
+                       "back node %u's flash", mc->name, name, node_index,
+                       node_index);
+            return false;
+        }
         if (drive) {
             flash_drives[node_index] = blk_by_legacy_dinfo(drive);
+        }
+        if (drive || flash_nodes[node_index]) {
             flash_count++;
         }
     }
@@ -4071,6 +4214,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                              "nasid",
                              sgi_machine_topology_nasid(t, node_index));
         node->flash_drive = flash_drives[node_index];
+        node->flash_node = flash_nodes[node_index];
         node->model_node = model_node;
         node->memory = node_memory;
         node->slave_role = model_node->slave_role;
@@ -4915,6 +5059,104 @@ static char *sgi_machine_get_routes(Object *obj, Error **errp)
     return g_string_free(result, false);
 }
 
+/* ---- Writable storage bound through machine properties ---- */
+
+/*
+ * The catalogue's storage item names the machine binds: one property per
+ * item, named exactly as the item, holding the block node (-blockdev
+ * node-name) or drive id that backs it. The property stands for the
+ * backing device's own "drive" property, as pc_sysfw.c's pflash0 does, but
+ * the devices are built from topology= and nodes=, so the name is held here
+ * and set on the device's "drive" when the builder creates it.
+ */
+static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
+                                         const char *name)
+{
+    const SGIModelTopology *t = smc->default_topology ?
+        sgi_model_find_topology(smc->default_topology) : NULL;
+    unsigned int index;
+    const char *end;
+
+    if (!t || !t->nodes) {
+        return false;
+    }
+    if (g_str_has_prefix(name, "node") &&
+        !qemu_strtoui(name + strlen("node"), &end, 10, &index) &&
+        g_str_equal(end, "-flash")) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
+    }
+    return false;
+}
+
+static void sgi_machine_get_storage(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    g_autofree char *value =
+        g_strdup(s->storage ? g_hash_table_lookup(s->storage, name) : NULL);
+
+    if (!value) {
+        value = g_strdup("");
+    }
+    visit_type_str(v, name, &value, errp);
+}
+
+static void sgi_machine_set_storage(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    char *value;
+
+    if (sgi_machine_built(name, errp) ||
+        !visit_type_str(v, name, &value, errp)) {
+        return;
+    }
+    if (!s->storage) {
+        s->storage = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                           g_free, g_free);
+    }
+    if (*value) {
+        g_hash_table_insert(s->storage, g_strdup(name), value);
+    } else {
+        g_hash_table_remove(s->storage, name);
+        g_free(value);
+    }
+}
+
+/* One property per bindable item any of the product's offerings lists. */
+static void sgi_machine_add_storage_properties(Object *obj)
+{
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    const SGIModelOfferingList *entry;
+
+    if (!smc->product) {
+        return;
+    }
+    for (entry = sgi_machines()->offerings; entry; entry = entry->next) {
+        const SGIModelStorageItemList *item;
+
+        if (!g_str_equal(entry->value->product, smc->product)) {
+            continue;
+        }
+        for (item = entry->value->storage; item; item = item->next) {
+            const char *name = item->value->name;
+            g_autofree char *description = NULL;
+
+            if (object_property_find(obj, name) ||
+                !sgi_machine_storage_bindable(smc, name)) {
+                continue;
+            }
+            object_property_add(obj, name, "str", sgi_machine_get_storage,
+                                sgi_machine_set_storage, NULL, NULL);
+            description = g_strdup_printf(
+                "Block node or drive backing %s; it must be exactly the "
+                "size query-sgi-machines lists for the configuration",
+                name);
+            object_property_set_description(obj, name, description);
+        }
+    }
+}
+
 static void sgi_machine_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
@@ -4923,6 +5165,7 @@ static void sgi_machine_instance_init(Object *obj)
         sgi_model_find_topology(smc->default_topology) : NULL;
 
     SGI_MACHINE(obj)->debug_leds = true;
+    sgi_machine_add_storage_properties(obj);
     /*
      * With no -smp at all QEMU leaves smp.sockets at 1 beside the class's
      * default_cpus; the product's default population is that many
@@ -4991,6 +5234,9 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->population);
     g_free(s->baseio_preset);
     g_free(s->io_prom);
+    if (s->storage) {
+        g_hash_table_destroy(s->storage);
+    }
     g_free(s->fuel_mac_eeprom);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(

@@ -441,6 +441,7 @@ sn0_machine_qtests = \
                                                    'sgi-debug-tools-test',
                                                    'sn-builder-test',
                                                    'sn-node-population-test',
+                                                   'sgi-machine-storage-test',
                                                    'sn0-pci-shoehorn-test',
                                                    'sn0-pci-carrier-test',
                                                    'sn0-menet-test',
