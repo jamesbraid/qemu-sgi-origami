@@ -5034,6 +5034,13 @@ static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
                 n += 6;
                 continue;
             }
+            if (next == 0x04d && third == 0x061 && fourth == 0x066 &&
+                s->gl_const[(k + n + 4) % SGI_ODYSSEY_GL_CONSTANTS] == 0x06c &&
+                s->gl_const[(k + n + 5) % SGI_ODYSSEY_GL_CONSTANTS] == 0x077) {
+                p->linear_texgen = 0xd;
+                n += 5;
+                continue;
+            }
             if (next == 0x06b && third == 0x077) {
                 p->linear_texgen = 3;
                 n += 2;
