@@ -3504,6 +3504,87 @@ static int sgi_kona_gl_read_bank(SGIKonaState *s, unsigned i,
     return w->double_buffered ? w->displayed_bank ^ back : 0;
 }
 
+typedef struct SGIKonaGLCopySource {
+    SGIKonaState *s;
+    const SGIKonaGLWindow *window;
+    unsigned bank;
+} SGIKonaGLCopySource;
+
+static bool sgi_kona_gl_copy_read(void *opaque, int32_t x, int32_t y,
+                                  uint32_t *rgba)
+{
+    const SGIKonaGLCopySource *source = opaque;
+    SGIKonaState *s = source->s;
+    int64_t px = (int64_t)source->window->x + x;
+    int64_t py = (int64_t)source->window->y + y;
+    uint32_t rgb;
+
+    if (sgi_plane_load(&s->mem,
+            sgi_kona_plane(s, sgi_kona_bank_tag_plane(s, source->bank)),
+            px, py) != SGI_KONA_TAG_DIRECT) {
+        return false;
+    }
+    rgb = sgi_plane_load(&s->mem,
+        sgi_kona_plane(s, sgi_kona_bank_plane(s, source->bank)), px, py);
+    *rgba = (rgb << 8) | 0xff;
+    return true;
+}
+
+static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
+{
+    int i = s->context_current, bank;
+    int32_t x = a[0], y = a[1];
+    uint32_t width = a[2], height = a[3], selection;
+    const SGIKonaGLPipe *p;
+    const SGIKonaGLWindow *w;
+    SGIKonaGLCopySource source;
+    SGIGLPixelTransfer transfer;
+    SGIGLSink sink;
+    int64_t px, py;
+
+    if (i == SGI_KONA_CONTEXT_NONE) {
+        goto refused;
+    }
+    if (s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        goto refused;
+    }
+    p = &s->gl_pipe[i];
+    w = &s->gl_window[i];
+    /* The unqueried producer form does not establish its flag's meaning. */
+    if (a[4] || a[5] != 0x1800 || a[6] != 0x80000000 ||
+        p->pixel_zoom_unsupported || p->pixel_transfer_unsupported ||
+        sgi_kona_gl_float(p->pixel_zoom[0]) != 1 ||
+        sgi_kona_gl_float(p->pixel_zoom[1]) != 1 ||
+        s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
+        s->gl[i].cur.texture_3d || !width || !height ||
+        (uint64_t)width * height > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
+        goto refused;
+    }
+    bank = sgi_kona_gl_read_bank(s, i, &selection);
+    px = (int64_t)w->x + x;
+    py = (int64_t)w->y + y;
+    if (bank < 0 || x < 0 || y < 0 ||
+        (uint64_t)x + width > w->width || (uint64_t)y + height > w->height ||
+        px < 0 || py < 0 || px + width > SGI_KONA_FB_WIDTH ||
+        py + height > SGI_KONA_FB_HEIGHT) {
+        goto refused;
+    }
+    source = (SGIKonaGLCopySource) { .s = s, .window = w, .bank = bank };
+    for (unsigned k = 0; k < 4; k++) {
+        transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
+        transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
+    }
+    sgi_kona_gl_sink(s, &sink);
+    if (sgi_gl_copy_pixels_rgba_transfer(&s->gl[i], &sink, x, y, width, height,
+                                         sgi_kona_gl_copy_read, &source,
+                                         1, 1, &transfer)) {
+        return;
+    }
+refused:
+    qemu_log_mask(LOG_UNIMP, "sgi-kona: native CopyPixels profile refused\n");
+}
+
 static bool sgi_kona_gl_pixel_transfer_identity(const SGIKonaGLPipe *p)
 {
     if (p->pixel_transfer_unsupported) {
@@ -5329,6 +5410,9 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
                               " 0x%" PRIx32 "; reads refused\n", args[0]);
             }
         }
+        return;
+    case SGI_KONA_CMD_GL_COPY_PIXELS:
+        sgi_kona_gl_copy_pixels(s, args);
         return;
     case SGI_KONA_CMD_GL_READ_PIXELS:
         sgi_kona_gl_read_pixels(s, args);
