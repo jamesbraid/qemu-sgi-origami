@@ -147,6 +147,10 @@ static SGIKonaTextureObject *texture_object(SGIKonaTextureState *s,
 static bool texture_format(uint32_t base, uint32_t internal)
 {
     switch (base) {
+    case SGI_GL_DEPTH_COMPONENT:
+        return internal == base ||
+               (internal >= SGI_GL_DEPTH_COMPONENT16_SGIX &&
+                internal <= SGI_GL_DEPTH_COMPONENT32_SGIX);
     case SGI_GL_ALPHA:
         return internal == base || (internal >= 0x803b && internal <= 0x803e);
     case SGI_GL_LUMINANCE:
@@ -571,7 +575,12 @@ static bool texture_params(const SGIKonaTextureParams *p)
         !isfinite(p->lod_scale_s) || !isfinite(p->lod_scale_t) ||
         !isfinite(p->lod_scale_r) ||
         p->lod_scale_s <= 0 || p->lod_scale_t <= 0 || p->lod_scale_r <= 0 ||
-        p->min_lod > p->max_lod) {
+        p->min_lod > p->max_lod ||
+        (p->shadow_compare &&
+         p->shadow_compare != SGI_GL_TEXTURE_LEQUAL_R_SGIX &&
+         p->shadow_compare != SGI_GL_TEXTURE_GEQUAL_R_SGIX) ||
+        !isfinite(p->shadow_ambient) || p->shadow_ambient < 0 ||
+        p->shadow_ambient > 1) {
         return false;
     }
     for (unsigned k = 0; k < 4; k++) {
@@ -721,7 +730,9 @@ static const SGIKonaTextureNativeImage *texture_native_border_image(
         h[16] |= MIN(ctz32(depth) + 1, 1) << 8;
     }
     for (unsigned k = 0; k < o->native_count; k++) {
-        if (texture_native_key(o->native[k].header, h)) {
+        if (texture_native_key(o->native[k].header, h) &&
+            (o->native[k].image.base_format == SGI_GL_DEPTH_COMPONENT) ==
+            (interior->image.base_format == SGI_GL_DEPTH_COMPONENT)) {
             return &o->native[k];
         }
     }
@@ -853,6 +864,14 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                   texture_native_uses_border(o->params.wrap_t)) ||
                  (volume && texture_native_uses_border(o->params.wrap_r)));
 
+            if (o->native_internal_valid &&
+                (image->base_format == SGI_GL_DEPTH_COMPONENT) !=
+                (o->native_base_format == SGI_GL_DEPTH_COMPONENT)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: incompatible depth texture storage "
+                              "for handle 0x%x\n", o->handle);
+                return UINT32_MAX;
+            }
             *view = *image;
             if (o->native_layout_valid) {
                 view->stride_width = image->width;
@@ -1009,6 +1028,8 @@ const SGIGLTexImage *sgi_kona_texture_resolve(SGIKonaTextureState *s)
         .read_filter_weight = texture_filter_weight,
         .detail_level = o->params.detail_level,
         .detail_mode = o->params.detail_mode,
+        .shadow_compare = o->params.shadow_compare,
+        .shadow_ambient = o->params.shadow_ambient,
     };
     if ((o->params.mag_filter == SGI_GL_LINEAR_DETAIL_SGIS ||
          o->params.mag_filter == SGI_GL_LINEAR_DETAIL_ALPHA_SGIS ||
@@ -1163,6 +1184,11 @@ static bool texture_save(QEMUFile *f, void *pv, size_t size,
         qemu_put_be32(f, o->native_layout_valid |
                          (o->native_one_dimensional << 1));
         qemu_put_be32(f, o->native_layout);
+        qemu_put_be32(f, o->params.shadow_compare);
+        union { double d; uint64_t u; } ambient = {
+            .d = o->params.shadow_ambient,
+        };
+        qemu_put_be64(f, ambient.u);
     }
     qemu_put_be32(f, g_hash_table_size(s->filter_curves));
     g_hash_table_iter_init(&iter, s->filter_curves);
@@ -1203,7 +1229,7 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
     for (uint32_t i = 0; i < count; i++) {
         uint32_t id = qemu_get_be32(f), levels = qemu_get_be32(f);
         uint32_t valid, native_count;
-        union { double d; uint64_t u; } scale_r;
+        union { double d; uint64_t u; } scale_r, ambient;
         SGIKonaTextureObject *o;
 
         if (levels > SGI_GL_TEX_LEVELS_MAX || id == UINT32_MAX ||
@@ -1403,6 +1429,12 @@ static bool texture_load(QEMUFile *f, void *pv, size_t size,
         }
         o->native_layout_valid = valid & 1;
         o->native_one_dimensional = valid & 2;
+        o->params.shadow_compare = qemu_get_be32(f);
+        ambient.u = qemu_get_be64(f);
+        o->params.shadow_ambient = ambient.d;
+        if (!texture_params(&o->params)) {
+            goto invalid;
+        }
     }
     curves = qemu_get_be32(f);
     if (curves > SGI_KONA_TEXTURE_CURVE_SLOTS) {

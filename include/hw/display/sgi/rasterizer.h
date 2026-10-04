@@ -206,7 +206,8 @@ typedef struct SGIGLTexPyramid {
  * wrap_r are ignored. Dimensions count interior texels; row zero has the
  * lowest T and slice zero the lowest R. Interior callbacks get in-range
  * indices; stored-border callbacks get signed indices. Both return canonical
- * RRGGBBAA bytes.
+ * RRGGBBAA bytes. DEPTH_COMPONENT callbacks instead return an unsigned
+ * normalized 32-bit depth value.
  * The family validates storage and guest addressing. It owns object state,
  * binding and migration, rebuilding this borrowed descriptor after load.
  * Image and descriptor stay immutable through each synchronous draw; the
@@ -251,6 +252,9 @@ typedef struct SGIGLTexImage {
     const SGIGLTexLevel *detail_image;
     int32_t detail_level;
     uint32_t detail_mode;
+    /* Zero disables comparison. SGIX operators compare depth to projected R. */
+    uint32_t shadow_compare;
+    double shadow_ambient;
 } SGIGLTexImage;
 
 /*

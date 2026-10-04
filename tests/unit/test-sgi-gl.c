@@ -6785,6 +6785,149 @@ static SGIGLTexImage texture_image(TexturePixels *p)
     };
 }
 
+static void test_texture_shadow(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x7fffffff, 0x80000000, 0, UINT32_MAX,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLContext c;
+    const float color[4] = { .3, .4, .5, .25 };
+    float coord[4] = { .25, .25, .5, 1 }, out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_2D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    image.base_format = SGI_GL_DEPTH_COMPONENT;
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    g_assert_cmpfloat(out[3], ==, color[3]);
+    coord[0] = .75;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    image.shadow_compare = SGI_GL_TEXTURE_GEQUAL_R_SGIX;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    coord[0] = .25;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, 0);
+    /* Equality passes for both operators at both representable endpoints. */
+    coord[1] = .75;
+    for (unsigned i = 0; i < 2; i++) {
+        image.shadow_compare = i ? SGI_GL_TEXTURE_GEQUAL_R_SGIX :
+                                   SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+        for (unsigned j = 0; j < 2; j++) {
+            coord[0] = j ? .75 : .25;
+            coord[2] = j;
+            g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                                     color, out));
+            g_assert_cmpfloat(out[0], ==, 1);
+        }
+    }
+    sgi_gl_cleanup(&c);
+}
+
+static void test_texture_shadow_filter(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x40000000, 0xc0000000, 0x40000000, 0xc0000000,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, .25 };
+    float coord[4] = { 1, .5, 1.2, 2 }, out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_2D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    image.base_format = SGI_GL_DEPTH_COMPONENT;
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    image.min_filter = image.mag_filter = SGI_GL_LINEAR;
+    /* Comparing the filtered depth would return one instead of one half. */
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, .5);
+    image.shadow_ambient = .2;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], .6, 0.000001);
+    g_assert_cmpfloat(out[1], ==, out[0]);
+    g_assert_cmpfloat(out[2], ==, out[0]);
+    g_assert_cmpfloat(out[3], ==, .25);
+    /* Constant border depth participates in the same per-tap comparison. */
+    image.wrap_s = SGI_GL_CLAMP;
+    image.border_color[0] = 1;
+    coord[0] = 0;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], .6, 0.000001);
+    /* R is a reference for 1D images, even though T is ignored. */
+    enable(&c, SGI_GL_TEXTURE_2D, false);
+    enable(&c, SGI_GL_TEXTURE_1D, true);
+    image.one_dimensional = true;
+    image.height = 1;
+    coord[1] = NAN;
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], .6, 0.000001);
+    coord[2] = NAN;
+    out[0] = -1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    sgi_gl_cleanup(&c);
+}
+
+static void test_texture_shadow_rejection(void)
+{
+    TexturePixels pixels = { .pixel = { UINT32_MAX, UINT32_MAX,
+                                        UINT32_MAX, UINT32_MAX } };
+    SGIGLTexImage image = texture_image(&pixels);
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, 1 };
+    float coord[4] = { .25, .25, .5, 1 }, out[4] = { -1, -1, -1, -1 };
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_2D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    image.base_format = SGI_GL_DEPTH_COMPONENT;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    image.shadow_compare = 1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    image.shadow_ambient = INFINITY;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    image.shadow_ambient = 1.1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    image.shadow_ambient = -.1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    image.shadow_ambient = 0;
+    coord[2] = 1.1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    coord[2] = -.1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    coord[2] = .5;
+    pixels.fail = true;
+    g_assert_false(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                              color, out));
+    for (unsigned k = 0; k < 4; k++) {
+        g_assert_cmpfloat(out[k], ==, -1);
+    }
+    sgi_gl_cleanup(&c);
+}
+
 static void texture_env(FragScene *f, uint32_t pname, float a, float b,
                         float c, float d)
 {
@@ -6796,6 +6939,40 @@ static void texture_coord(FragScene *f, float s, float t, float r, float q)
 {
     frag_command(f, SGI_GL_OP_TEXCOORD4F,
                  (uint32_t[]) { bits(s), bits(t), bits(r), bits(q) }, 4);
+}
+
+static void test_texture_shadow_primitives(void)
+{
+    TexturePixels pixels = { .pixel = { 0x80000000, 0x80000000,
+                                        0x80000000, 0x80000000 } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+
+    image.base_format = SGI_GL_DEPTH_COMPONENT;
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    /* R/Q must reach points, segments and triangle fragments. */
+    texture_coord(&f, .5, .5, 1.5, 2);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_POINTS }, 1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F, (uint32_t[]) { 0, 0 }, 2);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0xffffff);
+    frag_command(&f, SGI_GL_OP_BEGIN, (uint32_t[]) { SGI_GL_LINES }, 1);
+    frag_command(&f, SGI_GL_OP_VERTEX2F,
+                 (uint32_t[]) { bits(-.75), bits(-.484375) }, 2);
+    frag_command(&f, SGI_GL_OP_VERTEX2F,
+                 (uint32_t[]) { bits(.75), bits(-.484375) }, 2);
+    frag_command(&f, SGI_GL_OP_END, NULL, 0);
+    g_assert_cmphex(frag_pixel(&f, 32, 16), ==, 0xffffff);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0xffffff);
+    texture_coord(&f, .5, .5, .5, 2);
+    frag_quad(&f, 1, 1, 1, 1);
+    g_assert_cmphex(frag_pixel(&f, 16, 16), ==, 0);
+    sgi_gl_cleanup(&f.c);
 }
 
 static void test_raster_texture_coordinates(void)
@@ -7041,6 +7218,30 @@ static SGIGLTexImage texture_image_3d(Texture3DPixels *p)
         .wrap_r = SGI_GL_REPEAT,
         .read_texel_3d = texture_read_3d, .opaque = p,
     };
+}
+
+static void test_texture_shadow_volume(void)
+{
+    Texture3DPixels pixels = { .pixel = { UINT32_MAX, UINT32_MAX,
+        UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+        UINT32_MAX, UINT32_MAX } };
+    SGIGLTexImage image = texture_image_3d(&pixels);
+    SGIGLContext c;
+    const float color[4] = { 1, 1, 1, .25 };
+    const float coord[4] = { .25, .25, 1, 1 };
+    float out[4];
+
+    context_init(&c);
+    enable(&c, SGI_GL_TEXTURE_3D, true);
+    c.cur.texture_env_mode = SGI_GL_REPLACE;
+    image.base_format = SGI_GL_DEPTH_COMPONENT;
+    image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    /* Spatial REPEAT maps R to zero without changing the depth reference. */
+    g_assert_true(sgi_gl_texture_apply_pixel(&c.cur, &image, coord,
+                                             color, out));
+    g_assert_cmpfloat(out[0], ==, 1);
+    g_assert_cmpfloat(out[3], ==, .25);
+    sgi_gl_cleanup(&c);
 }
 
 static void test_texture_3d_sampling(void)
@@ -9790,6 +9991,35 @@ static void mipmap_init(MipmapFixture *f, uint32_t min, uint32_t mag,
     texture_coord(&f->scene, 0.5f, 0.5f, 0, 1);
 }
 
+static void test_texture_shadow_mipmaps(void)
+{
+    MipmapFixture f;
+    const float color[4] = { 1, 1, 1, .25 };
+    const float coord[4] = { .25, .25, .6, 1 };
+    float out[4];
+
+    mipmap_init(&f, SGI_GL_NEAREST_MIPMAP_LINEAR, SGI_GL_NEAREST, .5, 1000);
+    f.image.shadow_compare = SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+    f.image.shadow_ambient = .2;
+    for (unsigned i = 0; i < 3; i++) {
+        f.levels[i].base_format = SGI_GL_DEPTH_COMPONENT;
+        f.levels[i].internal_format = SGI_GL_DEPTH_COMPONENT24_SGIX;
+        for (unsigned j = 0; j < 16; j++) {
+            f.pixels[i].pixels[j] = i ? 0xc0000000 : 0x40000000;
+        }
+    }
+    g_assert_true(sgi_gl_texture_apply_pixel(&f.scene.c.cur, &f.image, coord,
+                                             color, out));
+    g_assert_cmpfloat_with_epsilon(out[0], .6, .000001);
+    g_assert_cmpfloat(out[3], ==, .25);
+    f.pixels[1].fail = true;
+    out[0] = -1;
+    g_assert_false(sgi_gl_texture_apply_pixel(&f.scene.c.cur, &f.image, coord,
+                                              color, out));
+    g_assert_cmpfloat(out[0], ==, -1);
+    sgi_gl_cleanup(&f.scene.c);
+}
+
 static bool texture_filter_weight(void *opaque, double lambda, double *weight)
 {
     double *value = opaque;
@@ -12020,6 +12250,17 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/texture-projective", test_texture_projective);
     g_test_add_func("/sgi-gl/texture-fog-order", test_texture_fog_order);
     g_test_add_func("/sgi-gl/texture-errors", test_texture_errors);
+    g_test_add_func("/sgi-gl/texture-shadow/rejection",
+                    test_texture_shadow_rejection);
+    g_test_add_func("/sgi-gl/texture-shadow/primitives",
+                    test_texture_shadow_primitives);
+    g_test_add_func("/sgi-gl/texture-shadow/volume",
+                    test_texture_shadow_volume);
+    g_test_add_func("/sgi-gl/texture-shadow/mipmaps",
+                    test_texture_shadow_mipmaps);
+    g_test_add_func("/sgi-gl/texture-shadow/compare", test_texture_shadow);
+    g_test_add_func("/sgi-gl/texture-shadow/filter",
+                    test_texture_shadow_filter);
     g_test_add_func("/sgi-gl/texture-environment-without-image",
                     test_texture_environment_without_image);
     g_test_add_func("/sgi-gl/texture-invalid-quad-polygon",
