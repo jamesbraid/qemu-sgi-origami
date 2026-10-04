@@ -1420,7 +1420,7 @@ static void test_read_reply_order(void)
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==, 0);
     qtest_quit(s);
     found = kona_log_read(log);
-    payload = strstr(found, "addr 0x320008 len 0xa0\n");
+    payload = strstr(found, "addr 0x320008 len 0x78\n");
     ready = strstr(found, "addr 0x320000 len 0x4\n");
     g_assert_nonnull(payload);
     g_assert_nonnull(ready);
@@ -1445,7 +1445,7 @@ static void test_read_payload_failure(void)
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found,
-                    "160-byte write to 0x9000004000000 failed (result 2)"));
+                    "120-byte write to 0x9000004000000 failed (result 2)"));
     g_assert_null(strstr(found, "addr 0x3fffff8 len 0x4\n"));
 }
 
