@@ -104,6 +104,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
  */
 #define SGI_KONA_CMD_DMA_PACKET     0x1eb
 #define SGI_KONA_CMD_DMA_LIST_WRITE 0x1c8
+/* Read descriptor (six words), then finish reason and context index. */
+#define SGI_KONA_CMD_SELECT_FEED_START  0x1f5
+#define SGI_KONA_CMD_SELECT_FEED_FINISH 0x1f6
 /*
  * The GL client's display-list packets, which it writes to its doorbell:
  * invoke a list from pipe memory (0x16d, a byte offset and a word count;

@@ -89,6 +89,9 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     /* kona_idma's packet and kona_dmawrite's list-write record. */
     { SGI_KONA_CMD_DMA_PACKET, 6 },
     { SGI_KONA_CMD_DMA_LIST_WRITE, 2 },
+    /* Read-DMA brackets carry the descriptor and completion arguments. */
+    { SGI_KONA_CMD_SELECT_FEED_START, 6 },
+    { SGI_KONA_CMD_SELECT_FEED_FINISH, 2 },
     /*
      * The display-list packets, each count read at its libGLcore sender.
      * 0x170 and 0x171 count their n only; the n pairs follow.

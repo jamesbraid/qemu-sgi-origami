@@ -241,6 +241,7 @@ static const SGICommandPortSelector expected_command_tokens[] = {
     { 0x1e1, 4 }, { 0x1e3, 8 }, { 0x172, 1 }, { 0x1fc, 1 }, { 0x1f9, 4 },
     { 0x1f3, 11 }, { 0x1ee, 3 }, { 0x1f4, 2 }, { 0x1ed, 3 },
     { 0x1e7, 1 }, { 0x1eb, 6 }, { 0x1c8, 2 },
+    { 0x1f5, 6 }, { 0x1f6, 2 },
     { 0x16d, 2 }, { 0x16e, 2 }, { 0x170, 1 }, { 0x171, 1 }, { 0x167, 4 },
     { 0x16f, 3 }, { 0x14c, 1 }, { 0x14d, 6 }, { 0x141, 1 }, { 0x143, 3 },
     { 0x131, 1 }, { 0x14e, 24 }, { 0x14f, 1 }, { 0x150, 6 }, { 0x159, 2 },
@@ -294,6 +295,39 @@ static void test_command_tokens_frame(void)
                           SGI_KONA_PORT_TEXTPORT);
 }
 
+/* Selector-shaped descriptor words must stay inside the read bracket. */
+static void test_command_select_feed(void)
+{
+    static const struct {
+        uint32_t selector, argc, args[6];
+    } packets[] = {
+        { 0x1f5, 6, { 0x1eb, 0x9000, 0x1f6, 0x138, 0x1f8, 0x100 } },
+        { 0x138, 2, { 17, 29 } },
+        { 0x1f6, 2, { 0x100, 7 } },
+        { 0x1dd, 1, { 0x105 } },
+    };
+    RecordedPacket r = { 0 };
+    SGICommandPort p;
+
+    sgi_command_port_init(&p, &test_ops, &r, SGI_KONA_PORT_TEXTPORT,
+                          sgi_kona_command_tokens, sgi_kona_command_num_tokens);
+    for (unsigned i = 0; i < ARRAY_SIZE(packets); i++) {
+        memset(&r, 0, sizeof(r));
+        sgi_command_port_write(&p, packets[i].selector, 4);
+        g_assert_false(r.got_packet);
+        g_assert_false(r.got_unsupported);
+        for (unsigned j = 0; j < packets[i].argc; j++) {
+            sgi_command_port_write(&p, packets[i].args[j], 4);
+            g_assert_true(r.got_packet == (j + 1 == packets[i].argc));
+            g_assert_false(r.got_unsupported);
+        }
+        g_assert_cmphex(r.selector, ==, packets[i].selector);
+        g_assert_cmpuint(r.argc, ==, packets[i].argc);
+        g_assert_cmpmem(r.args, r.argc * sizeof(uint32_t),
+                        packets[i].args, r.argc * sizeof(uint32_t));
+    }
+}
+
 /*
  * The GL client's commands and the words after each selector word, a
  * double counting two, as the senders write them: written out again here
@@ -340,7 +374,8 @@ static const SGICommandPortSelector expected_gl_tokens[] = {
     { 0x2f, 2 }, { 0x30, 2 }, { 0x33, 2 }, { 0x11, 5 }, { 0x12, 5 },
     /* Pixels, queries and the attribute stack. */
     { 0x5, 8 }, { 0x6, 9 },
-    { 0x3a, 8 }, { 0x39, 7 }, { 0x4c, 1 }, { 0xc9, 1 }, { 0xc8, 1 },
+    { 0x3a, 8 }, { 0x39, 7 }, { 0x38, 7 }, { 0x110, 4 }, { 0x115, 4 },
+    { 0x4c, 1 }, { 0xc9, 1 }, { 0xc8, 1 },
     { 0x119, 1 },
     /* Textures. */
     { 0x1c4, 1 }, { 0x1c5, 1 },
@@ -485,6 +520,8 @@ int main(int argc, char **argv)
                     test_command_tokens_frame);
     g_test_add_func("/sgi-kona-ports/command/excludes-uncounted-x-tokens",
                     test_command_excludes_uncounted_x_tokens);
+    g_test_add_func("/sgi-kona-ports/command/select-feed",
+                    test_command_select_feed);
     g_test_add_func("/sgi-kona-ports/gl/table-shape", test_gl_table_shape);
     g_test_add_func("/sgi-kona-ports/video/table-shape",
                     test_video_table_shape);
