@@ -1248,6 +1248,9 @@ struct SGIKonaState {
  */
 uint32_t sgi_kona_fb_read(SGIKonaState *s, int x, int y);
 
+bool sgi_kona_pixels_dma_waiting(SGIKonaState *s);
+bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                                uint32_t per_line, uint64_t pitch);
 bool sgi_kona_bitmap_dma_waiting(SGIKonaState *s);
 bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
                                 uint32_t per_line, uint64_t pitch);
