@@ -214,6 +214,38 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
     return true;
 }
 
+bool sgi_renderer_request_tile(SGIRendererRequest *request,
+                                int64_t x, int64_t y, unsigned width,
+                                unsigned height,
+                                const int64_t bounds[4])
+{
+    int64_t x0, y0, x1, y1;
+
+    if (!width || !height || width > SGI_RENDERER_SIZE ||
+        height > SGI_RENDERER_SIZE || x > INT64_MAX - SGI_RENDERER_SIZE ||
+        y > INT64_MAX - SGI_RENDERER_SIZE) {
+        return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        request->vertices[i][0] = (double)request->vertices[i][0] - x;
+        request->vertices[i][1] = (double)request->vertices[i][1] - y;
+    }
+    x0 = MAX(bounds[0], x);
+    y0 = MAX(bounds[1], y);
+    x1 = MIN(bounds[2], x + width - 1);
+    y1 = MIN(bounds[3], y + height - 1);
+    if (x0 > x1 || y0 > y1) {
+        request->clip[0] = request->clip[1] = 0;
+        request->clip[2] = request->clip[3] = -1;
+    } else {
+        request->clip[0] = x0 - x;
+        request->clip[1] = y0 - y;
+        request->clip[2] = x1 - x;
+        request->clip[3] = y1 - y;
+    }
+    return sgi_renderer_request_valid(request);
+}
+
 static int64_t renderer_edge(const int64_t a[2], const int64_t b[2],
                              int64_t x, int64_t y)
 {

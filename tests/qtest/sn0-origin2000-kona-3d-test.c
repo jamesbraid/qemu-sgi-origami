@@ -12509,7 +12509,7 @@ static void test_renderer_viewport(gconstpointer opaque)
     gl_vertex2f(s, 0, 128);
     gl_end(s);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
-                     mode == 5 || mode == 7 ? 0 : 2);
+                     mode == 5 ? 0 : mode == 7 ? 4 : 2);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
     expected_clear(expected, 0xffffff);
@@ -12534,6 +12534,76 @@ static void test_renderer_viewport(gconstpointer opaque)
         g_assert_cmpuint(pixel[0], ==, 255);
         g_assert_cmpuint(pixel[1], ==, 0);
         g_assert_cmpuint(pixel[2], ==, 0);
+    }
+    qtest_quit(s);
+}
+
+static void test_renderer_tiles(gconstpointer opaque)
+{
+    static const struct {
+        int32_t x, y;
+        unsigned width, height, requests;
+    } windows[] = {
+        { PROBE_X, PROBE_Y, 256, 256, 8 },
+        { PROBE_X, PROBE_Y, 257, 193, 12 },
+        { PROBE_X, PROBE_Y, 129, 1, 4 },
+        { PROBE_X, PROBE_Y, 1, 129, 4 },
+        { PROBE_X, PROBE_Y, 64, 63, 2 },
+        { FB_WIDTH - 65, FB_HEIGHT - 63, 129, 129, 2 },
+        { -17, -33, 193, 193, 8 },
+        { 0, 0, FB_WIDTH, FB_HEIGHT, 160 },
+        { PROBE_X, PROBE_Y, 257, 193, 12 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    int32_t ox = windows[mode].x, oy = windows[mode].y;
+    unsigned width = windows[mode].width, height = windows[mode].height;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree uint8_t *expected = NULL, *frame = NULL;
+
+    renderer_fixture(s);
+    kona_command_kicked(s, 0x1f3,
+        (uint32_t[]) { ox, oy, 0x05670000 | width, 0x05670000 | height,
+                       ox, oy, width, height, 0, 0xd, 0 }, 11);
+    kona_command_kicked(s, 0x1ee, (uint32_t[]) { ox, oy, 0 }, 3);
+    kona_command(s, 0xe3, (uint32_t[]) { 0, 0, width, height }, 4);
+    if (mode == 8) {
+        kona_command(s, 0xc, (uint32_t[]) { 120, 70, 70, 80 }, 4);
+        kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    }
+    expected = kona_screendump(s);
+    kona_command_f(s, 0x63, (float[]) { 17 / 255.0f, 63 / 255.0f,
+                                      191 / 255.0f }, 3);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     windows[mode].requests);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    frame = kona_screendump(s);
+    for (unsigned y = 0; y < FB_HEIGHT; y++) {
+        for (unsigned x = 0; x < FB_WIDTH; x++) {
+            int64_t lx = (int64_t)x - ox, ly = (int64_t)y - oy;
+            unsigned offset = ((FB_HEIGHT - 1 - y) * FB_WIDTH + x) * 3;
+            uint8_t *pixel = expected + offset;
+
+            if (lx >= 0 && lx < width && ly >= 0 && ly < height &&
+                (mode != 8 || (lx >= 120 && lx < 190 &&
+                                ly >= 70 && ly < 150))) {
+                pixel[0] = 17;
+                pixel[1] = 63;
+                pixel[2] = 191;
+            }
+            if (memcmp(frame + offset, pixel, 3)) {
+                g_error("tiled window pixel (%u,%u) shows %02x%02x%02x, "
+                        "expected %02x%02x%02x", x, y,
+                        frame[offset], frame[offset + 1], frame[offset + 2],
+                        pixel[0], pixel[1], pixel[2]);
+            }
+        }
     }
     qtest_quit(s);
 }
@@ -13593,6 +13663,12 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_viewport);
+    }
+    for (unsigned mode = 0; mode < 9; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/tiles/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_tiles);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

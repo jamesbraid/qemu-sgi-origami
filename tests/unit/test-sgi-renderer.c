@@ -150,6 +150,76 @@ static void test_large_coordinates(void)
     g_assert_false(sgi_renderer_request_valid(request));
 }
 
+static void test_tiles(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    const int64_t bounds[4] = { mode == 1 ? 120 : 0, mode == 1 ? 70 : 0,
+                               mode == 1 ? 189 : 255,
+                               mode == 1 ? 149 : 255 };
+    const int64_t offsets[6][2] = {
+        { 0, 0 }, { 128, 0 }, { 0, 128 }, { 128, 128 },
+        { 256, 0 }, { -64, -64 },
+    };
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+
+    for (unsigned tile = 0; tile < ARRAY_SIZE(offsets); tile++) {
+        int64_t ox = offsets[tile][0], oy = offsets[tile][1];
+        unsigned width = mode == 2 ? 65 : 128;
+        unsigned height = mode == 2 ? 63 : 128;
+
+        memset(request, 0, sizeof(*request));
+        request->vertices[0][3] = request->vertices[1][3] =
+            request->vertices[2][3] = 1;
+        request->vertices[1][0] = request->vertices[2][0] = 256;
+        request->vertices[2][1] = 256;
+        request->generation = 19;
+        request->rgb[0] = 17;
+        request->rgb[1] = 63;
+        request->rgb[2] = 191;
+        g_assert_true(sgi_renderer_request_tile(request, ox, oy, width, height,
+                                               bounds));
+        g_assert_cmpfloat(request->vertices[0][0], ==, -ox);
+        g_assert_cmpfloat(request->vertices[0][1], ==, -oy);
+        g_assert_cmpfloat(request->vertices[2][0], ==, 256 - ox);
+        g_assert_cmpfloat(request->vertices[2][1], ==, 256 - oy);
+        g_assert_cmpuint(request->generation, ==, 19);
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 0; x < 128; x++) {
+                int64_t wx = x + ox, wy = y + oy;
+                bool covered = x < width && y < height && wx >= wy &&
+                               wx >= bounds[0] && wx <= bounds[2] &&
+                               wy >= bounds[1] && wy <= bounds[3];
+                uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+
+                if (covered) {
+                    memcpy(pixel, request->rgb, sizeof(request->rgb));
+                    pixel[3] = 255;
+                }
+            }
+        }
+        g_assert_true(sgi_renderer_staging_valid(request));
+        request->rgba[3] ^= 255;
+        g_assert_false(sgi_renderer_staging_valid(request));
+    }
+}
+
+static void test_tile_invalid(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    const int64_t bounds[4] = { INT64_MIN, INT64_MIN, INT64_MAX, INT64_MAX };
+
+    g_assert_false(sgi_renderer_request_tile(request, 0, 0, 0, 128, bounds));
+    g_assert_false(sgi_renderer_request_tile(request, 0, 0, 128, 0, bounds));
+    g_assert_false(sgi_renderer_request_tile(request, 0, 0, 129, 128, bounds));
+    g_assert_false(sgi_renderer_request_tile(request, 0, 0, 128, 129, bounds));
+    g_assert_false(sgi_renderer_request_tile(request, INT64_MAX, 0,
+                                            128, 128, bounds));
+    g_assert_false(sgi_renderer_request_tile(request, 0, INT64_MAX,
+                                            128, 128, bounds));
+    g_assert_true(sgi_renderer_request_tile(request, 0, 0, 128, 128, bounds));
+    g_assert_true(sgi_renderer_staging_valid(request));
+}
+
 static void test_triangle_coverage(void)
 {
     static const float vertices[4][3][4] = {
@@ -836,6 +906,13 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/request", test_request);
     g_test_add_func("/sgi-renderer/triangle-coverage", test_triangle_coverage);
     g_test_add_func("/sgi-renderer/large-coordinates", test_large_coordinates);
+    g_test_add_data_func("/sgi-renderer/tiles/full", GUINT_TO_POINTER(0),
+                         test_tiles);
+    g_test_add_data_func("/sgi-renderer/tiles/scissor", GUINT_TO_POINTER(1),
+                         test_tiles);
+    g_test_add_data_func("/sgi-renderer/tiles/partial", GUINT_TO_POINTER(2),
+                         test_tiles);
+    g_test_add_func("/sgi-renderer/tiles/invalid", test_tile_invalid);
 #if !defined(CONFIG_OPENGL) && !defined(CONFIG_MODULES)
     g_test_add_func("/sgi-renderer/missing-backend", test_missing_backend);
 #endif
