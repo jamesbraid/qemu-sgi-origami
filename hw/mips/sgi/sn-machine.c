@@ -1565,6 +1565,79 @@ static const SGIBridgeBoardRecord sgi_machine_crosstown_record = {
 };
 #define SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL 0x0e0d0c0b0a09ULL
 
+/* The block node or drive bound to item @name, or NULL. */
+static const char *sgi_machine_storage_node(SGIMachineState *s,
+                                            const char *name)
+{
+    return s->storage ? g_hash_table_lookup(s->storage, name) : NULL;
+}
+
+/*
+ * The BASEIO PROM flash backing for @record: its io<N>-flash binding or
+ * the legacy drive @legacy names, refusing both at once.
+ */
+static bool sgi_machine_io_flash_backing(SGIMachineState *s,
+                                         const SGIModelTopology *t,
+                                         const SGIModelIoBoard *record,
+                                         BlockBackend *legacy,
+                                         const char **backing, Error **errp)
+{
+    g_autofree char *name = g_strdup_printf(
+        "io%u-flash",
+        sgi_model_io_board_index(t, record, sgi_model_io_board_has_io_flash));
+    /* A board with no PROM flash takes no io<N>-flash, as for NVRAM. */
+    const char *node = sgi_model_io_board_has_io_flash(record) ?
+                       sgi_machine_storage_node(s, name) : NULL;
+
+    if (node && legacy) {
+        error_setg(errp, "%s: %s and -drive id=%s both back the same BASEIO "
+                   "PROM flash", MACHINE_GET_CLASS(s)->name, name,
+                   blk_name(legacy));
+        return false;
+    }
+    *backing = legacy ? blk_name(legacy) : node;
+    return true;
+}
+
+/*
+ * The Timekeeper NVRAM and clock record backing for @record: its nvram<N>
+ * and nvram<N>-clock bindings or the legacy backend @legacy, refusing
+ * both at once and a clock record bound without its NVRAM. @clock is
+ * NULL for a legacy backend, whose model finds "<id>-clock" itself.
+ */
+static bool sgi_machine_nvram_backing(SGIMachineState *s,
+                                      const SGIModelTopology *t,
+                                      const SGIModelIoBoard *record,
+                                      BlockBackend *legacy,
+                                      const char **nvram, const char **clock,
+                                      Error **errp)
+{
+    const char *product = MACHINE_GET_CLASS(s)->name;
+    unsigned int index =
+        sgi_model_io_board_index(t, record, sgi_model_io_board_has_nvram);
+    g_autofree char *name = g_strdup_printf("nvram%u", index);
+    g_autofree char *clock_name = g_strdup_printf("nvram%u-clock", index);
+    const char *node = NULL, *clock_node = NULL;
+
+    if (sgi_model_io_board_has_nvram(record)) {
+        node = sgi_machine_storage_node(s, name);
+        clock_node = sgi_machine_storage_node(s, clock_name);
+    }
+    if (legacy && (node || clock_node)) {
+        error_setg(errp, "%s: %s and -drive id=%s both back the same "
+                   "Timekeeper NVRAM", product, node ? name : clock_name,
+                   blk_name(legacy));
+        return false;
+    }
+    if (clock_node && !node) {
+        error_setg(errp, "%s: %s needs %s", product, clock_name, name);
+        return false;
+    }
+    *nvram = legacy ? blk_name(legacy) : node;
+    *clock = clock_node;
+    return true;
+}
+
 /*
  * IP29's onboard I/O, one per Origin 200 node: linked to its node's own
  * Hub, or to a GIGAchannel cabinet's Crossbow port. sn0.c owns the
@@ -1605,7 +1678,12 @@ static bool sgi_machine_instantiate_ip29_io(
         t, attachment->node_index, SN0_IOC3_RECORD_B_CHARDEV));
     const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
         parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
+    const char *nvram, *nvram_clock;
 
+    if (!sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
+                                   &nvram_clock, errp)) {
+        return false;
+    }
     if (attachment->crossbar_index >= 0) {
         upstream = OBJECT(s->crossbars[attachment->crossbar_index]);
         upstream_index = attachment->widget;
@@ -1613,8 +1691,7 @@ static bool sgi_machine_instantiate_ip29_io(
     if (!sn0_node_build_baseio(
             node, OBJECT(s), &s->board_links[board_index], upstream,
             upstream_index, record->serial, ioc3_serial, bus_name,
-            nvram_blk ? blk_name(nvram_blk) : NULL,
-            chardev_a ? chardev_a->label : NULL,
+            nvram, nvram_clock, chardev_a ? chardev_a->label : NULL,
             chardev_b ? chardev_b->label : NULL,
             record_a ? record_a->label : NULL,
             record_b ? record_b->label : NULL, parallel_id, &bridge, errp)) {
@@ -1677,61 +1754,6 @@ static bool sgi_machine_attach_xio_card(
     return true;
 }
 
-/* The block node or drive bound to item @name, or NULL. */
-static const char *sgi_machine_storage_node(SGIMachineState *s,
-                                            const char *name)
-{
-    return s->storage ? g_hash_table_lookup(s->storage, name) : NULL;
-}
-
-/*
- * The catalogue's io<N>-flash name for @record's BASEIO PROM flash: N
- * counts the topology's boards that fit the part, in io_boards order.
- */
-static char *sgi_machine_io_flash_name(const SGIModelTopology *t,
-                                       const SGIModelIoBoard *record)
-{
-    const SGIModelIoBoardList *entry;
-    unsigned int index = 0;
-
-    for (entry = t->io_boards; entry && entry->value != record;
-         entry = entry->next) {
-        switch (entry->value->preset) {
-        case SGI_MODEL_IO_BOARD_PRESET_IO6:
-        case SGI_MODEL_IO_BOARD_PRESET_IO6G:
-        case SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL:
-            index++;
-            break;
-        default:
-            break;
-        }
-    }
-    return g_strdup_printf("io%u-flash", index);
-}
-
-/*
- * The BASEIO PROM flash backing for @record: its io<N>-flash binding or
- * the legacy drive @legacy names, refusing both at once.
- */
-static bool sgi_machine_io_flash_backing(SGIMachineState *s,
-                                         const SGIModelTopology *t,
-                                         const SGIModelIoBoard *record,
-                                         BlockBackend *legacy,
-                                         const char **backing, Error **errp)
-{
-    g_autofree char *name = sgi_machine_io_flash_name(t, record);
-    const char *node = sgi_machine_storage_node(s, name);
-
-    if (node && legacy) {
-        error_setg(errp, "%s: %s and -drive id=%s both back the same BASEIO "
-                   "PROM flash", MACHINE_GET_CLASS(s)->name, name,
-                   blk_name(legacy));
-        return false;
-    }
-    *backing = legacy ? blk_name(legacy) : node;
-    return true;
-}
-
 static bool sgi_machine_instantiate_baseio_card(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1750,7 +1772,7 @@ static bool sgi_machine_instantiate_baseio_card(
     g_autofree char *flash_id =
         g_strdup_printf("sgi-baseio-flash%u", board_index);
     BlockBackend *flash_blk = blk_by_name(flash_id);
-    const char *flash_backing;
+    const char *flash_backing, *nvram, *nvram_clock;
     static const struct {
         unsigned int offset;
         const char *prop;
@@ -1763,7 +1785,9 @@ static bool sgi_machine_instantiate_baseio_card(
     size_t i;
 
     if (!sgi_machine_io_flash_backing(s, t, record, flash_blk, &flash_backing,
-                                      errp)) {
+                                      errp) ||
+        !sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
+                                   &nvram_clock, errp)) {
         object_unref(OBJECT(dev));
         return false;
     }
@@ -1773,8 +1797,11 @@ static bool sgi_machine_instantiate_baseio_card(
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
     qdev_prop_set_string(dev, "preset", preset);
-    if (nvram_blk) {
-        qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
+    if (nvram) {
+        qdev_prop_set_string(dev, "nvram-drive", nvram);
+    }
+    if (nvram_clock) {
+        qdev_prop_set_string(dev, "nvram-clock-drive", nvram_clock);
     }
     if (flash_backing) {
         qdev_prop_set_string(dev, "flash-drive", flash_backing);
@@ -2248,9 +2275,17 @@ static bool sgi_machine_instantiate_bedrock_io(
                                                       node_index);
         BlockBackend *nvram_blk = nvram_dinfo ?
             blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_name);
+        const char *nvram, *nvram_clock;
 
-        if (nvram_blk) {
-            qdev_prop_set_string(baseio, "nvram-drive", blk_name(nvram_blk));
+        if (!sgi_machine_nvram_backing(s, t, record, nvram_blk, &nvram,
+                                       &nvram_clock, errp)) {
+            return false;
+        }
+        if (nvram) {
+            qdev_prop_set_string(baseio, "nvram-drive", nvram);
+        }
+        if (nvram_clock) {
+            qdev_prop_set_string(baseio, "nvram-clock-drive", nvram_clock);
         }
     }
     /*
@@ -5159,6 +5194,12 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
         !qemu_strtoui(name + strlen("io"), &end, 10, &index) &&
         g_str_equal(end, "-flash")) {
         return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
+    }
+    if (g_str_has_prefix(name, "nvram") &&
+        !qemu_strtoui(name + strlen("nvram"), &end, 10, &index) &&
+        (!*end || g_str_equal(end, "-clock"))) {
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB ||
+               t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
     }
     return false;
 }

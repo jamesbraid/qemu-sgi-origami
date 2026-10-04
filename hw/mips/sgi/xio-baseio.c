@@ -81,6 +81,7 @@ struct SGIXioBaseioState {
     char *pci_bus_name;
     char *preset;
     char *nvram_drive_id;
+    char *nvram_clock_drive_id;
     char *flash_drive_id;
     char *firmware;
     char *chardev_a_id;
@@ -179,6 +180,10 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     if (s->nvram_drive_id) {
         qdev_prop_set_string(baseio, "nvram-drive", s->nvram_drive_id);
     }
+    if (s->nvram_clock_drive_id) {
+        qdev_prop_set_string(baseio, "nvram-clock-drive",
+                             s->nvram_clock_drive_id);
+    }
     if (s->chardev_a_id) {
         qdev_prop_set_string(baseio, "chardev-a", s->chardev_a_id);
     }
@@ -232,6 +237,8 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("pci-bus-name", SGIXioBaseioState, pci_bus_name),
     DEFINE_PROP_STRING("preset", SGIXioBaseioState, preset),
     DEFINE_PROP_STRING("nvram-drive", SGIXioBaseioState, nvram_drive_id),
+    DEFINE_PROP_STRING("nvram-clock-drive", SGIXioBaseioState,
+                       nvram_clock_drive_id),
     DEFINE_PROP_STRING("flash-drive", SGIXioBaseioState, flash_drive_id),
     DEFINE_PROP_STRING("firmware", SGIXioBaseioState, firmware),
     DEFINE_PROP_STRING("chardev-a", SGIXioBaseioState, chardev_a_id),
