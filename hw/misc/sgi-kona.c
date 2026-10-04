@@ -2347,6 +2347,12 @@ static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
     return end <= p->len;
 }
 
+static bool sgi_kona_renderer_logic_op(const SGIGLDrawState *st)
+{
+    return st->color_logic_op ||
+           (st->blend && st->blend_equation == SGI_GL_LOGIC_OP);
+}
+
 static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       const float *provoking,
                                       const SGIClipRect *tile,
@@ -2362,6 +2368,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     unsigned height = tile->y1 - tile->y0 + 1;
     int64_t tx = x - drawable->origin[0], ty = y - drawable->origin[1];
     int64_t bounds[4] = { tx, ty, tx + width - 1, ty + height - 1 };
+    bool logic_op = sgi_kona_renderer_logic_op(st);
 
     if (d->context >= SGI_KONA_CONTEXTS ||
         d->context != s->context_current || !s->gl_grammar ||
@@ -2408,12 +2415,16 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     if (st->shade_model != SGI_GL_FLAT ||
         (st->colour_mask & ~15) ||
         st->alpha_test || st->depth_test || st->stencil_test ||
-        st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
+        (st->blend && !logic_op) || st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return false;
+    }
+    if (logic_op &&
+        st->logic_op_mode - SGI_GL_CLEAR > SGI_GL_SET - SGI_GL_CLEAR) {
         return false;
     }
     if (st->cull_face && st->cull_face_mode != SGI_GL_FRONT &&
@@ -2550,6 +2561,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     float vertices[3][SGI_GL_VERTEX_FLOATS];
     Error *err = NULL;
     bool success = false;
+    bool logic_op = sgi_kona_renderer_logic_op(d->state);
 
     if (!s->host_gpu) {
         return false;
@@ -2641,11 +2653,16 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                     uint32_t colour = (pixel[0] << 16) |
                                       (pixel[1] << 8) | pixel[2];
 
-                    if (colour_mask != 0xffffff) {
+                    if (logic_op || colour_mask != 0xffffff) {
                         uint32_t old = sgi_kona_gl_load_colour(s, target,
                                                               tile.x0 + x,
                                                               tile.y0 + y);
 
+                        if (logic_op) {
+                            colour = sgi_x_logic_op(
+                                d->state->logic_op_mode - SGI_GL_CLEAR,
+                                colour, old) & 0xffffff;
+                        }
                         colour = (colour & colour_mask) | (old & ~colour_mask);
                     }
                     sgi_kona_gl_store_colour(s, target,

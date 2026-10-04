@@ -12688,10 +12688,63 @@ static void test_renderer_colour_mask(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_logic_op(gconstpointer opaque)
+{
+    static const uint8_t values[16] = {
+        0x00, 0xc0, 0x0c, 0xcc, 0x30, 0xf0, 0x3c, 0xfc,
+        0x03, 0xc3, 0x0f, 0xcf, 0x33, 0xf3, 0x3f, 0xff,
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque), op = mode & 15;
+    unsigned variant = mode / 16;
+    uint32_t rgb = (variant == 4 ? 0xcc : values[op]) * 0x010101;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (!variant) {
+        kona_command(s, 1, (uint32_t[]) { 3, 0x22, 960, 960, 960 }, 5);
+    } else {
+        kona_command_f(s, 0x1d, (float[]) { 240 / 255.0f, 240 / 255.0f,
+                                           240 / 255.0f, 1 }, 4);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+    }
+    kona_command(s, 0x2e, (uint32_t[]) { 0x1500 + op }, 1);
+    if (variant == 1) {
+        kona_command(s, 0x21, (uint32_t[]) { 1, 0, 1, 0 }, 4);
+        rgb = (rgb & 0xff00ff) | 0x00f000;
+    }
+    if (variant == 2 || variant == 3) {
+        kona_command(s, 0xcb, (uint32_t[]) { 0, 0 }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbe2 }, 1);
+    }
+    if (variant == 3) {
+        kona_command(s, 0xe7, (uint32_t[]) { 0xbf1 }, 1);
+    } else {
+        kona_command(s, 0x24,
+                     (uint32_t[]) { variant == 4 ? 0xbf1 : 0xbf2 }, 1);
+    }
+    kona_command_f(s, 0x63, (float[]) { 204 / 255.0f, 204 / 255.0f,
+                                      204 / 255.0f }, 3);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, rgb);
+    assert_window_matches(s, expected);
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
-        0xbc0, 0xb71, 0xb90, 0xbe2, 0xbf1, 0xbf2, 0xb60,
+        0xbc0, 0xb71, 0xb90, 0xbe2, 0xb60,
         0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
@@ -13763,6 +13816,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_colour_mask);
+    }
+    for (unsigned mode = 0; mode < 80; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/logic-op/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_logic_op);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
