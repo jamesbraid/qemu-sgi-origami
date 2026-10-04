@@ -2328,11 +2328,34 @@ static void events_append(GArray *events, uint32_t offset, uint32_t value)
     g_array_append_val(events, event);
 }
 
-/* Bank @bank of @m, expanded, appended to @events. */
-static void events_append_bank(GArray *events, const Rad4ModeFixture *m,
+/*
+ * The option words the driver's mode routine distinguishes: bits 8 and 10
+ * and the selector in bits 12-13 of its configuration word. rad4setres
+ * sends selector 2 (sync on green) unless told otherwise.
+ */
+#define OPT_H           0x0100u
+#define OPT_V           0x0400u
+#define OPT_SEL(n)      ((uint32_t)(n) << 12)
+#define OPT_RAD4SETRES  OPT_SEL(2)
+
+/* The sequence mode @mode writes for configuration word @option_word. */
+static const Rad4ModeSequence *mode_sequence(int mode, uint32_t option_word)
+{
+    for (int q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
+        if (rad4_sequences[q].mode == mode &&
+            (rad4_sequences[q].options &
+             (1u << RAD4_OPTION_INDEX(option_word)))) {
+            return &rad4_sequences[q];
+        }
+    }
+    g_assert_not_reached();
+}
+
+/* Bank @bank of @q, expanded, appended to @events. */
+static void events_append_bank(GArray *events, const Rad4ModeSequence *q,
                                int bank)
 {
-    const Rad4TimingBank *b = &m->banks[bank];
+    const Rad4TimingBank *b = q->banks[bank];
     uint32_t address = mode_bank_base[bank];
 
     for (int r = 0; r < b->run_count; r++) {
@@ -2345,39 +2368,46 @@ static void events_append_bank(GArray *events, const Rad4ModeFixture *m,
 }
 
 /*
- * One mode-programming sequence. The PLL bytes come from @pll and the
- * vertical bank and horizontal banks from @vertical and @horizontal, so a
- * test can splice two modes; pass the same mode three times for a real one.
+ * One mode-programming sequence. The PLL bytes and sync value come from
+ * @pll and the vertical bank and horizontal banks from @vertical and
+ * @horizontal, so a test can splice two sequences; pass the same one three
+ * times for a real one.
  */
-static GArray *mode_events_spliced(const Rad4ModeFixture *pll,
-                                   const Rad4ModeFixture *vertical,
-                                   const Rad4ModeFixture *horizontal)
+static GArray *mode_events_spliced(const Rad4ModeSequence *pll,
+                                   const Rad4ModeSequence *vertical,
+                                   const Rad4ModeSequence *horizontal)
 {
     GArray *events = g_array_new(false, false, sizeof(Rad4Event));
 
     events_append(events, B_CTRL, 0);
     events_append(events, B_RGB_LO, 0x21);
     events_append(events, B_RGB_HI, 0);
-    events_append(events, B_RGB_DATA, pll->pll[0]);
-    events_append(events, B_RGB_DATA, pll->pll[1]);
+    events_append(events, B_RGB_DATA, rad4_modes[pll->mode].pll[0]);
+    events_append(events, B_RGB_DATA, rad4_modes[pll->mode].pll[1]);
     events_append_bank(events, vertical, 0);
     for (int bank = 1; bank < RAD4_MODE_BANKS; bank++) {
         events_append_bank(events, horizontal, bank);
     }
     events_append(events, B_RGB_LO, 0x20);
     events_append(events, B_RGB_HI, 0);
-    events_append(events, B_RGB_DATA, 1);
+    events_append(events, B_RGB_DATA, pll->sync);
     events_append(events, B_CTRL, CTRL_MODE_CMD);
     return events;
 }
 
+static GArray *mode_events_option(int mode, uint32_t option_word)
+{
+    const Rad4ModeSequence *q = mode_sequence(mode, option_word);
+    GArray *events = mode_events_spliced(q, q, q);
+
+    g_assert_cmpuint(events->len, ==, q->event_count);
+    return events;
+}
+
+/* The sequence for an all-zero configuration word, the default EEPROM. */
 static GArray *mode_events(int mode)
 {
-    GArray *events = mode_events_spliced(&rad4_modes[mode], &rad4_modes[mode],
-                                         &rad4_modes[mode]);
-
-    g_assert_cmpuint(events->len, ==, rad4_modes[mode].event_count);
-    return events;
+    return mode_events_option(mode, 0);
 }
 
 static Rad4Event *event_at(GArray *events, unsigned i)
@@ -2542,9 +2572,11 @@ static void check_no_mode(QTestState *qts)
 }
 
 /*
- * Each of the 13 sequences, replayed alone, is recognized as its own mode:
- * the scanout takes the mode's size and stride and the frame interrupt
- * its refresh label.
+ * Each mode's sequence, replayed alone, is recognized as that mode: the
+ * scanout takes the mode's size and stride and the frame interrupt its
+ * refresh label. That holds both for the all-zero configuration word the
+ * default EEPROM gives at boot and for the selector-2 word rad4setres
+ * sends by default.
  */
 static void test_mode_recognized(const void *data)
 {
@@ -2565,6 +2597,72 @@ static void test_mode_recognized(const void *data)
     }
     play_mode(qts, mode);
     check_mode_active(qts, mode);
+    {
+        g_autoptr(GArray) events = mode_events_option(mode, OPT_RAD4SETRES);
+
+        play_events(qts, events);
+        check_mode_active(qts, mode);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The driver's timing loaders read three option fields of the
+ * configuration word: bit 8, bit 10 and the selector in bits 12-13. All 16
+ * combinations give mode 9, each through its own sequence where the
+ * loaders tell them apart. The selector-2 word rad4setres sends by default
+ * writes 0 as the first word of horizontal bank 3, where the all-zero word
+ * writes 0x80 (the write a live guest's rad4setres 9 made), and 0x23 to the
+ * sync register.
+ */
+static void test_mode_option_words(void)
+{
+    QTestState *qts = rad4_init();
+    const Rad4ModeSequence *zero = mode_sequence(9, 0);
+    const Rad4ModeSequence *on_green = mode_sequence(9, OPT_RAD4SETRES);
+
+    g_assert_cmphex(zero->banks[3]->runs[0].value, ==, 0x80);
+    g_assert_cmphex(on_green->banks[3]->runs[0].value, ==, 0x00);
+    g_assert_cmphex(zero->sync, ==, 0x01);
+    g_assert_cmphex(on_green->sync, ==, 0x23);
+    for (uint32_t sel = 0; sel < 4; sel++) {
+        for (uint32_t bits = 0; bits < 4; bits++) {
+            uint32_t word = OPT_SEL(sel) | (bits & 1 ? OPT_H : 0) |
+                            (bits & 2 ? OPT_V : 0);
+            g_autoptr(GArray) events = mode_events_option(9, word);
+
+            if (g_test_verbose()) {
+                g_test_message("option word 0x%04x", word);
+            }
+            play_events(qts, events);
+            check_mode_active(qts, 9);
+        }
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * What a live guest does: boot in mode 0 from the all-zero EEPROM, then
+ * "rad4setres 9" and "rad4setres 0", each sending its default selector-2
+ * word while the old mode is scanning out with a frame pending.
+ */
+static void test_mode_switch_rad4setres(void)
+{
+    QTestState *qts = rad4_init();
+    g_autoptr(GArray) nine = mode_events_option(9, OPT_RAD4SETRES | 9);
+    g_autoptr(GArray) zero = mode_events_option(0, OPT_RAD4SETRES);
+
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+    play_mode(qts, 0);
+    check_mode_active(qts, 0);
+    qtest_clock_step(qts, 1000000000 / rad4_modes[0].refresh_hz + 1000);
+    g_assert_true(frame_pending(qts));
+    play_events(qts, nine);
+    check_mode_active(qts, 9);
+    qtest_clock_step(qts, 1000000000 / rad4_modes[9].refresh_hz + 1000);
+    g_assert_true(frame_pending(qts));
+    play_events(qts, zero);
+    check_mode_active(qts, 0);
     qtest_quit(qts);
 }
 
@@ -2598,18 +2696,18 @@ static const Mutation mode_mutations[] = {
 
 static unsigned mutation_position(int mode, const Mutation *mutation)
 {
-    const Rad4ModeFixture *m = &rad4_modes[mode];
+    const Rad4ModeSequence *q = mode_sequence(mode, 0);
     unsigned start = EV_BANKS;
 
     if (mutation->bank < 0) {
-        return mutation->index < 0 ? m->event_count + mutation->index
+        return mutation->index < 0 ? q->event_count + mutation->index
                                    : mutation->index;
     }
     for (int b = 0; b < mutation->bank; b++) {
-        start += m->banks[b].words;
+        start += q->banks[b]->words;
     }
     return start + (mutation->index < 0 ?
-                    m->banks[mutation->bank].words + mutation->index :
+                    q->banks[mutation->bank]->words + mutation->index :
                     mutation->index);
 }
 
@@ -2667,12 +2765,13 @@ static void test_mode_shared_pll(void)
     QTestState *qts = rad4_init();
 
     for (unsigned p = 0; p < ARRAY_SIZE(pairs); p++) {
-        const Rad4ModeFixture *a = &rad4_modes[pairs[p][0]];
-        const Rad4ModeFixture *b = &rad4_modes[pairs[p][1]];
+        const Rad4ModeSequence *a = mode_sequence(pairs[p][0], 0);
+        const Rad4ModeSequence *b = mode_sequence(pairs[p][1], 0);
         g_autoptr(GArray) ab = mode_events_spliced(a, a, b);
         g_autoptr(GArray) ba = mode_events_spliced(b, b, a);
 
-        g_assert_cmpmem(a->pll, 2, b->pll, 2);
+        g_assert_cmpmem(rad4_modes[a->mode].pll, 2,
+                        rad4_modes[b->mode].pll, 2);
         play_mode(qts, pairs[p][0]);
         check_mode_active(qts, pairs[p][0]);
         play_mode(qts, pairs[p][1]);
@@ -2692,13 +2791,14 @@ static void test_mode_shared_pll(void)
  */
 static void test_mode_shared_banks(void)
 {
-    const Rad4ModeFixture *two = &rad4_modes[2];
+    const Rad4ModeSequence *two = mode_sequence(2, 0);
     const Rad4ModeFixture *three = &rad4_modes[3];
     QTestState *qts = rad4_init();
     g_autoptr(GArray) mixed = mode_events(2);
 
     for (int b = 0; b < RAD4_MODE_BANKS; b++) {
-        g_assert_cmpuint(two->banks[b].words, ==, three->banks[b].words);
+        g_assert_cmpuint(two->banks[b]->words, ==,
+                         mode_sequence(3, 0)->banks[b]->words);
     }
     play_mode(qts, 2);
     check_mode_active(qts, 2);
@@ -2931,6 +3031,9 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(11), test_mode_rejects_mutation);
     qtest_add_func("/psitech-rad4/mode-shared-pll", test_mode_shared_pll);
     qtest_add_func("/psitech-rad4/mode-shared-banks", test_mode_shared_banks);
+    qtest_add_func("/psitech-rad4/mode-option-words", test_mode_option_words);
+    qtest_add_func("/psitech-rad4/mode-switch-rad4setres",
+                   test_mode_switch_rad4setres);
     qtest_add_func("/psitech-rad4/mode-switch-with-frame-pending",
                    test_mode_switch_with_frame_pending);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",

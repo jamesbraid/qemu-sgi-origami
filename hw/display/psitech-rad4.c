@@ -177,6 +177,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_VERT_WORDS         2048
 
 #define RAD4_CTRL_MODE_CMD      0x20u
+
+/* One bit per entry of rad4_sequences[]. */
+#define RAD4_CANDIDATE_WORDS    DIV_ROUND_UP(RAD4_SEQUENCE_COUNT, 64)
 #define RAD4_CTRL_STORED_BIT    0x02u
 #define RAD4_STATUS_FRAME       0x20u
 
@@ -650,12 +653,12 @@ struct PsitechRad4State {
 
     /*
      * Mode recognizer: the position reached in the write sequence and the
-     * modes (bits of rad4_modes[]) whose sequence matches every write so
-     * far. mode is the last recognized mode, mode 0 until one is.
+     * sequences (bits of rad4_sequences[]) that match every write so far.
+     * mode is the last recognized mode, mode 0 until one is.
      */
     int rec_state; /* Rad4RecState, as plain int for VMState */
     uint32_t rec_index;
-    uint32_t rec_candidates;
+    uint64_t rec_candidates[RAD4_CANDIDATE_WORDS];
     uint32_t mode;
 };
 
@@ -1183,7 +1186,7 @@ static void rad4_recognizer_reset(PsitechRad4State *s)
 {
     s->rec_state = RAD4_REC_UNARMED;
     s->rec_index = 0;
-    s->rec_candidates = 0;
+    memset(s->rec_candidates, 0, sizeof(s->rec_candidates));
 }
 
 /* Mark [y_start, y_end] (inclusive, clipped to the visible image) dirty. */
@@ -1298,29 +1301,28 @@ static void rad4_ensure_surface(PsitechRad4State *s)
 }
 
 /*
- * Event @pos of mode @m's write sequence: board control, the PLL index and
- * the mode's two PLL bytes, its four timing banks expanded from their runs,
- * then the sync register and board control again. The two control writes
- * are never compared through here: rad4_recognizer_control() matches them
- * on bit 0x20 alone.
+ * Event @pos of write sequence @q: board control, the PLL index and the
+ * mode's two PLL bytes, the sequence's four timing banks expanded from
+ * their runs, then the sync register, with the sequence's sync value, and
+ * board control again. The two control writes are never compared through
+ * here: rad4_recognizer_control() matches them on bit 0x20 alone.
  */
-static void rad4_mode_event(const Rad4ModeFixture *m, uint32_t pos,
-                            uint32_t *offset, uint32_t *value)
+static void rad4_sequence_event(const Rad4ModeSequence *q, uint32_t pos,
+                                uint32_t *offset, uint32_t *value)
 {
     static const uint32_t prefix[][2] = {
         { RAD4_BAR2_CTRL, 0 },
         { RAD4_BAR2_RGB_LO, 0x21 },
         { RAD4_BAR2_RGB_HI, 0 },
     };
-    static const uint32_t suffix[][2] = {
-        { RAD4_BAR2_RGB_LO, 0x20 },
-        { RAD4_BAR2_RGB_HI, 0 },
-        { RAD4_BAR2_RGB_DATA, 1 },
-        { RAD4_BAR2_CTRL, RAD4_CTRL_MODE_CMD },
+    static const uint32_t suffix_offset[] = {
+        RAD4_BAR2_RGB_LO, RAD4_BAR2_RGB_HI, RAD4_BAR2_RGB_DATA, RAD4_BAR2_CTRL,
     };
     static const uint32_t bank_base[RAD4_MODE_BANKS] = {
         RAD4_BAR2_VERT, RAD4_BAR2_HORIZ0, RAD4_BAR2_HORIZ1, RAD4_BAR2_HORIZ3,
     };
+    const Rad4ModeFixture *m = &rad4_modes[q->mode];
+    uint32_t suffix_value[] = { 0x20, 0, q->sync, RAD4_CTRL_MODE_CMD };
 
     if (pos < ARRAY_SIZE(prefix)) {
         *offset = prefix[pos][0];
@@ -1335,7 +1337,7 @@ static void rad4_mode_event(const Rad4ModeFixture *m, uint32_t pos,
     }
     pos -= ARRAY_SIZE(m->pll);
     for (int b = 0; b < RAD4_MODE_BANKS; b++) {
-        const Rad4TimingBank *bank = &m->banks[b];
+        const Rad4TimingBank *bank = q->banks[b];
 
         if (pos >= bank->words) {
             pos -= bank->words;
@@ -1351,9 +1353,14 @@ static void rad4_mode_event(const Rad4ModeFixture *m, uint32_t pos,
         }
         g_assert_not_reached();
     }
-    assert(pos < ARRAY_SIZE(suffix));
-    *offset = suffix[pos][0];
-    *value = suffix[pos][1];
+    assert(pos < ARRAY_SIZE(suffix_offset));
+    *offset = suffix_offset[pos];
+    *value = suffix_value[pos];
+}
+
+static bool rad4_candidate(PsitechRad4State *s, uint32_t q)
+{
+    return s->rec_candidates[q / 64] & BIT_ULL(q % 64);
 }
 
 static void rad4_recognition_failed(PsitechRad4State *s, uint32_t offset,
@@ -1384,42 +1391,41 @@ static void rad4_mode_recognized(PsitechRad4State *s, uint32_t mode)
 }
 
 /*
- * One event while collecting: keep the modes whose sequence has exactly
- * this write at the current position. Modes 4 and 11, and 5 and 6, share
- * PLL bytes and modes 2 and 3 share every timing bank, so a single field
- * never decides; only the whole sequence does. No candidate left is a
- * mismatch.
+ * One event while collecting: keep the sequences that have exactly this
+ * write at the current position. Each mode has eight distinct sequences,
+ * one for each group of option words (EEPROM configuration bits 8, 10 and
+ * 12-13) that the driver's timing loaders treat alike. Modes 4 and 11, and
+ * 5 and 6, share PLL bytes and modes 2 and 3 share every timing bank, so a
+ * single field never decides; only the whole sequence does. No candidate
+ * left is a mismatch. The last event, board control, is matched by
+ * rad4_recognizer_control().
  */
 static void rad4_recognizer_collect(PsitechRad4State *s, uint32_t offset,
                                     uint32_t value)
 {
-    uint32_t keep = 0;
+    uint64_t keep[RAD4_CANDIDATE_WORDS] = { 0 };
+    bool any = false;
 
-    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
+    for (uint32_t q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
         uint32_t expected_offset, expected_value;
 
-        if (!(s->rec_candidates & BIT(m)) ||
-            s->rec_index >= rad4_modes[m].event_count) {
+        if (!rad4_candidate(s, q) ||
+            s->rec_index + 1 >= rad4_sequences[q].event_count) {
             continue;
         }
-        rad4_mode_event(&rad4_modes[m], s->rec_index,
-                        &expected_offset, &expected_value);
+        rad4_sequence_event(&rad4_sequences[q], s->rec_index,
+                            &expected_offset, &expected_value);
         if (expected_offset == offset && expected_value == value) {
-            keep |= BIT(m);
+            keep[q / 64] |= BIT_ULL(q % 64);
+            any = true;
         }
     }
-    if (!keep) {
+    if (!any) {
         rad4_recognition_failed(s, offset, value);
         return;
     }
-    s->rec_candidates = keep;
+    memcpy(s->rec_candidates, keep, sizeof(keep));
     s->rec_index++;
-    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
-        if ((keep & BIT(m)) && s->rec_index == rad4_modes[m].event_count) {
-            rad4_mode_recognized(s, m);
-            return;
-        }
-    }
 }
 
 /*
@@ -1452,11 +1458,11 @@ static void rad4_recognizer_control(PsitechRad4State *s, uint32_t value,
     if (s->rec_state != RAD4_REC_COLLECTING) {
         return;
     }
-    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
-        if ((s->rec_candidates & BIT(m)) &&
-            s->rec_index == rad4_modes[m].event_count - 1u) {
+    for (uint32_t q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
+        if (rad4_candidate(s, q) &&
+            s->rec_index == rad4_sequences[q].event_count - 1u) {
             s->rec_index++;
-            rad4_mode_recognized(s, m);
+            rad4_mode_recognized(s, rad4_sequences[q].mode);
             return;
         }
     }
@@ -1468,7 +1474,7 @@ static void rad4_recognizer_control(PsitechRad4State *s, uint32_t value,
 /*
  * Feed one recognition-relevant (address, value) event other than a board
  * control write (rad4_recognizer_control()) through the exact grammar of
- * the driver's 13 mode sequences. Addresses are BAR2-relative.
+ * the driver's mode sequences. Addresses are BAR2-relative.
  * The caller still applies the event's own register effect separately,
  * since recognition state and register storage are distinct.
  */
@@ -1479,12 +1485,14 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
 
     switch (s->rec_state) {
     case RAD4_REC_PREFIX_SEEN:
-        /* The first write after arming is common to every mode. */
-        rad4_mode_event(&rad4_modes[0], 1, &arm_offset, &arm_value);
+        /* The first write after arming is common to every sequence. */
+        rad4_sequence_event(&rad4_sequences[0], 1, &arm_offset, &arm_value);
         if (s->rec_index == 0 && arm_offset == offset && arm_value == value) {
             s->rec_state = RAD4_REC_COLLECTING;
             s->rec_index = 2;
-            s->rec_candidates = MAKE_64BIT_MASK(0, RAD4_MODE_COUNT);
+            for (uint32_t q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
+                s->rec_candidates[q / 64] |= BIT_ULL(q % 64);
+            }
         } else {
             /* Not the expected next event: quietly returns to unarmed, no
              * failure logged. */
@@ -2738,8 +2746,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2783,7 +2791,8 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_BOOL(frame_pending, PsitechRad4State),
         VMSTATE_INT32(rec_state, PsitechRad4State),
         VMSTATE_UINT32(rec_index, PsitechRad4State),
-        VMSTATE_UINT32(rec_candidates, PsitechRad4State),
+        VMSTATE_UINT64_ARRAY(rec_candidates, PsitechRad4State,
+                             RAD4_CANDIDATE_WORDS),
         VMSTATE_UINT32(mode, PsitechRad4State),
         VMSTATE_BOOL(km_irq_level, PsitechRad4State),
         VMSTATE_END_OF_LIST()
