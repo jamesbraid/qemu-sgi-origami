@@ -1760,6 +1760,22 @@ static void test_pixel_float_conversion(void)
     }
 }
 
+static void test_pixel_double_conversion(void)
+{
+    const uint32_t source[] = { 0x7fffffff, 0, 0, 0xffffffff };
+    double rgba[] = { 1, 1, 1, 0 };
+    const double before[] = { 1, 1, 1, 0 };
+
+    g_assert_true(sgi_kona_gl_pixel_rgba_double(5, 5, source, false, rgba));
+    g_assert_cmpfloat(rgba[0], <, 0.5);
+    g_assert_cmpfloat(rgba[0] * -4294967296.0 + 2147483648.0, ==, 0.5);
+    g_assert_cmpfloat(rgba[3], ==, 1);
+    memcpy(rgba, before, sizeof(rgba));
+    g_assert_false(sgi_kona_gl_pixel_rgba_double(5, 5, NULL, false, rgba));
+    g_assert_false(sgi_kona_gl_pixel_rgba_double(2, 5, source, false, rgba));
+    g_assert_cmpmem(rgba, sizeof(rgba), before, sizeof(before));
+}
+
 static void test_texture_pixel_transfer_order(void)
 {
     const uint32_t source[] = {
@@ -2072,6 +2088,8 @@ int main(int argc, char **argv)
                     test_pixels_pio_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixel-float-conversion",
                     test_pixel_float_conversion);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-double-conversion",
+                    test_pixel_double_conversion);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/order",
                     test_texture_pixel_transfer_order);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/expansion",

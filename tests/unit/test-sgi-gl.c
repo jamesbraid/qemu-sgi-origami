@@ -1733,6 +1733,66 @@ static void test_draw_pixels_float_refusal(void)
     g_assert_cmpuint(rec.ops, ==, 0);
 }
 
+static void test_draw_pixels_double_precision(void)
+{
+    const double image[][4] = {
+        { 2147483647.0 / 4294967295.0, 0, 0, 1 },
+    };
+    const float rounded[][4] = { { 0.5f, 0, 0, 1 } };
+    const SGIGLPixelTransfer transfer = {
+        .scale = { -4294967296.0f, 1, 1, 1 },
+        .bias = { 2147483648.0f, 0, 0, 0 },
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    g_assert_true(sgi_gl_draw_pixels_double_transfer(&c, &sink, 1, 1, image,
+                                                     1, 1, &transfer));
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0x800000);
+    g_assert_true(sgi_gl_draw_pixels_float_transfer(&c, &sink, 1, 1, rounded,
+                                                    1, 1, &transfer));
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+}
+
+static void test_draw_pixels_double_refusal(void)
+{
+    double image[][4] = { { 1, 0, 0, 1 }, { 0, 1, 0, 1 } };
+    const double invalid[] = { NAN, INFINITY, -INFINITY };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    for (unsigned k = 0; k < 4; k++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+            image[1][k] = invalid[i];
+            g_assert_false(sgi_gl_draw_pixels_double_transfer(&c, &sink, 2, 1,
+                                                              image, 1, 1,
+                                                              NULL));
+            image[1][k] = k == 1 || k == 3;
+        }
+    }
+    g_assert_cmpuint(rec.ops, ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+    c.raster_valid = 0;
+    g_assert_true(sgi_gl_draw_pixels_double_transfer(&c, &sink, 2, 1, NULL,
+                                                     1, 1, NULL));
+}
+
 static void test_draw_pixels_window_and_scissor(void)
 {
     static const uint32_t image[] = {
@@ -11788,5 +11848,9 @@ int main(int argc, char **argv)
                     test_draw_pixels_float_transfer);
     g_test_add_func("/sgi-gl/draw-pixels/float-refusal",
                     test_draw_pixels_float_refusal);
+    g_test_add_func("/sgi-gl/draw-pixels/double-precision",
+                    test_draw_pixels_double_precision);
+    g_test_add_func("/sgi-gl/draw-pixels/double-refusal",
+                    test_draw_pixels_double_refusal);
     return g_test_run();
 }
