@@ -660,10 +660,103 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type)
 {
-    /* Depth has one normalized component and no packed colour types. */
-    return format == 13 && type <= 6 ?
+    /* Depth and stencil have one scalar element and no packed colour types. */
+    return (format == 12 || format == 13) && type <= 6 ?
            sgi_kona_gl_texture_pixel_bytes(0, type) :
            sgi_kona_gl_texture_pixel_bytes(format, type);
+}
+
+bool sgi_kona_gl_pixel_index(uint32_t type, const uint32_t *source,
+                              bool swap_bytes, double *index)
+{
+    uint32_t raw;
+    double value;
+
+    if (!source || !index || type > 6) {
+        return false;
+    }
+    if (type < 2) {
+        raw = source[0] >> 24;
+        value = type == 0 ? (double)(int8_t)raw : raw;
+    } else if (type < 4) {
+        raw = source[0] >> 16;
+        raw = swap_bytes ? bswap16(raw) : raw;
+        value = type == 2 ? (double)(int16_t)raw : raw;
+    } else {
+        raw = swap_bytes ? bswap32(source[0]) : source[0];
+        if (type == 6) {
+            float scalar;
+
+            if ((raw & 0x7f800000) == 0x7f800000) {
+                return false;
+            }
+            memcpy(&scalar, &raw, sizeof(scalar));
+            value = scalar;
+        } else {
+            value = type == 4 ? (int32_t)raw : (double)raw;
+        }
+    }
+    *index = value;
+    return true;
+}
+
+bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
+                                       int32_t offset, uint32_t *out)
+{
+    double whole, fraction;
+    uint64_t fixed;
+    uint32_t integer, fractional;
+
+    if (!out || !isfinite(index)) {
+        return false;
+    }
+    /* Model fixed-point precision: 32 integer and 32 fractional bits. */
+    whole = floor(index);
+    integer = (int64_t)fmod(whole, 4294967296.0);
+    fraction = (index - whole) * 4294967296.0;
+    fractional = MIN(fraction, (double)UINT32_MAX);
+    fixed = ((uint64_t)integer << 32) | fractional;
+    if (shift >= 64 || shift <= -64) {
+        fixed = 0;
+    } else if (shift > 0) {
+        fixed <<= shift;
+    } else if (shift < 0) {
+        fixed >>= -shift;
+    }
+    fixed += (uint64_t)(uint32_t)offset << 32;
+    *out = fixed >> 32;
+    return true;
+}
+
+bool sgi_kona_gl_pixel_index_pack(uint32_t type, uint32_t index,
+                                   bool swap_bytes, uint8_t *out,
+                                   size_t capacity)
+{
+    static const uint32_t masks[] = {
+        0x7f, 0xff, 0x7fff, 0xffff, 0x7fffffff, 0xffffffff,
+    };
+    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(0, type), bits;
+    uint8_t packed[4];
+
+    if (!out || type > 6 || !bytes || capacity < bytes) {
+        return false;
+    }
+    if (type == 6) {
+        float scalar = index;
+
+        memcpy(&bits, &scalar, sizeof(bits));
+    } else {
+        bits = index & masks[type];
+    }
+    if (bytes == 1) {
+        packed[0] = bits;
+    } else if (bytes == 2) {
+        stw_be_p(packed, swap_bytes ? bswap16(bits) : bits);
+    } else {
+        stl_be_p(packed, swap_bytes ? bswap32(bits) : bits);
+    }
+    memcpy(out, packed, bytes);
+    return true;
 }
 
 static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,

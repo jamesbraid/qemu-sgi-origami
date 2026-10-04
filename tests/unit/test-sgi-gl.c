@@ -1793,6 +1793,67 @@ static void test_draw_pixels_double_refusal(void)
                                                      1, 1, NULL));
 }
 
+static void test_draw_pixels_stencil(void)
+{
+    const uint32_t image[] = { 0x13c, 0xab };
+    static Planes p;
+    SGIRasterRules rules = rules_supported;
+    Recorder rec = { .rules = &rules };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    rules.stencil_bits = 8;
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    c.cur.alpha_test = c.cur.depth_test = c.cur.stencil_test = 1;
+    c.cur.alpha_func = c.cur.depth_func = c.cur.stencil_func = SGI_GL_NEVER;
+    c.cur.texture_2d = 1;
+    c.cur.stencil_write_mask = 0x0f;
+    p.stencil[planes_index(10, 20)] = 0xa5;
+    p.stencil[planes_index(11, 20)] = 0xa5;
+    g_assert_true(sgi_gl_draw_pixels_stencil(&c, &sink, 2, 1, image, 1, 1));
+    g_assert_cmphex(p.stencil[planes_index(10, 20)], ==, 0xac);
+    g_assert_cmphex(p.stencil[planes_index(11, 20)], ==, 0xab);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+    g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0);
+    g_assert_cmpuint(rec.op.ntargets, ==, 0);
+}
+
+static void test_draw_pixels_stencil_clipping(void)
+{
+    const uint32_t image[] = { 12, 34 };
+    static Planes p;
+    SGIRasterRules rules = rules_supported;
+    Recorder rec = { .rules = &rules };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    rules.stencil_bits = 8;
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10.25;
+    c.raster_pos[1] = 20.25;
+    c.cur.index_bits = 8;
+    c.cur.scissor_test = 1;
+    memcpy(c.cur.scissor, (int32_t[]) { 7, 20, 2, 1 }, sizeof(c.cur.scissor));
+    g_assert_true(sgi_gl_draw_pixels_stencil(&c, &sink, 2, 1, image, -2, 2));
+    g_assert_cmphex(p.stencil[planes_index(7, 20)], ==, 34);
+    g_assert_cmphex(p.stencil[planes_index(8, 20)], ==, 12);
+    g_assert_cmphex(p.stencil[planes_index(9, 20)], ==, 0);
+    g_assert_cmphex(p.stencil[planes_index(8, 21)], ==, 0);
+    c.cur.stencil_write_mask = 0;
+    g_assert_true(sgi_gl_draw_pixels_stencil(&c, &sink, 2, 1, image, -2, 2));
+    g_assert_cmphex(p.stencil[planes_index(7, 20)], ==, 34);
+    c.raster_valid = 0;
+    g_assert_true(sgi_gl_draw_pixels_stencil(&c, &sink, 2, 1, NULL, 1, 1));
+}
+
 static void test_draw_pixels_depth_transfer(void)
 {
     const double image[] = { 0.25, 0.75, 2147483647.0 / 4294967295.0 };
@@ -12121,6 +12182,9 @@ int main(int argc, char **argv)
                     test_draw_pixels_float_refusal);
     g_test_add_func("/sgi-gl/draw-pixels/double-precision",
                     test_draw_pixels_double_precision);
+    g_test_add_func("/sgi-gl/stencil-pixels/write", test_draw_pixels_stencil);
+    g_test_add_func("/sgi-gl/stencil-pixels/clipping",
+                    test_draw_pixels_stencil_clipping);
     g_test_add_func("/sgi-gl/depth-pixels/transfer",
                     test_draw_pixels_depth_transfer);
     g_test_add_func("/sgi-gl/depth-pixels/zoom", test_draw_pixels_depth_zoom);

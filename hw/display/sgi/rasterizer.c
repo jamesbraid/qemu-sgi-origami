@@ -1723,6 +1723,18 @@ static uint32_t sgi_soft_index(const SGISoftDraw *r, double index)
  * (4.1.7), and as its index in colour-index mode, which glIndexMask masks
  * (4.2.2).
  */
+static bool sgi_soft_owned_at(const SGISoftDraw *r, int px, int py)
+{
+    int x = r->win.ox + px, y = r->win.oy + py;
+
+    return (r->win.clip->n <= 1 || sgi_clip_contains(r->win.clip, x, y)) &&
+           (!r->st->scissor_test ||
+            (px >= r->st->scissor[0] &&
+             (int64_t)px < (int64_t)r->st->scissor[0] + r->st->scissor[2] &&
+             py >= r->st->scissor[1] &&
+             (int64_t)py < (int64_t)r->st->scissor[1] + r->st->scissor[3]));
+}
+
 static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                                  double z, const SGISoftFrag *frag,
                                  double coverage, bool antialias)
@@ -1753,14 +1765,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
 
         fogged.index = (index & ~mask) | value;
     }
-    if (r->win.clip->n > 1 && !sgi_clip_contains(r->win.clip, x, y)) {
-        return;
-    }
-    if (r->st->scissor_test &&
-        !(px >= r->st->scissor[0] &&
-          (int64_t)px < (int64_t)r->st->scissor[0] + r->st->scissor[2] &&
-          py >= r->st->scissor[1] &&
-          (int64_t)py < (int64_t)r->st->scissor[1] + r->st->scissor[3])) {
+    if (!sgi_soft_owned_at(r, px, py)) {
         return;
     }
     /*
@@ -3874,7 +3879,8 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                             const SGIRasterTarget *t, const SGIRasterOp *op)
 {
     const SGIRasterPixels *p = &op->pixels;
-    bool image = p->rgba || p->rgba_float || p->rgba_double || p->depth;
+    bool image = p->rgba || p->rgba_float || p->rgba_double || p->depth ||
+                 p->stencil;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = {
         .fog = p->distance,
@@ -3883,6 +3889,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     };
     bool rgba_reported = false;
     unsigned texture_reports = 0;
+    uint32_t stencil_max = 0, stencil_mask = 0;
     double ex = p->x + (double)p->zoom[0] * p->width;
     double ey = p->y + (double)p->zoom[1] * p->height;
     double bx0, by0, bx1, by1;
@@ -3890,7 +3897,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
 
     r.rgba_reported = &rgba_reported;
     r.texture_reports = &texture_reports;
-    if (!sgi_soft_texture_setup(&r, true) ||
+    if ((!p->stencil && !sgi_soft_texture_setup(&r, true)) ||
         !p->width || !p->height || !image ||
         !isfinite(p->x) || !isfinite(p->y) ||
         !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
@@ -3899,7 +3906,15 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     }
     r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
     memcpy(r.targets, op->targets, sizeof(r.targets));
-    if (!sgi_soft_setup_ops(&r)) {
+    if (p->stencil) {
+        if (!sgi_soft_stencil_max(rules, t, &stencil_max)) {
+            return;
+        }
+        stencil_mask = p->state->stencil_write_mask & stencil_max;
+        if (!stencil_mask) {
+            return;
+        }
+    } else if (!sgi_soft_setup_ops(&r)) {
         return;
     }
     /* Include lower/left centres and exclude upper/right centres (3.6.4). */
@@ -3934,6 +3949,18 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                 continue;
             }
             at = (uint64_t)sy * p->width + (uint32_t)sx;
+            if (p->stencil) {
+                int px = r.win.ox + x, py = r.win.oy + y;
+
+                if (sgi_soft_owned_at(&r, x, y)) {
+                    uint32_t old = t->load_stencil(t->opaque, px, py);
+
+                    t->store_stencil(t->opaque, px, py,
+                        ((old & ~stencil_mask) |
+                         (p->stencil[at] & stencil_mask)) & stencil_max);
+                }
+                continue;
+            }
             rgba = p->rgba ? p->rgba[at] : 0;
             for (int k = 0; k < 4; k++) {
                 double component = p->depth ? p->colour[k] :

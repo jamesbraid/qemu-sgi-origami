@@ -2272,6 +2272,100 @@ static const struct {
       { 513.0 / 1023, 257.0 / 1023, 129.0 / 1023, 2.0 / 3 } },
 };
 
+static void test_pixel_index_decode(void)
+{
+    static const struct {
+        uint32_t type, bits;
+        double value;
+    } cases[] = {
+        { 0, 0xff000000, -1 }, { 1, 0xa5000000, 165 },
+        { 2, 0xffa50000, -91 }, { 3, 0xa5120000, 42258 },
+        { 4, 0xffffffff, -1 }, { 5, 0xffffffff, 4294967295.0 },
+        { 6, 0x3f000000, 0.5 }, { 6, 0xbf000000, -0.5 },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            uint32_t source = cases[i].bits;
+            double out = 123;
+
+            if (swap && cases[i].type >= 2) {
+                if (cases[i].type < 4) {
+                    source = bswap16(source >> 16) << 16;
+                } else {
+                    source = bswap32(source);
+                }
+            }
+            g_assert_true(sgi_kona_gl_pixel_index(cases[i].type, &source,
+                                                   swap, &out));
+            g_assert_cmpfloat(out, ==, cases[i].value);
+        }
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        uint32_t source = i == 0 ? 0x7fc00000 :
+                          i == 1 ? 0x7f800000 : 0xff800000;
+        double out = 123;
+
+        g_assert_false(sgi_kona_gl_pixel_index(6, &source, false, &out));
+        g_assert_cmpfloat(out, ==, 123);
+    }
+}
+
+static void test_pixel_index_transfer(void)
+{
+    static const struct {
+        double value;
+        int32_t shift, offset;
+        uint32_t expected;
+    } cases[] = {
+        { 18, 2, 3, 75 }, { -1, -1, 0, 0x7fffffff },
+        { 0.5, 1, 0, 1 }, { -0.5, 1, 0, 0xffffffff },
+        { -0.5, 0, 1, 0 }, { 4294967295.0, 1, 0, 0xfffffffe },
+        { 1, 64, 3, 3 }, { -1, -64, -1, 0xffffffff },
+        { 1, INT32_MIN, 0, 0 }, { 1, INT32_MAX, 0, 0 },
+    };
+    uint32_t out = 123;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_assert_true(sgi_kona_gl_pixel_index_transfer(cases[i].value,
+            cases[i].shift, cases[i].offset, &out));
+        g_assert_cmphex(out, ==, cases[i].expected);
+    }
+    g_assert_false(sgi_kona_gl_pixel_index_transfer(NAN, 0, 0, &out));
+    g_assert_false(sgi_kona_gl_pixel_index_transfer(INFINITY, 0, 0, &out));
+}
+
+static void test_pixel_index_pack(void)
+{
+    static const uint32_t bits[] = {
+        0x7f, 0xff, 0x7fff, 0xffff, 0x7fffffff, 0xffffffff, 0x4f800000,
+    };
+
+    for (uint32_t type = 0; type <= 6; type++) {
+        unsigned bytes = type < 2 ? 1 : type < 4 ? 2 : 4;
+
+        for (unsigned swap = 0; swap < 2; swap++) {
+            uint8_t out[8], expected[4];
+
+            memset(out, 0xa5, sizeof(out));
+            for (unsigned k = 0; k < bytes; k++) {
+                expected[k] = bits[type] >> (8 * (swap ? k : bytes - 1 - k));
+            }
+            g_assert_true(sgi_kona_gl_pixel_index_pack(type, UINT32_MAX,
+                                                       swap, out,
+                                                       sizeof(out)));
+            g_assert_cmpmem(out, bytes, expected, bytes);
+            g_assert_cmphex(out[bytes], ==, 0xa5);
+            memset(out, 0xa5, sizeof(out));
+            g_assert_false(sgi_kona_gl_pixel_index_pack(type, UINT32_MAX,
+                                                       swap, out, bytes - 1));
+            for (unsigned k = 0; k < sizeof(out); k++) {
+                g_assert_cmphex(out[k], ==, 0xa5);
+            }
+        }
+    }
+}
+
 static void test_pixel_packed_decode(void)
 {
     for (unsigned n = 0; n < ARRAY_SIZE(packed_pixels); n++) {
@@ -2855,6 +2949,11 @@ int main(int argc, char **argv)
                     test_pixel_pack_double_precision);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/refusals",
                     test_pixel_pack_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/index/decode",
+                    test_pixel_index_decode);
+    g_test_add_func("/sgi-kona-gl-decode/index/transfer",
+                    test_pixel_index_transfer);
+    g_test_add_func("/sgi-kona-gl-decode/index/pack", test_pixel_index_pack);
     g_test_add_func("/sgi-kona-gl-decode/packed/decode",
                     test_pixel_packed_decode);
     g_test_add_func("/sgi-kona-gl-decode/packed/pack",

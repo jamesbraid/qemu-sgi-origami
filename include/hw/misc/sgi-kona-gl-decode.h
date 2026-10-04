@@ -136,6 +136,15 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type);
 
+/* Raw indices retain integer values, including fractional FLOAT input. */
+bool sgi_kona_gl_pixel_index(uint32_t type, const uint32_t *source,
+                              bool swap_bytes, double *index);
+bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
+                                       int32_t offset, uint32_t *out);
+bool sgi_kona_gl_pixel_index_pack(uint32_t type, uint32_t index,
+                                   bool swap_bytes, uint8_t *out,
+                                   size_t capacity);
+
 /*
  * Components occupy transport-decoded words, most significant bytes first.
  * Integer inputs use OpenGL 1.2.1 table 2.6; FLOAT inputs use IEEE binary32.
