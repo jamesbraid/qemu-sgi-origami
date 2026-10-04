@@ -12783,10 +12783,76 @@ static void test_renderer_alpha_test(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_blend(gconstpointer opaque)
+{
+    static const struct {
+        uint32_t src, dst, equation;
+        float rgba[4];
+        uint32_t rgb;
+    } cases[] = {
+        { 0x302, 0x303, 0x8006, { 0, 1, 1, 0.25f }, 0xbfa040 },
+        { 1, 1, 0x8006, { 0, 0.25f, 1, 1 }, 0xffc0ff },
+        { 1, 1, 0x800a, { 0.5f, 0.25f, 1, 1 }, 0x0000ff },
+        { 1, 1, 0x800b, { 0.5f, 0.25f, 1, 1 }, 0x7f4000 },
+        { 0, 0, 0x8007, { 0.5f, 1, 1, 1 }, 0x808000 },
+        { 0, 0, 0x8008, { 0.5f, 0.25f, 1, 1 }, 0xff80ff },
+        { 0x304, 0x305, 0x8006, { 0, 0, 1, 0 }, 0x0000ff },
+        { 0x308, 1, 0x8006, { 0, 0, 1, 0.25f }, 0xff8000 },
+        { 0x8001, 0x8004, 0x8006, { 1, 1, 1, 1 }, 0xff80ff },
+        { 0x306, 0x300, 0x8006, { 0.5f, 0.5f, 0.5f, 1 }, 0xff8100 },
+        { 0x306, 0, 0x8006, { 0.5f, 0.5f, 0.5f, 1 }, 0x804000 },
+        { 0x307, 0, 0x8006, { 0.5f, 0.5f, 0.5f, 1 }, 0x004080 },
+        { 0, 0x300, 0x8006, { 0.5f, 0.5f, 0.5f, 1 }, 0x804000 },
+        { 0, 0x301, 0x8006, { 0.5f, 0.5f, 0.5f, 1 }, 0x7f4000 },
+        { 0x8003, 0, 0x8006, { 1, 1, 1, 1 }, 0x808080 },
+        { 0x8004, 0, 0x8006, { 1, 1, 1, 1 }, 0x808080 },
+        { 0x8001, 0, 0x8006, { 1, 1, 1, 1 }, 0x8040ff },
+        { 0x8002, 0, 0x8006, { 1, 1, 1, 1 }, 0x80bf00 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned variant = mode / ARRAY_SIZE(cases);
+    unsigned index = mode % ARRAY_SIZE(cases);
+    uint32_t rgb = cases[index].rgb;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (!variant) {
+        kona_command(s, 1, (uint32_t[]) { 3, 0x22, 1020, 512, 0 }, 5);
+    } else {
+        kona_command_f(s, 0x1d, (float[]) { 1, 0.5f, 0, 1 }, 4);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+    }
+    if (variant == 2) {
+        kona_command(s, 0x21, (uint32_t[]) { 1, 0, 1, 0 }, 4);
+        rgb = (rgb & 0xff00ff) | 0x008000;
+    }
+    kona_command(s, 0xcb,
+                 (uint32_t[]) { cases[index].src, cases[index].dst }, 2);
+    kona_command(s, 0xe7, &cases[index].equation, 1);
+    kona_command_f(s, 0xe6, (float[]) { 0.5f, 0.25f, 1, 0.5f }, 4);
+    kona_command(s, 0x24, (uint32_t[]) { 0xbe2 }, 1);
+    kona_command_f(s, 0x6b, cases[index].rgba, 4);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, rgb);
+    assert_window_matches(s, expected);
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
-        0xb71, 0xb90, 0xbe2, 0xb60,
+        0xb71, 0xb90, 0xb60,
         0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
@@ -13872,6 +13938,12 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_renderer_alpha_test);
+    }
+    for (unsigned mode = 0; mode < 54; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/blend/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_blend);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

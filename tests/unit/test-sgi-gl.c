@@ -4516,6 +4516,47 @@ static void frag_blend(FragScene *f, uint32_t src, uint32_t dst,
  * - a factor or equation the specification lacks changes nothing;
  * - not in colour-index mode, and not where the planes cannot be read.
  */
+static void test_packed_blend(void)
+{
+    static const struct {
+        uint32_t src, dst, equation, colour, destination, expected;
+        double alpha;
+    } cases[] = {
+        { SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA, SGI_GL_FUNC_ADD,
+          0x00ffff, 0xff8000, 0xbfa040, 0.25 },
+        { 1, 1, SGI_GL_FUNC_SUBTRACT,
+          0x8040ff, 0xff8000, 0x0000ff, 1 },
+        { 1, 1, SGI_GL_FUNC_REVERSE_SUBTRACT,
+          0x8040ff, 0xff8000, 0x7f4000, 1 },
+        { 0, 0, SGI_GL_MIN, 0x80ffff, 0xff8000, 0x808000, 1 },
+        { 0, 0, SGI_GL_MAX, 0x8040ff, 0xff8000, 0xff80ff, 1 },
+        { SGI_GL_SRC_ALPHA_SATURATE, 1, SGI_GL_FUNC_ADD,
+          0x0000ff, 0xff8000, 0xff8000, 0.25 },
+    };
+    SGIRasterRules rules = { .color_bits = 8 };
+    SGIGLDrawState st = { 0 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        st.blend_src = cases[i].src;
+        st.blend_dst = cases[i].dst;
+        st.blend_equation = cases[i].equation;
+        g_assert_cmphex(sgi_raster_blend_rgb(&rules, &st, cases[i].colour,
+            cases[i].alpha, cases[i].destination), ==, cases[i].expected);
+    }
+    st.blend_src = SGI_GL_SRC_ALPHA;
+    st.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    st.blend_equation = SGI_GL_FUNC_ADD;
+    g_assert_cmphex(sgi_raster_blend_rgb(&rules, &st, 0xff, -1, 0xff0000),
+                    ==, 0xff0000);
+    g_assert_cmphex(sgi_raster_blend_rgb(&rules, &st, 0xff, 2, 0xff0000),
+                    ==, 0xff);
+    rules.color_bits = 1;
+    g_assert_cmphex(sgi_raster_blend_rgb(&rules, &st, 1, 0.5, 4), ==, 1);
+    rules.color_bits = 10;
+    g_assert_cmphex(sgi_raster_blend_rgb(&rules, &st, 1023, 0.5, 1023 << 20),
+                    ==, 0x1ff00200);
+}
+
 static void test_blend(void)
 {
     static const struct {
@@ -12435,6 +12476,7 @@ int main(int argc, char **argv)
                     test_alpha_compare_precision);
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
     g_test_add_func("/sgi-gl/blend", test_blend);
+    g_test_add_func("/sgi-gl/packed-blend", test_packed_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);
     g_test_add_func("/sgi-gl/colour-mask", test_colour_mask);
     g_test_add_func("/sgi-gl/packed-colour-mask", test_packed_colour_mask);

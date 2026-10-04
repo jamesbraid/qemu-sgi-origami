@@ -128,6 +128,10 @@ uint32_t sgi_raster_colour_mask(const SGIRasterRules *r, uint32_t mask);
 /* Compare incoming alpha and reference at the rules' alpha-test precision. */
 bool sgi_raster_alpha_test(const SGIRasterRules *r, uint32_t func,
                            double alpha, double ref);
+/* Packed RGB blending with quantized source alpha, destination alpha 1. */
+uint32_t sgi_raster_blend_rgb(const SGIRasterRules *rules,
+                              const SGIGLDrawState *st, uint32_t src,
+                              double alpha, uint32_t dst);
 
 /*
  * A vertex in clip coordinates, as view-volume clipping (OpenGL 1.2.1,

@@ -2415,7 +2415,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     if (st->shade_model != SGI_GL_FLAT ||
         (st->colour_mask & ~15) ||
         st->depth_test || st->stencil_test ||
-        (st->blend && !logic_op) || st->fog ||
+        st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
@@ -2568,6 +2568,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     Error *err = NULL;
     bool success = false;
     bool logic_op = sgi_kona_renderer_logic_op(d->state);
+    bool blend = d->state->blend && !logic_op;
 
     if (!s->host_gpu) {
         return false;
@@ -2648,7 +2649,13 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     for (unsigned i = 0; i < count; i++) {
         SGIRendererRequest *request = &requests[i];
         SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
+        double alpha = 0;
 
+        if (blend) {
+            sgi_kona_renderer_indices(d, i / tiles, indices);
+            alpha = d->vertices[indices[3] * SGI_GL_VERTEX_FLOATS +
+                                SGI_GL_V_COLOR + 3];
+        }
         assert(request->generation == s->renderer_generation);
         for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
             for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
@@ -2659,7 +2666,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                     uint32_t colour = (pixel[0] << 16) |
                                       (pixel[1] << 8) | pixel[2];
 
-                    if (logic_op || colour_mask != 0xffffff) {
+                    if (logic_op || blend || colour_mask != 0xffffff) {
                         uint32_t old = sgi_kona_gl_load_colour(s, target,
                                                               tile.x0 + x,
                                                               tile.y0 + y);
@@ -2668,6 +2675,9 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                             colour = sgi_x_logic_op(
                                 d->state->logic_op_mode - SGI_GL_CLEAR,
                                 colour, old) & 0xffffff;
+                        } else if (blend) {
+                            colour = sgi_raster_blend_rgb(&sgi_kona_gl_rules,
+                                d->state, colour, alpha, old);
                         }
                         colour = (colour & colour_mask) | (old & ~colour_mask);
                     }

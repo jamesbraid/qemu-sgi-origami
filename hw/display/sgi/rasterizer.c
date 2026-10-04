@@ -507,15 +507,15 @@ static double sgi_soft_blend_component(const SGIGLDrawState *st, unsigned k,
  * destination dst (4.1.6), each component the fixed point of the rules'
  * colour bits taken as a fraction of its largest value. The planes hold
  * no alpha, so the destination's alpha is 1. The result is clamped to
- * [0, 1] and stored at plane pixel (x, y) as a fragment's colour is.
+ * [0, 1] by the subsequent colour conversion.
  */
-static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
-                               uint32_t src, double alpha, uint32_t dst)
+static void sgi_soft_blend_rgb(const SGIRasterRules *rules,
+                                const SGIGLDrawState *st, uint32_t src,
+                                double alpha, uint32_t dst, double out[3])
 {
-    const SGIGLDrawState *st = r->st;
-    const int bits = r->rules->color_bits;
+    const int bits = rules->color_bits;
     const double max = (1u << bits) - 1;
-    double s[4], d[4], out[3];
+    double s[4], d[4];
 
     for (int k = 0; k < 3; k++) {
         int shift = (2 - k) * bits;
@@ -528,6 +528,25 @@ static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
     for (int k = 0; k < 3; k++) {
         out[k] = sgi_soft_blend_component(st, k, s, d);
     }
+}
+
+uint32_t sgi_raster_blend_rgb(const SGIRasterRules *rules,
+                              const SGIGLDrawState *st, uint32_t src,
+                              double alpha, uint32_t dst)
+{
+    double out[3];
+
+    alpha = sgi_soft_alpha(rules, alpha) / (double)sgi_soft_alpha_max(rules);
+    sgi_soft_blend_rgb(rules, st, src, alpha, dst, out);
+    return sgi_soft_rgb(rules, out);
+}
+
+static uint32_t sgi_soft_blend(const SGISoftDraw *r, int x, int y,
+                               uint32_t src, double alpha, uint32_t dst)
+{
+    double out[3];
+
+    sgi_soft_blend_rgb(r->rules, r->st, src, alpha, dst, out);
     return sgi_soft_store_rgb(r, x, y, out);
 }
 
