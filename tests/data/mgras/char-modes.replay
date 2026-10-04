@@ -2,7 +2,7 @@
 sgi-replay 2
 head sgi-mgras
 # FILLMODE (register 0x110) mode fixture, built from live capture
-# irix-20260922T055519-8b72de (QEMU 4ddb0e1ce4 at capture time). Every
+# (QEMU 4ddb0e1ce4 at capture time). Every
 # 'write 8 0x120400' word below is the guest's own 64-bit command word,
 # copied from qemu.trace by line number, not re-encoded.
 #

@@ -1,17 +1,22 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/* Bounded functional SI graphics endpoint. */
+/* Bounded functional MGRAS graphics endpoint. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/misc/sgi-mgras-texture.h"
+#include "hw/misc/sgi-onewire-slot.h"
+#include "hw/mips/sgi/pi-gfx.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "migration/vmstate.h"
+#include "migration/register.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
@@ -28,7 +33,7 @@
 
 /*
  * VC3 register 0x1e: bit 2 enables the display, bit 0 enables the retrace
- * interrupt. The IRIX 6.5.30 kernel's MgrasEnableRetraceInterrupts sets bit
+ * interrupt. The IRIX 6.5.30 kernel's retrace-interrupt enable routine sets bit
  * 0 through 0x072038; the VC2's control register uses the same two bits
  * (Linux include/video/newport.h, VC2_CTRL_EVIRQ and VC2_CTRL_EVIDEO).
  */
@@ -59,6 +64,13 @@
 #define MGRAS_XMAP_CONFIG_REVISION 1
 #define MGRAS_XMAP_CONFIG_FIFO_CAPACITY 2
 
+/*
+ * The monitor ID in 0x071308 bits 7:4: 0xf, what every captured Origin
+ * board read with its monitor. It belongs to the
+ * monitor, not the board, so every board answers alike.
+ */
+#define MGRAS_MONITOR_ID 0xf
+
 /* DAC register addresses, as written to the DAC address halfword. */
 #define MGRAS_DAC_REG_ID 0x0300
 #define MGRAS_DAC_REG_REVISION 0x0b00
@@ -78,39 +90,77 @@
  *   decode; product ID 2 (over 3), the MGRAS revision and every ASIC
  *   revision are approximated with the matching one-GE board's values.
  *
+ * MXI and EMXI add one TE1 and its TRAM to each of SSI's two REs. The model
+ * keeps one texture store, drawn by the shared rasterizer for every row, so
+ * a texture load, a base write and a draw reach both REs' rows alike. That
+ * approximates each path holding its own full copy (the software cannot tell
+ * them apart; only the diagnostics' per-RE TRAM tests could). Both paths
+ * report the same TRAM population, as the kernel's decode requires.
+ *
+ * SSI and ESSI render: their second GE takes its program through the second
+ * download port, and their second RE's two PP1s have XMAP register files of
+ * their own behind PP1SELECT. Drawing reaches both REs through the one command
+ * FIFO, so one set of planes stands for both.
+ *
  * Only 0x071308 is left out: its bits 7:4 are the attached monitor's ID,
- * not the board's.
+ * not the board's (MGRAS_MONITOR_ID).
+ *
+ * Every board scans out 1280x1024, the screen IRIX's default timing table
+ * sets up. Which boards also drive 1600x1200 is unsettled: the OCTANE
+ * Technical Report's feature list says only MXI does, while its Table 4.3
+ * lists SI and SSI visuals at 1600x1200 from an IRIX 5.3 and 6.2 patch.
+ * The model has no mode change, so every board keeps 1280x1024.
+ *
+ * The board record names the board the way published Octane and Origin
+ * inventories do: GM10 (SI, part 030-0938, seen on an SI+T), GM20 (SSI and
+ * MXI, 030-0957), MOT10 (ESI, 030-1241) and MOT20 (ESSI and EMXI,
+ * 030-1240). Each revision letter is one a capture shows. The stock IP30
+ * PROM takes the E-series mark from this name ("Name:MOT"), not from the GE
+ * revision IRIX reads.
  */
 static const SGIMgrasBoard mgras_boards[] = {
     {
         .name = "si", .hinv_name = "SI",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 0,
         .version1 = 0x45, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM10", .record_part = "030-0938-003",
+        .record_revision = "U",
         .implemented = true,
     }, {
         .name = "si-t", .hinv_name = "SI with texture option",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 4,
         .version1 = 0x45, .version0 = 0x0c,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM10", .record_part = "030-0938-003",
+        .record_revision = "U",
     }, {
         .name = "ssi", .hinv_name = "SSI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 0,
         .version1 = 0x46, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM20", .record_part = "030-0957-003",
+        .record_revision = "N",
+        .implemented = true,
     }, {
         .name = "mxi", .hinv_name = "MXI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
         .version1 = 0x46, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 2, .re4_revision = 2,
         .pp1_revision = 0, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "GM20", .record_part = "030-0957-003",
+        .record_revision = "N",
     }, {
         /*
          * Approximated beyond identity: the model renders an E-series
@@ -121,33 +171,46 @@ static const SGIMgrasBoard mgras_boards[] = {
          * will not see it.
          */
         .name = "esi", .hinv_name = "ESI",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 0,
         .version1 = 0x51, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT10", .record_part = "030-1241-002",
+        .record_revision = "J",
         .implemented = true,
     }, {
         .name = "esi-t", .hinv_name = "ESI with texture option",
+        .width = 1280, .height = 1024,
         .ge_count = 1, .re_count = 1, .tram_count = 4,
         .version1 = 0x51, .version0 = 0x0c,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT10", .record_part = "030-1241-002",
+        .record_revision = "J",
     }, {
         .name = "essi", .hinv_name = "ESSI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 0,
         .version1 = 0x52, .version0 = 0x0f,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT20", .record_part = "030-1240-003",
+        .record_revision = "G",
+        .implemented = true,
     }, {
         .name = "emxi", .hinv_name = "EMXI",
+        .width = 1280, .height = 1024,
         .ge_count = 2, .re_count = 2, .tram_count = 4,
         .version1 = 0x52, .version0 = 0x00,
         .hq_revision = 2, .ge_revision = 3, .re4_revision = 2,
         .pp1_revision = 4, .vc3_revision = 0, .cmap_revision = 3,
         .ra_revision = 0, .video_option = false,
+        .record_name = "MOT20", .record_part = "030-1240-003",
+        .record_revision = "G",
     },
 };
 
@@ -159,6 +222,11 @@ static const SGIMgrasBoard *mgras_find_board(const char *name)
         }
     }
     return NULL;
+}
+
+bool sgi_mgras_board_known(const char *name)
+{
+    return mgras_find_board(name) != NULL;
 }
 
 /* 0x071708: RA revision 6:4, CMAP revision 2:0, bit 7 set: no video option. */
@@ -289,6 +357,7 @@ static void mgras_error(SGIMgrasState *s, hwaddr addr, unsigned size,
 static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
+
     if (s->display_enabled) {
         bool vintr = s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR;
         bool dest = s->hq_vector_dest_upper || s->hq_vector_dest_lower;
@@ -299,19 +368,110 @@ static void mgras_retrace(void *opaque)
             mgras_deliver_hq_role(s, true, s->hq_vectors >>
                                   MGRAS_HQ_VECTOR_RETRACE_SHIFT, "retrace");
         } else if (vintr && !s->retrace_no_dest_logged) {
-            /* Once per reset: a retrace comes 60 times a second. */
+            /* Once per reset: a retrace comes about 60 times a second. */
             s->retrace_no_dest_logged = true;
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: retrace interrupt "
                           "enabled with no HQ vector destination programmed; "
                           "no packets sent\n");
         }
     }
-    timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              NANOSECONDS_PER_SECOND / 60);
+}
+
+static const SGIHeadOps mgras_scanout_ops = {
+    .resolve_row = sgi_mgras_display_resolve_row,
+    .retrace = mgras_retrace,
+};
+
+/*
+ * Take the retrace period from the current VC3 tables and DAC PLL. The
+ * IRIX 6.5.30 kernel's timing-setup routine writes the DAC PLL bytes, then
+ * 0x072408, then the VC3 SRAM tables and VID_EP, and only then enables
+ * the display through VC3 register 0x1e, so the model reads them at that
+ * write rather than on every SRAM store. A new period restarts the retrace
+ * phase; an unchanged one keeps it. Both are the model's choices: the VC3
+ * presumably walks its tables live, and what a new table does to the
+ * phase is unknown.
+ */
+static void mgras_set_timing(SGIMgrasState *s, const SGIScanoutMode *mode)
+{
+    const SGIScanoutMode *cur = &s->scanout.mode;
+
+    if (mode->width != cur->width || mode->height != cur->height ||
+        mode->frame_clocks != cur->frame_clocks ||
+        mode->clock_hz != cur->clock_hz) {
+        sgi_scanout_set_mode(&s->scanout, mode);
+    }
+}
+
+static void mgras_update_timing(SGIMgrasState *s, bool log)
+{
+    SGIScanoutMode mode;
+    const char *problem = sgi_mgras_display_timing(s, &mode);
+
+    /* Once per reset: the kernel writes 0x1e often. */
+    if (problem && log && !s->timing_problem_logged) {
+        s->timing_problem_logged = true;
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: the VC3 frame table at "
+                      "0x%04x %s; running the default timing\n",
+                      s->vc3_reg[0] /* VID_EP */, problem);
+    }
+    mgras_set_timing(s, &mode);
+}
+
+/*
+ * The period the destination runs: the one the source was running, which
+ * the stream carries only when it differs from what the loaded VC3 and DAC
+ * state gives, because the guest changed the tables or PLL after its last
+ * enable write.
+ */
+static void mgras_load_timing(SGIMgrasState *s)
+{
+    SGIScanoutMode mode;
+
+    if (s->timing_loaded) {
+        s->timing_loaded = false;
+        mode = (SGIScanoutMode) {
+            .width = s->width,
+            .height = s->height,
+            .frame_clocks = s->timing_frame_clocks,
+            .clock_hz = s->timing_clock_hz,
+        };
+        mgras_set_timing(s, &mode);
+    } else {
+        mgras_update_timing(s, false);
+    }
+}
+
+/*
+ * The stream carries the retrace phase as the timer's expiry alone, as it
+ * did before the scanout owned the timer. The scanout counts retraces from
+ * an epoch, so restart its count one period before the loaded retrace; the
+ * ones after it then keep the source's phase. A stream with no retrace
+ * pending, which this model never sends, restarts the phase at load.
+ */
+static void mgras_retrace_rephase(SGIMgrasState *s)
+{
+    SGIScanout *so = &s->scanout;
+    int64_t next = timer_expire_time_ns(so->retrace_timer);
+    int64_t period;
+
+    mgras_load_timing(s);
+    period = sgi_scanout_retrace_time(so, 1) - so->epoch;
+    if (period < 0) {
+        timer_del(so->retrace_timer);
+        return;
+    }
+    if (next < 0) {
+        next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + period;
+    }
+    so->frames = 0;
+    so->epoch = next - period;
+    timer_mod(so->retrace_timer, next);
 }
 
 static void mgras_complete_context(SGIMgrasState *s)
 {
+    sgi_mgras_gl_context_loaded(s);
     s->ready = true;
     s->protocol = 3;
     s->pending |= MGRAS_PENDING_CONTEXT;
@@ -331,10 +491,10 @@ static void mgras_context_write(SGIMgrasState *s, uint32_t value)
     }
     if (s->context_words >= 63) {
         /*
-         * Established (mgras-hq4.md, "Context switch and HQ flags"):
-         * MgrasCtxsw stores exactly 63 words and never reads or writes a
-         * closing token at 0x120400 -- the transaction completes as soon
-         * as the 63rd word lands. Defensive only: completion moves
+         * Established:
+         * The context-switch routine stores exactly 63 words and never reads or
+         * writes a closing token at 0x120400 -- the transaction completes as
+         * soon as the 63rd word lands. Defensive only: completion moves
          * protocol off the image state, so mgras_write() already routes any
          * later word to the command parser and this branch is unreachable
          * through it.
@@ -424,6 +584,145 @@ static uint8_t mgras_dac_reg_read(SGIMgrasState *s)
     }
 }
 
+/* Two PP1s sit behind each RE. */
+static unsigned int mgras_pp1_count(SGIMgrasState *s)
+{
+    return 2 * s->board->re_count;
+}
+
+/*
+ * The PP1s an XMAP write reaches, one bit each: all of the board's when
+ * PP1SELECT bit 0 is set, otherwise the one bits 2:1 name. Bits 7:3 are
+ * zero in every value the kernel writes and are ignored. A named PP1 the
+ * board does not have takes nothing.
+ */
+static unsigned int mgras_xmap_write_targets(SGIMgrasState *s)
+{
+    unsigned int pp = (s->pp1_select >> 1) & 3;
+
+    if (s->pp1_select & SGI_MGRAS_PP1_SELECT_ALL) {
+        return MAKE_64BIT_MASK(0, mgras_pp1_count(s));
+    }
+    if (pp >= mgras_pp1_count(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: XMAP access to PP1 %u, "
+                      "which a board with %u RE lacks\n", pp,
+                      s->board->re_count);
+        return 0;
+    }
+    return 1u << pp;
+}
+
+/*
+ * The kernel and the IDE select one RE for direct reads by writing its
+ * number to RSS register 0x112, bits 1:0. Bit 2 and bits 11:3 mean something
+ * else and are ignored here.
+ */
+#define MGRAS_RSS_RE_SELECT 0x112
+
+static uint32_t mgras_selected_re(SGIMgrasState *s)
+{
+    return s->rss[MGRAS_RSS_RE_SELECT] & 3;
+}
+
+/*
+ * What the RDRAM data port reads for one RE. Approximated: the same fixed
+ * word for every RE the board has, since the RDRAM contents are not
+ * modelled and the kernel's per-RE sync and CCR setup accept it. An RE the
+ * board lacks does not answer and reads 0.
+ */
+static uint32_t mgras_rdram_data(SGIMgrasState *s, uint32_t re)
+{
+    return re < s->board->re_count ? 0x8 : 0;
+}
+
+/*
+ * The PP1 an XMAP read answers from, or NULL for one the board lacks. With
+ * every PP1 selected the first answers; what real hardware returns then is
+ * unknown.
+ */
+static SGIMgrasXmap *mgras_xmap_read_target(SGIMgrasState *s)
+{
+    unsigned int targets = mgras_xmap_write_targets(s);
+
+    return targets ? &s->xmap[ctz32(targets)] : NULL;
+}
+
+static uint32_t mgras_xmap_read(SGIMgrasState *s, hwaddr addr)
+{
+    SGIMgrasXmap *x = mgras_xmap_read_target(s);
+
+    if (!x) {
+        return 0;
+    }
+    switch (addr) {
+    case 0x071c88: return x->index << 2;
+    case SGI_MGRAS_XMAP_OVERLAY_MODE: return x->overlay_mode[x->index];
+    /* XMAP selection and per-visual modes are an approximation. */
+    case SGI_MGRAS_XMAP_MAIN_MODE: return x->mode[x->index];
+    case SGI_MGRAS_XMAP_BUF_SELECT: return x->buf_select[x->index];
+    /*
+     * SGI's IDE XMAP test reads the XMAP revision under index byte 4 and
+     * accepts 0 or 1, and the FIFO capacity under index byte 8 and
+     * requires a low nibble of 1. Which revision the part reports is
+     * unknown; zero is the model's usual answer for an unknown revision.
+     */
+    case SGI_MGRAS_REPP_STATUS_3:
+        if (x->index == MGRAS_XMAP_CONFIG_REVISION) {
+            return s->board->pp1_revision;
+        }
+        if (x->index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
+            return 1;
+        }
+        return x->config;
+    case SGI_MGRAS_REPP_STATUS_4: return x->config_b;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: XMAP read of 0x%" HWADDR_PRIx
+                      " is not modelled; read as zero\n", addr);
+        return 0;
+    }
+}
+
+static void mgras_xmap_write(SGIMgrasState *s, hwaddr addr, uint32_t value)
+{
+    unsigned int targets = mgras_xmap_write_targets(s);
+
+    for (unsigned int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        SGIMgrasXmap *x = &s->xmap[pp];
+
+        if (!(targets & (1u << pp))) {
+            continue;
+        }
+        switch (addr) {
+        case 0x071c88:
+            x->index = (value >> 2) & 0x1f;
+            break;
+        case SGI_MGRAS_XMAP_OVERLAY_MODE:
+            x->overlay_mode[x->index] = value;
+            break;
+        /* Per-visual mode storage and scanout interpretation: approximate. */
+        case SGI_MGRAS_XMAP_MAIN_MODE:
+            x->mode[x->index] = value;
+            break;
+        /* Swap-mask storage; see the header comment above the definition. */
+        case SGI_MGRAS_XMAP_BUF_SELECT:
+            x->buf_select[x->index] = value;
+            break;
+        case SGI_MGRAS_REPP_STATUS_3:
+            x->config = value;
+            break;
+        case SGI_MGRAS_REPP_STATUS_4:
+            x->config_b = value;
+            break;
+        default:
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: XMAP write of 0x%x to "
+                          "0x%" HWADDR_PRIx " is not modelled; ignored\n",
+                          value, addr);
+            break;
+        }
+    }
+    s->dirty = true;
+}
+
 static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
                                      unsigned size)
 {
@@ -442,7 +741,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
         addr != 0x071c88 && addr != 0x071308 && addr != SGI_MGRAS_I2C_STROBE &&
         addr != 0x071708 && addr != SGI_MGRAS_BOARD_INVENTORY &&
-        addr != SGI_MGRAS_DAC_LUT_DATA_2) {
+        addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG) {
         mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -462,13 +761,18 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case 0x000020:
         return 0;
     /*
-     * Bits 31:28 are the HQ revision the IRIX kernel reads with a 32-bit
-     * load (mgras-board-identity.md). How they relate to the widget
-     * identification word at 0x000004 is unknown; a 64-bit read keeps
-     * the low word at zero as before.
+     * A 32-bit load here returns a widget identification word. The IRIX
+     * kernel takes the HQ revision from bits 31:28; the stock IP30 IDE's
+     * board probe accepts the board only when bits 27:12 are the part
+     * and bits 11:1 the manufacturer, and calls a revision below 2 a
+     * prototype. Bit 0 follows 0x000004 (approximated). Why the revision
+     * differs from 0x000004's is unknown, and a 64-bit read keeps the low
+     * word at zero as before.
      */
     case 0x000000: {
-        uint32_t v = (uint32_t)(s->board->hq_revision & 0xf) << 28;
+        uint32_t v = (uint32_t)(s->board->hq_revision & 0xf) << 28 |
+                     (s->part & 0xffff) << 12 |
+                     (s->manufacturer & 0x7ff) << 1 | 1;
 
         return size == 8 ? (uint64_t)v << 32 : v;
     }
@@ -511,23 +815,31 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /*
      * After the GE program verifies, the kernel takes the GE revision from
      * the low byte here; 3 or more marks an E-series board. Every class-0
-     * 0xa2 query, whether the kernel's own (MgrasFinish, index 0x1fa) or
-     * the OpenGL client's, is answered here once HQ flag bit 17 is set
-     * (see mgras_raster_command_fifo_dispatch()). Approximated: the model
+     * 0xa2 query, whether the kernel's own (the finish-fence routine, index
+     * 0x1fa) or the OpenGL client's, is answered here once HQ flag bit 17 is
+     * set (see mgras_raster_command_fifo_dispatch()). Approximated: the model
      * holds the GE revision from reset until the first query of either
-     * kind, then answers zero. When real hardware replaces the revision,
-     * and what each query returns, are unknown.
+     * kind, then gives that query's answer, sgi_mgras_gl_query_answer()'s.
+     * When real hardware replaces the revision is unknown.
      */
     case 0x028004:
         return s->ge_report;
     /*
-     * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
-     * on every OpenGL context query; the captured flow answers 0 and
-     * raises no error (glx-ioctl-trace.md). The field's meaning is
-     * otherwise unknown.
+     * Bits 7:4 are the attached monitor's ID. The kernel reads this byte while
+     * it builds the board record and again on every OpenGL context query
+     * (the board-information routine, the dynamic board-information routine),
+     * and gfxinfo prints the field. Every captured Origin board reports 0xf,
+     * which gfxinfo prints as "unknown, assuming 19"" and which, like 0,
+     * selects the kernel's stock 1280x1024 60 Hz timing record. Bits 2:0
+     * are the first CMAP's revision: SGI's IP30 IDE reads them beside
+     * 0x071708's and fails a board whose two CMAP revisions differ or fall
+     * outside 2 to 3. The kernel never reads them. Bit 3 is approximated 0.
      */
-    case 0x071308:
-        return 0;
+    case 0x071308: {
+        uint8_t v = MGRAS_MONITOR_ID << 4 | (s->board->cmap_revision & 7);
+
+        return size == 1 ? v : (uint32_t)v << 24;
+    }
     case SGI_MGRAS_BRINGUP_ARG_2: return s->bringup_arg_2;
     case SGI_MGRAS_BRINGUP_BLOCK_1: return s->bringup_block[0];
     case SGI_MGRAS_BRINGUP_BLOCK_2: return s->bringup_block[1];
@@ -535,11 +847,13 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
+    case 0x071c88:
     case SGI_MGRAS_XMAP_OVERLAY_MODE:
-        return s->xmap_overlay_mode[s->xmap_index];
-    /* XMAP selection and per-visual modes are an approximation. */
-    case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
-    case SGI_MGRAS_XMAP_BUF_SELECT: return s->xmap_buf_select[s->xmap_index];
+    case SGI_MGRAS_XMAP_MAIN_MODE:
+    case SGI_MGRAS_XMAP_BUF_SELECT:
+    case SGI_MGRAS_REPP_STATUS_3:
+    case SGI_MGRAS_REPP_STATUS_4:
+        return mgras_xmap_read(s, addr);
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     /*
      * Byte reads mirror the write side's no-op treatment (case
@@ -547,28 +861,18 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * public source documents this port's read-back semantics.
      */
     case SGI_MGRAS_I2C_STROBE: return 0;
-    case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
-    /*
-     * SGI's IDE XMAP test reads the XMAP revision under index byte 4 and
-     * accepts 0 or 1, and the FIFO capacity under index byte 8 and
-     * requires a low nibble of 1. Which revision the part reports is
-     * unknown; zero is the model's usual answer for an unknown revision.
-     */
-    case SGI_MGRAS_REPP_STATUS_3:
-        if (s->xmap_index == MGRAS_XMAP_CONFIG_REVISION) {
-            return s->board->pp1_revision;
-        }
-        if (s->xmap_index == MGRAS_XMAP_CONFIG_FIFO_CAPACITY) {
-            return 1;
-        }
-        return s->repp_status[1];
-    case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
+    case SGI_MGRAS_PP1_SELECT: return s->pp1_select;
     case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
     case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
     case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
     case SGI_MGRAS_DAC_LUT_DATA: return s->dac_lut_data[0];
     case SGI_MGRAS_DAC_LUT_DATA_2: return mgras_dac_reg_read(s);
-    case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
+    /*
+     * SGI's IP30 IDE writes walking patterns here a byte at a time and
+     * fails the DAC unless each byte reads back whole.
+     */
+    case SGI_MGRAS_DAC_CONFIG:
+        return size == 1 ? (s->dac_config & 0xff) : s->dac_config;
     case SGI_MGRAS_DAC_LUT_INDEX_LOW: return s->dac_lut_index_low;
     case 0x008000: return 0;
     /* Keep unresolved status bits separate from modeled pending sources. */
@@ -590,22 +894,51 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     /* Retrace status content is unsupported. */
     case SGI_MGRAS_RETRACE_STATUS_1: return 0;
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
-    /* Generic widget readiness is an immediate functional approximation. */
-    case 0x011098: return 0x2;
-    /* FIFO readiness is immediate. Exact thresholds remain unknown. */
-    case 0x020000: return 0x12;
+    case SGI_MGRAS_NIC:
+        /*
+         * Without a fitted record, keep the older answer: slot done and
+         * the wire sampled low, an approximation from before the chip.
+         */
+        return s->board_record ? s->nic_control : SGI_MGRAS_NIC_DONE;
+    /*
+     * FIFO readiness is immediate. Exact thresholds remain unknown.
+     * Bit 0 is the sync bit pixel reads wait on: the kernel and the
+     * OpenGL client write 0xf200 before a DMA read into an unaligned
+     * buffer, and the client 0x8f08 before a data-port read, then poll
+     * until bit 0 is set. No IRIX 6.5.30 kernel, client or X server
+     * routine waits for it to clear, and commands execute synchronously,
+     * so it is approximated as always set; when the board clears it is
+     * unknown.
+     */
+    case 0x020000: return 0x13;
     /* Commands execute synchronously, so modeled FIFO occupancy is zero. */
     case 0x020008: return 0;
     /* Bus and DMA activity are not modeled and report idle. */
     case 0x020100: return 0;
     case 0x020200: return 0;
-    /* Readback grammar is unsupported. These are fixed approximations. */
-    case 0x02c574: return 0x8;
-    /* Bits 7:4 are the RE4 revision; the rest is approximated. */
-    case 0x02c578: return 0x100 | (s->board->re4_revision & 0xf) << 4;
+    /*
+     * Readback grammar is unsupported. The RDRAM data port answers for the
+     * RE that RSS register 0x112 bits 1:0 select.
+     */
+    case 0x02c574: return mgras_rdram_data(s, mgras_selected_re(s));
+    /*
+     * Bits 7:4 are the RE4 revision, bits 3:2 the selected RE and bits 1:0
+     * the RE count less one. The rest is approximated.
+     */
+    case 0x02c578:
+        return 0x100 | (s->board->re4_revision & 0xf) << 4 |
+               (mgras_selected_re(s) & 3) << 2 |
+               ((s->board->re_count - 1) & 3);
+    /* The data port of a host read (sgi-mgras-raster.c). */
+    case SGI_MGRAS_RE_DATA_HI:
+    case SGI_MGRAS_RE_DATA_LO:
+        if (size != 4) {
+            mgras_error(s, addr, size, "unsupported read width");
+            return 0;
+        }
+        return sgi_mgras_raster_pio_read(s, addr == SGI_MGRAS_RE_DATA_HI);
     /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
-    case 0x071c88: return s->xmap_index << 2;
     case 0x071f00: return 1;
     /* Fixed functional-approximation synchronization value. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
@@ -674,6 +1007,23 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     }
 }
 
+/*
+ * One MicroLAN bit slot on the board's serial-number chip. The stock IP30
+ * PROM and IDE write the low-drive time in bits 19:10 and the sample
+ * offset in bits 9:2, wait for bit 1 and take the wire level from bit 0,
+ * as on the Bridge and HEART masters. The slot completes inside the write:
+ * real timing is unknown, and both readers poll the done bit first.
+ */
+static void mgras_nic_slot(SGIMgrasState *s, uint32_t value)
+{
+    uint32_t pulse = (value >> SGI_MGRAS_NIC_PULSE_SHIFT) & 0x3ff;
+    uint32_t sample = (value >> SGI_MGRAS_NIC_SAMPLE_SHIFT) & 0xff;
+    bool level = sgi_onewire_slot(s->nic_bus, pulse, sample);
+
+    s->nic_control = (value & SGI_MGRAS_NIC_WRITABLE) | SGI_MGRAS_NIC_DONE |
+                     (level ? SGI_MGRAS_NIC_LEVEL : 0);
+}
+
 static uint64_t mgras_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIMgrasState *s = opaque;
@@ -683,6 +1033,9 @@ static uint64_t mgras_read(void *opaque, hwaddr addr, unsigned size)
     trace_sgi_mgras_mmio(sequence, addr, value, size, false);
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, false);
+    }
+    if (addr >= SGI_MGRAS_GE_PORTS && addr < SGI_MGRAS_GE_PORTS_END) {
+        sgi_mgras_gl_ge_port_access(s, addr, false);
     }
     return value;
 }
@@ -696,6 +1049,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     trace_sgi_mgras_mmio(sequence, addr, value, size, true);
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
+    }
+    if (addr >= SGI_MGRAS_GE_PORTS && addr < SGI_MGRAS_GE_PORTS_END) {
+        sgi_mgras_gl_ge_port_access(s, addr, true);
     }
     if ((size != 1 && size != 2 && size != 4 && size != 8) ||
         (addr & (size - 1))) {
@@ -765,28 +1121,20 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         mgras_update_irq(s);
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
+    case 0x071c88:
     case SGI_MGRAS_XMAP_OVERLAY_MODE:
-        s->xmap_overlay_mode[s->xmap_index] = value;
-        s->dirty = true;
-        return;
-    /* Per-visual mode storage and scanout interpretation are approximate. */
     case SGI_MGRAS_XMAP_MAIN_MODE:
-        s->xmap_mode[s->xmap_index] = value;
-        s->dirty = true;
-        return;
-    /* Swap-mask storage; see the header comment above the definition. */
     case SGI_MGRAS_XMAP_BUF_SELECT:
-        s->xmap_buf_select[s->xmap_index] = value;
+    case SGI_MGRAS_REPP_STATUS_3:
+    case SGI_MGRAS_REPP_STATUS_4:
+        mgras_xmap_write(s, addr, value);
         return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
-    case SGI_MGRAS_REPP_STATUS_1: s->repp_status[0] = value; return;
-    case 0x071c88:
-        s->xmap_index = (value >> 2) & 0x1f;
+    case SGI_MGRAS_PP1_SELECT:
+        s->pp1_select = value;
         return;
-    case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
-    case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
     case SGI_MGRAS_BRINGUP_FLAG: s->bringup_flag = value; return;
     /*
@@ -846,9 +1194,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     /*
      * Inferred: 0x011040 sets enables and 0x011048 clears them. The IRIX
      * 6.5.30 kernel stores 0x400 to 0x011040 before a swap, and nothing
-     * after that writes 0x011040 again before the next MgrasCtxsw sleeps on
-     * source 19; the switch's tail clears every enable at 0x011048 before
-     * restoring the incoming context's word. With a replacing store the
+     * after that writes 0x011040 again before the next context-switch routine
+     * sleeps on source 19; the switch's tail clears every enable at 0x011048
+     * before restoring the incoming context's word. With a replacing store the
      * source-19 wake never arrives, and the switch is left to its watchdog.
      * The discriminating tests are
      * irq-enable-set-and-clear-ports and swap-keeps-context-switch-enable.
@@ -885,8 +1233,11 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     case SGI_MGRAS_HQ_FLAGS_CLEAR: s->hq_flags &= ~(uint32_t)value; return;
     /* Store this unresolved scheduling argument without interpreting it. */
     case SGI_MGRAS_RETRACE_ACK: return;
-    /* The generic readiness argument has no modeled side effect. */
-    case 0x011098: return;
+    case SGI_MGRAS_NIC:
+        if (s->board_record) {
+            mgras_nic_slot(s, value);
+        }
+        return;
     /* The approximated status register accepts a clearing write. */
     case 0x020000: return;
     case 0x130500:
@@ -898,6 +1249,13 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         /* A new transaction restarts the context word count. */
         s->context_words = 0;
         s->pending |= MGRAS_PENDING_FLAGS; mgras_update_irq(s); return;
+    case 0x020400:
+        if (size != 8) {
+            mgras_error(s, addr, size, "unsupported normal-FIFO width");
+            return;
+        }
+        sgi_mgras_raster_fifo_write(s, value);
+        return;
     case 0x120400:
         /*
          * s->ready alone cannot gate this dispatch: it latches true after
@@ -973,6 +1331,9 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
                 s->dirty = true;
             }
             s->display_enabled = enabled;
+            if (enabled) {
+                mgras_update_timing(s, true);
+            }
             break;
         }
         default: break;
@@ -1029,8 +1390,56 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     mgras_error(s, addr, size, "unsupported write");
 }
 
+/*
+ * Every path that changes what the frame resolves from runs inside an
+ * access, so folding the change into the scanout's dirty lines here means
+ * the next console update, a screendump included, sees it.
+ */
+static uint64_t mgras_mmio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint64_t value = mgras_read(opaque, addr, size);
+
+    sgi_mgras_display_flush(opaque);
+    return value;
+}
+
+/*
+ * The processor interface counts a store into the page the driver
+ * enables, which covers both command ports, and the pipe returns the
+ * credit when it frees the store's FIFO slot. The model takes every store
+ * off the port before the handler returns, so the credit goes back at
+ * once, to the widget's entry in the master node's map. The mark is
+ * sampled first: one store is one credit, whatever the handler stores in
+ * turn and however wide the store was.
+ */
+static void mgras_return_credit(SGIMgrasState *s)
+{
+    if (!s->pi) {
+        if (!s->pi_unlinked_logged) {
+            s->pi_unlinked_logged = true;
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: no pi link; graphics "
+                          "credits are not returned\n");
+        }
+        return;
+    }
+    sgi_pi_gfx_return_credits(s->pi, SGI_XIO_BOARD(s)->slot, 1);
+}
+
+static void mgras_mmio_write(void *opaque, hwaddr addr, uint64_t value,
+                             unsigned size)
+{
+    bool counted = sgi_pi_gfx_store_counted();
+
+    mgras_write(opaque, addr, value, size);
+    if (counted) {
+        mgras_return_credit(opaque);
+    }
+    sgi_mgras_display_flush(opaque);
+}
+
 static const MemoryRegionOps mgras_ops = {
-    .read = mgras_read, .write = mgras_write, .endianness = DEVICE_BIG_ENDIAN,
+    .read = mgras_mmio_read, .write = mgras_mmio_write,
+    .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /* Preserve 64-bit FIFO words instead of splitting them into callbacks. */
     .impl = { .min_access_size = 1, .max_access_size = 8 },
@@ -1044,10 +1453,19 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     if (mc->parent_phases.enter) {
         mc->parent_phases.enter(obj, type);
     }
-    memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
-    memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
-    memset(s->format, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    memset(s->overlay, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    memset(s->front, 0, s->width * s->height * sizeof(*s->front));
+    memset(s->back, 0, s->width * s->height * sizeof(*s->back));
+    memset(s->front_alpha, 0, s->front_count * sizeof(*s->front_alpha));
+    memset(s->back_alpha, 0, s->back_count * sizeof(*s->back_alpha));
+    for (int i = 0; i < 2 && s->slot[i]; i++) {
+        memset(s->slot[i], 0, s->slot_count * sizeof(*s->slot[i]));
+        memset(s->slot_alpha[i], 0,
+               s->slot_count * sizeof(*s->slot_alpha[i]));
+    }
+    memset(s->depth, 0, s->width * s->height * sizeof(*s->depth));
+    memset(s->format, 0, s->width * s->height);
+    memset(s->back_format, 0, s->width * s->height);
+    memset(s->overlay, 0, s->width * s->height);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -1061,6 +1479,15 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
     s->glyph_row = s->glyph_unit = s->pio_x = s->pio_y = 0;
+    s->pio_read_active = false;
+    s->pio_read_x = s->pio_read_y = s->pio_read_w = s->pio_read_h = 0;
+    s->pio_read_next = s->pio_read_low = 0;
+    s->public_glyph_row = 0;
+    s->public_glyph_armed = s->public_glyph_wide_valid = false;
+    s->gl_re_count_word = s->gl_re_count_tokens = 0;
+    sgi_mgras_texture_board_reset(s);
+    /* An idle master reads done; its reset value is unmeasured. */
+    s->nic_control = SGI_MGRAS_NIC_DONE;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1074,12 +1501,12 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->display_enabled = s->cursor_enabled = false;
     /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
-    for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
-        s->xmap_mode[i] = 0x7a4;
-        s->xmap_buf_select[i] = 0;
+    memset(s->xmap, 0, sizeof(s->xmap));
+    for (int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
+            s->xmap[pp].mode[i] = 0x7a4;
+        }
     }
-    memset(s->xmap_overlay_mode, 0, sizeof(s->xmap_overlay_mode));
-    s->xmap_index = 0;
     s->cmap_selector = 0;
     s->cmap_position = 0;
     memset(s->cmap, 0, sizeof(s->cmap));
@@ -1087,7 +1514,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
     s->reset_arg = s->reset_control = s->i2c_scratch = 0;
-    memset(s->repp_status, 0, sizeof(s->repp_status));
+    s->pp1_select = 0;
     s->sync_status = 0;
     s->dac_lut_index = 0;
     memset(s->dac_lut_data, 0, sizeof(s->dac_lut_data));
@@ -1106,6 +1533,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->scratch_command = 0;
     memset(s->dma_map_regs, 0, sizeof(s->dma_map_regs));
     s->dma_map_reg = s->dma_map_words_remaining = 0;
+    s->dma_map_forward_words = 0;
     memset(s->dma_desc_20000, 0, sizeof(s->dma_desc_20000));
     memset(s->dma_desc_28000, 0, sizeof(s->dma_desc_28000));
     memset(s->dma_desc_30000, 0, sizeof(s->dma_desc_30000));
@@ -1120,6 +1548,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->ge_report = s->board->ge_revision;
     s->lowater_asserted = s->general_asserted = s->error_asserted = false;
     s->retrace_no_dest_logged = false;
+    s->timing_problem_logged = false;
 }
 
 static void mgras_reset_hold(Object *obj, ResetType type)
@@ -1141,16 +1570,22 @@ static void mgras_reset_exit(Object *obj, ResetType type)
     if (mc->parent_phases.exit) {
         mc->parent_phases.exit(obj, type);
     }
-    /* Retrace timing is a fixed-period approximation. */
-    timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              NANOSECONDS_PER_SECOND / 60);
+    sgi_mgras_display_flush(s);
+    /* Reset cleared the tables: back to the default period. */
+    mgras_update_timing(s, false);
+    /* The first retrace falls one period after reset. */
+    sgi_scanout_reset(&s->scanout);
 }
 
 /*
- * Select the descriptor. A board with TRAM or a second GE and RE would
- * make IRIX drive texture and multi-engine paths the model does not have,
- * so it is refused unless x-unimplemented-board asks for it anyway; then
- * it is presented with a LOG_UNIMP note naming what is missing.
+ * Select the descriptor. SI+T and ESI+T make IRIX drive texture paths
+ * the model has only in part (hw/misc/sgi-mgras-texture.c draws a loaded
+ * RGBA level nearest-sampled and modulated, nothing more), so a board not
+ * marked implemented is refused unless x-unimplemented-board asks for it
+ * anyway; then it is presented with a LOG_UNIMP note naming what is
+ * missing. MXI and EMXI stay refused with them: they need the same texture
+ * boards' paths, and their client's pixel-texture passes, one per RE, are
+ * not modelled (sgi-mgras-texture.c has no pixel texture on any board).
  */
 static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
 {
@@ -1172,24 +1607,67 @@ static bool mgras_realize_board(SGIMgrasState *s, Error **errp)
     if (!b->implemented) {
         missing = g_string_new(NULL);
         if (b->tram_count) {
-            g_string_append(missing, "texture (TE1 and TRAM)");
-        }
-        if (b->ge_count > 1 || b->re_count > 1) {
-            g_string_append_printf(missing, "%sa second GE and RE",
-                                   missing->len ? " and " : "");
+            g_string_append(missing, "texture beyond the subset its "
+                            "datasheet lists (TE1 and TRAM)");
         }
         if (!s->unimplemented_board) {
             error_setg(errp, "sgi-mgras: board '%s' (%s) needs %s, which "
                        "the model does not implement", b->name, b->hinv_name,
                        missing->str);
-            error_append_hint(errp, "Implemented boards: si, esi\n");
+            error_append_hint(errp, "Implemented boards: si, esi, ssi, "
+                              "essi\n");
             return false;
         }
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: presenting board '%s' (%s) "
                       "without %s; IRIX will drive paths the model ignores\n",
                       b->name, b->hinv_name, missing->str);
     }
+    if (b->width > SGI_MGRAS_MAX_WIDTH) {
+        error_setg(errp, "sgi-mgras: board '%s' names a %u-pixel-wide "
+                   "screen, but scanout rows hold %d pixels", b->name,
+                   b->width, SGI_MGRAS_MAX_WIDTH);
+        return false;
+    }
     s->board = b;
+    s->width = b->width;
+    s->height = b->height;
+    return true;
+}
+
+/*
+ * Pixel banks 0 and 1, back to back in one board memory, each a plane of
+ * the screen's size. A bank word is whatever the per-pixel format tag says
+ * it is, so the planes are raw words in host order; MGRAS reads and writes
+ * them through front and back, and the planes give the shared code their
+ * bounds. This is the model's layout, not the board's pixel memory map.
+ */
+static bool mgras_realize_banks(SGIMgrasState *s, Error **errp)
+{
+    uint32_t bytes = s->width * s->height * sizeof(uint32_t);
+
+    sgi_board_memory_init(&s->mem, 2 * (uint64_t)bytes);
+    for (int bank = 0; bank < 2; bank++) {
+        SGIPlane plane = {
+            .base = (uint64_t)bank * bytes,
+            .len = bytes,
+            .width = s->width,
+            .height = s->height,
+            .stride = s->width * sizeof(uint32_t),
+            .format = SGI_PLANE_RAW,
+            .packing = HOST_BIG_ENDIAN ? SGI_PACK_BE_RED_HIGH :
+                                         SGI_PACK_LE_RED_HIGH,
+            .evidence = "model layout: MGRAS's own bank arrays",
+        };
+
+        s->bank_plane[bank] = sgi_board_memory_add_plane(&s->mem, &plane,
+                                                         errp);
+        if (s->bank_plane[bank] == SGI_PLANE_NONE) {
+            sgi_board_memory_cleanup(&s->mem);
+            return false;
+        }
+    }
+    s->front = (uint32_t *)s->mem.bytes;
+    s->back = (uint32_t *)(s->mem.bytes + bytes);
     return true;
 }
 
@@ -1211,22 +1689,60 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     if (!mgras_realize_board(s, errp)) {
         return false;
     }
-    s->front = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
-    s->format = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->overlay = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    if (!mgras_realize_banks(s, errp)) {
+        return false;
+    }
+    s->depth = g_new0(uint32_t, s->width * s->height);
+    s->front_count = s->back_count = s->width * s->height;
+    s->front_alpha = g_new0(uint8_t, s->front_count);
+    s->back_alpha = g_new0(uint8_t, s->back_count);
+    s->depth_count = s->width * s->height;
+    if (s->board->re_count == 2) {
+        s->slot_count = s->width * s->height;
+        s->slot[0] = g_new0(uint32_t, s->slot_count);
+        s->slot[1] = g_new0(uint32_t, s->slot_count);
+        s->slot_alpha[0] = g_new0(uint8_t, s->slot_count);
+        s->slot_alpha[1] = g_new0(uint8_t, s->slot_count);
+    }
+    s->format = g_new0(uint8_t, s->width * s->height);
+    s->back_format = g_new0(uint8_t, s->width * s->height);
+    s->overlay = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
-    s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->tram = g_malloc0(SGI_MGRAS_TRAM_BYTES);
     memory_region_init_io(&s->regs, OBJECT(s), &mgras_ops, s,
                            "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
-    s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_retrace, s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
     return true;
+}
+
+#define MGRAS_LOAD_CLEANUP TYPE_SGI_MGRAS "/load-cleanup"
+
+static int mgras_load_cleanup(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    /* A later context or subsection may fail after earlier allocations. */
+    if (s->gl_restore_in_progress) {
+        sgi_mgras_gl_reset(s);
+        s->gl_restore_in_progress = false;
+    }
+    return 0;
+}
+
+static const SaveVMHandlers mgras_load_ops = {
+    .load_cleanup = mgras_load_cleanup,
+};
+
+static void mgras_unregister_cleanup(SGIMgrasState *s)
+{
+    if (s->gl_cleanup_registered) {
+        unregister_savevm(NULL, MGRAS_LOAD_CLEANUP, s);
+        s->gl_cleanup_registered = false;
+    }
 }
 
 /* Runs once the board sits at its final QOM path, which its console names. */
@@ -1235,9 +1751,32 @@ static bool mgras_finish_realize(SGIXioBoardState *board, Error **errp)
     SGIMgrasState *s = SGI_MGRAS(board);
     DeviceState *dev = DEVICE(board);
 
-    s->con = qemu_graphic_console_create(dev, 0, &sgi_mgras_display_ops, s);
+    /*
+     * The serial-number chip's bus is built here, not at instance init:
+     * moving the board under its module unparents it, which drops any
+     * bus it already had.
+     */
+    s->nic_bus = onewire_create_bus(dev, "nic");
+    if (s->board_record) {
+        SGIBoardRecord record = {
+            .barcode = s->board_record_barcode,
+            .part = s->board->record_part,
+            .revision = s->board->record_revision,
+            .name = s->board->record_name,
+        };
+
+        if (!sgi_board_record_attach(OBJECT(s), "nic-chip", s->nic_bus,
+                                     &record, s->board_record_serial,
+                                     "MGRAS", errp)) {
+            return false;
+        }
+    }
+    sgi_scanout_init(&s->scanout, dev, &mgras_scanout_ops, s);
+    mgras_update_timing(s, false);
     device_cold_reset(dev);
-    sgi_mgras_display_ensure_surface(s);
+    register_savevm_live(MGRAS_LOAD_CLEANUP, VMSTATE_INSTANCE_ID_ANY, 1,
+                         &mgras_load_ops, s);
+    s->gl_cleanup_registered = true;
     return true;
 }
 
@@ -1246,14 +1785,45 @@ static void mgras_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(dev);
 
+    mgras_unregister_cleanup(s);
+    sgi_mgras_gl_cleanup(s);
     mc->parent_unrealize(dev);
-    timer_del(s->retrace_timer); timer_free(s->retrace_timer);
+    sgi_scanout_cleanup(&s->scanout);
     address_space_destroy(&s->fabric_as);
-    qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->format);
+    sgi_board_memory_cleanup(&s->mem);
+    g_free(s->slot[0]);
+    g_free(s->slot[1]);
+    s->slot[0] = s->slot[1] = NULL;
+    g_free(s->front_alpha);
+    g_free(s->back_alpha);
+    g_free(s->slot_alpha[0]);
+    g_free(s->slot_alpha[1]);
+    g_free(s->depth); g_free(s->format);
+    g_free(s->back_format);
     g_free(s->overlay);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
-    g_free(s->display_buffer);
+    g_free(s->tram);
+    s->tram = NULL;
+}
+
+static bool mgras_xmap_indices_valid(SGIMgrasState *s)
+{
+    for (int pp = 0; pp < SGI_MGRAS_MAX_PP1; pp++) {
+        if (s->xmap[pp].index >= SGI_MGRAS_XMAP_ENTRIES) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int mgras_pre_load(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    s->gl_restore_in_progress = true;
+    /* TRAM's subsection comes only when a block was written. */
+    sgi_mgras_texture_board_reset(s);
+    return 0;
 }
 
 /* Rebuild host-only display state from migrated VC3 state and redraw it. */
@@ -1261,30 +1831,42 @@ static int mgras_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
+    if (version_id < 33) {
+        memset(s->front_alpha, 0xff,
+               s->front_count * sizeof(*s->front_alpha));
+        memset(s->back_alpha, 0xff,
+               s->back_count * sizeof(*s->back_alpha));
+        for (int i = 0; i < 2 && s->slot_alpha[i]; i++) {
+            memset(s->slot_alpha[i], 0xff,
+                   s->slot_count * sizeof(*s->slot_alpha[i]));
+        }
+    }
+
     if (s->ge_active_slot >= ARRAY_SIZE(s->ge) ||
         s->ge_write_ptr[0] > s->ge_words[0] ||
         s->ge_write_ptr[1] > s->ge_words[1] ||
         s->context_words > ARRAY_SIZE(s->context) ||
-        s->cmd_token_reg >= ARRAY_SIZE(s->rss) ||
-        s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
-        (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_DISCARD &&
-         s->cmd_token_words_remaining >
-         SGI_MGRAS_CMD_TOKEN_MAX_BLOCK_WORDS) ||
-        (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
-         s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
+        !sgi_mgras_cmd_parser_valid(s->cmd_token_class, s->cmd_token_reg,
+                                    s->cmd_token_words_remaining,
+                                    s->cmd_token_payload_count) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
-        s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
-        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
+        s->dma_map_forward_words > SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS ||
+        s->pio_x > s->width || s->pio_y > s->height ||
+        !sgi_mgras_raster_pio_read_valid(s) ||
+        !sgi_mgras_raster_pending_valid(s) ||
+        !sgi_mgras_texture_transfer_valid(s) ||
+        !mgras_xmap_indices_valid(s) ||
         s->dac_lut_load_channel >= 3 ||
-        s->gl_vertex_count >= ARRAY_SIZE(s->gl_vertex)) {
+        !sgi_mgras_gl_post_load(s)) {
         return -EINVAL;
     }
-
-    sgi_mgras_display_ensure_surface(s);
     s->display_enabled =
         (s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_DISPLAY) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
+    mgras_retrace_rephase(s);
     s->dirty = true;
+    sgi_mgras_display_flush(s);
+    s->gl_restore_in_progress = false;
     return 0;
 }
 
@@ -1292,26 +1874,71 @@ static bool mgras_front_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
-    return s->front_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
+    return s->front_count == s->width * s->height;
 }
+
+static bool mgras_slots_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->slot_count != 0;
+}
+
+static bool mgras_alpha_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->front_alpha && s->back_alpha;
+}
+
+static bool mgras_slot_count_valid(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->slot_count == s->width * s->height;
+}
+
+/* Only a two-RE board has the slots, so a one-RE stream carries none. */
+static const VMStateDescription vmstate_sgi_mgras_slots = {
+    .name = TYPE_SGI_MGRAS "/slots",
+    .version_id = 2,
+    .minimum_version_id = 1,
+    .needed = mgras_slots_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(slot_count, SGIMgrasState),
+        VMSTATE_VALIDATE("slot plane length is fixed",
+                         mgras_slot_count_valid),
+        VMSTATE_VARRAY_UINT32(slot[0], SGIMgrasState, slot_count, 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_VARRAY_UINT32(slot[1], SGIMgrasState, slot_count, 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_VARRAY_UINT32(slot_alpha[0], SGIMgrasState, slot_count, 2,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_VARRAY_UINT32(slot_alpha[1], SGIMgrasState, slot_count, 2,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_alpha = {
+    .name = TYPE_SGI_MGRAS "/alpha",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_alpha_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_VARRAY_UINT32(front_alpha, SGIMgrasState, front_count, 0,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_VARRAY_UINT32(back_alpha, SGIMgrasState, back_count, 0,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 static bool mgras_back_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
-    return s->back_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
-}
-
-/*
- * Version 11 (introduced by the XMAP swap-mask select commit) still carries
- * both the retired per-pixel WID plane and the unindexed overlay-mode word
- * on the wire: that commit only added xmap_buf_select, it did not touch
- * either field. The WID-to-overlay and overlay-mode-to-per-WID-array cutover
- * lands at version 12, so streams from 9, 10 and 11 all need the old layout.
- */
-static bool mgras_stream_before_v12(void *opaque, int version_id)
-{
-    return version_id < 12;
+    return s->back_count == s->width * s->height;
 }
 
 static bool mgras_ge_lengths_valid(void *opaque, int version_id)
@@ -1322,13 +1949,185 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
            s->ge_words[1] <= SGI_MGRAS_GE_WORDS;
 }
 
+static const VMStateDescription vmstate_sgi_mgras_xmap = {
+    .name = TYPE_SGI_MGRAS "/xmap", .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(index, SGIMgrasXmap),
+        VMSTATE_UINT32(config, SGIMgrasXmap),
+        VMSTATE_UINT32(config_b, SGIMgrasXmap),
+        VMSTATE_UINT32_ARRAY(mode, SGIMgrasXmap, SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY(buf_select, SGIMgrasXmap,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY(overlay_mode, SGIMgrasXmap,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
- * Origami's unversioned machines support migration between identical builds
+ * The unversioned machines support migration between identical builds
  * only. Change both version_id and minimum_version_id when represented state
  * changes.
  */
+/*
+ * The period the source runs, sent only when re-deriving it from the
+ * migrated tables and PLL bytes would give another, so an ordinary stream
+ * stays loadable by a binary that predates this subsection.
+ */
+static bool mgras_timing_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    SGIScanoutMode derived;
+
+    sgi_mgras_display_timing(s, &derived);
+    return derived.frame_clocks != s->scanout.mode.frame_clocks ||
+           derived.clock_hz != s->scanout.mode.clock_hz;
+}
+
+static int mgras_timing_pre_save(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    s->timing_frame_clocks = s->scanout.mode.frame_clocks;
+    s->timing_clock_hz = s->scanout.mode.clock_hz;
+    return 0;
+}
+
+static int mgras_timing_post_load(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    if (!s->timing_clock_hz || s->timing_frame_clocks > UINT32_MAX ||
+        muldiv64(s->timing_frame_clocks, NANOSECONDS_PER_SECOND,
+                 s->timing_clock_hz) < SGI_SCANOUT_MIN_PERIOD_NS) {
+        return -EINVAL;
+    }
+    s->timing_loaded = true;
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_timing = {
+    .name = TYPE_SGI_MGRAS "/timing",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_timing_needed,
+    .pre_save = mgras_timing_pre_save,
+    .post_load = mgras_timing_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(timing_frame_clocks, SGIMgrasState),
+        VMSTATE_UINT32(timing_clock_hz, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+/*
+ * Every GL context's shared state, the table entry the loaded context
+ * selects and the no-context entry 0 alike, through the shared layer's
+ * description; the MGRAS state beside each travels in MGRAS's own.
+ */
+DEFINE_VMSTATE_SGI_GL_CONTEXTS(vmstate_sgi_mgras_gl_contexts,
+                               TYPE_SGI_MGRAS "/gl-contexts", SGIMgrasState,
+                               gl, SGI_MGRAS_GL_CONTEXTS);
+
+static const VMStateDescription vmstate_sgi_mgras_gl_selection_hit = {
+    .name = TYPE_SGI_MGRAS "/gl-selection-hit",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(name_count, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32(depth_min, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32(depth_max, SGIMgrasGLSelectionHit),
+        VMSTATE_UINT32_ARRAY(names, SGIMgrasGLSelectionHit,
+                             SGI_MGRAS_GL_SELECTION_NAMES),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static const VMStateDescription vmstate_sgi_mgras_gl_selection_state = {
+    .name = TYPE_SGI_MGRAS "/gl-selection-state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(active, SGIMgrasGLSelection),
+        VMSTATE_BOOL(result_phase, SGIMgrasGLSelection),
+        VMSTATE_BOOL(pending, SGIMgrasGLSelection),
+        VMSTATE_BOOL(overflow, SGIMgrasGLSelection),
+        VMSTATE_UINT32(name_count, SGIMgrasGLSelection),
+        VMSTATE_UINT32(hit_count, SGIMgrasGLSelection),
+        VMSTATE_UINT32(depth_min, SGIMgrasGLSelection),
+        VMSTATE_UINT32(depth_max, SGIMgrasGLSelection),
+        VMSTATE_UINT32_ARRAY(names, SGIMgrasGLSelection,
+                             SGI_MGRAS_GL_SELECTION_NAMES),
+        VMSTATE_STRUCT_ARRAY(hits, SGIMgrasGLSelection,
+                             SGI_MGRAS_GL_SELECTION_HITS, 0,
+                             vmstate_sgi_mgras_gl_selection_hit,
+                             SGIMgrasGLSelectionHit),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_gl_selection_needed(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    static const SGIMgrasGLSelection empty;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        if (memcmp(&s->gl_selection[i], &empty, sizeof(empty))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_gl_selection = {
+    .name = TYPE_SGI_MGRAS "/gl-selection",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_gl_selection_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_ARRAY(gl_selection, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 0,
+                             vmstate_sgi_mgras_gl_selection_state,
+                             SGIMgrasGLSelection),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mgras_nic_needed(void *opaque)
+{
+    return SGI_MGRAS(opaque)->board_record;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_nic = {
+    .name = TYPE_SGI_MGRAS "/nic",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_nic_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(nic_control, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool mgras_dma_map_forward_needed(void *opaque)
+{
+    return SGI_MGRAS(opaque)->dma_map_forward_words != 0;
+}
+
+static const VMStateDescription vmstate_sgi_mgras_dma_map_forward = {
+    .name = TYPE_SGI_MGRAS "/dma-map-forward",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mgras_dma_map_forward_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(dma_map_forward_words, SGIMgrasState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 16, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 34, .minimum_version_id = 34,
+    .pre_load = mgras_pre_load,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1340,9 +2139,6 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VALIDATE("back plane length is fixed", mgras_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
-        /* Streams before version 12 carry the retired per-pixel WID plane. */
-        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0,
-                              SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT),
         /* The per-pixel format tag; see mgras_put_pixel(). */
         VMSTATE_VARRAY_UINT32(format, SGIMgrasState, front_count, 10,
                               vmstate_info_uint8, uint8_t),
@@ -1393,7 +2189,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(reset_arg, SGIMgrasState),
         VMSTATE_UINT32(reset_control, SGIMgrasState),
         VMSTATE_UINT32(i2c_scratch, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(repp_status, SGIMgrasState, 3),
+        /* The first PP1's registers sit where the only XMAP's were. */
+        VMSTATE_UINT32(pp1_select, SGIMgrasState),
+        VMSTATE_UINT32(xmap[0].config, SGIMgrasState),
+        VMSTATE_UINT32(xmap[0].config_b, SGIMgrasState),
         VMSTATE_UINT32(sync_status, SGIMgrasState),
         VMSTATE_UINT32(dac_lut_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(dac_lut_data, SGIMgrasState, 2),
@@ -1418,9 +2217,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(dma_desc_30000, SGIMgrasState, 1),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
-        /* Before version 12 this was one unindexed overlay-mode word. */
-        VMSTATE_UNUSED_BUFFER(mgras_stream_before_v12, 0, 4),
-        VMSTATE_UINT32_ARRAY_V(xmap_overlay_mode, SGIMgrasState,
+        VMSTATE_UINT32_ARRAY_V(xmap[0].overlay_mode, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 12),
         VMSTATE_UINT32(hq_status_extra, SGIMgrasState),
         VMSTATE_UINT32(hq_vector_dest_upper, SGIMgrasState),
@@ -1444,35 +2241,105 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
         VMSTATE_UINT32(glyph_row, SGIMgrasState),
         VMSTATE_UINT32(glyph_unit, SGIMgrasState),
+        VMSTATE_UINT32(public_glyph_row, SGIMgrasState),
+        VMSTATE_BOOL(public_glyph_armed, SGIMgrasState),
+        VMSTATE_BOOL(public_glyph_wide_valid, SGIMgrasState),
         VMSTATE_UINT32(pio_x, SGIMgrasState),
         VMSTATE_UINT32(pio_y, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_class, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_reg, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_words_remaining, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(cmd_token_payload, SGIMgrasState,
-                             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS),
+        VMSTATE_UINT32_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 0, 8),
         VMSTATE_UINT32(cmd_token_payload_count, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_reg, SGIMgrasState, 32),
         VMSTATE_UINT8(vc3_index, SGIMgrasState),
         VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
                              SGI_MGRAS_VC3_SRAM_WORDS),
-        VMSTATE_UINT8(xmap_index, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(xmap_mode, SGIMgrasState,
+        VMSTATE_UINT8(xmap[0].index, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(xmap[0].mode, SGIMgrasState,
                              SGI_MGRAS_XMAP_ENTRIES),
-        VMSTATE_UINT32_ARRAY_V(xmap_buf_select, SGIMgrasState,
+        VMSTATE_UINT32_ARRAY_V(xmap[0].buf_select, SGIMgrasState,
                                SGI_MGRAS_XMAP_ENTRIES, 11),
-        VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
-        VMSTATE_INT32_ARRAY_V(gl_viewport, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_ARRAY_V(gl_clear_color, SGIMgrasState, 4, 14),
-        VMSTATE_UINT32_ARRAY_V(gl_color, SGIMgrasState, 4, 15),
-        VMSTATE_UINT32_V(gl_shade_model, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_begin, SGIMgrasState, 15),
-        VMSTATE_UINT32_V(gl_vertex_count, SGIMgrasState, 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_vertex, SGIMgrasState, 3, 4, 15),
-        VMSTATE_UINT32_2DARRAY_V(gl_vertex_color, SGIMgrasState, 3, 4, 15),
+        VMSTATE_TIMER_PTR_V(scanout.retrace_timer, SGIMgrasState, 2),
         VMSTATE_UINT32_V(ge_report, SGIMgrasState, 16),
+        /*
+         * Version 17 grows the command payload to 16 words for
+         * glLoadMatrixf; the stream keeps the second 8 here.
+         */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 8, 8, 17,
+                          vmstate_info_uint32, uint32_t),
+        VMSTATE_UINT32_ARRAY_V(gl_banks, SGIMgrasState, 2, 17),
+        VMSTATE_VARRAY_UINT32(depth, SGIMgrasState, depth_count, 17,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_UINT32_ARRAY_V(gl_slot, SGIMgrasState, SGI_MGRAS_GL_CONTEXTS,
+                               18),
+        VMSTATE_UINT64_ARRAY_V(gl_selected, SGIMgrasState,
+                               SGI_MGRAS_GL_CONTEXTS, 18),
+        VMSTATE_UINT64_V(gl_selections, SGIMgrasState, 18),
+        VMSTATE_UINT32_V(gl_current, SGIMgrasState, 18),
+        /* Version 19 adds PP1s 1 to 3; PP1 0 is the XMAP sent above. */
+        VMSTATE_STRUCT_SUB_ARRAY(xmap, SGIMgrasState, 1,
+                                 SGI_MGRAS_MAX_PP1 - 1, 19,
+                                 vmstate_sgi_mgras_xmap, SGIMgrasXmap),
+        VMSTATE_STRUCT_ARRAY(gl_context, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 20,
+                             vmstate_sgi_mgras_gl_context_parser,
+                             SGIMgrasGLContext),
+        /* Bank 1's format tag, since that bank holds indices too. */
+        VMSTATE_VARRAY_UINT32(back_format, SGIMgrasState, back_count, 24,
+                              vmstate_info_uint8, uint8_t),
+        /* Contexts read out of GE external RAM, and the transfer under way. */
+        VMSTATE_UINT64_ARRAY_V(gl_saved, SGIMgrasState,
+                               SGI_MGRAS_GL_CONTEXTS, 26),
+        VMSTATE_BOOL_ARRAY_V(gl_is_saved, SGIMgrasState,
+                             SGI_MGRAS_GL_CONTEXTS, 29),
+        VMSTATE_UINT32_V(eram_state, SGIMgrasState, 26),
+        VMSTATE_UINT64_V(eram_host, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_rows, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_bpr, SGIMgrasState, 26),
+        VMSTATE_UINT32_V(eram_next_addr, SGIMgrasState, 26),
+        /* A host read through the data port, between its reads. */
+        VMSTATE_BOOL_V(pio_read_active, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_x, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_y, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_w, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_h, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_next, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(pio_read_low, SGIMgrasState, 27),
+        VMSTATE_UINT32_V(gl_re_count_word, SGIMgrasState, 30),
+        VMSTATE_UINT32_V(gl_re_count_tokens, SGIMgrasState, 30),
+        VMSTATE_UINT32_V(tram_transfer, SGIMgrasState, 31),
+        VMSTATE_UINT32_V(tram_rows, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_words, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_first_row, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_read_block, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_load_block, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_txaddr, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_tladdr, SGIMgrasState, 32),
+        VMSTATE_UINT32_V(tram_kernel_rows, SGIMgrasState, 32),
+        /* Version 34 extends command payloads for the 32-row GL stipple. */
+        VMSTATE_SUB_ARRAY(cmd_token_payload, SGIMgrasState, 16, 16, 34,
+                          vmstate_info_uint32, uint32_t),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_mgras_timing,
+        &vmstate_sgi_mgras_slots,
+        &vmstate_sgi_mgras_alpha,
+        &vmstate_sgi_mgras_nic,
+        &vmstate_sgi_mgras_dma_map_forward,
+        &vmstate_sgi_mgras_gl_contexts,
+        &vmstate_sgi_mgras_gl_selection,
+        &vmstate_sgi_mgras_gl_readback,
+        &vmstate_sgi_mgras_gl_client_read,
+        &vmstate_sgi_mgras_gl_clip_query,
+        &vmstate_sgi_mgras_gl_block,
+        &vmstate_sgi_mgras_gl_pixels,
+        &vmstate_sgi_mgras_gl_pixel_flags,
+        &vmstate_sgi_mgras_texture,
+        &vmstate_sgi_mgras_tram,
+        NULL
     }
 };
 
@@ -1486,6 +2353,17 @@ static const Property mgras_properties[] = {
                      unimplemented_board, false),
     DEFINE_PROP_LINK("fabric", SGIMgrasState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("pi", SGIMgrasState, pi, TYPE_SGI_PI_GFX, Object *),
+    /*
+     * Fit the board's serial-number record. Off by default, which keeps
+     * the older always-done answer at 0x011098 for machines that have not
+     * chosen a record. The default barcode and serial are fictitious.
+     */
+    DEFINE_PROP_BOOL("board-record", SGIMgrasState, board_record, false),
+    DEFINE_PROP_STRING("board-record-barcode", SGIMgrasState,
+                       board_record_barcode),
+    DEFINE_PROP_UINT64("board-record-serial", SGIMgrasState,
+                       board_record_serial, 0x7a3000000b01ULL),
 };
 
 static bool mgras_test_get_first_ack(Object *obj, Error **errp)
@@ -1505,9 +2383,9 @@ static void mgras_test_get_pixel(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->front[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->front[s->test_pixel_y * s->width + s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1521,12 +2399,12 @@ static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
     uint32_t value = 0;
 
     if (DEVICE(obj)->realized) {
-        qemu_console_hw_update(s->con);
+        qemu_console_hw_update(s->scanout.con);
     }
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->display_buffer[s->test_pixel_y * SGI_MGRAS_WIDTH +
-                                  s->test_pixel_x];
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->scanout.frame[s->test_pixel_y * s->width +
+                                 s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1552,9 +2430,9 @@ static void mgras_test_get_format(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->format[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->format[s->test_pixel_y * s->width + s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -1566,9 +2444,9 @@ static void mgras_test_get_overlay(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
-        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
-        value = s->overlay[s->test_pixel_y * SGI_MGRAS_WIDTH +
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->overlay[s->test_pixel_y * s->width +
                            s->test_pixel_x];
     }
     visit_type_uint32(v, name, &value, errp);
@@ -1618,9 +2496,104 @@ static void mgras_test_get_dma_map_control(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static void mgras_test_get_polygon_contexts(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        value += s->gl[i].polygon.vertices != NULL;
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_polygon_vertices(Object *obj, Visitor *v,
+                                           const char *name, void *opaque,
+                                           Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint64_t value = 0;
+
+    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
+        value += s->gl[i].polygon.count;
+    }
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void mgras_test_get_line_phase(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = s->gl[s->gl_current].line_phase;
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_depth_stencil(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->depth[s->test_pixel_y * s->width + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_back_pixel(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        value = s->back[s->test_pixel_y * s->width + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void mgras_test_get_slot_pixel(Object *obj, Visitor *v,
+                                      const char *name, void *opaque,
+                                      Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_slot < 2 && s->slot[s->test_slot] &&
+        s->test_pixel_x < s->width && s->test_pixel_y < s->height) {
+        value = s->slot[s->test_slot][s->test_pixel_y * s->width +
+                                      s->test_pixel_x] & 0xffffff;
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
+
+    sgi_mgras_gl_init(s);
+    object_property_add(obj, "x-test-line-phase", "uint32",
+                        mgras_test_get_line_phase, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-depth-stencil", "uint32",
+                        mgras_test_get_depth_stencil, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-back-pixel", "uint32",
+                        mgras_test_get_back_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-slot-pixel", "uint32",
+                        mgras_test_get_slot_pixel, NULL, NULL, NULL);
+    object_property_add_uint32_ptr(obj, "x-test-slot", &s->test_slot,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-polygon-contexts", "uint32",
+                        mgras_test_get_polygon_contexts, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-polygon-vertices", "uint64",
+                        mgras_test_get_polygon_vertices, NULL, NULL, NULL);
 
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -1641,6 +2614,14 @@ static void mgras_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-value",
                                    &s->test_last_interrupt_value,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-gl-re-count-word",
+                                   &s->gl_re_count_word,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-gl-re-count-tokens",
+                                   &s->gl_re_count_tokens,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "x-test-retraces", &s->retraces,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error", &s->error,
                                    OBJ_PROP_FLAG_READ);
@@ -1673,6 +2654,14 @@ static void mgras_instance_init(Object *obj)
                         mgras_test_get_dma_map_control, NULL, NULL, NULL);
 }
 
+static void mgras_instance_finalize(Object *obj)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    mgras_unregister_cleanup(s);
+    sgi_mgras_gl_cleanup(s);
+}
+
 static void mgras_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -1701,5 +2690,6 @@ static const TypeInfo mgras_types[] = {{
     .name = TYPE_SGI_MGRAS, .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIMgrasState), .class_size = sizeof(SGIMgrasClass),
     .instance_init = mgras_instance_init,
+    .instance_finalize = mgras_instance_finalize,
     .class_init = mgras_class_init }};
 DEFINE_TYPES(mgras_types)

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * SI MGRAS raster command implementation.
+ * MGRAS raster command implementation.
  * Direct records use payload32 | (selector << 34), with selector
  * 0x60001/0x70001 | (register << 6). FIFO words are 32-bit
  * headers in high-half-first order and retain payload state across
@@ -9,15 +9,20 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/cutils.h"
+#include "qemu/units.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/misc/sgi-mgras-texture.h"
 #include "system/dma.h"
+#include "hw/display/sgi/pixel-dma.h"
 #include "trace.h"
 
 
 
 
 #define MGRAS_CMD_SELECTOR_MASK 0x1fff803f
+#define MGRAS_CMD_TOKEN_LIMIT_BYTES \
+    (SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS * sizeof(uint32_t))
 #define MGRAS_CMD_SELECTOR_STATE 0x60001
 #define MGRAS_CMD_SELECTOR_EXEC 0x70001
 
@@ -31,6 +36,15 @@
 
 #define MGRAS_CMD_FIFO_FENCE_CLASS 0x000e
 #define MGRAS_CMD_FIFO_FENCE_REG 0x04
+/*
+ * 0x000e0100 is the client's DMA-read fence marker, which
+ * the DMA read-wait routine sends before it polls 0x020200 & 0x1eff for zero.
+ * The client also pads pooled display lists with it. What the board does with
+ * it is unknown. It has no payload, the model's DMA is always idle by the time
+ * the client polls, and the word would otherwise be logged once per padding
+ * word.
+ */
+#define MGRAS_CMD_FIFO_DMA_READ_FENCE_REG 0x01
 #define MGRAS_HQ_FLAG_FENCE 0x00010000
 
 /*
@@ -41,7 +55,25 @@
  */
 #define MGRAS_CMD_HDR_CLASS_HQ 0x0000
 #define MGRAS_HQ_OP_QUERY 0xa2
+/* 0xa104: one current-attribute index; 0x8b08: a histogram bin query. */
+#define MGRAS_HQ_OP_ATTR_QUERY 0xa1
+#define MGRAS_HQ_OP_HISTOGRAM_QUERY 0x8b
 #define MGRAS_HQ_OP_SWAP 0x37
+/*
+ * 0xf200, a sync request with no payload. The IRIX 6.5.30 kernel's DMA
+ * read set-up, which both its own TRAM save and the OpenGL client's TRAM
+ * read go through, writes it to the command FIFO and then polls 0x020000
+ * bit 0 for up to two seconds; if the bit stays clear it gives up without
+ * kicking the read, and the client's read fails with EFAULT. X.Org's
+ * impact driver (ImpactSRWaitDMAOver) also waits for bit 0 after its DMA,
+ * sending no token. Inferred from the pair: bit 0 says the raster engine
+ * has taken everything sent before the request. Approximated: the model
+ * runs each command as it arrives, so the word needs no action and bit 0
+ * reads set always, as bit 1 does. hq-status-re-sync-after-request pins
+ * that the word is a known token, not logged as unimplemented, and that
+ * both bits read set after it.
+ */
+#define MGRAS_HQ_OP_RE_SYNC 0xf2
 #define MGRAS_HQ_FLAG_QUERY 0x00020000
 
 
@@ -69,6 +101,14 @@
 #define MGRAS_DESC_20000_REG_ROWS 7
 #define MGRAS_DESC_20000_REG_BPR 8
 #define MGRAS_DESC_20000_REG_KICK 11
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0 2
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1 3
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2 4
+#define MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3 6
+/* X.Org's pg_list0 to pg_list3, and the word after pg_widtha. */
+#define MGRAS_DESC_20000_REG_PAGE_LIST 0
+#define MGRAS_DESC_20000_REG_LAST_BYTES 9
+#define MGRAS_DESC_20000_REG_LIST_EXECUTE 0x0c
 #define MGRAS_DMA_KICK_DIRECTION_READ 0x08
 
 
@@ -89,10 +129,10 @@
 #define MGRAS_RSS_IR_ALIAS 0x045
 
 /*
- * XYWIN carries a per-window screen origin: mgrasLineSS writes it before
- * RE_POINT/RE_LINE, but mgrasPolyFillRectSolid never writes it before
+ * XYWIN carries a per-window screen origin: the line routine writes it before
+ * RE_POINT/RE_LINE, but the solid rectangle-fill routine never writes it before
  * BLOCKXYSTARTI/BLOCKXYENDI (both confirmed by the sites each function's
- * disassembly touches). OpenBSD's impact(4) driver
+ * code touches). OpenBSD's impact(4) driver
  * (sys/arch/sgi/dev/impactreg.h) names this register IMPACTSR_CMD_XYWIN
  * and comments it "YX coords", built through an IMPACTSR_YXCOORDS(x, y)
  * macro expanding to (y << 16) | x -- the low/high 16-bit split below is
@@ -108,7 +148,7 @@
  * The raster clip rectangle. The X server draws a primitive once for each
  * box of its window's clip list: before each pass it loads the box into
  * 0x147 and 0x148 and 0x11 into 0x14f, and after the last it loads 0 into
- * 0x14f (mgrasPolyPoint in the IRIX 6.5.30 impactsr.so). From its
+ * 0x14f (the point routine in the IRIX 6.5.30 impactsr.so). From its
  * arithmetic on the X box (x1, y1) to (x2, y2), end exclusive:
  *
  *   0x147 = x1 << 16 | (x2 - 1)
@@ -118,7 +158,7 @@
  * same sense as XYWIN's y field. That a pixel outside the box is not
  * written is inferred: the per-box redraw only makes sense if the
  * hardware drops what falls outside, and in a scripted desktop session
- * (run irix-20260927T102421-204445) all 99,540 clipped CHAR_L executes
+ * (a captured run) all 99,540 clipped CHAR_L executes
  * (glyph rows and byte-transfer units) and 1,738 clipped IR_ALIAS
  * transfer heads meet their box under this reading and none under an
  * unflipped one. Line boxes hold after the XYWIN origin, so the
@@ -136,15 +176,16 @@
 
 
 /*
- * Register 0x05f: function unknown. The DDX writes it 32 times with
- * value 0 immediately before the PIO draw-pixel row loop
- * (mgrasDrawPixels..C, 0x577e68-0x577ee8) in every observed capture. No
- * read, branch or paint result has been tied to it, so it is not treated
- * as a colour or alpha register here; that would assert a meaning the
- * evidence does not establish. Latched silently by the generic
- * mgras_raster_rss_write() store like every other unmodelled register.
+ * Register 0x05f, IMPACTSR_CMD_ALPHA in OpenBSD's impactreg.h. No public
+ * driver writes it, and its function is unknown.
+ * The DDX writes it 33 times per pass with value 0 immediately before
+ * the PIO draw-pixel row loop (the pixel-draw routine's C variant,
+ * 0x577e68-0x577ee8) in every observed capture. No read, branch or paint result
+ * has been tied to it, so the name alone does not make it an alpha or colour
+ * register here. Latched silently by the generic mgras_raster_rss_write()
+ * store like every other unmodelled register.
  */
-#define MGRAS_RSS_UNK_05F 0x05f
+#define MGRAS_RSS_ALPHA 0x05f
 #define MGRAS_RSS_COLORMASKLSBSA 0x163
 #define MGRAS_RSS_GLINE_XSTARTF 0x00c
 #define MGRAS_RSS_DRBPOINTERS 0x16d
@@ -173,6 +214,7 @@
  * and inert.
  */
 #define MGRAS_RSS_FILLMODE 0x110
+#define MGRAS_FILLMODE_PUBLIC_BITMAP 0x00400018
 #define MGRAS_FILLMODE_GLYPH_ROW 0x10400008
 #define MGRAS_FILLMODE_BYTE_XFER 0x10c00000
 
@@ -203,17 +245,16 @@
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 /*
- * A primitive draws into the overlay planes when DRBPOINTERS holds the
- * overlay pointer word and COLORMASKMSBS enables planes in bits 6:4.
- * Inferred from captured IRIX 6.5.30 desktop sessions: every fill, glyph
- * row, byte transfer and line the server issues for a window on its
- * overlay visual (popup and Toolchest menus, XOR drag outlines) carries
- * DRBPOINTERS 0x101c0, COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no
- * main-plane drawing carries that pointer word. How the hardware decodes
- * the pointer word's fields is unknown, so the whole word is compared.
- * The same word with COLORMASKMSBS 0xf0 and logic op CLEAR is how the
- * server erases an overlay window, over the whole screen at start-up and
- * over a popup's rectangle when it is taken down.
+ * A primitive draws into the overlay planes when DRBPOINTERS holds the overlay
+ * pointer word and COLORMASKMSBS enables planes in bits 6:4. Inferred from
+ * IRIX 6.5.30 desktop sessions recorded on the model: every fill, glyph row,
+ * byte transfer and line the server issues for a window on its overlay visual
+ * (popup and Toolchest menus, XOR drag outlines) carries DRBPOINTERS 0x101c0,
+ * COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no main-plane drawing carries
+ * that pointer word. How the hardware decodes the pointer word's fields is
+ * unknown, so the whole word is compared. The same word with COLORMASKMSBS
+ * 0xf0 and logic op CLEAR is how the server erases an overlay window, over the
+ * whole screen at start-up and over a popup's rectangle when it is taken down.
  */
 #define MGRAS_DRBPOINTERS_OVERLAY 0x000101c0
 #define MGRAS_COLORMASKMSBS_OVERLAY 0x70
@@ -236,8 +277,8 @@
  * is odd, which keeps the checkerboard fixed to the screen only if the
  * pattern restarts at each span. That parity is the server's stipple
  * origin, not a hardware rule: the desktop capture flips it from one
- * drawable's batch of spans to the next. Every stippled line in the captures is
- * horizontal and preceded by its own RE_POINT and pattern, so stepping
+ * drawable's batch of spans to the next. Every stippled line in the captures
+ * is horizontal and preceded by its own RE_POINT and pattern, so stepping
  * one bit per drawn pixel along a diagonal or vertical line, and
  * restarting at an RE_LINE chained from the previous one, are untested
  * assumptions.
@@ -293,9 +334,18 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     uint32_t cmd_class, reg, payload_bytes, true_class;
 
     if (s->cmd_token_words_remaining > 0) {
+        if (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GL_BLOCK) {
+            s->cmd_token_words_remaining--;
+            sgi_mgras_gl_block_word(s, token);
+            return;
+        }
+        if (s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GE_LOAD) {
+            s->cmd_token_words_remaining--;
+            sgi_mgras_gl_ge_load_word(s, token);
+            return;
+        }
         if (s->cmd_token_class != MGRAS_CMD_HDR_CLASS_DISCARD &&
-            s->cmd_token_payload_count <
-            SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            s->cmd_token_payload_count < SGI_MGRAS_CMD_TOKEN_PAYLOAD_WORDS) {
             s->cmd_token_payload[s->cmd_token_payload_count++] = token;
         }
         if (--s->cmd_token_words_remaining == 0 &&
@@ -308,23 +358,36 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     cmd_class = token >> 16;
     reg = (token >> 8) & 0xff;
     payload_bytes = token & 0xff;
+    sgi_mgras_gl_pixels_header(s, token);
+    sgi_mgras_gl_eram_header(s, token);
 
     if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
         reg == MGRAS_CMD_FIFO_FENCE_REG && payload_bytes == 0) {
         s->hq_flags |= MGRAS_HQ_FLAG_FENCE;
         return;
     }
+    if (cmd_class == MGRAS_CMD_FIFO_FENCE_CLASS &&
+        reg == MGRAS_CMD_FIFO_DMA_READ_FENCE_REG && payload_bytes == 0) {
+        return;
+    }
 
     /*
-     * Established (mgras-gl-commands.md, "Word framing"): the IRIX 6.5.30
+     * Established: the IRIX 6.5.30
      * OpenGL client forms these blocks for its GE table loads and batched
      * raster register writes, for example 0x80000214 for five descriptor
      * words and 128 data words. The class-0 opcode before the block gives
-     * it its meaning; the model does not interpret it and consumes it by
-     * length, so the words after it parse as headers again.
+     * it its meaning; the model interprets glBitmap's image
+     * (sgi_mgras_gl_block()) and consumes any other by length, so the
+     * words after it parse as headers again. A block whose first byte is
+     * not word aligned carries the byte's offset in bits 23:22 and one
+     * word more.
      */
     if (token & MGRAS_CMD_HDR_INLINE_BLOCK) {
-        mgras_command_fifo_discard(s, token & MGRAS_CMD_HDR_INLINE_BYTES);
+        if (!sgi_mgras_gl_block(s, token)) {
+            mgras_command_fifo_discard(s,
+                ((token & SGI_MGRAS_CMD_BLOCK_OFFSET) >> 22) +
+                (token & MGRAS_CMD_HDR_INLINE_BYTES));
+        }
         return;
     }
 
@@ -348,7 +411,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x payload %u bytes "
                           "exceeds %zu-byte limit\n", cmd_class, reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -359,7 +422,10 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 
     if (cmd_class == MGRAS_CMD_HDR_CLASS_HQ &&
-        (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP)) {
+        (reg == MGRAS_HQ_OP_QUERY || reg == MGRAS_HQ_OP_SWAP ||
+         reg == MGRAS_HQ_OP_ATTR_QUERY ||
+         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY ||
+         reg == MGRAS_HQ_OP_RE_SYNC)) {
         s->cmd_token_class = MGRAS_CMD_HDR_CLASS_HQ;
         s->cmd_token_reg = reg;
         s->cmd_token_payload_count = 0;
@@ -369,7 +435,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: HQ opcode 0x%02x payload "
                           "%u bytes exceeds %zu-byte limit\n", reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -379,12 +445,16 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
         return;
     }
 
+    /* GE parameter loads stream: their payload can pass 64 words. */
+    if (sgi_mgras_gl_ge_load(s, token)) {
+        return;
+    }
+
     /*
-     * The OpenGL packets the model executes: glViewport, glClearColor,
-     * glClear's colour token, glShadeModel, glColor3f/4f, glVertex2f/3f/4f,
-     * glBegin/glEnd for triangles and glFlush (mgras-gl-commands.md). The
+     * The OpenGL packets the model executes (see sgi_mgras_gl_header()). The
      * class and opcode are kept like any other header's, so the payload
-     * collects and dispatches through the usual path.
+     * collects and dispatches through the usual path; the longest,
+     * glLoadMatrixf's, fills the 16-word buffer.
      */
     if (sgi_mgras_gl_header(token)) {
         s->cmd_token_class = cmd_class;
@@ -418,7 +488,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
             qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
                           "class 0x%04x reg 0x%02x payload %u bytes "
                           "exceeds %zu-byte limit\n", cmd_class, reg,
-                          payload_bytes, sizeof(s->cmd_token_payload));
+                          payload_bytes, MGRAS_CMD_TOKEN_LIMIT_BYTES);
             s->cmd_token_class = MGRAS_CMD_HDR_CLASS_DISCARD;
             return;
         }
@@ -444,7 +514,7 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO token, class "
                       "0x%04x reg 0x%02x payload %u bytes exceeds %zu-byte "
                       "limit\n", cmd_class, reg, payload_bytes,
-                      sizeof(s->cmd_token_payload));
+                      MGRAS_CMD_TOKEN_LIMIT_BYTES);
     }
 }
 
@@ -460,6 +530,17 @@ static void mgras_command_fifo_token(SGIMgrasState *s, uint32_t token)
  * though their meaning is unresolved.
  */
 #define MGRAS_DMA_MAP_CLASS 0x0048
+/*
+ * SGI's IP30 IDE writes raster registers through this port: classes
+ * 0x58-0x5f, the main port's raster classes 0x18-0x1f with token bit 22
+ * set, each header followed by its data words. Inferred from the IDE's
+ * register writer, which names the same 0x02c000 + reg * 4 registers the
+ * main port's classes reach. What bit 22 selects is unknown; the model
+ * hands such a token to the main parser with the bit cleared.
+ */
+#define MGRAS_DMA_MAP_RASTER_MASK 0xfff8
+#define MGRAS_DMA_MAP_RASTER_CLASSES 0x0058
+#define MGRAS_DMA_MAP_RASTER_BIT (1u << 22)
 #define MGRAS_DMA_MAP_CLOSE_CLASS 0x000e
 #define MGRAS_DMA_MAP_CLOSE_REG 0x01
 #define MGRAS_DMA_MAP_SLOT_BASE_HI 0x20
@@ -472,6 +553,11 @@ static void mgras_dma_map_token(SGIMgrasState *s, uint32_t token)
 {
     uint32_t cmd_class, reg, payload_bytes;
 
+    if (s->dma_map_forward_words > 0) {
+        s->dma_map_forward_words--;
+        mgras_command_fifo_token(s, token);
+        return;
+    }
     if (s->dma_map_words_remaining > 0) {
         if (s->dma_map_reg < SGI_MGRAS_DMA_MAP_REGS) {
             s->dma_map_regs[s->dma_map_reg] = token;
@@ -495,6 +581,14 @@ static void mgras_dma_map_token(SGIMgrasState *s, uint32_t token)
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA-mapping command-FIFO "
                       "header, class 0x%04x reg 0x%02x has unaligned "
                       "payload %u bytes\n", cmd_class, reg, payload_bytes);
+        return;
+    }
+
+    if ((cmd_class & MGRAS_DMA_MAP_RASTER_MASK) ==
+        MGRAS_DMA_MAP_RASTER_CLASSES && s->cmd_token_words_remaining == 0 &&
+        payload_bytes / 4 <= SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+        s->dma_map_forward_words = payload_bytes / 4;
+        mgras_command_fifo_token(s, token & ~MGRAS_DMA_MAP_RASTER_BIT);
         return;
     }
 
@@ -648,14 +742,14 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
  * depth 12, visual 0x29). The server gives it a display ID of its own
  * whose XMAP mode it writes as 0x405 when the window opens, clears it
  * under 0xc804 with COLORMASKLSBSA 0xffffff, and draws every fill, line
- * and glyph row in it under 0x4004 with COLORMASKLSBSA 0xfff (run
- * irix-20260927T035120-7dd191, seq 3803845-3829697). Its fill colours
- * are whole nibbles (FILLCOLOR 0x500/0x800/0xa00), which is what a
- * four-bit channel keeps of the 8-bit-in-12-bit registers. Read as CI8,
- * each of those paints stored index 0 and the pane showed black. What
- * the three fields mean on their own, and what bit 11 adds to the clear,
- * is not known; only these encodings are recognised. The server also
- * offers 12-bit PseudoColor visuals, which no capture draws to.
+ * and glyph row in it under 0x4004 with COLORMASKLSBSA 0xfff (a captured run,
+ * seq 3803845-3829697). Its fill colours are whole nibbles (FILLCOLOR
+ * 0x500/0x800/0xa00), which is what a four-bit channel keeps of the
+ * 8-bit-in-12-bit registers. Read as CI8, each of those paints stored index 0
+ * and the pane showed black. What the three fields mean on their own, and what
+ * bit 11 adds to the clear, is not known; only these encodings are recognised.
+ * The server also offers 12-bit PseudoColor visuals, which no capture draws
+ * to.
  */
 #define MGRAS_PP1FILLMODE_RGB 0x2000
 #define MGRAS_PP1FILLMODE_RGB12_MASK 0x6700
@@ -678,10 +772,9 @@ static uint8_t mgras_pixel_format(SGIMgrasState *s)
  * A 12-bit pixel keeps each 0x00RRGGBB channel's top four bits, red in
  * bits 3:0, green in bits 7:4 and blue in bits 11:8: the red, green and
  * blue masks 0xf, 0xf0 and 0xf00 the server's xdpyinfo reports for its
- * 12-bit TrueColor visuals, 0x29 and 0x2a (run
- * irix-20260927T045444-f4307c, where xwininfo gives the Icon Catalog's
- * pane depth 12 and visual 0x29). No capture reads a 12-bit pixel back,
- * so the masks are the only evidence of the stored layout.
+ * 12-bit TrueColor visuals, 0x29 and 0x2a (a captured run, where xwininfo
+ * gives the Icon Catalog's pane depth 12 and visual 0x29). No capture reads a
+ * 12-bit pixel back, so the masks are the only evidence of the stored layout.
  */
 static uint32_t mgras_rgb12_from_rgb(uint32_t rgb)
 {
@@ -714,11 +807,10 @@ static uint32_t mgras_format_color(uint8_t format, uint32_t index,
  * offset 0, the same word in PACKEDCOLOR and in its image blits) all use
  * that layout. The IRIX 6.5.30 Icon Catalog's 12-bit pane agrees: the
  * soffice icon's stipples carry PACKEDCOLOR 0xf00000 and show blue on
- * the RAD4 reference, and nedit's carry 0xf0f0 and show yellow (run
- * irix-20260927T035120-7dd191). The model stores 0x00RRGGBB, so such a
- * word is swapped on the way in, and a 12-bit window's paint swaps it
- * before keeping its nibbles. FILLCOLOR_R/G/B and BKGRD are per-channel
- * registers and need no swap.
+ * the RAD4 reference, and nedit's carry 0xf0f0 and show yellow (a captured
+ * run). The model stores 0x00RRGGBB, so such a word is swapped on the way in,
+ * and a 12-bit window's paint swaps it before keeping its nibbles.
+ * FILLCOLOR_R/G/B and BKGRD are per-channel registers and need no swap.
  */
 static uint32_t mgras_rgb_from_pixel_word(uint32_t word)
 {
@@ -729,8 +821,8 @@ static bool mgras_clipped(SGIMgrasState *s, unsigned int idx)
 {
     uint32_t cx = s->rss[MGRAS_RSS_CLIP_X];
     uint32_t cy = s->rss[MGRAS_RSS_CLIP_Y];
-    unsigned int x = idx % SGI_MGRAS_WIDTH;
-    unsigned int row = SGI_MGRAS_HEIGHT - 1 - idx / SGI_MGRAS_WIDTH;
+    unsigned int x = idx % s->width;
+    unsigned int row = s->height - 1 - idx / s->width;
 
     if (s->rss[MGRAS_RSS_CLIP_MODE] != MGRAS_CLIP_MODE_ON) {
         return false;
@@ -782,19 +874,19 @@ static void mgras_put_overlay(SGIMgrasState *s, unsigned int idx,
 
 
 /* Normalize corners and clip. Returns false when nothing is visible. */
-static bool mgras_rect_bounds(uint32_t xy0, uint32_t xy1, int *x_lo, int *y_lo,
-                           int *x_hi, int *y_hi)
+static bool mgras_rect_bounds(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
+                              int *x_lo, int *y_lo, int *x_hi, int *y_hi)
 {
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
 
     *x_lo = MIN(x0, x1);
     *y_lo = MIN(y0, y1);
-    if (*x_lo >= SGI_MGRAS_WIDTH || *y_lo >= SGI_MGRAS_HEIGHT) {
+    if (*x_lo >= s->width || *y_lo >= s->height) {
         return false;
     }
-    *x_hi = MIN(MAX(x0, x1), SGI_MGRAS_WIDTH - 1);
-    *y_hi = MIN(MAX(y0, y1), SGI_MGRAS_HEIGHT - 1);
+    *x_hi = MIN(MAX(x0, x1), s->width - 1);
+    *y_hi = MIN(MAX(y0, y1), s->height - 1);
     return true;
 }
 
@@ -805,12 +897,12 @@ static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
 {
     int x_lo, y_lo, x_hi, y_hi;
 
-    if (!mgras_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
+    if (!mgras_rect_bounds(s, xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
+            mgras_put_pixel(s, y * s->width + x, color, op, mask, format);
         }
     }
 }
@@ -821,12 +913,12 @@ static void mgras_fill_overlay_rect(SGIMgrasState *s, uint32_t xy0,
 {
     int x_lo, y_lo, x_hi, y_hi;
 
-    if (!mgras_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
+    if (!mgras_rect_bounds(s, xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
         return;
     }
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, index, op);
+            mgras_put_overlay(s, y * s->width + x, index, op);
         }
     }
 }
@@ -902,13 +994,13 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     int y = y0 + s->glyph_row;
     int width;
 
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
     s->glyph_row++;
-    if (y > y1 || y >= SGI_MGRAS_HEIGHT) {
+    if (y > y1 || y >= s->height) {
         return;
     }
     width = MIN(x1 - x0 + 1, 64);
@@ -916,10 +1008,10 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
         bool set = (bits >> (63 - i)) & 1;
 
         if (set) {
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, ink, op, mask,
+            mgras_put_pixel(s, y * s->width + x0 + i, ink, op, mask,
                         format);
             if (overlay) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + i,
+                mgras_put_overlay(s, y * s->width + x0 + i,
                                   mgras_overlay_ink(s), op);
             }
         }
@@ -967,17 +1059,17 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
     int skip = (row * pitch) % 8;
     int units_per_row = DIV_ROUND_UP(skip + width, 8);
 
-    if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
+    if (y <= y1 && y < s->height) {
         for (int i = 0; i < 8; i++) {
             int col = s->glyph_unit * 8 + i - skip;
 
-            if (col < 0 || col >= width || x0 + col >= SGI_MGRAS_WIDTH) {
+            if (col < 0 || col >= width || x0 + col >= s->width) {
                 continue;
             }
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i], op,
+            mgras_put_pixel(s, y * s->width + x0 + col, bytes[i], op,
                          mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
             if (mgras_overlay_target(s)) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i],
+                mgras_put_overlay(s, y * s->width + x0 + col, bytes[i],
                                   op);
             }
         }
@@ -1023,14 +1115,14 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
     int y = y0 + row;
     int units_per_row = DIV_ROUND_UP(width, 2);
 
-    if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
+    if (y <= y1 && y < s->height) {
         for (int i = 0; i < 2; i++) {
             int col = s->glyph_unit * 2 + i;
 
-            if (col >= width || x0 + col >= SGI_MGRAS_WIDTH) {
+            if (col >= width || x0 + col >= s->width) {
                 continue;
             }
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
+            mgras_put_pixel(s, y * s->width + x0 + col, pixels[i], op,
                          mask, format);
             /*
              * Every captured overlay draw uses CI8 (the register file
@@ -1042,7 +1134,7 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
              */
             if (mgras_overlay_target(s) &&
                 format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
-                mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x0 + col,
+                mgras_put_overlay(s, y * s->width + x0 + col,
                                   pixels[i], op);
             }
         }
@@ -1068,16 +1160,16 @@ static void mgras_draw_byte_row(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint32_t packing = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
 
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
 
     /*
      * The real xdm chooser ORs a row-padding field (bits 16:14) into this
      * word alongside the packing selector bit, e.g. 0x00010080 or
-     * 0x00018000 rather than the bare selector value (blockcopy-grammar.md).
+     * 0x00018000 rather than the bare selector value.
      * Test the selector bit, not the whole register, so those padded
      * values still match their packing mode. Bit 7 set is the only value
      * that selects the pair packing; every other value, including 0 (the
@@ -1137,21 +1229,21 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
                       s->rss[MGRAS_RSS_PP1FILLMODE]);
         return;
     }
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+    if (x0 > x1 || y0 > y1 || x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
 
     for (int i = 0; i < 2; i++) {
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
 
-        if (x > x1 || y > y1 || x >= SGI_MGRAS_WIDTH ||
-            y >= SGI_MGRAS_HEIGHT) {
+        if (x > x1 || y > y1 || x >= s->width ||
+            y >= s->height) {
             return;
         }
-        mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, format);
+        mgras_put_pixel(s, y * s->width + x, pixels[i], op, mask, format);
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -1172,20 +1264,20 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * eight observed XYWIN values all carry a nonzero x field, and adding
  * both fields lands each of those clusters inside a distinct,
  * non-overlapping icon-sized box. Gating on x != 0 is an inference from
- * that split, not a confirmed hardware or driver condition: disassembly
- * of mgrasLineSS finds two distinct sites that write XYWIN ahead of
+ * that split, not a confirmed hardware or driver condition: the client's code
+ * for the line routine finds two distinct sites that write XYWIN ahead of
  * RE_POINT/RE_LINE, one that structurally always stores x == 0 and one
  * that can store a genuine nonzero x, but which guest-side condition
  * chooses between them was not traced to a confirmed branch predicate.
- * mgrasPolyFillRectSolid never writes XYWIN at all, which is why
+ * The solid rectangle-fill routine never writes XYWIN at all, which is why
  * BLOCKXYSTARTI/BLOCKXYENDI fills need no such adjustment.
  *
- * The y field is packed top-down (0 at the bottom, SGI_MGRAS_HEIGHT - 1
+ * The y field is packed top-down (0 at the bottom, s->height - 1
  * at the top of the window), the opposite sense from the framebuffer's
  * own top-down row order: adding it to a line/point's raw y unmodified
  * put the greeter's icon line art roughly 800 pixels too far down, past
  * the bottom of the window it was meant to land in. Flipping the field
- * with SGI_MGRAS_HEIGHT - 1 - oy before adding lines it up with the
+ * with s->height - 1 - oy before adding lines it up with the
  * measured on-screen geometry: XYWIN 0x03390146 (the capture's largest
  * cluster, 379 RE_LINE executes, raw y in [16, 113]) lands at
  * [214, 311], matching the EZsetup icon's own measured rect (y 214-312,
@@ -1200,14 +1292,14 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * position -- rather than the pre-fix ghost cluster near the origin or
  * the pre-fix placement roughly 800 pixels further down.
  *
- * The flip's magnitude (SGI_MGRAS_HEIGHT - 1, not some other constant)
+ * The flip's magnitude (s->height - 1, not some other constant)
  * is not capture-only: OpenBSD's impact(4) driver initializes XYWIN
  * exactly once, to IMPACTSR_YXCOORDS(0, 0x3ff) -- x field 0, y field
- * 0x3ff (1023, SGI_MGRAS_HEIGHT - 1) -- and 1,456 of the capture's 1,953
+ * 0x3ff (1023, s->height - 1) -- and 1,456 of the capture's 1,953
  * RE_LINE executes carry that same reset value, 0x03ff0000, while
  * drawing at their own already-correct absolute position (see the x != 0
  * gate above). That reset value is exactly the flip's fixed point --
- * SGI_MGRAS_HEIGHT - 1 - 0x3ff == 0 -- which is why leaving x's own gate
+ * s->height - 1 - 0x3ff == 0 -- which is why leaving x's own gate
  * on ox != 0 already excludes it: at oy == 0x3ff the corrected y term is
  * a no-op even if it were applied unconditionally. The driver never
  * exercises a nonzero-x window itself, so it settles the fixed point and
@@ -1222,30 +1314,30 @@ static void mgras_apply_window_origin(SGIMgrasState *s, int *x, int *y)
 
     if (ox != 0) {
         *x += ox;
-        *y += (SGI_MGRAS_HEIGHT - 1) - oy;
+        *y += (s->height - 1) - oy;
     }
 }
 
 /*
- * The driver never writes an oy past SGI_MGRAS_HEIGHT - 1 (see the reset
+ * The driver never writes an oy past s->height - 1 (see the reset
  * value above), but nothing here enforces that: OpenBSD's impactreg.h packs
  * XYWIN as IMPACTSR_YXCOORDS(x, y) == (y << 16) | x with no documented width
  * narrower than the 16-bit field already masked above, so a guest is free to
  * point the register anywhere in that range. An oy past 1023 drives
  * mgras_apply_window_origin()'s y term negative, and a plain
- * "x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT" rejection only ever
+ * "x >= s->width || y >= s->height" rejection only ever
  * checks an upper bound: it has no "x < 0 || y < 0" term, so a negative x
  * or y sails through both sides of the OR. mgras_put_pixel()'s idx
- * parameter is unsigned, so a negative y * SGI_MGRAS_WIDTH + x then wraps
+ * parameter is unsigned, so a negative y * s->width + x then wraps
  * into a multi-gigabyte forward offset into s->front. Casting each
  * coordinate to unsigned before comparing rejects negative and over-large
  * values in the same check, without changing anything for an in-range
  * point.
  */
-static bool mgras_xy_on_screen(int x, int y)
+static bool mgras_xy_on_screen(SGIMgrasState *s, int x, int y)
 {
-    return (unsigned int)x < SGI_MGRAS_WIDTH &&
-           (unsigned int)y < SGI_MGRAS_HEIGHT;
+    return (unsigned int)x < s->width &&
+           (unsigned int)y < s->height;
 }
 
 /*
@@ -1274,12 +1366,12 @@ static void mgras_draw_point(SGIMgrasState *s)
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
 
     mgras_apply_window_origin(s, &x, &y);
-    if (!mgras_xy_on_screen(x, y)) {
+    if (!mgras_xy_on_screen(s, x, y)) {
         return;
     }
-    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
+    mgras_put_pixel(s, y * s->width + x, color, op, mask, format);
     if (mgras_overlay_target(s)) {
-        mgras_put_overlay(s, y * SGI_MGRAS_WIDTH + x, mgras_overlay_ink(s), op);
+        mgras_put_overlay(s, y * s->width + x, mgras_overlay_ink(s), op);
     }
 }
 
@@ -1354,14 +1446,14 @@ static void mgras_draw_line(SGIMgrasState *s)
     for (;;) {
         int e2;
 
-        if (mgras_xy_on_screen(x0, y0)) {
+        if (mgras_xy_on_screen(s, x0, y0)) {
             bool set = !stipple || ((pattern >> (31 - (step & 31))) & 1);
 
             if (set) {
-                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
+                mgras_put_pixel(s, y0 * s->width + x0, color, op, mask,
                             format);
                 if (overlay) {
-                    mgras_put_overlay(s, y0 * SGI_MGRAS_WIDTH + x0,
+                    mgras_put_overlay(s, y0 * s->width + x0,
                                       mgras_overlay_ink(s), op);
                 }
             } else if (opaque) {
@@ -1369,7 +1461,7 @@ static void mgras_draw_line(SGIMgrasState *s)
                  * No capture draws a stippled line into the overlay, so
                  * only the main planes take the background.
                  */
-                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, background, op,
+                mgras_put_pixel(s, y0 * s->width + x0, background, op,
                             mask, format);
             }
         }
@@ -1388,6 +1480,345 @@ static void mgras_draw_line(SGIMgrasState *s)
         }
     }
     s->rss[MGRAS_RSS_RE_POINT] = xy1;
+}
+
+static bool mgras_public_bounds(SGIMgrasState *s, unsigned *x0,
+                                unsigned *y0, unsigned *x1, unsigned *y1)
+{
+    uint32_t start = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    uint32_t end = s->rss[MGRAS_RSS_BLOCKXYENDI];
+
+    *x0 = start >> 16;
+    *y0 = start & 0xffff;
+    *x1 = end >> 16;
+    *y1 = end & 0xffff;
+    return *x0 <= *x1 && *y0 <= *y1 &&
+           *x1 < s->width && *y1 < s->height;
+}
+
+bool sgi_mgras_raster_pending_valid(SGIMgrasState *s)
+{
+    unsigned x0, y0, x1, y1;
+
+    if (s->public_glyph_row >= s->height ||
+        (s->public_glyph_wide_valid && !s->public_glyph_armed)) {
+        return false;
+    }
+    if (!s->public_glyph_armed) {
+        return true;
+    }
+    return s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP &&
+           mgras_public_bounds(s, &x0, &y0, &x1, &y1) && x1 - x0 < 16 &&
+           s->public_glyph_row >= y0 && s->public_glyph_row <= y1 &&
+           (x1 - x0 < 8 ? !s->public_glyph_wide_valid : y0 == y1);
+}
+
+static void mgras_public_alias_execute(SGIMgrasState *s)
+{
+    unsigned x0, y0, x1, y1;
+    uint32_t mode = s->rss[MGRAS_RSS_FILLMODE];
+    uint32_t pp1 = s->rss[MGRAS_RSS_PP1FILLMODE];
+
+    s->public_glyph_armed = false;
+    s->public_glyph_wide_valid = false;
+    if (s->rss[MGRAS_RSS_IR_ALIAS] != 0x18 ||
+        !mgras_public_bounds(s, &x0, &y0, &x1, &y1)) {
+        goto unsupported;
+    }
+    if (mode == 0 && (pp1 == 0x0c006300 || pp1 == 0x18006304)) {
+        uint32_t color =
+            mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+
+        mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
+                        s->rss[MGRAS_RSS_BLOCKXYENDI],
+                        color, pp1 >> 26, s->rss[MGRAS_RSS_COLORMASKLSBSA],
+                        SGI_MGRAS_PIXEL_FORMAT_RGB);
+        s->dirty = true;
+        return;
+    }
+    if (mode == MGRAS_FILLMODE_PUBLIC_BITMAP && pp1 == 0x0c006300 &&
+        x1 - x0 < 16 && (x1 - x0 < 8 || y0 == y1)) {
+        s->public_glyph_armed = true;
+        s->public_glyph_row = y0;
+        return;
+    }
+unsupported:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO alias "
+                  "0x%x, fillmode 0x%x, PP1 fillmode 0x%x\n",
+                  s->rss[MGRAS_RSS_IR_ALIAS], mode, pp1);
+}
+
+static void mgras_public_char_execute(SGIMgrasState *s, uint32_t reg)
+{
+    unsigned x0, y0, x1, y1;
+    uint32_t foreground, background, rg, ba;
+    uint16_t bits;
+    bool wide;
+
+    if (!s->public_glyph_armed ||
+        s->rss[MGRAS_RSS_PP1FILLMODE] != 0x0c006300 ||
+        !mgras_public_bounds(s, &x0, &y0, &x1, &y1)) {
+        goto unsupported;
+    }
+    wide = x1 - x0 >= 8;
+    if ((!wide && reg != MGRAS_RSS_CHAR_H) ||
+        (wide && (reg != MGRAS_RSS_CHAR_L ||
+                  !s->public_glyph_wide_valid))) {
+        goto unsupported;
+    }
+    bits = (s->rss[MGRAS_RSS_CHAR_H] >> 24) << 8;
+    if (wide) {
+        bits |= s->rss[MGRAS_RSS_CHAR_L] >> 24;
+    }
+    foreground = mgras_rgb_from_pixel_word(s->rss[MGRAS_RSS_PACKEDCOLOR]);
+    rg = s->rss[MGRAS_RSS_BKGRD_RG];
+    ba = s->rss[MGRAS_RSS_BKGRD_BA];
+    /* Public OpenBSD packing; red and blue low nibbles stay zero. */
+    background = ((rg & 0xf00) << 12) | ((rg >> 8) & 0xff00) |
+                 ((ba >> 4) & 0xf0);
+    for (unsigned i = 0; i <= x1 - x0; i++) {
+        uint32_t color = bits & (0x8000 >> i) ? foreground : background;
+
+        mgras_put_pixel(s, s->public_glyph_row * s->width + x0 + i,
+                        color, 3, s->rss[MGRAS_RSS_COLORMASKLSBSA],
+                        SGI_MGRAS_PIXEL_FORMAT_RGB);
+    }
+    s->public_glyph_wide_valid = false;
+    if (wide || s->public_glyph_row == y1) {
+        s->public_glyph_armed = false;
+    } else {
+        s->public_glyph_row++;
+    }
+    s->dirty = true;
+    return;
+unsupported:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO CHAR "
+                  "execute, register 0x%x\n", reg);
+}
+
+void sgi_mgras_raster_fifo_write(SGIMgrasState *s, uint64_t word)
+{
+    const uint64_t variable = (0x1ffULL << 40) | 0x0004000000000000ULL |
+                              UINT32_MAX;
+    uint32_t reg = (word >> 40) & 0x1ff;
+    bool execute = word & 0x0004000000000000ULL;
+    unsigned x0, y0, x1, y1;
+    if ((word & ~variable) != 0x0018000400000000ULL) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO "
+                      "packet 0x%016" PRIx64 "\n", word);
+        return;
+    }
+    mgras_raster_rss_write(s, reg, word);
+    if (!execute) {
+        if (reg == MGRAS_RSS_CHAR_H && s->public_glyph_armed &&
+            s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP &&
+            mgras_public_bounds(s, &x0, &y0, &x1, &y1) && x1 - x0 >= 8) {
+            s->public_glyph_wide_valid = true;
+        }
+        return;
+    }
+    if (reg == MGRAS_RSS_IR_ALIAS &&
+        (s->rss[MGRAS_RSS_FILLMODE] == 0 ||
+         s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP)) {
+        mgras_public_alias_execute(s);
+    } else if ((reg == MGRAS_RSS_CHAR_H || reg == MGRAS_RSS_CHAR_L) &&
+               s->rss[MGRAS_RSS_FILLMODE] == MGRAS_FILLMODE_PUBLIC_BITMAP) {
+        mgras_public_char_execute(s, reg);
+    } else {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unsupported normal-FIFO "
+                      "execute, register 0x%x, fillmode 0x%x\n", reg,
+                      s->rss[MGRAS_RSS_FILLMODE]);
+    }
+}
+
+/*
+ * Host reads through the raster engine's data port. The IRIX 6.5.30 X
+ * server's pixel-read routine (impactsr.so, SHA-256 726dc1e25b71..., 0x58a680)
+ * reads a box this way; a captured run caught it 214 times
+ * while oglsnoop showed the pixel under the pointer, two pixels each
+ * time (the first at seq 4088838). Established from that
+ * listing and the trace: the server waits for 0x02c578 bit 8, writes
+ * CONFIG (0x112) 0xca4, XYWIN 0, PIXCMD (0x160) 2, PP1FILLMODE 0x500, the
+ * colour masks, DRBPOINTERS 0x90240, the box in BLOCKXYSTARTI and
+ * BLOCKXYENDI, XFRSIZE (0x153) and XFRCOUNTERS (0x158) as height << 16 |
+ * width, XFRMODE (0x159) 0x8000, FILLMODE 0x800000, IR_ALIAS 0x18,
+ * XFRCONTROL (0x102) 0xa and GLINE_XSTARTF 1, executes IR_ALIAS, and then
+ * reads the data as 8-byte units, each 0x02d1c0 and then 0x02c1c4,
+ * storing the first word before the second; it then writes XFRCONTROL 0
+ * and restores CONFIG and XYWIN. Its DMA reads write XFRCONTROL 8 instead,
+ * and are kicked through the descriptors. The register names are OpenBSD
+ * impactreg.h's and gxemul's impactsr-bsd.h's.
+ *
+ * Inferred: that XFRCONTROL bit 1 selects the data port, the only bit the
+ * two read forms differ in, and bit 3 the read, since the server's
+ * transfers to the screen through the port set bit 1 alone (XFRCONTROL
+ * 2, a captured run); that a unit carries two 4-byte
+ * pixels, since a
+ * two-pixel box took exactly one; that each row starts a unit, since the
+ * listing counts each row's bytes down by eight; and that the box and
+ * rows follow the DMA read's, hardware y with the top row first. The
+ * pixels are bank 0's in the DMA read's 4-byte form
+ * (mgras_raster_dma_run_read()). Approximated: whether reading 0x02d1c0
+ * advances the transfer and 0x02c1c4 only returns the latched half, as
+ * the model has it, or the reverse, is unknown; software always reads the
+ * pair in that order. Unknown: the one-byte form and other server XFRMODE
+ * values, which the model logs and reads as zero. The discriminating tests
+ * are pio-read-returns-the-box, pio-read-rows-start-a-unit and the replay
+ * fixture pio-read-oglsnoop.
+ */
+#define MGRAS_RSS_XFRCONTROL 0x102
+#define MGRAS_RSS_XFRSIZE 0x153
+#define MGRAS_RSS_XFRCOUNTERS 0x158
+#define MGRAS_XFRCONTROL_PIO_READ 0xa
+#define MGRAS_XFRMODE_PIO_READ 0x8000
+
+/*
+ * The two callers disagree about the box's row order, so the start takes
+ * which one is asking. The X server's BLOCKXYSTARTI is the box's high
+ * hardware row and its BLOCKXYENDI the low one (established, a captured run);
+ * the OpenGL client writes the low row first and the high one second
+ * (established as words from the client's listing, with the axis assignment
+ * inferred; see the pixel read-back and copy contract). Approximated for the
+ * client: the box is the rows between the two, its top row comes first as the
+ * server's read has it, and a transfer mode with bits 7:4 equal to 8, the
+ * client's RGBA and GL_ABGR_EXT form, reads the same 4-byte pixels; the
+ * alignment fields in bits 10:8 and 16:14 are ignored. Which order the board
+ * returns rows in for the client, and what its other mode values return, are
+ * unknown, so the model logs them and reads zero.
+ */
+#define MGRAS_XFRMODE_GL_FORMAT_MASK 0xf0
+#define MGRAS_XFRMODE_GL_FORMAT_RGBA 0x80
+#define MGRAS_XFRMODE_GL_ALIGN_MASK  0x1c700
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_READ 0x4008a
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW 0x10080
+/* Captured on a 2x1 XImage read with matching size and counters. */
+#define MGRAS_XFRMODE_CAPTURED_XIMAGE_MODE_80 0x80
+
+static void mgras_pio_read_start(SGIMgrasState *s, bool client)
+{
+    uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
+    uint32_t size = s->rss[MGRAS_RSS_XFRSIZE];
+    uint32_t mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
+    uint32_t x0 = xy0 >> 16, y0 = xy0 & 0xffff;
+    uint32_t x1 = xy1 >> 16, y1 = xy1 & 0xffff;
+    uint32_t w = size & 0xffff, h = size >> 16;
+
+    s->pio_read_active = false;
+    if (client) {
+        uint32_t low = y0;
+
+        if ((mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
+            MGRAS_XFRMODE_GL_FORMAT_RGBA) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read for the "
+                          "OpenGL client, mode 0x%x, not modelled; reads "
+                          "return zero\n", mode);
+            return;
+        }
+        if (mode & MGRAS_XFRMODE_GL_ALIGN_MASK) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read mode 0x%x "
+                          "has alignment bits the model ignores\n", mode);
+        }
+        /* The client's start is the low row: swap into the server's. */
+        y0 = y1;
+        y1 = low;
+    } else if (mode != MGRAS_XFRMODE_PIO_READ &&
+               !((mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_READ ||
+                  mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_MODE_80 ||
+                  mode == MGRAS_XFRMODE_CAPTURED_XIMAGE_SINGLE_ROW) &&
+                 size == 0x00010002 &&
+                 s->rss[MGRAS_RSS_XFRCOUNTERS] == size)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: data-port read, mode 0x%x, "
+                      "not modelled; reads return zero\n", mode);
+        return;
+    }
+    if (x0 > x1 || y1 > y0 || x1 >= s->width || y0 >= s->height ||
+        w != x1 - x0 + 1 || h != y0 - y1 + 1) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: data-port read box "
+                      "(%u,%u)-(%u,%u) does not fit size 0x%x; reads return "
+                      "zero\n", x0, y0, x1, y1, size);
+        return;
+    }
+    s->pio_read_active = true;
+    s->pio_read_x = x0;
+    s->pio_read_y = s->height - 1 - y0;
+    s->pio_read_w = w;
+    s->pio_read_h = h;
+    s->pio_read_next = 0;
+    s->pio_read_low = 0;
+}
+
+void sgi_mgras_raster_pio_read_trigger(SGIMgrasState *s)
+{
+    mgras_pio_read_start(s, true);
+}
+
+/*
+ * The raster register records the OpenGL client batches into 0x7c08 and
+ * 0x7f08 packets (established as words; the packets and their registers
+ * are in the pixel read-back and copy contract). A record stores its
+ * value as a state write does, so a later execute sees it. Approximated:
+ * it does not also touch the glyph arming or the query flag a direct write
+ * to the box registers does, since the client's records are not the X
+ * server's glyph traffic. Only the registers a read writes are applied;
+ * the draw path's other records, and 0xc and 0x15f whose meaning is
+ * unknown, are left, and the caller logs them.
+ */
+bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
+{
+    switch (reg) {
+    case MGRAS_RSS_BLOCKXYSTARTI:
+    case MGRAS_RSS_BLOCKXYENDI:
+    case MGRAS_RSS_XFRSIZE:
+    case MGRAS_RSS_XFRCOUNTERS:
+    case MGRAS_RSS_BYTE_XFER_PACKING:
+        s->rss[reg] = value;
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Bank 0's pixel at screen (x, y) as the data port gives it. */
+static uint32_t mgras_pio_read_pixel(SGIMgrasState *s, uint32_t x, uint32_t y)
+{
+    uint32_t p = s->front[y * s->width + x];
+
+    return ((p & 0xff) << 16) | (p & 0xff00) | ((p >> 16) & 0xff);
+}
+
+uint32_t sgi_mgras_raster_pio_read(SGIMgrasState *s, bool high)
+{
+    uint32_t units = DIV_ROUND_UP(s->pio_read_w, 2);
+    uint32_t row, x, hi;
+
+    if (!high) {
+        return s->pio_read_low;
+    }
+    if (!s->pio_read_active || s->pio_read_next >= units * s->pio_read_h) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: data-port read with no "
+                      "read box left; zero\n");
+        s->pio_read_low = 0;
+        return 0;
+    }
+    row = s->pio_read_next / units;
+    x = 2 * (s->pio_read_next % units);
+    hi = mgras_pio_read_pixel(s, s->pio_read_x + x, s->pio_read_y + row);
+    s->pio_read_low = x + 1 < s->pio_read_w ?
+        mgras_pio_read_pixel(s, s->pio_read_x + x + 1, s->pio_read_y + row) :
+        0;
+    s->pio_read_next++;
+    return hi;
+}
+
+bool sgi_mgras_raster_pio_read_valid(SGIMgrasState *s)
+{
+    return !s->pio_read_active ||
+           (s->pio_read_w && s->pio_read_h &&
+            s->pio_read_x + s->pio_read_w <= s->width &&
+            s->pio_read_y + s->pio_read_h <= s->height &&
+            s->pio_read_next <=
+                DIV_ROUND_UP(s->pio_read_w, 2) * s->pio_read_h);
 }
 
 static void mgras_raster_command_execute(
@@ -1418,8 +1849,13 @@ static void mgras_raster_command_execute(
          * mgras_draw_pio_pixel_pair()) already paint their own data; this
          * execute only latches the register write mgras_raster_rss_write()
          * already applied. This is established behaviour, not an
-         * unimplemented command, so it is not logged.
+         * unimplemented command, so it is not logged. With the transfer
+         * control set for a host read it starts one through the data port.
          */
+        if ((s->rss[MGRAS_RSS_XFRCONTROL] & MGRAS_XFRCONTROL_PIO_READ) ==
+            MGRAS_XFRCONTROL_PIO_READ) {
+            mgras_pio_read_start(s, false);
+        }
         return;
     case MGRAS_RSS_CHAR_H:
     case MGRAS_RSS_CHAR_L:
@@ -1441,6 +1877,14 @@ static void mgras_raster_rss_write(SGIMgrasState *s, uint32_t reg,
                                     uint32_t value)
 {
     s->rss[reg] = value;
+    if (reg == MGRAS_RSS_FILLMODE || reg == MGRAS_RSS_BLOCKXYSTARTI ||
+        reg == MGRAS_RSS_BLOCKXYENDI) {
+        s->public_glyph_armed = false;
+        s->public_glyph_wide_valid = false;
+    }
+    if (reg == MGRAS_RSS_CHAR_H) {
+        s->public_glyph_wide_valid = false;
+    }
     if (reg == MGRAS_RSS_CLIP_MODE && value != 0 &&
         value != MGRAS_CLIP_MODE_ON) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: clip mode 0x%x not modelled, "
@@ -1483,144 +1927,164 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * Host-memory source address formula from DMA-source captures:
  * va = addr_low + addr_high +
  * row*pitch + byte, page_ix = va >> 12, and the source page's physical
- * address is (list_node << 32) | (pagelist[page_ix] << 12) | (va & 0xfff).
- * The page list itself is `count` big-endian 64-bit page-frame-number
- * entries at (list_node << 32) | list_pa, both taken from the selected
- * mapping slot. Reading byte-by-byte (rather than the whole row at once)
- * is deliberate: consecutive page-list entries need not be adjacent, so a
- * row's bytes can span a page boundary at an arbitrary offset.
+ * address is (pagelist[page_ix] << 12) | (va & 0xfff). The page list
+ * itself is `count` big-endian 64-bit page-frame-number entries at
+ * (list_node << 32) | list_pa, both taken from the selected mapping slot.
+ * Consecutive page-list entries need not be adjacent, so a row's bytes
+ * can span a page boundary at an arbitrary offset: the shared DMA code
+ * cuts every transfer at each guest page and resolves each page through
+ * the list.
  *
- * A page-frame number wider than 20 bits would collide with the node
- * identifier this formula ORs in at bit 32 (PFN << 12 would reach bit 32
- * at PFN 0x100000): 20 bits is both the formula's own ceiling and what a
- * node's up-to-4-GiB RAM needs for a 4 KiB page (2**32 / 2**12 = 2**20
- * frames). The observed captures only exercise page-frame numbers under
- * 0x4000 (64 MiB/node) and show every entry's top six bytes zero, which
- * is consistent with a plain PFN field carrying no flag bits -- unlike
- * the unrelated DMA-map base pair, whose low word packs flags into bits
- * 2:0 -- but does not by itself distinguish a 16-bit field from a wider
- * one. Mask to the formula's 20-bit ceiling rather than guess narrower.
+ * An entry is a whole 4 KiB frame number of the node physical address
+ * space, node included, not a frame within the list's own node. The IRIX
+ * 6.5.30 kernel's texture-table fill routine (unix.IP27, SHA-256
+ * cbdb02ea5d33...) stores each entry as a 64-bit doubleword from vtopv, then
+ * the next three entries as that value plus 1, 2 and 3, one per 4 KiB of the
+ * kernel's 16 KiB page (established from the client's code). On SN0 the
+ * node number is physical address bits 39:32 (NASID_SHFT 32 in Linux's
+ * asm/sn/sn0/addrs.h), so a frame on node n has n in entry bits 27:20.
+ * The pages a process locks for a pool or an image lie on whatever node
+ * holds them, and the list names each one's node itself (inferred: no
+ * other field in the slot could). Every single-node capture has entries
+ * below 2^20, which cannot tell this reading from the model's earlier
+ * one, which took the node from the list's address and masked entries to
+ * 20 bits. On four nodes (a captured run) that reading
+ * sent list fetches for pool pages off node 0 to node 0's memory, whose
+ * zeros, floats and user-space pointers the list grammar then parsed.
+ * The 28-bit mask keeps the 40-bit node physical space and nothing above
+ * it.
  */
-#define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffu
+#define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffffu
+#define MGRAS_DMA_PAGE_SIZE 4096
+
+/*
+ * One transfer's view of the bus for the shared DMA hooks. The widget
+ * comes from the kicked slot's control word, so it travels with the
+ * transfer rather than living in device state.
+ */
+typedef struct MgrasDmaBus {
+    SGIMgrasState *s;
+    unsigned int widget;
+} MgrasDmaBus;
+
+/*
+ * The shared code hands over plain node addresses; the XIO packet fabric
+ * reaches them with the slot's widget composed in.
+ */
+static bool mgras_raster_dma_address(void *opaque, uint64_t addr, hwaddr *bus)
+{
+    MgrasDmaBus *b = opaque;
+
+    return sgi_mgras_xio_compose(b->s, b->widget, addr, bus);
+}
 
 /*
  * A replayed session has no guest RAM behind it, so a traced capture must
  * carry the bytes a host-to-screen DMA image transfer reads: the page-list
- * fetch below and the per-byte pixel source in mgras_raster_dma_draw_image().
- * Bytes are accumulated per contiguous run of plain node addresses (the
- * address dma_memory_read() resolves before sgi_mgras_xio_compose() shifts
- * a widget number into it, not the composed fabric address that call
- * produces) and flushed as one sgi_mgras_dma_chunk event, capped at one
- * page so a wide row still yields several bounded events rather than one
- * unbounded one. The node address, not the fabric address, is what a
- * replay's own qtest_memwrite can actually preload: qtest's guest RAM has
- * no widget-shifted region behind it. mgras_write() has already incremented
- * and traced s->trace_sequence for the write that triggered this draw, so
- * the chunk shares that same write's sequence number (trace_sequence - 1):
- * Origami's reduction places chunk records immediately before the write
- * they belong to.
+ * fetch and the pixel source. The shared code calls this once per chunk it
+ * resolves -- at most SGI_DMA_CHUNK_MAX bytes, never crossing a guest page
+ * -- at the plain node address before mgras_raster_dma_address() composed
+ * it. The node address, not the fabric address, is what a replay's own
+ * qtest_memwrite can actually preload: qtest's guest RAM has no
+ * widget-shifted region behind it. mgras_write() has already incremented
+ * and traced s->trace_sequence for the write that triggered this transfer,
+ * so the transfer is submitted with that write's sequence number
+ * (trace_sequence - 1): the replay tooling places chunk records
+ * immediately before the write they belong to.
  */
-#define MGRAS_DMA_CHUNK_MAX_BYTES 4096
-
-typedef struct MgrasDmaChunk {
-    uint64_t addr;
-    uint32_t len;
-    bool active;
-    uint8_t bytes[MGRAS_DMA_CHUNK_MAX_BYTES];
-} MgrasDmaChunk;
-
-static void mgras_raster_dma_chunk_flush(SGIMgrasState *s,
-                                         MgrasDmaChunk *chunk)
+static void mgras_raster_dma_chunk(void *opaque, uint64_t seq, uint64_t addr,
+                                   const uint8_t *bytes, uint32_t len)
 {
-    g_autofree char *hex = NULL;
+    g_autofree char *hex = g_malloc(len * 2 + 1);
 
-    if (!chunk->active) {
-        return;
-    }
-    hex = g_malloc(chunk->len * 2 + 1);
-    qemu_hexdump_to_buffer(hex, chunk->len * 2 + 1, chunk->bytes, chunk->len);
-    trace_sgi_mgras_dma_chunk(s->trace_sequence - 1, chunk->addr, chunk->len,
-                              hex);
-    chunk->active = false;
-    chunk->len = 0;
-}
-
-static void mgras_raster_dma_chunk_add(SGIMgrasState *s, MgrasDmaChunk *chunk,
-                                       uint64_t addr, const uint8_t *data,
-                                       size_t len)
-{
-    /*
-     * Both current call sites pass a fixed, far-smaller length (one
-     * page-list entry or one pixel byte), so this never fires today; it
-     * guards a single add too large for chunk->bytes on its own, which the
-     * chunk->active branch below does not check.
-     */
-    g_assert(len <= MGRAS_DMA_CHUNK_MAX_BYTES);
-    if (!trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK)) {
-        return;
-    }
-    if (chunk->active && (chunk->addr + chunk->len != addr ||
-                          chunk->len + len > MGRAS_DMA_CHUNK_MAX_BYTES)) {
-        mgras_raster_dma_chunk_flush(s, chunk);
-    }
-    if (!chunk->active) {
-        chunk->addr = addr;
-        chunk->len = 0;
-        chunk->active = true;
-    }
-    memcpy(chunk->bytes + chunk->len, data, len);
-    chunk->len += len;
+    qemu_hexdump_to_buffer(hex, len * 2 + 1, bytes, len);
+    trace_sgi_mgras_dma_chunk(seq, addr, len, hex);
 }
 
 /*
- * Fetch and byte-swap a slot's whole big-endian page-frame-number list,
- * shared by the draw and read paths. On success, *page_list is a freshly
- * allocated `count`-entry array the caller owns. On any composed fabric
- * address or DMA failure, this has already logged the guest error and
- * freed the partial list; the caller must stop the transfer rather than
- * paint or write anything from it.
+ * A transfer runs to completion inside the kick that started it, and
+ * mgras_raster_dma_kick() raises the fence flag the driver polls, whether
+ * or not the transfer moved anything. The completion adds nothing to that.
  */
-static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
-                                            unsigned int widget,
-                                            uint32_t list_node,
-                                            uint32_t list_pa, uint32_t count,
-                                            uint64_t **page_list)
+static void mgras_raster_dma_publish(void *opaque, const SGICompletion *c)
 {
-    uint64_t *list = g_new0(uint64_t, count);
-    MgrasDmaChunk chunk = { };
+}
 
-    for (uint32_t i = 0; i < count; i++) {
-        hwaddr fabric;
-        uint64_t node_addr = ((uint64_t)list_node << 32) | (list_pa + i * 8);
-        uint8_t entry[sizeof(uint64_t)];
-        MemTxResult result;
+static const SGIHeadOps mgras_raster_dma_ops = {
+    .publish = mgras_raster_dma_publish,
+    .dma_address = mgras_raster_dma_address,
+    .dma_chunk = mgras_raster_dma_chunk,
+};
 
-        if (!sgi_mgras_xio_compose(s, widget, node_addr, &fabric)) {
-            mgras_raster_dma_chunk_flush(s, &chunk);
-            g_free(list);
-            return false;
-        }
-        result = dma_memory_read(&s->fabric_as, fabric, entry, sizeof(entry),
-                                 MEMTXATTRS_UNSPECIFIED);
-        if (result != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image transfer "
-                          "page-list entry %u read at 0x%" PRIx64 " failed "
-                          "(result %d)\n", i, (uint64_t)fabric, result);
-            mgras_raster_dma_chunk_flush(s, &chunk);
-            g_free(list);
-            return false;
-        }
-        /*
-         * Recorded at node_addr, not fabric: a replayed session has no
-         * fabric-side device behind it, only qtest's own guest RAM, which
-         * qtest_memwrite reaches at the plain node address, never at the
-         * widget-shifted fabric address sgi_mgras_xio_compose() produces.
-         */
-        mgras_raster_dma_chunk_add(s, &chunk, node_addr, entry, sizeof(entry));
-        list[i] = ldq_be_p(entry) & MGRAS_DMA_PAGE_LIST_PFN_MASK;
+/*
+ * Resolve the kicked slot's mapping: its bus, and its page list read from
+ * guest memory as device page addresses. On success, *page_addr is a
+ * freshly allocated `count`-entry array the caller owns. On an unusable
+ * mapping or a failed read, this has already logged why and the caller
+ * must stop the transfer rather than paint or write anything.
+ */
+static bool mgras_raster_dma_setup(SGIMgrasState *s, unsigned int slot,
+                                   MgrasDmaBus *ctx, SGIDMABus *bus,
+                                   SGIDMAPageList *pl, uint64_t **page_addr)
+{
+    uint64_t base = sgi_mgras_dma_map_slot_base(s, slot);
+    uint32_t list_node = (uint32_t)(base >> 32) & 0xff;
+    uint32_t count = sgi_mgras_dma_map_slot_count(s, slot);
+    uint64_t list_addr;
+    g_autofree uint64_t *addr = NULL;
+
+    /*
+     * The base pair's low word is entry 0's byte address, not a
+     * page-aligned address plus flag bits: every observed mapping's low
+     * word ends in 0x18 or 0x19 (three zero header words before the
+     * page-frame-number entries begin), so only bits 2:0 are flag-like.
+     * Masking to the page (as this used to) reads the header's first
+     * zero word as page-frame number 0 and drops every transfer 24 bytes
+     * short.
+     */
+    list_addr = ((uint64_t)list_node << 32) | ((uint32_t)base & ~0x7u);
+    ctx->s = s;
+    ctx->widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
+    *bus = (SGIDMABus) {
+        .as = &s->fabric_as,
+        .ops = &mgras_raster_dma_ops,
+        .opaque = ctx,
+    };
+
+    if (count == 0 || count > (1u << 20)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
+                      "unusable page count %u\n", count);
+        return false;
     }
-    mgras_raster_dma_chunk_flush(s, &chunk);
-    *page_list = list;
+
+    /*
+     * The list lives in one node's memory: node in bits 39:32, offset in
+     * 31:0. A list that ran past the node's last byte would carry into the
+     * node number and read another node's memory.
+     */
+    if ((uint32_t)list_addr + (uint64_t)count * 8 > (1ull << 32)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA page list of %u "
+                      "entries at 0x%" PRIx64 " runs past its node\n",
+                      count, list_addr);
+        return false;
+    }
+
+    /* Read the big-endian entries and turn them into page addresses. */
+    addr = g_new(uint64_t, count);
+    if (!sgi_dma_read(bus, list_addr, addr, count * 8,
+                      trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK),
+                      s->trace_sequence - 1)) {
+        return false;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        addr[i] = (ldq_be_p(&addr[i]) & MGRAS_DMA_PAGE_LIST_PFN_MASK) << 12;
+    }
+    *pl = (SGIDMAPageList) {
+        .addr = addr,
+        .npages = count,
+        .page_size = MGRAS_DMA_PAGE_SIZE,
+    };
+    *page_addr = g_steal_pointer(&addr);
     return true;
 }
 
@@ -1630,7 +2094,7 @@ static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
  * would need SRC_OFF_ALIGNED shifted into bits 63:32, and would send any
  * nonzero value there to a different node's memory entirely. Per the DMA
  * source-mapping decode the source-address formula in the comment above
- * mgras_raster_dma_load_page_list() already cites, they are non-overlapping
+ * mgras_raster_dma_setup() already cites, they are non-overlapping
  * parts of one byte offset into the page list: SRC_OFF_LOW3 carries the
  * offset's low 3 bits (src & 7), SRC_OFF_ALIGNED carries the same
  * offset's 8-aligned remainder (src & ~7). Addition reconstructs the
@@ -1642,34 +2106,199 @@ static uint64_t mgras_raster_dma_src_offset(SGIMgrasState *s)
            s->dma_desc_20000[MGRAS_DESC_20000_REG_SRC_OFF_ALIGNED];
 }
 
+/*
+ * The transfer between the resolved guest rows and the pixel banks, on
+ * host memory only. The rows land through mgras_put_pixel(), so the logic
+ * op, colour mask, clip and format tag apply as for any other paint.
+ */
+static int mgras_raster_dma_run_draw(SGIMgrasState *s, SGIPixelDMA *d,
+                                     uint8_t op, uint32_t mask)
+{
+    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    for (int32_t row = 0; row < d->h; row++) {
+        uint64_t pos = d->offset + (uint64_t)row * d->pitch;
+        int y = d->y + row;
+
+        if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, false)) {
+            return SGI_FAIL_BOUNDS;
+        }
+        for (int32_t col = 0; col < d->w; col++) {
+            const uint8_t *p = bytes + col * d->guest_bpp;
+            /*
+             * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
+             * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
+             * red, green and blue, and byte 0 is not stored. The public
+             * drivers transfer this layout under the same pixel format
+             * (0x600) and PP1FILLMODE format bits (0x62xx) the IRIX
+             * server uses: X.Org's impact driver (impact_shadow.c,
+             * visual masks 0xff/0xff00/0xff0000) and the Linux Impact
+             * framebuffer patch (red at offset 0). The IRIX 6.5.30
+             * greeter's EZsetup icon agrees: read red-first it is cyan
+             * and blue-grey where the RAD4 reference shows yellow and
+             * orange. PACKEDCOLOR and pair-packed pixels carry the same
+             * word; see mgras_rgb_from_pixel_word().
+             */
+            uint32_t color = d->guest_bpp == 1 ? p[0] :
+                ((uint32_t)p[3] << 16) | ((uint32_t)p[2] << 8) | p[1];
+            uint8_t format = d->guest_bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
+                                                 SGI_MGRAS_PIXEL_FORMAT_RGB;
+
+            mgras_put_pixel(s, y * s->width + d->x + col, color, op, mask,
+                            format);
+        }
+    }
+    s->dirty = true;
+    return 0;
+}
+
+/*
+ * The inverse of mgras_raster_dma_run_draw()'s pixel assembly: bytes 1, 2
+ * and 3 of a 4-byte pixel carry blue, green and red of the stored
+ * 0x00RRGGBB value, and byte 0 always reads back zero because the draw
+ * path never stores it.
+ */
+static int mgras_raster_dma_run_read(SGIMgrasState *s, SGIPixelDMA *d,
+                                     bool reverse_y)
+{
+    uint32_t bpr = (uint32_t)d->w * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    for (int32_t row = 0; row < d->h; row++) {
+        uint8_t did[SGI_MGRAS_MAX_WIDTH];
+        uint64_t pos = d->offset + (uint64_t)row * d->pitch;
+        int32_t y = d->y + (reverse_y ? -row : row);
+
+        sgi_mgras_display_did_line(s, false, y, did);
+        for (int32_t col = 0; col < d->w; col++) {
+            uint32_t index = y * s->width + d->x + col;
+            bool back = (s->xmap[0].buf_select[0] >> did[d->x + col]) & 1;
+            uint32_t stored = back ? s->back[index] : s->front[index];
+            uint8_t *p = bytes + col * d->guest_bpp;
+
+            if (d->guest_bpp == 1) {
+                p[0] = stored;
+            } else if (d->guest_bpp == 2) {
+                uint16_t rgb555 = ((stored >> 19) & 0x1f) |
+                                  ((stored >> 6) & 0x3e0) |
+                                  ((stored << 7) & 0x7c00);
+
+                /* The 15-bit visual stores red in the low five bits. */
+                p[0] = rgb555 >> 8;
+                p[1] = rgb555;
+            } else {
+                p[0] = 0;
+                p[1] = stored;
+                p[2] = stored >> 8;
+                p[3] = stored >> 16;
+            }
+        }
+        if (!sgi_dma_map_copy(&d->map, pos, bytes, bpr, true)) {
+            return SGI_FAIL_BOUNDS;
+        }
+    }
+    return 0;
+}
+
+static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
+                                            uint32_t width,
+                                            uint32_t height)
+{
+    bool back = s->gl_context[s->gl_current].client_read_bank == 1;
+    unsigned int bank = s->gl_banks[0] & 1;
+    const uint32_t *color_plane;
+    const uint8_t *alpha_plane;
+    uint32_t bpr = width * d->guest_bpp;
+    g_autofree uint8_t *bytes = g_malloc(bpr);
+
+    /* The selector names logical front/back; the bank token places them. */
+    bank ^= !back;
+    color_plane = bank ? s->back : s->front;
+    alpha_plane = bank ? s->back_alpha : s->front_alpha;
+
+    for (uint32_t row = 0; row < height; row++) {
+        for (uint32_t col = 0; col < width; col++) {
+            uint32_t y = d->y - row;
+            uint32_t index = y * s->width + d->x + col;
+            uint32_t color = color_plane[index];
+            uint8_t *p = bytes + col * d->guest_bpp;
+
+            p[0] = color >> 16;
+            p[1] = color >> 8;
+            p[2] = color;
+            p[3] = alpha_plane[index];
+        }
+        if (!sgi_dma_map_copy(&d->map, d->offset + (uint64_t)row * d->pitch,
+                              bytes, bpr, true)) {
+            return SGI_FAIL_BOUNDS;
+        }
+    }
+    return 0;
+}
+
+/*
+ * One pixel transfer through the shared DMA code: its guest rows resolved
+ * under the lock, the pixels moved on host memory, then the map released,
+ * which writes back a read's rows. Both directions work on bank 0, the
+ * bank the X server draws in, so that is the plane the transfer names. A
+ * transfer that does not fit its page list or that plane fails whole
+ * before anything is mapped, so it paints or writes nothing.
+ */
+static void mgras_raster_dma_transfer(SGIMgrasState *s, unsigned int slot,
+                                      SGIPixelDMA *d, uint8_t op,
+                                      uint32_t mask, bool reverse_y,
+                                      uint32_t client_width,
+                                      uint32_t client_height)
+{
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    g_autofree uint64_t *page_addr = NULL;
+    int ret;
+
+    if (!mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return;
+    }
+    d->plane = s->bank_plane[0];
+    d->tag_plane = SGI_PLANE_NONE;
+    d->trace_chunks =
+        trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    d->trace_seq = s->trace_sequence - 1;
+    d->seq = d->trace_seq;
+    ret = sgi_dma_pixels_map(d, &bus, &pl, &s->mem);
+    if (!ret) {
+        ret = d->dir == SGI_DMA_TO_PLANE ?
+              mgras_raster_dma_run_draw(s, d, op, mask) :
+              client_width ? mgras_raster_dma_run_client_read(
+                  s, d, client_width, client_height) :
+              mgras_raster_dma_run_read(s, d, reverse_y);
+    }
+    sgi_dma_pixels_finish(d, ret, &mgras_raster_dma_ops, &ctx);
+}
+
 static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
 {
-    unsigned int slot, widget;
-    uint64_t base;
-    uint32_t list_node, list_pa, count;
+    unsigned int slot;
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
-    uint64_t addr = mgras_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
-    uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     unsigned int width, bpp;
-    uint64_t *page_list;
-    MgrasDmaChunk chunk = { };
+    SGIPixelDMA d;
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
     }
     if (rows == 0 || bpr == 0 || x0 > x1 || y0 > y1 ||
-        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        x0 >= s->width || y0 >= s->height) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    x1 = MIN(x1, s->width - 1);
+    y1 = MIN(y1, s->height - 1);
     width = x1 - x0 + 1;
     if (bpr % width) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
@@ -1684,107 +2313,18 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    /*
-     * The base pair's low word is entry 0's byte address, not a
-     * page-aligned address plus flag bits: every observed mapping's low
-     * word ends in 0x18 or 0x19 (three zero header words before the
-     * page-frame-number entries begin), so only bits 2:0 are flag-like.
-     * Masking to the page (as this used to) reads the header's first
-     * zero word as page-frame number 0 and drops every transfer 24 bytes
-     * short.
-     */
-    base = sgi_mgras_dma_map_slot_base(s, slot);
-    list_node = (uint32_t)(base >> 32) & 0xff;
-    list_pa = (uint32_t)base & ~0x7u;
-    count = sgi_mgras_dma_map_slot_count(s, slot);
-    widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
-
-    if (count == 0 || count > (1u << 20)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
-                      "unusable page count %u\n", count);
-        return;
-    }
-
-    if (!mgras_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
-                                      &page_list)) {
-        return;
-    }
-
-    rows = MIN(rows, (uint32_t)(y1 - y0 + 1));
-    for (uint32_t row = 0; row < rows; row++) {
-        int y = y0 + (int)row;
-        uint8_t pixel_bytes[4];
-
-        for (uint32_t b = 0; b < bpr; b++) {
-            uint64_t va = addr + (uint64_t)row * pitch + b;
-            uint64_t page_ix = va >> 12;
-            uint64_t src_pa;
-            hwaddr fabric;
-            uint8_t byte;
-            MemTxResult result;
-
-            if (page_ix >= count) {
-                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
-                              "source page %" PRIu64 " exceeds mapped "
-                              "count %u\n", page_ix, count);
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                continue;
-            }
-            src_pa = ((uint64_t)list_node << 32) |
-                     (page_list[page_ix] << 12) | (va & 0xfff);
-            if (!sgi_mgras_xio_compose(s, widget, src_pa, &fabric)) {
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                continue;
-            }
-            result = dma_memory_read(&s->fabric_as, fabric, &byte,
-                                     sizeof(byte), MEMTXATTRS_UNSPECIFIED);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
-                              "transfer source read at 0x%" PRIx64 " failed "
-                              "(result %d)\n", (uint64_t)fabric, result);
-                mgras_raster_dma_chunk_flush(s, &chunk);
-                g_free(page_list);
-                return;
-            }
-            /*
-             * Recorded at src_pa, not fabric: see the matching comment in
-             * mgras_raster_dma_load_page_list().
-             */
-            mgras_raster_dma_chunk_add(s, &chunk, src_pa, &byte, sizeof(byte));
-            pixel_bytes[b % bpp] = byte;
-            if (b % bpp == bpp - 1) {
-                uint32_t col = b / bpp;
-                /*
-                 * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
-                 * 32-bit pixel with red in bits 7:0: bytes 3, 2 and 1 are
-                 * red, green and blue, and byte 0 is not stored. The
-                 * public drivers transfer this layout under the same
-                 * pixel format (0x600) and PP1FILLMODE format bits
-                 * (0x62xx) the IRIX server uses: X.Org's impact driver
-                 * (impact_shadow.c, visual masks 0xff/0xff00/0xff0000)
-                 * and the Linux Impact framebuffer patch (red at offset
-                 * 0). The IRIX 6.5.30 greeter's EZsetup icon agrees: read
-                 * red-first it is cyan and blue-grey where the RAD4
-                 * reference shows yellow and orange. PACKEDCOLOR and
-                 * pair-packed pixels carry the same word; see
-                 * mgras_rgb_from_pixel_word().
-                 */
-                uint32_t color = bpp == 1 ? pixel_bytes[0] :
-                    ((uint32_t)pixel_bytes[3] << 16) |
-                    ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[1];
-                uint8_t format = bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
-                                            SGI_MGRAS_PIXEL_FORMAT_RGB;
-
-                if (x0 + (int)col <= x1) {
-                    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + (int)col,
-                                 color, op, mask, format);
-                }
-            }
-        }
-    }
-    mgras_raster_dma_chunk_flush(s, &chunk);
-    g_free(page_list);
-    s->dirty = true;
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_TO_PLANE,
+        .x = x0,
+        .y = y0,
+        .w = width,
+        .h = MIN(rows, (uint32_t)(y1 - y0 + 1)),
+        .pitch = pitch,
+        .guest_bpp = bpp,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, s->rss[MGRAS_RSS_PP1FILLMODE] >> 26,
+                              s->rss[MGRAS_RSS_COLORMASKLSBSA], false, 0, 0);
 }
 
 /*
@@ -1797,21 +2337,21 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
  * that box height instead of guessing which end to trust.
  *
  * A stored pixel is mgras_put_pixel()'s COLORMASKLSBSA-masked 0x00RRGGBB
- * value; the byte extraction below is the exact inverse of the draw
- * path's assembly, bytes 1, 2 and 3 of a 4-byte pixel carrying blue,
- * green and red. Byte 0 always reads back zero: the draw path never
- * stores it. The Linux Impact framebuffer patch's impact_smallcopy()
- * relies on the same round trip: it reads with PP1FILLMODE 0x2200 and
- * pixel format 0x200, the values of the IRIX server's save-under reads,
- * and writes the words back with 0x6200 and 0x600.
+ * value, read back by mgras_raster_dma_run_read(). The Linux Impact
+ * framebuffer patch's impact_smallcopy() relies on the same round trip:
+ * it reads with PP1FILLMODE 0x2200 and pixel format 0x200, the values of
+ * the IRIX server's save-under reads, and writes the words back with
+ * 0x6200 and 0x600.
+ *
+ * A read whose descriptor the box does not fit, in rows or in a pixel of
+ * one or four bytes, is not a raster read; this returns false for it and
+ * moves nothing. The kernel's context read-outs are such reads
+ * (sgi-mgras-gl.c, "Context eviction"), so the caller waits for the token
+ * that would name one before logging it.
  */
-static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
+static bool mgras_raster_dma_read_image(SGIMgrasState *s, unsigned int slot)
 {
-    unsigned int slot, widget;
-    uint64_t base;
-    uint32_t list_node, list_pa, count;
     uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
-    uint64_t addr = mgras_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
@@ -1819,113 +2359,490 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int y_top, y_bottom;
-    unsigned int width, bpp;
-    uint64_t *page_list;
+    unsigned int width, height, bpp;
+    bool coalesced;
+    SGIPixelDMA d;
+
+    if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= s->width ||
+        y0 >= s->height || y1 >= s->height) {
+        return false;
+    }
+    x1 = MIN(x1, s->width - 1);
+    width = x1 - x0 + 1;
+    y_top = s->height - 1 - y0;
+    y_bottom = s->height - 1 - y1;
+    if (y_top > y_bottom) {
+        return false;
+    }
+    height = y_bottom - y_top + 1;
+    coalesced = rows == 1 && pitch == bpr && bpr % (width * height) == 0;
+    if (coalesced) {
+        bpp = bpr / (width * height);
+    } else {
+        if (bpr % width || rows != height) {
+            return false;
+        }
+        bpp = bpr / width;
+    }
+    if (bpp != 1 && bpp != 2 && bpp != 4) {
+        return false;
+    }
+
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_FROM_PLANE,
+        .x = x0,
+        .y = y_top,
+        .w = width,
+        .h = height,
+        .pitch = coalesced ? width * bpp : pitch,
+        .guest_bpp = bpp,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, 0, 0, false, 0, 0);
+    return true;
+}
+
+/*
+ * The node address of a kicked transfer's first byte, the key the
+ * kernel's context read-outs and write-backs share (sgi-mgras-gl.c,
+ * "Context eviction"). False, logged, when the mapping cannot give one.
+ */
+static bool mgras_raster_dma_client_read(SGIMgrasState *s,
+                                         unsigned int slot)
+{
+    uint32_t xy0, xy1, x0, y0, x1, y1, origin_x, origin_y;
+    uint32_t window_x0, window_y0, window_x1, window_y1;
+    uint32_t width, height, pixels, pitch, rows, bpr, mode;
+    uint32_t signature_size =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG0];
+    uint32_t signature_extent =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG1];
+    uint32_t signature_format =
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG2];
+    uint32_t signature_width = signature_extent & 0xffff;
+    uint32_t signature_height = signature_extent >> 16;
+    uint64_t source_x0, source_y0, source_x1, source_y1;
+    uint64_t image_bytes, row_bytes;
+    SGIPixelDMA d;
+    bool captured_format = signature_format == 0x00400080 ||
+                           signature_format == 0x00c00080 ||
+                           (signature_width == 41 &&
+                            (signature_height == 32 || signature_height == 1) &&
+                            signature_format == 0xc10080) ||
+                           ((signature_width == 23 || signature_width == 7) &&
+                            signature_height == 1 &&
+                            signature_format == 0xc10480) ||
+                           (signature_width == 23 && signature_height == 32 &&
+                            signature_format == 0xc10480);
+    bool captured_split;
+    bool one_descriptor, per_row_descriptors;
+
+    if (!sgi_mgras_gl_client_read_active(s) || !signature_width ||
+        !signature_height || signature_size != signature_width * 4 ||
+        !captured_format ||
+        s->dma_desc_28000[MGRAS_DESC_28000_CLIENT_READ_SIGNATURE_REG3] !=
+            0xa) {
+        return false;
+    }
+
+    s->gl_context[s->gl_current].client_read_kicked = 1;
+    if (s->gl_context[s->gl_current].client_read_bank > 1) {
+        goto rejected;
+    }
+    xy0 = s->rss[MGRAS_RSS_BLOCKXYSTARTI];
+    xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
+    x0 = xy0 >> 16;
+    y0 = xy0 & 0xffff;
+    x1 = xy1 >> 16;
+    y1 = xy1 & 0xffff;
+    pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
+    captured_split =
+        (signature_width == 41 && signature_height == 32 &&
+         signature_format == 0xc10080 && mode == 0xc10080 &&
+         pitch == 0x100) ||
+        (signature_width == 23 && signature_height == 32 &&
+         signature_format == 0xc10480 && mode == 0xc10480) ||
+        (signature_width == 41 && signature_height == 1 &&
+         signature_format == 0xc10080 && mode == 0xc10080 &&
+         pitch == 0x100) ||
+        ((signature_width == 23 || signature_width == 7) &&
+         signature_height == 1 && signature_format == 0xc10480 &&
+         mode == 0xc10480 && pitch == 0x100) ||
+        (signature_width == 41 && signature_height == 1 &&
+         signature_format == 0x00c00080 && mode == 0x00010080 &&
+         pitch == 0x100) ||
+        (signature_width == 23 && signature_height == 1 &&
+         signature_format == 0x00c00080 && mode == 0x00010480 &&
+         pitch == 0x100);
+
+    if (x0 > x1 || y0 > y1 ||
+        !sgi_mgras_gl_client_read_window(s, &origin_x, &origin_y,
+                                         &window_x0, &window_y0,
+                                         &window_x1, &window_y1)) {
+        goto rejected;
+    }
+    width = x1 - x0 + 1;
+    height = y1 - y0 + 1;
+    if (width != signature_width || height != signature_height ||
+        s->rss[MGRAS_RSS_XFRSIZE] != ((height << 16) | width) ||
+        s->rss[MGRAS_RSS_XFRCOUNTERS] != ((height << 16) | width) ||
+        (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
+            MGRAS_XFRMODE_GL_FORMAT_RGBA ||
+        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split)) {
+        goto rejected;
+    }
+    source_x0 = (uint64_t)origin_x + x0;
+    source_y0 = (uint64_t)origin_y + y0;
+    source_x1 = (uint64_t)origin_x + x1;
+    source_y1 = (uint64_t)origin_y + y1;
+    if (source_x0 < window_x0 || source_x1 > window_x1 ||
+        source_y0 < window_y0 || source_y1 > window_y1 ||
+        source_x1 >= s->width || source_y1 >= s->height) {
+        goto rejected;
+    }
+
+    pixels = width * height;
+    image_bytes = (uint64_t)pixels * 4;
+    row_bytes = (uint64_t)width * 4;
+    if (image_bytes > UINT32_MAX || row_bytes > UINT32_MAX) {
+        goto rejected;
+    }
+    one_descriptor = rows == 1 && pitch == image_bytes &&
+                     bpr == image_bytes;
+    per_row_descriptors = rows == height && bpr == row_bytes &&
+                          (pitch == row_bytes || captured_split);
+    if (!one_descriptor && !per_row_descriptors) {
+        goto rejected;
+    }
+
+    d = (SGIPixelDMA) {
+        .dir = SGI_DMA_FROM_PLANE,
+        .x = source_x0,
+        .y = s->height - 1 - source_y0,
+        .w = width,
+        .h = height,
+        .pitch = per_row_descriptors ? pitch : row_bytes,
+        .guest_bpp = 4,
+        .offset = mgras_raster_dma_src_offset(s),
+    };
+    mgras_raster_dma_transfer(s, slot, &d, 0, 0, false, width, height);
+    return true;
+
+rejected:
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: captured OpenGL client DMA read "
+                  "has unsupported bounds, mode or descriptor; no bytes "
+                  "returned\n");
+    return true;
+}
+
+static bool mgras_raster_dma_host(SGIMgrasState *s, unsigned int slot,
+                                  uint64_t *host)
+{
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    g_autofree uint64_t *page_addr = NULL;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+
+    if (!mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    if (offset / MGRAS_DMA_PAGE_SIZE >= pl.npages) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA offset 0x%" PRIx64
+                      " lies past its %u mapped pages\n", offset, pl.npages);
+        return false;
+    }
+    *host = page_addr[offset / MGRAS_DMA_PAGE_SIZE] |
+            (offset % MGRAS_DMA_PAGE_SIZE);
+    return true;
+}
+
+/* A read kick: a raster read, or else perhaps a context read-out. */
+static void mgras_raster_dma_read(SGIMgrasState *s, uint32_t kick_byte)
+{
+    unsigned int slot;
+    uint64_t host;
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
     }
-    if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= SGI_MGRAS_WIDTH ||
-        y0 >= SGI_MGRAS_HEIGHT || y1 >= SGI_MGRAS_HEIGHT) {
+    if (mgras_raster_dma_client_read(s, slot)) {
         return;
     }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    width = x1 - x0 + 1;
-    if (bpr % width) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
-                      "bytes/row does not divide destination width %u\n",
-                      bpr, width);
+    if (mgras_raster_dma_read_image(s, slot) ||
+        !mgras_raster_dma_host(s, slot, &host)) {
         return;
     }
-    bpp = bpr / width;
-    if (bpp != 1 && bpp != 4) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented DMA image "
-                      "transfer pixel width %u bytes\n", bpp);
+    sgi_mgras_gl_eram_read_kicked(s, host,
+                                  s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
+                                  s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR]);
+}
+
+/* A write kick to the GE after an ERAM count: a context write-back. */
+static void mgras_raster_dma_eram_write(SGIMgrasState *s, uint32_t kick_byte)
+{
+    unsigned int slot;
+    uint64_t host;
+
+    if (mgras_raster_dma_select_slot(s, kick_byte, &slot) &&
+        mgras_raster_dma_host(s, slot, &host)) {
+        sgi_mgras_gl_eram_write_kicked(s, host);
+    }
+}
+
+/*
+ * A transfer to the GE, carrying the image of the loaded context's pixel
+ * draw (sgi-mgras-gl.c, mgras_gl_pixels_start()). The OpenGL client kicks
+ * it with (slot << 1) | 0xa1 (the DMA setup routine, 0xd9c2b10 in the
+ * IRIX 6.5.30 IP27GR532 libGLcore.so): 0xa7 for slot 3 in every capture
+ * of ipaste, imgview and i3dm (a captured run), where the
+ * X server's transfers into the raster engine are 0xb1 to 0xbf. The model
+ * reads bit 4 clear as the GE's port only with a draw waiting, inferred
+ * from that split: the kernel's GE-memory transfers (0xa5) also clear it,
+ * and a transfer with no draw waiting keeps the raster path's handling.
+ * The descriptor is the raster path's, and each row goes to the draw as
+ * the GE would take it, the first row the image's bottom one.
+ */
+#define MGRAS_DMA_KICK_TO_RASTER 0x10
+
+/*
+ * The most one row of a transfer to the GE can hold: a texture level
+ * arrives as a single row, and the board keeps at most 4 MiB of texels a
+ * context. A pixel draw's rows are far shorter (4096 pixels of four
+ * bytes). The descriptor's row length is the guest's, so this bounds the
+ * host buffer that one row is copied through.
+ */
+#define MGRAS_DMA_GE_ROW_MAX (4 * MiB)
+
+static void mgras_raster_dma_ge_pixels(SGIMgrasState *s, uint32_t kick_byte)
+{
+    uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    g_autofree uint8_t *row = NULL;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    int ret = 0;
+
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        sgi_mgras_gl_pixels_abort(s);
         return;
     }
-
-    y_top = SGI_MGRAS_HEIGHT - 1 - y0;
-    y_bottom = SGI_MGRAS_HEIGHT - 1 - y1;
-    if (y_top > y_bottom || rows != (uint32_t)(y_bottom - y_top + 1)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer read box "
-                      "does not match rows %u\n", rows);
+    if (!rows) {
+        /* An empty transfer: nothing to take and nothing wrong. */
+        sgi_mgras_gl_pixels_abort(s);
         return;
     }
-
-    base = sgi_mgras_dma_map_slot_base(s, slot);
-    list_node = (uint32_t)(base >> 32) & 0xff;
-    list_pa = (uint32_t)base & ~0x7u;
-    count = sgi_mgras_dma_map_slot_count(s, slot);
-    widget = (sgi_mgras_dma_map_slot_control(s, slot) >> 16) & 0xf;
-
-    if (count == 0 || count > (1u << 20)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
-                      "unusable page count %u\n", count);
+    if (bpr > MGRAS_DMA_GE_ROW_MAX) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel DMA rows of %u "
+                      "bytes exceed the %u a row can hold; not drawn\n",
+                      bpr, (uint32_t)MGRAS_DMA_GE_ROW_MAX);
+        sgi_mgras_gl_pixels_abort(s);
         return;
     }
-
-    if (!mgras_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
-                                      &page_list)) {
+    if (offset + (uint64_t)(rows - 1) * pitch + bpr >
+        sgi_dma_page_list_bytes(&pl)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: pixel DMA of %u rows of "
+                      "%u bytes at 0x%" PRIx64 " runs past its %u mapped "
+                      "pages; not drawn\n", rows, bpr, offset, pl.npages);
+        sgi_mgras_gl_pixels_abort(s);
         return;
     }
+    row = g_malloc(bpr);
+    for (uint32_t r = 0; r < rows && !ret; r++) {
+        uint64_t pos = offset + (uint64_t)r * pitch;
+        SGIDMAMap map = { 0 };
 
-    for (uint32_t row = 0; row < rows; row++) {
-        int y = y_top + (int)row;
-
-        for (uint32_t b = 0; b < bpr; b++) {
-            uint32_t col = b / bpp;
-            int x = x0 + (int)col;
-            uint64_t va, src_pa;
-            uint64_t page_ix;
-            hwaddr fabric;
-            uint32_t stored;
-            uint8_t byte;
-            MemTxResult result;
-
-            if (x > x1) {
-                continue;
-            }
-            stored = s->front[y * SGI_MGRAS_WIDTH + x];
-            byte = bpp == 1 ? (uint8_t)stored :
-                b % bpp == 0 ? 0 : (uint8_t)(stored >> (8 * (b % bpp - 1)));
-
-            va = addr + (uint64_t)row * pitch + b;
-            page_ix = va >> 12;
-            if (page_ix >= count) {
-                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
-                              "destination page %" PRIu64 " exceeds mapped "
-                              "count %u\n", page_ix, count);
-                continue;
-            }
-            src_pa = ((uint64_t)list_node << 32) |
-                     (page_list[page_ix] << 12) | (va & 0xfff);
-            if (!sgi_mgras_xio_compose(s, widget, src_pa, &fabric)) {
-                continue;
-            }
-            result = dma_memory_write(&s->fabric_as, fabric, &byte,
-                                      sizeof(byte), MEMTXATTRS_UNSPECIFIED);
-            if (result != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
-                              "transfer destination write at 0x%" PRIx64
-                              " failed (result %d)\n", (uint64_t)fabric,
-                              result);
-                g_free(page_list);
-                return;
-            }
+        ret = sgi_dma_map(&bus, &map, &pl, pos, bpr, DMA_DIRECTION_TO_DEVICE,
+                          trace, s->trace_sequence - 1);
+        if (!ret && !sgi_dma_map_copy(&map, pos, row, bpr, false)) {
+            ret = SGI_FAIL_BOUNDS;
+        }
+        sgi_dma_unmap(&map);
+        if (!ret) {
+            sgi_mgras_gl_pixels_row(s, row, bpr);
         }
     }
-    g_free(page_list);
+    if (ret) {
+        sgi_mgras_gl_pixels_abort(s);
+    }
+}
+
+uint64_t sgi_mgras_raster_dma_bytes(SGIMgrasState *s)
+{
+    return (uint64_t)s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS] *
+           s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+}
+
+bool sgi_mgras_raster_dma_copy(SGIMgrasState *s, uint32_t kick_byte,
+                               uint8_t *buf, uint64_t bytes, bool to_host)
+{
+    uint32_t pitch = s->dma_desc_20000[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    int ret = 0;
+
+    if ((uint64_t)rows * bpr != bytes || !rows) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
+                      "bytes for a transfer of %" PRIu64 " bytes; nothing "
+                      "moved\n", rows, bpr, bytes);
+        return false;
+    }
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    if (offset + (uint64_t)(rows - 1) * pitch + bpr >
+        sgi_dma_page_list_bytes(&pl)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA of %u rows of %u "
+                      "bytes at 0x%" PRIx64 " runs past its %u mapped pages; "
+                      "nothing moved\n", rows, bpr, offset, pl.npages);
+        return false;
+    }
+    for (uint32_t r = 0; r < rows && !ret; r++) {
+        uint64_t pos = offset + (uint64_t)r * pitch;
+        SGIDMAMap map = { 0 };
+
+        ret = sgi_dma_map(&bus, &map, &pl, pos, bpr,
+                          to_host ? DMA_DIRECTION_FROM_DEVICE :
+                                    DMA_DIRECTION_TO_DEVICE,
+                          trace && !to_host, s->trace_sequence - 1);
+        if (!ret && !sgi_dma_map_copy(&map, pos, buf + (uint64_t)r * bpr,
+                                      bpr, to_host)) {
+            ret = SGI_FAIL_BOUNDS;
+        }
+        sgi_dma_unmap(&map);
+    }
+    return !ret;
+}
+
+/*
+ * The HQ page-list form, as the OpenGL client's TRAM restore sends it
+ * (its texture-load-from-save routine, 0xd9a4390 in the IRIX 6.5.30
+ * IP27GR532 libGLcore.so): 0x00080010 with four words, X.Org's pg_list0
+ * to pg_list3, holding up to eight 16-bit entries high half first, the
+ * last with bit 15 set; pg_offset (register 5), pg_widtha (8), register
+ * 9 and pg_linecnt (7) 1, with pg_width (4) 0x1000 sent before. In a
+ * traced IRIX guest run a transfer of 32,640 bytes
+ * named entries 1 to 8 with pg_offset 0, pg_widtha 0x1000 and register 9
+ * 0xf80, and the next, of 28,800, entries 8 to 15 with pg_offset 0xf80,
+ * pg_widtha 0x80 and register 9 0x1000: both are the first entry's
+ * pg_widtha bytes from pg_offset, the middle entries whole, and register
+ * 9's bytes of the last, established as that arithmetic on the two
+ * shapes. Inferred: that an entry indexes the slot's page list, which the
+ * kernel installed just before. The bytes run on through the pages as one
+ * stream.
+ */
+bool sgi_mgras_raster_dma_page_list_read(SGIMgrasState *s, uint32_t kick_byte,
+                                         uint8_t *buf, uint64_t bytes)
+{
+    const uint32_t *d = s->dma_desc_20000;
+    uint64_t offset = mgras_raster_dma_src_offset(s);
+    uint32_t width = d[MGRAS_DESC_20000_REG_PITCH];
+    uint32_t first = d[MGRAS_DESC_20000_REG_BPR];
+    uint32_t last = d[MGRAS_DESC_20000_REG_LAST_BYTES];
+    bool trace = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    g_autofree uint64_t *page_addr = NULL;
+    g_autofree uint64_t *chosen = NULL;
+    uint32_t entry[8], n = 0;
+    uint64_t total;
+    unsigned int slot;
+    MgrasDmaBus ctx;
+    SGIDMABus bus;
+    SGIDMAPageList pl, run;
+    SGIDMAMap map = { 0 };
+    bool ended = false;
+    int ret;
+
+    for (uint32_t i = 0; i < ARRAY_SIZE(entry) && !ended; i++) {
+        uint32_t half = d[MGRAS_DESC_20000_REG_PAGE_LIST + i / 2] >>
+                        (i % 2 ? 0 : 16);
+
+        entry[n++] = half & 0x7fff;
+        ended = half & 0x8000;
+    }
+    total = n == 1 ? first : first + (uint64_t)(n - 2) * width + last;
+    if (!ended || width != MGRAS_DMA_PAGE_SIZE ||
+        offset + first > MGRAS_DMA_PAGE_SIZE ||
+        (n > 1 && offset + first != MGRAS_DMA_PAGE_SIZE) || total != bytes) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: page-list DMA of %u "
+                      "entries%s, offset 0x%" PRIx64 ", first 0x%x, last 0x%x "
+                      "for a transfer of %" PRIu64 " bytes; nothing moved\n",
+                      n, ended ? "" : " with no last entry", offset, first,
+                      last, bytes);
+        return false;
+    }
+    if (!mgras_raster_dma_select_slot(s, kick_byte, &slot) ||
+        !mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
+        return false;
+    }
+    chosen = g_new(uint64_t, n);
+    for (uint32_t i = 0; i < n; i++) {
+        if (entry[i] >= pl.npages) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: page-list DMA entry "
+                          "%u past the slot's %u pages; nothing moved\n",
+                          entry[i], pl.npages);
+            return false;
+        }
+        chosen[i] = page_addr[entry[i]];
+    }
+    run = (SGIDMAPageList) {
+        .addr = chosen,
+        .npages = n,
+        .page_size = MGRAS_DMA_PAGE_SIZE,
+    };
+    ret = sgi_dma_map(&bus, &map, &run, offset, bytes,
+                      DMA_DIRECTION_TO_DEVICE, trace, s->trace_sequence - 1);
+    if (!ret && !sgi_dma_map_copy(&map, offset, buf, bytes, false)) {
+        ret = SGI_FAIL_BOUNDS;
+    }
+    sgi_dma_unmap(&map);
+    return !ret;
 }
 
 static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 {
     uint32_t kick_byte = kick_word & 0xff;
+    bool take;
 
+    /* A TRAM save or restore moves TRAM's bytes (sgi-mgras-texture.c). */
     if (kick_word & MGRAS_DMA_KICK_DIRECTION_READ) {
-        mgras_raster_dma_read_image(s, kick_byte);
+        if (!sgi_mgras_texture_tram_kick(s, kick_byte, true)) {
+            mgras_raster_dma_read(s, kick_byte);
+        }
         return;
     }
-    mgras_raster_dma_draw_image(s, kick_byte);
+    if (sgi_mgras_texture_tram_kick(s, kick_byte, false)) {
+        /* Done; the fence below says so. */
+    } else if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
+               sgi_mgras_gl_pixels_dma(
+                   s, s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS],
+                   s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR], &take)) {
+        if (take) {
+            mgras_raster_dma_ge_pixels(s, kick_byte);
+        }
+    } else if (!(kick_byte & MGRAS_DMA_KICK_TO_RASTER) &&
+               sgi_mgras_gl_eram_write_armed(s)) {
+        mgras_raster_dma_eram_write(s, kick_byte);
+    } else {
+        mgras_raster_dma_draw_image(s, kick_byte);
+    }
     /*
      * This model is synchronous: the transfer above already ran to
      * completion (or was a no-op on malformed descriptor state) by the
@@ -1936,12 +2853,325 @@ static void mgras_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
     s->hq_flags |= MGRAS_HQ_FLAG_FENCE;
 }
 
+/*
+ * Display-list execute, 0x00080c08 with two words: a byte offset into the pool
+ * and a size. The IRIX 6.5.30 GL client sends it from the display-list DMA
+ * execute routine with nothing after it, just after the kernel installs the
+ * pool's page list in DMA-map slot 4. That the board reads the list from slot
+ * 4's pages is inferred from that install being the only one before the
+ * execute.
+ *
+ * The board reads the words from host memory itself. The shared command
+ * fetch resolves them from the page list and hands them to the same
+ * command grammar the main port uses. The list gets a parser of its own,
+ * starting at a header, and the port's resumes where it stood once the
+ * list is done, so a list that ends inside a packet cannot swallow the
+ * port's next words, and the port's words cannot finish a list's packet.
+ * The list's words draw with the GL state of the context loaded when the
+ * execute arrives, and change it as the same words on the port would.
+ *
+ * A list longer than a pool page is a chain of ranges, and the board
+ * follows it. Established from a captured run (seq
+ * 7576878-7576887): for a 1,024-triangle list the client installed the
+ * page list once and sent one execute, offset 0x1000 and size 0x3fa,
+ * which covers the first of the list's 14 pool pages, and nothing else
+ * reached the board before glFlush. So the rest of the list can only be
+ * reached from the pool. Each range there begins with a header the
+ * client's range-header routine (libGLcore.so IP27GR532, SHA-256 626d6d94...,
+ * 0xd970cf0) writes from the range's type, and the same run's fetch
+ * records (sgi_mgras_dma_chunk, seq 7576884 and 7576887) show the board
+ * reading exactly these words at the execute:
+ *
+ *   0x00083904, 0                    the list's last range
+ *   0x00080c08, next offset, size    the next range, headers included
+ *   0x00083708, next offset, size,   a range ending in glCallList: the
+ *   0x00080c08, callee offset, size  called list's first range, then next
+ *
+ * Established from the client's code: the three forms, their 2, 3 and 6
+ * header words (the table at .rodata 0xdac9588), that the display-list pool
+ * routine writes the next range's pool offset and size into a range's words 1
+ * and 2, and that the display-list call-resolve routine writes the called
+ * list's first range into words 4 and 5 of a calling range. A descriptor flag
+ * would make a next or call token 0x00080e08 and the last range's second word
+ * 1; the two routines that build the descriptors, the first descriptor-building
+ * routine and the display-list pool routine, leave that flag clear in every
+ * path, and no capture has either form, so the model treats both as
+ * unimplemented and draws nothing for the list. Established from the
+ * fetch records: 14 ranges of one list read as 13 next headers and one
+ * last header, and the words after each header drew the reference image.
+ * Inferred: that the board reads the size as 32-bit words, and that it
+ * runs a calling range's own words, then the called list up to its last
+ * range, then the next range, which is glCallList's order; no capture
+ * has a list that calls a list. A later dump of the same pool held other
+ * values in word 0; the board had already read the list by then.
+ *
+ * The model follows calls on a stack of MGRAS_LIST_MAX_CALLS returns.
+ * The display-list DMA execute routine sends a list by DMA only while its
+ * nesting and the current call depth come to less than 64 (established), so the
+ * client never nests deeper; the board's own depth is unknown. A call past it
+ * fails the execute whole. The discriminating tests are
+ * gl-list-draws-the-probe-list, gl-list-follows-the-chain,
+ * gl-list-big-matches-the-reference, gl-list-continues-at-offset-zero
+ * and gl-list-calls-a-list.
+ *
+ * A chain is followed for at most MGRAS_LIST_MAX_RANGES ranges and, over
+ * all of them, MGRAS_LIST_MAX_WORDS words. Over either limit, or outside
+ * the pool, the execute fails whole and nothing is drawn. The limits
+ * stop a looping chain of small ranges, which would otherwise append
+ * ranges until the pool's words ran out, hundreds of thousands of them
+ * in one port write. The discriminating tests are
+ * gl-list-over-the-range-limit and gl-list-past-the-pool-is-bounded.
+ *
+ * The client waits on nothing after the execute, and the board is not
+ * known to report a list's end anywhere the guest can see, so the
+ * completion this publishes goes nowhere (mgras_raster_dma_publish()).
+ * A list is executed inside the port write that invoked it.
+ */
+#define MGRAS_LIST_SLOT 4
+
+/*
+ * The most words one execute may fetch. The board's own limit is not
+ * known; this one bounds host memory and time, since the pool, and so
+ * every size in it, is the guest's choice. It is 2^20 words (4 MiB),
+ * twice the whole pool the IRIX 6.5.30 kernel installed in both runs
+ * (0x204 pages, 528,384 words) and 78 times the largest list measured
+ * (list-big, 13,355 words). An execute over it is refused whole.
+ */
+#define MGRAS_LIST_MAX_WORDS (1u << 20)
+
+/*
+ * The most ranges one execute may follow. The client fills each pool
+ * page with one range of up to 1,017 words (list-big: 14 ranges), so a
+ * list at MGRAS_LIST_MAX_WORDS laid out that way takes 1,032 ranges.
+ */
+#define MGRAS_LIST_MAX_RANGES 2048
+
+/* The deepest call chain the model follows; see above. */
+#define MGRAS_LIST_MAX_CALLS 64
+
+/* A range's header tokens, as the range-header routine writes them. */
+#define MGRAS_LIST_HDR_LAST 0x00083904u
+#define MGRAS_LIST_HDR_NEXT 0x00080c08u
+#define MGRAS_LIST_HDR_CALL 0x00083708u
+
+typedef struct MgrasListRange {
+    uint32_t offset;
+    uint32_t size;
+} MgrasListRange;
+
+/* A list fetch's view of the bus, its calls, and what it has refused. */
+typedef struct MgrasListBus {
+    MgrasDmaBus dma;
+    bool refused;
+    unsigned int depth;
+    MgrasListRange ret[MGRAS_LIST_MAX_CALLS];
+} MgrasListBus;
+
+typedef enum MgrasListHeader {
+    MGRAS_LIST_BAD,
+    MGRAS_LIST_LAST,
+    MGRAS_LIST_NEXT,
+    MGRAS_LIST_CALL,
+} MgrasListHeader;
+
+/*
+ * Read a range's header: its kind, its length in words, and the ranges it
+ * names, next and, for a call, the called list's first.
+ */
+static MgrasListHeader mgras_raster_list_header(const uint32_t *w, unsigned n,
+                                                unsigned *len,
+                                                MgrasListRange *next,
+                                                MgrasListRange *callee)
+{
+    if (n >= 2 && w[0] == MGRAS_LIST_HDR_LAST && w[1] == 0) {
+        *len = 2;
+        return MGRAS_LIST_LAST;
+    }
+    if (n >= 3 && w[0] == MGRAS_LIST_HDR_NEXT) {
+        *len = 3;
+        *next = (MgrasListRange) { w[1], w[2] };
+        return MGRAS_LIST_NEXT;
+    }
+    if (n >= 6 && w[0] == MGRAS_LIST_HDR_CALL &&
+        w[3] == MGRAS_LIST_HDR_NEXT) {
+        *len = 6;
+        *next = (MgrasListRange) { w[1], w[2] };
+        *callee = (MgrasListRange) { w[4], w[5] };
+        return MGRAS_LIST_CALL;
+    }
+    return MGRAS_LIST_BAD;
+}
+
+static void mgras_raster_list_decode(void *opaque, uint32_t context,
+                                     const uint32_t *words, unsigned n)
+{
+    MgrasDmaBus *b = opaque;
+    MgrasListRange next, callee;
+    unsigned header;
+
+    /* The fetch ends at a range whose header next() did not accept. */
+    if (mgras_raster_list_header(words, n, &header, &next, &callee) ==
+        MGRAS_LIST_BAD) {
+        return;
+    }
+    for (unsigned i = header; i < n; i++) {
+        mgras_command_fifo_token(b->s, words[i]);
+    }
+}
+
+static bool mgras_raster_list_refuse(MgrasListBus *b)
+{
+    b->refused = true;
+    return false;
+}
+
+static bool mgras_raster_list_next(void *opaque, const SGICommandFetch *f,
+                                   uint64_t *offset, uint64_t *nwords)
+{
+    MgrasListBus *b = container_of(opaque, MgrasListBus, dma);
+    const SGIFetchSegment *seg;
+    MgrasListRange next, callee;
+    unsigned header;
+
+    if (!f->nsegments) {
+        return false;
+    }
+    seg = &f->segments[f->nsegments - 1];
+    switch (mgras_raster_list_header(seg->words, seg->nwords, &header, &next,
+                                     &callee)) {
+    case MGRAS_LIST_LAST:
+        if (!b->depth) {
+            return false;
+        }
+        next = b->ret[--b->depth];
+        break;
+    case MGRAS_LIST_NEXT:
+        break;
+    case MGRAS_LIST_CALL:
+        if (b->depth == MGRAS_LIST_MAX_CALLS) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%"
+                          PRIx64 " calls past the model's %u nested lists\n",
+                          seg->addr, MGRAS_LIST_MAX_CALLS);
+            return mgras_raster_list_refuse(b);
+        }
+        b->ret[b->depth++] = next;
+        next = callee;
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: display-list range at 0x%"
+                      PRIx64 " begins 0x%08x, not a range header the "
+                      "model knows\n", seg->addr,
+                      seg->nwords ? seg->words[0] : 0);
+        return mgras_raster_list_refuse(b);
+    }
+    if (f->nsegments >= MGRAS_LIST_MAX_RANGES ||
+        f->nwords + next.size > MGRAS_LIST_MAX_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list goes on "
+                      "past %u ranges or %u words, the model's limits\n",
+                      MGRAS_LIST_MAX_RANGES, MGRAS_LIST_MAX_WORDS);
+        return mgras_raster_list_refuse(b);
+    }
+    /*
+     * Every range carries a header, so a range of no words is not one.
+     * Unknown: whether the client ever ends a list with a call, a calling
+     * range whose next range is (0, 0). The listing's three header forms
+     * always name a next range, the display-list pool routine was not read far
+     * enough to rule the case out, and no capture has a list that calls a list.
+     * The model refuses such a list here, on the return from the called list.
+     */
+    if (!next.size) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list names a "
+                      "range of no words at pool offset 0x%x\n", next.offset);
+        return mgras_raster_list_refuse(b);
+    }
+    *offset = next.offset;
+    *nwords = next.size;
+    return true;
+}
+
+static void mgras_raster_list_execute(SGIMgrasState *s, uint32_t offset,
+                                      uint32_t size)
+{
+    SGICommandFetch *f = &s->list_fetch;
+    SGIMgrasCmdParser port;
+    MgrasListBus ctx = { };
+    SGIDMABus bus;
+    SGIDMAPageList pl;
+    g_autofree uint64_t *page_addr = NULL;
+    int ret;
+
+    /*
+     * An execute among a list's own commands would arrive here from
+     * inside the fetch. The client puts its calls in range headers, which
+     * mgras_raster_list_next() follows, and never among the commands.
+     */
+    if (f->open) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: a display list's commands "
+                      "execute the list at pool offset 0x%x; an execute "
+                      "inside a list is not modelled\n", offset);
+        return;
+    }
+    if (size > MGRAS_LIST_MAX_WORDS) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%x of "
+                      "%u words is over the model's %u-word limit\n", offset,
+                      size, MGRAS_LIST_MAX_WORDS);
+        return;
+    }
+    if (sgi_mgras_dma_map_slot_count(s, MGRAS_LIST_SLOT) == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list executed "
+                      "with no pool mapped in DMA-map slot %u\n",
+                      MGRAS_LIST_SLOT);
+        return;
+    }
+    if (!mgras_raster_dma_setup(s, MGRAS_LIST_SLOT, &ctx.dma, &bus, &pl,
+                                &page_addr)) {
+        return;
+    }
+    f->context = s->gl_current;
+    f->decode = mgras_raster_list_decode;
+    f->next = mgras_raster_list_next;
+    f->little_endian = false;
+    f->trace_chunks = trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK);
+    f->trace_seq = s->trace_sequence - 1;
+    f->seq = f->trace_seq;
+    f->cookie = 0;
+
+    sgi_mgras_cmd_parser_save(s, &port);
+    s->cmd_token_class = s->cmd_token_reg = 0;
+    s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
+    ret = sgi_fetch_map(f, &bus, &pl, offset, size);
+    if (!ret && ctx.refused) {
+        ret = SGI_FAIL_BOUNDS;
+    }
+    if (!ret) {
+        sgi_fetch_run(f, bus.opaque);
+        if (s->cmd_token_words_remaining) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: display list at 0x%x "
+                          "ends %u words short of a packet\n", offset,
+                          s->cmd_token_words_remaining);
+        }
+    }
+    sgi_fetch_finish(f, ret, bus.ops, bus.opaque);
+    sgi_mgras_cmd_parser_load(s, &port);
+}
+
 static void mgras_raster_desc_bank_store(SGIMgrasState *s, uint32_t cmd_class,
                                       uint32_t reg, const uint32_t *payload,
                                       uint32_t payload_words)
 {
     uint32_t *regs;
     uint32_t regs_count;
+
+    if (cmd_class == MGRAS_CMD_HDR_CLASS_DESC_20000 &&
+        reg == MGRAS_DESC_20000_REG_LIST_EXECUTE) {
+        if (payload_words == 2) {
+            mgras_raster_list_execute(s, payload[0], payload[1]);
+        } else {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: display-list execute with "
+                          "%u words, not 2\n", payload_words);
+        }
+        return;
+    }
 
     switch (cmd_class) {
     case MGRAS_CMD_HDR_CLASS_DESC_20000:
@@ -1983,37 +3213,68 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
                          (s->cmd_token_payload_count * sizeof(uint32_t));
 
     /*
-     * Established as software expectation (mgras-hq4.md, "HQ flags"): the
-     * IRIX 6.5.30 client's __Mgr_ReturnMode clears flag 17, writes the query,
-     * then polls flag 17 with no bound and reads 0x028004 once it is set.
-     * Approximated: the model has the answer as soon as the arguments
-     * arrive, and the answer is zero; it replaces the GE revision 0x028004
-     * held since reset. Which answer each query index expects is unknown.
-     * The discriminating tests are hq-query-sets-flag-after-arguments and
-     * hq-query-flag-only-from-query.
+     * Established as software expectation: the
+     * IRIX 6.5.30 client's state-query routine clears flag 17, writes the
+     * query, then polls flag 17 with no bound and reads 0x028004 once it is
+     * set. Approximated: the model has the answer as soon as the arguments
+     * arrive, and it replaces the GE revision 0x028004 held since reset.
+     * sgi_mgras_gl_query_answer() answers the indices it decodes from the
+     * loaded context's GL state and every other index with zero; which
+     * answer the board gives each index is unknown. The discriminating
+     * tests are hq-query-sets-flag-after-arguments,
+     * hq-query-flag-only-from-query and hq-query-answers-the-matrices.
      */
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_QUERY) {
-        s->ge_report = 0;
+        s->ge_report = sgi_mgras_gl_query_answer(s, s->cmd_token_payload,
+                                                 s->cmd_token_payload_count);
         s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
         return;
     }
 
     /*
-     * Established (mgras-hq4.md, "Swap scheduling"): MgrasSchedSwapBuf
+     * Established: the client's one-argument
+     * 0xa104 query, sent for GL_CURRENT_COLOR and the other current
+     * attributes, and its two-argument 0x8b08 histogram query clear flag
+     * 17 and wait on it like 0xa20c. perfly waited forever on 0xa104 in
+     * a captured run. Approximated as for 0xa20c: the
+     * flag is set once the query's own arguments arrive, and the answer
+     * is the model's (sgi_mgras_gl_attribute_answer()). The
+     * discriminating test is hq-attribute-queries-set-flag-after-arguments.
+     */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        (reg == MGRAS_HQ_OP_ATTR_QUERY ||
+         reg == MGRAS_HQ_OP_HISTOGRAM_QUERY)) {
+        s->ge_report = reg == MGRAS_HQ_OP_ATTR_QUERY &&
+                       s->cmd_token_payload_count == 1 ?
+                       sgi_mgras_gl_attribute_answer(s,
+                                                     s->cmd_token_payload[0]) :
+                       0;
+        s->hq_flags |= MGRAS_HQ_FLAG_QUERY;
+        return;
+    }
+
+    /*
+     * Established: the swap-scheduling routine
      * enables source 10, writes 0x3700 and sleeps until its handler sees
      * source 10. Inferred there: the board raises it once the work queued
      * ahead of the word has drained, so the flip follows the rendering.
      * Approximated: the model executes each command as it arrives, so
      * nothing is queued ahead and it raises the source when the word is
      * consumed. The XMAP
-     * buffer selection itself is the kernel's MgrasSchedSwapTask, not
+     * buffer selection itself is the kernel's swap task, not
      * this word. The discriminating tests are
      * swap-command-raises-interrupt-10 and swap-command-needs-enable.
      */
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_SWAP) {
         sgi_mgras_raise_pending(s, SGI_MGRAS_PENDING_SWAP);
+        return;
+    }
+
+    /* Nothing is queued ahead of a sync request (MGRAS_HQ_OP_RE_SYNC). */
+    if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
+        reg == MGRAS_HQ_OP_RE_SYNC) {
         return;
     }
 

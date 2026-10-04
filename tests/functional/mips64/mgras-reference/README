@@ -1,0 +1,32 @@
+Reference colour statistics for the per-board matrix tests. Each file is
+JSON written by lib_mgras_matrix.write_stats() and is named
+<board>-<feature>.json. Take them from a run that was judged correct by
+eye: every run saves a candidate as mgras-<board>-<feature>.stats.json in
+its log directory, beside the frame it describes.
+
+One per feature on each board, each from a frame checked by eye:
+  si-lit3d.json     ivview draws the lit windmill
+  si-pixels.json    imgview shows brick.rgb
+  si-t-lit3d.json   as si-lit3d
+  si-t-pixels.json  as si-pixels
+  si-t-texture.json perfly draws the CH-53 with its panel texture, the
+                    rotor blades and the Performer logo
+  ssi-lit3d.json    as si-lit3d
+  ssi-pixels.json   as si-pixels
+  ssi-doublebuffer.json  clock draws its face
+  esi-lit3d.json  esi-pixels.json   as the SI two
+  esi-t-lit3d.json  esi-t-pixels.json  esi-t-texture.json
+                    as the SI+T three
+  essi-lit3d.json  essi-pixels.json  essi-doublebuffer.json
+                    as the SSI three
+  mxi-lit3d.json  emxi-lit3d.json  ivview draws the lit windmill
+  mxi-pixels.json  emxi-pixels.json  imgview shows brick.rgb
+  mxi-texture.json  emxi-texture.json
+                    perfly draws the textured CH-53 head-on, with its panel
+                    texture and the Performer logo; the rotor shows as thin
+                    lines at this angle
+  mxi-doublebuffer.json  emxi-doublebuffer.json  clock draws its face
+
+A missing file fails the test, as a mismatch does. When a model change
+alters a frame on purpose, check the new frame by eye before replacing
+its file.

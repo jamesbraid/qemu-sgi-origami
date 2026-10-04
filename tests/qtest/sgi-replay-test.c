@@ -37,6 +37,7 @@
  * window, @mmio_size that window's size; write and read offsets are checked
  * against it.  @qom_path is the head's device, which must provide the
  * x-test-pixel-x/-y selectors and x-test-pixel for native pixel checks.
+ * x-test-back-pixel reads the second colour bank.
  * @display_pixel_property selects scanout readback. @auxiliary_planes
  * enables x-test-wid and x-test-overlay checks. @console selects the
  * screendump device, and @needs_prom supplies synthetic firmware to
@@ -110,6 +111,44 @@ static const ReplayHead replay_heads[] = {
         .display_pixel_property = "x-test-display-pixel",
         .needs_prom = true,
     },
+    {
+        /*
+         * The same machine with the SI board's textured sibling, SI+T, for
+         * captures of the texture path. The model presents SI+T only on
+         * request, since it implements part of the texture engine.
+         */
+        .codename = "sgi-mgras-si-t",
+        .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=si-t,"
+                   "x-unimplemented-board=on",
+        .mmio_base = SPACE_IO + (0xfULL << 24),
+        .mmio_size = 2 * MiB,
+        .qom_path = "/machine/module0/io3",
+        .width = 1280,
+        .height = 1024,
+        .display_pixel_property = "x-test-display-pixel",
+        .auxiliary_planes = true,
+        .trace = "-trace enable=sgi_mgras_mmio "
+                 "-trace enable=sgi_mgras_control_mmio",
+    },
+    {
+        /*
+         * The same machine with the SSI board, two raster engines, whose
+         * colour-buffer slots 2 and 3 a deep GL window draws into.
+         */
+        .codename = "sgi-mgras-ssi",
+        .machine = "-M origin2000,topology=origin2000-deskside,nodes=1 "
+                   "-smp 2 -m 256M -device sgi-mgras,slot=io3,board=ssi",
+        .mmio_base = SPACE_IO + (0xfULL << 24),
+        .mmio_size = 2 * MiB,
+        .qom_path = "/machine/module0/io3",
+        .width = 1280,
+        .height = 1024,
+        .display_pixel_property = "x-test-display-pixel",
+        .auxiliary_planes = true,
+        .trace = "-trace enable=sgi_mgras_mmio "
+                 "-trace enable=sgi_mgras_control_mmio",
+    },
 };
 
 static const ReplayHead *find_head(const char *codename)
@@ -131,6 +170,15 @@ static const ReplayHead *find_head(const char *codename)
 #define ROOT_ICON         "root-icon.replay"
 #define OVERLAY           "overlay.replay"
 #define DMA_IMAGE_TRANSFER "dma-image-transfer.replay"
+#define GL_PIXELS_RECTWRITE "gl-pixels-rectwrite.replay"
+#define GL_DEEP_SWAP_CLOCK_SSI "gl-deep-swap-clock-ssi.replay"
+#define GL_SWAP_TMESH_SPHERE "gl-swap-tmesh-sphere.replay"
+#define GL_NEW_CONTEXT_SLOT_REUSE \
+    "gl-new-context-slot-reuse.replay"
+#define GL_TEXTURE_RGBA4_QUAD \
+    "gl-texture-rgba4-quad.replay"
+#define GL_EVICTION_I3DM  "gl-eviction-i3dm.replay"
+#define PIO_READ_OGLSNOOP "pio-read-oglsnoop.replay"
 #define INVALID_REPLAY    "invalid.replay"
 #define INVALID_BOUNDS    "invalid-bounds.replay"
 #define INVALID_EXTRA     "invalid-extra.replay"
@@ -289,7 +337,7 @@ static void replay_mmio(QTestState *qts, const ReplayHead *head,
  * s->fabric_as and preloading there leaves the plain address, and so the
  * model's read, untouched. HEX is the same lowercase, unseparated hex-pair
  * encoding qemu_hexdump_to_buffer() writes into the trace;
- * MGRAS_DMA_CHUNK_MAX_BYTES in hw/misc/sgi-mgras-raster.c bounds a single
+ * SGI_DMA_CHUNK_MAX in include/hw/display/sgi/pixel-dma.h bounds a single
  * captured chunk the same way.
  */
 #define REPLAY_DMA_MAX_BYTES 4096
@@ -328,9 +376,14 @@ static void replay_dma(QTestState *qts, const char *path, unsigned int line,
     qtest_memwrite(qts, addr, bytes, len);
 }
 
+/*
+ * Check one colour pixel: pixel and display-pixel read the first bank and
+ * the displayed result, back-pixel the second bank, where a GL client
+ * drawing to the buffer the bank token makes the front draws.
+ */
 static void replay_pixel(QTestState *qts, const ReplayHead *head,
                          const char *path, unsigned int line, char **words,
-                         bool display)
+                         const char *property)
 {
     uint64_t x, y, expected, actual;
 
@@ -343,7 +396,7 @@ static void replay_pixel(QTestState *qts, const ReplayHead *head,
     if (x >= head->width || y >= head->height || expected > UINT32_MAX) {
         g_error("%s:%u: pixel is outside the native surface", path, line);
     }
-    actual = pixel(qts, head, x, y, display);
+    actual = plane_value(qts, head, x, y, property);
     if (actual != expected) {
         g_error("%s:%u: pixel (%" PRIu64 ", %" PRIu64 ") returned 0x%"
                 PRIx64 ", expected 0x%" PRIx64,
@@ -590,9 +643,11 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "dma")) {
         replay_dma(qts, path, line, words);
     } else if (!strcmp(words[0], "pixel")) {
-        replay_pixel(qts, head, path, line, words, false);
+        replay_pixel(qts, head, path, line, words, "x-test-pixel");
     } else if (!strcmp(words[0], "display-pixel")) {
-        replay_pixel(qts, head, path, line, words, true);
+        replay_pixel(qts, head, path, line, words, "x-test-display-pixel");
+    } else if (!strcmp(words[0], "back-pixel")) {
+        replay_pixel(qts, head, path, line, words, "x-test-back-pixel");
     } else if (!strcmp(words[0], "pixels")) {
         replay_pixels(qts, head, path, line, words);
     } else if (!strcmp(words[0], "wid")) {
@@ -1169,6 +1224,75 @@ static void test_char_modes(void)
     run_fixture(CHAR_MODES, NULL);
 }
 
+/*
+ * One row of mandel's first IRIS GL rectwrite from the IRIX 6.5.30 SI
+ * session: the GE parameter loads, 0x8d20 and the row's inline block of
+ * 16-bit colour indices.
+ */
+static void test_gl_pixels_rectwrite(void)
+{
+    run_fixture(GL_PIXELS_RECTWRITE, NULL);
+}
+
+/*
+ * A deep double-buffered window's swaps show the slot or bank the client
+ * drew: black before the first swap, the clock's frame after each.
+ */
+static void test_gl_deep_swap_clock_ssi(void)
+{
+    run_fixture(GL_DEEP_SWAP_CLOCK_SSI, NULL);
+}
+
+/*
+ * The first strips of mview's lit atom sphere on the SI, each broken by
+ * twenty-three triangle-mesh swap words. The pixels the swap redirects
+ * keep the clear colour when the word is ignored.
+ */
+static void test_gl_swap_tmesh_sphere(void)
+{
+    run_fixture(GL_SWAP_TMESH_SPHERE, NULL);
+}
+
+/*
+ * ivview's context dies four words short in slot 0x5420, and the next
+ * ivview's new context in the same slot sets up and answers its queries.
+ */
+static void test_gl_new_context_slot_reuse(void)
+{
+    run_fixture(GL_NEW_CONTEXT_SLOT_REUSE, NULL);
+}
+
+/*
+ * ivview's RGBA4 textured quad on SI+T, as its client sent it: the load
+ * bracket, the 0x511a transfer by DMA with the host bytes added, the
+ * bind and the quad. The fixture checks the model's choice of truncation
+ * to 4 bits: every pixel of the quad is 0x114488.
+ */
+static void test_gl_texture_rgba4_quad(void)
+{
+    run_fixture(GL_TEXTURE_RGBA4_QUAD, NULL);
+}
+
+/*
+ * The X server reads two pixels through the raster engine's data port, as
+ * it did for oglsnoop, and each 8-byte
+ * unit comes back as the two pixels' words.
+ */
+static void test_pio_read_oglsnoop(void)
+{
+    run_fixture(PIO_READ_OGLSNOOP, NULL);
+}
+
+/*
+ * The kernel reads i3dm's top view's context out of ERAM address 0x9d19
+ * and writes it back at 0x5420, the tool panel's, and the view's clear
+ * then covers the whole view.
+ */
+static void test_gl_eviction_i3dm(void)
+{
+    run_fixture(GL_EVICTION_I3DM, NULL);
+}
+
 static void test_cmap_xmap_wid(void)
 {
     run_fixture(CMAP_XMAP_WID, NULL);
@@ -1240,7 +1364,7 @@ static void test_overlay_migration(void)
  * screen DMA draw's source bytes reach the model: DMA_IMAGE_TRANSFER's two
  * 'dma' lines preload the page-list entry and the pixel row at their plain
  * node addresses, exactly matching what
- * sn0-origin2000-mgras-test.c's test_dma_image_transfer_traces_source_chunks
+ * sgi-mgras-pixels-test.c's test_dma_image_transfer_traces_source_chunks
  * proved a real capture of this same register sequence records, before the
  * kick that makes the model read them back. The fixture also carries its
  * own command-channel handshake (copied from fill.replay), since unlike a
@@ -1543,6 +1667,20 @@ int main(int argc, char **argv)
                    test_overlay_migration);
     qtest_add_func("sgi-replay/mgras/dma-image-transfer",
                    test_dma_image_transfer);
+    qtest_add_func("sgi-replay/mgras/gl-pixels-rectwrite",
+                   test_gl_pixels_rectwrite);
+    qtest_add_func("sgi-replay/mgras/gl-deep-swap-clock-ssi",
+                   test_gl_deep_swap_clock_ssi);
+    qtest_add_func("sgi-replay/mgras/gl-swap-tmesh-sphere",
+                   test_gl_swap_tmesh_sphere);
+    qtest_add_func("sgi-replay/mgras/gl-new-context-slot-reuse",
+                   test_gl_new_context_slot_reuse);
+    qtest_add_func("sgi-replay/mgras/gl-texture-rgba4-quad",
+                   test_gl_texture_rgba4_quad);
+    qtest_add_func("sgi-replay/mgras/pio-read-oglsnoop",
+                   test_pio_read_oglsnoop);
+    qtest_add_func("sgi-replay/mgras/gl-eviction-i3dm",
+                   test_gl_eviction_i3dm);
     qtest_add_func("sgi-replay/mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-replay/mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-replay/mgras/invalid-extra", test_invalid_extra);
