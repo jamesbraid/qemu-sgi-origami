@@ -4384,7 +4384,8 @@ static void texture_native_bind(QTestState *s, uint32_t handle)
     uint32_t record[22] = { 0, 0x101010, 256u << 10 };
 
     kona_command(s, 0x1d5,
-                 (uint32_t[]) { handle, 41 << 12, 0x30 << 14, 0x11, 0 }, 5);
+                 (uint32_t[]) { handle, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x11, 0 }, 5);
     kona_command(s, 0x179, record, 22);
 }
 
@@ -4564,7 +4565,7 @@ static void texture_native_format_bind(QTestState *s, unsigned index,
 {
     uint32_t record[22] = { 0, 0x101010, 256u << 10 };
     uint32_t bind[5] = {
-        0, (index << 12) | 7,
+        0, (2u << 28) | (index << 12) | 7,
         (0x30 << 14) | (mag << 5) | (channel << 26) | (detail_level << 21),
         0x11, 0,
     };
@@ -5062,8 +5063,9 @@ static void test_texture_native_byte_formats(gconstpointer opaque)
     h[9] = cases[c].storage;
     h[17] = 0x2180;
     kona_command(s, 0x1d5,
-                 (uint32_t[]) { 0, (h[9] == 0xe ? 17 : h[9] == 8 ? 1 : 0)
-                                   << 12, h[9] << 14, 0x11, 0 }, 5);
+                 (uint32_t[]) { 0, (2u << 28) |
+                     ((h[9] == 0xe ? 17 : h[9] == 8 ? 1 : 0) << 12),
+                     h[9] << 14, 0x11, 0 }, 5);
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     for (unsigned alignment = 1; alignment <= 8; alignment *= 2) {
@@ -5124,7 +5126,8 @@ static void test_texture_native_rows(void)
     h[16] = 0x44;
     h[18] = 0x55;
     kona_command(s, 0x1d5,
-                 (uint32_t[]) { 0, 41 << 12, 0x30 << 14, 0x44, 0 }, 5);
+                 (uint32_t[]) { 0, (2u << 28) | (41 << 12),
+                                0x30 << 14, 0x44, 0 }, 5);
     /* Select the physical descriptor supplied by this upload. */
     kona_command(s, 0x179, record, 22);
     for (unsigned pad = 0; pad < 4; pad++) {
@@ -5212,7 +5215,7 @@ static void test_texture_byte_migrates(gconstpointer opaque)
     h[9] = 0xd;
     h[17] = 0x2180;
     kona_command(from, 0x1d5,
-                 (uint32_t[]) { 0, 0, 0xd << 14, 0x11, 0 }, 5);
+                 (uint32_t[]) { 0, 2u << 28, 0xd << 14, 0x11, 0 }, 5);
     kona_command(from, 0x179, record, 22);
     kona_command(from, 0x33, (uint32_t[]) { 0xcf2, 3 }, 2);
     kona_command(from, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
@@ -5288,7 +5291,7 @@ static void test_texture_native_dma(gconstpointer opaque)
     h[17] = 0x2184;
     record[3] = h[16];
     kona_command(s, 0x1d5,
-                 (uint32_t[]) { 0, 0, 0xd << 14,
+                 (uint32_t[]) { 0, 2u << 28, 0xd << 14,
                                 mode == 11 ? 0x1c : large ? 0x1b : 0x11,
                                 0 }, 5);
     kona_command(s, 0x179, record, 22);
@@ -6448,7 +6451,7 @@ static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb44, 0xbc0, 0xb71, 0xb90, 0xbe2, 0xbf1, 0xbf2, 0xb60,
-        0x8037, 0xde1, 0x806f, 0xbd0, 0x3000, 0xc11, 0xb41, 0xb42,
+        0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xc11, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -6769,6 +6772,150 @@ static void test_texture_native_interior(gconstpointer opaque)
     }
     assert_texture_pixel(to ? to : from, 0, 0, 0xff0000ff);
     assert_texture_pixel(to ? to : from, 1, 1, 0xff0000ff);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
+static void test_texture_native_1d(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 1 || mode == 3, half = mode == 2 || mode == 3;
+    uint32_t h[20], bind[5] = {
+        0, (1u << 28) | (41 << 12), (0x30 << 14) | (1 << 2), 1, 0,
+    };
+    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0x23 };
+    uint32_t pixels[] = { 0xff0000ff, 0x0000ffff };
+    uint32_t halves[] = { 0xffff0000, 0x0000ffff, 0, 0xffffffff };
+    const uint32_t *data = half ? halves : pixels;
+    unsigned count = half ? 4 : 2;
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x106, bind, 5);
+    kona_command(s, 0x179, record, 22);
+    memcpy(h, texture_header, sizeof(h));
+    h[0] = 0xde0;
+    h[2] = 1;
+    h[4] = half ? 3 : 1;
+    h[6] = h[7] = dma;
+    h[14] = 0;
+    h[17] = 0x2181 | (dma ? 4 : 0);
+    kona_command(s, 0x174, h, 20);
+    if (dma) {
+        uint8_t bytes[16];
+
+        for (unsigned k = 0; k < count; k++) {
+            stl_be_p(bytes + 4 * k, data[k]);
+        }
+        qtest_memwrite(s, 0x380000, bytes, count * 4);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        texture_dma_packet(s, 0, count * 4, count * 4, 0);
+        g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+    } else {
+        for (unsigned k = 0; k < count; k++) {
+            qtest_writel(s, REG_COMMAND, data[k]);
+            if (mode == 10 && k == 0) {
+                dir = g_dir_make_tmp("sn0-kona-1d-partial-XXXXXX", &err);
+                g_assert_no_error(err);
+                uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+                args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+                to = qtest_init(args);
+                sgi_migrate_stopped(from, uri);
+                s = to;
+            }
+        }
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x24, (uint32_t[]) { 0xde0 }, 1);
+    if (mode == 5) {
+        dir = g_dir_make_tmp("sn0-kona-1d-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        to = qtest_init(args);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 8) {
+        static const unsigned targets[] = { 0, 2, 4 };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(targets); k++) {
+            bind[1] = (targets[k] << 28) | (41 << 12);
+            kona_command(s, 0x106, bind, 5);
+            kona_command(s, 0x179, record, 22);
+            assert_texture_pixel(s, 0, 0, 0);
+        }
+        bind[1] = (1u << 28) | (41 << 12);
+        bind[3] = 0x11;
+        kona_command(s, 0x106, bind, 5);
+        kona_command(s, 0x179, record, 22);
+        assert_texture_pixel(s, 0, 0, 0);
+        bind[3] = 1;
+        kona_command(s, 0x106, bind, 5);
+        kona_command(s, 0x179, record, 22);
+        assert_texture_pixel(s, 0, 0, 0xff0000ff);
+    }
+    if (mode == 9) {
+        for (unsigned bad = 0; bad < 3; bad++) {
+            uint32_t invalid[20];
+
+            memcpy(invalid, h, sizeof(invalid));
+            if (bad == 0) {
+                invalid[2] = 2;
+                invalid[14] = 1;
+            } else if (bad == 1) {
+                invalid[12] = invalid[14] = 1;
+            } else {
+                invalid[15] = 1;
+            }
+            kona_command(s, 0x174, invalid, 20);
+            for (unsigned k = 0; k < 2 * invalid[2]; k++) {
+                qtest_writel(s, REG_COMMAND, 0x0000ffff);
+            }
+            kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+            assert_texture_pixel(s, 0, 0, 0xff0000ff);
+        }
+    }
+    if (mode == 6 || mode == 7) {
+        bool enabled = mode == 6;
+
+        kona_command(s, enabled ? 0x24 : 0x25, (uint32_t[]) { 0xde0 }, 1);
+        kona_command(s, 0xc9, (uint32_t[]) { 0x2000 }, 1);
+        assert_reply_posted(s);
+        kona_command(s, enabled ? 0x25 : 0x24, (uint32_t[]) { 0xde0 }, 1);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    }
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    if (mode == 4) {
+        /* T must not turn magnification into minification. */
+        gl_begin(s, 4);
+        for (unsigned k = 0; k < 3; k++) {
+            kona_command_f(s, 0x80,
+                           (float[]) { 0.5, k == 1 ? 128 : 0 }, 2);
+            kona_command_f(s, 0x90,
+                           (float[]) { tri[k][0], tri[k][1], 0 }, 3);
+        }
+        gl_end(s);
+        assert_stencil_colour(s, 0x0000ff);
+    } else {
+        kona_command_f(s, 0x80, (float[]) { 0.25, 123 }, 2);
+        gl_triangle_z(s, tri, 0);
+        assert_stencil_colour(s, mode == 7 ? 0xffffff : 0xff0000);
+        if (mode != 7) {
+            kona_command_f(s, 0x80, (float[]) { 0.75, -123 }, 2);
+            gl_triangle_z(s, tri, 0);
+            assert_stencil_colour(s, 0x0000ff);
+        }
+    }
     if (to) {
         qtest_quit(to);
         g_rmdir(dir);
@@ -7283,6 +7430,19 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(0), test_texture_native_interior);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/interior/migrates",
                         GINT_TO_POINTER(1), test_texture_native_interior);
+    static const char *one_d_cases[] = {
+        "pio-byte", "dma-byte", "pio-halfword", "dma-halfword", "ignore-t",
+        "migrates", "restore-enabled", "restore-disabled", "targets-refused",
+        "dimensions-refused", "partial-migrates",
+    };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(one_d_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/texture/1d/%s", one_d_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_texture_native_1d);
+    }
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
