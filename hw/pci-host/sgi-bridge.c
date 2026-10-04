@@ -588,18 +588,11 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
     sgi_bridge_aim_window(s, slot);
 }
 
-/*
- * Two callers: the programmed-access windows (the byte-lane tables land a
- * narrow access reversed with swap disabled, the state both guests run in)
- * and the DMA path. A slot is exempt when the device plugged into it declared
- * that it orders these byte lanes itself, which is a fact about the model on
- * the other end of the wires and travels with it from slot to slot; the
- * property beside it forces the answer for tests and debugging.
- */
+/* Only the explicit test override bypasses ordinary PCI placement. */
 static bool sgi_bridge_slot_needs_correction(SGIBridgeState *s,
                                              unsigned int slot)
 {
-    return !((s->self_ordered_slots | s->byte_lane_exempt) & (1u << slot));
+    return !(s->byte_lane_exempt & (1u << slot));
 }
 
 /*
@@ -700,8 +693,8 @@ static MemTxResult sgi_bridge_window_failed(SGIBridgeState *s,
  * visible to the compiler's array-bounds check, the eight-byte doubleword
  * being the caller's. Parameterized on a plain base and a correction flag
  * rather than a slot: the per-device windows pass their slot's own base and
- * its self-ordered exemption, the inbound PIO translated window (no slot, no
- * exemption a card can declare into) always corrects from PCI address zero
+ * its explicit test override, the inbound PIO translated window always
+ * corrects from PCI address zero
  * and leaves word lanes unswapped.
  * device is the number a failure records.
  */
@@ -937,8 +930,8 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
  * The inbound PIO translated window's cycle: the same byte-lane correction
  * as a per-device window's, but based at PCI address zero rather than a
  * slot's programmed base, and always corrected. There is no per-device
- * register behind this window to carry a self-ordered exemption or a
- * 64-bit-device declaration, so a doubleword access always gets the two
+ * register behind this window to select a test override or a 64-bit
+ * device, so a doubleword access always gets the two
  * corrected four-byte cycles a 32-bit device's window would use, the common
  * case, and the only one this window can express. No slot selects
  * the cycle either, so a failure records device number zero: which number
@@ -2117,26 +2110,19 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
            BRIDGE_PAGE_SHIFT_16K : BRIDGE_PAGE_SHIFT_4K;
 }
 
-/*
- * Ordinary PCI models need the crossed-lane correction with swapping off.
- * IOC3 models its swap-disabled view in guest byte order instead. Compose
- * either native representation with the guest's selected DMA swap control.
- */
+/* The programmed DMA swap control applies to every requesting PCI slot. */
 static bool sgi_bridge_dma_needs_correction(SGIBridgeState *s, unsigned int slot,
                                             hwaddr pci_addr)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
-    bool self_ordered = s->self_ordered_slots & (1U << slot);
-    bool swap;
 
     /* Local space never crosses the swapper; the override is test-only. */
     if (pci_addr < BRIDGE_PCI_TRANSLATED ||
         (s->byte_lane_exempt & (1U << slot))) {
         return false;
     }
-    swap = dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
-                                               : DEV_SWAP_DIRECT);
-    return self_ordered ? swap : !swap;
+    return !(dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
+                                                 : DEV_SWAP_DIRECT));
 }
 
 /*
@@ -2499,43 +2485,6 @@ static void sgi_bridge_link_reset(void *opaque, int line, int level)
                   "and released, not held until the link connection is "
                   "determined: no reviewed source says what a core held in "
                   "reset answers\n");
-}
-
-/*
- * The one place a device's byte-lane declaration is read: at plug time, into
- * a slot mask, so that every later access is a mask test rather than a walk
- * of the bus. Reading it here also means a card carries its own answer into
- * whatever slot it is put in, which a mask the board computed cannot.
- */
-static void sgi_bridge_plug(const HotplugHandler *handler, DeviceState *dev,
-                            Error **errp)
-{
-    SGIBridgeState *s = SGI_BRIDGE(handler);
-    Object *obj = OBJECT(dev);
-    Error *local_err = NULL;
-    bool self_ordered;
-
-    /* Saying nothing is the answer an ordinary card gives: correct it. */
-    if (!object_dynamic_cast(obj, TYPE_PCI_DEVICE) ||
-        !object_property_find(obj, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED)) {
-        return;
-    }
-
-    self_ordered = object_property_get_bool(obj,
-                                            SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
-                                            &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
-    }
-
-    if (self_ordered) {
-        /*
-         * Folded the way the DMA attributes are, for a slot past the eight.
-         */
-        s->self_ordered_slots |=
-            1u << (PCI_SLOT(PCI_DEVICE(dev)->devfn) % SGI_BRIDGE_DEVICES);
-    }
 }
 
 /*
@@ -2973,7 +2922,6 @@ static void sgi_bridge_class_init(ObjectClass *oc, const void *data)
      * constants standing between the test and the answer.
      */
     dc->user_creatable = true;
-    hc->plug = sgi_bridge_plug;
     hc->is_hotpluggable_bus = sgi_bridge_is_hotpluggable_bus;
     rc->phases.hold = sgi_bridge_reset_hold;
     device_class_set_props(dc, sgi_bridge_properties);

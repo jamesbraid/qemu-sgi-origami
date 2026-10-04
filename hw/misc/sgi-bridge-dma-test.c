@@ -63,12 +63,6 @@ struct SGIBridgeDMATestState {
     uint16_t vendor_id;
     uint16_t device_id;
 
-    /*
-     * Whether this card tells the bridge it orders its own byte lanes, so a
-     * test can stand one in for SGI silicon that does. Off by default, which
-     * is what an ordinary card says.
-     */
-    bool byte_lane_self_ordered;
     bool plain_dma;
 
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
@@ -411,8 +405,6 @@ static const Property sgi_bridge_dma_test_properties[] = {
                        SGI_BRIDGE_DMA_TEST_DEVICE),
     /* Settable, so one card type covers both sides of the exemption. */
     DEFINE_PROP_BOOL("plain-dma", SGIBridgeDMATestState, plain_dma, false),
-    DEFINE_PROP_BOOL(SGI_BRIDGE_BYTE_LANE_SELF_ORDERED, SGIBridgeDMATestState,
-                     byte_lane_self_ordered, false),
 };
 
 static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)

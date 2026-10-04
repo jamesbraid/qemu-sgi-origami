@@ -425,6 +425,10 @@ struct SGIIOC3State {
     const SGIIOC3Population *board;
 
     MemoryRegion bar;
+    MemoryRegion pci_bar;
+    MemoryRegion pci_dma;
+    AddressSpace bar_as;
+    AddressSpace dma_view_as;
 
     SerialState serial[SGI_IOC3_SERIAL_PORTS];
     MemoryRegion serial_io[SGI_IOC3_SERIAL_PORTS];
@@ -532,7 +536,7 @@ struct SGIIOC3State {
     int64_t sdma_loop_due[SGI_IOC3_SERIAL_PORTS];
     QEMUTimer *sdma_loop_timer[SGI_IOC3_SERIAL_PORTS];
 
-    AddressSpace *dma_as;   /* ring transfers go through the Bridge */
+    AddressSpace *dma_as;   /* chip-owned view over the PCI bus-master space */
 
     uint32_t chip_control;
     uint32_t int_out;

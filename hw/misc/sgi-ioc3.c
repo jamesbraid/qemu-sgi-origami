@@ -20,13 +20,90 @@
 #include "hw/misc/sgi-onewire-slot.h"
 #include "net/util.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
 #include "system/dma.h"
 #include "net/net.h"
 #include "trace.h"
+
+/* Word conversion keeps child DMA formats independent of PCI placement. */
+static MemTxResult sgi_ioc3_pci_dma_read(void *opaque, hwaddr addr,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIIOC3State *s = opaque;
+    uint8_t bytes[4] = { 0 };
+    MemTxResult result;
+
+    assert(size <= sizeof(bytes));
+    result = address_space_read(pci_get_address_space(PCI_DEVICE(s)),
+                                addr ^ (4 - size), attrs, bytes, size);
+    *value = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult sgi_ioc3_pci_dma_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIIOC3State *s = opaque;
+    uint8_t bytes[4];
+
+    assert(size <= sizeof(bytes));
+    stn_be_p(bytes, size, value);
+    return address_space_write(pci_get_address_space(PCI_DEVICE(s)),
+                               addr ^ (4 - size), attrs, bytes, size);
+}
+
+static const MemoryRegionOps sgi_ioc3_pci_dma_ops = {
+    .read_with_attrs = sgi_ioc3_pci_dma_read,
+    .write_with_attrs = sgi_ioc3_pci_dma_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
+
+/* The register view changes narrow placement, preserving transferred bytes. */
+static MemTxResult sgi_ioc3_pci_bar_read(void *opaque, hwaddr addr,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIIOC3State *s = opaque;
+    uint8_t bytes[4] = { 0 };
+    MemTxResult result;
+
+    assert(size <= sizeof(bytes));
+    result = address_space_read(&s->bar_as, addr ^ (4 - size),
+                                attrs, bytes, size);
+    *value = ldn_le_p(bytes, size);
+    return result;
+}
+
+static MemTxResult sgi_ioc3_pci_bar_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIIOC3State *s = opaque;
+    uint8_t bytes[4];
+
+    assert(size <= sizeof(bytes));
+    stn_le_p(bytes, size, value);
+    return address_space_write(&s->bar_as, addr ^ (4 - size),
+                               attrs, bytes, size);
+}
+
+static const MemoryRegionOps sgi_ioc3_pci_bar_ops = {
+    .read_with_attrs = sgi_ioc3_pci_bar_read,
+    .write_with_attrs = sgi_ioc3_pci_bar_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 4,
+};
 
 static void sgi_ioc3_update_irq(SGIIOC3State *s)
 {
@@ -1717,8 +1794,11 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                           "sgi-ioc3.main", SGI_IOC3_MAIN_SIZE);
     memory_region_add_subregion(&s->bar, 0, &s->main);
 
-    /* All child DMA goes through this function's bus-master view. */
-    s->dma_as = pci_get_address_space(dev);
+    /* All DMA masters share the chip's conversion into its PCI function. */
+    memory_region_init_io(&s->pci_dma, OBJECT(dev), &sgi_ioc3_pci_dma_ops, s,
+                          "sgi-ioc3.pci-dma", UINT64_MAX);
+    s->pci_dma.disable_reentrancy_guard = true;
+    s->dma_as = &s->dma_view_as;
 
     /*
      * The MicroLAN bus exists on every board; what varies is whether a part
@@ -1734,7 +1814,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
 
     if (s->board->eth) {
         object_property_set_link(OBJECT(&s->eth), "dma-memory",
-                                 OBJECT(&dev->bus_master_container_region),
+                                 OBJECT(&s->pci_dma),
                                  &error_abort);
         bool configured = qemu_configure_nic_device(DEVICE(&s->eth), true,
                                                     NULL);
@@ -1841,7 +1921,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
     if (s->board->parallel) {
         object_property_set_link(OBJECT(&s->parallel_dev), "dma-memory",
-                                 OBJECT(&dev->bus_master_container_region),
+                                 OBJECT(&s->pci_dma),
                                  &error_abort);
         if (!qdev_realize(DEVICE(&s->parallel_dev), BUS(&s->ioc3_bus), errp)) {
             return;
@@ -1948,7 +2028,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         object_unparent(OBJECT(&s->ds1685));
     }
 
-    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+    memory_region_init_io(&s->pci_bar, OBJECT(dev), &sgi_ioc3_pci_bar_ops, s,
+                          "sgi-ioc3.pci-bar", SGI_IOC3_BAR_SIZE);
+    s->pci_bar.disable_reentrancy_guard = true;
+    address_space_init(&s->bar_as, &s->bar, "sgi-ioc3.registers");
+    address_space_init(&s->dma_view_as, &s->pci_dma, "sgi-ioc3.dma");
+    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->pci_bar);
 
     /* The SuperIO line is board wiring, not the PCI pin. */
     qdev_init_gpio_out(DEVICE(dev), &s->superio_irq, 1);
@@ -1987,6 +2072,8 @@ static void sgi_ioc3_exit(PCIDevice *dev)
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_DS1685) {
         qdev_unrealize(DEVICE(&s->ds1685));
     }
+    address_space_destroy(&s->dma_view_as);
+    address_space_destroy(&s->bar_as);
 }
 
 static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
@@ -2277,16 +2364,6 @@ static const Property sgi_ioc3_properties[] = {
                        board_onewire_serial, SGI_IOC3_BOARD_ONEWIRE_SERIAL),
 };
 
-/*
- * IOC3's swap-disabled view uses big-endian DMA structures and unmodified
- * frame bytes. The bridge composes its programmed DMA swap with that native
- * representation. This is fixed by the model, not a guest-selectable mode.
- */
-static bool sgi_ioc3_byte_lane_self_ordered(Object *obj, Error **errp)
-{
-    return true;
-}
-
 static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2294,9 +2371,6 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI IOC3 base I/O controller";
-
-    object_class_property_add_bool(oc, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED,
-                                   sgi_ioc3_byte_lane_self_ordered, NULL);
 
     pc->realize = sgi_ioc3_realize;
     pc->exit = sgi_ioc3_exit;

@@ -22,6 +22,12 @@
  * past it: a transfer that runs off the end has nothing to land in.
  */
 #define RAM_SCRATCH     0x02000000u
+
+/* PCI direct-window addresses, distinct from qtest backing RAM addresses. */
+static uint32_t pci_dma_address(uint32_t physical)
+{
+    return 0x80000000u | physical;
+}
 #define RAM_END         0x03000000u
 
 #define IOC3_PCI_SLOT   4
@@ -229,6 +235,8 @@ static void ioc3_attach(QTestState *qts)
     ioc3_window = qpci_iomap(ioc3_dev, 0, NULL);
     qpci_device_enable(ioc3_dev);
 
+    /* Direct DMA targets transfer RAM without the reset 512 MB step. */
+    qtest_writel(qts, 0x40000000 + 0x80 + 4, 0);
 }
 
 /*
@@ -249,12 +257,14 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
     ioc3_writel(qts, ENET_MAC_CONTROL, MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_RX_RING_HI, 0);
-    ioc3_writel(qts, ENET_RX_RING_LO, ring & 0xfffff000u);
+    ioc3_writel(qts, ENET_RX_RING_LO,
+                 pci_dma_address(ring & 0xfffff000u));
     ioc3_writel(qts, ENET_RX_TIMER, 0);
     ioc3_writel(qts, ENET_RX_CONTROL, 0);
     for (i = 0; i < buffers; i++) {
         dma_stl_be(qts, ring + i * 8, 0);
-        dma_stl_be(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+        dma_stl_be(qts, ring + i * 8 + 4,
+                 pci_dma_address(rxbuf + i * 0x1000));
     }
     ioc3_writel(qts, ENET_RX_PRODUCE, (buffers << 3) | RPIR_ARM);
 }
@@ -432,7 +442,8 @@ static void test_the_inline_path_off_the_fabric(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
 
     assert_reply_landed(qts, rxbuf);
@@ -464,12 +475,15 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
                (split << TXD_BUF1_LEN_SHIFT) |
                ((sizeof(frame) - split) << TXD_BUF2_LEN_SHIFT));
     dma_stl_be(qts, desc + 8, 0);
-    dma_stl_be(qts, desc + 12, buf1);
+    dma_stl_be(qts, desc + 12,
+                 pci_dma_address(buf1));
     dma_stl_be(qts, desc + 16, 0);
-    dma_stl_be(qts, desc + 20, buf2);
+    dma_stl_be(qts, desc + 20,
+                 pci_dma_address(buf2));
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
 
     assert_reply_landed(qts, rxbuf);
@@ -503,13 +517,16 @@ static void send_descriptor(QTestState *qts, const uint8_t *frame,
                    (split << TXD_BUF1_LEN_SHIFT) |
                    ((actual_len - split) << TXD_BUF2_LEN_SHIFT));
         dma_stl_be(qts, desc + 8, 0);
-        dma_stl_be(qts, desc + 12, buf1);
+        dma_stl_be(qts, desc + 12,
+                 pci_dma_address(buf1));
         dma_stl_be(qts, desc + 16, 0);
-        dma_stl_be(qts, desc + 20, buf2);
+        dma_stl_be(qts, desc + 20,
+                 pci_dma_address(buf2));
     }
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
 }
 
@@ -940,7 +957,7 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
     for (i = 0; i < RX_RING_ENTRIES; i++) {
         dma_stl_be(qts, ring + i * RX_RING_STRIDE, 0);
         dma_stl_be(qts, ring + i * RX_RING_STRIDE + 4,
-                   rxbuf + (i % BUFFERS) * 0x1000);
+                 pci_dma_address(rxbuf + (i % BUFFERS) * 0x1000));
     }
 
     for (sent = 0; sent < RX_RING_ENTRIES * LAPS; sent++) {
@@ -1009,7 +1026,7 @@ static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
 
         dma_stl_be(qts, RAM_SCRATCH + 0x8000 + slot * RX_RING_STRIDE, 0);
         dma_stl_be(qts, RAM_SCRATCH + 0x8000 + slot * RX_RING_STRIDE + 4,
-                   rxbuf + slot * 0x1000);
+                 pci_dma_address(rxbuf + slot * 0x1000));
     }
     ioc3_writel(qts, ENET_RX_PRODUCE,
                 ((BUFFERS + EXTRA) * RX_RING_STRIDE) | RPIR_ARM);
@@ -1066,7 +1083,8 @@ static void test_a_burst_behind_one_doorbell(const void *data)
     qts = ioc3_attach_socket(sv[1], 8);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     queue_tx_run(qts, base, 0, BURST, TX_RING_SMALL * TX_DESC_SIZE, LEN);
 
     /* One write, sixteen frames. */
@@ -1106,7 +1124,8 @@ static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
 
     /* Sixty-four gigabytes up, where this machine has nothing at all. */
     ioc3_writel(qts, ENET_TX_RING_HI, 0x10);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
 
     net_socket_expect_no_frame(sv[0]);
@@ -1153,12 +1172,14 @@ static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
     dma_stl_be(qts, base + 4, LEN << TXD_BUF1_LEN_SHIFT);
     /* The buffer's high word, which is where the frame is not. */
     dma_stl_be(qts, base + 8, 0x10);
-    dma_stl_be(qts, base + 12, buf);
+    dma_stl_be(qts, base + 12,
+                 pci_dma_address(buf));
     dma_stl_be(qts, base + 16, 0);
     dma_stl_be(qts, base + 20, 0);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
 
     net_socket_expect_no_frame(sv[0]);
@@ -1193,7 +1214,8 @@ static void test_the_transmit_ring_wraps_three_times(const void *data)
     qts = ioc3_attach_socket(sv[1], 8);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     while (sent < TX_RING_SMALL * LAPS) {
         queue_tx_run(qts, base, sent, CHUNK, ring_bytes, LEN);
@@ -1239,7 +1261,8 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
     qts = ioc3_attach_socket(sv[1], 8);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address((base & 0xffffc000u) | TX_RING_SEL));
 
     while (sent < COUNT) {
         uint32_t run = MIN((uint32_t)CHUNK, (uint32_t)COUNT - sent);
@@ -1341,7 +1364,8 @@ static void tx_one(QTestState *qts, uint32_t base, uint32_t slot,
         dma_stl_be(qts, desc + 0, len | TXD_BUF1_VALID | TXD_INT_DONE);
         dma_stl_be(qts, desc + 4, len << TXD_BUF1_LEN_SHIFT);
         dma_stl_be(qts, desc + 8, 0);
-        dma_stl_be(qts, desc + 12, buf);
+        dma_stl_be(qts, desc + 12,
+                 pci_dma_address(buf));
         dma_stl_be(qts, desc + 16, 0);
         dma_stl_be(qts, desc + 20, 0);
     }
@@ -1361,7 +1385,8 @@ static void test_a_reply_after_the_walk_at_one_size(const void *data)
     uint32_t base = RAM_SCRATCH;
     qts = ioc3_start(ring, rxbuf, 3);
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     /* Take the ARP answer here so it is not mistaken for the echo. */
     build_arp_request(frame, 42);
@@ -1518,7 +1543,8 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
                 MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     /* Sixty-four gigabytes up, where this machine has nothing at all. */
     ioc3_writel(qts, ENET_RX_RING_HI, 0x10);
@@ -1568,7 +1594,8 @@ static void test_a_status_failure_does_not_publish_valid(const void *data)
                 MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     tx_one(qts, base, 0, frame, sizeof(frame));
 
@@ -1597,7 +1624,8 @@ static void test_a_payload_failure_does_not_publish_valid(const void *data)
                 MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     tx_one(qts, base, 0, frame, sizeof(frame));
 
@@ -1731,7 +1759,8 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
                       IOC3_PCI_SLOT, path);
     ioc3_bring_up(qts, ring, rxbuf, 2);
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
 
     memset(quiet, 0, sizeof(quiet));
     memset(quiet, 0xff, 6);
@@ -1777,7 +1806,8 @@ static void test_deferred_receive_delivers_without_reset(const void *data)
                       IOC3_PCI_SLOT, path);
     ioc3_bring_up(qts, ring, rxbuf, 2);
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
 
     build_arp_request(frame, sizeof(frame));
     dma_stl_be(qts, desc, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
@@ -1887,7 +1917,8 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
 
     /* One slot past what ioc3_attach_socket posted, reusing buffer 0. */
     dma_stl_be(qts, ring + BUFFERS * RX_RING_STRIDE, 0);
-    dma_stl_be(qts, ring + BUFFERS * RX_RING_STRIDE + 4, rxbuf);
+    dma_stl_be(qts, ring + BUFFERS * RX_RING_STRIDE + 4,
+                 pci_dma_address(rxbuf));
     ioc3_writel(qts, ENET_RX_PRODUCE,
                ((BUFFERS + 1) * RX_RING_STRIDE) | RPIR_ARM);
 
@@ -2011,7 +2042,8 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address((base & 0xffffc000u) | TX_RING_SEL));
 
     /*
  * 255 loopback deliveries fill the remaining room exactly; the 256th finds
@@ -2074,7 +2106,8 @@ static void test_loopback_respects_a_held_completion(const void *data)
 
     /* A second ring slot naming the same buffer, the way a repost does. */
     dma_stl_be(qts, ring + RX_RING_STRIDE, 0);
-    dma_stl_be(qts, ring + RX_RING_STRIDE + 4, rxbuf);
+    dma_stl_be(qts, ring + RX_RING_STRIDE + 4,
+                 pci_dma_address(rxbuf));
     ioc3_writel(qts, ENET_RX_PRODUCE, 2 * RX_RING_STRIDE | RPIR_ARM);
 
     /*
@@ -2098,7 +2131,8 @@ static void test_loopback_respects_a_held_completion(const void *data)
                MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
                MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address((base & 0xffffc000u) | TX_RING_SEL));
 
     /*
  * The engine's staged consume index is now on the second ring slot, which
@@ -2160,7 +2194,8 @@ static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
     mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     tx_one(qts, base, 0, frame, sizeof(frame));
 
     wait_for_rx_consume(qts, RX_RING_STRIDE);
@@ -2214,7 +2249,8 @@ static void test_dp83843_loopback_requires_the_tw_lben_bit(const void *data)
     mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) & ~LBR_TW_LBEN);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     tx_one(qts, base, 0, frame, sizeof(frame));
 
     len = net_socket_recv_frame(sv[0], got, sizeof(got));
@@ -2256,7 +2292,8 @@ static void test_dp83840a_bit5_does_not_select_loopback(const void *data)
     mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
 
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
-    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    ioc3_writel(qts, ENET_TX_RING_LO,
+                 pci_dma_address(base & 0xffffc000u));
     tx_one(qts, base, 0, frame, sizeof(frame));
 
     len = net_socket_recv_frame(sv[0], got, sizeof(got));

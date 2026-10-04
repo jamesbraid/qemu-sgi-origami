@@ -59,6 +59,8 @@ static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node)
                  PCI_COMMAND_MEMORY);
     qtest_writel(qts, node + BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* Direct PCI DMA targets this node's memory, without the 512 MB step. */
+    qtest_writel(qts, node + BRIDGE_BASE + 0x80 + REG_DATA, 0);
 }
 
 static void sn0_ioc3_attach(QTestState *qts)
@@ -1809,6 +1811,12 @@ static void test_the_ethernet_stopped_registers(const void *data)
  * (at 0x4000), used as scratch space for descriptors and buffers. */
 #define RAM_SCRATCH       0x00100000
 
+/* PCI direct-window addresses, distinct from qtest backing RAM addresses. */
+static uint32_t pci_dma_address(uint32_t physical)
+{
+    return 0x80000000u | physical;
+}
+
 /*
  * IRIX's two-step reset handshake: write reset, poll the diagnostic idle,
  * clear reset. The seeded witness is a produce index because the ring bases
@@ -2449,7 +2457,8 @@ static void test_the_ethernet_transmit_sends_inline_frame(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
 
     /* The doorbell: one descriptor further than the ring base. */
     qtest_writel(qts, TX_PRODUCE, 128);
@@ -2490,7 +2499,8 @@ static void test_transmit_starts_when_enabled_late(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
 
     /* The doorbell, with transmit still off. Nothing may go out yet. */
     qtest_writel(qts, TX_PRODUCE, 128);
@@ -2533,7 +2543,8 @@ static void test_a_second_enable_write_does_not_resend(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
@@ -2582,7 +2593,8 @@ static void test_the_ethernet_transmit_bounds_the_inline_area(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, area, sizeof(area));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2610,7 +2622,8 @@ static void test_an_unaligned_produce_index_terminates(const void *data)
 
     qtest_writel(qts, MAC_CONTROL, MCR_TX_DMA_EN | MCR_TX_EN);
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
 
     /* Both indices written raw, neither on a descriptor boundary. */
     qtest_writel(qts, TX_CONSUME, 0);
@@ -2662,7 +2675,8 @@ static void test_the_ethernet_transmit_honours_total_byte_count(
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET,
                    inline_data, sizeof(inline_data));
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2705,12 +2719,15 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
     qtest_writel(qts, desc + 4, (sizeof(buf1) << TXD_BUF1_LEN_SHIFT) |
                 (sizeof(buf2) << TXD_BUF2_LEN_SHIFT));
     qtest_writel(qts, desc + 8, 0);
-    qtest_writel(qts, desc + 12, buf1_addr);
+    qtest_writel(qts, desc + 12,
+                 pci_dma_address(buf1_addr));
     qtest_writel(qts, desc + 16, 0);
-    qtest_writel(qts, desc + 20, buf2_addr);
+    qtest_writel(qts, desc + 20,
+                 pci_dma_address(buf2_addr));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2834,7 +2851,8 @@ static void test_the_ethernet_transmit_inserts_udp_checksum(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2906,7 +2924,8 @@ static void test_the_ethernet_transmit_inserts_tcp_checksum(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2955,7 +2974,8 @@ static void test_the_ethernet_transmit_leaves_checksum_alone_when_not_asked(
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -2996,7 +3016,8 @@ static void test_the_ethernet_transmit_pads_short_frame(const void *data)
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -3036,7 +3057,8 @@ static void test_the_ethernet_transmit_leaves_short_frame_alone_when_pad_off(
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
     qtest_writel(qts, TX_RING_HI, 0);
-    qtest_writel(qts, TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(qts, TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     qtest_writel(qts, TX_PRODUCE, 128);
 
     got = net_socket_recv_frame(sv[0], received, sizeof(received));
@@ -3249,9 +3271,11 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
     qtest_writel(qts, MAC_CONTROL,
                 MCR_PROMISC | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
     qtest_writel(qts, RX_RING_HI, 0);
-    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_RING_LO,
+                 pci_dma_address(ring & 0xfffff000u));
     qtest_writel(qts, ring + 0, 0);
-    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, ring + 4,
+                 pci_dma_address(rxbuf));
     qtest_writel(qts, RX_PRODUCE, 8);
 
     net_socket_send_frame(sv[0], frame, size);
@@ -3327,9 +3351,11 @@ static void sn0_ioc3_filter_setup(QTestState *qts, uint32_t ring,
     qtest_writel(qts, MAC_ADDR_HI, FILTER_STATION_HI);
     qtest_writel(qts, MAC_ADDR_LO, FILTER_STATION_LO);
     qtest_writel(qts, RX_RING_HI, 0);
-    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_RING_LO,
+                 pci_dma_address(ring & 0xfffff000u));
     qtest_writel(qts, ring + 0, 0);
-    qtest_writel(qts, ring + 4, rxbuf);
+    qtest_writel(qts, ring + 4,
+                 pci_dma_address(rxbuf));
     qtest_writel(qts, RX_PRODUCE, 8);
     qtest_writel(qts, MAC_CONTROL,
                 mcr_extra | MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
@@ -3582,7 +3608,8 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
     qtest_writel(qts, MAC_CONTROL,
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
     qtest_writel(qts, RX_RING_HI, 0);
-    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_RING_LO,
+                 pci_dma_address(ring & 0xfffff000u));
     qtest_writel(qts, RX_TIMER, 0);
     qtest_writel(qts, RX_CONTROL, threshold);
 
@@ -3590,7 +3617,8 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
      * supply is deep enough for a watermark to sit below it. */
     for (i = 0; i < 4; i++) {
         qtest_writel(qts, ring + i * 8, 0);
-        qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+        qtest_writel(qts, ring + i * 8 + 4,
+                 pci_dma_address(rxbuf + i * 0x1000));
     }
 
     qtest_writel(qts, RX_PRODUCE, produce);
@@ -3703,12 +3731,14 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
     qtest_writel(qts, MAC_CONTROL,
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
     qtest_writel(qts, RX_RING_HI, 0);
-    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+    qtest_writel(qts, RX_RING_LO,
+                 pci_dma_address(ring & 0xfffff000u));
     qtest_writel(qts, RX_TIMER, 0);
     qtest_writel(qts, RX_CONTROL, 3);
     for (i = 0; i < 4; i++) {
         qtest_writel(qts, ring + i * 8, 0);
-        qtest_writel(qts, ring + i * 8 + 4, rxbuf + i * 0x1000);
+        qtest_writel(qts, ring + i * 8 + 4,
+                 pci_dma_address(rxbuf + i * 0x1000));
     }
     qtest_writel(qts, RX_PRODUCE, 4 << 3);
 

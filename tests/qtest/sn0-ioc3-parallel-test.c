@@ -57,6 +57,8 @@ static void sn0_ioc3_attach(QTestState *qts)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* Direct PCI DMA targets RAM without the reset 512 MB step. */
+    qtest_writel(qts, BRIDGE_BASE + 0x80 + REG_DATA, 0);
 }
 
 static void test_ioc3_attach(QTestState *qts)
@@ -1131,7 +1133,7 @@ static void test_the_engine_retires_an_armed_transfer(const void *data)
     qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
 
     qtest_writel(qts, DMA_A_ADDR_HI, 0);
-    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_ADDR_LO, 0x80000000u | PLP_BUFFER);
     qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
     qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
     qtest_writeb(qts, ECP_EXTENDED,
@@ -1184,7 +1186,7 @@ static void test_only_the_last_context_completes_the_chain(const void *data)
 
     qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
 
-    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_ADDR_LO, 0x80000000u | PLP_BUFFER);
     qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | PLP_PAYLOAD_LEN);
     qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
     qtest_writeb(qts, ECP_EXTENDED,
@@ -1214,7 +1216,7 @@ static void test_the_engine_needs_both_enables(const void *data)
     qtest_memwrite(qts, PLP_BUFFER, PLP_PAYLOAD, PLP_PAYLOAD_LEN);
 
     /* The DMA path enabled in the register file, the engine not enabled. */
-    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_ADDR_LO, 0x80000000u | PLP_BUFFER);
     qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | COUNT_LAST | PLP_PAYLOAD_LEN);
     qtest_writeb(qts, ECP_EXTENDED,
                  ECR_MODE(MODE_COMPAT_FIFO) | ECR_DMA_ENABLE);
@@ -1256,9 +1258,9 @@ static void test_the_engine_takes_a_chain_in_order(const void *data)
     qtest_memwrite(qts, PLP_BUFFER, "FIRST", 5);
     qtest_memwrite(qts, PLP_BUFFER + 0x1000, "SECOND", 6);
 
-    qtest_writel(qts, DMA_A_ADDR_LO, PLP_BUFFER);
+    qtest_writel(qts, DMA_A_ADDR_LO, 0x80000000u | PLP_BUFFER);
     qtest_writel(qts, DMA_A_COUNT, COUNT_ARM | 5);
-    qtest_writel(qts, DMA_B_ADDR_LO, PLP_BUFFER + 0x1000);
+    qtest_writel(qts, DMA_B_ADDR_LO, 0x80000000u | (PLP_BUFFER + 0x1000));
     qtest_writel(qts, DMA_B_COUNT, COUNT_ARM | COUNT_LAST | 6);
     qtest_writel(qts, DMA_CONTROL, DMA_ENABLE);
     qtest_writeb(qts, ECP_EXTENDED,
