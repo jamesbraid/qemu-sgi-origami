@@ -8,7 +8,10 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "exec/memattrs.h"
 #include "libqtest.h"
+#include "libqos/pci-sgi-bridge.h"
+#include "hw/pci/pci_regs.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "qobject/qlist.h"
@@ -2745,16 +2748,331 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 }
 
 
+/* Assert the dispatch sequence independently of the returned payload bytes. */
+static void assert_dma_payload_trace(const char *path, uint32_t start,
+                                     unsigned length, bool native)
+{
+    g_autofree char *trace = NULL;
+    g_auto(GStrv) lines = NULL;
+    unsigned consumed = 0, callbacks = 0;
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    lines = g_strsplit(trace, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        uint64_t addr;
+        unsigned size, write, expected;
+        unsigned remaining = length - consumed;
+
+        if ((sscanf(lines[i], "sgi_hub_ii_packet_access addr=0x%" SCNx64
+                    " size=%u write=%u", &addr, &size, &write) != 3 &&
+             sscanf(lines[i], "sgi_hub_ii_dma_buffer addr=0x%" SCNx64
+                    " len=%u write=%u", &addr, &size, &write) != 3) ||
+            !write || addr < start || addr >= start + length) {
+            continue;
+        }
+        g_assert_cmphex(addr, ==, start + consumed);
+        if (!native && !(addr & 7) && remaining >= 8) {
+            expected = remaining & ~7U;
+        } else {
+            expected = 4;
+            while (expected > remaining || (addr & (expected - 1))) {
+                expected /= 2;
+            }
+        }
+        g_assert_cmpuint(size, ==, expected);
+        consumed += size;
+        callbacks++;
+    }
+    g_assert_cmpuint(consumed, ==, length);
+    g_test_message("RX offset=%u length=%u %s callbacks=%u",
+                   start & 0xfff, length, native ? "native" : "buffer",
+                   callbacks);
+}
+
+typedef struct IOC3DMATest {
+    QTestState *qts;
+    QPCIBus *bus;
+    QPCIDevice *ioc3;
+    QPCIDevice *probe;
+    QPCIBar bar;
+} IOC3DMATest;
+
+static void ioc3_dma_test_start(IOC3DMATest *s, bool native, bool r32,
+                                 bool memory_only, const char *extra)
+{
+    s->qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
+        "-device sgi-ioc3,id=ioc3,bus=pci,addr=04.0 "
+        "-device sgi-bridge-dma-test,bus=pci,addr=05.0,dma-buffer=%s,"
+        "dma-r32=%s,memory-only=%s,"
+        "dma-memory=/machine/peripheral/ioc3/sgi-ioc3.pci-dma[0] %s",
+        native ? "off" : "on", r32 ? "on" : "off",
+        memory_only ? "on" : "off", extra);
+    s->bus = qpci_init_sgi_bridge(s->qts, NULL);
+    s->ioc3 = qpci_device_find(s->bus, QPCI_DEVFN(4, 0));
+    s->probe = qpci_device_find(s->bus, QPCI_DEVFN(5, 0));
+    g_assert_nonnull(s->ioc3);
+    g_assert_nonnull(s->probe);
+    qpci_device_enable(s->ioc3);
+    qpci_device_enable(s->probe);
+    s->bar = qpci_iomap(s->probe, 0, NULL);
+    qtest_writel(s->qts, 0x40000084, 0);
+}
+
+static void ioc3_dma_test_stop(IOC3DMATest *s)
+{
+    g_free(s->probe);
+    g_free(s->ioc3);
+    qpci_free_sgi_bridge(s->bus);
+    qtest_quit(s->qts);
+}
+
+static void ioc3_dma_test_transfer(IOC3DMATest *s, uint32_t address,
+                                    unsigned length, uint32_t source)
+{
+    qpci_io_writel(s->probe, s->bar, 0, address);
+    qpci_io_writel(s->probe, s->bar, 4, length);
+    qpci_io_writel(s->probe, s->bar, 8, 0x30);
+    qpci_io_writel(s->probe, s->bar, 0x14, source);
+    qpci_io_writel(s->probe, s->bar, 0xc, source ? 2 : 1);
+}
+
+/* Short requests and every residue keep native partial-word placement. */
+static void test_dma_buffer_prefix_alignment(const void *data)
+{
+    const unsigned tails[] = { 24, 25, 26, 27, 28, 29, 30, 31, 1500, 1514 };
+    const uint32_t dest = 0x02004000, source = 0x02008000;
+    uint8_t expected[1544], seen[sizeof(expected)], bytes[sizeof(expected)];
+
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = i + 0x30;
+    }
+    for (unsigned mode = 0; mode < 8; mode++) {
+        bool native = mode & 1, swap = mode & 2, r32 = mode & 4;
+        bool converted = swap != r32;
+        IOC3DMATest s;
+
+        ioc3_dma_test_start(&s, native, r32, false, "");
+        qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
+        qtest_memwrite(s.qts, source, bytes, sizeof(bytes));
+        for (unsigned residue = 0; residue < 8; residue++) {
+            unsigned prefix = 8 - residue;
+            unsigned lengths[] = { prefix - 1, prefix, prefix + 7,
+                                   prefix + 8, prefix + 9 };
+
+            for (unsigned n = 0; n < G_N_ELEMENTS(lengths) +
+                                     G_N_ELEMENTS(tails); n++) {
+                unsigned length = n < G_N_ELEMENTS(lengths) ? lengths[n] :
+                                  tails[n - G_N_ELEMENTS(lengths)];
+                unsigned start = 8 + residue;
+
+                g_test_message("native=%d swap=%d r32=%d residue=%u len=%u",
+                               native, swap, r32, residue, length);
+                memset(expected, 0xee, sizeof(expected));
+                for (unsigned i = 0; i < length; i++) {
+                    expected[(start + i) ^ (converted ? 3 : 0)] = 0x30 + i;
+                }
+                qtest_memset(s.qts, dest, 0xee, sizeof(expected));
+                ioc3_dma_test_transfer(&s, 0x80000000 | (dest + start),
+                                        length, 0);
+                g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==, 0);
+                qtest_memread(s.qts, dest, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+
+                memset(expected, 0xee, sizeof(expected));
+                for (unsigned i = 0; i < length; i++) {
+                    expected[i ^ (converted ? 3 : 0)] =
+                        bytes[(residue + i) ^ (converted ? 3 : 0)];
+                }
+                qtest_memset(s.qts, dest, 0xee, sizeof(expected));
+                ioc3_dma_test_transfer(&s, 0x80000000 | dest, length,
+                                        0x80000000 | (source + residue));
+                g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==, 0);
+                qtest_memread(s.qts, dest, seen, sizeof(seen));
+                g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+            }
+        }
+        ioc3_dma_test_stop(&s);
+    }
+}
+
+static void test_dma_buffer_prefix_rejection(const void *data)
+{
+    const uint32_t dest = 0x02004000;
+    uint8_t seen[32], expected[sizeof(seen)];
+
+    memset(expected, 0xee, sizeof(expected));
+    for (unsigned mode = 0; mode < 4; mode++) {
+        bool memory_only = mode & 2;
+        IOC3DMATest s;
+
+        ioc3_dma_test_start(&s, mode & 1, false, memory_only, "");
+        if (!memory_only) {
+            uint16_t command = qpci_config_readw(s.ioc3, PCI_COMMAND);
+
+            qpci_config_writew(s.ioc3, PCI_COMMAND,
+                               command & ~PCI_COMMAND_MASTER);
+        }
+        qtest_memset(s.qts, dest, 0xee, sizeof(seen));
+        ioc3_dma_test_transfer(&s, 0x80000000 | (dest + 2), 22, 0);
+        g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==,
+                        memory_only ? MEMTX_ACCESS_ERROR : MEMTX_DECODE_ERROR);
+        qtest_memread(s.qts, dest, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+        ioc3_dma_test_stop(&s);
+    }
+}
+
+/* Fault results combine, and later mapped pages still receive DMA. */
+static void test_dma_buffer_prefix_pages(const void *data)
+{
+    const uint32_t first = 0x02004000, second = 0x02010000;
+    const uint32_t third = 0x02018000, dest = 0x02020000;
+    uint8_t seen[48], expected[sizeof(seen)];
+
+    for (unsigned mode = 0; mode < 8; mode++) {
+        bool native = mode & 1, swap = mode & 2, large = mode & 4;
+        unsigned page = large ? 16384 : 4096;
+        IOC3DMATest s;
+
+        ioc3_dma_test_start(&s, native, false, false, "");
+        qtest_writel(s.qts, 0x40000224, swap ? 1U << 20 : 0);
+        if (large) {
+            qtest_writel(s.qts, 0x40000024,
+                         qtest_readl(s.qts, 0x40000024) | (1U << 21));
+        }
+        for (unsigned fault = 0; fault < 3; fault++) {
+            unsigned length = fault == 1 ? page + 22 : 46;
+            uint32_t address = 0x40000000 | (page - 6);
+            uint64_t sample = fault == 1 ? 0x0000353433323130ULL :
+                              0x3736353433323130ULL;
+
+            g_test_message("native=%d swap=%d page=%u fault=%u",
+                           native, swap, page, fault);
+            qtest_writeq(s.qts, 0x40010000, fault == 2 ? 0 : first | 1);
+            qtest_writeq(s.qts, 0x40010008, fault == 1 ? 0 : second | 1);
+            qtest_writeq(s.qts, 0x40010010, third | 1);
+            qtest_memset(s.qts, first + page - 8, 0xee, 8);
+            qtest_memset(s.qts, second, 0xee, sizeof(seen));
+            qtest_memset(s.qts, third, 0xee, sizeof(seen));
+            ioc3_dma_test_transfer(&s, address, length, 0);
+            g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==,
+                            fault ? MEMTX_DECODE_ERROR : MEMTX_OK);
+            memset(expected, 0xee, sizeof(expected));
+            if (fault != 2) {
+                for (unsigned i = 0; i < 6; i++) {
+                    expected[(2 + i) ^ (swap ? 3 : 0)] = 0x30 + i;
+                }
+            }
+            qtest_memread(s.qts, first + page - 8, seen, 8);
+            g_assert_cmpmem(seen, 8, expected, 8);
+            memset(expected, 0xee, sizeof(expected));
+            if (fault != 1) {
+                for (unsigned i = 0; i < 40; i++) {
+                    expected[i ^ (swap ? 3 : 0)] = 0x36 + i;
+                }
+            }
+            qtest_memread(s.qts, second, seen, sizeof(seen));
+            g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+            memset(expected, 0xee, sizeof(expected));
+            if (fault == 1) {
+                for (unsigned i = 0; i < 16; i++) {
+                    expected[i ^ (swap ? 3 : 0)] = 0x36 + page + i;
+                }
+            }
+            qtest_memread(s.qts, third, seen, sizeof(seen));
+            g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+            if (!fault) {
+                continue;
+            }
+            if (fault == 2) {
+                sample = 0x3736000000000000ULL;
+            }
+            memset(expected, 0xee, sizeof(expected));
+            qtest_memset(s.qts, dest, 0xee, sizeof(seen));
+            ioc3_dma_test_transfer(&s, 0x80000000 | dest, length, address);
+            g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==,
+                            MEMTX_DECODE_ERROR);
+            g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x2c), ==,
+                            (uint32_t)sample);
+            g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x30), ==,
+                            sample >> 32);
+            qtest_memread(s.qts, dest, seen, sizeof(seen));
+            g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+        }
+        ioc3_dma_test_stop(&s);
+    }
+}
+
+/* The one-byte overlap must not split the native prefix or four-byte body. */
+static void test_dma_buffer_prefix_mmio(const void *data)
+{
+    const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
+
+    for (unsigned mode = 0; mode < 8; mode++) {
+        IOC3DMATest s;
+        bool native = mode & 1, swap = mode & 2;
+        unsigned residue = mode & 4 ? 2 : 6;
+        unsigned length = 28 - residue;
+        g_autofree char *path = trace_dir ? g_strdup_printf(
+            "%s/ioc3-mmio-%u.trace", trace_dir, mode) :
+            g_strdup_printf("ioc3-mmio-%u-%u.trace",
+                            (unsigned)getpid(), g_random_int());
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-xio-test-target.memory-kind=overlap-mmio "
+            "-global sgi-xio-test-target.overlap-offset=7 "
+            "-trace enable=memory_region_ops_write,file=%s", path);
+        g_autofree char *trace = NULL;
+        g_auto(GStrv) lines = NULL;
+        unsigned callbacks = 0, consumed = 0;
+
+        ioc3_dma_test_start(&s, native, false, false, extra);
+        qtest_sysbus_mmio_map(s.qts, "/machine/peripheral/transfer-ram",
+                              1, 0x05000000);
+        qtest_writel(s.qts, 0x40000224, swap ? 1U << 19 : 0);
+        ioc3_dma_test_transfer(&s, 0x82000000 | residue, length, 0);
+        g_assert_cmphex(qpci_io_readl(s.probe, s.bar, 0x28), ==, 0);
+        g_assert_cmpuint(qtest_readq(s.qts, 0x05000038), ==,
+                         residue == 2 ? 7 : 6);
+        g_assert_cmpuint(qtest_readq(s.qts, 0x05000040), ==, 4);
+        g_assert_cmpuint(qtest_readq(s.qts, 0x05000048), ==, 0);
+        ioc3_dma_test_stop(&s);
+        g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+        lines = g_strsplit(trace, "\n", -1);
+        for (unsigned i = 0; lines[i]; i++) {
+            uint64_t addr, value;
+            unsigned size, expected_size = callbacks ? 4 : 2;
+            unsigned offset = residue + consumed;
+
+            if (!strstr(lines[i], "name 'transfer-ram.ram'") ||
+                sscanf(lines[i], "memory_region_ops_write cpu %*d mr %*s "
+                       "addr 0x%" SCNx64 " value 0x%" SCNx64 " size %u",
+                       &addr, &value, &size) != 3) {
+                continue;
+            }
+            g_assert_cmpuint(size, ==, expected_size);
+            g_assert_cmphex(addr, ==, offset ^ (swap ? 4 - size : 0));
+            callbacks++;
+            consumed += size;
+        }
+        g_assert_cmpuint(consumed, ==, length);
+        g_assert_cmpuint(callbacks, ==, residue == 2 ? 7 : 6);
+        if (!trace_dir) {
+            g_assert_cmpint(g_unlink(path), ==, 0);
+        }
+    }
+}
+
 /* Whole payloads traverse IOC3, Bridge and the Hub's current RAM mapping. */
 static void test_dma_buffer_payloads(const void *data)
 {
-    const unsigned lengths[] = { 1024, 1500 };
+    const unsigned lengths[] = { 60, 64, 94, 1024, 1186, 1500, 1514 };
+    const unsigned offsets[] = { 42, 64, 66, 68, 70 };
     const char *trace = g_getenv("QEMU_DMA_IOC3_TRACE");
     const uint32_t desc = RAM_SCRATCH;
     const uint32_t payload = RAM_SCRATCH + 0x4000;
     const uint32_t ring = RAM_SCRATCH + 0x8000;
     const uint32_t rxbuf = RAM_SCRATCH + 0xc000;
-    uint8_t frame[1500], seen[1500], received[66 + 1500 + 8];
+    uint8_t frame[1514], seen[1514], received[70 + 1514 + 8];
     uint8_t guard[8];
 
     for (unsigned i = 0; i < sizeof(frame); i++) {
@@ -2762,15 +3080,20 @@ static void test_dma_buffer_payloads(const void *data)
     }
     memset(frame, 0xff, 6);
     for (unsigned size = 0; size < G_N_ELEMENTS(lengths); size++) {
-        for (unsigned offset = 64; offset <= 66; offset += 2) {
+        for (unsigned off = 0; off < G_N_ELEMENTS(offsets); off++) {
+            unsigned offset = offsets[off];
+
             for (unsigned order = 0; order < 2; order++) {
                 bool native = order ^ ((size + offset / 2) & 1);
                 unsigned length = lengths[size];
                 size_t span = offset + length + 8;
-                g_autofree char *tracing = trace ? g_strdup_printf(
-                    "-trace enable=sgi_hub_ii_*,file=%s/ioc3-%s-%u-%u.trace",
-                    trace, native ? "native" : "buffer", offset, length) :
-                    g_strdup("");
+                g_autofree char *path = trace ? g_strdup_printf(
+                    "%s/ioc3-%s-%u-%u.trace", trace,
+                    native ? "native" : "buffer", offset, length) :
+                    g_strdup_printf("ioc3-payload-%u-%u.trace",
+                                    (unsigned)getpid(), g_random_int());
+                g_autofree char *tracing = g_strdup_printf(
+                    "-trace enable=sgi_hub_ii_*,file=%s", path);
                 g_autofree char *extra = g_strdup_printf(
                     "-global sgi-ioc3-eth.dma-buffer=%s %s",
                     native ? "off" : "on", tracing);
@@ -2839,6 +3162,10 @@ static void test_dma_buffer_payloads(const void *data)
                     }
                 }
                 qtest_quit(qts);
+                assert_dma_payload_trace(path, rxbuf + offset, length, native);
+                if (!trace) {
+                    g_assert_cmpint(g_unlink(path), ==, 0);
+                }
                 close(sv[0]);
             }
         }
@@ -6126,6 +6453,14 @@ int main(int argc, char **argv)
                         test_the_ethernet_transmit_honours_total_byte_count);
     qtest_add_data_func("sn0/ioc3/dma-buffer-payloads", NULL,
                         test_dma_buffer_payloads);
+    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-alignment", NULL,
+                        test_dma_buffer_prefix_alignment);
+    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-rejection", NULL,
+                        test_dma_buffer_prefix_rejection);
+    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-pages", NULL,
+                        test_dma_buffer_prefix_pages);
+    qtest_add_data_func("sn0/ioc3/dma-buffer-prefix-mmio", NULL,
+                        test_dma_buffer_prefix_mmio);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-inserts-udp-checksum",

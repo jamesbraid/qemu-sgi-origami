@@ -52,6 +52,9 @@ slow_qtests = {
   # FIFO snapshots expand parallel coverage to 45 cases. It took 47.31s
   # alone and exceeded 60s alongside other device suites.
   'sn0-ioc3-parallel-test': 180,
+  # Expanded DMA swap coverage starts a head for each offset and size.
+  # The full 60-case Ethernet suite exceeded the 60s default.
+  'sgi-ioc3-eth-test': 180,
   # The MTTCG primitives run several thread=multi TCG cases, and the R10000
   # performance test adds live migration and a stream analysis pass. Both fit
   # under 60s unloaded but need headroom under parallel CI load.

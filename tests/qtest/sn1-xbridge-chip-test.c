@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "exec/memattrs.h"
 #include "hw/misc/iommu-testdev.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -910,6 +911,87 @@ static void test_slot_source_dma(void)
     qtest_quit(s);
 }
 
+/* The linked endpoint must retain IOC3's slot, not the trigger's slot. */
+static void test_ioc3_prefix_source_dma(void)
+{
+    const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
+    const uint64_t head = VIEW(2), card = head + 0x400000;
+    uint8_t seen[32], expected[sizeof(seen)];
+
+    for (unsigned mode = 0; mode < 8; mode++) {
+        bool native = mode & 1, swap = mode & 2, denied = mode & 4;
+        g_autofree char *path = trace_dir ? g_strdup_printf(
+            "%s/ioc3-xbridge-%u.trace", trace_dir, mode) :
+            g_strdup_printf("ioc3-xbridge-%u-%u.trace",
+                            (unsigned)getpid(), g_random_int());
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-xbridge-assembly-fixture.source-aware-host=on "
+            "-global sgi-bedrock-io.device-mask-reset=0x%" PRIx64 " "
+            "-device sgi-ioc3,id=ioc3,bus=fixture1-head-e.0,addr=0 "
+            "-device sgi-bridge-dma-test,bus=fixture1-head-e.0,addr=1,"
+            "dma-buffer=%s,"
+            "dma-memory=/machine/peripheral/ioc3/sgi-ioc3.pci-dma[0] "
+            "-trace enable=sgi_xbridge_dma_packet,file=%s",
+            UINT64_MAX - denied, native ? "off" : "on", path);
+        QTestState *s = assembly_start(extra);
+        g_autofree char *trace = NULL;
+        g_auto(GStrv) lines = NULL;
+        unsigned callbacks = 0;
+
+        qtest_writel(s, head + 0x24, 0x0f003208);
+        qtest_writel(s, head + 0x20004, 6);
+        qtest_writel(s, head + 0x21010, 0x01200000);
+        qtest_writel(s, head + 0x21004, 6);
+        qtest_writel(s, head + 0x204, 0x1010 | (swap ? 1U << 19 : 0));
+        qtest_writel(s, head + 0x20c, 0x1012);
+        qtest_writel(s, head + 0x84, 0xa << 20);
+        qtest_memset(s, FABRIC + SCRATCH, 0xee, sizeof(seen));
+        qtest_writel(s, card, 0x80008002);
+        qtest_writel(s, card + 4, 22);
+        qtest_writel(s, card + 8, 0x30);
+        qtest_writel(s, card + 0xc, 1);
+        g_assert_cmphex(qtest_readl(s, card + 0x28), ==,
+                        denied ? MEMTX_ACCESS_ERROR : MEMTX_OK);
+        memset(expected, 0xee, sizeof(expected));
+        if (!denied) {
+            for (unsigned i = 0; i < 22; i++) {
+                expected[(2 + i) ^ (swap ? 3 : 0)] = 0x30 + i;
+            }
+        }
+        qtest_memread(s, FABRIC + SCRATCH, seen, sizeof(seen));
+        g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+        lines = g_strsplit(trace, "\n", -1);
+        for (unsigned i = 0; lines[i]; i++) {
+            uint64_t address;
+            unsigned widget, device, size, write;
+            int result;
+
+            if (sscanf(lines[i], "sgi_xbridge_dma_packet vtime %*d "
+                       "source_widget %u device %u address 0x%" SCNx64
+                       " size %u write %u result %d", &widget, &device,
+                       &address, &size, &write, &result) != 6) {
+                continue;
+            }
+            g_assert_cmpuint(widget, ==, 8);
+            g_assert_cmpuint(device, ==, 0);
+            g_assert_cmpuint(size, ==, callbacks ? 4 : 2);
+            g_assert_cmphex(address, ==, (UINT64_C(0xa) << 48) +
+                            SCRATCH + (callbacks ?
+                            4 * callbacks : swap ? 0 : 2));
+            g_assert_cmpuint(write, ==, 1);
+            g_assert_cmpint(result, ==,
+                            denied ? MEMTX_ACCESS_ERROR : MEMTX_OK);
+            callbacks++;
+        }
+        g_assert_cmpuint(callbacks, ==, 6);
+        if (!trace_dir) {
+            g_assert_cmpint(g_unlink(path), ==, 0);
+        }
+    }
+}
+
 static void test_source_dma_byte_lanes(void)
 {
     QTestState *s = assembly_start(
@@ -1253,6 +1335,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/source-dma-wide-register",
                    test_source_dma_wide_register);
     qtest_add_func("/sn1/xbridge-chip/slot-source-dma", test_slot_source_dma);
+    qtest_add_func("/sn1/xbridge-chip/ioc3-prefix-source-dma",
+                   test_ioc3_prefix_source_dma);
     qtest_add_func("/sn1/xbridge-chip/source-dma-byte-lanes",
                    test_source_dma_byte_lanes);
     qtest_add_func("/sn1/xbridge-chip/six-head-source-dma",
