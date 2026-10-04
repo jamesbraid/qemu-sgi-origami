@@ -1434,6 +1434,174 @@ static void test_native_volume_interior(gconstpointer data)
     sgi_kona_texture_cleanup(&dst);
 }
 
+static void test_native_volume_border(gconstpointer data)
+{
+    unsigned level = GPOINTER_TO_UINT(data) >> 24;
+    uint32_t width = (GPOINTER_TO_UINT(data) >> 16) & 255;
+    uint32_t height = (GPOINTER_TO_UINT(data) >> 8) & 255;
+    uint32_t depth = GPOINTER_TO_UINT(data) & 255;
+    unsigned ps = ctz32(width), pt = ctz32(height), pr = ctz32(depth);
+    unsigned bs = MIN(ps + 1, 3), bt = MIN(pt + 1, 1);
+    uint32_t nx = (1u << bs) - 1, ny = (1u << bt) - 1;
+    SGIKonaTextureState src, dst;
+    SGIKonaTextureParams p;
+    uint32_t h[20] = {
+        [0] = SGI_GL_TEXTURE_3D, [9] = 0x30, [10] = 9,
+        [17] = 0x1141, [18] = 23, [19] = 47,
+    };
+    uint32_t table[16], pixels[32], rgba;
+    SGIGLDrawState state = { .texture_3d = true,
+                            .texture_env_mode = SGI_GL_REPLACE };
+    const float color[4] = { 1, 1, 1, 1 };
+    float coord[4] = { 0, .5, .5, 1 }, out[4];
+    const SGIGLTexImage *im;
+    const SGIGLTexLevel *view;
+    SGIKonaTextureObject *o;
+    SGIKonaTextureNativeImage *n;
+    uint64_t at;
+    GByteArray *a;
+
+    sgi_kona_texture_init(&src);
+    sgi_kona_texture_init(&dst);
+    sgi_kona_texture_defaults(&p);
+    p.min_filter = p.mag_filter = SGI_GL_LINEAR;
+    p.wrap_s = p.wrap_t = SGI_GL_CLAMP;
+    for (unsigned k = 0; k < ARRAY_SIZE(table); k++) {
+        table[k] = UINT32_MAX;
+    }
+    table[level & ~1u] = 23;
+    table[(level & ~1u) + 1] = 47;
+    g_assert_true(sgi_kona_texture_native_table(&src, 9, table));
+    g_assert_true(sgi_kona_texture_native_volume_dimensions(&src, 9,
+        width << level, height << level, depth << level));
+    g_assert_true(sgi_kona_texture_native_layout(&src, 9,
+        MAX(ps + level + 1, 3) | (MAX(pt + level + 1, 1) << 4) |
+        (MAX(pr + level + 1, 1) << 8)));
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    h[1] = width;
+    h[2] = height;
+    h[13] = width - 1;
+    h[14] = height - 1;
+    h[16] = MAX(ps + 1, 3) | (MAX(pt + 1, 1) << 4) |
+            (MAX(pr + 1, 1) << 8);
+    h[17] |= (level & 1) << 3;
+    for (unsigned k = 0; k < width * height; k++) {
+        pixels[k] = 0xff0000ff;
+    }
+    for (unsigned z = 0; z < depth; z++) {
+        h[15] = z;
+        g_assert_true(sgi_kona_texture_native_upload(&src, h, pixels,
+                                                    SGI_GL_RGBA, SGI_GL_RGBA));
+    }
+    im = sgi_kona_texture_resolve(&src);
+    g_assert_cmpuint(im->pyramid->count, ==, 1);
+    view = &im->pyramid->levels[0];
+    g_assert_cmpuint(view->border, ==, 1);
+    g_assert_nonnull(view->read_border_texel_3d);
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                             -1, 0, 0, &rgba));
+    if (!level) {
+        out[0] = .123f;
+        g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[0], ==, .123f);
+    }
+    h[1] = h[2] = 1;
+    h[16] = bs | (bt << 4) | (MIN(pr + 1, 1) << 8);
+    for (unsigned z = 0; z < depth; z++) {
+        uint32_t border = z ? 0x00ff00ff : 0x0000ffff;
+
+        h[15] = z;
+        for (int32_t y = -1; y <= (int32_t)height; y++) {
+            for (int32_t x = -1; x <= (int32_t)width; x++) {
+                if (x >= 0 && x < width && y >= 0 && y < height) {
+                    continue;
+                }
+                h[11] = h[13] = x < 0 ? nx : x;
+                h[12] = h[14] = y < 0 ? ny : y;
+                g_assert_true(sgi_kona_texture_native_upload(&src, h, &border,
+                                                   SGI_GL_RGBA, SGI_GL_RGBA));
+            }
+        }
+    }
+    im = sgi_kona_texture_resolve(&src);
+    view = &im->pyramid->levels[0];
+    for (unsigned z = 0; z < depth; z++) {
+        g_assert_true(view->read_border_texel_3d(view->opaque, level,
+                                                 -1, -1, z, &rgba));
+        g_assert_cmphex(rgba, ==, z ? 0x00ff00ff : 0x0000ffff);
+        g_assert_true(view->read_border_texel_3d(view->opaque, level,
+                                                 width, height, z, &rgba));
+        g_assert_cmphex(rgba, ==, z ? 0x00ff00ff : 0x0000ffff);
+    }
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                             -2, 0, 0, &rgba));
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                             0, 0, 0, &rgba));
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                             -1, -1, -1, &rgba));
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                             width, height, depth, &rgba));
+    if (!level) {
+        g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[0], ==, .5);
+        g_assert_cmpfloat(out[1], ==, depth > 1 ? .25 : 0);
+        g_assert_cmpfloat(out[2], ==, depth > 1 ? .25 : .5);
+        coord[1] = 0;
+        g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[0], ==, .25);
+        g_assert_cmpfloat(out[1], ==, depth > 1 ? .375 : 0);
+        g_assert_cmpfloat(out[2], ==, depth > 1 ? .375 : .75);
+        p.wrap_r = SGI_GL_CLAMP_TO_EDGE;
+        g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+        coord[2] = -1;
+        im = sgi_kona_texture_resolve(&src);
+        g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[0], ==, .25);
+        g_assert_cmpfloat(out[2], ==, .75);
+        p.wrap_s = SGI_GL_CLAMP_TO_BORDER;
+        g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+        coord[0] = -1;
+        im = sgi_kona_texture_resolve(&src);
+        g_assert_true(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[2], ==, 1);
+        p.wrap_s = p.wrap_t = SGI_GL_REPEAT;
+        p.wrap_r = SGI_GL_CLAMP_TO_BORDER;
+        g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+        im = sgi_kona_texture_resolve(&src);
+        coord[0] = coord[1] = .5;
+        coord[2] = 2;
+        out[0] = .123f;
+        g_assert_false(sgi_gl_texture_apply_pixel(&state, im, coord,
+                                                 color, out));
+        g_assert_cmpfloat(out[0], ==, .123f);
+    }
+    p.wrap_s = p.wrap_t = SGI_GL_CLAMP;
+    p.wrap_r = SGI_GL_REPEAT;
+    g_assert_true(sgi_kona_texture_bind(&src, 9, &p));
+    a = save(&src);
+    g_assert_true(load(a, &dst));
+    g_byte_array_unref(a);
+    im = sgi_kona_texture_resolve(&dst);
+    view = &im->pyramid->levels[0];
+    g_assert_true(view->read_border_texel_3d(view->opaque, level,
+                                             -1, -1, depth - 1, &rgba));
+    g_assert_cmphex(rgba, ==, depth > 1 ? 0x00ff00ff : 0x0000ffff);
+    o = g_hash_table_lookup(dst.objects, GUINT_TO_POINTER(9));
+    n = &o->native[o->native_count - 1];
+    at = ((uint64_t)(depth - 1) * n->image.height + ny) * n->image.width + nx;
+    n->coverage[at / 8] &= ~(1u << (at % 8));
+    n->covered--;
+    g_assert_false(view->read_border_texel_3d(view->opaque, level,
+                                              -1, -1, depth - 1, &rgba));
+    sgi_kona_texture_cleanup(&src);
+    sgi_kona_texture_cleanup(&dst);
+}
+
 static void test_native_mixed_transport(void)
 {
     for (unsigned volume = 0; volume < 2; volume++) {
@@ -1977,8 +2145,9 @@ static void test_native_border(gconstpointer data)
     sgi_kona_texture_cleanup(&dst);
 }
 
-static void test_native_border_interior_alias(void)
+static void test_native_border_interior_alias(gconstpointer data)
 {
+    bool volume = GPOINTER_TO_UINT(data);
     SGIKonaTextureState s;
     SGIKonaTextureParams p;
     uint32_t h[20] = {
@@ -1990,6 +2159,14 @@ static void test_native_border_interior_alias(void)
     const SGIGLTexLevel *view;
     uint32_t rgba;
 
+    if (volume) {
+        h[0] = SGI_GL_TEXTURE_3D;
+        h[2] = 1;
+        h[14] = 0;
+        h[16] = 0x113;
+        h[17] = 0x1141;
+        h[19] = 47;
+    }
     sgi_kona_texture_init(&s);
     sgi_kona_texture_defaults(&p);
     p.wrap_s = p.wrap_t = SGI_GL_CLAMP;
@@ -1998,9 +2175,12 @@ static void test_native_border_interior_alias(void)
         table[k] = UINT32_MAX;
     }
     table[0] = 23;
+    table[1] = volume ? 47 : UINT32_MAX;
     g_assert_true(sgi_kona_texture_native_table(&s, 9, table));
-    g_assert_true(sgi_kona_texture_native_dimensions(&s, 9, 8, 4));
-    g_assert_true(sgi_kona_texture_native_layout(&s, 9, 0x23));
+    g_assert_true(volume ?
+        sgi_kona_texture_native_volume_dimensions(&s, 9, 8, 1, 1) :
+        sgi_kona_texture_native_dimensions(&s, 9, 8, 4));
+    g_assert_true(sgi_kona_texture_native_layout(&s, 9, h[16]));
     g_assert_true(sgi_kona_texture_bind(&s, 9, &p));
     for (unsigned k = 0; k < ARRAY_SIZE(pixels); k++) {
         pixels[k] = red[0];
@@ -2011,9 +2191,16 @@ static void test_native_border_interior_alias(void)
     g_assert_cmpuint(im->pyramid->count, ==, 1);
     view = &im->pyramid->levels[0];
     /* Complete interior coverage cannot supply overlapping border addresses. */
-    g_assert_false(view->read_border_texel(view->opaque, 0, -1, 0, &rgba));
-    g_assert_false(view->read_border_texel(view->opaque, 0, 0, -1, &rgba));
-    g_assert_true(view->read_texel(view->opaque, 0, 7, 3, &rgba));
+    if (volume) {
+        g_assert_false(view->read_border_texel_3d(view->opaque, 0,
+                                                 -1, 0, 0, &rgba));
+        g_assert_false(view->read_border_texel_3d(view->opaque, 0,
+                                                 0, -1, 0, &rgba));
+    } else {
+        g_assert_false(view->read_border_texel(view->opaque, 0, -1, 0, &rgba));
+        g_assert_false(view->read_border_texel(view->opaque, 0, 0, -1, &rgba));
+    }
+    g_assert_true(view->read_texel(view->opaque, 0, 7, h[2] - 1, &rgba));
     g_assert_cmphex(rgba, ==, red[0]);
     sgi_kona_texture_cleanup(&s);
 }
@@ -2201,8 +2388,12 @@ int main(int argc, char **argv)
                          GUINT_TO_POINTER(0x1010801), test_native_border);
     g_test_add_data_func("/sgi/kona/texture/native-border/1d-single-texel",
                          GUINT_TO_POINTER(0x1020101), test_native_border);
-    g_test_add_func("/sgi/kona/texture/native-border/interior-alias",
-                    test_native_border_interior_alias);
+    g_test_add_data_func("/sgi/kona/texture/native-border/interior-alias",
+                         GUINT_TO_POINTER(0),
+                         test_native_border_interior_alias);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-alias",
+                         GUINT_TO_POINTER(1),
+                         test_native_border_interior_alias);
     g_test_add_func("/sgi/kona/texture/native-repeat-interior-mipmaps",
                     test_native_repeat_interior_mipmaps);
     g_test_add_func("/sgi/kona/texture/native-mixed-transport",
@@ -2220,6 +2411,17 @@ int main(int argc, char **argv)
     g_test_add_data_func("/sgi/kona/texture/native-volume/wide-interior",
                          GUINT_TO_POINTER(0x80402),
                          test_native_volume_interior);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-separate",
+                         GUINT_TO_POINTER(0x20202), test_native_volume_border);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-shared",
+                         GUINT_TO_POINTER(0x40101), test_native_volume_border);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-wide",
+                         GUINT_TO_POINTER(0x80202), test_native_volume_border);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-odd",
+                         GUINT_TO_POINTER(0x1020101),
+                         test_native_volume_border);
+    g_test_add_data_func("/sgi/kona/texture/native-volume/border-single-voxel",
+                         GUINT_TO_POINTER(0x10101), test_native_volume_border);
     g_test_add_func("/sgi/kona/texture/native-volume/sampling",
                     test_native_volume_sampling);
     g_test_add_func("/sgi/kona/texture/native-migration",

@@ -655,15 +655,18 @@ static bool texture_native_read(void *opaque, uint32_t level, uint32_t x,
     return true;
 }
 
-static bool texture_native_read_border(void *opaque, uint32_t level,
-                                       int32_t x, int32_t y, uint32_t *rgba)
+static bool texture_native_read_border_3d(void *opaque, uint32_t level,
+                                          int32_t x, int32_t y, int32_t z,
+                                          uint32_t *rgba)
 {
     const SGIKonaTextureLevel *l = opaque;
     const SGIKonaTextureNativeImage *n = l->native_border;
     uint32_t sx, sy;
     uint64_t at;
 
-    if (!n || (n->header[0] == SGI_GL_TEXTURE_1D && y) ||
+    /* R border addressing is not established by the inspected producer. */
+    if (!n || z < 0 || z >= (int32_t)l->depth ||
+        (n->header[0] == SGI_GL_TEXTURE_1D && y) ||
         x < -1 || y < -1 || x > (int32_t)l->width ||
         y > (int32_t)l->height ||
         (x >= 0 && x < l->width && y >= 0 && y < l->height)) {
@@ -674,10 +677,11 @@ static bool texture_native_read_border(void *opaque, uint32_t level,
     /* A shared plane's interior coverage cannot establish a negative border. */
     if ((n->image.pixels == l->pixels &&
          ((x < 0 && sx < l->width) || (y < 0 && sy < l->height))) ||
-        sx >= n->image.width || sy >= n->image.height) {
+        sx >= n->image.width || sy >= n->image.height ||
+        z >= n->image.depth) {
         return false;
     }
-    at = (uint64_t)sy * n->image.width + sx;
+    at = ((uint64_t)z * n->image.height + sy) * n->image.width + sx;
     if (!native_covered(n->coverage, at)) {
         return false;
     }
@@ -686,6 +690,12 @@ static bool texture_native_read_border(void *opaque, uint32_t level,
         *rgba |= 0xff;
     }
     return true;
+}
+
+static bool texture_native_read_border(void *opaque, uint32_t level,
+                                       int32_t x, int32_t y, uint32_t *rgba)
+{
+    return texture_native_read_border_3d(opaque, level, x, y, 0, rgba);
 }
 
 static bool texture_native_uses_border(uint32_t wrap)
@@ -700,9 +710,16 @@ static const SGIKonaTextureNativeImage *texture_native_border_image(
     uint32_t h[20];
     uint32_t width = MAX(1u, o->native_width >> level);
     uint32_t height = MAX(1u, o->native_height >> level);
+    bool volume = o->native_depth != 0;
 
     memcpy(h, interior->header, sizeof(h));
-    h[16] = MIN(ctz32(width) + 1, 3) | (MIN(ctz32(height) + 1, 2) << 4);
+    h[16] = MIN(ctz32(width) + 1, 3) |
+            (MIN(ctz32(height) + 1, volume ? 1 : 2) << 4);
+    if (volume) {
+        uint32_t depth = MAX(1u, o->native_depth >> level);
+
+        h[16] |= MIN(ctz32(depth) + 1, 1) << 8;
+    }
     for (unsigned k = 0; k < o->native_count; k++) {
         if (texture_native_key(o->native[k].header, h)) {
             return &o->native[k];
@@ -830,10 +847,11 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             }
         } else if (image) {
             SGIKonaTextureLevel *view = &o->native_view[count];
-            bool border = !volume && o->native_layout_valid &&
+            bool border = o->native_layout_valid &&
                 (texture_native_uses_border(o->params.wrap_s) ||
                  (!o->native_one_dimensional &&
-                  texture_native_uses_border(o->params.wrap_t)));
+                  texture_native_uses_border(o->params.wrap_t)) ||
+                 (volume && texture_native_uses_border(o->params.wrap_r)));
 
             *view = *image;
             if (o->native_layout_valid) {
@@ -851,7 +869,10 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
                 texture_native_border_image(o, interior, level) : NULL;
             o->view[count++] = (SGIGLTexLevel) {
                 .border = border,
-                .read_border_texel = border ? texture_native_read_border : NULL,
+                .read_border_texel = border && !volume ?
+                                      texture_native_read_border : NULL,
+                .read_border_texel_3d = border && volume ?
+                                         texture_native_read_border_3d : NULL,
                 .level = level, .width = view->width, .height = view->height,
                 .depth = view->depth,
                 .base_format = view->base_format,
