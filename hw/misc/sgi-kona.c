@@ -3655,8 +3655,8 @@ static bool sgi_kona_gl_pixel_transfer_identity(const SGIKonaGLPipe *p)
 }
 
 /*
- * Ordinary small-return RGB bytes use normalized format 4/type 1 and
- * dense rows at byte 8. The pointer's low bits do not offset the source.
+ * Ordinary small-return RGB/RGBA components use normalized formats 4/5
+ * and dense rows at byte 8. The pointer's low bits do not offset the source.
  * The selected logical bank supplies direct RGB at drawable-local lower-
  * left coordinates, bottom-first. Unsupported visuals/bindings, indexed
  * pixels and clipped rectangles receive no reply.
@@ -3667,6 +3667,9 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
     int32_t x0 = args[0], y0 = args[1];
     uint32_t w = args[2], h = args[3], format = args[4], type = args[5];
     const SGIKonaGLWindow *win;
+    const SGIKonaGLPipe *p;
+    float scale[4], bias[4];
+    uint32_t pixel_bytes;
     uint64_t row, len;
     int64_t px, py;
     uint32_t selection;
@@ -3678,19 +3681,31 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
                       " context; no reply\n");
         return;
     }
-    if (!sgi_kona_gl_pixel_transfer_identity(&s->gl_pipe[i])) {
+    p = &s->gl_pipe[i];
+    if (p->pixel_transfer_unsupported) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels pixel transfer"
                       " unsupported; no reply\n");
         return;
     }
-    if (format != 4 || type != 1 || args[6] > 3) {
+    for (unsigned k = 0; k < 4; k++) {
+        scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
+        bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
+        if (!isfinite(scale[k]) || !isfinite(bias[k])) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels nonfinite"
+                          " transfer; no reply\n");
+            return;
+        }
+    }
+    if ((format != 4 && format != 5) ||
+        (type != 1 && type != 3 && type != 6) || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
                       " is not modelled; no reply\n", format, type, args[6]);
         return;
     }
     /* Check the complete dense extent before allocating or writing. */
-    row = (uint64_t)w * 3;
+    pixel_bytes = sgi_kona_gl_texture_pixel_bytes(format, type);
+    row = (uint64_t)w * pixel_bytes;
     if ((int32_t)w <= 0 || (int32_t)h <= 0 ||
         row > SGI_KONA_SMALL_RETURN_BYTES ||
         h > SGI_KONA_SMALL_RETURN_BYTES / row || (w == 8 && h == 1)) {
@@ -3733,11 +3748,21 @@ static void sgi_kona_gl_read_pixels(SGIKonaState *s, const uint32_t *args)
             uint32_t rgb = sgi_plane_load(&s->mem,
                 sgi_kona_plane(s, sgi_kona_bank_plane(s, bank)),
                 px + c, py + r);
-            uint8_t *out = data + r * row + c * 3;
+            double source[4] = {
+                ((rgb >> 16) & 255) / 255.0,
+                ((rgb >> 8) & 255) / 255.0,
+                (rgb & 255) / 255.0, 1,
+            };
+            float rgba[4];
+            uint8_t *out = data + r * row + c * pixel_bytes;
 
-            out[0] = rgb >> 16;
-            out[1] = rgb >> 8;
-            out[2] = rgb;
+            for (unsigned k = 0; k < 4; k++) {
+                rgba[k] = CLAMP(source[k] * scale[k] + bias[k], 0.0, 1.0);
+            }
+            if (!sgi_kona_gl_pixel_pack(format, type, rgba, false,
+                                         out, pixel_bytes)) {
+                return;
+            }
         }
     }
     trace_sgi_kona_gl_reply(SGI_KONA_CMD_GL_READ_PIXELS, format, len);

@@ -1882,9 +1882,16 @@ static void test_read_indexed_source_refused(void)
         "'property':'x-test-plane-word'}}");
     g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 3);
     qobject_unref(reply);
-    prepare_refused_reply(qts);
-    kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
-    assert_reply_unchanged(qts); /* Last source pixel is indexed. */
+    for (unsigned format = 4; format <= 5; format++) {
+        static const uint32_t types[] = { 1, 3, 6 };
+
+        for (unsigned k = 0; k < ARRAY_SIZE(types); k++) {
+            prepare_refused_reply(qts);
+            kona_command(qts, 0x39,
+                         (uint32_t[]) { 0, 0, 3, 2, format, types[k], 0 }, 7);
+            assert_reply_unchanged(qts); /* Last source pixel is indexed. */
+        }
+    }
     assert_read_buffer(qts, 0x404);
 }
 
@@ -5683,6 +5690,143 @@ static void pixel_transfer_set(QTestState *s, uint32_t pname, float value)
     kona_command(s, 0x30, (uint32_t[]) { pname, bits }, 2);
 }
 
+static void test_read_pixels_typed(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t types[] = { 1, 3, 6 };
+    static const uint8_t bytes[4][4] = {
+        { 0, 0, 0, 255 }, { 255, 0, 0, 255 },
+        { 0, 128, 0, 255 }, { 0, 0, 255, 255 },
+    };
+    static const uint8_t transferred[4][4] = {
+        { 64, 0, 64, 191 }, { 191, 0, 64, 191 },
+        { 64, 128, 64, 191 }, { 64, 0, 255, 191 },
+    };
+    static const uint16_t halves[4][4] = {
+        { 16384, 0, 16384, 49151 }, { 49151, 0, 16384, 49151 },
+        { 16384, 32896, 16384, 49151 }, { 16384, 0, 65535, 49151 },
+    };
+    static const uint32_t floats[4][4] = {
+        { 0x3e800000, 0, 0x3e800000, 0x3f400000 },
+        { 0x3f400000, 0, 0x3e800000, 0x3f400000 },
+        { 0x3e800000, 0x3f008081, 0x3e800000, 0x3f400000 },
+        { 0x3e800000, 0, 0x3f800000, 0x3f400000 },
+    };
+    unsigned type = mode >= 9 ? 6 : types[mode % 3];
+    unsigned components = mode < 3 ? 3 : 4;
+    unsigned scalar_bytes = type == 1 ? 1 : type == 3 ? 2 : 4;
+    bool transfer = mode >= 6 && mode != 10;
+    uint8_t expected[0x4000], got[0x4000];
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t pixels[] = {
+            0x00000011, 0xff000022, 0x00800033, 0x0000ff44,
+        };
+
+        qtest_writel(s, REG_COMMAND, pixels[k]);
+    }
+    if (transfer) {
+        pixel_transfer_set(s, 0xd14, 0.5);
+        pixel_transfer_set(s, 0xd15, 0.25);
+        pixel_transfer_set(s, 0xd1b, 0.25);
+        pixel_transfer_set(s, 0xd1c, 0.5);
+        pixel_transfer_set(s, 0xd1d, 0.25);
+    }
+    if (mode == 10) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf0, 1 }, 2);
+    }
+    if (mode == 9) {
+        dir = g_dir_make_tmp("sn0-kona-typed-read-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    for (unsigned low = 0; low < 4; low++) {
+        memset(expected, 0xa5, sizeof(expected));
+        stl_be_p(expected, 1);
+        for (unsigned pixel = 0; pixel < 4; pixel++) {
+            for (unsigned c = 0; c < components; c++) {
+                uint8_t *out = expected + 8 +
+                    (pixel * components + c) * scalar_bytes;
+                uint8_t v = bytes[pixel][c];
+
+                if (type == 1) {
+                    *out = transfer ? transferred[pixel][c] : v;
+                } else if (type == 3) {
+                    stw_be_p(out, transfer ? halves[pixel][c] : v * 257);
+                } else {
+                    uint32_t bits = v == 128 ? 0x3f008081 :
+                                    v ? 0x3f800000 : 0;
+
+                    stl_be_p(out, transfer ? floats[pixel][c] : bits);
+                }
+            }
+        }
+        prepare_refused_reply(s);
+        kona_command(s, 0x39,
+                     (uint32_t[]) { 64, 64, 2, 2, components == 3 ? 4 : 5,
+                                    type, low }, 7);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+        qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_read_pixels_typed_extent(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t h[] = { 0, 0, mode < 2 ? 1023 : 8, 1, 5, 6, 3 };
+    uint8_t expected[0x4000], got[0x4000];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    kona_command_kicked(s, 0x1f3,
+                        (uint32_t[]) { PROBE_X, PROBE_Y, 0x05670080,
+                                       0x05670080, PROBE_X, PROBE_Y,
+                                       1024, 1, 0, 0xd, 0 }, 11);
+    kona_command(s, 0x1a, (uint32_t[]) { 0x4000 }, 1);
+    if (mode == 1) {
+        h[2] = 1024;
+    } else if (mode == 2) {
+        h[5] = 3;
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, h, ARRAY_SIZE(h));
+    if (mode) {
+        assert_reply_unchanged(s);
+    } else {
+        memset(expected, 0xa5, sizeof(expected));
+        stl_be_p(expected, 1);
+        for (unsigned k = 0; k < 1023; k++) {
+            stl_be_p(expected + 8 + k * 16, 0);
+            stl_be_p(expected + 12 + k * 16, 0);
+            stl_be_p(expected + 16 + k * 16, 0x3f800000);
+            stl_be_p(expected + 20 + k * 16, 0x3f800000);
+        }
+        qtest_memread(s, RETURN_PAGE, got, sizeof(got));
+        g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    }
+    assert_native_query_word(s, 0xb92, 0x207, false);
+    qtest_quit(s);
+}
+
 static void test_draw_pixels_scalar_pio(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -5952,7 +6096,8 @@ static void test_native_image_state_refusal(gconstpointer opaque)
     gl_make_current(s);
     gl_rect_scene(s);
     if (mode < 2) {
-        pixel_transfer_set(s, mode == 1 ? 0xd10 : 0xd14, mode == 1 ? 1 : 2);
+        pixel_transfer_set(s, mode == 1 ? 0xd10 : 0xd14,
+                           mode == 1 ? 1 : INFINITY);
     } else {
         kona_command(s, 0x33,
                      (uint32_t[]) { mode == 2 ? 0xcf3 : 0xcf4, 1 }, 2);
@@ -8350,8 +8495,8 @@ static void test_texture_native_1d(gconstpointer opaque)
 
 int main(int argc, char **argv)
 {
-    static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
-    static const uint32_t bad_type[] = { 0, 0, 1, 1, 4, 6, 0 };
+    static const uint32_t bad_format[] = { 0, 0, 1, 1, 6, 1, 0 };
+    static const uint32_t bad_type[] = { 0, 0, 1, 1, 4, 2, 0 };
     static const uint32_t too_large[] = { 0, 0, 5457, 1, 4, 1, 0 };
     static const uint32_t huge_width[] = {
         0, 0, UINT32_MAX, UINT32_MAX, 4, 1, 0,
@@ -8961,6 +9106,29 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                             test_draw_pixels_zoom);
+    }
+    static const char *typed_extent_cases[] = {
+        "float-capacity", "float-capacity-exceeded", "ushort-ambiguous",
+        "float-ambiguous",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(typed_extent_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/typed-read/%s", typed_extent_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_read_pixels_typed_extent);
+    }
+    static const char *typed_read_cases[] = {
+        "rgb-ubyte", "rgb-ushort", "rgb-float", "rgba-ubyte", "rgba-ushort",
+        "rgba-float", "transfer-ubyte", "transfer-ushort", "transfer-float",
+        "transfer-migrates", "unpack-swap-independent",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(typed_read_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/typed-read/%s", typed_read_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_read_pixels_typed);
     }
     static const char *scalar_pixels_cases[] = {
         "byte", "short", "ushort", "int", "uint", "float",
