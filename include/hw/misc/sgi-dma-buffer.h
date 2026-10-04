@@ -10,12 +10,19 @@
 typedef struct SGIDMABufferClass SGIDMABufferClass;
 DECLARE_CLASS_CHECKERS(SGIDMABufferClass, SGI_DMA_BUFFER, TYPE_SGI_DMA_BUFFER)
 
+/* Conversion composes by XOR; zero leaves native access widths unchanged. */
+typedef struct SGIDMABufferRequest {
+    bool swap32;
+    unsigned max_access_size;
+} SGIDMABufferRequest;
+
 /* Immutable controller metadata, borrowed for the native region's lifetime. */
 typedef struct SGIDMABufferProvider {
     /* Decline before effects; accepted prefixes consume 1..*len bytes. */
     bool (*transfer)(void *opaque, dma_addr_t addr, void *buf,
                      dma_addr_t *len, DMADirection dir, MemTxAttrs attrs,
-                     bool swap32, MemTxResult *result);
+                     const SGIDMABufferRequest *request,
+                          MemTxResult *result);
     void *opaque;
 } SGIDMABufferProvider;
 
@@ -31,19 +38,28 @@ typedef struct SGIDMABufferContext {
     PCIDevice *pci_dev;
     bool (*enabled)(PCIDevice *dev);
     const SGIDMABufferProvider *provider;
+    SGIDMABufferRequest request;
 } SGIDMABufferContext;
 
 const SGIDMABufferProvider *sgi_dma_buffer_provider(MemoryRegion *region);
+void sgi_dma_buffer_init_as(SGIDMABufferContext *ctx, AddressSpace *as);
 void sgi_dma_buffer_init_pci(SGIDMABufferContext *ctx, PCIDevice *dev);
 MemTxResult sgi_dma_buffer_rw(SGIDMABufferContext *ctx, dma_addr_t addr,
                               void *buf, dma_addr_t len, DMADirection dir,
                               MemTxAttrs attrs);
 bool sgi_dma_buffer_rw_ram(AddressSpace *as, dma_addr_t addr, void *buf,
                            dma_addr_t *len, DMADirection dir, MemTxAttrs attrs,
-                           bool swap32, MemTxResult *result);
+                           const SGIDMABufferRequest *request,
+                           MemTxResult *result);
 bool sgi_dma_buffer_try_rw(AddressSpace *as, dma_addr_t addr, void *buf,
                            dma_addr_t *len, DMADirection dir, MemTxAttrs attrs,
-                           bool swap32, MemTxResult *result);
+                           const SGIDMABufferRequest *request,
+                           MemTxResult *result);
+
+MemTxResult sgi_dma_buffer_native_rw(AddressSpace *as, dma_addr_t addr,
+                                     void *buf, dma_addr_t len,
+                                     DMADirection dir, MemTxAttrs attrs,
+                                     const SGIDMABufferRequest *request);
 
 static inline MemTxResult sgi_dma_buffer_read(SGIDMABufferContext *ctx,
                                               dma_addr_t addr, void *buf,
@@ -82,7 +98,7 @@ static inline MemTxResult sgi_dma_buffer_rw_relaxed(SGIDMABufferContext *ctx,
         MemTxResult part;
 
         if (!provider->transfer(provider->opaque, addr, bytes, &consumed,
-                                dir, attrs, false, &part)) {
+                                dir, attrs, &ctx->request, &part)) {
             break;
         }
         assert(consumed && consumed <= len);

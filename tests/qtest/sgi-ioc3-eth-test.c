@@ -287,16 +287,23 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
  * The socket-pair attachment chooses every byte in both directions, which
  * size boundaries need and user-mode networking cannot give.
  */
-static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
+static QTestState *ioc3_attach_socket_options(int guest_fd,
+                                              unsigned int buffers,
+                                              const char *extra)
 {
     QTestState *qts;
 
     qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
-                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0",
-                      guest_fd, IOC3_PCI_SLOT);
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 %s",
+                      guest_fd, IOC3_PCI_SLOT, extra);
     ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
+}
+
+static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
+{
+    return ioc3_attach_socket_options(guest_fd, buffers, "");
 }
 
 /*
@@ -822,8 +829,8 @@ static void test_dma_swap_controls(const void *data)
     const uint32_t payload_physical = RAM_SCRATCH + 0x4000;
     const uint32_t rx_ring_physical = RAM_SCRATCH + 0x8000;
     const uint32_t rx_physical = RAM_SCRATCH + 0xc000;
-    enum { LEN = 64 };
-    uint8_t frame[LEN];
+    const unsigned lengths[] = { 64, 1024, 1500 };
+    uint8_t frame[1500];
     unsigned int n, i;
 
     for (i = 0; i < sizeof(frame); i++) {
@@ -831,8 +838,13 @@ static void test_dma_swap_controls(const void *data)
     }
     memset(frame, 0xff, 6);
 
-    for (n = 0; n < 2 * G_N_ELEMENTS(controls); n++) {
-        uint32_t control = controls[n / 2];
+    for (n = 0; n < 4 * G_N_ELEMENTS(controls) * G_N_ELEMENTS(lengths);
+         n++) {
+        unsigned length = lengths[n / (4 * G_N_ELEMENTS(controls))];
+        bool native = !(n % 4 / 2);
+        g_autofree char *extra = g_strdup_printf(
+            "-global sgi-ioc3-eth.dma-buffer=%s", native ? "off" : "on");
+        uint32_t control = controls[n / 4 % G_N_ELEMENTS(controls)];
         unsigned int rx_offset = n % 2 ? RXD_BUF_OFFSET : 64;
         bool swap = control &
                     (translated ? swap_translated : swap_direct);
@@ -846,8 +858,11 @@ static void test_dma_swap_controls(const void *data)
         uint8_t descriptor[128] = { 0 };
         uint8_t encoded[sizeof(descriptor)];
         uint8_t pointer[8], encoded_pointer[8], header[8];
-        uint8_t encoded_frame[LEN];
-        uint8_t got[LEN], received[RXD_BUF_OFFSET + LEN + 8];
+        uint8_t encoded_frame[sizeof(frame)];
+        uint8_t got[sizeof(frame)];
+        uint8_t received[RXD_BUF_OFFSET + sizeof(frame) + 8];
+        uint8_t source_guard[8];
+        size_t received_size = RXD_BUF_OFFSET + length + 8;
         uint8_t expected[sizeof(received)];
         QTestState *qts;
         uint32_t device;
@@ -855,10 +870,11 @@ static void test_dma_swap_controls(const void *data)
 
         g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
         net_socket_set_recv_timeout(sv[0], 2);
-        g_test_message("%s DMA, swap controls 0x%x, receive offset %u",
+        g_test_message("%s %s DMA, swap controls 0x%x, receive offset %u, "
+                       "%u bytes", native ? "native" : "buffer",
                        translated ? "translated" : "direct",
-                       control, rx_offset);
-        qts = ioc3_attach_socket(sv[1], 1);
+                       control, rx_offset, length);
+        qts = ioc3_attach_socket_options(sv[1], 1, extra);
         device = qtest_readl(qts, device_reg);
         qtest_writel(qts, device_reg,
                      (device & ~(swap_direct | swap_translated)) | control);
@@ -870,19 +886,19 @@ static void test_dma_swap_controls(const void *data)
             qtest_writeq(qts, bridge + 0x10018, payload_physical | 1);
         }
 
-        if (n % 2) {
-            stl_be_p(descriptor, LEN | TXD_BUF1_VALID);
-            stl_be_p(descriptor + 4, LEN << TXD_BUF1_LEN_SHIFT);
+        if (n % 2 || length > TXD_DATA_SIZE) {
+            stl_be_p(descriptor, length | TXD_BUF1_VALID);
+            stl_be_p(descriptor + 4, length << TXD_BUF1_LEN_SHIFT);
             stq_be_p(descriptor + 8, payload);
-            for (i = 0; i < sizeof(encoded_frame); i++) {
+            for (i = 0; i < length; i++) {
                 encoded_frame[i] = frame[swap ? i ^ 3 : i];
             }
-            qtest_memwrite(qts, payload_physical, encoded_frame,
-                            sizeof(encoded_frame));
+            qtest_memset(qts, payload_physical - 8, 0xee, length + 16);
+            qtest_memwrite(qts, payload_physical, encoded_frame, length);
         } else {
-            stl_be_p(descriptor, LEN | TXD_DATA_VALID);
-            stl_be_p(descriptor + 4, LEN);
-            memcpy(descriptor + TXD_DATA_OFFSET, frame, sizeof(frame));
+            stl_be_p(descriptor, length | TXD_DATA_VALID);
+            stl_be_p(descriptor + 4, length);
+            memcpy(descriptor + TXD_DATA_OFFSET, frame, length);
         }
         for (i = 0; i < sizeof(encoded); i++) {
             encoded[i] = descriptor[swap ? i ^ 3 : i];
@@ -891,8 +907,22 @@ static void test_dma_swap_controls(const void *data)
         ioc3_writel(qts, ENET_TX_RING_LO, tx);
         ioc3_writel(qts, ENET_TX_PRODUCE, sizeof(descriptor));
         g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)),
-                         ==, sizeof(frame));
-        g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+                         ==, length);
+        g_assert_cmpmem(got, length, frame, length);
+        if (n % 2 || length > TXD_DATA_SIZE) {
+            qtest_memread(qts, payload_physical, got, length);
+            g_assert_cmpmem(got, length, encoded_frame, length);
+            qtest_memread(qts, payload_physical - 8, source_guard,
+                           sizeof(source_guard));
+            for (i = 0; i < sizeof(source_guard); i++) {
+                g_assert_cmphex(source_guard[i], ==, 0xee);
+            }
+            qtest_memread(qts, payload_physical + length, source_guard,
+                           sizeof(source_guard));
+            for (i = 0; i < sizeof(source_guard); i++) {
+                g_assert_cmphex(source_guard[i], ==, 0xee);
+            }
+        }
 
         stq_be_p(pointer, rx);
         for (i = 0; i < sizeof(pointer); i++) {
@@ -905,7 +935,7 @@ static void test_dma_swap_controls(const void *data)
         ioc3_writel(qts, ENET_MAC_CONTROL,
                      MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
                      MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(rx_offset / 2));
-        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        net_socket_send_frame(sv[0], frame, length);
         wait_for_rx_consume(qts, 8);
         qtest_memread(qts, rx_physical, received, sizeof(received));
         for (i = 0; i < sizeof(header); i++) {
@@ -913,20 +943,20 @@ static void test_dma_swap_controls(const void *data)
         }
         g_assert_cmphex(ldl_be_p(header) & RXH_VALID, ==, RXH_VALID);
         g_assert_cmphex(ldl_be_p(header) & RXH_BYTECNT_MASK, ==,
-                        (LEN + ETHER_FCS_LEN) << RXH_BYTECNT_SHIFT);
+                        (length + ETHER_FCS_LEN) << RXH_BYTECNT_SHIFT);
         g_assert_cmphex(ldl_be_p(header + 4) & RXE_GOODPKT, ==, RXE_GOODPKT);
         memset(expected, 0xee, sizeof(expected));
-        for (i = 0; i < sizeof(frame); i++) {
+        for (i = 0; i < length; i++) {
             expected[(rx_offset + i) ^ (swap ? 3 : 0)] = frame[i];
         }
         /* QEMU supplies zero bytes for the FCS omitted by its backend. */
         for (i = 0; i < ETHER_FCS_LEN; i++) {
-            expected[(rx_offset + LEN + i) ^ (swap ? 3 : 0)] = 0;
+            expected[(rx_offset + length + i) ^ (swap ? 3 : 0)] = 0;
         }
         g_assert_cmpmem(received + sizeof(header),
-                        sizeof(received) - sizeof(header),
+                        received_size - sizeof(header),
                         expected + sizeof(header),
-                        sizeof(expected) - sizeof(header));
+                        received_size - sizeof(header));
         ioc3_quit(qts);
         close(sv[0]);
     }
@@ -1110,6 +1140,7 @@ static void test_dma_bus_master_disable(const void *data)
 {
     enum { LEN = 64 };
     const uint32_t desc = RAM_SCRATCH;
+    const uint32_t payload = RAM_SCRATCH + 0x4000;
     uint8_t frame[LEN], got[LEN];
     QTestState *qts;
     uint16_t command;
@@ -1122,9 +1153,11 @@ static void test_dma_bus_master_disable(const void *data)
     memset(frame, 0xff, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = ioc3_attach_socket(sv[1], 4);
-    dma_stl_be(qts, desc, LEN | TXD_DATA_VALID);
-    dma_stl_be(qts, desc + 4, LEN);
-    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+    dma_stl_be(qts, desc, LEN | TXD_BUF1_VALID);
+    dma_stl_be(qts, desc + 4, LEN << TXD_BUF1_LEN_SHIFT);
+    dma_stl_be(qts, desc + 8, 0);
+    dma_stl_be(qts, desc + 12, pci_dma_address(payload));
+    qtest_memwrite(qts, payload, frame, sizeof(frame));
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
     ioc3_writel(qts, ENET_TX_RING_LO, pci_dma_address(desc));
 

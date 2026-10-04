@@ -4553,9 +4553,10 @@ static MemTxResult sgi_hub_ii_packet_write(void *opaque, hwaddr addr,
 }
 
 static bool sgi_hub_ii_dma_buffer_transfer(void *opaque, dma_addr_t addr,
-                                          void *buf, dma_addr_t *len,
-                                          DMADirection dir, MemTxAttrs attrs,
-                                          bool swap32, MemTxResult *result)
+                                           void *buf, dma_addr_t *len,
+                                           DMADirection dir, MemTxAttrs attrs,
+                                           const SGIDMABufferRequest *request,
+                                           MemTxResult *result)
 {
     SGIHubState *s = opaque;
 
@@ -4564,9 +4565,10 @@ static bool sgi_hub_ii_dma_buffer_transfer(void *opaque, dma_addr_t addr,
     }
     *len = MIN(*len, SGI_HUB_XIO_MEMORY_SIZE - addr);
     if (sgi_dma_buffer_rw_ram(&s->ii_inbound_as, addr, buf, len, dir, attrs,
-                           swap32, result)) {
+                           request, result)) {
         trace_sgi_hub_ii_dma_buffer(addr, *len,
-                                   dir == DMA_DIRECTION_FROM_DEVICE, swap32);
+                                   dir == DMA_DIRECTION_FROM_DEVICE,
+                                   request->swap32);
         return true;
     }
     return false;

@@ -32,16 +32,17 @@ typedef struct TestProvider {
     unsigned calls;
     unsigned handled;
     bool fail;
+    bool swap32;
 } TestProvider;
 
 static bool transfer(void *opaque, dma_addr_t addr, void *buf,
                      dma_addr_t *len, DMADirection dir, MemTxAttrs attrs,
-                     bool swap32, MemTxResult *result)
+                     const SGIDMABufferRequest *request, MemTxResult *result)
 {
     TestProvider *s = opaque;
 
     s->calls++;
-    g_assert_false(swap32);
+    g_assert_cmpint(request->swap32, ==, s->swap32);
     if (!s->handled) {
         return false;
     }
@@ -81,6 +82,22 @@ static void test_root(void)
                     MEMTX_OK);
     g_assert_cmpuint(state.calls, ==, 2);
     g_assert_cmpuint(native_calls, ==, 1);
+}
+
+static void test_conversion_request(void)
+{
+    MemoryRegion root = { 0 };
+    AddressSpace as = { .root = &root };
+    TestProvider state = { .handled = 8, .swap32 = true };
+    SGIDMABufferProvider provider = { .transfer = transfer, .opaque = &state };
+    SGIDMABufferContext ctx = {
+        .as = &as, .provider = &provider,
+        .request = { .swap32 = true, .max_access_size = 4 },
+    };
+    uint8_t bytes[8];
+
+    g_assert_cmpint(sgi_dma_buffer_read_relaxed(&ctx, 0x100, bytes, 8), ==,
+                    MEMTX_OK);
 }
 
 static void test_decline(void)
@@ -315,6 +332,7 @@ static void test_swap_avx2(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/dma/buffer/conversion-request", test_conversion_request);
     g_test_add_func("/dma-buffer/shared-root", test_root);
     g_test_add_func("/dma-buffer/decline", test_decline);
     g_test_add_func("/dma-buffer/handled-error", test_error);

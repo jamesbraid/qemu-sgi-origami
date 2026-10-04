@@ -66,6 +66,40 @@ static const MemoryRegionOps sgi_ioc3_pci_dma_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool sgi_ioc3_dma_buffer_transfer(void *opaque, dma_addr_t addr,
+                                         void *buf, dma_addr_t *len,
+                                         DMADirection dir, MemTxAttrs attrs,
+                                         const SGIDMABufferRequest *request,
+                                         MemTxResult *result)
+{
+    SGIIOC3State *s = opaque;
+    SGIDMABufferContext *ctx = &s->pci_dma_context;
+    SGIDMABufferRequest composed = *request;
+    dma_addr_t length = *len & ~7ULL;
+
+    if (!length || (addr & 7) || attrs.memory || !ctx->provider ||
+        !ctx->enabled(ctx->pci_dev)) {
+        return false;
+    }
+    composed.swap32 ^= true;
+    composed.max_access_size = request->max_access_size ?
+        MIN(request->max_access_size, 4) : 4;
+    if (!ctx->provider->transfer(ctx->provider->opaque, addr, buf, &length,
+                                 dir, attrs, &composed, result)) {
+        return false;
+    }
+    *len = length;
+    return true;
+}
+
+static const SGIDMABufferProvider *
+sgi_ioc3_dma_buffer_provider(Object *owner, MemoryRegion *mr)
+{
+    SGIIOC3State *s = SGI_IOC3(owner);
+
+    return mr == &s->pci_dma ? &s->dma_provider : NULL;
+}
+
 /* The register view changes narrow placement, preserving transferred bytes. */
 static MemTxResult sgi_ioc3_pci_bar_read(void *opaque, hwaddr addr,
                                        uint64_t *value, unsigned size,
@@ -1798,6 +1832,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->pci_dma, OBJECT(dev), &sgi_ioc3_pci_dma_ops, s,
                           "sgi-ioc3.pci-dma", UINT64_MAX);
     s->pci_dma.disable_reentrancy_guard = true;
+    sgi_dma_buffer_init_pci(&s->pci_dma_context, dev);
+    s->dma_provider.transfer = sgi_ioc3_dma_buffer_transfer;
+    s->dma_provider.opaque = s;
     s->dma_as = &s->dma_view_as;
 
     /*
@@ -2380,6 +2417,7 @@ static void sgi_ioc3_class_init(ObjectClass *oc, const void *data)
     pc->class_id = SGI_IOC3_CLASS_ID;
     pc->subsystem_vendor_id = SGI_IOC3_VENDOR_ID;
     pc->subsystem_id = SGI_IOC3_SUBSYSTEM_ID;
+    SGI_DMA_BUFFER_CLASS(oc)->get_provider = sgi_ioc3_dma_buffer_provider;
     rc->phases.hold = sgi_ioc3_reset_hold;
     dc->vmsd = &vmstate_sgi_ioc3;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
@@ -2396,6 +2434,7 @@ static const TypeInfo sgi_ioc3_types[] = {
         .class_init = sgi_ioc3_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
+            { TYPE_SGI_DMA_BUFFER },
             { },
         },
     },

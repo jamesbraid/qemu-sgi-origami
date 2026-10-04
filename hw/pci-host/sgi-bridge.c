@@ -2282,39 +2282,54 @@ static AddressSpace *sgi_bridge_device_address_space(PCIBus *bus, void *opaque,
 static bool sgi_bridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
                                            void *buf, dma_addr_t *len,
                                            DMADirection dir, MemTxAttrs attrs,
-                                           bool swap32, MemTxResult *result)
+                                           const SGIDMABufferRequest *request,
+                                           MemTxResult *result)
 {
     struct SGIBridgeDeviceDMA *dma = opaque;
     SGIBridgeState *s = dma->s;
     bool write = dir == DMA_DIRECTION_FROM_DEVICE;
     IOMMUTLBEntry entry;
-    hwaddr translated, length;
+    hwaddr translated, length, span;
     bool correct;
+    SGIDMABufferRequest composed = *request;
 
-    if (attrs.memory) {
+    if (attrs.memory ||
+        (request->swap32 && ((addr & 3) || *len < 4 ||
+                            (request->max_access_size &&
+                             request->max_access_size < 4)))) {
         return false;
     }
-    assert(!swap32);
     entry = sgi_bridge_translate(&dma->iommu, addr,
                                   write ? IOMMU_WO : IOMMU_RO, 0);
-    length = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    length = span;
     if (!(entry.perm & (1 << write))) {
         length = memory_access_size(&s->dma_denied, length, addr);
-        *result = address_space_rw(&s->dma_denied_as, addr, attrs, buf,
-                                    length, write);
+        if (request->swap32 || request->max_access_size) {
+            length = MIN(span, request->swap32 ? 4 :
+                               request->max_access_size);
+        }
+        *result = sgi_dma_buffer_native_rw(&s->dma_denied_as, addr, buf,
+                                            length, dir, attrs, request);
     } else {
         translated = (entry.translated_addr & ~entry.addr_mask) |
                      (addr & entry.addr_mask);
         correct = entry.target_as == &s->lane_swap_as;
+        composed.swap32 ^= correct;
         if (!sgi_dma_buffer_try_rw(correct ? &s->fabric_as : entry.target_as,
                                    translated, buf, &length, dir, attrs,
-                                   correct, result)) {
+                                   &composed, result)) {
             if (correct) {
                 length = memory_access_size(&s->lane_swap,
                     MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
             }
-            *result = address_space_rw(entry.target_as, translated, attrs,
-                                        buf, length, write);
+            /* The outer facade splits the operation before leaf dispatch. */
+            if (request->swap32 || request->max_access_size) {
+                length = MIN(span, request->swap32 ? 4 :
+                                   request->max_access_size);
+            }
+            *result = sgi_dma_buffer_native_rw(entry.target_as, translated, buf,
+                                               length, dir, attrs, request);
         }
     }
     *len = length;
