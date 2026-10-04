@@ -6940,6 +6940,30 @@ static void test_alpha_storage(void)
     g_assert_cmpuint(s.pixel[0].component[3], ==, 127);
 }
 
+static void test_alpha_test_precision(void)
+{
+    AlphaScene s;
+
+    alpha_init(&s);
+    s.f.c.cur.alpha_test = true;
+    s.f.c.cur.alpha_func = SGI_GL_GREATER;
+    s.f.c.cur.alpha_ref = 0.5;
+    alpha_point(&s, 255, 0, 0, 128.0 / 255);
+    g_assert_cmpuint(s.stores, ==, 0);
+
+    s.rules.alpha_test_bits = 12;
+    alpha_point(&s, 255, 0, 0, 0.5);
+    g_assert_cmpuint(s.stores, ==, 0);
+    alpha_point(&s, 255, 0, 0, 127.0 / 255);
+    g_assert_cmpuint(s.stores, ==, 0);
+    alpha_point(&s, 255, 0, 0, 128.0 / 255);
+    g_assert_cmpuint(s.stores, ==, 1);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 128);
+    alpha_point(&s, 255, 0, 0, 129.0 / 255);
+    g_assert_cmpuint(s.stores, ==, 2);
+    g_assert_cmpuint(s.pixel[0].component[3], ==, 129);
+}
+
 static void test_alpha_blend_masks(void)
 {
     static const struct {
@@ -10328,6 +10352,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/polygon-offset", test_polygon_offset);
     g_test_add_func("/sgi-gl/clip-planes", test_clip_planes);
     g_test_add_func("/sgi-gl/alpha-storage", test_alpha_storage);
+    g_test_add_func("/sgi-gl/alpha-test-precision",
+                    test_alpha_test_precision);
     g_test_add_func("/sgi-gl/alpha-blend-masks", test_alpha_blend_masks);
     g_test_add_func("/sgi-gl/alpha-clear-precision",
                     test_alpha_clear_precision);
