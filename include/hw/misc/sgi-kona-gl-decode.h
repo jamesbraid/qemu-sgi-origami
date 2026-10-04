@@ -212,6 +212,21 @@ bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
                                    uint32_t row_length, uint32_t skip_rows,
                                    uint32_t skip_pixels, uint32_t alignment,
                                    SGIKonaGLPixelLayout *layout);
+typedef struct SGIKonaGLPixelDMALayout {
+    SGIKonaGLPixelLayout pixels;
+    uint64_t total_bytes, line_bytes, pitch, span;
+    uint32_t lines;
+} SGIKonaGLPixelDMALayout;
+
+/* Raw DMA omits the PIO word prefixes and independently padded rows. */
+bool sgi_kona_gl_pixels_dma_layout(const uint32_t header[8],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLPixelDMALayout *layout);
+/* Locate a useful byte in the word-framed PIO staging buffer. */
+bool sgi_kona_gl_pixels_pio_offset(const SGIKonaGLPixelLayout *layout,
+                                   uint32_t row, uint64_t byte,
+                                   uint64_t *offset);
 /* Extract a useful row byte; missing words leave output unchanged. */
 bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *layout,
                                  const uint32_t *words, size_t nwords,

@@ -960,13 +960,53 @@ bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
     return true;
 }
 
-bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
-                                 const uint32_t *words, size_t nwords,
-                                 uint32_t row, uint64_t byte, uint8_t *out)
+bool sgi_kona_gl_pixels_dma_layout(const uint32_t header[8],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLPixelDMALayout *layout)
+{
+    SGIKonaGLPixelDMALayout d = { 0 };
+    SGIKonaGLPixelLayout *l = &d.pixels;
+    uint32_t pio_header[8];
+
+    if (!header || !layout || header[5] != 1 || header[7]) {
+        return false;
+    }
+    memcpy(pio_header, header, sizeof(pio_header));
+    pio_header[5] = 0;
+    if (!sgi_kona_gl_pixels_pio_layout(pio_header, row_length, skip_rows,
+                                       skip_pixels, alignment, l) ||
+        l->stride < l->row_bytes ||
+        umul64_overflow(l->height - 1, l->stride, &d.span) ||
+        uadd64_overflow(d.span, l->row_bytes, &d.span)) {
+        return false;
+    }
+    if (l->strided) {
+        d.lines = l->height;
+        d.line_bytes = l->row_bytes;
+        d.pitch = l->stride;
+        if (umul64_overflow(d.lines, d.line_bytes, &d.total_bytes)) {
+            return false;
+        }
+    } else {
+        d.lines = 1;
+        d.total_bytes = d.line_bytes = d.pitch = d.span;
+    }
+    if (d.total_bytes > UINT32_MAX || d.line_bytes > UINT32_MAX ||
+        d.pitch - d.line_bytes > UINT32_MAX) {
+        return false;
+    }
+    *layout = d;
+    return true;
+}
+
+bool sgi_kona_gl_pixels_pio_offset(const SGIKonaGLPixelLayout *l,
+                                   uint32_t row, uint64_t byte,
+                                   uint64_t *offset)
 {
     uint64_t start, pos;
 
-    if (!l || !words || !out || row >= l->height || byte >= l->row_bytes) {
+    if (!l || !offset || row >= l->height || byte >= l->row_bytes) {
         return false;
     }
     if (l->strided) {
@@ -981,7 +1021,22 @@ bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
                uadd64_overflow(start, l->phase, &start)) {
         return false;
     }
-    if (uadd64_overflow(start, byte, &pos) || pos / 4 >= nwords) {
+    if (uadd64_overflow(start, byte, &pos)) {
+        return false;
+    }
+    *offset = pos;
+    return true;
+}
+
+bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
+                                 const uint32_t *words, size_t nwords,
+                                 uint32_t row, uint64_t byte, uint8_t *out)
+{
+    uint64_t pos;
+
+    if (!words || !out ||
+        !sgi_kona_gl_pixels_pio_offset(l, row, byte, &pos) ||
+        pos / 4 >= nwords) {
         return false;
     }
     *out = words[pos / 4] >> (24 - 8 * (pos & 3));

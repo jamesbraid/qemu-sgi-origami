@@ -1733,6 +1733,142 @@ static void test_pixels_pio_refusals(void)
     g_assert_cmpuint(l.payload_words, ==, (uint64_t)UINT32_MAX * 4);
 }
 
+static void test_pixels_dma_contiguous_padding(void)
+{
+    const uint32_t header[8] = { 1, 3, 4, 1, 2, 1, 0, 0 };
+    SGIKonaGLPixelDMALayout d;
+    uint64_t offset;
+
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(header, 0, 0, 0, 4, &d));
+    g_assert_cmpuint(d.lines, ==, 1);
+    g_assert_cmpuint(d.total_bytes, ==, 11);
+    g_assert_cmpuint(d.line_bytes, ==, 11);
+    g_assert_cmpuint(d.pitch, ==, 11);
+    g_assert_cmpuint(d.span, ==, 11);
+    g_assert_cmpuint(d.pixels.phase, ==, 2);
+    g_assert_cmpuint(d.pixels.payload_words, ==, 4);
+    g_assert_true(sgi_kona_gl_pixels_pio_offset(&d.pixels, 2, 2, &offset));
+    g_assert_cmpuint(offset, ==, 12);
+}
+
+static void test_pixels_dma_strided_skips(void)
+{
+    const uint32_t header[8] = { 1, 3, 4, 1, 1, 1, 1, 0 };
+    const uint64_t positions[][3] = {
+        { 2, 3, 4 }, { 8, 9, 10 }, { 14, 15, 16 },
+    };
+    SGIKonaGLPixelDMALayout d;
+
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(header, 2, 1, 1, 1, &d));
+    g_assert_cmpuint(d.lines, ==, 3);
+    g_assert_cmpuint(d.total_bytes, ==, 9);
+    g_assert_cmpuint(d.line_bytes, ==, 3);
+    g_assert_cmpuint(d.pitch, ==, 6);
+    g_assert_cmpuint(d.span, ==, 15);
+    g_assert_cmpuint(d.pixels.phase, ==, 2);
+    g_assert_cmpuint(d.pixels.payload_words, ==, 5);
+    for (uint32_t row = 0; row < 3; row++) {
+        for (uint32_t byte = 0; byte < 3; byte++) {
+            uint64_t offset;
+
+            g_assert_true(sgi_kona_gl_pixels_pio_offset(&d.pixels, row,
+                                                        byte, &offset));
+            g_assert_cmpuint(offset, ==, positions[row][byte]);
+        }
+    }
+}
+
+static void test_pixels_dma_scalar_widths(void)
+{
+    const uint32_t sizes[] = { 1, 1, 2, 2, 4, 4, 4 };
+    const uint32_t components[] = { 1, 3, 4, 1, 2 };
+    uint32_t header[8] = { 2, 3, 3, 0, 3, 1, 0, 0 };
+    SGIKonaGLPixelDMALayout d;
+
+    for (header[2] = 3; header[2] <= 7; header[2]++) {
+        for (header[3] = 0; header[3] < ARRAY_SIZE(sizes); header[3]++) {
+            uint32_t bytes = components[header[2] - 3] * sizes[header[3]];
+
+            g_assert_true(sgi_kona_gl_pixels_dma_layout(header, 0, 0, 0,
+                                                        1, &d));
+            g_assert_cmpuint(d.total_bytes, ==, 6 * bytes);
+            g_assert_cmpuint(d.line_bytes, ==, 6 * bytes);
+            g_assert_cmpuint(d.pitch, ==, 6 * bytes);
+            g_assert_cmpuint(d.lines, ==, 1);
+            g_assert_cmpuint(d.pixels.phase, ==, 3);
+            g_assert_cmpuint(d.pixels.pixel_bytes, ==, bytes);
+        }
+    }
+}
+
+static void test_pixels_dma_refusals(void)
+{
+    const struct {
+        uint32_t header[8];
+        uint32_t row_length, skip_pixels, alignment;
+    } cases[] = {
+        { { 1, 1, 5, 1, 0, 0, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 5, 1, 0, 2, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 5, 1, 0, 1, 0, 1 }, 0, 0, 4 },
+        { { 1, 1, 5, 1, 4, 1, 0, 0 }, 0, 0, 4 },
+        { { 0, 1, 5, 1, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { 1, 0, 5, 1, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 5, 1, 0, 1, 0, 0 }, 0, 0, 3 },
+        { { 1, 1, 5, 1, 0, 1, 0, 0 }, 0, 1, 4 },
+        { { 1, 1, 5, 1, 0, 1, 1, 0 }, 0, 0, 4 },
+        { { 2, 1, 5, 1, 0, 1, 1, 0 }, 1, 0, 4 },
+        { { 1, 1, 2, 1, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { UINT32_MAX, 2, 3, 1, 0, 1, 0, 0 }, 0, 0, 1 },
+        { { UINT32_MAX, UINT32_MAX, 5, 6, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 5, 6, 0, 1, 1, 0 }, UINT32_MAX, 0, 4 },
+    };
+    SGIKonaGLPixelDMALayout before = { .total_bytes = 0x1234 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        SGIKonaGLPixelDMALayout d = before;
+
+        g_assert_false(sgi_kona_gl_pixels_dma_layout(cases[i].header,
+                          cases[i].row_length, 0, cases[i].skip_pixels,
+                          cases[i].alignment, &d));
+        g_assert_cmpmem(&d, sizeof(d), &before, sizeof(before));
+    }
+}
+
+static void test_pixels_dma_large_span(void)
+{
+    uint32_t header[8] = { UINT32_MAX, 1, 3, 1, 0, 1, 0, 0 };
+    SGIKonaGLPixelDMALayout d;
+
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(header, 0, 0, 0, 1, &d));
+    g_assert_cmpuint(d.total_bytes, ==, UINT32_MAX);
+    header[0] = 1;
+    header[1] = 2;
+    header[6] = 1;
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(header, UINT32_MAX, 0, 0,
+                                                1, &d));
+    g_assert_cmpuint(d.total_bytes, ==, 2);
+    g_assert_cmpuint(d.line_bytes, ==, 1);
+    g_assert_cmpuint(d.pitch, ==, UINT32_MAX);
+    g_assert_cmpuint(d.span, ==, (uint64_t)UINT32_MAX + 1);
+}
+
+static void test_pixels_pio_offset_refusals(void)
+{
+    SGIKonaGLPixelLayout l = {
+        .width = 1, .height = 3, .row_bytes = 1, .stride = UINT64_MAX,
+    };
+    uint64_t offset = 0x1234;
+
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(NULL, 0, 0, &offset));
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(&l, 0, 0, NULL));
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(&l, 3, 0, &offset));
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(&l, 0, 1, &offset));
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(&l, 2, 0, &offset));
+    l.phase = 1;
+    g_assert_false(sgi_kona_gl_pixels_pio_offset(&l, 1, 0, &offset));
+    g_assert_cmpuint(offset, ==, 0x1234);
+}
+
 static void test_pixel_float_conversion(void)
 {
     const uint32_t floats[] = {
@@ -2115,6 +2251,18 @@ int main(int argc, char **argv)
                     test_pixels_pio_scalar_widths);
     g_test_add_func("/sgi-kona-gl-decode/pixels-pio/refusals",
                     test_pixels_pio_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-dma/contiguous-padding",
+                    test_pixels_dma_contiguous_padding);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-dma/strided-skips",
+                    test_pixels_dma_strided_skips);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-dma/scalar-widths",
+                    test_pixels_dma_scalar_widths);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-dma/refusals",
+                    test_pixels_dma_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-dma/large-span",
+                    test_pixels_dma_large_span);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-pio/offset-refusals",
+                    test_pixels_pio_offset_refusals);
     g_test_add_func("/sgi-kona-gl-decode/pixel-float-conversion",
                     test_pixel_float_conversion);
     g_test_add_func("/sgi-kona-gl-decode/pixel-double-conversion",
