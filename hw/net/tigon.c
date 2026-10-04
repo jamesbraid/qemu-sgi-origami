@@ -481,8 +481,10 @@ static MemTxResult tigon_dma_read_words(TigonState *s, uint64_t addr,
 
     assert(count > 0 && count <= TIGON_MAX_BD_WORDS);
     bytes = count * sizeof(*words);
-    result = sgi_dma_buffer_read(
-        tigon_descriptor_dma(s, "read", addr, bytes), addr, words, bytes);
+    /* At most 32 bytes: native DMA avoids the buffer cache setup cost. */
+    result = dma_memory_read(
+        tigon_descriptor_dma(s, "read", addr, bytes)->as,
+        addr, words, bytes, MEMTXATTRS_UNSPECIFIED);
     trace_tigon_dma("read", addr, bytes, result);
     if (result != MEMTX_OK) {
         memset(words, 0, bytes);
@@ -511,8 +513,9 @@ static MemTxResult tigon_dma_write_words(TigonState *s, uint64_t addr,
         raw[i] = bigendian ? cpu_to_be32(words[i])
                            : cpu_to_le32(words[i]);
     }
-    result = sgi_dma_buffer_write(
-        tigon_descriptor_dma(s, "write", addr, bytes), addr, raw, bytes);
+    result = dma_memory_write(
+        tigon_descriptor_dma(s, "write", addr, bytes)->as,
+        addr, raw, bytes, MEMTXATTRS_UNSPECIFIED);
     trace_tigon_dma("write", addr, bytes, result);
     return result;
 }
