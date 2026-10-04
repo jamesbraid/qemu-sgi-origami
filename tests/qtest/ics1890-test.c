@@ -350,15 +350,23 @@ static void store32(PHYTest *t, uint64_t addr, uint32_t val)
     qtest_memwrite(t->qts, addr, buf, sizeof(buf));
 }
 
+/* PCI direct-window addresses differ from qtest backing RAM addresses. */
+static uint32_t pci_dma_address(uint32_t physical)
+{
+    return 0x80000000u | physical;
+}
+
 static void packet_setup(PHYTest *t)
 {
+    /* Direct DMA targets transfer RAM without the reset 512 MB step. */
+    qtest_writel(t->qts, 0x40000000 + 0x80 + 4, 0);
     wr(t, 0xf0, (1 << 1) | (33 << 3) | (0xf << 13));
     wr(t, 0x100, 0);
-    wr(t, 0x104, RAM + 0x8000);
+    wr(t, 0x104, pci_dma_address(RAM + 0x8000));
     wr(t, 0x128, 0);
-    wr(t, 0x12c, RAM);
+    wr(t, 0x12c, pci_dma_address(RAM));
     store32(t, RAM + 0x8000, 0);
-    store32(t, RAM + 0x8004, RAM + 0xc000);
+    store32(t, RAM + 0x8004, pci_dma_address(RAM + 0xc000));
     wr(t, 0x110, 0x80000008);
 }
 

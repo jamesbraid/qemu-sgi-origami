@@ -427,9 +427,17 @@ static void attach_node_ioc3(QTestState *qts, unsigned int node)
     qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + BRIDGE_DEVICE(IOC3_SLOT) +
                        REG_DATA,
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* Direct PCI DMA targets this node without the reset 512 MB step. */
+    qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + 0x80 + REG_DATA, 0);
     /* The PROMs' chip control, which aims the serial DMA engines. */
     qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + IOC3_WINDOW_OFFSET + 0x28,
                  0x0007ae5e);
+}
+
+/* PCI direct-window addresses differ from qtest backing RAM addresses. */
+static uint32_t pci_dma_address(uint32_t physical)
+{
+    return 0x80000000u | physical;
 }
 
 static void queue_ioc3_ethernet_tx(QTestState *qts, uint32_t desc,
@@ -518,7 +526,8 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
     qtest_writeb(from, IOC3_SERIAL_A_MCR, 0x13);
     qtest_writel(from, IOC3_SDMA_RING_HI, 0);
-    qtest_writel(from, IOC3_SDMA_RING_LO, IOC3_RING_RAM | IOC3_RING_4K);
+    qtest_writel(from, IOC3_SDMA_RING_LO,
+                 pci_dma_address(IOC3_RING_RAM) | IOC3_RING_4K);
     qtest_writel(from, IOC3_SDMA_A_RX_TIMER, 0x123);
     qtest_writel(from, IOC3_SDMA_A_RX_CONSUME, IOC3_CONSUME_ARM_TIMER);
     qtest_writel(from, IOC3_SDMA_A_CONTROL, IOC3_SDMA_ENABLE);
@@ -601,7 +610,8 @@ static void test_blocked_serial_transmit_survives_migration(const void *data)
     qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
     qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
     qtest_writel(from, IOC3_SDMA_RING_HI, 0);
-    qtest_writel(from, IOC3_SDMA_RING_LO, IOC3_RING_RAM | IOC3_RING_4K);
+    qtest_writel(from, IOC3_SDMA_RING_LO,
+                 pci_dma_address(IOC3_RING_RAM) | IOC3_RING_4K);
     qtest_writel(from, IOC3_SDMA_A_CONTROL, IOC3_SDMA_ENABLE);
     qtest_memwrite(from, IOC3_RING_RAM, entry, sizeof(entry));
     qtest_writel(from, IOC3_SDMA_A_TX_PRODUCE, sizeof(entry));
@@ -1383,7 +1393,8 @@ static void test_ethernet_interrupt_reasserts_after_migration(const void *data)
                  IOC3_MCR_TX_DMA_EN | IOC3_MCR_TX_EN);
     qtest_writel(from, IOC3_ENET_INT_ENABLE, sources);
     qtest_writel(from, IOC3_ENET_TX_RING_HI, 0);
-    qtest_writel(from, IOC3_ENET_TX_RING_LO, desc & 0xffffc000u);
+    qtest_writel(from, IOC3_ENET_TX_RING_LO,
+                 pci_dma_address(desc & 0xffffc000u));
     queue_ioc3_ethernet_tx(from, desc, 128);
     g_assert_cmphex(qtest_readl(from, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
                     ==, BRIDGE_PIN_ETH);
