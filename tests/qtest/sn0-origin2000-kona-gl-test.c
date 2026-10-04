@@ -451,14 +451,11 @@ static void x_repaint(QTestState *s)
 {
     const uint32_t top = FB_HEIGHT - 1 - 640;
     const uint32_t gc[] = {
-        0xff000, 0, 0, 0, 0, 0xfc000, 8, 1, 0, 6, 0, 1, 1,
+        0xfef00, 0, 0, 0, 0xffffff, 0xffffff, 4, 1, 1, 6, 0, 0, 0,
     };
 
     kona_command(s, 0x12a, (uint32_t[]){ 0, 0, FB_WIDTH, FB_HEIGHT }, 4);
     kona_command(s, 0x12b, (uint32_t[]){ 1, 0, 0, FB_WIDTH, FB_HEIGHT }, 5);
-    qtest_writel(s, KONA_REG(0xc1000c + 0x20 * 0x12e), 0x2dff);
-    qtest_writel(s, KONA_REG(0xc1000c), 1);
-    qtest_writel(s, KONA_REG(0xc1000c), 0x3fc00000);
     kona_command(s, 0x129, gc, ARRAY_SIZE(gc));
     kona_command(s, 0x154, (uint32_t[]){ (PROBE_X << 16) | top,
                     ((PROBE_X + 1) << 16) | (top + 1) }, 2);

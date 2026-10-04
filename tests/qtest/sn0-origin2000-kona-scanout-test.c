@@ -458,6 +458,23 @@ static void test_planes_declared(void)
         "plane 5 base 0xd80000 len 0x500000 1280x1024 stride 5120 format 4",
     };
 
+    static const struct {
+        const char *line;
+        unsigned count;
+    } internal[] = {
+        { "plane 6 base 0x1280000 len 0x140000 1280x1024 stride 1280 format 5",
+          1 },
+        { "plane 0 base 0x0 len 0x500000 1280x1024 stride 5120 format 9", 2 },
+        { "plane 1 base 0x500000 len 0x500000 1280x1024 stride 5120 format 9",
+          1 },
+        { "plane 2 base 0xa00000 len 0x500000 1280x1024 stride 5120 format 9",
+          1 },
+        { "plane 3 base 0xf00000 len 0x500000 1280x1024 stride 5120 format 9",
+          1 },
+        { "plane 1 base 0x500000 len 0x140000 1280x1024 stride 1280 format 6",
+          1 },
+    };
+
     s = qtest_initf("%s -trace enable=sgi_plane_add -D %s", MACHINE_ARGS,
                     log);
     qtest_quit(s);
@@ -465,7 +482,11 @@ static void test_planes_declared(void)
     for (size_t i = 0; i < G_N_ELEMENTS(planes); i++) {
         g_assert_nonnull(strstr(found, planes[i]));
     }
-    g_assert_cmpuint(count_occurrences(found, "sgi_plane_add "), ==, 6);
+    for (size_t i = 0; i < G_N_ELEMENTS(internal); i++) {
+        g_assert_cmpuint(count_occurrences(found, internal[i].line), ==,
+                         internal[i].count);
+    }
+    g_assert_cmpuint(count_occurrences(found, "sgi_plane_add "), ==, 13);
     g_free(found);
 
     s = qtest_initf("%s,list-memory-size=0x200000 -trace enable=sgi_plane_add"

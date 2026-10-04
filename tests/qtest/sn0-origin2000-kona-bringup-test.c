@@ -1179,10 +1179,8 @@ static void test_x_initialise_echo(void)
 }
 
 /*
- * The X server's display tokens and the kernel's 0x1e6 are consumed
- * whole with a trace each and change nothing else: arguments shaped like
- * the textport's sync probe (1 9 0) queue no mailbox reply, the return
- * page is untouched and the textport stays in step afterwards.
+ * Display packets keep command framing and leave replies untouched.
+ * The DID map has a handler; display mode and flush remain unmodelled.
  */
 static void test_display_tokens_consumed(void)
 {
@@ -1198,7 +1196,7 @@ static void test_display_tokens_consumed(void)
     g_autofree uint8_t *before = g_malloc(0x40);
     g_autofree uint8_t *after = g_malloc(0x40);
     QTestState *s = kona_init_logged(MACHINE_ARGS,
-                                     "sgi_kona_command_unmodelled",
+                                     "sgi_kona_*command*",
                                      "guest_errors", &log);
 
     guest_fill(s, RETURN_PAGE, 0x5a, 0x40);
@@ -1218,10 +1216,16 @@ static void test_display_tokens_consumed(void)
         g_autofree char *line = g_strdup_printf(
             "token 0x%x argc %u consumed", tokens[i].token, tokens[i].words);
 
-        g_assert_nonnull(strstr(found, line));
+        if (tokens[i].token == 0x132) {
+            g_assert_null(strstr(found, line));
+            g_assert_nonnull(strstr(found, "token 0x132 args 0x1 0x9 0x0"
+                                          " argc 2"));
+        } else {
+            g_assert_nonnull(strstr(found, line));
+        }
     }
     g_assert_cmpuint(count_occurrences(found, "sgi_kona_command_unmodelled "),
-                     ==, ARRAY_SIZE(tokens));
+                     ==, ARRAY_SIZE(tokens) - 1);
     g_assert_null(strstr(found, "textport expected a sync word"));
 }
 
