@@ -4097,19 +4097,30 @@ static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
     OdysseyTextureChain *chain = opaque;
     OdysseyTexture texture;
 
-    if (level >= ARRAY_SIZE(chain->storage) || y != 0) {
+    if (level >= ARRAY_SIZE(chain->storage)) {
         return false;
     }
     texture = chain->storage[level];
-    if ((texture.width != 2 && texture.width != 4) ||
-        texture.height != 1 || !texture.offset ||
-        (x != -1 && x != (int32_t)texture.width)) {
+    if (texture.height == 1) {
+        if ((texture.width != 2 && texture.width != 4) || y != 0 ||
+            !texture.offset || (x != -1 && x != (int32_t)texture.width)) {
+            return false;
+        }
+        texture.offset--;
+        texture.width += 2;
+        return odyssey_texture_read(&texture, x + 1, 0, rgba);
+    }
+    if (texture.width != 2 || texture.height != 2 ||
+        x < -1 || x > 2 || y < -1 || y > 2 ||
+        (x >= 0 && x < 2 && y >= 0 && y < 2) ||
+        texture.offset < (uint64_t)texture.stride + 1) {
         return false;
     }
-    /* Setup checks the complete captured row, including both border texels. */
-    texture.offset--;
+    /* Setup validates the complete captured 4-by-4 border region. */
+    texture.offset -= texture.stride + 1;
     texture.width += 2;
-    return odyssey_texture_read(&texture, x + 1, 0, rgba);
+    texture.height += 2;
+    return odyssey_texture_read(&texture, x + 1, y + 1, rgba);
 }
 
 /* Each normalized component indexes the table after filtering. */
@@ -4153,12 +4164,22 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                         ODSY_TEX_MODE_3D)) == ODSY_TEX_MODE_1D &&
         height == 1 && depth == 1 && !s->tex_level0;
-    bool stored_border = one_d_shape && (width == 2 || width == 4) &&
-        (word == 0x03002000 || word == 0x03002022) &&
+    bool two_d_shape =
+        (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+                        ODSY_TEX_MODE_3D)) == ODSY_TEX_MODE_2D &&
+        width == 2 && height == 2 && depth == 1 && !s->tex_level0;
+    bool stored_border =
+        ((one_d_shape && (width == 2 || width == 4) &&
+          (word == 0x03002000 || word == 0x03002022)) ||
+         (two_d_shape && (word == 0x03002800 || word == 0x03002822))) &&
         !(s->tex_sampler[5] & 0xff000000) &&
         (s->tex_sampler[6] & 0xff000000) == 0x01000000;
-    bool one_d_clamp = stored_border ||
-        (one_d_shape && (word == 0x13002000 || word == 0x13002022));
+    bool one_d_clamp = one_d_shape &&
+        (stored_border || word == 0x13002000 || word == 0x13002022);
+    bool two_d_clamp = two_d_shape &&
+        (stored_border || word == 0x13002800 || word == 0x13002822);
+    bool captured_clamp = one_d_clamp || two_d_clamp;
+    bool two_d_stored = stored_border && two_d_shape;
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
     bool colour_table_l8 = word == 0x11500001 || word == 0x11500003 ||
                            word == 0x11600001;
@@ -4217,16 +4238,16 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                               (ctz32(height) << 5) |
                               (three_d ? ctz32(depth) : 0)) ||
         ws > 3 || wt > 3 ||
-        (!border && !one_d_clamp &&
+        (!border && !captured_clamp &&
          (s->tex_sampler[5] || s->tex_sampler[6])) ||
-        (one_d_clamp && !stored_border &&
+        (captured_clamp && !stored_border &&
          ((s->tex_sampler[5] | s->tex_sampler[6]) & 0xff000000)) ||
         (border && (ws != 3 || wt != 3 ||
                     width_word != (0x00fc0000 | width) ||
                     height_word != (0x00fc0000 | height) ||
                     ((s->tex_sampler[5] | s->tex_sampler[6]) &
                      0xff000000))) ||
-        ((clamp || border) && !one_d_clamp &&
+        ((clamp || border) && !captured_clamp &&
          ((clamp && (ws != 2 || wt != 2)) ||
           (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                           ODSY_TEX_MODE_3D)) != ODSY_TEX_MODE_2D ||
@@ -4275,7 +4296,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
                     border ? SGI_GL_CLAMP_TO_BORDER :
                     wt == 2 ? SGI_GL_CLAMP :
                     wt ? SGI_GL_CLAMP_TO_EDGE : SGI_GL_REPEAT;
-    if (border || one_d_clamp) {
+    if (border || captured_clamp) {
         image->border_color[0] = ((s->tex_sampler[5] >> 12) & 0xfff) /
                                  4095.0f;
         image->border_color[1] = (s->tex_sampler[5] & 0xfff) / 4095.0f;
@@ -4418,10 +4439,15 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint32_t expected_units = stored_border ? 4 :
                                   ((level_width + 15) / 16 + 1) & ~1u;
         uint32_t base = entry[0] & 0x1fffffffu;
-        uint32_t interior = stored_border ? 16 : 0;
+        uint32_t interior_x = stored_border ? 16 : 0;
+        uint32_t interior_y = two_d_stored ? 16 : 0;
+        uint32_t rows = level_height + interior_y + two_d_stored;
         int object;
 
         if ((stored_border && (entry[1] != 0x41100004 || !base)) ||
+            (two_d_clamp && !stored_border &&
+             (filter || s->tex_sampler[5] || s->tex_sampler[6]) &&
+             entry[1] != 0x41100002) ||
             (entry[1] & 0x3c0ff000u) || entry[2] ||
             (i && (entry[1] & 0xc3f00000u) !=
                   (s->tex_levels[first * 3 + 1] & 0xc3f00000u)) ||
@@ -4431,7 +4457,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         }
         chain->levels[i] = (SGIGLTexLevel) {
             .level = i, .width = level_width, .height = level_height,
-            .border = stored_border, .base_format = image->base_format,
+            .base_format = image->base_format,
             .internal_format = image->base_format,
             .opaque = chain,
         };
@@ -4441,24 +4467,27 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         object = odyssey_object_find(s, base);
         if (object < 0 || s->obj_width[object] < level_width ||
             (stride_units && s->obj_width[object] != stride_units * 16) ||
-            s->obj_rows[object] < level_height ||
-            umul64_overflow(level_height - 1, s->obj_width[object], &end) ||
+            s->obj_rows[object] < rows ||
+            umul64_overflow(rows - 1, s->obj_width[object], &end) ||
             uadd64_overflow(end, s->obj_offset[object], &end) ||
-            uadd64_overflow(end, interior, &end) ||
+            uadd64_overflow(end, interior_x, &end) ||
             uadd64_overflow(end, level_width + stored_border, &end) ||
             end > s->obj_used ||
             end > s->obj_mem.bytes_len / 4) {
             continue;
         }
         chain->storage[i] = (OdysseyTexture) {
-            /* The captured 1D stored-border policy uses interior column 16. */
-            .s = s, .offset = s->obj_offset[object] + interior,
+            /* Captured stored-border policy uses interior coordinate 16. */
+            .s = s,
+            .offset = s->obj_offset[object] +
+                      interior_y * s->obj_width[object] + interior_x,
             .stride = s->obj_width[object], .width = level_width,
             .height = level_height, .base_format = image->base_format,
             .words = s->obj_used,
         };
         chain->levels[i].read_texel = odyssey_texture_read_level;
         if (stored_border) {
+            chain->levels[i].border = 1;
             chain->levels[i].read_border_texel =
                 odyssey_texture_read_border_level;
         }
