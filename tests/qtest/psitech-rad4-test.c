@@ -858,17 +858,218 @@ static void test_serial_eeprom_bad_command(void)
 
     bar0_write(qts, R_SERIAL, ctrl);
 
-    /* A command that is not "start bit, then 0xac". */
+    /* Start bit, then EWDS (00 00xxxx): a command that returns no data. */
     static const int bad_bits[9] = { 1, 0, 0, 0, 0, 0, 0, 0, 0 };
     for (int i = 0; i < 9; i++) {
         serial_clock_bit(qts, &ctrl, bad_bits[i]);
     }
 
-    /* Any other command reads incoming one until cold reset. */
+    /* Only READ drives data-out low; every other command leaves it high. */
     bool bit = serial_clock_bit(qts, &ctrl, 0);
     g_assert_true(bit);
 
     qtest_quit(qts);
+}
+
+/*
+ * The serial EEPROM is a 93C46-type 64x16 part: after a start bit, two
+ * opcode bits and six address bits. These helpers drive it the way the
+ * driver's own EEPROM routines do: chip select high, the command, then data
+ * clocked MSB first.
+ */
+#define EE_READ(word)   (0x80 | (word))
+#define EE_WRITE(word)  (0x40 | (word))
+#define EE_EWEN         0x30
+#define EE_EWDS         0x00
+
+/* The driver's configuration record: 40 bytes from byte 0x58, word 0x2c. */
+#define EE_RECORD_WORD  0x2c
+#define EE_RECORD_WORDS 20
+
+static void ee_select(QTestState *qts, uint32_t *ctrl, bool on)
+{
+    *ctrl = on ? SERIAL_CS : 0;
+    bar0_write(qts, R_SERIAL, *ctrl);
+}
+
+/* Clock out a start bit and an 8-bit command; returns the last sample. */
+static bool ee_command(QTestState *qts, uint32_t *ctrl, uint8_t command)
+{
+    bool miso;
+
+    serial_clock_bit(qts, ctrl, 1);
+    for (int i = 7; i >= 0; i--) {
+        miso = serial_clock_bit(qts, ctrl, (command >> i) & 1);
+    }
+    return miso;
+}
+
+static void ee_simple_command(QTestState *qts, uint8_t command)
+{
+    uint32_t ctrl;
+
+    ee_select(qts, &ctrl, true);
+    ee_command(qts, &ctrl, command);
+    ee_select(qts, &ctrl, false);
+}
+
+/*
+ * A sequential READ of @count words, as the driver reads its record in one
+ * chip-select period: the dummy zero is visible right after the last
+ * address bit, then each data bit after its clock's falling edge.
+ */
+static void ee_read(QTestState *qts, uint8_t word, uint16_t *out,
+                    unsigned count)
+{
+    uint32_t ctrl;
+
+    ee_select(qts, &ctrl, true);
+    g_assert_false(ee_command(qts, &ctrl, EE_READ(word)));
+    for (unsigned i = 0; i < count; i++) {
+        out[i] = 0;
+        for (int bit = 0; bit < 16; bit++) {
+            out[i] = (out[i] << 1) | serial_clock_bit(qts, &ctrl, 0);
+        }
+    }
+    ee_select(qts, &ctrl, false);
+}
+
+/*
+ * WRITE one word, then raise chip select again and sample data-out without
+ * clocking, the driver's busy poll: one means programming has finished.
+ */
+static void ee_write(QTestState *qts, uint8_t word, uint16_t value)
+{
+    uint32_t ctrl;
+
+    ee_select(qts, &ctrl, true);
+    ee_command(qts, &ctrl, EE_WRITE(word));
+    for (int bit = 15; bit >= 0; bit--) {
+        serial_clock_bit(qts, &ctrl, (value >> bit) & 1);
+    }
+    ee_select(qts, &ctrl, false);
+    ee_select(qts, &ctrl, true);
+    g_assert_cmphex(bar0_read(qts, R_SERIAL) & SERIAL_MISO, ==, SERIAL_MISO);
+    ee_select(qts, &ctrl, false);
+}
+
+/*
+ * The record the driver writes back after changing to @mode: its 32-bit
+ * request word in the first four record bytes, each byte pair shifted out
+ * odd byte first, so word 0x2d carries the index in its high byte. The
+ * other 36 bytes are what it read at attach, zero here.
+ */
+static void ee_expected_mode_record(uint16_t *record, uint8_t mode)
+{
+    memset(record, 0, EE_RECORD_WORDS * sizeof(*record));
+    record[1] = (uint16_t)mode << 8;
+}
+
+static void ee_write_record(QTestState *qts, const uint16_t *record)
+{
+    ee_simple_command(qts, EE_EWEN);
+    for (unsigned i = 0; i < EE_RECORD_WORDS; i++) {
+        ee_write(qts, EE_RECORD_WORD + i, record[i]);
+    }
+    ee_simple_command(qts, EE_EWDS);
+}
+
+static void test_serial_eeprom_write(void)
+{
+    QTestState *qts = rad4_init();
+    uint16_t expected[EE_RECORD_WORDS], record[EE_RECORD_WORDS];
+    uint16_t first[2];
+
+    /* The default image is all zero: mode 0, every option bit clear. */
+    ee_read(qts, EE_RECORD_WORD, record, EE_RECORD_WORDS);
+    ee_expected_mode_record(expected, 0);
+    g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+
+    /* The part powers up write-disabled: a WRITE alone changes nothing. */
+    ee_write(qts, EE_RECORD_WORD + 1, 0x0700);
+    ee_read(qts, EE_RECORD_WORD, record, EE_RECORD_WORDS);
+    g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+
+    ee_expected_mode_record(expected, 7);
+    ee_write_record(qts, expected);
+    ee_read(qts, EE_RECORD_WORD, record, EE_RECORD_WORDS);
+    g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+
+    /* EWDS closed writing again. */
+    ee_write(qts, EE_RECORD_WORD + 1, 0x0b00);
+    ee_read(qts, EE_RECORD_WORD + 1, first, 1);
+    g_assert_cmphex(first[0], ==, 0x0700);
+
+    /* A sequential read runs past the last word into word 0. */
+    ee_read(qts, 0x3f, first, 2);
+    g_assert_cmphex(first[0], ==, 0);
+    g_assert_cmphex(first[1], ==, 0);
+
+    /* The contents are nonvolatile: a system reset keeps them. */
+    qtest_system_reset(qts);
+    rad4_configure_bars(qts);
+    ee_read(qts, EE_RECORD_WORD, record, EE_RECORD_WORDS);
+    g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+
+    qtest_quit(qts);
+}
+
+static QTestState *rad4_init_eeprom_drive(const char *path)
+{
+    QTestState *qts = qtest_initf("-M origin200"
+                                  " -drive if=none,id=rad4ee,format=raw,"
+                                  "file=%s"
+                                  " -device psitech-rad4,addr="
+                                  G_STRINGIFY(RAD4_SLOT) ",eeprom=rad4ee",
+                                  path);
+
+    rad4_configure_bars(qts);
+    return qts;
+}
+
+/*
+ * With a backing drive, the image is read at realize and every programmed
+ * word is written through, so a second QEMU on the same file reads it back.
+ * The image stores each word most significant byte first.
+ */
+static void test_serial_eeprom_backing_drive(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    uint16_t expected[EE_RECORD_WORDS], record[EE_RECORD_WORDS];
+    uint8_t image[128] = { 0 };
+    uint16_t word;
+    QTestState *qts;
+    gsize length;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-eeprom-XXXXXX.img", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    image[0x00] = 0x12;
+    image[0x01] = 0x34;
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+
+    qts = rad4_init_eeprom_drive(path);
+    ee_read(qts, 0, &word, 1);
+    g_assert_cmphex(word, ==, 0x1234);
+    ee_expected_mode_record(expected, 11);
+    ee_write_record(qts, expected);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
+    g_assert_cmpuint(length, ==, sizeof(image));
+    g_assert_cmphex((uint8_t)contents[0x5a], ==, 11);
+    g_assert_cmphex((uint8_t)contents[0x5b], ==, 0);
+
+    qts = rad4_init_eeprom_drive(path);
+    ee_read(qts, EE_RECORD_WORD, record, EE_RECORD_WORDS);
+    g_assert_cmpmem(record, sizeof(record), expected, sizeof(expected));
+    qtest_quit(qts);
+
+    unlink(path);
 }
 
 static void test_framebuffer_mask(void)
@@ -2203,6 +2404,10 @@ int main(int argc, char **argv)
                    test_serial_eeprom_valid_command);
     qtest_add_func("/psitech-rad4/serial-eeprom-bad",
                    test_serial_eeprom_bad_command);
+    qtest_add_func("/psitech-rad4/serial-eeprom-write",
+                   test_serial_eeprom_write);
+    qtest_add_func("/psitech-rad4/serial-eeprom-backing-drive",
+                   test_serial_eeprom_backing_drive);
     qtest_add_func("/psitech-rad4/framebuffer-mask", test_framebuffer_mask);
     qtest_add_func("/psitech-rad4/rgb-data-read-autoincrement",
                    test_rgb_data_read_autoincrement);
