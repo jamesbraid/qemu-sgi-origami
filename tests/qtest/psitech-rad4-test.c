@@ -2666,6 +2666,40 @@ static void test_mode_switch_rad4setres(void)
     qtest_quit(qts);
 }
 
+/*
+ * A system reset leaves no mode recognized. The scanout returns to mode
+ * 0's 1280x1024 geometry and shows nothing, not the previous mode's
+ * converted rows re-strided at the new width, and no frames arrive until
+ * the driver programs a mode again, after which mode 0 works as at boot.
+ */
+static void test_mode_reset_returns_to_mode0(void)
+{
+    QTestState *qts = rad4_init();
+    g_autoptr(Screen) before = NULL;
+    g_autoptr(Screen) after = NULL;
+
+    play_mode(qts, 9);
+    check_mode_active(qts, 9);
+    bar2_write(qts, rad4_modes[9].width * 4, 0x00a1b2c3);
+    before = screen_capture(qts);
+    g_assert_cmpuint(before->width, ==, 1024);
+    g_assert_cmphex(screen_pixel(before, 0, 1), ==, 0xa1b2c3);
+
+    qtest_system_reset(qts);
+    rad4_configure_bars(qts);
+    after = screen_capture(qts);
+    g_assert_cmpuint(after->width, ==, 1280);
+    g_assert_cmpuint(after->height, ==, 1024);
+    for (unsigned i = 0; i < after->width * after->height; i++) {
+        g_assert_cmphex(after->pixels[i], ==, 0);
+    }
+    check_no_mode(qts);
+
+    play_mode(qts, 0);
+    check_mode_active(qts, 0);
+    qtest_quit(qts);
+}
+
 typedef enum MutationKind {
     MUTATE_XOR,
     MUTATE_DROP,
@@ -3034,6 +3068,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/mode-option-words", test_mode_option_words);
     qtest_add_func("/psitech-rad4/mode-switch-rad4setres",
                    test_mode_switch_rad4setres);
+    qtest_add_func("/psitech-rad4/mode-reset-returns-to-mode0",
+                   test_mode_reset_returns_to_mode0);
     qtest_add_func("/psitech-rad4/mode-switch-with-frame-pending",
                    test_mode_switch_with_frame_pending);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
