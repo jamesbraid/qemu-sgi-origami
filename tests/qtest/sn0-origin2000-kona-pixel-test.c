@@ -895,7 +895,7 @@ static void read_write_pattern(QTestState *s, int x, int y,
 static void read_assert_pattern(QTestState *s, uint64_t page,
                                 unsigned width, unsigned height)
 {
-    unsigned pitch = width;
+    unsigned pitch = (width + 3) & ~3;
     unsigned len = pitch * height;
     g_autofree uint8_t *got = g_malloc(len);
 
@@ -905,7 +905,7 @@ static void read_assert_pattern(QTestState *s, uint64_t page,
     for (unsigned r = 0; r < height; r++) {
         for (unsigned c = 0; c < pitch; c++) {
             g_assert_cmphex(got[r * pitch + c], ==,
-                            read_pattern(c, r));
+                            c < width ? read_pattern(c, r) : 0);
         }
     }
     if (len < 0x4000 - 8) {
@@ -1408,7 +1408,7 @@ static void test_read_reply_order(void)
     g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & INT_CAUSE_MAILBOX, ==, 0);
     qtest_quit(s);
     found = kona_log_read(log);
-    payload = strstr(found, "addr 0x320008 len 0x78\n");
+    payload = strstr(found, "addr 0x320008 len 0xa0\n");
     ready = strstr(found, "addr 0x320000 len 0x4\n");
     g_assert_nonnull(payload);
     g_assert_nonnull(ready);
@@ -1433,7 +1433,7 @@ static void test_read_payload_failure(void)
     qtest_quit(s);
     found = kona_log_read(log);
     g_assert_nonnull(strstr(found,
-                    "120-byte write to 0x9000004000000 failed (result 2)"));
+                    "160-byte write to 0x9000004000000 failed (result 2)"));
     g_assert_null(strstr(found, "addr 0x3fffff8 len 0x4\n"));
 }
 
@@ -2036,23 +2036,32 @@ static void read_index12_assert(QTestState *s, bool halfword)
         0x001, 0x123, 0xabc, 0xfed, 0x800, 0xfff, 0x056, 0x9ab, 0x000,
     };
     unsigned bytes = halfword ? 2 : 1;
-    uint8_t got[ARRAY_SIZE(indices) * 2 + 4];
+    unsigned pitch = halfword ? 8 : 4;
+    unsigned len = 3 * pitch;
+    uint8_t got[3 * 8 + 4];
 
     g_assert_cmphex(read_guest_word(s, READ_PAGE), ==, 1);
     g_assert_cmphex(read_guest_word(s, READ_PAGE + 4), ==, 0xa5a5a5a5);
-    qtest_memread(s, READ_PAGE + 8, got, ARRAY_SIZE(indices) * bytes + 4);
+    qtest_memread(s, READ_PAGE + 8, got, len + 4);
     for (unsigned i = 0; i < ARRAY_SIZE(indices); i++) {
+        unsigned offset = (i / 3) * pitch + (i % 3) * bytes;
+
         if (halfword) {
-            g_assert_cmphex(got[i * 2], ==, indices[i] >> 8);
-            g_assert_cmphex(got[i * 2 + 1], ==, indices[i] & 255);
+            g_assert_cmphex(got[offset], ==, indices[i] >> 8);
+            g_assert_cmphex(got[offset + 1], ==, indices[i] & 255);
         } else {
-            g_assert_cmphex(got[i], ==, indices[i] >> 4);
+            g_assert_cmphex(got[offset], ==, indices[i] >> 4);
         }
         g_assert_cmphex(front_native_at(s, 10 + i % 3, 20 + i / 3),
                         ==, indices[i] << 4);
     }
+    for (unsigned r = 0; r < 3; r++) {
+        for (unsigned c = 3 * bytes; c < pitch; c++) {
+            g_assert_cmphex(got[r * pitch + c], ==, 0);
+        }
+    }
     for (unsigned i = 0; i < 4; i++) {
-        g_assert_cmphex(got[ARRAY_SIZE(indices) * bytes + i], ==, 0xa5);
+        g_assert_cmphex(got[len + i], ==, 0xa5);
     }
 }
 
@@ -2101,7 +2110,7 @@ static void test_read_index12(gconstpointer opaque)
         x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);
     }
     read_index12_assert(s, true);
-    /* The same native words can produce tightly packed byte-index rows. */
+    /* The same stored words can produce padded byte-index rows. */
     read_setup(s, 3, 3);
     read_prepare(s, READ_PAGE);
     x_command(s, TOKEN_PIXEL_READ, (uint32_t[]){ 10, 20 }, 2);

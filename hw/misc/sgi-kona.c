@@ -5514,7 +5514,7 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
                      setup[SGI_KONA_X_SETUP_SHIFT] == 8 ? 1 :
                      setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
                      setup[SGI_KONA_X_SETUP_SHIFT] == 12 ? 2 : 0;
-    uint64_t pitch = width * bytes;
+    uint64_t pitch = QEMU_ALIGN_UP(width * bytes, 4);
     int64_t plane_y;
     const char *reason;
     g_autofree uint8_t *data = NULL;
