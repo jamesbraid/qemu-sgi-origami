@@ -17,6 +17,7 @@
 #include "psitech-rad4-mode0-fixture.h"
 #include "psitech-rad4-modes-fixture.h"
 #include "sgi-test.h"
+#include "sgi-migrate.h"
 
 /*
  * PCI type 0 configuration space offsets, restated the way
@@ -2690,6 +2691,44 @@ static void test_mode_switch_rad4setres(void)
  * converted rows re-strided at the new width, and no frames arrive until
  * the driver programs a mode again, after which mode 0 works as at boot.
  */
+/*
+ * A guest that has finished programming a mode keeps it across migration.
+ * Mode 4 (2048x1000) has the longest sequences, so a completed recognition
+ * leaves the recognizer index at the largest value the device can reach,
+ * and the destination must accept it and rebuild the 2048x1000 surface.
+ */
+static void test_mode_survives_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("psitech-rad4-migrate-XXXXXX",
+                                          NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = rad4_init();
+    QTestState *to = qtest_init(MACHINE_WITH_BRIDGE " -incoming defer");
+    Screen *screen;
+
+    play_mode(from, 4);
+    screen = screen_capture(from);
+    g_assert_cmpuint(screen->width, ==, 2048);
+    g_assert_cmpuint(screen->height, ==, 1000);
+    screen_free(screen);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    screen = screen_capture(to);
+    g_assert_cmpuint(screen->width, ==, 2048);
+    g_assert_cmpuint(screen->height, ==, 1000);
+    screen_free(screen);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_mode_reset_returns_to_mode0(void)
 {
     QTestState *qts = rad4_init();
@@ -3086,6 +3125,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/mode-option-words", test_mode_option_words);
     qtest_add_func("/psitech-rad4/mode-switch-rad4setres",
                    test_mode_switch_rad4setres);
+    qtest_add_func("/psitech-rad4/mode-survives-migration",
+                   test_mode_survives_migration);
     qtest_add_func("/psitech-rad4/mode-reset-returns-to-mode0",
                    test_mode_reset_returns_to_mode0);
     qtest_add_func("/psitech-rad4/mode-switch-with-frame-pending",
