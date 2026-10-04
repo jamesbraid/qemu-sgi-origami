@@ -12849,6 +12849,114 @@ static void test_renderer_blend(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_smooth(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const float colours[4][4] = {
+        { 1, 0, 0, 0 }, { 0, 1, 0, 0.5f }, { 0, 0, 1, 1 }, { 1, 1, 1, 1 },
+    };
+    static const float positions[4][2] = {
+        { 0, 0 }, { 128, 0 }, { 128, 128 }, { 0, 128 },
+    };
+    const double inverse_w[4] = { 1, mode == 1 ? 2 : 1,
+                                 mode == 1 ? 4 : 1, 1 };
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
+    if (mode == 4) {
+        kona_command(s, 0xca, (uint32_t[]) { 0x206, fbits(0.5f) }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+    } else if (mode == 5) {
+        kona_command(s, 0xcb, (uint32_t[]) { 0x302, 0x303 }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbe2 }, 1);
+    } else if (mode == 6) {
+        kona_command(s, 0x21, (uint32_t[]) { 1, 0, 1, 0 }, 4);
+    } else if (mode == 7) {
+        kona_command(s, 0x2e, (uint32_t[]) { 0x1506 }, 1);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbf2 }, 1);
+    } else if (mode == 8) {
+        kona_command(s, 0xc, (uint32_t[]) { 32, 16, 64, 80 }, 4);
+        kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    } else if (mode == 9) {
+        kona_command(s, 0xb6, (uint32_t[]) { 0x404 }, 1);
+        kona_command(s, 0x24, (uint32_t[]) { 0xb44 }, 1);
+    }
+    gl_begin(s, mode < 10 ? 4 : mode == 10 ? 7 : mode == 11 ? 9 : 8);
+    for (unsigned v = 0; v < (mode < 10 ? 3 : 4); v++) {
+        unsigned index = mode == 2 && v ? 3 - v :
+                         mode == 12 && v >= 2 ? 5 - v : v;
+        unsigned position = mode < 10 && index == 2 ? 3 : index;
+        float colour[4], w = 1 / inverse_w[index];
+
+        memcpy(colour, colours[index], sizeof(colour));
+        if (mode == 3) {
+            for (unsigned c = 0; c < 3; c++) {
+                colour[c] = colour[c] ? 2 : -1;
+            }
+        }
+        kona_command_f(s, 0x6b, colour, 4);
+        kona_command_f(s, 0x94,
+                       (float[]) { positions[position][0] * w,
+                                   positions[position][1] * w, 0, w }, 4);
+    }
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
+                     mode < 10 ? 1 : 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    for (unsigned palette = 0; palette < 2; palette++) {
+        expected_clear(expected, palette ? 0x326496 : 0xffffff);
+        for (unsigned y = 0; y < 128; y++) {
+            for (unsigned x = 0; x < 128; x++) {
+                /* Twice the barycentric numerators at this pixel centre. */
+                double weights[3] = { 254 - 2 * (double)(x + y),
+                                      2 * x + 1, 2 * y + 1 };
+                double sum = 0, alpha;
+                uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
+
+                if (mode >= 10) {
+                    double u = (x + 0.5) / 128, v = (y + 0.5) / 128;
+
+                    pixel[0] = floor((1 - u) * 255 + 0.5);
+                    pixel[1] = floor(fabs(u - v) * 255 + 0.5);
+                    pixel[2] = floor(v * 255 + 0.5);
+                    continue;
+                }
+                if (x + y >= 127 || mode == 9 ||
+                    (mode == 8 && (x < 32 || x >= 96 || y < 16 || y >= 96))) {
+                    continue;
+                }
+                for (unsigned c = 0; c < 3; c++) {
+                    weights[c] *= inverse_w[c];
+                    sum += weights[c];
+                }
+                alpha = floor((weights[1] * 0.5 + weights[2]) / sum *
+                               255 + 0.5);
+                if (mode == 4 && alpha < 128) {
+                    continue;
+                }
+                for (unsigned c = 0; c < 3; c++) {
+                    double value = floor(weights[c] / sum * 255 + 0.5);
+
+                    if (mode == 5) {
+                        value = floor(value * alpha / 255 + 255 - alpha + 0.5);
+                    } else if (mode == 6 && c == 1) {
+                        value = 255;
+                    } else if (mode == 7) {
+                        value = 255 - value;
+                    }
+                    pixel[c] = value;
+                }
+            }
+        }
+        assert_window_matches(s, expected);
+        kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    }
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
@@ -12893,14 +13001,6 @@ static void test_renderer_excluded_state(void)
         g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
                          ++fallbacks);
     }
-    qtest_system_reset(s);
-    renderer_fixture(s);
-    kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
-    renderer_triangle(s);
-    renderer_assert_image(s);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
-    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==,
-                     ++fallbacks);
     qtest_quit(s);
 }
 
@@ -13944,6 +14044,12 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/renderer/blend/%u", mode);
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_blend);
+    }
+    for (unsigned mode = 0; mode < 13; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/smooth/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_smooth);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

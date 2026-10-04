@@ -2412,7 +2412,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                   SGI_PLANE_TAG, x, y, width, height)) {
         return false;
     }
-    if (st->shade_model != SGI_GL_FLAT ||
+    if ((st->shade_model != SGI_GL_FLAT && st->shade_model != SGI_GL_SMOOTH) ||
         (st->colour_mask & ~15) ||
         st->depth_test || st->stencil_test ||
         st->fog ||
@@ -2435,6 +2435,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->cull_face_mode != SGI_GL_FRONT_AND_BACK) {
         return false;
     }
+    request->smooth = st->shade_model == SGI_GL_SMOOTH;
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = d->vertices + i * SGI_GL_VERTEX_FLOATS;
         double eye[4] = { 0 }, clip_position[4], window[3];
@@ -2466,8 +2467,20 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         }
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
+        if (request->smooth) {
+            request->inverse_w[i] = 1.0 / clip_position[3];
+            for (unsigned c = 0; c < 4; c++) {
+                double value = vertex[SGI_GL_V_COLOR + c];
+
+                if (!isfinite(value)) {
+                    return false;
+                }
+                request->colour[i][c] = CLAMP(value, 0, 1);
+            }
+        }
     }
-    if (!isfinite(provoking[SGI_GL_V_COLOR + 3])) {
+    request->alpha = provoking[SGI_GL_V_COLOR + 3];
+    if (!isfinite(request->alpha)) {
         return false;
     }
     for (unsigned c = 0; c < 3; c++) {
@@ -2490,9 +2503,9 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     if (!sgi_renderer_request_tile(request, tx, ty, width, height, bounds)) {
         return false;
     }
-    if (st->alpha_test &&
+    if (!request->smooth && st->alpha_test &&
         !sgi_raster_alpha_test(&sgi_kona_gl_rules, st->alpha_func,
-                               provoking[SGI_GL_V_COLOR + 3], st->alpha_ref)) {
+                               request->alpha, st->alpha_ref)) {
         request->clip[0] = request->clip[1] = 0;
         request->clip[2] = request->clip[3] = -1;
     }
@@ -2649,13 +2662,8 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     for (unsigned i = 0; i < count; i++) {
         SGIRendererRequest *request = &requests[i];
         SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
-        double alpha = 0;
+        double alpha = request->alpha;
 
-        if (blend) {
-            sgi_kona_renderer_indices(d, i / tiles, indices);
-            alpha = d->vertices[indices[3] * SGI_GL_VERTEX_FLOATS +
-                                SGI_GL_V_COLOR + 3];
-        }
         assert(request->generation == s->renderer_generation);
         for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
             for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
@@ -2666,6 +2674,20 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                     uint32_t colour = (pixel[0] << 16) |
                                       (pixel[1] << 8) | pixel[2];
 
+                    if (request->smooth && (d->state->alpha_test || blend)) {
+                        double rgba[4];
+
+                        if (!sgi_renderer_fragment(request, x, y, rgba)) {
+                            g_assert_not_reached();
+                        }
+                        alpha = rgba[3];
+                        if (d->state->alpha_test &&
+                            !sgi_raster_alpha_test(&sgi_kona_gl_rules,
+                                d->state->alpha_func, alpha,
+                                d->state->alpha_ref)) {
+                            continue;
+                        }
+                    }
                     if (logic_op || blend || colour_mask != 0xffffff) {
                         uint32_t old = sgi_kona_gl_load_colour(s, target,
                                                               tile.x0 + x,

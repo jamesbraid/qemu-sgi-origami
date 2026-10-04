@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/thread.h"
@@ -522,13 +523,19 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     static const char *vertex_source =
         "#version 330 core\n"
         "layout(location=0) in vec4 vertex;\n"
+        "layout(location=1) in vec4 projected_colour;\n"
+        "out vec4 interpolated_colour;\n"
         "void main() { gl_Position = vec4(vertex.xy / 64.0 - 1.0,"
-        "vertex.z, vertex.w); }\n";
+        "vertex.z, vertex.w); interpolated_colour = projected_colour; }\n";
     static const char *fragment_source =
         "#version 330 core\n"
         "uniform vec3 colour;\n"
+        "uniform bool smooth_shading;\n"
+        "in vec4 interpolated_colour;\n"
         "layout(location=0) out vec4 pixel;\n"
-        "void main() { pixel = vec4(colour, 1.0); }\n";
+        "void main() { vec3 rgb = smooth_shading ? "
+        "interpolated_colour.rgb / interpolated_colour.a : colour; "
+        "pixel = vec4(rgb, 1.0); }\n";
     EGLint attributes[] = {
         EGL_CONTEXT_OPENGL_PROFILE_MASK,
         EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
@@ -588,8 +595,11 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     glBindVertexArray(renderer->vao);
     glGenBuffers(1, &renderer->vbo);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vbo);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), NULL);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float), NULL);
     glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 8 * sizeof(float),
+                            (void *)(4 * sizeof(float)));
+    glEnableVertexAttribArray(1);
     glGenTextures(1, &renderer->texture);
     glBindTexture(GL_TEXTURE_2D, renderer->texture);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SGI_RENDERER_SIZE,
@@ -641,6 +651,9 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
 static bool renderer_gl_execute(SGIRendererGL *renderer)
 {
     SGIRendererRequest *request = &renderer->request;
+    float vertices[3][8] = { 0 };
+    double scale = MAX(request->inverse_w[0],
+                        MAX(request->inverse_w[1], request->inverse_w[2]));
     static const GLenum disabled[] = {
         GL_BLEND, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_SCISSOR_TEST,
         GL_CULL_FACE, GL_DITHER, GL_MULTISAMPLE, GL_SAMPLE_ALPHA_TO_COVERAGE,
@@ -651,6 +664,22 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     if (!qemu_egl_display_lease_usable(renderer->lease)) {
         error_setg(&renderer->error, "SGI renderer EGL display is quarantined");
         return false;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        memcpy(vertices[i], request->vertices[i], sizeof(request->vertices[i]));
+        if (request->smooth) {
+            float inverse_w = request->inverse_w[i] / scale;
+
+            if (!isfinite(inverse_w) || inverse_w <= 0) {
+                error_setg(&renderer->error,
+                           "SGI renderer reciprocal w is outside host precision");
+                return false;
+            }
+            for (unsigned c = 0; c < 3; c++) {
+                vertices[i][4 + c] = request->colour[i][c] * inverse_w;
+            }
+            vertices[i][7] = inverse_w;
+        }
     }
     for (unsigned i = 0; i < ARRAY_SIZE(disabled); i++) {
         glDisable(disabled[i]);
@@ -671,10 +700,11 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     glUniform3f(glGetUniformLocation(renderer->program, "colour"),
                  request->rgb[0] / 255.0f, request->rgb[1] / 255.0f,
                  request->rgb[2] / 255.0f);
+    glUniform1i(glGetUniformLocation(renderer->program, "smooth_shading"),
+                 request->smooth);
     glBindVertexArray(renderer->vao);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(request->vertices), request->vertices,
-                   GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);

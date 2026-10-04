@@ -5,6 +5,7 @@
 #include "ui/egl-helpers.h"
 #include "ui/sgi-renderer.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "../qtest/prereq.h"
 
 int display_opengl;
 
@@ -150,7 +151,8 @@ static void test_shader_output(void)
     };
 
     if (!node) {
-        g_test_skip("QEMU_TEST_SGI_RENDER_NODE is not set");
+        qtest_prereq_missing("SGI_RENDER_NODE",
+                             "QEMU_TEST_SGI_RENDER_NODE is not set");
         return;
     }
     g_assert_true(egl_init_session(node, DISPLAY_GL_MODE_CORE,
@@ -181,6 +183,22 @@ static void test_shader_output(void)
     g_assert_true(sgi_renderer_draw(renderer, request, &err));
     g_assert_null(err);
     g_assert_true(sgi_renderer_staging_valid(request));
+    memset(request, 0, sizeof(*request));
+    request->smooth = true;
+    request->vertices[1][0] = request->vertices[2][1] = 128;
+    request->clip[2] = request->clip[3] = 127;
+    for (unsigned i = 0; i < 3; i++) {
+        request->vertices[i][3] = 1;
+        request->colour[i][i] = request->colour[i][3] = 1;
+    }
+    for (unsigned mode = 0; mode < 2; mode++) {
+        for (unsigned i = 0; i < 3; i++) {
+            request->inverse_w[i] = mode ? 1 << i : 1;
+        }
+        g_assert_true(sgi_renderer_draw(renderer, request, &err));
+        g_assert_null(err);
+        g_assert_true(sgi_renderer_staging_valid(request));
+    }
     egl_cleanup_session(provider);
     g_assert_cmpint(fcntl(fd, F_GETFD), >=, 0);
     /* The worker must survive after provider display globals are cleared. */

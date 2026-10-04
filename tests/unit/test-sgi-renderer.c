@@ -38,6 +38,101 @@ static SGIRendererRequest *fixture(void)
     return request;
 }
 
+static void test_smooth(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    const double inverse_w[3] = { 1, mode == 1 ? 2 : 1, mode == 1 ? 4 : 1 };
+
+    request->smooth = true;
+    request->vertices[1][0] = request->vertices[2][1] = 128;
+    request->clip[2] = request->clip[3] = 127;
+    for (unsigned i = 0; i < 3; i++) {
+        request->vertices[i][3] = 1;
+        request->colour[i][i] = 1;
+        request->colour[i][3] = i * 0.5;
+        request->inverse_w[i] = inverse_w[i];
+    }
+    if (mode == 2) {
+        float vertex[4];
+        double colour[4];
+
+        memcpy(vertex, request->vertices[1], sizeof(vertex));
+        memcpy(request->vertices[1], request->vertices[2], sizeof(vertex));
+        memcpy(request->vertices[2], vertex, sizeof(vertex));
+        memcpy(colour, request->colour[1], sizeof(colour));
+        memcpy(request->colour[1], request->colour[2], sizeof(colour));
+        memcpy(request->colour[2], colour, sizeof(colour));
+    }
+    if (mode == 3) {
+        const int64_t bounds[4] = { 0, 0, 127, 127 };
+
+        g_assert_true(sgi_renderer_request_tile(request, 16, 32, 64, 64,
+                                               bounds));
+    }
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            unsigned wx = x + (mode == 3 ? 16 : 0);
+            unsigned wy = y + (mode == 3 ? 32 : 0);
+            uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+            double colour[4];
+            bool covered = wx + wy < 127 &&
+                           (mode != 3 || (x < 64 && y < 64));
+
+            g_assert_cmpint(sgi_renderer_fragment(request, x, y, colour),
+                            ==, covered);
+            if (covered) {
+                double weights[3] = { 254 - 2 * (double)(wx + wy),
+                                      2 * wx + 1, 2 * wy + 1 };
+                double sum = 0;
+
+                for (unsigned c = 0; c < 3; c++) {
+                    weights[c] *= inverse_w[c];
+                    sum += weights[c];
+                }
+                for (unsigned c = 0; c < 3; c++) {
+                    double expected = weights[c] / sum;
+
+                    g_assert_cmpfloat_with_epsilon(colour[c], expected,
+                                                   0.00000000000001);
+                    pixel[c] = floor(expected * 255 + 0.5);
+                }
+                g_assert_cmpfloat_with_epsilon(colour[3],
+                    (weights[1] * 0.5 + weights[2]) / sum,
+                    0.00000000000001);
+                pixel[3] = 255;
+            }
+        }
+    }
+    g_assert_true(sgi_renderer_staging_valid(request));
+    request->rgba[4 * (16 * 128 + 16)] ^= 1;
+    g_assert_false(sgi_renderer_staging_valid(request));
+}
+
+static void test_smooth_invalid(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+
+    request->smooth = true;
+    for (unsigned i = 0; i < 3; i++) {
+        request->inverse_w[i] = 1;
+    }
+    g_assert_true(sgi_renderer_request_valid(request));
+    request->colour[1][2] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->colour[1][2] = 2;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->colour[1][2] = -1;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->colour[1][2] = 0;
+    request->inverse_w[0] = 0;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->inverse_w[0] = INFINITY;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->inverse_w[0] = -1;
+    g_assert_false(sgi_renderer_request_valid(request));
+}
+
 static void test_staging(void)
 {
     g_autofree SGIRendererRequest *request = fixture();
@@ -98,7 +193,14 @@ static void test_colour(void)
 static void test_request(void)
 {
     g_autofree SGIRendererRequest *request = fixture();
+    double colour[4];
 
+    request->alpha = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->alpha = 0.375;
+    g_assert_true(sgi_renderer_fragment(request, 16, 16, colour));
+    g_assert_cmpfloat(colour[0], ==, 1);
+    g_assert_cmpfloat(colour[3], ==, 0.375);
     request->vertices[1][0] = 112;
     g_assert_true(sgi_renderer_request_valid(request));
     request->rgb[0] = 127;
@@ -342,6 +444,7 @@ static void test_missing_registration(void)
 
 static unsigned draw_count;
 static bool corrupt_colour, corrupt_clip, corrupt_vertices;
+static unsigned corrupt_attributes = UINT_MAX;
 
 static void *generation_create(SGIRenderCreateResult *result, Error **errp)
 {
@@ -355,7 +458,15 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
     g_autofree SGIRendererRequest *expected = fixture();
 
     draw_count++;
-    if (corrupt_vertices) {
+    if (corrupt_attributes == 0) {
+        request->smooth = false;
+    } else if (corrupt_attributes == 1) {
+        request->colour[0][3] = 0.5;
+    } else if (corrupt_attributes == 2) {
+        request->inverse_w[1] = 2;
+    } else if (corrupt_attributes == 3) {
+        request->alpha = 0.5;
+    } else if (corrupt_vertices) {
         float vertex[4];
 
         memcpy(vertex, request->vertices[1], sizeof(vertex));
@@ -487,6 +598,37 @@ static void test_input_vertices(void)
     g_assert_null(err);
     g_assert_false(sgi_renderer_draw(renderer, request, &err));
     g_assert_nonnull(err);
+    error_free(err);
+    sgi_renderer_free(renderer);
+}
+
+static void test_input_attributes(gconstpointer opaque)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+    Error *err = NULL;
+    SGIRenderer *renderer;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_passed();
+        return;
+    }
+    request->smooth = true;
+    for (unsigned i = 0; i < 3; i++) {
+        request->colour[i][0] = request->colour[i][3] = 1;
+        request->inverse_w[i] = 1;
+    }
+    corrupt_attributes = GPOINTER_TO_UINT(opaque);
+    sgi_renderer_register_gl(&response_ops);
+    renderer = sgi_renderer_new(&err);
+    g_assert_nonnull(renderer);
+    g_assert_null(err);
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_nonnull(err);
+    error_free(err);
+    err = NULL;
+    g_assert_false(sgi_renderer_draw(renderer, request, &err));
+    g_assert_cmpuint(draw_count, ==, 1);
     error_free(err);
     sgi_renderer_free(renderer);
 }
@@ -938,6 +1080,13 @@ int main(int argc, char **argv)
     qemu_init_exec_dir(argv[0]);
 #endif
     g_test_init(&argc, &argv, NULL);
+    for (unsigned mode = 0; mode < 4; mode++) {
+        g_autofree char *path = g_strdup_printf("/sgi-renderer/smooth/%u",
+                                                mode);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_smooth);
+    }
+    g_test_add_func("/sgi-renderer/smooth/invalid", test_smooth_invalid);
     g_test_add_func("/sgi-renderer/staging", test_staging);
     g_test_add_func("/sgi-renderer/clip", test_clip);
     g_test_add_func("/sgi-renderer/empty-clip", test_empty_clip);
@@ -965,6 +1114,13 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
+    for (unsigned input = 0; input < 4; input++) {
+        g_autofree char *path = g_strdup_printf(
+            "/sgi-renderer/input-attributes/%u", input);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(input),
+                             test_input_attributes);
+    }
     static const char *batch_cases[] = {
         "success", "second-backend-failure", "second-staging-failure",
         "late-invalid-input",
