@@ -7354,6 +7354,105 @@ static void query_record_migration(bool defaults)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+/* Literal public 4F setters; response layout is the existing model encoding. */
+static const uint32_t query_texture_4f[2][5] = {
+    { 0xc380d025, 0x3f400000, 0x3e800000, 0x3f200000, 0x3f800000 },
+    { 0xc380d025, 0x3e000000, 0x3f400000, 0x3f600000, 0x3f800000 },
+};
+
+static void texture_current_query(QTestState *qts, const uint32_t *record,
+                                  unsigned words, uint32_t count,
+                                  uint32_t slot, uint32_t sequence)
+{
+    const uint64_t page = ODSY_SHADOW_PAGE + 0x2000;
+    const uint32_t request[] = { 0x4c0, count, 0x10a5a, slot, sequence };
+    uint8_t bytes[28], counter[4], sync[2];
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_CTX_SHADOW_ADDR_LOWER, page);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_UPPER, 0);
+    reg_write(qts, ODSY_HOST_WRITE_ADDR_LOWER, page + 0x800);
+    qtest_memset(qts, page, 0xa5, 4096);
+    push_user_words(qts, request, ARRAY_SIZE(request));
+    qtest_memread(qts, page + 0x94c, bytes, sizeof(bytes));
+    g_assert_cmphex((uint32_t)ldl_be_p(bytes), ==, 0xa5a5a5a5);
+    for (unsigned i = 0; i < words; i++) {
+        g_assert_cmphex((uint32_t)ldl_be_p(bytes + 4 * (i + 1)), ==, record[i]);
+    }
+    for (unsigned i = words + 1; i < sizeof(bytes) / 4; i++) {
+        g_assert_cmphex((uint32_t)ldl_be_p(bytes + 4 * i), ==, 0xa5a5a5a5);
+    }
+    qtest_memread(qts, page + 0x97c, counter, sizeof(counter));
+    g_assert_cmphex((uint32_t)ldl_be_p(counter), ==, count);
+    qtest_memread(qts, page + 0x800 + 2 * slot, sync, sizeof(sync));
+    g_assert_cmphex(lduw_be_p(sync), ==, sequence);
+}
+
+static void test_texture_current_query_4f(void)
+{
+    QTestState *qts = board_start("");
+
+    for (unsigned owner = 0; owner < 2; owner++) {
+        push_user_words(qts, query_texture_4f[owner], 5);
+        texture_current_query(qts, query_texture_4f[owner], 5, 2,
+                              owner ? 8 : 5, 1);
+    }
+    /* Original raw 4F records replay through the kernel command port. */
+    for (unsigned owner = 0; owner < 2; owner++) {
+        for (unsigned i = 0; i < 5; i++) {
+            cmd_push(qts, query_texture_4f[owner][i]);
+        }
+        texture_current_query(qts, query_texture_4f[owner], 5, 3,
+                              owner ? 8 : 5, 4);
+    }
+    qtest_system_reset(qts);
+    texture_current_query(qts, (uint32_t[]) { 0xc380c821, 0, 0 },
+                          3, 2, 5, 1);
+    qtest_quit(qts);
+}
+
+static void texture_current_query_4f_migration(bool defaults)
+{
+    const uint32_t initial[] = { 0xc380c821, 0, 0 };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from = board_start("");
+    QTestState *to;
+    int fd = g_file_open_tmp("odyssey-current-4f-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    if (!defaults) {
+        push_user_words(from, query_texture_4f[1], 5);
+    }
+    uri = g_strdup_printf("file:%s", path);
+    sgi_migrate_stopped(from, uri);
+    to = board_start(" -incoming defer");
+    push_user_words(to, query_texture_4f[0], 5);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    texture_current_query(to, defaults ? initial : query_texture_4f[1],
+                          defaults ? 3 : 5, 2, 8, 2);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_texture_current_query_4f_migration(void)
+{
+    texture_current_query_4f_migration(false);
+}
+
+static void test_texture_current_query_4f_migration_defaults(void)
+{
+    texture_current_query_4f_migration(true);
+}
+
 static void test_query_record_migration(void)
 {
     query_record_migration(false);
@@ -14922,6 +15021,12 @@ int main(int argc, char **argv)
                    test_back_material_migration);
     qtest_add_func("sn1/odyssey/back-material-migration-defaults",
                    test_back_material_migration_defaults);
+    qtest_add_func("sn1/odyssey/texture-current-query-4f-migration",
+                   test_texture_current_query_4f_migration);
+    qtest_add_func("sn1/odyssey/texture-current-query-4f-migration-defaults",
+                   test_texture_current_query_4f_migration_defaults);
+    qtest_add_func("sn1/odyssey/texture-current-query-4f",
+                   test_texture_current_query_4f);
     qtest_add_func("sn1/odyssey/query-record-migration",
                    test_query_record_migration);
     qtest_add_func("sn1/odyssey/query-record-migration-defaults",
