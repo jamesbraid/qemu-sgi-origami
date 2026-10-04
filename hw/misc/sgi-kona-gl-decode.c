@@ -447,26 +447,53 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
 
 bool sgi_kona_gl_texture_native_layout(const uint32_t h[20])
 {
+    bool volume = h[0] == SGI_GL_TEXTURE_3D;
     uint32_t layout;
 
-    if ((h[0] != SGI_GL_TEXTURE_1D && h[0] != SGI_GL_TEXTURE_2D) || h[6] > 1) {
+    if ((!volume && h[0] != SGI_GL_TEXTURE_1D &&
+         h[0] != SGI_GL_TEXTURE_2D) || h[6] > 1) {
         return false;
     }
     switch (h[9]) {
     case 0xd:
     case 0xe:
     case 8:
-        layout = 0x2200;
+        layout = volume ? 0x11c0 : 0x2200;
         break;
     case 0x30:
-        layout = 0x2181;
+        layout = volume ? 0x1141 : 0x2181;
         break;
     default:
         return false;
     }
-    /* Allocation bank selection is independent of logical mipmap parity. */
+    /* Bit three selects a bank in ordinary mode and level parity in volume. */
     layout |= h[6] << 2;
     return (h[17] & ~8u) == layout;
+}
+
+bool sgi_kona_gl_texture_native_binding_layout(uint32_t base, uint32_t target,
+                                               uint32_t record)
+{
+    bool volume = target == SGI_GL_TEXTURE_3D;
+    uint32_t expected;
+
+    if (!volume && target != SGI_GL_TEXTURE_1D && target != SGI_GL_TEXTURE_2D) {
+        return false;
+    }
+    switch (base) {
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_ALPHA:
+    case SGI_GL_LUMINANCE_ALPHA:
+        expected = volume ? 0x23 : 0x44;
+        break;
+    case SGI_GL_RGB:
+    case SGI_GL_RGBA:
+        expected = volume ? 0x22 : 0x43;
+        break;
+    default:
+        return false;
+    }
+    return (record & 0xff) == expected;
 }
 
 bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],

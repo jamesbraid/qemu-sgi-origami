@@ -791,6 +791,75 @@ static void test_texture_native_layout(void)
     g_assert_false(sgi_kona_gl_texture_native_layout(h));
 }
 
+static void test_texture_volume_layout(void)
+{
+    static const struct {
+        uint32_t storage, layout;
+    } families[] = {
+        { 0xd, 0x11c0 }, { 0xe, 0x11c0 }, { 8, 0x11c0 },
+        { 0x30, 0x1141 },
+    };
+    uint32_t h[20] = { [0] = SGI_GL_TEXTURE_3D };
+
+    for (unsigned k = 0; k < ARRAY_SIZE(families); k++) {
+        for (unsigned parity = 0; parity < 2; parity++) {
+            for (unsigned dma = 0; dma < 2; dma++) {
+                uint32_t extra = (parity << 3) | (dma << 2);
+
+                h[6] = dma;
+                h[9] = families[k].storage;
+                h[17] = families[k].layout | extra;
+                g_assert_true(sgi_kona_gl_texture_native_layout(h));
+                h[17] ^= 4;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = (h[9] == 0x30 ? 0x11c1 : 0x1140) | extra;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = (h[9] == 0x30 ? 0x21c1 : 0x21c0) | extra;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = (h[9] == 0x30 ? 0x2181 : 0x2200) | extra;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[17] = families[k].layout | extra;
+                h[0] = SGI_GL_TEXTURE_2D;
+                g_assert_false(sgi_kona_gl_texture_native_layout(h));
+                h[0] = SGI_GL_TEXTURE_3D;
+            }
+        }
+    }
+}
+
+static void test_texture_binding_layout(void)
+{
+    static const uint32_t bases[] = {
+        SGI_GL_LUMINANCE, SGI_GL_ALPHA, SGI_GL_LUMINANCE_ALPHA,
+        SGI_GL_RGB, SGI_GL_RGBA,
+    };
+    static const uint32_t targets[] = {
+        SGI_GL_TEXTURE_1D, SGI_GL_TEXTURE_2D, SGI_GL_TEXTURE_3D,
+    };
+
+    for (unsigned k = 0; k < ARRAY_SIZE(bases); k++) {
+        for (unsigned t = 0; t < ARRAY_SIZE(targets); t++) {
+            uint32_t record = targets[t] == SGI_GL_TEXTURE_3D ?
+                              (k < 3 ? 0x23 : 0x22) : (k < 3 ? 0x44 : 0x43);
+
+            g_assert_true(sgi_kona_gl_texture_native_binding_layout(bases[k],
+                                                       targets[t], record));
+            g_assert_true(sgi_kona_gl_texture_native_binding_layout(bases[k],
+                                         targets[t], record | 0x12340000));
+            g_assert_false(sgi_kona_gl_texture_native_binding_layout(bases[k],
+                                                   targets[t], record ^ 1));
+            g_assert_false(sgi_kona_gl_texture_native_binding_layout(bases[k],
+                                                   targets[t], record ^ 0x60));
+        }
+    }
+    g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_INTENSITY,
+                                                   SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_native_binding_layout(0x1902,
+                                                   SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_LUMINANCE,
+                                                              0xdead, 0x44));
+}
+
 static void test_texture_sampler_1d(void)
 {
     uint32_t bind[5] = { 0, 0x10000000, 0x24, 1, 0 };
@@ -1293,6 +1362,10 @@ int main(int argc, char **argv)
                     test_texture_sampler_1d);
     g_test_add_func("/sgi-kona-gl-decode/texture-native-layout",
                     test_texture_native_layout);
+    g_test_add_func("/sgi-kona-gl-decode/texture-volume-layout",
+                    test_texture_volume_layout);
+    g_test_add_func("/sgi-kona-gl-decode/texture-binding-layout",
+                    test_texture_binding_layout);
     g_test_add_func("/sgi-kona-gl-decode/texture-negative-lod",
                     test_texture_negative_lod);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-conversion",
