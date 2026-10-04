@@ -4772,20 +4772,18 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         stride = layout.stride;
         words = layout.payload_words;
     } else {
-        if (p->unpack_skip_rows || p->unpack_skip_pixels) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture unpack skips"
-                          " unsupported for DMA; source framing unknown\n");
+        SGIKonaGLPixelDMALayout dma;
+
+        if (!sgi_kona_gl_pixels_dma_layout(h + 1, p->unpack_row_length,
+                                            p->unpack_skip_rows,
+                                            p->unpack_skip_pixels,
+                                            p->unpack_alignment, &dma)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture DMA framing"
+                          " unsupported; source length unknown\n");
             return 0;
         }
-        if (p->unpack_alignment != 1 && p->unpack_alignment != 2 &&
-            p->unpack_alignment != 4 && p->unpack_alignment != 8) {
-            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported unpack alignment;"
-                          " row lengths unknown\n");
-            return 0;
-        }
-        stride = ROUND_UP((uint64_t)(p->unpack_row_length ?
-                         p->unpack_row_length : h[1]) * bytes,
-                         p->unpack_alignment);
+        layout = dma.pixels;
+        stride = layout.stride;
         words = 0;
     }
     pixels = (uint64_t)h[1] * h[2];
@@ -4819,7 +4817,9 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
         u->transfer = p->pixel_transfer;
         u->transfer_captured = true;
         u->pio_layout = !h[6];
-        u->pio_phase = layout.phase;
+        u->pio_phase = h[6] ? 0 : layout.phase;
+        u->dma_layout = h[6];
+        u->dma_phase = h[6] ? layout.phase : 0;
         s->texture_state_used = true;
     }
     return h[6] ? 0 : words;
@@ -7108,7 +7108,8 @@ bool sgi_kona_texture_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
     uint32_t height = u->header[2];
     uint64_t span = (uint64_t)(height - 1) * u->source_stride + row_bytes;
 
-    if (!sgi_kona_texture_dma_waiting(s) || (io & 3) != u->header[5] ||
+    if (!sgi_kona_texture_dma_waiting(s) ||
+        (io & 3) != (u->dma_layout ? u->dma_phase : u->header[5]) ||
         (u->header[7] ? (lines != height || per_line != row_bytes ||
                          pitch != u->source_stride) :
                         (lines != 1 || per_line != span || pitch != span)) ||
@@ -10768,6 +10769,16 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
         u->pio_phase != 0) {
         return false;
     }
+    if (u->dma_layout ?
+        (!u->count || u->draw_pixels || u->pio_layout || h[6] != 1 ||
+         u->dma_phase > 3 || h[8] ||
+         (!h[7] && (u->source_stride < (uint64_t)h[1] *
+                    sgi_kona_gl_texture_pixel_bytes(h[3], h[4]) ||
+                    u->source_stride - (uint64_t)h[1] *
+                    sgi_kona_gl_texture_pixel_bytes(h[3], h[4]) >= 4))) :
+        u->dma_phase != 0) {
+        return false;
+    }
     if (u->transfer_captured && (!u->count || u->draw_pixels)) {
         return false;
     }
@@ -10829,6 +10840,8 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     }
     qemu_put_byte(f, u->pio_layout);
     qemu_put_be32(f, u->pio_phase);
+    qemu_put_byte(f, u->dma_layout);
+    qemu_put_be32(f, u->dma_phase);
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
@@ -10845,7 +10858,7 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
 {
     SGIKonaTextureUpload *u = pv;
     SGIKonaTextureUpload tmp = { 0 };
-    unsigned complete, swap, draw, transfer, pio;
+    unsigned complete, swap, draw, transfer, pio, dma;
 
     uint32_t marker = qemu_get_be32(f);
     uint32_t version = qemu_get_be32(f);
@@ -10873,9 +10886,13 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     pio = qemu_get_byte(f);
     tmp.pio_layout = pio;
     tmp.pio_phase = qemu_get_be32(f);
+    dma = qemu_get_byte(f);
+    tmp.dma_layout = dma;
+    tmp.dma_phase = qemu_get_be32(f);
     tmp.complete = complete;
     tmp.swap_bytes = swap;
     if (complete > 1 || swap > 1 || draw > 1 || transfer > 1 || pio > 1 ||
+        dma > 1 ||
         !sgi_kona_texture_upload_valid(&tmp)) {
         goto invalid;
     }

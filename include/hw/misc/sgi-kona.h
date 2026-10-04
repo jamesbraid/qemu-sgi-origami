@@ -720,6 +720,8 @@ typedef struct SGIKonaTextureUpload {
     SGIKonaGLPixelTransfer transfer;
     bool pio_layout;
     uint32_t pio_phase;
+    bool dma_layout;
+    uint32_t dma_phase;
 } SGIKonaTextureUpload;
 
 typedef struct SGIKonaGLImageUpload {
