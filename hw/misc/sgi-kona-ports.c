@@ -193,6 +193,8 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     /* Established relative-point and line lengths. */
     { SGI_KONA_CMD_X_RELATIVE_POINT, 1 },
     { SGI_KONA_CMD_X_RELATIVE_POINT6, 6 },
+    /* Inferred relative form of the twenty-four-point packet. */
+    { SGI_KONA_CMD_X_RELATIVE_POINT24, 24 },
     { SGI_KONA_CMD_X_SEGMENT, 2 },
     /* Inferred six independent endpoint pairs, without an inspected sender. */
     { SGI_KONA_CMD_X_SEGMENT6, 12 },
