@@ -34,3 +34,27 @@ qtest-mips64/xframe-test	/mips64/xframe/receive-pads-after-vnet-header
 
 # MIPS64 has no PCIe endpoint to fragment a TIGON receive frame.
 qtest-mips64/tigon-test	/mips64/tigon/receive-iov-matches-flat
+
+# KONA GPU renderer cases require QEMU_TEST_SGI_RENDER_NODE.
+qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/real-gl
+qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/gpu-to-cpu-migration
+qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/cpu-to-gpu-migration
+qtest-mips64/sn0-origin2000-kona-3d-test	/mips64/sn0/origin2000/kona-3d/renderer/excluded-state
+
+# KONA legacy migrations require the separately supplied old QEMU binaries:
+# QTEST_QEMU_BINARY_KONA_V1, V3, V6, V4, V5, V6_PLANES, X_SERVER_V2,
+# and X_SERVER_V1, respectively.
+qtest-mips64/sn0-origin2000-kona-test	/mips64/sn0/origin2000/kona/migration-from-v1-no-raster-position
+qtest-mips64/sn0-origin2000-kona-bringup-test	/mips64/sn0/origin2000/kona-bringup/migration-from-v3
+qtest-mips64/sn0-origin2000-kona-scanout-test	/mips64/sn0/origin2000/kona-scanout/migration-from-v6
+qtest-mips64/sn0-origin2000-kona-video-test	/mips64/sn0/origin2000/kona-video/migration-from-v4
+qtest-mips64/sn0-origin2000-kona-video-test	/mips64/sn0/origin2000/kona-video/migration-from-v5
+qtest-mips64/sn0-origin2000-kona-video-test	/mips64/sn0/origin2000/kona-video/migration-from-v6-planes
+qtest-mips64/sn0-origin2000-kona-glyph-test	/mips64/sn0/origin2000/kona-glyph/migration-from-x-server-v2
+qtest-mips64/sn0-origin2000-kona-fill-test	/mips64/sn0/origin2000/kona-fill/migration-from-x-server-v1
+
+# KONA old-writer migrations require retained .cache/kona-old-write fixtures.
+qtest-mips64/sn0-origin2000-kona-pixel-test	/mips64/sn0/origin2000/kona-pixel/old-write-receiver/no-pending
+qtest-mips64/sn0-origin2000-kona-pixel-test	/mips64/sn0/origin2000/kona-pixel/old-write-receiver/empty-prefix
+qtest-mips64/sn0-origin2000-kona-pixel-test	/mips64/sn0/origin2000/kona-pixel/old-write-receiver/written-prefix
+qtest-mips64/sn0-origin2000-kona-pixel-test	/mips64/sn0/origin2000/kona-pixel/old-write-receiver/completed-payload
