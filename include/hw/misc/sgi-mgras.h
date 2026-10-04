@@ -380,7 +380,9 @@ typedef struct SGIMgrasTexView {
     uint64_t bit;
     uint32_t log2w, log2h;
     uint32_t mode;
+    uint32_t format;
     uint32_t depth;
+    uint8_t component_bits[4];
     const uint64_t *border_data;
     uint32_t level, border_offset, border_count;
 } SGIMgrasTexView;

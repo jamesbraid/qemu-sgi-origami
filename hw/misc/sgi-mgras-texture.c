@@ -860,14 +860,19 @@ static bool mgras_tex_border_index(uint32_t w, uint32_t h, int32_t x,
 }
 
 static void mgras_tex_border_store(SGIMgrasTexture *t, uint32_t key,
-                                   uint32_t index, uint32_t rgba)
+                                   uint32_t index,
+                                   const uint16_t component[4])
 {
+    uint64_t value = 1ull << 48;
     uint64_t *slot = &t->border_data[t->border_offset[key] + index];
 
-    if (!(*slot & (1ull << 32))) {
+    if (!(*slot & (1ull << 48))) {
         t->border_valid_count[key]++;
     }
-    *slot = (1ull << 32) | rgba;
+    for (uint32_t i = 0; i < 4; i++) {
+        value |= (uint64_t)(component[i] & 0xfff) << (12 * i);
+    }
+    *slot = value;
 }
 
 void sgi_mgras_texture_reset(SGIMgrasTexture *t)
@@ -1720,10 +1725,10 @@ bool sgi_mgras_texture_dma(SGIMgrasState *s, uint32_t rows, uint32_t bpr,
  */
 static uint32_t mgras_tex_upload_component(const uint8_t *in, uint32_t n,
                                            uint32_t size, uint32_t depth);
-static uint32_t mgras_tex_upload_rgba(const uint8_t *in, uint32_t src,
-                                      uint32_t size, uint32_t comps,
-                                      uint32_t depth, uint32_t layout,
-                                      bool abgr, uint32_t texel);
+static void mgras_tex_upload_components(const uint8_t *in, uint32_t src,
+                                       uint32_t size, uint32_t comps,
+                                       uint32_t depth, bool abgr,
+                                       uint32_t texel, uint16_t component[4]);
 
 static void mgras_tex_commit(SGIMgrasState *s)
 {
@@ -1811,11 +1816,11 @@ static void mgras_tex_commit(SGIMgrasState *s)
             uint32_t border_index;
 
             if (mgras_tex_border_index(w, h, tx, ty, &border_index)) {
-                uint32_t rgba = mgras_tex_upload_rgba(
-                    in, src, size, comps, depth, MGRAS_TEX_LAYOUT(mode),
-                    t->load_abgr, texel);
+                uint16_t component[4];
 
-                mgras_tex_border_store(t, border_key, border_index, rgba);
+                mgras_tex_upload_components(in, src, size, comps, depth,
+                                            t->load_abgr, texel, component);
+                mgras_tex_border_store(t, border_key, border_index, component);
                 border_stored = true;
             }
             if (tx < 0 || tx >= w || ty < 0 || ty >= h) {
@@ -1910,28 +1915,41 @@ static uint32_t mgras_tex_upload_component(const uint8_t *in, uint32_t n,
            depth == 8 ? (c + 128) / 257 : (c + 128) / 257 >> 4;
 }
 
-static uint32_t mgras_tex_upload_rgba(const uint8_t *in, uint32_t src,
-                                      uint32_t size, uint32_t comps,
-                                      uint32_t depth, uint32_t layout,
-                                      bool abgr, uint32_t texel)
+static void mgras_tex_upload_components(const uint8_t *in, uint32_t src,
+                                       uint32_t size, uint32_t comps,
+                                       uint32_t depth, bool abgr,
+                                       uint32_t texel, uint16_t component[4])
 {
-    uint32_t c[4] = { 0, 0, 0, 0 };
-
+    memset(component, 0, 4 * sizeof(*component));
     for (uint32_t i = 0; i < comps; i++) {
         uint32_t k = abgr ? comps - 1 - i : i;
         uint32_t n = texel * src + k;
 
-        c[i] = k >= src ? (1u << depth) - 1 :
-               mgras_tex_upload_component(in, n, size, depth);
-        c[i] = depth == 4 ? c[i] * 0x11 :
-               depth == 8 ? c[i] : (c[i] * 255 + 2047) / 4095;
+        component[i] = k >= src ? (1u << depth) - 1 :
+                       mgras_tex_upload_component(in, n, size, depth);
     }
-    switch (layout) {
-    case MGRAS_TEX_LAYOUT_ONE:
+}
+
+static uint32_t mgras_tex_components_to_rgba(uint32_t mode, uint32_t format,
+                                             const uint16_t component[4])
+{
+    uint32_t depth = mgras_tex_depth_bits(mode);
+    uint32_t c[4] = { 0, 0, 0, 0 };
+
+    for (uint32_t i = 0; i < 4; i++) {
+        c[i] = depth == 4 ? component[i] * 0x11 :
+               depth == 8 ? component[i] :
+               (component[i] * 255 + 2047) / 4095;
+    }
+    switch (format) {
+    case SGI_GL_ALPHA:
+        return c[3];
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_INTENSITY:
         return c[0] << 24 | c[0];
-    case MGRAS_TEX_LAYOUT_LA:
-        return c[0] << 24 | c[1];
-    case MGRAS_TEX_LAYOUT_RGB:
+    case SGI_GL_LUMINANCE_ALPHA:
+        return c[0] << 24 | c[3];
+    case SGI_GL_RGB:
         return c[0] << 24 | c[1] << 16 | c[2] << 8;
     default:
         return c[0] << 24 | c[1] << 16 | c[2] << 8 | c[3];
@@ -2008,6 +2026,81 @@ static bool mgras_tex_read_volume_texel(void *opaque, uint32_t level,
     return true;
 }
 
+static bool mgras_tex_read_volume_components(void *opaque, uint32_t level,
+                                             uint32_t x, uint32_t y,
+                                             uint32_t z,
+                                             uint16_t component[4])
+{
+    const SGIMgrasTexView *l = opaque;
+    uint32_t comps = mgras_tex_components(l->mode);
+    uint32_t depth = mgras_tex_depth_bits(l->mode);
+    uint64_t bit = l->bit + (((uint64_t)y << l->log2w) + x) *
+                   mgras_tex_slot_bits(l->mode);
+    uint16_t stored[4] = { 0, 0, 0, 0 };
+
+    if (level != l->level) {
+        return false;
+    }
+    memset(component, 0, 4 * sizeof(*component));
+    if (l->volume_data) {
+        uint32_t width = 1u << l->log2w;
+        uint32_t height = 1u << l->log2h;
+        uint64_t offset;
+        const uint8_t *p;
+
+        if (z >= l->depth || x >= width || y >= height) {
+            return false;
+        }
+        offset = ((uint64_t)z * height + y) * width * 4 + x * 4;
+        p = offset < SGI_MGRAS_VOLUME_TEX_BASE_BYTES ?
+            &l->volume_data[offset] :
+            &l->volume_data_extra[offset - SGI_MGRAS_VOLUME_TEX_BASE_BYTES];
+        for (uint32_t i = 0; i < 4; i++) {
+            component[i] = p[i];
+        }
+        return true;
+    }
+    if (z) {
+        return false;
+    }
+    for (uint32_t i = 0; i < comps; i++) {
+        stored[i] = mgras_tram_get(l->tram, bit + i * depth, depth);
+    }
+    switch (l->format) {
+    case SGI_GL_ALPHA:
+        component[3] = stored[0];
+        break;
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_INTENSITY:
+        component[0] = stored[0];
+        break;
+    case SGI_GL_LUMINANCE_ALPHA:
+        component[0] = stored[0];
+        component[3] = stored[1];
+        break;
+    case SGI_GL_RGB:
+    case SGI_GL_RGBA:
+        component[0] = stored[0];
+        component[1] = stored[1];
+        component[2] = stored[2];
+        if (l->format == SGI_GL_RGBA) {
+            component[3] = stored[3];
+        }
+        break;
+    default:
+        return false;
+    }
+    return true;
+}
+
+static bool mgras_tex_read_texel_components(void *opaque, uint32_t level,
+                                            uint32_t x, uint32_t y,
+                                            uint16_t component[4])
+{
+    return mgras_tex_read_volume_components(opaque, level, x, y, 0,
+                                            component);
+}
+
 static bool mgras_tex_read_texel(void *opaque, uint32_t level, uint32_t x,
                                  uint32_t y, uint32_t *rgba)
 {
@@ -2027,6 +2120,26 @@ static bool mgras_tex_read_image_texel(void *opaque, uint32_t x, uint32_t y,
                                        uint32_t *rgba)
 {
     return mgras_tex_read_image_texel_3d(opaque, x, y, 0, rgba);
+}
+
+static bool mgras_tex_read_image_components(void *opaque, uint32_t x,
+                                            uint32_t y,
+                                            uint16_t component[4])
+{
+    SGIMgrasTexture *t = opaque;
+
+    return mgras_tex_read_volume_components(&t->views[0], 0, x, y, 0,
+                                            component);
+}
+
+static bool mgras_tex_read_image_components_3d(void *opaque, uint32_t x,
+                                               uint32_t y, uint32_t z,
+                                               uint16_t component[4])
+{
+    SGIMgrasTexture *t = opaque;
+
+    return mgras_tex_read_volume_components(&t->views[0], 0, x, y, z,
+                                            component);
 }
 
 static bool mgras_tex_color_table_ready(const SGIMgrasTexture *t,
@@ -2056,13 +2169,14 @@ static void mgras_tex_color_table_post_filter(void *opaque, double rgba[4])
 }
 
 /* The sampler's base format for a layout and the class the draw names. */
-static bool mgras_tex_read_border_texel(void *opaque, uint32_t level,
-                                        int32_t x, int32_t y,
-                                        uint32_t *rgba)
+static bool mgras_tex_read_border_components(void *opaque, uint32_t level,
+                                             int32_t x, int32_t y,
+                                             uint16_t component[4])
 {
     const SGIMgrasTexView *l = opaque;
     uint32_t w = 1u << l->log2w, h = 1u << l->log2h, index;
     uint64_t value;
+    uint16_t stored[4];
 
     if (level != l->level || !l->border_data ||
         !mgras_tex_border_index(w, h, x, y, &index) ||
@@ -2070,11 +2184,83 @@ static bool mgras_tex_read_border_texel(void *opaque, uint32_t level,
         return false;
     }
     value = l->border_data[l->border_offset + index];
-    if (!(value & (1ull << 32))) {
+    if (!(value & (1ull << 48))) {
         return false;
     }
-    *rgba = value & UINT32_MAX;
+    for (uint32_t i = 0; i < 4; i++) {
+        stored[i] = (value >> (12 * i)) & 0xfff;
+    }
+    memset(component, 0, 4 * sizeof(*component));
+    switch (l->format) {
+    case SGI_GL_ALPHA:
+        component[3] = stored[0];
+        break;
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_INTENSITY:
+        component[0] = stored[0];
+        break;
+    case SGI_GL_LUMINANCE_ALPHA:
+        component[0] = stored[0];
+        component[3] = stored[1];
+        break;
+    case SGI_GL_RGB:
+    case SGI_GL_RGBA:
+        memcpy(component, stored, sizeof(stored));
+        if (l->format == SGI_GL_RGB) {
+            component[3] = 0;
+        }
+        break;
+    default:
+        return false;
+    }
     return true;
+}
+
+static bool mgras_tex_read_border_texel(void *opaque, uint32_t level,
+                                        int32_t x, int32_t y,
+                                        uint32_t *rgba)
+{
+    const SGIMgrasTexView *l = opaque;
+    uint16_t component[4];
+
+    if (!mgras_tex_read_border_components(opaque, level, x, y, component)) {
+        return false;
+    }
+    *rgba = mgras_tex_components_to_rgba(l->mode, l->format, component);
+    return true;
+}
+
+static void mgras_tex_component_bits(uint32_t format, uint32_t depth,
+                                     uint8_t bits[4])
+{
+    memset(bits, 0, 4 * sizeof(*bits));
+    switch (format) {
+    case SGI_GL_ALPHA:
+        bits[3] = depth;
+        break;
+    case SGI_GL_LUMINANCE:
+    case SGI_GL_INTENSITY:
+        bits[0] = depth;
+        break;
+    case SGI_GL_LUMINANCE_ALPHA:
+        bits[0] = bits[3] = depth;
+        break;
+    case SGI_GL_RGB:
+        bits[0] = bits[1] = bits[2] = depth;
+        break;
+    case SGI_GL_RGBA:
+        bits[0] = bits[1] = bits[2] = bits[3] = depth;
+        break;
+    }
+}
+
+static bool mgras_tex_read_image_border_components(void *opaque, int32_t x,
+                                                    int32_t y,
+                                                    uint16_t component[4])
+{
+    SGIMgrasTexture *t = opaque;
+
+    return mgras_tex_read_border_components(&t->views[0], 0, x, y, component);
 }
 
 static bool mgras_tex_format(uint32_t layout, uint32_t cls, uint32_t *format)
@@ -2258,7 +2444,14 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
         if (!mgras_tex_draw_level(s, level, mode, e)) {
             continue;
         }
-        t->sampler_levels[n++] = (SGIGLTexLevel) {
+        uint8_t component_bits[4];
+        SGIGLTexLevel *sampler_level = &t->sampler_levels[n++];
+
+        e->format = format;
+        mgras_tex_component_bits(format, mgras_tex_depth_bits(mode),
+                                 e->component_bits);
+        memcpy(component_bits, e->component_bits, sizeof(component_bits));
+        *sampler_level = (SGIGLTexLevel) {
             .level = level,
             .width = 1u << e->log2w,
             .height = 1u << e->log2h,
@@ -2271,6 +2464,12 @@ static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
                                  mgras_tex_read_border_texel : NULL,
             .read_texel_3d = mgras_tex_read_volume_texel,
             .opaque = e,
+            .component_bits = { component_bits[0], component_bits[1],
+                                component_bits[2], component_bits[3] },
+            .read_texel_components = mgras_tex_read_texel_components,
+            .read_border_texel_components = e->border_data ?
+                mgras_tex_read_border_components : NULL,
+            .read_texel_3d_components = mgras_tex_read_volume_components,
         };
     }
     t->pyramid = (SGIGLTexPyramid) {
@@ -2584,7 +2783,12 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
         },
         .pyramid = &t->pyramid,
         .post_filter = color_table ? mgras_tex_color_table_post_filter : NULL,
+        .read_texel_components = mgras_tex_read_image_components,
+        .read_texel_3d_components = mgras_tex_read_image_components_3d,
+        .read_border_texel_components = mgras_tex_read_image_border_components,
     };
+    mgras_tex_component_bits(format, mgras_tex_depth_bits(mode),
+                             image->component_bits);
     return image;
 }
 
@@ -2661,10 +2865,21 @@ bool sgi_mgras_texture_valid(const SGIMgrasTexture *t)
         for (uint32_t j = 0; j < count; j++) {
             uint64_t value = t->border_data[t->border_offset[i] + j];
 
-            if (value >> 33) {
+            uint32_t depth = mgras_tex_depth_bits(t->border_mode[i]);
+            uint32_t comps = mgras_tex_components(t->border_mode[i]);
+            uint32_t maximum = (1u << depth) - 1;
+
+            if (value >> 49) {
                 return false;
             }
-            valid += !!(value & (1ull << 32));
+            for (uint32_t k = 0; k < 4; k++) {
+                uint32_t component = (value >> (12 * k)) & 0xfff;
+
+                if (component > maximum || (k >= comps && component)) {
+                    return false;
+                }
+            }
+            valid += !!(value & (1ull << 48));
         }
         if (valid != t->border_valid_count[i]) {
             return false;
@@ -2796,8 +3011,8 @@ static int mgras_tex_state_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_mgras_tex = {
     .name = TYPE_SGI_MGRAS "/texture-state",
-    .version_id = 14,
-    .minimum_version_id = 14,
+    .version_id = 15,
+    .minimum_version_id = 15,
     .post_load = mgras_tex_state_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(texmode1, SGIMgrasTexture),

@@ -3424,6 +3424,31 @@ static void test_gl_texture_linear_midpoint(void)
  * colour (red). The quad's s runs -0.25 to 0.75 over 30 pixels, so pixel
  * 23's centre is s = 0.
  */
+static void test_gl_texture_linear_preserves_12bit_components(void)
+{
+    static const float quad[4][4] = {
+        { 16, 16, 0.625f, 0.5f }, { 47, 16, 0.625f, 0.5f },
+        { 47, 32, 0.625f, 0.5f }, { 16, 32, 0.625f, 0.5f },
+    };
+    QTestState *t = tex_start(TEX_ARGS);
+    uint8_t texels[16] = { 0 };
+    TexScene sc = {
+        .layout = TEX_LAYOUT_RGBA, .depth = 2, .cls = TEX_CLASS_COLOUR,
+        .mode2 = TEX_MAG_LINEAR | TEX_MIN_LINEAR,
+        .w = 2, .h = 1, .texels = texels, .quad = quad,
+    };
+
+    stw_be_p(&texels[2], 0xfff0);
+    stw_be_p(&texels[6], 0xffff);
+    stw_be_p(&texels[8], 0x0090);
+    stw_be_p(&texels[10], 0xfff0);
+    stw_be_p(&texels[14], 0xffff);
+    tex_scene(t, &sc);
+    g_assert_cmphex(gl_window_pixel(t, 31, 24), ==, 0x00ff00);
+    g_assert_cmphex(mgras_qom_get_uint(t, "x-test-error"), ==, 0);
+    qtest_quit(t);
+}
+
 static void test_gl_texture_linear_edge_wrap(void)
 {
     static const float quad[4][4] = {
@@ -4923,6 +4948,68 @@ static QTestState *tex_sb_file_migrate_and_restart(QTestState *from,
     return to;
 }
 
+static void tex_precision_border_upload(QTestState *t)
+{
+    uint8_t pixels[4 * 3 * 8] = { 0 };
+    const uint32_t box[6] = { -1, -1, 4, 3, 3 << 16 | 4, 0 };
+
+    for (unsigned i = 0; i < 12; i++) {
+        stw_be_p(&pixels[8 * i + 2], 0xffff);
+        stw_be_p(&pixels[8 * i + 6], 0xffff);
+    }
+    stw_be_p(&pixels[8 * 4], 0x0090);
+    tex_enter(t, GL_SLOT_A);
+    tex_sb_set_base_block(t, 0, 4);
+    tex_load_fmt(t, true, 0x34000 | TEX_LAYOUT_RGBA << 1 | 2 << 5,
+                 0x10, pixels, 4, 3, 4, 8, box, true, 0, 0);
+}
+
+static uint32_t tex_precision_border_draw(QTestState *t)
+{
+    static const float white[4] = { 1, 1, 1, 1 };
+    static const float quad[4][4] = {
+        { 16, 16, -0.125f, 0.5f }, { 32, 16, -0.125f, 0.5f },
+        { 32, 32, -0.125f, 0.5f }, { 16, 32, -0.125f, 0.5f },
+    };
+
+    gl_enter_slot(t, GL_SLOT_A);
+    tex_bind(t, tex_mode1(TEX_ENV_MODULATE, TEX_LAYOUT_RGBA,
+                          TEX_CLASS_COLOUR, 2),
+             0x10000 | 2 << 2 | TEX_MAG_LINEAR | TEX_MIN_LINEAR |
+             TEX_SB_CLAMP_BITS);
+    tex_records(t, (const uint32_t[]) {
+        TEX_TXSIZE, 0x101,
+        TEX_TXCLAMPSIZE, 2 << 13 | 1,
+    }, 2);
+    tex_mipmap_word(t, 4);
+    tex_quad_rect(t, white, quad);
+    return gl_window_pixel(t, 24, 24);
+}
+
+static void test_gl_texture_stored_border_preserves_12bit_after_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-12bit-border-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_build_filename(tmpfs, "state", NULL);
+    uri = g_strdup_printf("file:%s", path);
+    from = tex_start(TEX_ARGS);
+    tex_precision_border_upload(from);
+    g_assert_cmphex(tex_precision_border_draw(from), ==, 0x00ff00);
+
+    to = tex_sb_file_migrate_and_restart(from, TEX_ARGS, uri);
+    g_assert_cmphex(tex_precision_border_draw(to), ==, 0x00ff00);
+    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    qtest_quit(to);
+    unlink(path);
+    g_rmdir(tmpfs);
+}
+
 static void test_gl_texture_stored_border_file_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -5168,6 +5255,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-rejected-upload",
                    test_gl_texture_stored_border_bad_upload);
+    qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-texture-stored-border-preserves-12bit-after-migration",
+        test_gl_texture_stored_border_preserves_12bit_after_migration);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-texture-stored-border-file-migration",
                    test_gl_texture_stored_border_file_migration);
@@ -5182,6 +5273,9 @@ int main(int argc, char **argv)
                    test_gl_texture_border_per_class);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-linear-midpoint",
                    test_gl_texture_linear_midpoint);
+    qtest_add_func(
+        "sn0/origin2000/mgras/gl-texture-linear-preserves-12bit-components",
+        test_gl_texture_linear_preserves_12bit_components);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-linear-edge-wrap",
                    test_gl_texture_linear_edge_wrap);
     qtest_add_func("sn0/origin2000/mgras/gl-texture-depth12-halfword",
