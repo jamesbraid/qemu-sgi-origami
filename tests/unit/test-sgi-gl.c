@@ -1508,11 +1508,11 @@ static void test_copy_pixels_noop_and_refusal(void)
                                                    copy_source_read, &source,
                                                    1, 1, NULL));
     c.in_begin = 0;
-    c.cur.texture_2d = 1;
+    c.cur.index_bits = 8;
     g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 1, 1,
                                                    copy_source_read, &source,
                                                    1, 1, NULL));
-    c.cur.texture_2d = 0;
+    c.cur.index_bits = 0;
     g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, INT32_MAX, 0,
                                                    2, 1, copy_source_read,
                                                    &source, 1, 1, NULL));
@@ -1727,7 +1727,7 @@ static void test_draw_pixels_float_refusal(void)
     g_assert_false(sgi_gl_draw_pixels_float_transfer(&c, &sink, 2, 1, image,
                                                      1, 1, NULL));
     c.in_begin = 0;
-    c.cur.texture_2d = 1;
+    c.cur.index_bits = 8;
     g_assert_false(sgi_gl_draw_pixels_float_transfer(&c, &sink, 2, 1, image,
                                                      1, 1, NULL));
     g_assert_cmpuint(rec.ops, ==, 0);
@@ -3564,15 +3564,6 @@ static void draw_pixels_refusals(void)
     c.cur.index_bits = 8;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
     c.cur.index_bits = 0;
-    c.cur.texture_1d = 1;
-    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
-    c.cur.texture_1d = 0;
-    c.cur.texture_2d = 1;
-    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
-    c.cur.texture_2d = 0;
-    c.cur.texture_3d = 1;
-    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
-    c.cur.texture_3d = 0;
     sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, NAN, 1);
     sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, 1, INFINITY);
     for (unsigned k = 0; k < 4; k++) {
@@ -3600,7 +3591,7 @@ static void test_draw_pixels_refusals(void)
     SGIGLContext c;
 
     g_assert_nonnull(strstr(log, "glDrawPixels inside glBegin"));
-    g_assert_nonnull(strstr(log, "textured or colour-index"));
+    g_assert_nonnull(strstr(log, "colour-index"));
     g_assert_nonnull(strstr(log, "glDrawPixels with no window"));
     g_assert_nonnull(strstr(log, "nonfinite glDrawPixels placement"));
     g_assert_nonnull(strstr(log, "nonfinite pixel transfer"));
@@ -6547,6 +6538,183 @@ static void texture_coord(FragScene *f, float s, float t, float r, float q)
 {
     frag_command(f, SGI_GL_OP_TEXCOORD4F,
                  (uint32_t[]) { bits(s), bits(t), bits(r), bits(q) }, 4);
+}
+
+static void test_raster_texture_coordinates(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    const uint32_t bytes[] = { 0xffffffff, 0xffffffff };
+    const float floats[][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
+    const double doubles[][4] = { { 1, 1, 1, 1 }, { 1, 1, 1, 1 } };
+    FragScene f;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_coord(&f, 0.5f, 1.5f, 0, 2);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, (uint32_t[]) { 0, 0 }, 2);
+    texture_coord(&f, 0.75f, 0.25f, 0, 1);
+    for (unsigned mode = 0; mode < 3; mode++) {
+        memset(&f.p, 0, sizeof(f.p));
+        if (!mode) {
+            sgi_gl_draw_pixels_rgba(&f.c, &f.sink, 2, 1, bytes);
+        } else if (mode == 1) {
+            g_assert_true(sgi_gl_draw_pixels_float_transfer(&f.c, &f.sink,
+                              2, 1, floats, 1, 1, NULL));
+        } else {
+            g_assert_true(sgi_gl_draw_pixels_double_transfer(&f.c, &f.sink,
+                              2, 1, doubles, 1, 1, NULL));
+        }
+        g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x0000ff);
+        g_assert_cmphex(frag_pixel(&f, 33, 32), ==, 0x0000ff);
+        g_assert_cmphex(frag_pixel(&f, 34, 32), ==, 0);
+        g_assert_cmpfloat(f.c.raster_pos[0], ==, 32);
+        g_assert_cmpfloat(f.c.raster_pos[1], ==, 32);
+    }
+    g_assert_cmpuint(pixels.reads, ==, 6);
+}
+
+static void test_copy_pixels_texture_overlap(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    FragScene f;
+    CopySource source = { .planes = &f.p, .fail_x = -1, .fail_y = -1 };
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_coord(&f, 0.5f, 1.5f, 0, 2);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F,
+                 (uint32_t[]) { bits(1.0f / 32), 0 }, 2);
+    texture_coord(&f, 0.75f, 0.25f, 0, 1);
+    f.p.colour[0][planes_index(32, 32)] = 0xffffff;
+    f.p.colour[0][planes_index(33, 32)] = 0xff0000;
+    f.p.colour[0][planes_index(34, 32)] = 0x112233;
+    g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&f.c, &f.sink, 32, 32,
+                      2, 1, copy_source_read, &source, 1, 1, NULL));
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0xffffff);
+    g_assert_cmphex(frag_pixel(&f, 33, 32), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 34, 32), ==, 0);
+    g_assert_cmpuint(source.reads, ==, 2);
+    g_assert_cmpuint(pixels.reads, ==, 2);
+}
+
+static void test_raster_texture_transfer_alpha(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0x80402040, 0x80402040, 0x80402040, 0x80402040,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    const double source[][4] = { { 0.25, 0.5, 1, 1 } };
+    SGIGLPixelTransfer transfer = {
+        .scale = { 2, 1, 1, 1 }, .bias = { 0.25, 0, 0, 0 },
+    };
+    FragScene f;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, (uint32_t[]) { 0, 0 }, 2);
+    g_assert_true(sgi_gl_draw_pixels_double_transfer(&f.c, &f.sink, 1, 1,
+                      source, 1, 1, &transfer));
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x602020);
+    memset(&f.p, 0, sizeof(f.p));
+    enable(&f.c, SGI_GL_ALPHA_TEST, true);
+    frag_command(&f, SGI_GL_OP_ALPHA_FUNC,
+                 (uint32_t[]) { SGI_GL_NEVER_ENUM + SGI_GL_GREATER,
+                                bits(0.5f) }, 2);
+    g_assert_cmpuint(f.c.cur.alpha_func, ==, SGI_GL_GREATER);
+    g_assert_true(sgi_gl_draw_pixels_double_transfer(&f.c, &f.sink, 1, 1,
+                      source, 1, 1, &transfer));
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0);
+    g_assert_cmpuint(pixels.reads, ==, 2);
+}
+
+static void test_bitmap_texture_coordinates(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    const uint8_t pattern = 0xa0;
+    SGIGLBitmap bitmap;
+    FragScene f;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    texture_env(&f, SGI_GL_TEXTURE_ENV_MODE, SGI_GL_REPLACE, 0, 0, 0);
+    texture_coord(&f, 0.5f, 1.5f, 0, 2);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, (uint32_t[]) { 0, 0 }, 2);
+    texture_coord(&f, 0.75f, 0.25f, 0, 1);
+    g_assert_true(sgi_gl_bitmap_place(&f.c, 3, 1, 0, 0, 2, 3, &bitmap));
+    sgi_gl_bitmap_bytes(&f.c, &f.sink, &bitmap, 0, &pattern, 1);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x0000ff);
+    g_assert_cmphex(frag_pixel(&f, 33, 32), ==, 0);
+    g_assert_cmphex(frag_pixel(&f, 34, 32), ==, 0x0000ff);
+    g_assert_cmpfloat(f.c.raster_pos[0], ==, 34);
+    g_assert_cmpfloat(f.c.raster_pos[1], ==, 35);
+    g_assert_cmpuint(pixels.reads, ==, 2);
+}
+
+static void test_raster_texture_invalid_coordinates(void)
+{
+    const float invalid[] = { 0, -1, NAN, INFINITY };
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+    } };
+    SGIGLTexImage image = texture_image(&pixels);
+    const uint32_t source = 0xffffffff;
+    const uint8_t pattern = 0x80;
+    FragScene f;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(invalid); i++) {
+        SGIGLBitmap bitmap;
+
+        frag_init(&f);
+        f.rec.target.texture = &image;
+        enable(&f.c, SGI_GL_TEXTURE_2D, true);
+        texture_coord(&f, 0, 0, 0, invalid[i]);
+        frag_command(&f, SGI_GL_OP_RASTER_POS2F, (uint32_t[]) { 0, 0 }, 2);
+        sgi_gl_draw_pixels_rgba(&f.c, &f.sink, 1, 1, &source);
+        g_assert_true(sgi_gl_bitmap_place(&f.c, 1, 1, 0, 0, 1, 0, &bitmap));
+        sgi_gl_bitmap_bytes(&f.c, &f.sink, &bitmap, 0, &pattern, 1);
+        g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0);
+        g_assert_cmpuint(pixels.reads, ==, 0);
+        g_assert_cmpfloat(f.c.raster_pos[0], ==, 33);
+    }
+}
+
+static void test_raster_texture_image_state(void)
+{
+    TexturePixels pixels = { .pixel = {
+        0xff0000ff, 0xff0000ff, 0xff0000ff, 0xff0000ff,
+    }, .fail = true };
+    SGIGLTexImage image = texture_image(&pixels);
+    const uint32_t source = 0x00ff00ff;
+    FragScene f;
+
+    frag_init(&f);
+    f.rec.target.texture = &image;
+    enable(&f.c, SGI_GL_TEXTURE_2D, true);
+    frag_command(&f, SGI_GL_OP_RASTER_POS2F, (uint32_t[]) { 0, 0 }, 2);
+    sgi_gl_draw_pixels_rgba(&f.c, &f.sink, 1, 1, &source);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0);
+    g_assert_cmpuint(pixels.reads, ==, 1);
+    f.c.cur.texture_env_mode = 0xdeaddead;
+    sgi_gl_draw_pixels_rgba(&f.c, &f.sink, 1, 1, &source);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0);
+    g_assert_cmpuint(pixels.reads, ==, 1);
+    f.c.cur.texture_env_mode = SGI_GL_MODULATE;
+    f.rec.target.texture = NULL;
+    sgi_gl_draw_pixels_rgba(&f.c, &f.sink, 1, 1, &source);
+    g_assert_cmphex(frag_pixel(&f, 32, 32), ==, 0x00ff00);
 }
 
 static void test_texture_sampling(void)
@@ -11622,6 +11790,18 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
     g_test_add_func("/sgi-gl/bitmap-nonfinite-placement",
                     test_bitmap_nonfinite_placement);
+    g_test_add_func("/sgi-gl/draw-pixels/texture-coordinates",
+                    test_raster_texture_coordinates);
+    g_test_add_func("/sgi-gl/draw-pixels/texture-transfer-alpha",
+                    test_raster_texture_transfer_alpha);
+    g_test_add_func("/sgi-gl/draw-pixels/texture-invalid-coordinates",
+                    test_raster_texture_invalid_coordinates);
+    g_test_add_func("/sgi-gl/draw-pixels/texture-image-state",
+                    test_raster_texture_image_state);
+    g_test_add_func("/sgi-gl/copy-pixels/texture-overlap",
+                    test_copy_pixels_texture_overlap);
+    g_test_add_func("/sgi-gl/bitmap/texture-coordinates",
+                    test_bitmap_texture_coordinates);
     g_test_add_func("/sgi-gl/draw-pixels/refusals", test_draw_pixels_refusals);
     g_test_add_func("/sgi-gl/draw-pixels/zoom", test_draw_pixels_zoom);
     g_test_add_func("/sgi-gl/draw-pixels/transfer", test_draw_pixels_transfer);
