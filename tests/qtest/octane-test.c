@@ -3211,7 +3211,8 @@ static void test_firmware_rejections(void)
     g_test_message("no firmware: %s", error_output);
     g_assert_false(g_spawn_check_exit_status(status, NULL));
     g_assert_nonnull(strstr(error_output,
-                           "requires either -bios or flash-drive"));
+                           "requires one of -bios, node0-flash or "
+                           "flash-drive"));
     g_clear_pointer(&error_output, g_free);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(ftruncate(fd, MiB + 1), ==, 0);
@@ -3265,6 +3266,231 @@ static void test_catalogue_machine_options(void)
     g_assert_cmpuint(started, ==, 2);
     qobject_unref(response);
     qtest_quit(qts);
+}
+
+/* "-blockdev ..." for a raw file node named @node. */
+static char *octane_blockdev(const char *node, const char *path)
+{
+    return g_strdup_printf("driver=raw,node-name=%s,file.driver=file,"
+                           "file.filename=%s", node, path);
+}
+
+/* A @size-byte store at @path filled with @fill, @mark at offset 0. */
+static void octane_make_store(const char *path, size_t size, uint8_t fill,
+                              uint16_t mark)
+{
+    g_autofree char *bytes = g_malloc(size);
+
+    memset(bytes, fill, size);
+    if (size >= 2) {
+        stw_be_p(bytes, mark);
+    }
+    g_assert_true(g_file_set_contents(path, bytes, size, NULL));
+}
+
+static QTestState *octane_start_node_flash(const char *path)
+{
+    g_autofree char *node = octane_blockdev("flash", path);
+
+    return qtest_initf(MEMTX_TEST_DEVICE "-M octane,node0-flash=flash "
+                       "-m 128M -cpu R10000 -blockdev %s", node);
+}
+
+/*
+ * node0-flash backs the boot flash with a block node: it reads the file,
+ * and a word the CFI program command writes reaches the file and the
+ * next QEMU process.
+ */
+static void test_storage_node_flash(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("octane-storage-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "node0-flash.raw", NULL);
+    g_autofree char *stored = NULL;
+    gsize size;
+    QTestState *qts;
+
+    octane_make_store(path, MiB, 0xff, 0x1234);
+    qts = octane_start_node_flash(path);
+    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0xffff);
+    qtest_writel(qts, BRIDGE_REG(0x020),
+                 qtest_readl(qts, BRIDGE_REG(0x020)) | FLASH_WRITE_EN);
+    qtest_writew(qts, FLASH, 0x4040);
+    qtest_writew(qts, FLASH + 0x20, 0x1290);
+    qtest_writew(qts, FLASH, 0x7070);
+    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x0080);
+    qtest_writew(qts, FLASH, 0xffff);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1290);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &stored, &size, NULL));
+    g_assert_cmpuint(size, ==, MiB);
+    g_assert_cmphex(lduw_be_p(stored + 0x20), ==, 0x1290);
+    qts = octane_start_node_flash(path);
+    g_assert_cmphex(qtest_readw(qts, FLASH), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, FLASH + 0x20), ==, 0x1290);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void octane_rtc_map(QTestState *qts)
+{
+    qtest_writel(qts, CFG(2) + 0x10, 0x10000000);
+    qtest_writel(qts, CFG(2) + 0x04, 0x00000002);
+    qtest_writel(qts, BRIDGE + 0x200 + 8 * 2 + 4, 0x1100);
+}
+
+/*
+ * nvram0 and nvram0-clock back the DS1685, as the older sgi-nvram0 and
+ * sgi-nvram0-clock drives still do; its RAM reaches the file.
+ */
+static void test_storage_nvram(gconstpointer data)
+{
+    bool octane2 = GPOINTER_TO_INT(data) & 1;
+    bool legacy = GPOINTER_TO_INT(data) & 2;
+    g_autofree char *dir = g_dir_make_tmp("octane-nvram-XXXXXX", NULL);
+    g_autofree char *nvram = g_build_filename(dir, "nvram0.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "nvram0-clock.raw", NULL);
+    g_autofree char *nvram_node = octane_blockdev("nv", nvram);
+    g_autofree char *clock_node = octane_blockdev("nvclock", clock);
+    g_autofree char *extra = legacy ?
+        g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw "
+                        "-drive if=none,id=sgi-nvram0-clock,file=%s,"
+                        "format=raw", nvram, clock) :
+        g_strdup_printf("-machine nvram0=nv,nvram0-clock=nvclock "
+                        "-blockdev %s -blockdev %s", nvram_node, clock_node);
+    g_autofree char *stored = NULL;
+    gsize size;
+    QTestState *qts;
+
+    octane_make_store(nvram, 512, 0, 0);
+    octane_make_store(clock, 24, 0, 0);
+    qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
+    octane_rtc_map(qts);
+    qtest_writeb(qts, RTC_INDEX, 0x0e);
+    qtest_writeb(qts, RTC_DATA, 0x5a);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(nvram, &stored, &size, NULL));
+    g_assert_cmpuint(size, ==, 512);
+    g_assert_cmphex((uint8_t)stored[0x0e], ==, 0x5a);
+    qts = octane2 ? octane2_start_args(extra) : octane_start_args(extra);
+    octane_rtc_map(qts);
+    qtest_writeb(qts, RTC_INDEX, 0x0e);
+    g_assert_cmphex(qtest_readb(qts, RTC_DATA), ==, 0x5a);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(nvram), ==, 0);
+    g_assert_cmpint(g_unlink(clock), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void octane_storage_rejected(const char *machine, const char *extra,
+                                    const char *message)
+{
+    g_auto(GStrv) words = g_strsplit(extra, " ", -1);
+    GPtrArray *args = g_ptr_array_new();
+
+    g_ptr_array_add(args, (gpointer)qtest_qemu_binary(NULL));
+    g_ptr_array_add(args, (gpointer)"-M");
+    g_ptr_array_add(args, (gpointer)machine);
+    g_ptr_array_add(args, (gpointer)"-m");
+    g_ptr_array_add(args, (gpointer)"128M");
+    g_ptr_array_add(args, (gpointer)"-display");
+    g_ptr_array_add(args, (gpointer)"none");
+    g_ptr_array_add(args, (gpointer)"-S");
+    g_ptr_array_add(args, (gpointer)"-qmp");
+    g_ptr_array_add(args, (gpointer)"stdio");
+    for (char **word = words; *word; word++) {
+        g_ptr_array_add(args, *word);
+    }
+    g_ptr_array_add(args, NULL);
+    assert_launch_rejected((const char *const *)args->pdata, message);
+    g_ptr_array_free(args, true);
+}
+
+static void test_storage_refusals(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("octane-refusals-XXXXXX", NULL);
+    g_autofree char *small = g_build_filename(dir, "small.raw", NULL);
+    g_autofree char *right = g_build_filename(dir, "right.raw", NULL);
+    g_autofree char *nvram = g_build_filename(dir, "nvram.raw", NULL);
+    g_autofree char *clock = g_build_filename(dir, "clock.raw", NULL);
+    g_autofree char *small_node = octane_blockdev("flash", small);
+    g_autofree char *right_node = octane_blockdev("flash", right);
+    g_autofree char *large = g_build_filename(dir, "large.raw", NULL);
+    g_autofree char *large_nvram = octane_blockdev("nv", large);
+    g_autofree char *nvram_node = octane_blockdev("nv", nvram);
+    g_autofree char *clock_node = octane_blockdev("nvclock", clock);
+    g_autofree char *extra = NULL;
+
+    /* Sizes in whole sectors: the block layer rounds a length up. */
+    octane_make_store(small, 512 * KiB, 0xff, 0x1234);
+    octane_make_store(large, 1024, 0, 0);
+    octane_make_store(right, MiB, 0xff, 0x1234);
+    octane_make_store(nvram, 512, 0, 0);
+    octane_make_store(clock, 24, 0, 0);
+
+    extra = g_strdup_printf("-blockdev %s", small_node);
+    octane_storage_rejected("octane,node0-flash=flash", extra,
+                            "octane: node0-flash is 524288 bytes; it must "
+                            "be exactly 1048576");
+    g_free(extra);
+    extra = g_strdup_printf("-blockdev %s", right_node);
+    octane_storage_rejected("octane,node0-flash=missing", extra,
+                            "octane: node0-flash names 'missing', which is "
+                            "no block node or drive");
+    g_free(extra);
+    extra = g_strdup_printf("-blockdev %s -drive if=none,id=flash0,file=%s,"
+                            "format=raw", right_node, small);
+    octane_storage_rejected("octane,node0-flash=flash,flash-drive=flash0",
+                            extra, "octane: node0-flash and flash-drive=flash0 "
+                            "both back the boot flash");
+    g_free(extra);
+    extra = g_strdup_printf("-blockdev %s -bios %s", right_node, flash_path);
+    octane_storage_rejected("octane,node0-flash=flash", extra,
+                            "octane requires one of -bios, node0-flash or "
+                            "flash-drive");
+    g_free(extra);
+    extra = g_strdup_printf("-bios %s -blockdev %s", flash_path, large_nvram);
+    octane_storage_rejected("octane,nvram0=nv", extra,
+                            "octane: nvram0 is 1024 bytes; it must be exactly "
+                            "512");
+    g_free(extra);
+    extra = g_strdup_printf("-bios %s -blockdev %s", flash_path, clock_node);
+    octane_storage_rejected("octane,nvram0-clock=nvclock", extra,
+                            "octane: nvram0-clock needs nvram0");
+    g_free(extra);
+    extra = g_strdup_printf("-bios %s -blockdev %s -drive if=none,"
+                            "id=sgi-nvram0,file=%s,format=raw", flash_path,
+                            nvram_node, small);
+    octane_storage_rejected("octane,nvram0=nv", extra,
+                            "octane: nvram0 and -drive id=sgi-nvram0 both "
+                            "back the same Timekeeper NVRAM");
+    g_free(extra);
+    /*
+     * A drive the SCSI controller has already claimed cannot also back
+     * the NVRAM or its clock record: a clean refusal, not an abort.
+     */
+    extra = g_strdup_printf("-bios %s -drive if=scsi,id=claimed,bus=0,"
+                            "unit=1,file=%s,format=raw", flash_path, nvram);
+    octane_storage_rejected("octane,nvram0=claimed", extra,
+                            "Drive 'claimed' is already in use");
+    g_free(extra);
+    extra = g_strdup_printf("-bios %s -blockdev %s -drive if=scsi,"
+                            "id=claimed,bus=0,unit=1,file=%s,format=raw",
+                            flash_path, nvram_node, clock);
+    octane_storage_rejected("octane,nvram0=nv,nvram0-clock=claimed", extra,
+                            "Drive 'claimed' is already in use");
+    g_free(extra);
+    extra = g_strdup_printf("-bios %s -blockdev %s", flash_path, nvram_node);
+    octane_storage_rejected("octane,nvram1=nv", extra,
+                            "Property 'octane-machine.nvram1' not found");
+    for (const char *const *path = (const char *const[]) {
+             small, large, right, nvram, clock, NULL }; *path; path++) {
+        g_assert_cmpint(g_unlink(*path), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 static void test_pci_bar_separation(void)
@@ -4219,6 +4445,14 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-ust-migration",
                    test_rad_ust_migration);
     qtest_add_func("/octane/firmware-rejections", test_firmware_rejections);
+    qtest_add_func("/octane/storage/node-flash", test_storage_node_flash);
+    qtest_add_data_func("/octane/storage/nvram", GINT_TO_POINTER(0),
+                        test_storage_nvram);
+    qtest_add_data_func("/octane2/storage/nvram", GINT_TO_POINTER(1),
+                        test_storage_nvram);
+    qtest_add_data_func("/octane/storage/nvram-legacy-drive",
+                        GINT_TO_POINTER(2), test_storage_nvram);
+    qtest_add_func("/octane/storage/refusals", test_storage_refusals);
     qtest_add_func("/octane/catalogue-machine-options",
                    test_catalogue_machine_options);
     qtest_add_func("/octane/pci-bar-separation", test_pci_bar_separation);
