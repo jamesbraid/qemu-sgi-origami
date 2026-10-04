@@ -7,6 +7,7 @@ fork_unit_tests = [
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
   'test-sn-model', 'test-sgi-prom-image', 'test-sgi-initial-flash',
+  'test-sgi-machine-init',
   'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
   'test-sgi-rad1-audio-pcm', 'test-dma-buffer',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
@@ -293,6 +294,13 @@ endif
 test_env = environment()
 test_env.set('G_TEST_SRCDIR', meson.current_source_dir())
 test_env.set('G_TEST_BUILDDIR', meson.current_build_dir())
+
+# Runs the built tool rather than linking its sources.
+if is_variable('qemu_sgi_machine_init')
+  tests += {'test-sgi-machine-init': []}
+  test_deps += {'test-sgi-machine-init': qemu_sgi_machine_init}
+  test_env.set('QEMU_SGI_MACHINE_INIT', qemu_sgi_machine_init.full_path())
+endif
 
 slow_tests = {
   'test-aio-multithread' : 120,
