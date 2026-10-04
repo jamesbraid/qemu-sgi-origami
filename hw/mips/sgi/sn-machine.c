@@ -6891,6 +6891,28 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                  sgi_machine_node_module(t, node_index) ?
                                  sgi_machine_node_module(t, node_index)->
                                  initial_module_number : 0);
+            if (nodes[node_index]->has_option_intx_map) {
+                uint8_t map[SGI_PCI_INTX_MAP_SIZE];
+                const uint8List *entry;
+                unsigned index = 0;
+
+                for (entry = nodes[node_index]->option_intx_map; entry;
+                     entry = entry->next) {
+                    if (index == ARRAY_SIZE(map)) {
+                        error_setg(errp, "compute option INTx map is too long");
+                        return false;
+                    }
+                    map[index++] = entry->value;
+                }
+                if (index != ARRAY_SIZE(map)) {
+                    error_setg(errp, "compute option INTx map requires "
+                               "eight inputs");
+                    return false;
+                }
+                if (!sn1_node_set_option_intx_map(node, map, errp)) {
+                    return false;
+                }
+            }
             qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
         }
 
@@ -8240,6 +8262,10 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_KONA);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_MGRAS);
+#if defined(CONFIG_TEST_DEVICES) && defined(CONFIG_SGI_BOARD_TEST)
+    machine_class_allow_dynamic_sysbus_dev(mc,
+                                         "sgi-compute-option-intx-fixture");
+#endif
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);

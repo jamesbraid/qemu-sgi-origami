@@ -55,6 +55,10 @@ layer:
         remain unsupported. Routes and node inventory are
         not initialized for firmware. Construction support does not establish stock PROM or IRIX acceptance.
       emulation:
+        # Synthetic public default rule; physical riser wiring is unresolved.
+        option_intx_maps:
+          master-bedrock: [1, 5, 1, 5, 2, 6, 2, 6]
+          slave-bedrock: [1, 5, 1, 5, 2, 6, 2, 6]
         bedrock_nodes:
           master-bedrock:
             board_id_word: 32769

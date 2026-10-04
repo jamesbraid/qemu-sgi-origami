@@ -19,6 +19,7 @@
 #include "cpu.h"
 #include "sn-promdata.h"
 #include "sn1-fabric.h"
+#include "pci-intx-wiring.h"
 
 /*
  * Bedrock is fixed at four CPUs on two processor interfaces, two processors
@@ -58,6 +59,14 @@ typedef struct SN1PromView {
 
 typedef struct SN1NodeState {
     SysBusDevice parent_obj;
+
+    uint8_t option_intx_selected;
+    uint8_t option_intx_map[SGI_PCI_INTX_MAP_SIZE];
+    uint32_t option_intx_owner;
+    uint32_t option_intx_raw;
+    uint8_t option_intx_levels;
+    qemu_irq *option_intx_inputs;
+    qemu_irq option_intx_outputs[SGI_PCI_INTX_INPUTS];
 
     /* Properties, set by the machine before realize. */
     MemoryRegion *ram;
@@ -267,6 +276,9 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * a board-owning attachment builds. The node must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
+bool sn1_node_set_option_intx_map(SN1NodeState *node,
+                                 const uint8_t map[SGI_PCI_INTX_MAP_SIZE],
+                                 Error **errp);
 
 /* The node-owned Bedrock I/O endpoint, available after node realization. */
 SGIBedrockIOState *sn1_node_bedrock_io(SN1NodeState *node);

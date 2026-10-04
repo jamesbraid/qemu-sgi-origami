@@ -86,7 +86,8 @@ slow_qtests = {
   'sn1-address-map-test': 1800,
   'sn1-bedrock-flash-test': 175,
   'sn1-bedrock-md-test': 160,
-  'sn1-cross-node-test': 70,
+  'sn1-cross-node-test': 180,
+  'sn1-option-tigon-test': 600,
   'sn1-directory-state-test': 160,
   'sn1-fuel-test': 250,
   'sn1-io8-scsi-test': 160,
@@ -425,7 +426,10 @@ sn1_board_qtests = \
      'sn1-pi-gfx-test', 'sn1-fuel-test', 'sn1-fuel-usb-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-fuel-vpro-test'] : [])
+    ['sn1-fuel-vpro-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_TIGON') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-option-tigon-test'] : [])
 
 sn0_machine_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
