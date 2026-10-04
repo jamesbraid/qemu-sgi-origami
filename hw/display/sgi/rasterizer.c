@@ -2466,6 +2466,7 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     const SGIGLDrawState *st = r->st;
     const SGIVolumeVertex *verts[3] = { va, vb, vc };
     const float *flat = &provoking[SGI_GL_V_COLOR];
+    const float *flat_index = &provoking[SGI_GL_V_INDEX];
     SGISoftFrag flat_frag;
     SGISoftVertex v[3];
     SGISoftTexPlane gradient;
@@ -2503,18 +2504,20 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     }
     if (!front && r->back_colors) {
         flat = &provoking[SGI_GL_V_BACK_COLOR];
+        flat_index = &provoking[SGI_GL_V_BACK_INDEX];
         for (int i = 0; i < 3; i++) {
             const float *back = &verts[i]->attr[SGI_GL_V_BACK_COLOR];
 
             for (int k = 0; k < 4; k++) {
                 v[i].rgba[k] = MIN(MAX(back[k], 0.0f), 1.0f);
             }
+            v[i].index = verts[i]->attr[SGI_GL_V_BACK_INDEX];
         }
     }
     for (int k = 0; k < 4; k++) {
         flat_frag.rgba[k] = flat[k];
     }
-    flat_frag.index = provoking[SGI_GL_V_INDEX];
+    flat_frag.index = *flat_index;
     offset = sgi_soft_offset(r, v);
     if (area < 0) {
         /* Rasterize either winding the same way from here. */
@@ -3881,6 +3884,7 @@ static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
     SGISoftVertex *v = g_try_new(SGISoftVertex, n);
     double offset = 0;
     const float *flat_color = &provoking[SGI_GL_V_COLOR];
+    const float *flat_index = &provoking[SGI_GL_V_INDEX];
 
     if (!v) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing workspace "
@@ -3889,6 +3893,7 @@ static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
     }
     if (!front && r->back_colors) {
         flat_color = &provoking[SGI_GL_V_BACK_COLOR];
+        flat_index = &provoking[SGI_GL_V_BACK_INDEX];
     }
     for (size_t i = 0; i < n; i++) {
         if (!sgi_soft_project(r, &poly[i], &v[i])) {
@@ -3900,6 +3905,7 @@ static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
             for (unsigned k = 0; k < 4; k++) {
                 v[i].rgba[k] = MIN(MAX(back[k], 0.0f), 1.0f);
             }
+            v[i].index = poly[i].attr[SGI_GL_V_BACK_INDEX];
         }
     }
     if (r->texture_base) {
@@ -3917,7 +3923,7 @@ static void sgi_soft_polygon_smooth(const SGISoftDraw *r,
                  r->st->offset_bias;
     }
     sgi_soft_polygon_coverage(r, v, n, flat_color,
-                              provoking[SGI_GL_V_INDEX], offset);
+                              *flat_index, offset);
 out:
     g_free(v);
 }

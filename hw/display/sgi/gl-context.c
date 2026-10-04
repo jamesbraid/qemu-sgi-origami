@@ -849,13 +849,10 @@ static void sgi_gl_clear(SGIGLContext *c, const SGIGLSink *sink,
     }
 }
 
-/*
- * Whether vertices are lit: GL_LIGHTING enabled in RGBA mode. Colour-index
- * lighting (2.13.5) is not modelled; an index stays the current index.
- */
+/* Whether GL_LIGHTING supplies the vertex colour or colour index. */
 static bool sgi_gl_lit(const SGIGLContext *c)
 {
-    return c->lighting && !c->cur.index_bits;
+    return c->lighting;
 }
 
 static float sgi_gl_dot3(const float a[3], const float b[3])
@@ -1052,6 +1049,135 @@ static void sgi_gl_light_face(const SGIGLContext *c, const float eye[4],
 }
 
 /*
+ * One colour-index lighting result (OpenGL 1.2.1, 2.13.5). The material's
+ * COLOR INDEXES supply am, dm and sm; diffuse and specular light RGB become
+ * scalar intensities with weights 0.30, 0.59 and 0.11. Keep c fractional:
+ * mask its integer bits here, before vertex interpolation.
+ */
+static float sgi_gl_light_index_value(const SGIGLContext *c, float index)
+{
+    double integer = floor(index);
+
+    /* Follow the existing 32-bit conversion for values outside its range. */
+    if (!(integer >= -2147483648.0 && integer < 4294967296.0)) {
+        return 0.0f;
+    }
+    return sgi_gl_index_value(c->cur.index_bits, index) +
+           (index - integer);
+}
+
+static float sgi_gl_light_index_face(const SGIGLContext *c, const float eye[4],
+                                     const float n[3],
+                                     const SGIGLMaterial *m)
+{
+    float d = 0.0f, s = 0.0f;
+
+    for (int i = 0; i < SGI_GL_LIGHTS; i++) {
+        const SGIGLLight *l = &c->light[i];
+        const float *p = l->position;
+        float vp[3], h[3], sd[3], ndotl, ndh, att = 1.0f, spot = 1.0f;
+        float diffuse, specular;
+
+        if (!(c->lights_enabled & (1u << i))) {
+            continue;
+        }
+        for (int k = 0; k < 3; k++) {
+            if (p[3] == 0.0f && eye[3] == 0.0f) {
+                vp[k] = p[k] - eye[k];
+            } else if (p[3] == 0.0f) {
+                vp[k] = p[k];
+            } else if (eye[3] == 0.0f) {
+                vp[k] = -eye[k];
+            } else {
+                vp[k] = p[k] / p[3] - eye[k] / eye[3];
+            }
+        }
+        if (p[3] != 0.0f) {
+            float distance = sqrtf(sgi_gl_dot3(vp, vp));
+
+            att = 1.0f / (l->attenuation[0] + l->attenuation[1] * distance +
+                          l->attenuation[2] * distance * distance);
+        }
+        sgi_gl_unit3(vp);
+        if (l->spot_cutoff != 180.0f) {
+            float cosine;
+
+            memcpy(sd, l->spot_direction, sizeof(sd));
+            sgi_gl_unit3(sd);
+            cosine = -sgi_gl_dot3(vp, sd);
+            spot = cosine >= l->spot_cos_cutoff ?
+                   powf(MAX(cosine, 0.0f), l->spot_exponent) : 0.0f;
+        }
+
+        /*
+         * Use the clamped direction product for diffuse and specular terms.
+         */
+        ndotl = MAX(sgi_gl_dot3(n, vp), 0.0f);
+        diffuse = 0.30f * l->diffuse[0] + 0.59f * l->diffuse[1] +
+                  0.11f * l->diffuse[2];
+        specular = 0.30f * l->specular[0] + 0.59f * l->specular[1] +
+                   0.11f * l->specular[2];
+        d += att * spot * diffuse * ndotl;
+
+        /*
+         * Equation 2.2 tests this clamped direction product.
+         */
+        ndh = ndotl != 0.0f ? 1.0f : 0.0f;
+        for (int k = 0; k < 3; k++) {
+            float ve = k == 2 ? 1.0f : 0.0f;
+
+            if (c->light_model_local_viewer) {
+                ve = eye[3] == 0.0f ? -eye[k] : -eye[k] / eye[3];
+            }
+            h[k] = ve;
+        }
+        if (c->light_model_local_viewer) {
+            sgi_gl_unit3(h);
+        }
+        for (int k = 0; k < 3; k++) {
+            h[k] += vp[k];
+        }
+        sgi_gl_unit3(h);
+        if (ndh != 0.0f) {
+            ndh = powf(MAX(sgi_gl_dot3(n, h), 0.0f), m->shininess);
+        }
+        s += att * spot * specular * ndh;
+    }
+
+    s = MIN(s, 1.0f);
+    return sgi_gl_light_index_value(c,
+        MIN(m->color_indexes[0] +
+            d * (1.0f - s) * (m->color_indexes[1] -
+                               m->color_indexes[0]) +
+            s * (m->color_indexes[2] - m->color_indexes[0]),
+            m->color_indexes[2]));
+}
+
+/* Light both faces of one vertex in colour-index mode. */
+static void sgi_gl_light_index_vertex(const SGIGLContext *c,
+                                      const float obj[4], const float n[3],
+                                      float *front, float *back)
+{
+    const float *mv = c->cur.modelview;
+    float eye[4], normal[3];
+
+    for (int row = 0; row < 4; row++) {
+        eye[row] = mv[row] * obj[0] + mv[4 + row] * obj[1] +
+                   mv[8 + row] * obj[2] + mv[12 + row] * obj[3];
+    }
+    sgi_gl_eye_normal(c, n, normal);
+    *front = sgi_gl_light_index_face(c, eye, normal, &c->material[0]);
+    if (!c->light_model_two_side) {
+        *back = *front;
+        return;
+    }
+    for (int k = 0; k < 3; k++) {
+        normal[k] = -normal[k];
+    }
+    *back = sgi_gl_light_index_face(c, eye, normal, &c->material[1]);
+}
+
+/*
  * Light a vertex at object position obj with normal n: its front colour
  * into front and, with two-sided lighting, its back colour into back,
  * from the back material and the reversed normal (2.13.1). Without
@@ -1155,12 +1281,18 @@ void sgi_gl_capture_vertex(SGIGLContext *c, uint32_t mode,
     memcpy(&out[SGI_GL_V_EDGE], &c->cur_edge, sizeof(c->cur_edge));
     out[SGI_GL_V_INDEX] = c->cur_index;
     /* Material and lighting belong to the instant this vertex arrived. */
-    if (sgi_gl_lit(c)) {
+    if (sgi_gl_lit(c) && c->cur.index_bits) {
+        sgi_gl_light_index_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
+                                  &out[SGI_GL_V_INDEX],
+                                  &out[SGI_GL_V_BACK_INDEX]);
+    } else if (sgi_gl_lit(c)) {
         sgi_gl_light_vertex(c, &out[SGI_GL_V_POSITION], c->cur_normal,
                             &out[SGI_GL_V_COLOR], &out[SGI_GL_V_BACK_COLOR]);
+        out[SGI_GL_V_BACK_INDEX] = out[SGI_GL_V_INDEX];
     } else {
         memcpy(&out[SGI_GL_V_BACK_COLOR], c->cur_color,
                sizeof(c->cur_color));
+        out[SGI_GL_V_BACK_INDEX] = out[SGI_GL_V_INDEX];
     }
     if (c->polygon.enabled &&
         (mode == SGI_GL_TRIANGLE_STRIP || mode == SGI_GL_TRIANGLE_FAN ||
@@ -1385,7 +1517,12 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
     c->raster_pos[3] = clip[3];
     c->raster_distance = sqrt(eye[0] * eye[0] + eye[1] * eye[1] +
                               eye[2] * eye[2]);
-    if (sgi_gl_lit(c)) {
+    if (sgi_gl_lit(c) && c->cur.index_bits) {
+        float back;
+
+        sgi_gl_light_index_vertex(c, obj, c->cur_normal, &c->raster_index,
+                                  &back);
+    } else if (sgi_gl_lit(c)) {
         float back[4];
 
         sgi_gl_light_vertex(c, obj, c->cur_normal, c->raster_color, back);
@@ -1393,8 +1530,8 @@ static void sgi_gl_raster_pos(SGIGLContext *c, const float obj[4])
         for (int i = 0; i < 4; i++) {
             c->raster_color[i] = MIN(MAX(c->cur_color[i], 0.0f), 1.0f);
         }
+        c->raster_index = c->cur_index;
     }
-    c->raster_index = c->cur_index;
     sgi_gl_texture_coord(c, c->raster_texcoord);
 }
 
