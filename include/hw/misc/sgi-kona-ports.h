@@ -265,6 +265,10 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_COLOR_MASK  0x21
 #define SGI_KONA_CMD_GL_DEPTH_MASK  0x22
 #define SGI_KONA_CMD_GL_INDEX_MASK  0x23
+#define SGI_KONA_CMD_GL_INDEXD      0x72
+#define SGI_KONA_CMD_GL_INDEXF      0x73
+#define SGI_KONA_CMD_GL_INDEXI      0x74
+#define SGI_KONA_CMD_GL_INDEX_PACKED 0x75
 #define SGI_KONA_CMD_GL_ENABLE      0x24
 #define SGI_KONA_CMD_GL_LOGIC_OP    0x2e
 #define SGI_KONA_CMD_GL_BITMAP_INLINE 0x5
