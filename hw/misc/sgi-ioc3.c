@@ -2052,6 +2052,7 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
                                         SYS_BUS_DEVICE(&s->rtc), 0));
     } else {
         object_property_del(OBJECT(dev), "nvram-drive");
+        object_property_del(OBJECT(dev), "nvram-clock-drive");
         object_unparent(OBJECT(&s->rtc));
     }
 
@@ -2232,6 +2233,8 @@ static void sgi_ioc3_init(Object *obj)
     object_initialize_child(obj, "ds1685", &s->ds1685, TYPE_DS1685);
 
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
+    object_property_add_alias(obj, "nvram-clock-drive",
+                              OBJECT(&s->rtc), "clock-drive");
     object_property_add_alias(obj, "ds1685-drive",
                               OBJECT(&s->ds1685), "drive");
     object_property_add_alias(obj, "ds1685-clock-drive",

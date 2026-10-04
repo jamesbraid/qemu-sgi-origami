@@ -55,10 +55,11 @@
  * chip identity (which the carrier sets directly on the Bridge or
  * XBridge it owns, before this device exists to hand a bus from). It
  * forwards straight to the IOC3 child's own same-named property.
- * "nvram-drive", "chardev-a", "chardev-b", "record-a", "record-b" and
- * "parallel-chardev" name the onboard IOC3's own Timekeeper storage and
- * serial/parallel backends by block or chardev id, unset by default,
- * held only as an id rather than a claimed backend: a "drive" or
+ * "nvram-drive", "nvram-clock-drive", "chardev-a", "chardev-b",
+ * "record-a", "record-b" and "parallel-chardev" name the onboard IOC3's
+ * own Timekeeper storage, the clock record its model keeps beside it and
+ * serial/parallel backends by block node, drive or chardev id, unset by
+ * default, held only as an id rather than a claimed backend: a "drive" or
  * "chardev" property claims its backend the moment it is set, and the
  * IOC3 this device is about to build is the one device that may claim
  * each of these, once, before it realizes -- a link property here would
@@ -94,6 +95,7 @@
 #include "qapi/visitor.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "block/block-global-state.h"
 #include "system/block-backend.h"
 
 struct SGIBaseioState {
@@ -113,6 +115,7 @@ struct SGIBaseioState {
     uint32_t system_timekeeper_year_base;
     char *ioc3_mac;
     char *nvram_drive_id;
+    char *nvram_clock_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
     char *record_a_id;
@@ -122,7 +125,7 @@ struct SGIBaseioState {
     char *mio_chardev_b_id;
     bool parallel_claimed;
     /* Which of the backend ids above some chip of the preset took. */
-    const char *claimed[7];
+    const char *claimed[8];
     unsigned int n_claimed;
 };
 
@@ -209,21 +212,34 @@ static bool baseio_id_claimed(SGIBaseioState *s, const char *id)
     return false;
 }
 
-static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
+/* Set @prop on @dev to the -drive id or block node @id names. */
+static bool baseio_pass_backend(DeviceState *dev, const char *prop,
+                                const char *id, Error **errp)
 {
-    BlockBackend *blk;
-
-    if (!id) {
-        return true;
-    }
-    blk = blk_by_name(id);
-    if (!blk) {
-        error_setg(errp, "sgi-baseio: no drive backend named '%s' for "
-                  "nvram-drive", id);
+    if (!blk_by_name(id) && !bdrv_find_node(id)) {
+        error_setg(errp, "sgi-baseio: no drive or block node named '%s' for "
+                  "%s", id, prop);
         return false;
     }
-    qdev_prop_set_drive(dev, "nvram-drive", blk);
-    return true;
+    return object_property_set_str(OBJECT(dev), prop, id, errp);
+}
+
+static bool baseio_pass_drive(SGIBaseioState *s, DeviceState *dev,
+                              Error **errp)
+{
+    if (!s->nvram_drive_id) {
+        if (s->nvram_clock_drive_id) {
+            error_setg(errp, "sgi-baseio: nvram-clock-drive '%s' needs "
+                      "nvram-drive", s->nvram_clock_drive_id);
+            return false;
+        }
+        return true;
+    }
+    return baseio_pass_backend(dev, "nvram-drive", s->nvram_drive_id,
+                               errp) &&
+           (!s->nvram_clock_drive_id ||
+            baseio_pass_backend(dev, "nvram-clock-drive",
+                                s->nvram_clock_drive_id, errp));
 }
 
 static void baseio_configure_ioc3_timekeeper(SGIBaseioState *s,
@@ -350,7 +366,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                                  &error_abort);
     }
     if (timekeeper != SGI_IOC3_TIMEKEEPER_NONE &&
-        !baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
+        !baseio_pass_drive(s, DEVICE(ioc3), errp)) {
         object_unparent(OBJECT(ioc3));
         return NULL;
     }
@@ -364,6 +380,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     }
     if (timekeeper != SGI_IOC3_TIMEKEEPER_NONE) {
         baseio_note_claim(s, s->nvram_drive_id);
+        baseio_note_claim(s, s->nvram_clock_drive_id);
     }
     baseio_note_claim(s, chardev_a_id);
     baseio_note_claim(s, chardev_b_id);
@@ -818,11 +835,12 @@ static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
     baseio_configure_ioc3_timekeeper(s, ioc3, s->system_timekeeper_kind);
     if (s->system_timekeeper_kind == SGI_IOC3_TIMEKEEPER_M48T35) {
-        if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
+        if (!baseio_pass_drive(s, DEVICE(ioc3), errp)) {
             object_unparent(OBJECT(ioc3));
             return false;
         }
         baseio_note_claim(s, s->nvram_drive_id);
+        baseio_note_claim(s, s->nvram_clock_drive_id);
     }
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
@@ -1066,6 +1084,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
             const char *id;
         } ids[] = {
             { "nvram-drive", s->nvram_drive_id },
+            { "nvram-clock-drive", s->nvram_clock_drive_id },
             { "chardev-a", s->chardev_a_id },
             { "chardev-b", s->chardev_b_id },
             { "record-a", s->record_a_id },
@@ -1105,6 +1124,8 @@ static const Property baseio_properties[] = {
     DEFINE_PROP_UINT32("system-timekeeper-year-base", SGIBaseioState,
                        system_timekeeper_year_base, 1970),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
+    DEFINE_PROP_STRING("nvram-clock-drive", SGIBaseioState,
+                       nvram_clock_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),
     DEFINE_PROP_STRING("record-a", SGIBaseioState, record_a_id),

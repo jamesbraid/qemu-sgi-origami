@@ -1301,6 +1301,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
                            const char *nvram_drive_id,
+                           const char *nvram_clock_drive_id,
                            const char *chardev_a_id,
                            const char *chardev_b_id,
                            const char *record_a_id,
@@ -1340,6 +1341,10 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     }
     if (nvram_drive_id) {
         qdev_prop_set_string(baseio, "nvram-drive", nvram_drive_id);
+    }
+    if (nvram_clock_drive_id) {
+        qdev_prop_set_string(baseio, "nvram-clock-drive",
+                             nvram_clock_drive_id);
     }
     if (chardev_a_id) {
         qdev_prop_set_string(baseio, "chardev-a", chardev_a_id);

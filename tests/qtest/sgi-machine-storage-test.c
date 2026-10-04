@@ -27,6 +27,10 @@
 #define SN1_FLASH_MARK 0x2000
 #define SN1_MACHINE "-cpu R14000 -smp 2"
 
+/* The m48t35 Timekeeper's NVRAM and the clock record kept beside it. */
+#define NVRAM_SIZE (32 * 1024)
+#define NVRAM_CLOCK_SIZE 16
+
 static char *directory;
 
 static char *store_path(const char *name)
@@ -327,6 +331,33 @@ static void test_sn1_node_flash_refusals(void)
 }
 
 /*
+ * How many block backends with node or drive id @node are attached to a
+ * device whose canonical path ends in @suffix.
+ */
+static unsigned int attached_count(QTestState *qts, const char *node,
+                                   const char *suffix)
+{
+    QDict *response = qtest_qmp(qts, "{'execute': 'query-block'}");
+    QList *blocks = qdict_get_qlist(response, "return");
+    const QListEntry *entry;
+    unsigned int count = 0;
+
+    QLIST_FOREACH_ENTRY(blocks, entry) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        QDict *inserted = qdict_get_qdict(block, "inserted");
+
+        if (qdict_haskey(block, "qdev") && inserted &&
+            g_str_has_suffix(qdict_get_str(block, "qdev"), suffix) &&
+            (g_str_equal(qdict_get_str(block, "device"), node) ||
+             g_str_equal(qdict_get_str(inserted, "node-name"), node))) {
+            count++;
+        }
+    }
+    qobject_unref(response);
+    return count;
+}
+
+/*
  * The canonical path of the device a block backend whose node is @node, or
  * whose drive id is @node, is attached to; NULL when none is.
  */
@@ -428,6 +459,151 @@ static void test_io_flash_refusals(void)
     g_assert_cmpint(g_unlink(prom), ==, 0);
 }
 
+typedef struct NvramStores {
+    char *nvram;
+    char *clock;
+    char *nvram_node;
+    char *clock_node;
+} NvramStores;
+
+static void nvram_stores_init(NvramStores *stores, const char *stem)
+{
+    g_autofree char *nvram = g_strdup_printf("%s-nvram", stem);
+    g_autofree char *clock = g_strdup_printf("%s-clock", stem);
+
+    stores->nvram = make_store(nvram, NVRAM_SIZE, 0);
+    stores->clock = make_store(clock, NVRAM_CLOCK_SIZE, 0);
+    stores->nvram_node = blockdev("nv", stores->nvram);
+    stores->clock_node = blockdev("nvclock", stores->clock);
+}
+
+static void nvram_stores_cleanup(NvramStores *stores)
+{
+    g_assert_cmpint(g_unlink(stores->nvram), ==, 0);
+    g_assert_cmpint(g_unlink(stores->clock), ==, 0);
+    g_free(stores->nvram);
+    g_free(stores->clock);
+    g_free(stores->nvram_node);
+    g_free(stores->clock_node);
+}
+
+/* Both stores reach the board's Timekeeper. */
+static void assert_nvram_attached(QTestState *qts)
+{
+    g_assert_cmpuint(attached_count(qts, "nv", "/rtc"), ==, 1);
+    g_assert_cmpuint(attached_count(qts, "nvclock", "/rtc"), ==, 1);
+}
+
+/*
+ * nvram0 and nvram0-clock reach the Timekeeper on Origin 200's onboard
+ * I/O, an Origin 2000 BaseIO card and an Origin 300 IO-8.
+ */
+static void test_nvram_bound(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    NvramStores stores;
+    QTestState *qts;
+
+    nvram_stores_init(&stores, "bound");
+    qts = qtest_initf("-M origin200,nvram0=nv,nvram0-clock=nvclock "
+                      "-blockdev %s -blockdev %s", stores.nvram_node,
+                      stores.clock_node);
+    assert_nvram_attached(qts);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M " O2K_DESKSIDE ",nvram0=nv,nvram0-clock=nvclock "
+                      O2K_DESKSIDE_SIZE " -blockdev %s -blockdev %s",
+                      stores.nvram_node, stores.clock_node);
+    assert_nvram_attached(qts);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M origin300,nvram0=nv,nvram0-clock=nvclock "
+                      SN1_MACHINE " -bios %s -blockdev %s -blockdev %s",
+                      prom, stores.nvram_node, stores.clock_node);
+    assert_nvram_attached(qts);
+    qtest_quit(qts);
+    nvram_stores_cleanup(&stores);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/* The NVRAM can go without its clock record, as before. */
+static void test_nvram_without_clock(void)
+{
+    NvramStores stores;
+    QTestState *qts;
+
+    nvram_stores_init(&stores, "no-clock");
+    qts = qtest_initf("-M origin200,nvram0=nv -blockdev %s",
+                      stores.nvram_node);
+    g_assert_cmpuint(attached_count(qts, "nv", "/rtc"), ==, 1);
+    qtest_quit(qts);
+    nvram_stores_cleanup(&stores);
+}
+
+/* A drive id, with its "-clock" partner, still reaches the Timekeeper. */
+static void test_nvram_legacy_drive(void)
+{
+    NvramStores stores;
+    QTestState *qts;
+
+    nvram_stores_init(&stores, "legacy");
+    qts = qtest_initf("-M origin200 "
+                      "-drive if=none,id=sgi-nvram0,file=%s,format=raw "
+                      "-drive if=none,id=sgi-nvram0-clock,file=%s,format=raw",
+                      stores.nvram, stores.clock);
+    g_assert_cmpuint(attached_count(qts, "sgi-nvram0", "/rtc"), ==, 1);
+    g_assert_cmpuint(attached_count(qts, "sgi-nvram0-clock", "/rtc"), ==, 1);
+    qtest_quit(qts);
+    nvram_stores_cleanup(&stores);
+}
+
+static void test_nvram_refusals(void)
+{
+    g_autofree char *small = make_store("nvram-small", NVRAM_SIZE / 2, 0);
+    g_autofree char *empty = store_path("nvram-empty-clock");
+    g_autofree char *small_node = blockdev("nv", small);
+    g_autofree char *empty_node = blockdev("nvclock", empty);
+    g_autofree char *prom = make_store("nvram-prom", 4096, 0);
+    g_autofree char *legacy = NULL;
+    NvramStores stores;
+
+    nvram_stores_init(&stores, "refused");
+    legacy = g_strdup_printf("if=none,id=sgi-nvram0,file=%s,format=raw",
+                             small);
+    g_assert_true(g_file_set_contents(empty, "", 0, NULL));
+    assert_rejected("origin200,nvram0=nv", "-blockdev", small_node,
+                    "origin200: nvram0 is 16384 bytes; it must be exactly "
+                    "32768");
+    assert_rejected("origin200,nvram0-clock=nvclock", "-blockdev",
+                    empty_node, "origin200: nvram0-clock is 0 bytes; it "
+                    "must be at least 16");
+    assert_rejected("origin200,nvram1=nv", "-blockdev", stores.nvram_node,
+                    "origin200: topology 'origin200' with 1 node board has "
+                    "no nvram1");
+    {
+        const char *clock_only[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200,nvram0-clock=nvclock",
+            "-bios", prom, "-display", "none", "-S", "-qmp", "stdio",
+            "-blockdev", stores.clock_node, NULL,
+        };
+        const char *both[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200,nvram0=nv", "-bios",
+            prom, "-display", "none", "-S", "-qmp", "stdio",
+            "-blockdev", stores.nvram_node, "-drive", legacy, NULL,
+        };
+
+        assert_launch_rejected(clock_only,
+                               "origin200: nvram0-clock needs nvram0");
+        assert_launch_rejected(both, "origin200: nvram0 and -drive "
+                               "id=sgi-nvram0 both back the same Timekeeper "
+                               "NVRAM");
+    }
+    nvram_stores_cleanup(&stores);
+    g_assert_cmpint(g_unlink(small), ==, 0);
+    g_assert_cmpint(g_unlink(empty), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -461,6 +637,13 @@ int main(int argc, char **argv)
                    test_io_flash_legacy_drive);
     qtest_add_func("/sgi-machine-storage/io-flash/refusals",
                    test_io_flash_refusals);
+    qtest_add_func("/sgi-machine-storage/nvram/bound", test_nvram_bound);
+    qtest_add_func("/sgi-machine-storage/nvram/without-clock",
+                   test_nvram_without_clock);
+    qtest_add_func("/sgi-machine-storage/nvram/legacy-drive",
+                   test_nvram_legacy_drive);
+    qtest_add_func("/sgi-machine-storage/nvram/refusals",
+                   test_nvram_refusals);
     ret = g_test_run();
     g_assert_cmpint(g_rmdir(directory), ==, 0);
     g_free(directory);

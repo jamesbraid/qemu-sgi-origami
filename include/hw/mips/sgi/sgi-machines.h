@@ -58,6 +58,22 @@ const SGIModelTopology *sgi_model_resolve_population(
     const SGIModelTopology *chassis, unsigned int nodes, Error **errp);
 
 /*
+ * Whether @board fits a BASEIO PROM flash (an io<N>-flash store) or a
+ * Timekeeper whose NVRAM persists (an nvram<N> store), by the rule the
+ * catalogue generator applies when it lists a configuration's storage.
+ */
+bool sgi_model_io_board_has_io_flash(const SGIModelIoBoard *board);
+bool sgi_model_io_board_has_nvram(const SGIModelIoBoard *board);
+
+/*
+ * The N of @board's io<N>-flash or nvram<N> store: how many of @t's
+ * io_boards before @board @has accepts.
+ */
+unsigned int sgi_model_io_board_index(
+    const SGIModelTopology *t, const SGIModelIoBoard *board,
+    bool (*has)(const SGIModelIoBoard *board));
+
+/*
  * The offering a -M option string selects: "<machine>[,topology=T]
  * [,nodes=N]", resolved as the machine resolves it, with the product's
  * default topology from its offerings when topology= is absent. Any other

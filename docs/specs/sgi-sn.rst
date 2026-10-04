@@ -218,12 +218,19 @@ The machines bind these items today:
 - ``io<N>-flash``, the BASEIO PROM flash of an Origin 2000 or Onyx2
   BaseIO card or an Origin 200 GIGAchannel cabinet, N counting those
   boards in the topology's order.
+- ``nvram<N>`` and ``nvram<N>-clock``, each base I/O board's m48t35
+  Timekeeper NVRAM and the clock record its model keeps beside it, N
+  counting the boards that carry one. A clock record needs its NVRAM
+  bound too; an NVRAM bound alone restores its calendar with no time
+  added, as before.
 
 The older forms still work but are deprecated, and giving both forms for
-one store is refused: ``-drive if=pflash,unit=N`` for node N's flash, and
+one store is refused: ``-drive if=pflash,unit=N`` for node N's flash;
 ``-drive if=none,id=sgi-baseio-flash<B>`` (B the BaseIO card's I/O board
 index) or ``id=sgi-gigachannel-flash<C>`` (C the cabinet) for a BASEIO
-PROM flash.
+PROM flash; and ``-drive if=mtd,index=I`` or ``-drive
+if=none,id=sgi-nvram<I>`` with its ``sgi-nvram<I>-clock`` partner for a
+Timekeeper, I the I/O board index on SN0 and the node on SN1.
 
 Serial line order
 =================

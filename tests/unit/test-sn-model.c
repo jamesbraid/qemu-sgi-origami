@@ -1194,6 +1194,55 @@ static void test_resolve_product_scope(void)
                                              "no-such-topology"));
 }
 
+/*
+ * The machine numbers a board's io<N>-flash and nvram<N> stores by the
+ * runtime's own board rules. Every Scalable Node offering's storage list,
+ * which the generator writes, must name exactly the stores those rules
+ * number, in the same order.
+ */
+static void test_storage_board_rules(void)
+{
+    const SGIMachines *catalogue = resolution_catalogue();
+    const SGIModelOfferingList *entry;
+
+    for (entry = catalogue->offerings; entry; entry = entry->next) {
+        const SGIModelOffering *offering = entry->value;
+        const SGIModelTopology *t = sgi_model_product_topology(
+            catalogue, offering->product, offering->topology);
+        g_autoptr(GString) expected = g_string_new(NULL);
+        g_autoptr(GString) actual = g_string_new(NULL);
+        const SGIModelIoBoardList *board;
+        const SGIModelStorageItemList *item;
+
+        g_assert_nonnull(t);
+        if (t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HEART) {
+            continue;
+        }
+        for (board = t->io_boards; board; board = board->next) {
+            if (sgi_model_io_board_has_io_flash(board->value)) {
+                g_string_append_printf(expected, "io%u-flash ",
+                    sgi_model_io_board_index(
+                        t, board->value, sgi_model_io_board_has_io_flash));
+            }
+        }
+        for (board = t->io_boards; board; board = board->next) {
+            if (sgi_model_io_board_has_nvram(board->value)) {
+                unsigned int index = sgi_model_io_board_index(
+                    t, board->value, sgi_model_io_board_has_nvram);
+
+                g_string_append_printf(expected, "nvram%u nvram%u-clock ",
+                                       index, index);
+            }
+        }
+        for (item = offering->storage; item; item = item->next) {
+            if (!g_str_has_prefix(item->value->name, "node")) {
+                g_string_append_printf(actual, "%s ", item->value->name);
+            }
+        }
+        g_assert_cmpstr(actual->str, ==, expected->str);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1238,5 +1287,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sn-model/resolve/refusals", test_resolve_refusals);
     g_test_add_func("/sn-model/resolve/product-scope",
                     test_resolve_product_scope);
+    g_test_add_func("/sn-model/storage-board-rules",
+                    test_storage_board_rules);
     return g_test_run();
 }

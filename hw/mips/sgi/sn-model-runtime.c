@@ -785,3 +785,51 @@ const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
                QAPI_LIST_LENGTH(view->nodes) == 1 ? "" : "s");
     return NULL;
 }
+
+bool sgi_model_io_board_has_io_flash(const SGIModelIoBoard *board)
+{
+    switch (board->preset) {
+    case SGI_MODEL_IO_BOARD_PRESET_IO6:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6G:
+    case SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * A selected system Timekeeper, or a base I/O design whose IOC3 is fitted
+ * (and so carries the board's Timekeeper); an add-in card's IOC3 has none.
+ */
+bool sgi_model_io_board_has_nvram(const SGIModelIoBoard *board)
+{
+    if (board->system_timekeeper) {
+        return true;
+    }
+    switch (board->preset) {
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6G:
+    case SGI_MODEL_IO_BOARD_PRESET_IO8:
+    case SGI_MODEL_IO_BOARD_PRESET_IO9:
+        return board->has_ioc3_serial;
+    default:
+        return false;
+    }
+}
+
+unsigned int sgi_model_io_board_index(
+    const SGIModelTopology *t, const SGIModelIoBoard *board,
+    bool (*has)(const SGIModelIoBoard *board))
+{
+    const SGIModelIoBoardList *entry;
+    unsigned int index = 0;
+
+    for (entry = t->io_boards; entry && entry->value != board;
+         entry = entry->next) {
+        index += has(entry->value);
+    }
+    return index;
+}
