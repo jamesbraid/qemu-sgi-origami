@@ -1994,6 +1994,9 @@ static void sgi_gl_capability(SGIGLContext *c, uint32_t cap, bool on)
     case SGI_GL_COLOR_LOGIC_OP:
         c->cur.color_logic_op = on;
         return;
+    case SGI_GL_TEXTURE_1D:
+        c->cur.texture_1d = on;
+        return;
     case SGI_GL_TEXTURE_2D:
         c->cur.texture_2d = on;
         return;
@@ -2647,6 +2650,10 @@ bool sgi_gl_get(const SGIGLContext *c, uint32_t pname, uint32_t *out,
         return sgi_gl_get_floats(c->cur_texcoord, 4, out, n);
     case SGI_GL_CURRENT_RASTER_TEXTURE_COORDS:
         return sgi_gl_get_floats(c->raster_texcoord, 4, out, n);
+    case SGI_GL_TEXTURE_1D:
+        out[0] = c->cur.texture_1d;
+        *n = 1;
+        return true;
     case SGI_GL_TEXTURE_2D:
         out[0] = c->cur.texture_2d;
         *n = 1;
@@ -3069,6 +3076,7 @@ bool sgi_gl_context_valid(const SGIGLContext *c, Error **errp)
         { "index_logic_op", st->index_logic_op },
         { "color_logic_op", st->color_logic_op },
         { "fog", st->fog },
+        { "texture_1d", st->texture_1d },
         { "texture_2d", st->texture_2d },
         { "texture_3d", st->texture_3d },
         { "drawable.bound", st->drawable.bound },
@@ -3734,6 +3742,24 @@ static const VMStateDescription vmstate_sgi_gl_texture_env = {
     },
 };
 
+static bool sgi_gl_texture_1d_needed(void *opaque)
+{
+    const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
+
+    return SGI_GL_MOVED(st, init, texture_1d);
+}
+
+static const VMStateDescription vmstate_sgi_gl_texture_1d = {
+    .name = "sgi-gl-draw-state/texture-1d",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_gl_texture_1d_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(texture_1d, SGIGLDrawState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static bool sgi_gl_texture_3d_needed(void *opaque)
 {
     const SGIGLDrawState *st = opaque, *init = &sgi_gl_initial()->cur;
@@ -3784,6 +3810,7 @@ static const VMStateDescription vmstate_sgi_gl_draw_state = {
         &vmstate_sgi_gl_colour_mask,
         &vmstate_sgi_gl_fog,
         &vmstate_sgi_gl_texture_env,
+        &vmstate_sgi_gl_texture_1d,
         &vmstate_sgi_gl_texture_3d,
         &vmstate_sgi_gl_polygon_offset,
         &vmstate_sgi_gl_clip_planes,

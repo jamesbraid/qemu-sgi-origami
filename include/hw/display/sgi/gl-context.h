@@ -151,6 +151,7 @@ enum {
 #define SGI_GL_MODELVIEW        0x1700
 #define SGI_GL_PROJECTION       0x1701
 #define SGI_GL_TEXTURE          0x1702
+#define SGI_GL_TEXTURE_1D       0x0de0
 #define SGI_GL_TEXTURE_2D       0x0de1
 #define SGI_GL_TEXTURE_3D       0x806f
 #define SGI_GL_TEXTURE_ENV_MODE 0x2200
@@ -652,6 +653,7 @@ typedef struct SGIGLDrawState {
     float window_depth_scale;
     uint32_t window_rows_down;          /* 0 or 1 */
     /* The texture environment belongs to the context, not its objects. */
+    uint32_t texture_1d;
     uint32_t texture_2d;
     uint32_t texture_3d;
     uint32_t texture_env_mode;
