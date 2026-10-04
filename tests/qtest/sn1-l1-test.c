@@ -2739,10 +2739,10 @@ static void test_ip34_identity_needs_supplied_type(void)
     qtest_quit(s);
 
     s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,id=l1c,"
-                   "brick-type=ip34,brick-type-code=0x61" UART);
+                   "brick-type=ip34,brick-type-code=0x41" UART);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
-    g_assert_cmphex(reply[15], ==, 0x61);
+    g_assert_cmphex(reply[15], ==, 0x41);
     qtest_quit(s);
 }
 

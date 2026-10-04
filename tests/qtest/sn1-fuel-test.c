@@ -194,7 +194,7 @@ static QTestState *fuel_prid_start(const char *prom, const char *extra)
 
     return qtest_initf("-M fuel,board-id-word=0x4abc,"
                        "ioc3-subsystem-id=0xc30a,"
-                       "l1-type-code=0x61,"
+                       "l1-type-code=0x41,"
                        "bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s "
                        "-accel tcg,thread=multi -S %s", quoted, extra);
@@ -281,7 +281,7 @@ static QTestState *fuel_start(const char *prom)
 
     return qtest_initf("-M fuel,board-id-word=0x4abc,"
                        "ioc3-subsystem-id=0xc30a,"
-                       "l1-type-code=0x61,bedrock-revision=0x2 "
+                       "l1-type-code=0x41,bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 }
 
@@ -297,7 +297,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     if (g_test_subprocess()) {
         qtest_initf("-M fuel,board-id-word=0x4abc,"
                     "ioc3-subsystem-id=0xc30a,"
-                    "l1-type-code=0x61,bedrock-revision=0x2,"
+                    "l1-type-code=0x41,bedrock-revision=0x2,"
                     "fuel-mac-eeprom=%s "
                     "-bios %s -S -nic %s",
                     g_getenv("FUEL_MAC_PATH"), (const char *)data,
@@ -336,7 +336,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     g_assert_no_error(error);
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2,"
+                      "l1-type-code=0x41,bedrock-revision=0x2,"
                       "fuel-mac-eeprom=%s "
                       "-bios %s -S -nic user", path,
                       (const char *)data);
@@ -352,7 +352,7 @@ static void test_fuel_mac_eeprom_machine(const void *data)
     /* The supplied image is a raw override: it wins over mac=. */
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2,"
+                      "l1-type-code=0x41,bedrock-revision=0x2,"
                       "fuel-mac-eeprom=%s,mac=02:00:00:00:00:01 "
                       "-bios %s -S -nic user", path,
                       (const char *)data);
@@ -404,7 +404,7 @@ static QTestState *fuel_start_running(const char *prom)
 
     return qtest_initf("-M fuel,board-id-word=0x4abc,"
                        "ioc3-subsystem-id=0xc30a,"
-                       "l1-type-code=0x61,bedrock-revision=0x2 "
+                       "l1-type-code=0x41,bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s", quoted);
 }
 
@@ -565,7 +565,7 @@ static void test_fuel_ioc3_superio_interrupt_migration(const void *data)
     from = fuel_start(data);
     to = qtest_initf("-M fuel,board-id-word=0x4abc,"
                      "ioc3-subsystem-id=0xc30a,"
-                     "l1-type-code=0x61,bedrock-revision=0x2 "
+                     "l1-type-code=0x41,bedrock-revision=0x2 "
                      "-cpu R14000 -smp 1 -m 512M -bios %s -S "
                      "-incoming defer", quoted);
     fuel_map_ioc3(from);
@@ -675,7 +675,7 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2 "
+                      "l1-type-code=0x41,bedrock-revision=0x2 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s "
                       "-nic socket,fd=%d,id=ioc3-net", quoted, sv[1]);
     g_assert_cmpint(close(sv[1]), ==, 0);
@@ -1064,7 +1064,7 @@ static void test_fuel_zero_identity_inputs(const void *data)
     g_autofree char *quoted = g_shell_quote(data);
     QTestState *qts = qtest_initf(
         "-M fuel,board-id-word=0x4abc,ioc3-subsystem-id=0,"
-        "l1-type-code=0x61,bedrock-revision=0 "
+        "l1-type-code=0x41,bedrock-revision=0 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
 
     g_assert_cmphex(BEDROCK_REVISION(qtest_readq(qts, LB_REVISION)), ==, 0);
@@ -1130,7 +1130,7 @@ static void test_fuel_rejects_other_board_code(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,board-id-word=0x8abc,"
                                   "ioc3-subsystem-id=0xc30a,"
-                                  "l1-type-code=0x61,bedrock-revision=0x2 "
+                                  "l1-type-code=0x41,bedrock-revision=0x2 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
     qtest_quit(qts);
@@ -1212,7 +1212,7 @@ static void test_fuel_rejects_large_bedrock_revision(const void *data)
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                                   "ioc3-subsystem-id=0xc30a,"
-                                  "l1-type-code=0x61,"
+                                  "l1-type-code=0x41,"
                                   "bedrock-revision=0x10 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
@@ -1253,7 +1253,7 @@ static void test_fuel_bedrock_revision(const void *data)
     g_autofree char *quoted = g_shell_quote(data);
     QTestState *qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                                   "ioc3-subsystem-id=0xc30a,"
-                                  "l1-type-code=0x61,"
+                                  "l1-type-code=0x41,"
                                   "bedrock-revision=0x9 "
                                   "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                                   quoted);
@@ -1298,7 +1298,7 @@ static void test_l1_type_code_rejects_hub_machine(const void *data)
             "*input 'l1-type-code' is not bound by topology 'origin200'*");
         return;
     }
-    QTestState *qts = qtest_init("-M origin200,l1-type-code=0x61");
+    QTestState *qts = qtest_init("-M origin200,l1-type-code=0x41");
     qtest_quit(qts);
 }
 
@@ -1319,7 +1319,7 @@ static void test_fuel_board_id_migration(const void *data)
     from = fuel_start(prom);
     to = qtest_initf("-M fuel,board-id-word=0x4def,"
                      "ioc3-subsystem-id=0xc30a,"
-                     "l1-type-code=0x61,bedrock-revision=0x2 "
+                     "l1-type-code=0x41,bedrock-revision=0x2 "
                      "-cpu R14000 -smp 1 -m 512M -bios %s -S -incoming defer",
                      quoted);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + BOARD_ID_OFFSET),
@@ -1361,7 +1361,7 @@ static void test_fuel_serial_backends(const void *data)
     QTestState *qts = qtest_initf(
         "-M fuel,board-id-word=0x4abc,"
         "ioc3-subsystem-id=0xc30a,"
-        "l1-type-code=0x61,bedrock-revision=0x2 "
+        "l1-type-code=0x41,bedrock-revision=0x2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null -serial null -serial null "
         "-serial null -serial null", quoted);
@@ -1409,7 +1409,7 @@ static void test_fuel_serial_bytes(const void *data)
     qts = qtest_initf(
         "-M fuel,board-id-word=0x4abc,"
         "ioc3-subsystem-id=0xc30a,"
-        "l1-type-code=0x61,bedrock-revision=0x2 "
+        "l1-type-code=0x41,bedrock-revision=0x2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s -S "
         "-serial null "
         "-chardev socket,id=ioc3-a,fd=%d -serial chardev:ioc3-a "
@@ -1493,7 +1493,7 @@ static QTestState *fuel_start_system_timekeeper_args(const char *prom,
     return qtest_initf(
         "-M fuel,"
         "board-id-word=0x4abc,ioc3-subsystem-id=0xc30a,"
-        "l1-type-code=0x61,bedrock-revision=2 "
+        "l1-type-code=0x41,bedrock-revision=2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s "
         "-rtc base=%s,clock=vm -d unimp,guest_errors %s", quoted, base, extra);
 }

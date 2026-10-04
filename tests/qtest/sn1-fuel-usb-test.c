@@ -254,7 +254,7 @@ static void test_port(const void *opaque)
     g_assert_cmpint(close(fd), ==, 0);
     quoted = g_shell_quote(prom);
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
-                      "ioc3-subsystem-id=0xc30a,l1-type-code=0x61,"
+                      "ioc3-subsystem-id=0xc30a,l1-type-code=0x41,"
                       "bedrock-revision=0x2 -cpu R14000 -smp 1 "
                       "-m 512M -bios %s -nodefaults -trace file=%s",
                       quoted, trace_path);

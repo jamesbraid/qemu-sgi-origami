@@ -2380,7 +2380,7 @@ static void test_fuel_l1_revision(const void *data)
 
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2,"
+                      "l1-type-code=0x41,bedrock-revision=0x2,"
                       "l1-revision=1.48.1 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
     l1_expect_revision(qts, 1, 48, 1);
@@ -2390,7 +2390,7 @@ static void test_fuel_l1_revision(const void *data)
 
     qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
                       "ioc3-subsystem-id=0xc30a,"
-                      "l1-type-code=0x61,bedrock-revision=0x2,"
+                      "l1-type-code=0x41,bedrock-revision=0x2,"
                       "l1-revision=0.2147483647.0 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s -S", quoted);
     l1_expect_revision(qts, 0, INT32_MAX, 0);
@@ -2408,7 +2408,7 @@ static void test_fuel_l1_revision_rejects_invalid(const void *data)
     g_autofree char *machine = g_strdup_printf(
         "fuel,board-id-word=0x4abc,"
         "ioc3-subsystem-id=0xc30a,"
-        "l1-type-code=0x61,bedrock-revision=0x2,"
+        "l1-type-code=0x41,bedrock-revision=0x2,"
         "l1-revision=%s", (const char *)data);
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", machine, "-cpu", "R14000",
@@ -2468,11 +2468,11 @@ static void test_fuel_l1_type_migration(const void *data)
                        "-m 512M -bios %s -S", quoted);
     to = qtest_initf("-M fuel,board-id-word=0x4abc,"
                      "ioc3-subsystem-id=0xc30a,"
-                     "l1-type-code=0x61,bedrock-revision=0x2 "
+                     "l1-type-code=0x41,bedrock-revision=0x2 "
                      "-cpu R14000 -smp 1 "
                      "-m 512M -bios %s -S -incoming defer", quoted);
     l1_expect_product_identity(from, 0x34);
-    l1_expect_product_identity(to, 0x61);
+    l1_expect_product_identity(to, 0x41);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -2512,12 +2512,12 @@ static void test_fuel_l1_revision_migration(const void *data)
         uri = g_strdup_printf("unix:%s", socket);
         from = qtest_initf("-M fuel,board-id-word=0x4abc,"
                            "ioc3-subsystem-id=0xc30a,"
-                           "l1-type-code=0x61,bedrock-revision=0x2%s "
+                           "l1-type-code=0x41,bedrock-revision=0x2%s "
                            "-cpu R14000 -smp 1 -m 512M -bios %s -S",
                            cases[i].source, quoted);
         to = qtest_initf("-M fuel,board-id-word=0x4abc,"
                          "ioc3-subsystem-id=0xc30a,"
-                         "l1-type-code=0x61,bedrock-revision=0x2%s "
+                         "l1-type-code=0x41,bedrock-revision=0x2%s "
                          "-cpu R14000 -smp 1 -m 512M -bios %s "
                          "-S -incoming defer", cases[i].destination, quoted);
         l1_expect_revision(from, cases[i].major, cases[i].minor,
@@ -3092,7 +3092,7 @@ static void test_fuel_mac(const void *data)
     for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
         QTestState *qts = qtest_initf(
             "-M fuel,board-id-word=0x4abc,ioc3-subsystem-id=0xc30a,"
-            "l1-type-code=0x61,bedrock-revision=0x2%s "
+            "l1-type-code=0x41,bedrock-revision=0x2%s "
             "-cpu R14000 -smp 1 -m 512M -bios %s -S", cases[i].option,
             quoted);
         g_autofree char *mac = ioc3_mac(qts, IOC3_PATH);
@@ -4353,7 +4353,7 @@ static void test_fuel_config0_cold_reset(const void *data)
     qts = qtest_initf(
         "-M fuel,"
         "board-id-word=0x4abc,ioc3-subsystem-id=0xc30a,"
-        "l1-type-code=0x61,bedrock-revision=2 "
+        "l1-type-code=0x41,bedrock-revision=2 "
         "-cpu R14000 -smp 1 -m 512M -bios %s "
         "-accel tcg,thread=multi -no-shutdown -S", quoted);
 
