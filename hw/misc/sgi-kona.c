@@ -2568,6 +2568,8 @@ static void sgi_kona_gl_reset_context(SGIKonaState *s, unsigned i)
     memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
     s->gl_pipe[i] = (SGIKonaGLPipe) {
         .pixel_zoom = { 0x3f800000, 0x3f800000 },
+        .pixel_transfer.scale = { 0x3f800000, 0x3f800000,
+                                  0x3f800000, 0x3f800000 },
         .unpack_alignment = 4,
         .pack_alignment = 4,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
@@ -3798,6 +3800,8 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
                              s->gl_pipe[i].pixel_zoom[1] },
                 .unsupported = s->gl_pipe[i].pixel_zoom_unsupported,
             };
+        s->gl_transfer_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
+            s->gl_pipe[i].pixel_transfer;
         s->gl_attrib_mask[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] = mask;
         ++*depth;
     } else {
@@ -4016,6 +4020,7 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
                sizeof(s->gl_pipe[i].pixel_zoom));
         s->gl_pipe[i].pixel_zoom_unsupported =
             s->gl_zoom_attrib[k].unsupported;
+        s->gl_pipe[i].pixel_transfer = s->gl_transfer_attrib[k];
         s->gl_pipe[i].returns.read_buffer = s->gl_return_attrib[k].read_buffer;
         s->gl_pipe[i].returns.read_buffer_unsupported =
             s->gl_return_attrib[k].read_buffer_unsupported;
@@ -4635,17 +4640,25 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
     SGIKonaTextureUpload *u = &s->texture_upload;
     unsigned i = u->draw_context;
     SGIGLSink sink;
+    SGIGLPixelTransfer transfer;
 
     if (u->count && u->draw_pixels && s->context_current == i &&
         !s->gl_pipe[i].pixel_zoom_unsupported &&
         !s->gl_pipe[i].pixel_transfer_unsupported) {
+        for (unsigned channel = 0; channel < 4; channel++) {
+            transfer.scale[channel] = sgi_kona_gl_float(
+                s->gl_pipe[i].pixel_transfer.scale[channel]);
+            transfer.bias[channel] = sgi_kona_gl_float(
+                s->gl_pipe[i].pixel_transfer.bias[channel]);
+        }
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_draw_pixels_rgba_zoom(&s->gl[i], &sink, u->header[1],
-                                     u->header[2], u->pixels,
-                                     sgi_kona_gl_float(
-                                         s->gl_pipe[i].pixel_zoom[0]),
-                                     sgi_kona_gl_float(
-                                         s->gl_pipe[i].pixel_zoom[1]));
+        sgi_gl_draw_pixels_rgba_transfer(&s->gl[i], &sink, u->header[1],
+                                         u->header[2], u->pixels,
+                                         sgi_kona_gl_float(
+                                             s->gl_pipe[i].pixel_zoom[0]),
+                                         sgi_kona_gl_float(
+                                             s->gl_pipe[i].pixel_zoom[1]),
+                                         &transfer);
     }
     sgi_kona_texture_upload_clear(s);
 }
@@ -4819,6 +4832,63 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPixelStore of 0x%" PRIx32
                       " to %" PRIu32 " is not modelled\n", pname, value);
     }
+}
+
+static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
+                                       uint32_t pname, uint32_t value)
+{
+    SGIKonaGLPipe *p = &s->gl_pipe[i];
+    uint32_t *destination;
+
+    if (s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+        return;
+    }
+    switch (pname) {
+    case 0x0d14:                /* GL_RED_SCALE */
+        destination = &p->pixel_transfer.scale[0];
+        break;
+    case 0x0d15:                /* GL_RED_BIAS */
+        destination = &p->pixel_transfer.bias[0];
+        break;
+    case 0x0d18:                /* GL_GREEN_SCALE */
+        destination = &p->pixel_transfer.scale[1];
+        break;
+    case 0x0d19:                /* GL_GREEN_BIAS */
+        destination = &p->pixel_transfer.bias[1];
+        break;
+    case 0x0d1a:                /* GL_BLUE_SCALE */
+        destination = &p->pixel_transfer.scale[2];
+        break;
+    case 0x0d1b:                /* GL_BLUE_BIAS */
+        destination = &p->pixel_transfer.bias[2];
+        break;
+    case 0x0d1c:                /* GL_ALPHA_SCALE */
+        destination = &p->pixel_transfer.scale[3];
+        break;
+    case 0x0d1d:                /* GL_ALPHA_BIAS */
+        destination = &p->pixel_transfer.bias[3];
+        break;
+    case 0x0d11:                /* GL_MAP_STENCIL */
+    case 0x0d12:                /* GL_INDEX_SHIFT */
+    case 0x0d13:                /* GL_INDEX_OFFSET */
+    case 0x0d1e:                /* GL_DEPTH_SCALE */
+    case 0x0d1f:                /* GL_DEPTH_BIAS */
+        /* These transfers do not affect the supported RGBA source profile. */
+        return;
+    case 0x0d10:                /* GL_MAP_COLOR */
+        if (!sgi_kona_gl_float(value)) {
+            return;
+        }
+        /* Nonidentity colour maps are not retained by the model. */
+        /* fall through */
+    default:
+        p->pixel_transfer_unsupported = true;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported pixel transfer 0x%x;"
+                      " DrawPixels refused\n", pname);
+        return;
+    }
+    *destination = value;
 }
 
 /*
@@ -5066,8 +5136,8 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         }
         return;
     case SGI_KONA_CMD_GL_PIXEL_TRANSFER:
-        if (i != SGI_KONA_CONTEXT_NONE && !s->gl[i].in_begin) {
-            s->gl_pipe[i].pixel_transfer_unsupported = true;
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            sgi_kona_gl_pixel_transfer(s, i, args[0], args[1]);
         }
         return;
     case SGI_KONA_CMD_GL_PIXEL_STORE:
@@ -9456,6 +9526,28 @@ static const VMStateDescription vmstate_sgi_kona_gl_zoom_attrib = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
+    .name = TYPE_SGI_KONA "/gl-transfer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(scale, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_UINT32_ARRAY(bias, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_gl_transfer_pipe = {
+    .name = TYPE_SGI_KONA "/gl-transfer-pipe",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(pixel_transfer, SGIKonaGLPipe, 0,
+                        vmstate_sgi_kona_gl_transfer, SGIKonaGLPixelTransfer),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
     .version_id = 2,
@@ -9565,6 +9657,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              vmstate_sgi_kona_gl_pixels, SGIKonaGLPipe),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_zoom, SGIKonaGLPipe),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
+                             vmstate_sgi_kona_gl_transfer_pipe, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -9656,6 +9750,16 @@ static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
             SGIKonaGLPixelZoom *z =
                 &s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
 
+            if (version_id < 4) {
+                SGIKonaGLPixelTransfer *t =
+                    &s->gl_transfer_attrib[
+                        i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
+
+                memset(t, 0, sizeof(*t));
+                for (unsigned channel = 0; channel < 4; channel++) {
+                    t->scale[channel] = 0x3f800000;
+                }
+            }
             if (version_id < 3) {
                 /* Older snapshots did not retain the captured zoom. */
                 z->factors[0] = z->factors[1] = 0x3f800000;
@@ -9672,7 +9776,7 @@ static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
     .name = TYPE_SGI_KONA "/gl-attrib",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 2,
     .needed = sgi_kona_gl_attrib_needed,
     .post_load = sgi_kona_gl_attrib_post_load,
@@ -9688,9 +9792,13 @@ static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
                              SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_returns, SGIKonaGLReturnState),
         VMSTATE_STRUCT_ARRAY(gl_zoom_attrib, SGIKonaState,
-                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 3,
+                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_zoom_attrib,
                              SGIKonaGLPixelZoom),
+        VMSTATE_STRUCT_ARRAY(gl_transfer_attrib, SGIKonaState,
+                             SGI_KONA_GL_ATTRIB_SLOTS, 0,
+                             vmstate_sgi_kona_gl_transfer,
+                             SGIKonaGLPixelTransfer),
         VMSTATE_END_OF_LIST()
     },
 };
