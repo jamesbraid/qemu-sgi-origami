@@ -534,7 +534,8 @@ static bool texture_detail_args(const uint32_t args[6])
     return args && (args[0] == UINT32_MAX ||
         (args[1] < 31 && args[2] < 31 &&
          texture_dimensions(1u << args[1], 1u << args[2]) &&
-         sgi_kona_gl_texture_internal_format(args[3], &base, &internal)));
+         sgi_kona_gl_texture_internal_format(args[3], &base, &internal) &&
+         base != SGI_GL_DEPTH_COMPONENT));
 }
 
 bool sgi_kona_texture_detail_bind(SGIKonaTextureState *s,
