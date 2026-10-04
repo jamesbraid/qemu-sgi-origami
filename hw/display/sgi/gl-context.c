@@ -2131,6 +2131,16 @@ void sgi_gl_draw_pixels_rgba_zoom(SGIGLContext *c, const SGIGLSink *sink,
                                  const uint32_t *rgba, float zoom_x,
                                  float zoom_y)
 {
+    sgi_gl_draw_pixels_rgba_transfer(c, sink, width, height, rgba, zoom_x,
+                                     zoom_y, NULL);
+}
+
+void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                     uint32_t width, uint32_t height,
+                                     const uint32_t *rgba, float zoom_x,
+                                     float zoom_y,
+                                     const SGIGLPixelTransfer *transfer)
+{
     const SGIGLDrawable *d = &c->cur.drawable;
     SGIRasterOp op = {
         .kind = SGI_RASTER_PIXELS,
@@ -2139,6 +2149,7 @@ void sgi_gl_draw_pixels_rgba_zoom(SGIGLContext *c, const SGIGLSink *sink,
             .x = c->raster_pos[0],
             .y = c->raster_pos[1],
             .zoom = { zoom_x, zoom_y },
+            .transfer.scale = { 1, 1, 1, 1 },
             .width = width,
             .height = height,
             .rgba = rgba,
@@ -2163,6 +2174,16 @@ void sgi_gl_draw_pixels_rgba_zoom(SGIGLContext *c, const SGIGLSink *sink,
     }
     if (!zoom_x || !zoom_y) {
         return;
+    }
+    if (transfer) {
+        for (int k = 0; k < 4; k++) {
+            if (!isfinite(transfer->scale[k]) || !isfinite(transfer->bias[k])) {
+                qemu_log_mask(LOG_UNIMP, "sgi-gl: nonfinite pixel transfer "
+                              "dropped\n");
+                return;
+            }
+        }
+        op.pixels.transfer = *transfer;
     }
     if (c->cur.index_bits || c->cur.texture_1d || c->cur.texture_2d ||
         c->cur.texture_3d) {
