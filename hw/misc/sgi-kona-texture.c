@@ -272,8 +272,9 @@ bool sgi_kona_texture_subimage(SGIKonaTextureState *s, uint32_t handle,
 
 static bool texture_native_key(const uint32_t a[20], const uint32_t b[20])
 {
+    /* DMA byte layout is normalized before these image fragments arrive. */
     return a[0] == b[0] && a[9] == b[9] &&
-           a[16] == b[16] && a[17] == b[17] &&
+           a[16] == b[16] && (a[17] & ~4u) == (b[17] & ~4u) &&
            a[18] == b[18] && a[19] == b[19];
 }
 
