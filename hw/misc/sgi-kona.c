@@ -7349,6 +7349,79 @@ static void sgi_kona_x_points(SGIKonaState *s, const uint32_t *args,
     s->x_boxes_have = 0;
 }
 
+/* Endpoint and Bresenham tie rules are the documented solid-line policy. */
+static bool sgi_kona_x_segment(SGIKonaState *s, uint32_t first,
+                               uint32_t last, bool endpoint, bool commit)
+{
+    int x = (int16_t)(first >> 16), y = (int16_t)first;
+    int x2 = (int16_t)(last >> 16), y2 = (int16_t)last;
+    int dx = abs(x2 - x), dy = -abs(y2 - y);
+    int sx = x < x2 ? 1 : -1, sy = y < y2 ? 1 : -1;
+    int error = dx + dy;
+
+    while (x != x2 || y != y2) {
+        int twice = 2 * error;
+
+        if (!sgi_kona_x_fill(s, x, y, x + 1, y + 1, commit)) {
+            return false;
+        }
+        if (twice >= dy) {
+            error += dy;
+            x += sx;
+        }
+        if (twice <= dx) {
+            error += dx;
+            y += sy;
+        }
+    }
+    return !endpoint || sgi_kona_x_fill(s, x, y, x + 1, y + 1, commit);
+}
+
+static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
+                             const uint32_t *args, unsigned argc)
+{
+    uint32_t vertices[SGI_KONA_X_BOX_RUN_WORDS + 7];
+    unsigned count = s->x_boxes_have + argc;
+    bool segments = token == SGI_KONA_CMD_X_SEGMENT;
+    bool endpoint = token != SGI_KONA_CMD_X_LINE6;
+    bool moved = false;
+    SGIXGC gc;
+
+    if (count > ARRAY_SIZE(vertices) || count < 2 ||
+        (segments && (count & 1))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: invalid X solid-line vertex count; dropped\n");
+        goto done;
+    }
+    if (s->x_gc[7] != 1 || s->x_gc[10] ||
+        !sgi_kona_x_decode(s, &gc)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: unsupported X solid-line GC; dropped\n");
+        goto done;
+    }
+    memcpy(vertices, s->x_boxes, s->x_boxes_have * sizeof(*vertices));
+    memcpy(vertices + s->x_boxes_have, args, argc * sizeof(*vertices));
+    for (unsigned i = 1; i < count; i++) {
+        moved |= vertices[i] != vertices[0];
+    }
+    endpoint &= !moved || vertices[0] != vertices[count - 1];
+    for (unsigned pass = 0; pass < 2; pass++) {
+        for (unsigned i = 0; i + 1 < count; i += segments ? 2 : 1) {
+            if (!sgi_kona_x_segment(s, vertices[i], vertices[i + 1],
+                                       segments, pass != 0)) {
+                goto done;
+            }
+        }
+        if (!segments && endpoint &&
+            !sgi_kona_x_point_words(s, vertices + count - 1, 1,
+                                       false, pass != 0)) {
+            goto done;
+        }
+    }
+done:
+    s->x_boxes_have = 0;
+}
+
 static void sgi_kona_x_relative_points(SGIKonaState *s,
                                        const uint32_t *args, unsigned argc)
 {
@@ -8569,6 +8642,9 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_POINT24:
     case SGI_KONA_CMD_X_RELATIVE_POINT:
     case SGI_KONA_CMD_X_RELATIVE_POINT6:
+    case SGI_KONA_CMD_X_SEGMENT:
+    case SGI_KONA_CMD_X_LINE:
+    case SGI_KONA_CMD_X_LINE6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT:
     case SGI_KONA_CMD_X_BACKGROUND_POINT6:
     case SGI_KONA_CMD_X_BACKGROUND_POINT24:
@@ -8763,9 +8839,11 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_RELATIVE_POINT6:
         sgi_kona_x_relative_points(s, args, argc);
         break;
-    case 0x159:
-    case 0x15b:
-    case 0x15c:
+    case SGI_KONA_CMD_X_SEGMENT:
+    case SGI_KONA_CMD_X_LINE:
+    case SGI_KONA_CMD_X_LINE6:
+        sgi_kona_x_lines(s, selector, args, argc);
+        break;
     case 0x15d:
     case 0x15e:
         qemu_log_mask(LOG_UNIMP,
