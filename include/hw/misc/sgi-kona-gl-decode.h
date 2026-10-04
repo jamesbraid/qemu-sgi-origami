@@ -134,6 +134,7 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
 
 /* Native scalar types 0..6; zero bytes for an unknown format or type. */
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
+uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type);
 
 /*
  * Components occupy transport-decoded words, most significant bytes first.

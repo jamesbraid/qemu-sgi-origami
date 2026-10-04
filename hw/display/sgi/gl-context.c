@@ -2304,6 +2304,39 @@ bool sgi_gl_draw_pixels_double_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                                    transfer);
 }
 
+bool sgi_gl_draw_pixels_depth_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                       uint32_t width, uint32_t height,
+                                       const double *depth, float zoom_x,
+                                       float zoom_y, float scale, float bias)
+{
+    SGIRasterOp op;
+    SGIGLPixelRectangleResult result;
+    uint64_t count = (uint64_t)width * height;
+
+    result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
+                                    zoom_x, zoom_y, NULL, &op);
+    if (result != SGI_GL_PIXELS_READY) {
+        return result == SGI_GL_PIXELS_EMPTY;
+    }
+    if (!depth || count > SIZE_MAX / sizeof(*depth) ||
+        !isfinite(scale) || !isfinite(bias)) {
+        return false;
+    }
+    for (uint64_t i = 0; i < count; i++) {
+        if (!isfinite(depth[i])) {
+            qemu_log_mask(LOG_UNIMP, "sgi-gl: nonfinite glDrawPixels depth "
+                          "source dropped\n");
+            return false;
+        }
+    }
+    op.pixels.depth = depth;
+    op.pixels.depth_scale = scale;
+    op.pixels.depth_bias = bias;
+    memcpy(op.pixels.colour, c->raster_color, sizeof(op.pixels.colour));
+    sink->raster(sink->opaque, &op);
+    return true;
+}
+
 bool sgi_gl_copy_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                      int32_t x, int32_t y,
                                      uint32_t width, uint32_t height,

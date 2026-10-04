@@ -3874,7 +3874,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                             const SGIRasterTarget *t, const SGIRasterOp *op)
 {
     const SGIRasterPixels *p = &op->pixels;
-    bool image = p->rgba || p->rgba_float || p->rgba_double;
+    bool image = p->rgba || p->rgba_float || p->rgba_double || p->depth;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = {
         .fog = p->distance,
@@ -3936,14 +3936,19 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
             at = (uint64_t)sy * p->width + (uint32_t)sx;
             rgba = p->rgba ? p->rgba[at] : 0;
             for (int k = 0; k < 4; k++) {
-                double component = p->rgba_double ? p->rgba_double[at][k] :
+                double component = p->depth ? p->colour[k] :
+                                   p->rgba_double ? p->rgba_double[at][k] :
                                    p->rgba_float ? p->rgba_float[at][k] :
                                    ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
 
                 frag.rgba[k] = CLAMP(component * p->transfer.scale[k] +
                                      p->transfer.bias[k], 0.0, 1.0);
             }
-            sgi_soft_fragment_at(&r, x, y, p->z, &frag, 1, false);
+            double z = p->depth ?
+                CLAMP(p->depth[at] * p->depth_scale + p->depth_bias, 0.0, 1.0) :
+                p->z;
+
+            sgi_soft_fragment_at(&r, x, y, z, &frag, 1, false);
         }
     }
 }

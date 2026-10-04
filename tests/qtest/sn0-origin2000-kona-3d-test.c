@@ -6256,6 +6256,197 @@ static void read_dma_migrate(QTestState *from, QTestState **current,
     *current = *to;
 }
 
+static void test_depth_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned type = mode && mode <= 7 ? mode - 1 : 6;
+    static const uint32_t source[] = {
+        0x407f0000, 0x40ff0000, 0x40007fff, 0x4000ffff,
+        0x40000000, 0x40000000, 0x3e800000,
+    };
+    static const uint8_t first[] = { 129, 64, 128, 64, 128, 64, 64 };
+    uint32_t data[2] = { source[type], type == 6 ? 0x3f400000 :
+                                                  type == 4 ? 0x7fffffff :
+                                                              0xffffffff };
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    uint8_t got[3], expected[3] = { mode ? first[type] : 255,
+                                   mode ? type == 6 ? 191 : 255 : 255 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_make_current_depth(s, 24);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x1a, (uint32_t[]) { 0x100 }, 1);
+    if (mode) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+        kona_command(s, 0xce, (uint32_t[]) { 0x207 }, 1);
+        kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        /* Current colour changes must not replace the raster colour. */
+        kona_command_f(s, 0x63, (float[]) { 0, 1, 0 }, 3);
+        if (mode >= 8) {
+            pixel_transfer_set(s, 0xd1e, -1);
+            pixel_transfer_set(s, 0xd1f, 1);
+            expected[0] = 191;
+            expected[1] = 64;
+        }
+        if (mode == 9 || mode == 10) {
+            kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+            pixel_transfer_set(s, 0xd1e, 0);
+            pixel_transfer_set(s, 0xd1f, 0);
+            kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+        }
+        kona_command(s, 0x3a,
+                     (uint32_t[]) { 2, 1, 13, type, 0, mode == 11, 0, 0 }, 8);
+        if (mode == 11) {
+            uint8_t bytes[8];
+
+            stl_be_p(bytes, data[0]);
+            stl_be_p(bytes + 4, data[1]);
+            qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+            qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+            texture_dma_packet(s, 0, 8, 8, 0);
+        } else {
+            qtest_writel(s, REG_COMMAND, data[0]);
+            if (mode == 10) {
+                read_dma_migrate(from, &s, &to, &dir);
+            }
+            if (size == 4) {
+                qtest_writel(s, REG_COMMAND, data[1]);
+            }
+        }
+        expected_clear(e, 0);
+        for (unsigned x = 64; x <= 65; x++) {
+            e->rgb[((127 - 64) * 128 + x) * 3] = 255;
+        }
+        assert_window_matches(s, e);
+    }
+    if (mode == 12) {
+        pixel_transfer_set(s, 0xd1e, 0.5);
+        pixel_transfer_set(s, 0xd1f, 0.25);
+        expected[0] = 159;
+        expected[1] = 96;
+    } else {
+        pixel_transfer_set(s, 0xd1e, 1);
+        pixel_transfer_set(s, 0xd1f, 0);
+    }
+    if (mode == 14) {
+        kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+        kona_command_f(s, 0xa9, (float[]) { 1.0f / 64, 0 }, 2);
+        kona_command(s, 0x38,
+                     (uint32_t[]) { 64, 64, 2, 1, 0, 0x1801, 0x80000000 }, 7);
+        expected[2] = expected[1];
+        expected[1] = expected[0];
+    }
+    if (mode == 15) {
+        kona_command(s, 0x37, (uint32_t[]) { 0x405 }, 1);
+    }
+    prepare_refused_reply(s);
+    if (mode == 13) {
+        uint8_t destination[16], reply[16];
+        const uint64_t reason = 0x300000;
+
+        kona_command_kicked(s, 0x1f1,
+            (uint32_t[]) { physical_page_word(reason),
+                           tagged_offset_word(reason), 0x4000 }, 3);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        read_dma_clear_notifications(s, reason);
+        qtest_memset(s, 0x380000, 0xa5, sizeof(destination));
+        kona_command(s, 0x1f5, (uint32_t[]) { 0, 0x9003, 2, 1, 5, 0 }, 6);
+        kona_command(s, 0x39, (uint32_t[]) { 64, 64, 1, 2, 13, 1, 3 }, 7);
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100, 0x1234 }, 2);
+        memset(reply, 0xa5, sizeof(reply));
+        reply[3] = expected[0];
+        reply[9] = 255;
+        qtest_memread(s, 0x380000, destination, sizeof(destination));
+        g_assert_cmpmem(destination, sizeof(destination), reply, sizeof(reply));
+        g_assert_cmphex(guest_word(s, reason), ==, 0x100);
+        assert_reply_unchanged(s);
+    } else {
+        unsigned count = mode == 14 ? 3 : 2;
+
+        kona_command(s, 0x39,
+                     (uint32_t[]) { 64, 64, count, 1, 13, 1, 0 }, 7);
+        assert_reply_posted(s);
+        qtest_memread(s, RETURN_PAGE + 8, got, count);
+        g_assert_cmpmem(got, count, expected, count);
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_depth_pixel_boundaries(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const uint32_t maxima[] = {
+        0x7f, 0xff, 0x7fff, 0xffff, 0x7fffffff, 0xffffffff, 0x3f800000,
+    };
+    unsigned type = mode < 14 ? mode % 7 : 1;
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    uint32_t config[] = { 0, 12, 0, 0, 0, 0, 24, 0, 0, 0 };
+    uint8_t expected[8], got[8];
+    QTestState *s = qtest_init(MACHINE_ARGS);
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_make_current_depth(s, 24);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command(s, 0x1a, (uint32_t[]) { 0x100 }, 1);
+    if (mode >= 14 && mode != 17) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+        kona_command(s, 0xce, (uint32_t[]) { 0x207 }, 1);
+        kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        if (mode == 15) {
+            pixel_transfer_set(s, 0xd1e, INFINITY);
+        }
+        if (mode == 16 || mode == 18) {
+            config[6] = mode == 18 ? 0 : 16;
+            kona_command(s, 0x1, config, ARRAY_SIZE(config));
+        }
+        kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 13, 6, 0, 0, 0, 0 }, 8);
+        qtest_writel(s, REG_COMMAND, fbits(0.25));
+        qtest_writel(s, REG_COMMAND, mode == 14 ? 0x7fc00000 : fbits(0.75));
+        expected_clear(e, 0);
+        if (mode == 18) {
+            e->rgb[((127 - 64) * 128 + 64) * 3] = 255;
+            e->rgb[((127 - 64) * 128 + 65) * 3] = 255;
+        }
+        assert_window_matches(s, e);
+        pixel_transfer_set(s, 0xd1e, 1);
+        config[6] = 24;
+        kona_command(s, 0x1, config, ARRAY_SIZE(config));
+    }
+    if (mode == 17) {
+        config[6] = 0;
+        kona_command(s, 0x1, config, ARRAY_SIZE(config));
+    }
+    kona_command(s, 0x33, (uint32_t[]) { 0xd00, mode >= 7 && mode < 14 }, 2);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 13, type, 2 }, 7);
+    if (mode == 17) {
+        assert_reply_unchanged(s);
+    } else {
+        assert_reply_posted(s);
+        for (unsigned pixel = 0; pixel < 2; pixel++) {
+            for (unsigned k = 0; k < size; k++) {
+                unsigned shift = 8 * (mode >= 7 && mode < 14 ?
+                                      k : size - 1 - k);
+
+                expected[pixel * size + k] = maxima[type] >> shift;
+            }
+        }
+        qtest_memread(s, RETURN_PAGE + 8, got, 2 * size);
+        g_assert_cmpmem(got, 2 * size, expected, 2 * size);
+    }
+    qtest_quit(s);
+}
+
 static void test_read_pixels_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -11052,6 +11243,24 @@ int main(int argc, char **argv)
                             test_read_pixels_pack_swap);
         qtest_add_data_func(dma, GUINT_TO_POINTER(134 + type),
                             test_read_pixels_dma);
+    }
+    static const char *depth_pixel_names[] = {
+        "read-clear", "byte", "ubyte", "short", "ushort", "int", "uint",
+        "float", "transfer", "attributes", "migration", "dma",
+        "read-transfer", "read-dma", "copy-overlap", "read-buffer-independent",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(depth_pixel_names); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/depth-pixels/%s", depth_pixel_names[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_depth_pixels);
+    }
+    for (unsigned mode = 0; mode < 19; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/depth-boundaries/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_depth_pixel_boundaries);
     }
     static const char *packed_names[] = {
         "rgb-332", "rgba-4444", "rgba-5551", "rgba-8888", "rgba-1010102",
