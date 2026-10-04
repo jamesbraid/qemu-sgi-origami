@@ -5115,7 +5115,7 @@ static void test_texture_native_rows(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
     uint32_t h[20];
-    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0, 0, 0, 0x55 };
+    uint32_t record[22] = { 0, 0x101010, 256u << 10, 0x44, 0, 0, 0x55 };
 
     gl_make_current(s);
     memcpy(h, texture_header, sizeof(h));
@@ -5284,10 +5284,13 @@ static void test_texture_native_dma(gconstpointer opaque)
     h[7] = !contiguous;
     h[9] = 0xd;
     h[13] = width - 1;
-    h[16] = mode == 11 ? 0x1c : large ? 0x1b : 0x11;
+    h[16] = mode == 11 ? 0x2c : large ? 0x2b : 0x23;
     h[17] = 0x2184;
+    record[3] = h[16];
     kona_command(s, 0x1d5,
-                 (uint32_t[]) { 0, 0, 0xd << 14, h[16], 0 }, 5);
+                 (uint32_t[]) { 0, 0, 0xd << 14,
+                                mode == 11 ? 0x1c : large ? 0x1b : 0x11,
+                                0 }, 5);
     kona_command(s, 0x179, record, 22);
     kona_command(s, 0x33,
                  (uint32_t[]) { 0xcf2, mode == 10 ? 1 :
@@ -6736,6 +6739,43 @@ static void test_native_error_migrates(gconstpointer opaque)
     g_rmdir(dir);
 }
 
+static void test_texture_native_interior(gconstpointer opaque)
+{
+    bool migrate = GPOINTER_TO_INT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL;
+    uint32_t h[20];
+
+    gl_make_current(from);
+    texture_native_bind(from, 0);
+    memcpy(h, texture_header, sizeof(h));
+    for (unsigned geometry = 0; geometry < 2; geometry++) {
+        h[16] = geometry ? 0x11 : 0x23;
+        kona_command(from, 0x174, h, 20);
+        for (unsigned k = 0; k < 4; k++) {
+            qtest_writel(from, REG_COMMAND,
+                         geometry ? 0x0000ffff : 0xff0000ff);
+        }
+        kona_command(from, 0x176, (uint32_t[]) { 0 }, 1);
+    }
+    if (migrate) {
+        dir = g_dir_make_tmp("sn0-kona-interior-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+        to = qtest_init(args);
+        sgi_migrate_stopped(from, uri);
+    }
+    assert_texture_pixel(to ? to : from, 0, 0, 0xff0000ff);
+    assert_texture_pixel(to ? to : from, 1, 1, 0xff0000ff);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     static const uint32_t bad_format[] = { 0, 0, 1, 1, 5, 1, 0 };
@@ -7239,6 +7279,10 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(0), test_native_error_migrates);
     qtest_add_data_func("sn0/origin2000/kona-3d/native-error/partial-migrates",
                         GINT_TO_POINTER(1), test_native_error_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/interior/native",
+                        GINT_TO_POINTER(0), test_texture_native_interior);
+    qtest_add_data_func("sn0/origin2000/kona-3d/texture/interior/migrates",
+                        GINT_TO_POINTER(1), test_texture_native_interior);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
