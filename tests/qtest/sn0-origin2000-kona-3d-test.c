@@ -7605,6 +7605,20 @@ static void assert_native_error(QTestState *s, uint32_t error)
     g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
 }
 
+static void test_draw_pixels_begin_with_skips(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf3, 1 }, 2);
+    gl_begin(s, 4);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    gl_end(s);
+    assert_native_error(s, 0x502);
+    assert_native_error(s, 0);
+    qtest_quit(s);
+}
+
 static void test_native_error_state(void)
 {
     static const uint32_t codes[] = {
@@ -7973,6 +7987,8 @@ int main(int argc, char **argv)
                    test_blended_triangle);
     qtest_add_func("sn0/origin2000/kona-3d/culled-triangle",
                    test_culled_triangle);
+    qtest_add_func("sn0/origin2000/kona-3d/draw-pixels-begin-with-skips",
+                   test_draw_pixels_begin_with_skips);
     qtest_add_func("sn0/origin2000/kona-3d/read-pixels", test_read_pixels);
     qtest_add_func("sn0/origin2000/kona-3d/read-capacity",
                    test_read_pixels_capacity);

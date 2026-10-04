@@ -4711,14 +4711,14 @@ static uint32_t sgi_kona_gl_draw_pixels_open(SGIKonaState *s, int i,
     uint64_t count = (uint64_t)a[0] * a[1], stride, words;
 
     sgi_kona_texture_upload_clear(s);
+    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+    }
     if (p->unpack_skip_rows || p->unpack_skip_pixels) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels unpack skips"
                       " unsupported;"
                       " source framing unknown\n");
         return 0;
-    }
-    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
-        sgi_kona_gl_set_error(s, 0x502);
     }
     if (!bytes || !a[0] || !a[1] || a[0] > SGI_KONA_GL_IMAGE_MAX ||
         a[1] > SGI_KONA_GL_IMAGE_MAX || a[4] > 3 || a[5] > 1 ||
