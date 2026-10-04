@@ -5982,6 +5982,36 @@ static void odyssey_gl_segment(SGIOdysseyState *s, int32_t x1, int32_t y1,
                       s->line_stipple[ODSY_LINE_STIPPLE_CONTROL]);
     }
 
+    /*
+     * These captured Xlib modes distinguish inclusion of the final vertex.
+     * The bit's physical meaning is unknown. Limit this model policy to
+     * solid axial independent lines; other integer paths retain their rules.
+     */
+    if (!stippled && s->gl_primitive == SGI_GL_LINES &&
+        ((s->pattern_mode & ~(1u << 25)) == 0x00080000 ||
+         (s->pattern_mode & ~(1u << 25)) == 0x00100000) &&
+        (x1 == x2 || y1 == y2)) {
+        bool omit_last = s->pattern_mode & (1u << 25);
+
+        if (y1 == y2) {
+            lo = MAX(MIN(x1, x2), 0);
+            hi = MIN(MAX(x1, x2), SGI_ODYSSEY_WIDTH - 1);
+            for (i = lo; i <= hi; i++) {
+                if (!omit_last || i != x2) {
+                    odyssey_gl_plot(s, i, y1);
+                }
+            }
+        } else {
+            lo = MAX(MIN(y1, y2), 0);
+            hi = MIN(MAX(y1, y2), SGI_ODYSSEY_HEIGHT - 1);
+            for (i = lo; i <= hi; i++) {
+                if (!omit_last || i != y2) {
+                    odyssey_gl_plot(s, x1, i);
+                }
+            }
+        }
+        return;
+    }
     if (dx == 0 && dy == 0) {
         return;
     }

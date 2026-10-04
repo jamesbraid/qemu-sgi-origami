@@ -3372,16 +3372,9 @@ static void test_command_fifo_pattern_quad_straddles_screen(void)
 }
 
 /*
- * The 2D stream's line and polygon primitives and multi-rectangle quads
- * (docs/analysis/odyssey-account-icons.md): the greeter's account icons and
- * bevels. A line covers the pixels whose centres lie strictly between its
- * endpoints along the major axis, [min, max), whichever way it runs, so an X
- * span pushed left to right (the X server's solid span routine) and right
- * to left (the X server's stippled span routine) paints the same pixels;
- * a strip paints each joint once and not its final vertex. With 0x0404
- * bits 3 and 4 set, a line is stippled by
- * the 32-bit 0x0c48 operand: bit k for the k-th covered pixel from the first
- * vertex, k = 1 next to it.
+ * Solid axial independent lines in the captured default-cap mode include
+ * both endpoints. Strips retain half-open coverage, and stippled lines use
+ * bit k for the k-th covered pixel from the first vertex, k = 1 next to it.
  */
 #define ODSY_CMD_LINE_STIPPLE 0x00010c48
 #define ODSY_GL_LINES 0x00000001
@@ -3431,20 +3424,20 @@ static void test_command_fifo_lines(void)
     vertex2i(qts, 205, 315);
     vertex2i(qts, 205, 320);
     cmd_push(qts, ODSY_CMD_GL_END);
-    for (i = 202; i <= 209; i++) {
+    for (i = 202; i <= 210; i++) {
         g_assert_cmphex(odsy_shown(qts, i, 310), ==, ODSY_GREEN);
     }
-    g_assert_cmphex(odsy_shown(qts, 210, 310), ==, ODSY_RED);
-    g_assert_cmphex(odsy_shown(qts, 201, 310), ==, ODSY_RED);
-    for (i = 212; i <= 219; i++) {
-        g_assert_cmphex(odsy_shown(qts, i, 310), ==, ODSY_GREEN);
-    }
-    g_assert_cmphex(odsy_shown(qts, 220, 310), ==, ODSY_RED);
     g_assert_cmphex(odsy_shown(qts, 211, 310), ==, ODSY_RED);
-    for (i = 315; i <= 319; i++) {
+    g_assert_cmphex(odsy_shown(qts, 201, 310), ==, ODSY_RED);
+    for (i = 212; i <= 220; i++) {
+        g_assert_cmphex(odsy_shown(qts, i, 310), ==, ODSY_GREEN);
+    }
+    g_assert_cmphex(odsy_shown(qts, 221, 310), ==, ODSY_RED);
+    g_assert_cmphex(odsy_shown(qts, 211, 310), ==, ODSY_RED);
+    for (i = 315; i <= 320; i++) {
         g_assert_cmphex(odsy_shown(qts, 205, i), ==, ODSY_GREEN);
     }
-    g_assert_cmphex(odsy_shown(qts, 205, 320), ==, ODSY_RED);
+    g_assert_cmphex(odsy_shown(qts, 205, 321), ==, ODSY_RED);
 
     /* A strip paints its joint once and not its final vertex. */
     cmd_push(qts, ODSY_CMD_GL_BEGIN);
@@ -3490,7 +3483,7 @@ static void test_command_fifo_lines(void)
     vertex2i(qts, 212, 305);
     vertex2i(qts, 204, 305);
     cmd_push(qts, ODSY_CMD_GL_END);
-    for (i = 204; i <= 211; i++) {
+    for (i = 204; i <= 212; i++) {
         g_assert_cmphex(odsy_shown(qts, i, 305), ==, ODSY_GREEN);
     }
 
@@ -4547,6 +4540,151 @@ static void test_command_fifo_gl_integer_routing_migration_reset(void)
     qtest_quit(to);
     qtest_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void x11_captured_line_cap(bool not_last, unsigned shape, bool indexed)
+{
+    const uint32_t xy[][2][2] = {
+        { { 4, 8 }, { 12, 8 } },
+        { { 12, 8 }, { 4, 8 } },
+        { { 10, 10 }, { 10, 10 } },
+        { { 20, 4 }, { 20, 12 } },
+        { { 20, 12 }, { 20, 4 } },
+    };
+    uint32_t mode = (indexed ? 0x00080000 : 0x00100000) |
+                    (not_last ? 0x02000000 : 0);
+    uint32_t white = indexed ? 7 : 0xffffffff;
+    const uint32_t words[] = {
+        0x00010404, mode,
+        0x00010422, 3,
+        0x00014400, 1,
+        0x8080c800, xy[shape][0][0], xy[shape][0][1],
+        0x8080c800, xy[shape][1][0], xy[shape][1][1],
+        0x00014001,
+    };
+    QTestState *qts = board_start("");
+    unsigned mismatches = 0;
+
+    /* An original GL translation must not affect the captured X11 line. */
+    integer_routing_setup(qts, 0x02003200);
+    integer_routing_point(qts);
+    g_assert_cmphex(odsy_test_pixel(qts, 42, 63), ==, 0xff00ffff);
+    if (indexed) {
+        colour_index(qts, 7);
+    } else {
+        user_cmd_push(qts, 0xc580cc08);
+        user_cmd_push(qts, 255);
+        user_cmd_push(qts, 255);
+        user_cmd_push(qts, 255);
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+        user_cmd_push(qts, words[i]);
+    }
+    g_test_message("shape %u, mode 0x%08x", shape, mode);
+    for (unsigned y = 0; y < 32; y++) {
+        for (unsigned x = 0; x < 32; x++) {
+            bool covered = shape == 2 ? x == 10 && y == 10 :
+                           shape >= 3 ? x == 20 && y >= 4 && y <= 12 :
+                                        y == 8 && x >= 4 && x <= 12;
+            uint32_t expected, actual;
+
+            if (not_last && x == xy[shape][1][0] && y == xy[shape][1][1]) {
+                covered = false;
+            }
+            expected = covered ? white : 0;
+            actual = odsy_test_pixel(qts, x, y);
+            if (actual != expected) {
+                g_test_message("pixel (%u,%u): expected 0x%08x, got 0x%08x",
+                               x, y, expected, actual);
+                mismatches++;
+            }
+        }
+    }
+    qtest_quit(qts);
+    g_assert_cmpuint(mismatches, ==, 0);
+}
+
+/* Default and round caps emitted identical packets in the TrueColor capture. */
+static void test_command_fifo_x11_line_cap_default(void)
+{
+    x11_captured_line_cap(false, 0, false);
+    x11_captured_line_cap(false, 0, true);
+}
+
+static void test_command_fifo_x11_line_cap_not_last(void)
+{
+    x11_captured_line_cap(true, 0, false);
+    x11_captured_line_cap(true, 0, true);
+}
+
+static void test_command_fifo_x11_line_cap_reverse_default(void)
+{
+    x11_captured_line_cap(false, 1, false);
+    x11_captured_line_cap(false, 1, true);
+}
+
+static void test_command_fifo_x11_line_cap_reverse_not_last(void)
+{
+    x11_captured_line_cap(true, 1, false);
+    x11_captured_line_cap(true, 1, true);
+}
+
+static void test_command_fifo_x11_line_cap_zero_default(void)
+{
+    x11_captured_line_cap(false, 2, false);
+    x11_captured_line_cap(false, 2, true);
+}
+
+static void test_command_fifo_x11_line_cap_zero_not_last(void)
+{
+    x11_captured_line_cap(true, 2, false);
+    x11_captured_line_cap(true, 2, true);
+}
+
+/*
+ * Vertical direction is a synthetic mechanism check, not a native cap capture.
+ */
+static void test_command_fifo_x11_line_cap_vertical(void)
+{
+    for (unsigned indexed = 0; indexed < 2; indexed++) {
+        for (unsigned not_last = 0; not_last < 2; not_last++) {
+            x11_captured_line_cap(not_last, 3, indexed);
+            x11_captured_line_cap(not_last, 4, indexed);
+        }
+    }
+}
+
+/* Synthetic off-screen int32 endpoints must visit only framebuffer pixels. */
+static void test_command_fifo_x11_line_cap_screen_bounds(void)
+{
+    for (unsigned not_last = 0; not_last < 2; not_last++) {
+        uint32_t mode = 0x00100000 | (not_last ? 0x02000000 : 0);
+        const uint32_t words[] = {
+            0x00010404, mode, 0xc580cc08, 255, 255, 255,
+            0x00010422, 3, 0x00014400, 1,
+            0x8080c800, 0x80000000, 0, 0x8080c800, 0x7fffffff, 0,
+            0x8080c800, 1279, 0x80000000, 0x8080c800, 1279, 0x7fffffff,
+            0x8080c800, 0, 5, 0x8080c800, 1278, 5,
+            0x8080c800, 1278, 1023, 0x8080c800, 1278, 1023,
+            0x00014001,
+        };
+        QTestState *qts = board_start("");
+
+        for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+            user_cmd_push(qts, words[i]);
+        }
+        g_assert_cmphex(odsy_test_pixel(qts, 0, 0), ==, 0xffffffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 1279, 0), ==, 0xffffffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 1279, 1022), ==, 0xffffffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 1277, 5), ==, 0xffffffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 1278, 5), ==,
+                        not_last ? 0 : 0xffffffff);
+        /* The earlier vertical line paints the endpoint in either mode. */
+        g_assert_cmphex(odsy_test_pixel(qts, 1279, 5), ==, 0xffffffff);
+        g_assert_cmphex(odsy_test_pixel(qts, 1278, 1023), ==,
+                        not_last ? 0 : 0xffffffff);
+        qtest_quit(qts);
+    }
 }
 
 static void test_command_fifo_gl_integer_assemblies(void)
@@ -14522,6 +14660,22 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/odyssey/"
                    "command-fifo-gl-integer-routing-migration-reset",
                    test_command_fifo_gl_integer_routing_migration_reset);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-default",
+                   test_command_fifo_x11_line_cap_default);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-not-last",
+                   test_command_fifo_x11_line_cap_not_last);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-reverse-default",
+                   test_command_fifo_x11_line_cap_reverse_default);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-reverse-not-last",
+                   test_command_fifo_x11_line_cap_reverse_not_last);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-zero-default",
+                   test_command_fifo_x11_line_cap_zero_default);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-zero-not-last",
+                   test_command_fifo_x11_line_cap_zero_not_last);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-vertical",
+                   test_command_fifo_x11_line_cap_vertical);
+    qtest_add_func("sn1/odyssey/command-fifo-x11-line-cap-screen-bounds",
+                   test_command_fifo_x11_line_cap_screen_bounds);
     qtest_add_func("sn1/odyssey/command-fifo-gl-integer-assemblies",
                    test_command_fifo_gl_integer_assemblies);
     qtest_add_func("sn1/odyssey/command-fifo-gl-integer-triangle",
