@@ -7561,6 +7561,13 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
          */
         trace_sgi_kona_command_unmodelled(selector, argc);
         break;
+    case SGI_KONA_CMD_SELECT_FEED_START:
+    case SGI_KONA_CMD_SELECT_FEED_FINISH:
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-kona: select-feed packet 0x%x framed;"
+                      " DMA read not modelled\n", selector);
+        trace_sgi_kona_command_unmodelled(selector, argc);
+        break;
     case SGI_KONA_CMD_DMA_PACKET:
     case SGI_KONA_CMD_DMA_LIST_WRITE:
     case SGI_KONA_CMD_DMA_POOL:
