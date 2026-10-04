@@ -17,6 +17,8 @@
 #include "qemu/queue.h"
 #include "qemu/timer.h"
 #include "hw/core/hotplug.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/pci/pci_device.h"
 #include "hw/scsi/scsi.h"
 #include "hw/scsi/qlogic-isp.h"
@@ -367,6 +369,8 @@ struct QLogicISPState {
 
     MemoryRegion io;    /* Base address register 0, the I/O window. */
     MemoryRegion mmio;  /* Base address register 1: an alias of io. */
+    SGIDMABufferContext dma_context;
+    bool dma_buffer;
 
     uint16_t bus_cfg1;
     uint16_t bus_ctrl;
@@ -1544,7 +1548,6 @@ static void qlogic_isp_scsi_cancel(SCSIRequest *sreq)
 static void qlogic_isp_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
 {
     QLogicISPRequest *req = sreq->hba_private;
-    PCIDevice *pci = PCI_DEVICE(req->dev);
     uint8_t *buf = scsi_req_get_buf(sreq);
     uint32_t offset = 0;
 
@@ -1555,9 +1558,11 @@ static void qlogic_isp_scsi_transfer_data(SCSIRequest *sreq, uint32_t len)
         MemTxResult result;
 
         if (sreq->cmd.mode == SCSI_XFER_FROM_DEV) {
-            result = pci_dma_write(pci, addr, buf + offset, count);
+            result = sgi_dma_buffer_write(&req->dev->dma_context, addr,
+                                           buf + offset, count);
         } else {
-            result = pci_dma_read(pci, addr, buf + offset, count);
+            result = sgi_dma_buffer_read(&req->dev->dma_context, addr,
+                                          buf + offset, count);
         }
         if (result != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -2408,6 +2413,11 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     unsigned int i;
     int pm_cap;
 
+    sgi_dma_buffer_init_pci(&s->dma_context, dev);
+    if (!s->dma_buffer) {
+        s->dma_context.provider = NULL;
+    }
+
     /* The adapter presents one interrupt line, and it is a level. */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
@@ -2660,6 +2670,10 @@ static const VMStateDescription vmstate_qlogic_isp = {
     }
 };
 
+static const Property qlogic_isp_properties[] = {
+    DEFINE_PROP_BOOL("dma-buffer", QLogicISPState, dma_buffer, true),
+};
+
 static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -2676,6 +2690,7 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
     hc->pre_plug = qlogic_isp_channel_pre_plug;
     hc->unplug = qlogic_isp_channel_unplug;
     dc->vmsd = &vmstate_qlogic_isp;
+    device_class_set_props(dc, qlogic_isp_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
