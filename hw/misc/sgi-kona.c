@@ -4381,7 +4381,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
 
     sgi_kona_texture_upload_clear(s);
     /* Unknown source pairs cannot be counted or staged. */
-    if (!bytes || h[6] > 1 || !h[1] || !h[2] ||
+    if ((h[0] != SGI_GL_TEXTURE_2D && h[0] != SGI_GL_TEXTURE_3D) ||
+        !bytes || h[6] > 1 || h[7] > h[6] || h[8] || !h[1] || !h[2] ||
         h[1] > SGI_KONA_GL_IMAGE_MAX || h[2] > SGI_KONA_GL_IMAGE_MAX ||
         h[5] > 3 || i == SGI_KONA_CONTEXT_NONE) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture header refused:"
