@@ -515,12 +515,12 @@ class LaunchArgsTests(unittest.TestCase):
                              'chassis2-b')})
             calls = []
 
-            def one(firmware, spd_paths, cpus, where):
+            def one(firmware, spd_paths, cpus, _scratch):
                 calls.append(('one', firmware, spd_paths, cpus))
                 return 'origin300,x=1', ['-accel', 'a', '-cpu', 'c',
                                          '-smp', str(cpus), '-m', '512M']
 
-            def pair(firmware, spd_paths, populations, where):
+            def pair(firmware, spd_paths, populations, _scratch):
                 calls.append(('pair', firmware, spd_paths, populations))
                 return 'origin300,topology=origin300-two-chassis', [
                     '-accel', 'a', '-cpu', 'c', '-smp', '8', '-m', '1024M',

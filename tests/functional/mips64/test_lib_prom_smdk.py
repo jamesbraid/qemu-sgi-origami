@@ -230,7 +230,7 @@ class _Monitor(threading.Thread):
     """Play the PROM and the monitor: answer each line or command the
     driver sends with the next scripted reply, recording what it sent."""
 
-    def __init__(self, sock, greeting, replies, on_pause=None):
+    def __init__(self, sock, greeting, replies):
         super().__init__(daemon=True)
         self.sock, self.greeting, self.replies = sock, greeting, replies
         self.sent = []
