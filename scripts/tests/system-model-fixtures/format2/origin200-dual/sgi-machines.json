@@ -36,19 +36,20 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": false,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin200,topology=origin200-dual,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512,
@@ -78,17 +79,8 @@
       },
       "product": "origin200",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 2,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        }
-      ],
-      "smp": 4,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -140,6 +132,45 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [

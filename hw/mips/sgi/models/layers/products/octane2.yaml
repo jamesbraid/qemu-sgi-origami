@@ -70,9 +70,6 @@ layer:
         disk_bus: scsi
         netboot_adapter: none
         default_topology: octane2
-        requires_per_node_flash: false
-        has_managed_boot_flash: false
-        operator_firmware: true
         firmware_bytes: 2097152
         identity_inputs: []
         supported_guests:

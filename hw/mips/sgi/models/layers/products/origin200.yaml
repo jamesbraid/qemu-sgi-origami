@@ -75,10 +75,7 @@ layer:
         default_cpu_model: R10000
         disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
-        default_firmware_asset: assets/firmware/6.5.30/ip27prom.payload.bin
         default_topology: single-node
-        requires_per_node_flash: false
-        has_managed_boot_flash: false
         has_synthesized_firmware_toggle: false
         needs_debug_leds_off: true
         supported_guests: [irix, linux, openbsd, gentoo]

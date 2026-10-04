@@ -1622,10 +1622,8 @@
     "harness": {
       "console": "ioc3-serial-a",
       "default_cpu_model": "R10000",
-      "default_firmware_asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
       "default_topology": "single-node",
       "disk_bus": "scsi.0",
-      "has_managed_boot_flash": false,
       "has_synthesized_firmware_toggle": false,
       "install_media": [
         "disk-image",
@@ -1635,7 +1633,6 @@
       "netboot_adapter": "ioc3-ethernet",
       "prom_dialogue": "ip27-menu",
       "provenance": "derived",
-      "requires_per_node_flash": false,
       "sources": [
         "tools/origami_lib/prom.py: IOC3_CONSOLE and DEFAULT_FIRMWARE, the harness's own existing per-machine console and firmware defaults",
         "Origami commit 802f853c5282cf25afb8d1716a0aa002af515b90, tools/origami_lib/irix_network_suite.py:37: historical DEFAULT_MACHINE harness default",

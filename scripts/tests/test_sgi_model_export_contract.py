@@ -141,7 +141,7 @@ class ExportTests(unittest.TestCase):
             install_qemu_inputs(INPUTS, tree, machines=("origin300",))
             self.assertTrue((target / "sgi/sgi-machines.json").is_file())
 
-    def test_firmware_path_metadata_is_preserved_in_export(self):
+    def test_firmware_path_metadata_stays_out_of_the_catalogue(self):
         original = next(model for path, model in self.checked_models
                         if path.name == "origin300.yaml")
 
@@ -161,10 +161,12 @@ class ExportTests(unittest.TestCase):
         changed["machine"]["emulation"]["firmware_payload"]["path"] = (
             "firmware/renamed.bin")
         actual_catalogue, actual_manifest = export(changed)
-        self.assertNotEqual(actual_manifest["outputs"], expected_manifest["outputs"])
+        self.assertEqual(actual_manifest["outputs"],
+                         expected_manifest["outputs"])
         self.assertNotEqual(actual_manifest["source_sha256"],
                             expected_manifest["source_sha256"])
-        self.assertIn("firmware/renamed.bin", json.dumps(actual_catalogue))
+        self.assertEqual(actual_catalogue, expected_catalogue)
+        self.assertNotIn("firmware/renamed.bin", json.dumps(actual_catalogue))
 
     def test_origin2000_graphics_module_hubs_report_ni_revision_5(self):
         """`mgras_attach` (IRIX 6.5.30's SI Viz attach callback) reads

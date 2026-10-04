@@ -396,30 +396,43 @@ _SCSI_TARGETS = {
 # node's L1 combines the console and the system controller dialogue on
 # one UART instead (the model tooling/prom.py's `behind_l1` branch: one
 # `-serial chardev:l1`).
-_TIMEKEEPER_ARGUMENT = "-drive if=mtd,index=N"
-_PFLASH_ARGUMENT = "-drive if=pflash,unit=N"
-# the model tooling/nvram.py's NVRAM_BYTES: the Timekeeper window one
-# raw store backs per IOC3-bearing board.
+
+# The m48t35 Timekeeper's NVRAM window and the clock reference record its
+# model keeps beside it (hw/rtc/m48t35.h's M48T35_SIZE and
+# M48T35_CLOCK_REF_BYTES); IP30's DS1685-family NVRAM and its clock
+# record (hw/rtc/ds1685.h's DS1685_CLOCK_REF_BYTES).
 _TIMEKEEPER_NVRAM_BYTES = 0x8000
+_TIMEKEEPER_CLOCK_BYTES = 16
+_IP30_NVRAM_BYTES = 512
+_IP30_CLOCK_BYTES = 24
+# The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
+# that fit one.
+_IO_FLASH_BYTES = 0x100000
+_IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
+# Octane's writable 1 MiB boot flash (hw/mips/sgi/octane.c's
+# OCTANE_FLASH_SIZE); the topology's own flash size still describes the
+# older 2 MiB PROM payload window.
+_IP30_BOOT_FLASH_BYTES = 0x100000
+_BOOT_PROM_KINDS = {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}
 
 
-def _storage_for(topology: dict) -> list[dict]:
-    """One `storage` entry per SCSI host adapter any I/O board carries, in
+def _scsi_adapters_for(topology: dict) -> list[dict]:
+    """One `scsi-adapters` entry per SCSI host adapter any I/O board carries, in
     the same device order `_compile_io_board`/`_compile_bedrock_pci_function`
     already sort PCI functions into. `bus` follows QEMU's own generic-SCSI
     numbering, one bus per host adapter instantiated.
     """
-    storage = []
+    adapters = []
     for board in topology["io_boards"]:
         for function in board["pci"]:
             targets = _SCSI_TARGETS.get(function["kind"])
             if targets is None:
                 continue
-            storage.append({
-                "type": "scsi", "bus": f"scsi.{len(storage)}",
+            adapters.append({
+                "type": "scsi", "bus": f"scsi.{len(adapters)}",
                 "targets": list(targets),
             })
-    return storage
+    return adapters
 
 
 def _consoles_for(topology: dict, harness: dict) -> list[dict]:
@@ -494,34 +507,14 @@ def default_topology(machine_name: str, product_models: dict[str, dict]) -> str:
 
 
 def _product_facts(machine_name: str, product_models: dict[str, dict]) -> dict:
-    """The harness-policy and firmware-identity facts for one runtime
-    product, resolved from its own base `the model-input directory/` file (through
-    `the product-model registry`, the same lookup
-    `the model tooling/machines.py`'s registry used to make before the
-    catalogue this function builds replaced it as the harness's own
-    source). A topology that shares this product's name but carries no
+    """The harness-policy facts for one runtime product, resolved from its
+    own base model-input file through the product-model registry. A
+    topology that shares this product's name but carries no
     `machine.harness` block of its own (Origin 200's dual-module form)
     borrows these facts rather than going without.
     """
     machine = product_models[machine_name]["machine"]
-    harness = machine["harness"]
-    emulation = machine["emulation"]
-    firmware_payload = emulation.get("firmware_payload")
-    default_firmware_asset = harness.get("default_firmware_asset")
-    if default_firmware_asset is not None:
-        firmware_asset = default_firmware_asset
-        firmware_sha256 = None
-    elif firmware_payload is not None:
-        firmware_asset = "assets/" + firmware_payload["path"]
-        firmware_sha256 = firmware_payload["sha256"]
-    elif harness.get("operator_firmware"):
-        firmware_asset = firmware_sha256 = None
-    else:
-        raise ValueError(
-            f"{machine_name} carries neither "
-            "machine.harness.default_firmware_asset nor "
-            "machine.emulation.firmware_payload"
-        )
+    firmware_payload = machine["emulation"].get("firmware_payload")
     second_selection = (
         firmware_payload.get("second_selection") if firmware_payload else None
     )
@@ -529,69 +522,86 @@ def _product_facts(machine_name: str, product_models: dict[str, dict]) -> dict:
         2 * int(second_selection["size"], 0) if second_selection else None
     )
     return {
-        "harness": harness,
-        "firmware_argument": (
-            firmware_payload["argument"] if firmware_payload is not None
-            else "-bios"
-        ),
-        "firmware_asset": firmware_asset,
-        "firmware_sha256": firmware_sha256,
+        "harness": machine["harness"],
         "boot_flash_bytes": boot_flash_bytes,
     }
 
 
-def _resources_for(topology: dict, harness: dict, product: dict,
-                    dimms_per_node: tuple[int, ...], nodes: int) -> list[dict]:
-    """The catalogue's `resources` list for one offering: persistent
-    storage a launcher provisions beyond the drives a user attaches, for
-    a launch fitting `nodes` of the topology's node boards.
+def _timekeeper_board(board: dict, harness: dict) -> bool:
+    """Whether a board carries a Timekeeper whose NVRAM persists: a selected
+    system Timekeeper, unless the product turns it off, or a base I/O
+    design's own IOC3 Timekeeper."""
+    if board.get("system_timekeeper"):
+        return harness.get("timekeeper_nvram", True)
+    return (board["board_kind"] in _TIMEKEEPER_BOARD_KINDS
+            and any(function["kind"] == "IOC3" for function in board["pci"]))
+
+
+def _storage_for(topology: dict, harness: dict, product: dict,
+                 fitted: list[int]) -> list[dict]:
+    """Every writable persistent store a launch fitting the `fitted` node
+    boards has, numbered as the machine numbers what it builds, in the
+    order a launcher creates them: each node's boot flash, each BASEIO
+    PROM flash, then each Timekeeper NVRAM with its clock record. The
+    name is the file name, the block node name and the machine property
+    a launcher binds the store through. `initial` names what a new
+    machine's store starts from: an `init-inputs` image or zeroes.
+    """
+    generation = topology["generation"]
+    storage = []
+    for position, node in enumerate(fitted):
+        if generation == "IP30":
+            size = _IP30_BOOT_FLASH_BYTES
+        elif generation == "SN1":
+            size = product["boot_flash_bytes"]
+            if size is None:
+                raise ValueError(
+                    f"'{topology['name']}' has a Bedrock node but no "
+                    "firmware_payload.second_selection to size its flash")
+        else:
+            size = topology["nodes"][node]["flash"]["size"]
+        storage.append({"name": f"node{position}-flash", "size": size,
+                        "read-only": False, "initial": "boot-prom"})
+    # A population row keeps every I/O board: QEMU refuses a row that
+    # would leave one without the node board it attaches to.
+    boards = topology["io_boards"]
+    flash_boards = [board for board in boards
+                    if board["board_kind"] in _IO_FLASH_BOARD_KINDS]
+    for index, _ in enumerate(flash_boards):
+        storage.append({"name": f"io{index}-flash", "size": _IO_FLASH_BYTES,
+                        "read-only": False, "initial": "io-prom"})
+    if generation == "IP30":
+        nvram_sizes = [(_IP30_NVRAM_BYTES, _IP30_CLOCK_BYTES)]
+    else:
+        nvram_sizes = [(_TIMEKEEPER_NVRAM_BYTES, _TIMEKEEPER_CLOCK_BYTES)
+                       for board in boards
+                       if _timekeeper_board(board, harness)]
+    for index, (size, clock_size) in enumerate(nvram_sizes):
+        storage.append({"name": f"nvram{index}", "size": size,
+                        "read-only": False, "initial": "zero"})
+        storage.append({"name": f"nvram{index}-clock", "size": clock_size,
+                        "read-only": False, "initial": "zero"})
+    return storage
+
+
+def _init_inputs_for(topology: dict, storage: list[dict]) -> list[dict]:
+    """The images creating a new machine's storage needs, one per
+    `initial` source its `storage` list names."""
+    inputs = [{"name": "boot-prom",
+               "kind": _BOOT_PROM_KINDS[topology["generation"]],
+               "required": True}]
+    if any(item["initial"] == "io-prom" for item in storage):
+        inputs.append({"name": "io-prom", "kind": "io6-prom",
+                       "required": True})
+    return inputs
+
+
+def _resources_for(topology: dict, harness: dict,
+                   dimms_per_node: tuple[int, ...]) -> list[dict]:
+    """The catalogue's `resources` list for one offering: identity and SPD
+    inputs a launcher may supply beyond its writable `storage`.
     """
     resources = []
-    if topology["generation"] == "IP30":
-        resources.extend([
-            {"kind": "nvram", "scope": "board", "count": 1,
-             "size": 512, "argument": "-drive if=none,id=sgi-nvram0,..."},
-            {"kind": "rtc-clock", "scope": "board", "count": 1,
-             "size": 24, "argument": "-drive if=none,id=sgi-nvram0-clock,..."},
-        ])
-    selected_boards = [(index, board)
-                       for index, board in enumerate(topology["io_boards"])
-                       if board.get("system_timekeeper")]
-    if selected_boards and harness.get("timekeeper_nvram", True):
-        selected = selected_boards[0][1]["system_timekeeper"]
-        resources.append({
-            "kind": "nvram", "scope": "board", "count": len(selected_boards),
-            "board-indices": [index for index, _ in selected_boards],
-            "drive-indices": [topology["xio_attachments"][board["slot_index"]][
-                "node_index"] for _, board in selected_boards],
-            "argument": _TIMEKEEPER_ARGUMENT, "part": "m48t35",
-            "size": _TIMEKEEPER_NVRAM_BYTES, "clock-reference": True,
-            "system-timekeeper-kind": selected["kind"],
-            "year-base": selected["year_base"],
-            "initial-ip27-fixture": selected["initial_ip27_fixture"],
-        })
-    timekeeper_boards = sum(
-        1 for board in topology["io_boards"]
-        if board["board_kind"] in _TIMEKEEPER_BOARD_KINDS
-        and not board.get("system_timekeeper")
-        and any(function["kind"] == "IOC3" for function in board["pci"]))
-    if timekeeper_boards:
-        resources.append({
-            "kind": "nvram", "scope": "board", "count": timekeeper_boards,
-            "size": _TIMEKEEPER_NVRAM_BYTES, "argument": _TIMEKEEPER_ARGUMENT,
-        })
-    if harness["requires_per_node_flash"]:
-        resources.append({
-            "kind": "boot-flash", "scope": "node", "count": nodes,
-            "size": topology["nodes"][0]["flash"]["size"], "argument": _PFLASH_ARGUMENT,
-        })
-    elif harness["has_managed_boot_flash"]:
-        # One writable boot flash per chassis, pflash unit N for node N.
-        resources.append({
-            "kind": "boot-flash", "scope": "board",
-            "count": nodes,
-            "size": product["boot_flash_bytes"], "argument": _PFLASH_ARGUMENT,
-        })
     # Origin 300's identity and SPD inputs -- the model tooling/prom.py's
     # ORIGIN300_EEPROM_INPUTS (two chassis EEPROMs and two board EEPROMs,
     # one pair per board: the node board and the IO-8) and
@@ -662,15 +672,7 @@ def _offerings_for(model: dict, topology: dict,
             f"'{configuration_name}' has heterogeneous per-node memory "
             f"{default_memory}; the catalogue's offerings need one default"
         )
-    firmware = {
-        "kind": {"SN0": "ip27-prom", "SN1": "ip35-prom", "IP30": "ip30-prom"}[topology["generation"]],
-        "argument": product["firmware_argument"],
-        "asset": product["firmware_asset"],
-        "size": node["flash"]["size"],
-        "sha256": product["firmware_sha256"],
-        "per-node-flash": harness["requires_per_node_flash"],
-    }
-    storage = _storage_for(topology)
+    scsi_adapters = _scsi_adapters_for(topology)
     consoles = _consoles_for(topology, harness)
     networks = _networks_for(topology)
     identity_inputs = harness.get("identity_inputs", ())
@@ -683,8 +685,10 @@ def _offerings_for(model: dict, topology: dict,
                   key=lambda row: -len(row["nodes"]))
     for row in rows:
         nodes = len(row["nodes"])
-        resources = _resources_for(topology, harness, product,
-                                   dimms_per_node[:nodes], nodes)
+        resources = _resources_for(topology, harness, dimms_per_node[:nodes])
+        storage = _storage_for(topology, harness, product,
+                               list(row["nodes"]))
+        init_inputs = _init_inputs_for(topology, storage)
         for cpu_population in row["supported_cpu_populations"]:
             offerings.append({
                 "product": machine_name,
@@ -692,6 +696,8 @@ def _offerings_for(model: dict, topology: dict,
                 "default-topology": default_topology(machine_name, product_models),
                 "display-name": model["machine"]["name"],
                 "nodes": nodes,
+                "machine-options": (f"{machine_name},topology="
+                                    f"{configuration_name},nodes={nodes}"),
                 "cpus-per-node": list(cpu_population),
                 "dimms-per-node": list(dimms_per_node[:nodes]),
                 "smp": sum(cpu_population),
@@ -705,9 +711,10 @@ def _offerings_for(model: dict, topology: dict,
                     **({"required-properties": list(assembly["required_properties"])}
                        if "required_properties" in assembly else {}),
                 },
-                "firmware": firmware,
-                "resources": resources,
+                "init-inputs": init_inputs,
                 "storage": storage,
+                "resources": resources,
+                "scsi-adapters": scsi_adapters,
                 "consoles": consoles,
                 "networks": networks,
                 "console": harness["console"],

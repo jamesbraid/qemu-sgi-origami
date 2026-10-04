@@ -249,10 +249,7 @@ layer:
         default_cpu_model: R10000
         disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
-        default_firmware_asset: assets/firmware/6.5.30/ip27prom.payload.bin
         default_topology: onyx2-rack
-        requires_per_node_flash: true
-        has_managed_boot_flash: false
         supported_guests: [irix]
         install_media: [disk-image]
         provenance: derived

@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "a3eca891d926681afe25aefa24de87af1750de244294a39de13d943cb4507399"
+    "b3d6a4d07358ffa9867db3880586cf6eeab76238a4dae6174a4686a660d6e16b"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -167,6 +167,69 @@ class GeneratorTests(unittest.TestCase):
             self.assertFalse((tree / "assets").exists())
 
 
+class StorageTests(unittest.TestCase):
+    """Every offering names the writable stores a launcher attaches and the
+    images that create them, with no launcher argument templates."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+
+    def test_every_offering_lists_consistent_storage(self):
+        for offering in self.catalogue["offerings"]:
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(
+                    offering["machine-options"],
+                    f"{offering['product']},topology={offering['topology']},"
+                    f"nodes={offering['nodes']}")
+                self.assertNotIn("firmware", offering)
+                names = [item["name"] for item in offering["storage"]]
+                self.assertEqual(len(names), len(set(names)))
+                self.assertEqual(
+                    [name for name in names if name.endswith("-flash")
+                     and name.startswith("node")],
+                    [f"node{index}-flash"
+                     for index in range(offering["nodes"])])
+                for name in names:
+                    if name.startswith("nvram") and not name.endswith("-clock"):
+                        self.assertIn(f"{name}-clock", names)
+                inputs = {item["name"] for item in offering["init-inputs"]}
+                for item in offering["storage"]:
+                    self.assertFalse(item["read-only"])
+                    self.assertTrue(item["initial"] == "zero"
+                                    or item["initial"] in inputs)
+                for resource in offering["resources"]:
+                    self.assertIn(resource["kind"],
+                                  {"identity-eeprom", "spd-eeprom"})
+
+    def test_two_node_origin2000_deskside(self):
+        offering = next(
+            item for item in self.catalogue["offerings"]
+            if item["machine-options"] ==
+            "origin2000,topology=origin2000-deskside,nodes=2")
+        self.assertEqual(offering["init-inputs"], [
+            {"name": "boot-prom", "kind": "ip27-prom", "required": True},
+            {"name": "io-prom", "kind": "io6-prom", "required": True}])
+        flash = {"size": 1048576, "read-only": False}
+        self.assertEqual(offering["storage"], [
+            {"name": "node0-flash", **flash, "initial": "boot-prom"},
+            {"name": "node1-flash", **flash, "initial": "boot-prom"},
+            {"name": "io0-flash", **flash, "initial": "io-prom"},
+            {"name": "nvram0", "size": 32768, "read-only": False,
+             "initial": "zero"},
+            {"name": "nvram0-clock", "size": 16, "read-only": False,
+             "initial": "zero"}])
+
+    def test_origin200_dual_has_a_store_per_board(self):
+        offering = next(
+            item for item in self.catalogue["offerings"]
+            if item["topology"] == "origin200-dual")
+        self.assertEqual([item["name"] for item in offering["storage"]],
+                         ["node0-flash", "node1-flash", "nvram0",
+                          "nvram0-clock", "nvram1", "nvram1-clock"])
+
+
 class Origin300TimekeeperTests(unittest.TestCase):
     def test_origin300_export_has_per_node_timekeeper_policy(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
@@ -187,21 +250,16 @@ class Origin300TimekeeperTests(unittest.TestCase):
             for offering in catalogue["offerings"]:
                 if offering["topology"] != topology["name"]:
                     continue
-                resources = [item for item in offering["resources"]
-                             if item["kind"] == "nvram"]
-                self.assertEqual(len(resources), 1)
-                resource = resources[0]
-                self.assertEqual(resource["count"], len(fitted))
-                self.assertEqual(resource["board-indices"], fitted)
-                self.assertEqual(resource["drive-indices"],
-                                 list(range(len(fitted))))
-                self.assertEqual(resource["argument"], "-drive if=mtd,index=N")
-                self.assertEqual(resource["size"], 32768)
-                self.assertIs(resource["clock-reference"], True)
-                self.assertEqual(resource["year-base"], 1968)
-                self.assertIs(resource["initial-ip27-fixture"], False)
-                self.assertEqual(resource["system-timekeeper-kind"],
-                                 "m48t35-compatible")
+                nvram = [item for item in offering["storage"]
+                         if item["name"].startswith("nvram")]
+                expected = []
+                for index in range(len(fitted)):
+                    expected += [
+                        {"name": f"nvram{index}", "size": 32768,
+                         "read-only": False, "initial": "zero"},
+                        {"name": f"nvram{index}-clock", "size": 16,
+                         "read-only": False, "initial": "zero"}]
+                self.assertEqual(nvram, expected)
         pair = topologies["origin300-two-chassis"]
         self.assertEqual([board["id"] for board in pair["io-boards"]
                           if "system-timekeeper" in board],
@@ -256,21 +314,16 @@ class FuelTests(unittest.TestCase):
             if row["product"] != "fuel":
                 continue
             self.assertEqual(row["default-topology"], "fuel")
-            resources = [item for item in row["resources"]
-                         if item["kind"] == "nvram"]
-            self.assertEqual(len(resources), 1)
-            resource = resources[0]
-            self.assertEqual(resource["board-indices"], [0])
-            self.assertEqual(resource["drive-indices"], [0])
-            self.assertEqual(resource["part"], "m48t35")
-            self.assertEqual(resource["size"], 32768)
-            self.assertIs(resource["clock-reference"], True)
-            self.assertEqual(resource["year-base"], 1968)
-            self.assertIs(resource["initial-ip27-fixture"], False)
-            self.assertEqual(resource["system-timekeeper-kind"],
-                             "m48t35-compatible")
-            self.assertNotIn("requires-machine-option", resource)
-            self.assertNotIn("conflicts-machine-option", resource)
+            self.assertEqual(row["storage"], [
+                {"name": "node0-flash", "size": 16777216, "read-only": False,
+                 "initial": "boot-prom"},
+                {"name": "nvram0", "size": 32768, "read-only": False,
+                 "initial": "zero"},
+                {"name": "nvram0-clock", "size": 16, "read-only": False,
+                 "initial": "zero"}])
+            self.assertEqual(row["init-inputs"], [
+                {"name": "boot-prom", "kind": "ip35-prom",
+                 "required": True}])
 
     def test_system_timekeeper_requires_fitted_fuel_board(self):
         model = load_checked_system_model(

@@ -200,8 +200,6 @@ layer:
         disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: one-chassis
-        requires_per_node_flash: false
-        has_managed_boot_flash: true
         identity_inputs: [chassis-eeprom, board-eeprom, spd-eeprom, brick-serial, l1-debug-switches]
         supported_guests: [irix]
         install_media: [disk-image, netboot]

@@ -26,14 +26,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": false,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -42,10 +34,18 @@
         "brick-serial",
         "l1-debug-switches"
       ],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -74,33 +74,6 @@
       "prom-dialogue": "ip35-l1-prompt",
       "resources": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            1,
-            3
-          ],
-          "clock-reference": true,
-          "count": 2,
-          "drive-indices": [
-            0,
-            1
-          ],
-          "initial-ip27-fixture": false,
-          "kind": "nvram",
-          "part": "m48t35",
-          "scope": "board",
-          "size": 32768,
-          "system-timekeeper-kind": "m48t35-compatible",
-          "year-base": 1968
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "board",
-          "size": 16777216
-        },
-        {
           "argument": "chassis-eeprom.N=",
           "count": 4,
           "kind": "identity-eeprom",
@@ -117,6 +90,50 @@
           "count": 4,
           "kind": "spd-eeprom",
           "scope": "dimm"
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
         }
       ],
       "smdk": {
@@ -133,46 +150,40 @@
       "smp": 4,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -207,14 +218,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": false,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -223,10 +226,18 @@
         "brick-serial",
         "l1-debug-switches"
       ],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -255,33 +266,6 @@
       "prom-dialogue": "ip35-l1-prompt",
       "resources": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            1,
-            3
-          ],
-          "clock-reference": true,
-          "count": 2,
-          "drive-indices": [
-            0,
-            1
-          ],
-          "initial-ip27-fixture": false,
-          "kind": "nvram",
-          "part": "m48t35",
-          "scope": "board",
-          "size": 32768,
-          "system-timekeeper-kind": "m48t35-compatible",
-          "year-base": 1968
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "board",
-          "size": 16777216
-        },
-        {
           "argument": "chassis-eeprom.N=",
           "count": 4,
           "kind": "identity-eeprom",
@@ -300,19 +284,7 @@
           "scope": "dimm"
         }
       ],
-      "smdk": {
-        "diagnostic-mac-bootarg": false,
-        "discovery-prerequisites": [
-          "io8bt",
-          "xbg"
-        ],
-        "package-path": "assets/boot/smdk",
-        "requires-boot-flash": false,
-        "requires-network-identity": false,
-        "tftp-mode": "fixed"
-      },
-      "smp": 6,
-      "storage": [
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -354,6 +326,56 @@
             15
           ],
           "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 6,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -388,14 +410,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": false,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -404,10 +418,18 @@
         "brick-serial",
         "l1-debug-switches"
       ],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -436,33 +458,6 @@
       "prom-dialogue": "ip35-l1-prompt",
       "resources": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            1,
-            3
-          ],
-          "clock-reference": true,
-          "count": 2,
-          "drive-indices": [
-            0,
-            1
-          ],
-          "initial-ip27-fixture": false,
-          "kind": "nvram",
-          "part": "m48t35",
-          "scope": "board",
-          "size": 32768,
-          "system-timekeeper-kind": "m48t35-compatible",
-          "year-base": 1968
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "board",
-          "size": 16777216
-        },
-        {
           "argument": "chassis-eeprom.N=",
           "count": 4,
           "kind": "identity-eeprom",
@@ -481,19 +476,7 @@
           "scope": "dimm"
         }
       ],
-      "smdk": {
-        "diagnostic-mac-bootarg": false,
-        "discovery-prerequisites": [
-          "io8bt",
-          "xbg"
-        ],
-        "package-path": "assets/boot/smdk",
-        "requires-boot-flash": false,
-        "requires-network-identity": false,
-        "tftp-mode": "fixed"
-      },
-      "smp": 6,
-      "storage": [
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -535,6 +518,56 @@
             15
           ],
           "type": "scsi"
+        }
+      ],
+      "smdk": {
+        "diagnostic-mac-bootarg": false,
+        "discovery-prerequisites": [
+          "io8bt",
+          "xbg"
+        ],
+        "package-path": "assets/boot/smdk",
+        "requires-boot-flash": false,
+        "requires-network-identity": false,
+        "tftp-mode": "fixed"
+      },
+      "smp": 6,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -569,14 +602,6 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Two-chassis Origin 300",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
-        "kind": "ip35-prom",
-        "per-node-flash": false,
-        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
-        "size": 1476264
-      },
       "hardware-inputs": [],
       "identity-inputs": [
         "chassis-eeprom",
@@ -585,10 +610,18 @@
         "brick-serial",
         "l1-debug-switches"
       ],
+      "init-inputs": [
+        {
+          "kind": "ip35-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin300,topology=origin300-two-chassis,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           512
@@ -617,33 +650,6 @@
       "prom-dialogue": "ip35-l1-prompt",
       "resources": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "board-indices": [
-            1,
-            3
-          ],
-          "clock-reference": true,
-          "count": 2,
-          "drive-indices": [
-            0,
-            1
-          ],
-          "initial-ip27-fixture": false,
-          "kind": "nvram",
-          "part": "m48t35",
-          "scope": "board",
-          "size": 32768,
-          "system-timekeeper-kind": "m48t35-compatible",
-          "year-base": 1968
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "board",
-          "size": 16777216
-        },
-        {
           "argument": "chassis-eeprom.N=",
           "count": 4,
           "kind": "identity-eeprom",
@@ -660,6 +666,50 @@
           "count": 4,
           "kind": "spd-eeprom",
           "scope": "dimm"
+        }
+      ],
+      "scsi-adapters": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
         }
       ],
       "smdk": {
@@ -676,46 +726,40 @@
       "smp": 8,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 16777216
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7,
-            8,
-            9,
-            10,
-            11,
-            12,
-            13,
-            14,
-            15
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 16777216
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram1-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [

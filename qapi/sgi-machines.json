@@ -20,9 +20,9 @@
 # views, an XIO attachment's decode mask -- is a device fact
 # instead, fixed in the device model that already owns it.  An
 # `offerings` record carries what a launcher may choose, unfiltered by
-# that rule: the accepted CPU and memory populations, firmware kind
-# and size, storage controllers, console and network placement, and
-# the QEMU argument each becomes.
+# that rule: the accepted CPU and memory populations, the firmware
+# images and writable stores a machine needs, storage controllers,
+# and console and network placement.
 ##
 
 ##
@@ -1288,70 +1288,103 @@
             'argument': 'str' } }
 
 ##
-# @SGIModelFirmware:
+# @SGIModelInitInputKind:
 #
-# The firmware image an offering expects.
+# Which firmware image format an initialization input carries.
 #
-# @kind: which firmware contract this product's PROM speaks
-#     (ip27-prom, ip35-prom)
+# @ip27-prom: an IP27-family node PROM (Origin 200, Origin 2000,
+#     Onyx2)
 #
-# @argument: the QEMU argument form the image is supplied through
+# @ip35-prom: an IP35-family node PROM (Origin 300, Fuel)
 #
-# @asset: path of the firmware image asset a launcher fills this
-#     resource from
+# @ip30-prom: an IP30 PROM (Octane)
 #
-# @size: expected image size in bytes
-#
-# @sha256: expected image digest, when the launcher pins one
-#
-# @per-node-flash: whether every node's own flash must be filled
-#     (true) or one managed image serves the whole configuration
-#     (false)
+# @io6-prom: a BASEIO PROM, the image an IO6 or GIGAchannel I/O
+#     flash holds
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelFirmware',
-  'data': { 'kind': 'str',
-            'argument': 'str',
-            '*asset': 'str',
+{ 'enum': 'SGIModelInitInputKind',
+  'data': ['ip27-prom', 'ip35-prom', 'ip30-prom', 'io6-prom'] }
+
+##
+# @SGIModelInitInput:
+#
+# One image that creating a new machine's storage reads.
+#
+# @name: the input's name, which a @SGIModelStorageItem's @initial
+#     refers to
+#
+# @kind: the image format the input carries
+#
+# @required: whether a new machine cannot be created without it
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelInitInput',
+  'data': { 'name': 'str',
+            'kind': 'SGIModelInitInputKind',
+            'required': 'bool' } }
+
+##
+# @SGIModelStorageInitial:
+#
+# What a new machine's storage item starts from.
+#
+# @zero: zero-filled
+#
+# @boot-prom: built from the @boot-prom initialization input
+#
+# @io-prom: built from the @io-prom initialization input
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelStorageInitial',
+  'data': ['zero', 'boot-prom', 'io-prom'] }
+
+##
+# @SGIModelStorageItem:
+#
+# One writable persistent store of a machine: a node's boot flash, an
+# I/O board's PROM flash, a Timekeeper's NVRAM or the clock record
+# kept beside it.  A launcher creates one file per item, attaches it
+# as a block node named @name and binds that node through the machine
+# property of the same name.
+#
+# @name: the store's name: `node<N>-flash`, `io<N>-flash`, `nvram<N>`
+#     or `nvram<N>-clock`
+#
+# @size: the store's exact size in bytes; a clock record may instead
+#     be larger
+#
+# @read-only: whether the machine only reads the store
+#
+# @initial: what a new machine's store starts from
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelStorageItem',
+  'data': { 'name': 'str',
             'size': 'uint64',
-            '*sha256': 'str',
-            'per-node-flash': 'bool' } }
+            'read-only': 'bool',
+            'initial': 'SGIModelStorageInitial' } }
 
 ##
 # @SGIModelResource:
 #
-# One persistent resource a launcher provisions beyond the drives a
-# user attaches.
+# One identity input a launcher may supply beyond the machine's
+# writable storage.
 #
-# @kind: what this resource is (nvram, boot-flash, identity-eeprom,
-#     spd-eeprom)
+# @kind: what this resource is (identity-eeprom, spd-eeprom)
 #
-# @scope: what it is provisioned per (board, node, dimm)
+# @scope: what it is supplied per (board, dimm)
 #
-# @count: how many instances this offering needs
+# @count: how many instances this offering accepts
 #
 # @size: byte size of one instance, when documented
 #
 # @argument: the QEMU argument form this resource becomes, `N`
 #     standing for its instance index
-#
-# @part: fitted device part for a resource with part-specific backing
-#
-# @board-indices: I/O board indices owning the resource instances
-#
-# @drive-indices: NVRAM backend indices in board-indices order
-#
-# @clock-reference: whether each NVRAM backend needs a clock reference
-#
-# @system-timekeeper-kind: explicit fitted compatibility selection
-# @year-base: machine software year convention
-# @initial-ip27-fixture: fresh unbacked part initialization policy
-# @conflicts-machine-option: machine option incompatible with this
-#     resource
-#
-# @requires-machine-option: explicit machine option required before
-#     provisioning this resource
 #
 # Since: 11.2
 ##
@@ -1360,19 +1393,10 @@
             'scope': 'str',
             'count': 'uint32',
             '*size': 'uint64',
-            'argument': 'str',
-            '*part': 'str',
-            '*board-indices': ['uint32'],
-            '*drive-indices': ['uint32'],
-            '*clock-reference': 'bool',
-            '*requires-machine-option': 'str',
-            '*system-timekeeper-kind': 'SGIModelSystemTimekeeperKind',
-            '*year-base': 'uint32',
-            '*initial-ip27-fixture': 'bool',
-            '*conflicts-machine-option': 'str' } }
+            'argument': 'str' } }
 
 ##
-# @SGIModelStorage:
+# @SGIModelScsiAdapter:
 #
 # One SCSI host adapter an offering's I/O boards carry.
 #
@@ -1384,7 +1408,7 @@
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelStorage',
+{ 'struct': 'SGIModelScsiAdapter',
   'data': { 'type': 'str',
             'bus': 'str',
             'targets': ['uint32'] } }
@@ -1498,6 +1522,9 @@
 #
 # @nodes: node count of this configuration
 #
+# @machine-options: the `-M` value that selects exactly this
+#     configuration's product, topology and node count
+#
 # @cpus-per-node: this offering's accepted population, per node
 #
 # @dimms-per-node: this offering's fitted DIMM count, per node
@@ -1508,12 +1535,14 @@
 #
 # @processor: the processor this population is built from
 #
-# @firmware: the firmware image this offering expects
+# @init-inputs: the images creating this configuration's @storage
+#     reads
 #
-# @resources: persistent resources this offering needs beyond a user's
-#     own drives
+# @storage: every writable persistent store this configuration has
 #
-# @storage: SCSI host adapters this offering's I/O boards carry
+# @resources: identity inputs this offering accepts beyond @storage
+#
+# @scsi-adapters: SCSI host adapters this offering's I/O boards carry
 #
 # @consoles: serial lines this offering's launch places, in order
 #
@@ -1555,14 +1584,16 @@
             '*default-topology': 'str',
             'display-name': 'str',
             'nodes': 'uint32',
+            'machine-options': 'str',
             'cpus-per-node': ['uint32'],
             'dimms-per-node': ['uint32'],
             'smp': 'uint32',
             'memory-per-node-mib': 'SGIModelMemoryPopulation',
             'processor': 'SGIModelOfferingProcessor',
-            'firmware': 'SGIModelFirmware',
+            'init-inputs': ['SGIModelInitInput'],
+            'storage': ['SGIModelStorageItem'],
             'resources': ['SGIModelResource'],
-            'storage': ['SGIModelStorage'],
+            'scsi-adapters': ['SGIModelScsiAdapter'],
             'consoles': ['SGIModelConsole'],
             'networks': ['SGIModelNetworkOffering'],
             'console': 'str',

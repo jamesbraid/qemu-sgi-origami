@@ -34,19 +34,20 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": false,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin200,topology=origin200-gigachannel-loopback,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           512,
@@ -72,17 +73,8 @@
       },
       "product": "origin200",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        }
-      ],
-      "smp": 1,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -108,6 +100,27 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 1,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -153,19 +166,20 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 GIGAchannel loopback",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": false,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image",
         "netboot"
       ],
+      "machine-options": "origin200,topology=origin200-gigachannel-loopback,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           512,
@@ -191,17 +205,8 @@
       },
       "product": "origin200",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        }
-      ],
-      "smp": 2,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -227,6 +232,27 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
