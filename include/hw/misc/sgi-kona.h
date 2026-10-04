@@ -704,6 +704,16 @@ typedef struct SGIKonaTextureUpload {
     bool swap_bytes; /* captured when the native header arrives */
 } SGIKonaTextureUpload;
 
+#define SGI_KONA_GL_BITMAP_BYTES 3136
+
+typedef struct SGIKonaGLBitmapUpload {
+    uint32_t header[8];
+    uint32_t context;
+    uint32_t count;
+    bool refused;
+    uint8_t bytes[SGI_KONA_GL_BITMAP_BYTES];
+} SGIKonaGLBitmapUpload;
+
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
@@ -908,6 +918,7 @@ struct SGIKonaState {
     SGIKonaGLPipe gl_pipe[SGI_KONA_CONTEXTS];
     SGIKonaTextureState textures;
     SGIKonaTextureUpload texture_upload;
+    SGIKonaGLBitmapUpload gl_bitmap_upload;
     uint32_t texture_bind[5];
     uint32_t texture_record[22];
     uint32_t texture_record_token;

@@ -5515,6 +5515,221 @@ static void test_draw_pixels_zoom(gconstpointer opaque)
     }
 }
 
+static void bitmap_expected(QTestState *s, bool bitmap, bool pixels,
+                              int bx, int by, unsigned px, unsigned py,
+                              bool padded)
+{
+    static const uint8_t bits[] = { 0x81, 0x42, 0x24, 0x18, 0, 0, 0, 0x57 };
+    static const uint8_t short_bits[] = { 0x81, 0x42, 0x24, 0x18, 0x80, 0x01 };
+    const uint8_t *image = padded ? short_bits : bits;
+    unsigned rows = padded ? ARRAY_SIZE(short_bits) : ARRAY_SIZE(bits);
+    static const uint32_t rgb[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    expected_clear(e, 0x000000);
+    if (bitmap) {
+        for (unsigned row = 0; row < rows; row++) {
+            for (unsigned col = 0; col < 8; col++) {
+                int x = bx + col, y = by + row;
+
+                if ((image[row] & (0x80 >> col)) &&
+                    x >= 0 && x < 128 && y >= 0 && y < 128) {
+                    e->rgb[((127 - y) * 128 + x) * 3] = 255;
+                }
+            }
+        }
+    }
+    if (pixels) {
+        for (unsigned k = 0; k < 4; k++) {
+            unsigned at = ((127 - (py + k / 2)) * 128 + px + k % 2) * 3;
+
+            e->rgb[at] = rgb[k] >> 16;
+            e->rgb[at + 1] = rgb[k] >> 8;
+            e->rgb[at + 2] = rgb[k];
+        }
+    }
+    assert_window_matches(s, e);
+}
+
+static void test_native_bitmap(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool migration = mode == 3 || mode == 19;
+    bool invalid = mode == 4 || mode == 6;
+    bool refused = mode == 7 || mode == 8 || mode == 9 || mode == 10 ||
+                   mode == 11 || mode == 16 || mode == 18 || mode == 19;
+    uint32_t h[] = { 8, 8, fbits(0.5), fbits(1.5), fbits(3.5),
+                    fbits(5.5), 3, 8 };
+    uint32_t move[] = { 0, 0, 0, 0, 0, 0, 0, fbits(5), fbits(6) };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *tmpfs = NULL, *uri = NULL;
+    GError *err = NULL;
+    int bx = 63, by = 62;
+    unsigned px = 67, py = 68;
+
+    if (mode == 13) {
+        gl_make_current_depth(s, 24);
+    } else {
+        gl_make_current(s);
+    }
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+    kona_command_f(s, 0xad, (float[]) { 0, 0, mode == 13 ? 0.5 : 0 }, 3);
+    if (mode == 1) {
+        kona_command_f(s, 0x2f, (float[]) { -2, 3 }, 2);
+    } else if (mode == 2) {
+        kona_command(s, 0x33, (uint32_t[]) { 0x0cf1, 1 }, 2);
+    } else if (invalid) {
+        kona_command_f(s, 0xa9, (float[]) { 2, 0 }, 2);
+    } else if (mode == 7) {
+        gl_begin(s, 4);
+    } else if (mode == 8) {
+        return_context_deactivate(s);
+    } else if (mode == 9 || mode == 15) {
+        kona_command(s, 0x24, (uint32_t[]) { 0xde0 }, 1);
+    } else if (mode == 10) {
+        h[6] = 4;
+    } else if (mode == 11) {
+        h[2] = 0x7f800000;
+    } else if (mode == 12) {
+        uint32_t raw[] = { 8, 8, 0, 0, 0, 0, 0, fbits(100), fbits(100) };
+
+        kona_command(s, 0x6, raw, ARRAY_SIZE(raw));
+    } else if (mode == 13) {
+        h[2] = h[3] = 0;
+        h[4] = fbits(3);
+        h[5] = fbits(4);
+        bx = by = 64;
+        kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x100 }, 1);
+    } else if (mode == 14) {
+        h[2] = h[3] = fbits(64.5);
+        h[4] = fbits(67.5);
+        h[5] = fbits(68.5);
+        bx = by = -1;
+    }
+    if (mode == 18 || mode == 19) {
+        h[7] = 3137;
+        h[6] = DIV_ROUND_UP(h[7], 4) + 1;
+    } else if (mode == 20) {
+        h[1] = 6;
+        h[7] = 6;
+    }
+    if (mode == 5 || mode == 6 || mode == 15) {
+        kona_command(s, 0x6, move, ARRAY_SIZE(move));
+        if (mode == 15) {
+            kona_command(s, 0x25, (uint32_t[]) { 0xde0 }, 1);
+        }
+        bx += 5;
+        by += 6;
+        px += 5;
+        py += 6;
+    }
+    kona_command(s, 0x5, h, ARRAY_SIZE(h));
+    qtest_writel(s, REG_COMMAND, 0x81422418);
+    if (migration) {
+        tmpfs = g_dir_make_tmp("sn0-kona-bitmap-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 16) {
+        qtest_writel(s, REG_COMMAND + 0xc + 0x20 * 0x1fc, 0);
+        return_context_restore(s, SAVE_AREA);
+    } else {
+        /* This is payload, even though its word is a valid Begin selector. */
+        qtest_writel(s, REG_COMMAND, mode == 20 ? 0x80010057 : 0x00000057);
+        for (unsigned k = 2; k < DIV_ROUND_UP(h[7], 4); k++) {
+            qtest_writel(s, REG_COMMAND, 0x00000057);
+        }
+    }
+    if (mode == 7) {
+        gl_end(s);
+    } else if (mode == 9) {
+        kona_command(s, 0x25, (uint32_t[]) { 0xde0 }, 1);
+    }
+    if (mode == 17) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        kona_command(s, 0x6, move, ARRAY_SIZE(move));
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+        /* Clearing the new context's coincident window erased the bitmap. */
+        refused = true;
+    }
+    if (refused && mode != 17) {
+        px = py = 64;
+    }
+    kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    for (unsigned k = 0; k < 4; k++) {
+        static const uint32_t rgba[] = {
+            0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+        };
+
+        qtest_writel(s, REG_COMMAND, rgba[k]);
+    }
+    bitmap_expected(s, !invalid && !refused, !invalid && mode != 8,
+                    bx, by, px, py, mode == 20);
+    if (mode == 13) {
+        g_assert_cmphex(stencil_colour_or_depth(s, 5), ==, 0xbfffff);
+    }
+    if (invalid) {
+        kona_command(s, 0xc9, (uint32_t[]) { 1 }, 1);
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 4 + 13 * 4), ==, fbits(64));
+        g_assert_cmphex(guest_word(s, RETURN_PAGE + 4 + 14 * 4), ==, fbits(64));
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (tmpfs) {
+        g_rmdir(tmpfs);
+    }
+}
+
+static void test_bitmap_stale_destination(void)
+{
+    g_autofree char *tmpfs = NULL, *uri = NULL, *second_uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to, *again;
+    uint32_t h[] = { 8, 8, 0, 0, 0, 0, 3, 8 };
+
+    tmpfs = g_dir_make_tmp("sn0-kona-bitmap-stale-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/first.sock", tmpfs);
+    second_uri = g_strdup_printf("unix:%s/second.sock", tmpfs);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    gl_make_current(from);
+    gl_window_cleared(from, 0, 0, 0);
+    kona_command_f(from, 0xa9, (float[]) { 0, 0 }, 2);
+    gl_make_current(to);
+    gl_window_cleared(to, 0, 0, 0);
+    kona_command_f(to, 0xa9, (float[]) { 0, 0 }, 2);
+    kona_command(to, 0x5, h, ARRAY_SIZE(h));
+    qtest_writel(to, REG_COMMAND, 0xffffffff);
+    sgi_migrate_stopped(from, uri);
+    /* An absent bitmap subsection must not retain the destination's prefix. */
+    again = qtest_initf("%s -incoming %s", MACHINE_ARGS, second_uri);
+    sgi_migrate_stopped(to, second_uri);
+    kona_command(again, 0x3a,
+                 (uint32_t[]) { 2, 2, 5, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(again, REG_COMMAND, 0xff0000ff);
+    qtest_writel(again, REG_COMMAND, 0x00ff00ff);
+    qtest_writel(again, REG_COMMAND, 0x0000ffff);
+    qtest_writel(again, REG_COMMAND, 0xffffffff);
+    draw_pixels_expected(again, true);
+    qtest_quit(again);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
 static void test_texture_native_dma(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -7680,6 +7895,24 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_renderer_migration);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
+    qtest_add_func("sn0/origin2000/kona-3d/native-bitmap/stale-destination",
+                   test_bitmap_stale_destination);
+    static const char *native_bitmap_cases[] = {
+        "placement-move", "zoom-ignored", "normalized-bitorder",
+        "partial-migrates", "invalid-raster", "zero-image-move",
+        "zero-image-invalid-raster", "begin-refused", "no-context",
+        "textured-refused", "malformed-count", "nonfinite-origin",
+        "raw-refused", "raster-depth", "clipped", "zero-image-textured",
+        "partial-context-aborted", "contexts", "oversize-drained",
+        "oversize-drain-migrates", "word-padding-ignored",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(native_bitmap_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-bitmap/%s",
+            native_bitmap_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_native_bitmap);
+    }
     static const char *draw_pixels_zoom_cases[] = {
         "pio", "dma", "negative-pio", "negative-dma", "downscale",
         "zero", "clipped", "migrates", "pixel-mode-pop", "combined-pop",
