@@ -925,6 +925,8 @@ typedef struct SGIGLDraw {
     /* Borrowed dimensions; zero in direct submissions means one. */
     float point_size;
     float line_width;
+    bool point_smooth;
+    bool line_smooth;
     /* Borrowed canonical rows; absent rows mean stipple is disabled. */
     const uint32_t *polygon_stipple;
     bool polygon_stipple_enabled;
