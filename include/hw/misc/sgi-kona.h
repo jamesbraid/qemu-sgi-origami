@@ -743,6 +743,15 @@ typedef struct SGIKonaGLBitmapUpload {
     uint8_t bytes[SGI_KONA_GL_BITMAP_BYTES];
 } SGIKonaGLBitmapUpload;
 
+/* One context-owned select-feed bracket, with dense output staged at read. */
+typedef struct SGIKonaGLReadDMA {
+    bool active, refused;
+    int32_t context;
+    uint32_t descriptor[6], header[7];
+    uint32_t count;
+    uint8_t *data;
+} SGIKonaGLReadDMA;
+
 struct SGIKonaState {
     SGIXioBoardState parent_obj;
 
@@ -1105,6 +1114,7 @@ struct SGIKonaState {
     /* Complete read state is valid only within one context activation. */
     bool x_read_gc_valid;
     bool x_read_setup_valid;
+    SGIKonaGLReadDMA gl_read_dma;
 
     /*
      * The last X pixel setup (SGI_KONA_CMD_X_PIXEL_SETUP), and a pixel

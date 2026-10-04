@@ -6228,6 +6228,332 @@ static void test_read_pixels_typed(gconstpointer opaque)
     }
 }
 
+static void read_dma_clear_notifications(QTestState *s, uint64_t reason_page)
+{
+    uint8_t hub[8];
+
+    qtest_memset(s, reason_page, 0xa5, 0x4000);
+    qtest_memset(s, reason_page, 0, 4);
+    qtest_writel(s, REG_INT_CAUSE, 0xffffffff);
+    for (unsigned vector = 0x10; vector <= 0x11; vector++) {
+        stq_be_p(hub, vector);
+        g_assert_true(qtest_memwrite_cpu(s, 0, HUB_LOCAL + 0x90,
+                                         hub, sizeof(hub)));
+    }
+}
+
+static void read_dma_migrate(QTestState *from, QTestState **current,
+                              QTestState **to, char **dir)
+{
+    GError *err = NULL;
+    g_autofree char *uri = NULL;
+
+    *dir = g_dir_make_tmp("sn0-kona-read-dma-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", *dir);
+    *to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+    sgi_migrate_stopped(from, uri);
+    *current = *to;
+}
+
+static void test_read_pixels_dma(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const unsigned formats[] = { 0, 1, 2, 3, 4, 5, 6, 7, 9, 10 };
+    static const uint32_t maxima[] = {
+        0xff, 0xff, 0xffff, 0xffff, 0xffffffff, 0xffffffff,
+    };
+    bool matrix = mode >= 64;
+    unsigned format = matrix ? formats[(mode - 64) / 7] : mode == 9 ? 5 : 4;
+    unsigned type = matrix ? (mode - 64) % 7 :
+                    mode == 8 || mode == 42 ? 3 : mode == 9 ? 6 : 1;
+    unsigned components = format <= 3 || format == 6 ? 1 : format == 7 ? 2 :
+                          format == 4 || format == 9 ? 3 : 4;
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    unsigned row_bytes = 2 * components * size, total = 2 * row_bytes;
+    bool strided = mode < 8 ? mode >= 4 : matrix ? mode & 1 : mode == 33;
+    bool swap = mode == 8 || mode == 42;
+    bool transferred = matrix || swap;
+    bool refused = mode >= 18 && mode <= 50 && mode != 42;
+    const uint64_t reason_page = 0x300000, destination = 0x380000;
+    const uint32_t index = 0x13579bdf;
+    uint32_t phase = mode < 8 ? mode & 3 : matrix ? mode & 3 : 3;
+    uint32_t line = strided ? row_bytes : total;
+    uint32_t gap = mode == 33 ? 16384 - row_bytes : strided ? 5 : 0;
+    uint32_t pitch = strided ? row_bytes + gap : row_bytes;
+    uint32_t start[] = { 0, 0x9000 | phase, total, line, gap, 0 };
+    uint32_t read[] = { 0, 0, 2, 2, format, type, phase };
+    g_autofree uint8_t *expected = g_malloc(20000);
+    g_autofree uint8_t *got = g_malloc(20000);
+    uint8_t reason[0x4000], actual[0x4000], hub[8];
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 1, 0, 0);
+    if (mode != 45) {
+        kona_command_kicked(s, 0x1f1,
+                            (uint32_t[]) {
+                                physical_page_word(mode == 41 ?
+                                                   0x8000000 : reason_page),
+                                tagged_offset_word(reason_page), 0x4000 }, 3);
+    }
+    qtest_writel(s, KONA_REG(0x000034), 0x98000);
+    qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+    qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+    qtest_writel(s, KONA_REG(0x100000), mode == 32 ? 0 : 0x20000380);
+    qtest_memset(s, destination, 0xa5, 20000);
+    read_dma_clear_notifications(s, reason_page);
+    prepare_refused_reply(s);
+    if (transferred) {
+        pixel_transfer_set(s, 0xd14, 0);
+        pixel_transfer_set(s, 0xd15, 0.125);
+        pixel_transfer_set(s, 0xd19, 0.25);
+        pixel_transfer_set(s, 0xd1b, 0.375);
+        pixel_transfer_set(s, 0xd1c, 0);
+        pixel_transfer_set(s, 0xd1d, 0.625);
+    } else if (mode == 11) {
+        pixel_transfer_set(s, 0xd14, 0.5);
+    } else if (mode == 40) {
+        pixel_transfer_set(s, 0xd14, INFINITY);
+    }
+    if (swap) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xd00, 1 }, 2);
+    }
+    switch (mode) {
+    case 25:
+        start[1] |= 0x10000;
+        break;
+    case 26:
+        start[2]--;
+        break;
+    case 27:
+        start[3] = 3;
+        break;
+    case 28:
+        start[4] = 1;
+        break;
+    case 29:
+        start[5] = 0x100;
+        break;
+    case 30:
+        start[3] = row_bytes;
+        start[4] = 64 * 1024 * 1024;
+        break;
+    case 31:
+        read[6] = 0;
+        break;
+    case 34:
+        read[4] = 11;
+        break;
+    case 35:
+        read[5] = 7;
+        break;
+    case 36:
+        read[2] = 8;
+        read[3] = 1;
+        start[2] = start[3] = 24;
+        break;
+    case 37:
+        read[2] = 0;
+        break;
+    case 38:
+        read[3] = 0xffffffff;
+        break;
+    case 39:
+        read[1] = 127;
+        break;
+    case 47:
+        start[0] = 4;
+        break;
+    case 46:
+        return_context_deactivate(s);
+        read_dma_clear_notifications(s, reason_page);
+        break;
+    default:
+        break;
+    }
+    if (mode == 15) {
+        kona_command(s, 0x1f5, start, 3);
+        read_dma_migrate(from, &s, &to, &dir);
+        for (unsigned k = 3; k < ARRAY_SIZE(start); k++) {
+            qtest_writel(s, REG_COMMAND, start[k]);
+        }
+    } else if (mode != 23 && mode != 48) {
+        kona_command(s, 0x1f5, start, ARRAY_SIZE(start));
+    }
+    if (mode == 14) {
+        read_dma_migrate(from, &s, &to, &dir);
+    } else if (mode == 18) {
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+        read_dma_clear_notifications(s, reason_page);
+    }
+    if (mode == 16) {
+        kona_command(s, 0x39, read, 4);
+        read_dma_migrate(from, &s, &to, &dir);
+        for (unsigned k = 4; k < ARRAY_SIZE(read); k++) {
+            qtest_writel(s, REG_COMMAND, read[k]);
+        }
+    } else if (mode == 43) {
+        kona_command(s, 0x39, read, 4);
+        qtest_writel(s, REG_COMMAND + 0xc + 0x20 * 0x1fc, 0);
+        return_context_restore(s, SAVE_AREA);
+        read_dma_clear_notifications(s, reason_page);
+    } else if (mode == 50) {
+        kona_command(s, 0x138, (uint32_t[]) { 0, 0 }, 2);
+    } else if (mode != 22 && mode != 23 && mode != 48) {
+        kona_command(s, 0x39, read, ARRAY_SIZE(read));
+    }
+    assert_reply_unchanged(s);
+    memset(expected, 0xa5, 20000);
+    qtest_memread(s, destination, got, 20000);
+    g_assert_cmpmem(got, 20000, expected, 20000);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+    if (mode == 10) {
+        gl_window_cleared(s, 0, 0, 1);
+    } else if (mode == 11) {
+        pixel_transfer_set(s, 0xd14, 0);
+    } else if (swap) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xd00, 0 }, 2);
+    }
+    if (mode == 13 || mode == 42) {
+        read_dma_migrate(from, &s, &to, &dir);
+    } else if (mode == 19) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+        read_dma_clear_notifications(s, reason_page);
+    } else if (mode == 20) {
+        kona_command(s, 0x39, read, ARRAY_SIZE(read));
+    } else if (mode == 21) {
+        kona_command(s, 0x1f5, start, ARRAY_SIZE(start));
+    } else if (mode == 49) {
+        kona_command(s, 0x39, read, 4);
+        qtest_writel(s, REG_COMMAND + 0xc + 0x20 * 0x1fc, 0);
+        return_context_restore(s, SAVE_AREA);
+        read_dma_clear_notifications(s, reason_page);
+    } else if (mode == 48) {
+        GError *err = NULL;
+        g_autofree char *uri = NULL;
+
+        dir = g_dir_make_tmp("sn0-kona-read-reuse-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_init(MACHINE_ARGS " -incoming defer");
+        gl_make_current(to);
+        gl_window_cleared(to, 0, 0, 1);
+        kona_command(to, 0x1f5, start, ARRAY_SIZE(start));
+        kona_command(to, 0x39, read, ARRAY_SIZE(read));
+        qtest_qmp_assert_success(to,
+            "{ 'execute': 'migrate-incoming', 'arguments': { 'uri': %s } }",
+            uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 17) {
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100 }, 1);
+        read_dma_migrate(from, &s, &to, &dir);
+        qtest_writel(s, REG_COMMAND, index);
+    } else if (mode == 44) {
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100 }, 1);
+    } else {
+        kona_command(s, 0x1f6,
+                     (uint32_t[]) { mode == 24 ? 0x101 : 0x100, index }, 2);
+    }
+    if (!refused || mode == 41) {
+        double values[4] = { transferred ? 0.125 : mode == 11 ? 0.5 : 1,
+                             transferred ? 0.25 : 0,
+                             transferred ? 0.375 : 0,
+                             transferred ? 0.625 : 1 };
+        double packed[4];
+
+        switch (format) {
+        case 0:
+        case 1:
+        case 2:
+            packed[0] = values[format];
+            break;
+        case 3:
+            packed[0] = values[3];
+            break;
+        case 6:
+        case 7:
+            packed[0] = values[0] + values[1] + values[2];
+            packed[1] = values[3];
+            break;
+        case 9:
+        case 10:
+            packed[0] = values[2];
+            packed[1] = values[1];
+            packed[2] = values[0];
+            packed[3] = values[3];
+            break;
+        default:
+            memcpy(packed, values, sizeof(packed));
+            break;
+        }
+        for (unsigned y = 0; y < 2; y++) {
+            for (unsigned x = 0; x < 2; x++) {
+                for (unsigned c = 0; c < components; c++) {
+                    uint8_t *out = expected + phase + y * pitch +
+                                   (x * components + c) * size;
+                    double scaled = type == 6 ? 0 : packed[c] * maxima[type];
+                    uint32_t bits;
+
+                    if (type != 6 && !(type & 1)) {
+                        scaled = (scaled - 1) / 2;
+                    }
+                    bits = type == 6 ? fbits(packed[c]) : floor(scaled + 0.5);
+                    for (unsigned k = 0; k < size; k++) {
+                        unsigned shift = 8 * (swap ? k : size - 1 - k);
+
+                        out[k] = bits >> shift;
+                    }
+                }
+            }
+        }
+    }
+    qtest_memread(s, destination, got, 20000);
+    g_assert_cmpmem(got, 20000, expected, 20000);
+    memset(reason, 0xa5, sizeof(reason));
+    memset(reason, 0, 4);
+    if (!refused) {
+        stl_be_p(reason, 0x100);
+        stl_be_p(reason + 4, index);
+        stl_be_p(reason + 8, 0);
+        stl_be_p(reason + 12, 0);
+    }
+    qtest_memread(s, reason_page, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), reason, sizeof(reason));
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==,
+                    refused ? 0 : 0x20);
+    g_assert_true(qtest_memread_cpu(s, 0, HUB_LOCAL + PI_INT_PEND0,
+                                   hub, sizeof(hub)));
+    g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x11), ==,
+                    refused ? 0 : UINT64_C(1) << 0x11);
+    g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x10), ==, 0);
+    assert_reply_unchanged(s);
+    if (mode == 12) {
+        read_dma_clear_notifications(s, reason_page);
+        qtest_memset(s, destination, 0xa5, 20000);
+        kona_command(s, 0x1f6, (uint32_t[]) { 0x100, index }, 2);
+        memset(expected, 0xa5, 20000);
+        qtest_memread(s, destination, got, 20000);
+        g_assert_cmpmem(got, 20000, expected, 20000);
+        g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+        g_assert_cmphex(guest_word(s, reason_page), ==, 0);
+    }
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_read_pixels_colour(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -9814,7 +10140,7 @@ static void test_texture_native_1d(gconstpointer opaque)
 
 int main(int argc, char **argv)
 {
-    static const uint32_t bad_format[] = { 0, 0, 1, 1, 8, 1, 0 };
+    static const uint32_t bad_format[] = { 0, 0, 1, 1, 11, 1, 0 };
     static const uint32_t bad_type[] = { 0, 0, 1, 1, 4, 7, 0 };
     static const uint32_t too_large[] = { 0, 0, 5457, 1, 4, 1, 0 };
     static const uint32_t huge_width[] = {
@@ -10504,12 +10830,50 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_texture_pixel_transfer);
     }
+    static const char *read_dma_cases[] = {
+        "contiguous-phase0", "contiguous-phase1", "contiguous-phase2",
+        "contiguous-phase3", "strided-phase0", "strided-phase1",
+        "strided-phase2", "strided-phase3", "captured-pack-swap", "rgba-float",
+        "captured-framebuffer", "captured-transfer", "repeat-finish",
+        "staged-migrates", "descriptor-migrates", "partial-start-migrates",
+        "partial-read-migrates", "partial-finish-migrates",
+        "pending-context-cancelled", "staged-context-replaced", "double-read",
+        "replacement-start", "missing-read", "missing-start", "wrong-reason",
+        "bad-address-tag", "wrong-total", "wrong-line", "contiguous-gap",
+        "nonzero-final-word", "oversize-span", "wrong-phase",
+        "unmapped-destination", "late-unmapped-destination",
+        "unsupported-format", "unsupported-type", "ambiguous-eight-by-one",
+        "zero-width", "negative-height", "clipped-source",
+        "nonfinite-transfer", "unmapped-reason-page", "swapped-stage-migrates",
+        "partial-read-context-aborted", "partial-finish", "missing-reason-page",
+        "no-context", "unmapped-page-offset",
+        "inactive-load-clears-staged-destination",
+        "staged-partial-read-aborted", "x-read-refused",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(read_dma_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/read-dma/%s", read_dma_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_read_pixels_dma);
+    }
     static const char *colour_formats[] = {
         "alpha", "rgb", "rgba", "luminance", "luminance-alpha",
     };
     static const char *colour_types[] = {
         "byte", "ubyte", "short", "ushort", "int", "uint", "float",
     };
+    static const char *read_dma_formats[] = {
+        "red", "green", "blue", "alpha", "rgb", "rgba", "luminance",
+        "luminance-alpha", "bgr", "bgra",
+    };
+    for (unsigned mode = 0; mode < 70; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/read-dma-typed/%s-%s",
+            read_dma_formats[mode / 7], colour_types[mode % 7]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(64 + mode),
+                            test_read_pixels_dma);
+    }
     static const char *reordered_pixels_cases[] = {
         "bgr-pio", "bgra-pio", "bgr-ushort-swapped-dma", "bgra-float-dma",
     };
