@@ -203,6 +203,11 @@ static void test_request(void)
     g_autofree SGIRendererRequest *request = fixture();
     double colour[4];
 
+    request->offset = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->offset = INFINITY;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->offset = 0;
     request->depth[1] = NAN;
     g_assert_false(sgi_renderer_request_valid(request));
     request->depth[1] = -1;
@@ -483,6 +488,8 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
         request->alpha = 0.5;
     } else if (corrupt_attributes == 4) {
         request->depth[0] = 0.5;
+    } else if (corrupt_attributes == 5) {
+        request->offset = 0.5;
     } else if (corrupt_vertices) {
         float vertex[4];
 
@@ -1131,7 +1138,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
-    for (unsigned input = 0; input < 5; input++) {
+    for (unsigned input = 0; input < 6; input++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-renderer/input-attributes/%u", input);
 

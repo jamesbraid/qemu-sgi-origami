@@ -2057,15 +2057,15 @@ static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
  * depth step; EXT_polygon_offset's bias adds in window depth. Boundary modes
  * share this slope calculation and select their own offset enable.
  */
-static double sgi_soft_slope(const SGISoftDraw *r, const SGISoftVertex v[3])
+static double sgi_raster_depth_slope(const SGIGLDrawState *st,
+                                      const double window[3][3])
 {
-    const double sub = 1 << r->rules->subpixel_bits;
     double x1, y1, z1, x2, y2, z2, det, n, f;
 
-    sgi_soft_depth_range(r->st, &n, &f);
-    x1 = (v[1].x - v[0].x) / sub, y1 = (v[1].y - v[0].y) / sub;
-    x2 = (v[2].x - v[0].x) / sub, y2 = (v[2].y - v[0].y) / sub;
-    z1 = v[1].z - v[0].z, z2 = v[2].z - v[0].z;
+    sgi_soft_depth_range(st, &n, &f);
+    x1 = window[1][0] - window[0][0], y1 = window[1][1] - window[0][1];
+    x2 = window[2][0] - window[0][0], y2 = window[2][1] - window[0][1];
+    z1 = window[1][2] - window[0][2], z2 = window[2][2] - window[0][2];
     det = x1 * y2 - x2 * y1;
     /* Reviewed model choice for an entirely degenerate boundary: m = 0. */
     if (det == 0) {
@@ -2075,15 +2075,44 @@ static double sgi_soft_slope(const SGISoftDraw *r, const SGISoftVertex v[3])
            fabs(det) * fabs(f - n);
 }
 
-static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
+static void sgi_soft_window_vertices(const SGISoftDraw *r,
+                                      const SGISoftVertex v[3],
+                                      double window[3][3])
 {
-    const SGIGLDrawState *st = r->st;
+    const double sub = 1 << r->rules->subpixel_bits;
 
+    for (unsigned i = 0; i < 3; i++) {
+        window[i][0] = v[i].x / sub;
+        window[i][1] = v[i].y / sub;
+        window[i][2] = v[i].z;
+    }
+}
+
+static double sgi_soft_slope(const SGISoftDraw *r, const SGISoftVertex v[3])
+{
+    double window[3][3];
+
+    sgi_soft_window_vertices(r, v, window);
+    return sgi_raster_depth_slope(r->st, window);
+}
+
+double sgi_raster_polygon_offset(const SGIRasterRules *rules,
+                                  const SGIGLDrawState *st,
+                                  const double window[3][3])
+{
     if (!(st->polygon_offset & SGI_GL_OFFSET_FILL)) {
         return 0;
     }
-    return sgi_soft_slope(r, v) * st->offset_factor +
-           st->offset_units / sgi_soft_depth_max(r->rules) + st->offset_bias;
+    return sgi_raster_depth_slope(st, window) * st->offset_factor +
+           st->offset_units / sgi_soft_depth_max(rules) + st->offset_bias;
+}
+
+static double sgi_soft_offset(const SGISoftDraw *r, const SGISoftVertex v[3])
+{
+    double window[3][3];
+
+    sgi_soft_window_vertices(r, v, window);
+    return sgi_raster_polygon_offset(r->rules, r->st, window);
 }
 
 /*

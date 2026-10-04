@@ -25,6 +25,7 @@ typedef struct SGIRendererRequest {
     double alpha;             /* Flat source alpha, not stored plane alpha. */
     double colour[3][4];      /* Clamped vertex RGBA before interpolation. */
     double inverse_w[3];      /* Reciprocal clip w. */
+    double offset;            /* Filled polygon bias in window depth. */
     double depth[3];          /* Normalized depth, linear in window space. */
     int32_t clip[4]; /* Inclusive local rectangle; {0,0,-1,-1} is empty. */
     uint8_t rgba[SGI_RENDERER_BYTES];

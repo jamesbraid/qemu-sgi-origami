@@ -2371,6 +2371,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     int64_t tx = x - drawable->origin[0], ty = y - drawable->origin[1];
     int64_t bounds[4] = { tx, ty, tx + width - 1, ty + height - 1 };
     bool logic_op = sgi_kona_renderer_logic_op(st);
+    double window_vertices[3][3];
 
     if (d->context >= SGI_KONA_CONTEXTS ||
         d->context != s->context_current || !s->gl_grammar ||
@@ -2417,7 +2418,9 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     if ((st->shade_model != SGI_GL_FLAT && st->shade_model != SGI_GL_SMOOTH) ||
         (st->colour_mask & ~15) ||
         st->fog ||
-        st->polygon_offset || st->texture_1d || st->texture_2d ||
+        (st->polygon_offset & ~(SGI_GL_OFFSET_FILL | SGI_GL_OFFSET_LINE |
+                                SGI_GL_OFFSET_POINT)) ||
+        st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         !(st->depth_range[0] >= 0 && st->depth_range[0] <= 1) ||
@@ -2472,6 +2475,9 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         request->depth[i] = CLAMP(window[2], 0, 1);
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
+        window_vertices[i][0] = request->vertices[i][0];
+        window_vertices[i][1] = request->vertices[i][1];
+        window_vertices[i][2] = request->depth[i];
         if (request->smooth) {
             request->inverse_w[i] = 1.0 / clip_position[3];
             for (unsigned c = 0; c < 4; c++) {
@@ -2483,6 +2489,10 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                 request->colour[i][c] = CLAMP(value, 0, 1);
             }
         }
+    }
+    request->offset = sgi_raster_polygon_offset(rules, st, window_vertices);
+    if (!isfinite(request->offset)) {
+        return false;
     }
     request->alpha = provoking[SGI_GL_V_COLOR + 3];
     if (!isfinite(request->alpha)) {
@@ -2747,7 +2757,9 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
                         if (!sgi_renderer_depth(request, x, y, &z)) {
                             g_assert_not_reached();
                         }
-                        if (!sgi_raster_window_depth(d->state, z, 0, &window) ||
+                        if (!sgi_raster_window_depth(d->state, z,
+                                                     request->offset,
+                                                     &window) ||
                             !sgi_raster_depth_stencil(rules, d->state, t,
                                 tile.x0 + x, tile.y0 + y, window)) {
                             continue;

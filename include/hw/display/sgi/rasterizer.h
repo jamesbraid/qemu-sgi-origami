@@ -477,6 +477,10 @@ bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
                                const SGIGLDrawState *st,
                                const SGIRasterTarget *t, int x, int y,
                                double z);
+/* Filled polygon bias under the model's slope and depth-step choices. */
+double sgi_raster_polygon_offset(const SGIRasterRules *rules,
+                                  const SGIGLDrawState *st,
+                                  const double window[3][3]);
 /* Map normalized depth through the depth range, add offset and clamp. */
 bool sgi_raster_window_depth(const SGIGLDrawState *st, double z,
                               double offset, double *window);
