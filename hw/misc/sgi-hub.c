@@ -4522,6 +4522,7 @@ static MemTxResult sgi_hub_ii_packet_read(void *opaque, hwaddr addr,
     MemTxResult result;
     hwaddr target;
 
+    trace_sgi_hub_ii_packet_access(addr, size, false);
     *data = 0;
     if (size == 8 && addr == (SGI_HUB_XIO_IO_VIEW | SGI_HUB_XIO_IDENTITY)) {
         space = &s->ii_local_registers_as;
@@ -4542,12 +4543,41 @@ static MemTxResult sgi_hub_ii_packet_write(void *opaque, hwaddr addr,
     uint8_t bytes[8];
     hwaddr target;
 
+    trace_sgi_hub_ii_packet_access(addr, size, true);
     if (!sgi_hub_ii_inbound_target(s, addr, size, true, &target)) {
         return MEMTX_ERROR;
     }
     stq_be_p(bytes, data);
     return address_space_write(&s->ii_inbound_as, target, attrs,
                                bytes + 8 - size, size);
+}
+
+static bool sgi_hub_ii_dma_buffer_transfer(void *opaque, dma_addr_t addr,
+                                          void *buf, dma_addr_t *len,
+                                          DMADirection dir, MemTxAttrs attrs,
+                                          bool swap32, MemTxResult *result)
+{
+    SGIHubState *s = opaque;
+
+    if (addr >= SGI_HUB_XIO_MEMORY_SIZE) {
+        return false;
+    }
+    *len = MIN(*len, SGI_HUB_XIO_MEMORY_SIZE - addr);
+    if (sgi_dma_buffer_rw_ram(&s->ii_inbound_as, addr, buf, len, dir, attrs,
+                           swap32, result)) {
+        trace_sgi_hub_ii_dma_buffer(addr, *len,
+                                   dir == DMA_DIRECTION_FROM_DEVICE, swap32);
+        return true;
+    }
+    return false;
+}
+
+static const SGIDMABufferProvider *sgi_hub_dma_buffer_provider(Object *owner,
+                                                              MemoryRegion *mr)
+{
+    SGIHubState *s = SGI_HUB(owner);
+
+    return mr == &s->ii_packet_face ? &s->ii_dma_buffer : NULL;
 }
 
 static const MemoryRegionOps sgi_hub_ii_packet_ops = {
@@ -5089,6 +5119,8 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         }
     }
     memory_region_transaction_commit();
+    s->ii_dma_buffer.transfer = sgi_hub_ii_dma_buffer_transfer;
+    s->ii_dma_buffer.opaque = s;
     s->claim_ready = true;
     sgi_hub_net_changed(s);
 }
@@ -5554,6 +5586,7 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     npc->receive = sgi_hub_net_port_receive;
     npc->record_check_error = sgi_hub_net_port_record_check_error;
     gpc->return_credits = sgi_hub_return_gfx_credits;
+    SGI_DMA_BUFFER_CLASS(oc)->get_provider = sgi_hub_dma_buffer_provider;
 }
 
 static const TypeInfo sgi_hub_types[] = {
@@ -5568,6 +5601,7 @@ static const TypeInfo sgi_hub_types[] = {
             { TYPE_SGI_XIO_PORT },
             { TYPE_SGI_NET_PORT },
             { TYPE_SGI_PI_GFX },
+            { TYPE_SGI_DMA_BUFFER },
             { }
         },
     },

@@ -7,6 +7,7 @@
 #include "hw/pci/pci_host.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "system/memory.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_XBRIDGE_HEAD "sgi-xbridge-head"
@@ -173,6 +174,7 @@ struct SGIXBridgeHeadState {
     struct XBridgeDMA {
         IOMMUMemoryRegion iommu;
         AddressSpace as;
+        SGIDMABufferProvider provider;
         SGIXBridgeHeadState *head;
         unsigned slot;
         struct XBridgeSourceDMA {

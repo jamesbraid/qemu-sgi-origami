@@ -16,6 +16,7 @@
 
 #include "hw/net/net-rx-latency.h"
 #include "hw/pci/pci_device.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "net/net.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
@@ -67,7 +68,7 @@ struct TigonState {
     SGINetRxLatency rx_latency;
     NICConf conf;
     MACAddr station_addr;    /* active filter; conf holds the reset address */
-    AddressSpace *descriptor_as; /* immutable, borrowed PCI DMA route */
+    SGIDMABufferContext descriptor_dma; /* immutable, borrowed PCI DMA route */
     AddressSpace *payload_as;    /* immutable, borrowed payload DMA route */
 
     /* PCI identity, configurable so the SGI board is one instantiation. */

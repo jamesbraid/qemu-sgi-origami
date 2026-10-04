@@ -18,6 +18,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "qom/object.h"
 #include "hw/block/flash.h"
 
@@ -302,6 +303,7 @@ struct SGIBridgeState {
     struct SGIBridgeDeviceDMA {
         IOMMUMemoryRegion iommu;
         AddressSpace as;
+        SGIDMABufferProvider provider;
         SGIBridgeState *s;
         unsigned int slot;
     } dma[SGI_BRIDGE_DEVICES];
@@ -317,6 +319,8 @@ struct SGIBridgeState {
      * Where a lane-permuted transfer is sent: a translation entry can only
      * say where an access lands, so the action lives in the target space.
      */
+    MemoryRegion dma_denied;
+    AddressSpace dma_denied_as;
     MemoryRegion lane_swap;
     AddressSpace lane_swap_as;
 

@@ -116,12 +116,14 @@ config GT64120
 
 config SGI_BRIDGE
     bool
+    select SGI_DMA_BUFFER
     select ONEWIRE
     select PCI
     select SGI_XIO_PORT
 
 config SGI_XBRIDGE
     bool
+    select SGI_DMA_BUFFER
     default y if SGI_DEVICES
     select PCI
     select SGI_XBRIDGE_XBOW

@@ -17,6 +17,14 @@ struct SGIXioTestTargetState {
     SysBusDevice parent_obj;
     MemoryRegion ram;
     MemoryRegion alias;
+    MemoryRegion overlap;
+    char *memory_kind;
+    void *backing;
+    uint64_t mmio_value;
+    uint64_t mmio_reads;
+    uint64_t mmio_writes;
+    uint64_t mmio_size;
+    uint64_t overlap_calls;
     uint64_t size;
     Object *target_port;
     SGIBedrockIOState *target_peer;
@@ -78,6 +86,10 @@ static uint64_t source_status_read(void *opaque, hwaddr address, unsigned size)
     case 24: return s->destination_source.widget;
     case 32: return s->destination_source.device;
     case 40: return s->destination_source.device_known;
+    case 48: return s->mmio_reads;
+    case 56: return s->mmio_writes;
+    case 64: return s->mmio_size;
+    case 72: return s->overlap_calls;
     default: return 0;
     }
 }
@@ -117,6 +129,58 @@ static MemTxResult source_destination(void *opaque,
     return MEMTX_ACCESS_ERROR;
 }
 
+/* Wide MMIO deliberately overlaps a one-byte higher-priority region. */
+static uint64_t target_mmio_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIXioTestTargetState *s = opaque;
+
+    s->mmio_reads++;
+    s->mmio_size = size;
+    return extract64(s->mmio_value, (addr & 7) * 8, size * 8);
+}
+
+static void target_mmio_write(void *opaque, hwaddr addr, uint64_t value,
+                               unsigned size)
+{
+    SGIXioTestTargetState *s = opaque;
+
+    s->mmio_writes++;
+    s->mmio_size = size;
+    s->mmio_value = deposit64(s->mmio_value, (addr & 7) * 8, size * 8, value);
+}
+
+static uint64_t target_overlap_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIXioTestTargetState *s = opaque;
+
+    s->overlap_calls++;
+    return 0xfe;
+}
+
+static void target_overlap_write(void *opaque, hwaddr addr, uint64_t value,
+                                  unsigned size)
+{
+    SGIXioTestTargetState *s = opaque;
+
+    s->overlap_calls++;
+}
+
+static const MemoryRegionOps target_mmio_ops = {
+    .read = target_mmio_read,
+    .write = target_mmio_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static const MemoryRegionOps target_overlap_ops = {
+    .read = target_overlap_read,
+    .write = target_overlap_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 1 },
+    .impl = { .min_access_size = 1, .max_access_size = 1 },
+};
+
 static void target_realize(DeviceState *dev, Error **errp)
 {
     SGIXioTestTargetState *s = SGI_XIO_TEST_TARGET(dev);
@@ -141,8 +205,43 @@ static void target_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "XIO test RAM size must be 1 byte to 16 MiB");
         return;
     }
-    if (!memory_region_init_ram(&s->ram, OBJECT(s), name, s->size, errp)) {
+    if (!s->memory_kind) {
+        s->memory_kind = g_strdup("ram");
+    }
+    s->mmio_value = 0x0123456789abcdefULL;
+    if (!strcmp(s->memory_kind, "overlap-mmio")) {
+        memory_region_init_io(&s->ram, OBJECT(s), &target_mmio_ops, s,
+                              name, s->size);
+        memory_region_init_io(&s->overlap, OBJECT(s), &target_overlap_ops, s,
+                              "overlap", 1);
+        memory_region_add_subregion_overlap(&s->ram, 0x8004, &s->overlap, 1);
+    } else if (!strcmp(s->memory_kind, "ram-device")) {
+        s->backing = g_malloc0(s->size);
+        memory_region_init_ram_device_ptr(&s->ram, OBJECT(s), name, s->size,
+                                          s->backing);
+    } else if (!strcmp(s->memory_kind, "rom-device")) {
+        if (!memory_region_init_rom_device(&s->ram, OBJECT(s), &target_mmio_ops,
+                                           s, name, s->size, errp)) {
+            return;
+        }
+    } else if (!strcmp(s->memory_kind, "ram") ||
+               !strcmp(s->memory_kind, "readonly")) {
+        if (!memory_region_init_ram(&s->ram, OBJECT(s), name, s->size, errp)) {
+            return;
+        }
+        memory_region_set_readonly(&s->ram,
+                                   !strcmp(s->memory_kind, "readonly"));
+    } else {
+        error_setg(errp, "unknown XIO test memory kind '%s'", s->memory_kind);
         return;
+    }
+    if (strcmp(s->memory_kind, "ram") &&
+        strcmp(s->memory_kind, "overlap-mmio")) {
+        uint8_t *bytes = memory_region_get_ram_ptr(&s->ram);
+
+        for (uint64_t i = 0; i < s->size; i++) {
+            bytes[i] = i + 0x40;
+        }
     }
     memory_region_init_alias(&s->alias, OBJECT(s), "cpu-alias", &s->ram,
                              0, s->size);
@@ -151,13 +250,18 @@ static void target_realize(DeviceState *dev, Error **errp)
         memory_region_init_io(&s->source_window, OBJECT(s), &source_ops, s,
                               "explicit-source", 16 * SGI_XIO_PACKET_SIZE);
         memory_region_init_io(&s->source_status, OBJECT(s), &source_status_ops,
-                              s, "source-status", 48);
+                              s, "source-status", 80);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->source_window);
+        sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->source_status);
+    } else if (strcmp(s->memory_kind, "ram")) {
+        memory_region_init_io(&s->source_status, OBJECT(s), &source_status_ops,
+                              s, "memory-status", 80);
         sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->source_status);
     }
 }
 
 static const Property target_properties[] = {
+    DEFINE_PROP_STRING("memory-kind", SGIXioTestTargetState, memory_kind),
     DEFINE_PROP_BOOL("destination-callback", SGIXioTestTargetState,
                       destination_callback, false),
     DEFINE_PROP_SIZE("size", SGIXioTestTargetState, size, 64 * KiB),
@@ -191,11 +295,19 @@ static void target_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, target_properties);
 }
 
+static void target_finalize(Object *obj)
+{
+    SGIXioTestTargetState *s = SGI_XIO_TEST_TARGET(obj);
+
+    g_free(s->backing);
+}
+
 static const TypeInfo target_type = {
     .name = TYPE_SGI_XIO_TEST_TARGET,
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIXioTestTargetState),
     .class_init = target_class_init,
+    .instance_finalize = target_finalize,
 };
 
 static void target_register_types(void)
