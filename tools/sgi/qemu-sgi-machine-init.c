@@ -168,29 +168,24 @@ static bool check_inputs(const SGIModelOffering *offering,
 
 /*
  * The IP27 configuration-block values the machine patches into node
- * flash built for @t. The processor values come from the topology's
- * first node, as the machine takes them.
- *
- * The three product values follow the machine's current class fields:
- * only Origin 200 sets them, so every other IP27 product gets zeros.
- * Once the catalogue carries them per topology (an ip27-firmware record
- * with machine-type, flash-read-cycles and flash-write-cycles), read
- * them from there instead, as the machine then does.
+ * flash built for @t: the product values from the topology's
+ * ip27-firmware record, which the catalogue compiler requires on every
+ * SN0 topology, and the processor values from its first node, as the
+ * machine takes them.
  */
 static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t)
 {
     const SGIModelProcessor *cpu = t->nodes->value->cpu_slots->value->assembly;
-    SGIIP27FlashValues values = {
+    const SGIModelIp27FirmwareConfig *firmware = t->ip27_firmware;
+
+    g_assert(firmware);
+    return (SGIIP27FlashValues) {
+        .machine_type = firmware->machine_type,
+        .read_cycles = firmware->flash_read_cycles,
+        .write_cycles = firmware->flash_write_cycles,
         .cpu_mode_bits = cpu->mode_bits,
         .cpu_clock_hz = cpu->clock_hz,
     };
-
-    if (g_str_equal(t->product, "origin200")) {
-        values.machine_type = 1;
-        values.read_cycles = 15;
-        values.write_cycles = 4;
-    }
-    return values;
 }
 
 /*
