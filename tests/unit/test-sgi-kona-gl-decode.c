@@ -1892,7 +1892,7 @@ static void test_pixels_pio_refusals(void)
     header[5] = 0;
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 3, &l));
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 2, 0, 0, 4, &l));
-    header[2] = 11;
+    header[2] = 14;
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 4, &l));
     header[2] = 5;
     g_assert_true(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 4, &l));
@@ -1994,7 +1994,7 @@ static void test_pixels_dma_refusals(void)
         { { 1, 1, 5, 1, 0, 1, 0, 0 }, 0, 1, 4 },
         { { 1, 1, 5, 1, 0, 1, 1, 0 }, 0, 0, 4 },
         { { 2, 1, 5, 1, 0, 1, 1, 0 }, 1, 0, 4 },
-        { { 1, 1, 11, 1, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 14, 1, 0, 1, 0, 0 }, 0, 0, 4 },
         { { UINT32_MAX, 2, 3, 1, 0, 1, 0, 0 }, 0, 0, 1 },
         { { UINT32_MAX, UINT32_MAX, 5, 6, 0, 1, 0, 0 }, 0, 0, 4 },
         { { 1, 1, 5, 6, 0, 1, 1, 0 }, UINT32_MAX, 0, 4 },
@@ -2336,6 +2336,37 @@ static void test_pixel_index_transfer(void)
     }
     g_assert_false(sgi_kona_gl_pixel_index_transfer(NAN, 0, 0, &out));
     g_assert_false(sgi_kona_gl_pixel_index_transfer(INFINITY, 0, 0, &out));
+}
+
+static void test_pixel_index_round(void)
+{
+    static const struct {
+        double value;
+        int32_t shift, offset;
+        uint32_t expected;
+    } cases[] = {
+        { 0.25, 0, 0, 0 }, { 0.5, 0, 0, 1 }, { 2.75, 0, 0, 3 },
+        { -0.75, 0, 0, UINT32_MAX }, { -0.5, 0, 0, 0 },
+        { -1.75, 0, 0, UINT32_MAX - 1 }, { 0.25, 1, 0, 1 },
+        { 1, -1, 0, 1 }, { 0.75, 1, 3, 5 },
+        { 4294967295.75, 0, 0, 0 }, { -1, -1, 0, 0x80000000 },
+    };
+    uint32_t out;
+
+    for (unsigned k = 0; k < ARRAY_SIZE(cases); k++) {
+        g_assert_true(sgi_kona_gl_pixel_index_round(cases[k].value,
+            cases[k].shift, cases[k].offset, &out));
+        g_assert_cmphex(out, ==, cases[k].expected);
+    }
+    g_assert_false(sgi_kona_gl_pixel_index_round(NAN, 0, 0, &out));
+    g_assert_false(sgi_kona_gl_pixel_index_round(INFINITY, 0, 0, &out));
+    g_assert_false(sgi_kona_gl_pixel_index_round(1, 0, 0, NULL));
+    for (unsigned type = 0; type <= 6; type++) {
+        g_assert_cmpuint(sgi_kona_gl_native_pixel_bytes(11, type), ==,
+                        type < 2 ? 1 : type < 4 ? 2 : 4);
+    }
+    g_assert_cmpuint(sgi_kona_gl_native_pixel_bytes(11, 7), ==, 0);
+    g_assert_cmpuint(sgi_kona_gl_native_pixel_bytes(11, 8), ==, 0);
 }
 
 static void test_pixel_index_pack(void)
@@ -2956,6 +2987,7 @@ int main(int argc, char **argv)
                     test_pixel_index_decode);
     g_test_add_func("/sgi-kona-gl-decode/index/transfer",
                     test_pixel_index_transfer);
+    g_test_add_func("/sgi-kona-gl-decode/index/round", test_pixel_index_round);
     g_test_add_func("/sgi-kona-gl-decode/index/pack", test_pixel_index_pack);
     g_test_add_func("/sgi-kona-gl-decode/packed/decode",
                     test_pixel_packed_decode);

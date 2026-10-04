@@ -344,6 +344,7 @@ typedef struct SGIKonaGLPixelTransfer {
     uint32_t index_offset;
     uint32_t map_stencil;
     SGIKonaGLPixelMap stencil_map;
+    SGIKonaGLPixelMap index_rgba[4];
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {

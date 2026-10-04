@@ -6688,6 +6688,113 @@ static void test_stencil_pixel_maps(gconstpointer opaque)
     }
 }
 
+static void indexed_colour_maps(QTestState *s, uint32_t token)
+{
+    static const float values[][8] = {
+        { 0, 0, 1, 0 }, { 0, 1 }, { 0, 0, 0, 0, 1, 0, 0, 0 }, { 1 },
+    };
+    static const unsigned counts[] = { 4, 2, 8, 1 };
+
+    for (unsigned c = 0; c < 4; c++) {
+        kona_command(s, token,
+                     (uint32_t[]) { 0xc72 + c, counts[c],
+                                    fbits(counts[c] - 1), 256 }, 4);
+        for (unsigned k = 0; k < counts[c]; k++) {
+            uint32_t value = token == 0x34 ? fbits(values[c][k]) :
+                values[c][k] ? token == 0x35 ? UINT32_MAX : 0xffff : 0;
+
+            qtest_writel(s, REG_COMMAND, value);
+        }
+    }
+}
+
+static void test_indexed_colour_pixels(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned type = mode < 28 ? mode % 7 : 6;
+    unsigned size = type < 2 ? 1 : type < 4 ? 2 : 4;
+    bool dma = mode < 28 && ((mode / 7) & 1);
+    bool swap = mode < 28 && ((mode / 7) & 2);
+    uint32_t first = type == 6 ? fbits(18) : 18;
+    uint32_t second = type == 6 ? fbits(52) : 52;
+    uint32_t rgb[] = { 0xff0000, 0x0000ff };
+    uint8_t bytes[12] = { 0 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    indexed_colour_maps(s, mode == 28 ? 0x35 : mode == 29 ? 0x36 : 0x34);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode == 30) {
+        first = fbits(2.75f);
+        second = fbits(-0.75f);
+        rgb[0] = rgb[1] = 0x00ff00;
+    } else if (mode == 31) {
+        pixel_transfer_set(s, 0xd12, -1);
+        pixel_transfer_set(s, 0xd13, 1);
+        rgb[0] = 0xff0000;
+        rgb[1] = 0x00ff00;
+    } else if (mode == 32) {
+        pixel_transfer_set(s, 0xd14, 0);
+        pixel_transfer_set(s, 0xd19, 1);
+    } else if (mode == 33) {
+        kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+        kona_command(s, 0x34,
+                     (uint32_t[]) { 0xc72, 1, fbits(0), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, fbits(0));
+        read_dma_migrate(from, &s, &to, &dir);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    } else if (mode == 35) {
+        second = fbits(NAN);
+        rgb[0] = rgb[1] = 0;
+    } else if (mode == 36) {
+        qtest_system_reset(s);
+        gl_make_current(s);
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        rgb[0] = rgb[1] = 0;
+    }
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf0, swap }, 2);
+    packed_pixel_bytes(bytes + 1, first, size, swap);
+    packed_pixel_bytes(bytes + 1 + size, second, size, swap);
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380001, bytes + 1, 2 * size);
+    }
+    kona_command(s, 0x3a,
+                 (uint32_t[]) { 2, 1, 11, type, 1, dma, 0, 0 }, 8);
+    if (dma) {
+        texture_dma_packet(s, 1, 2 * size, 2 * size, 0);
+    } else {
+        qtest_writel(s, REG_COMMAND, ldl_be_p(bytes));
+        if (mode == 34) {
+            read_dma_migrate(from, &s, &to, &dir);
+        }
+        for (unsigned k = 1; k < DIV_ROUND_UP(1 + 2 * size, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(bytes + 4 * k));
+        }
+    }
+    expected_clear(e, 0);
+    for (unsigned k = 0; k < 2; k++) {
+        unsigned at = ((127 - 64) * 128 + 64 + k) * 3;
+
+        e->rgb[at] = rgb[k] >> 16;
+        e->rgb[at + 1] = rgb[k] >> 8;
+        e->rgb[at + 2] = rgb[k];
+    }
+    assert_window_matches(s, e);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_stencil_pixels_transport(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -11627,6 +11734,13 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_depth_pixel_boundaries);
+    }
+    for (unsigned mode = 0; mode < 37; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/indexed-colour-pixels/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_indexed_colour_pixels);
     }
     static const char *stencil_map_names[] = {
         "float", "uint", "ushort", "default", "read", "copy", "attributes",

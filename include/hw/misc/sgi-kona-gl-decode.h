@@ -141,6 +141,8 @@ bool sgi_kona_gl_pixel_index(uint32_t type, const uint32_t *source,
                               bool swap_bytes, double *index);
 bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
                                        int32_t offset, uint32_t *out);
+bool sgi_kona_gl_pixel_index_round(double index, int32_t shift,
+                                    int32_t offset, uint32_t *out);
 bool sgi_kona_gl_pixel_index_pack(uint32_t type, uint32_t index,
                                    bool swap_bytes, uint8_t *out,
                                    size_t capacity);

@@ -660,8 +660,8 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
 
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type)
 {
-    /* Depth and stencil have one scalar element and no packed colour types. */
-    return (format == 12 || format == 13) && type <= 6 ?
+    /* Index and depth formats have one scalar element. */
+    return (format >= 11 && format <= 13) && type <= 6 ?
            sgi_kona_gl_texture_pixel_bytes(0, type) :
            sgi_kona_gl_texture_pixel_bytes(format, type);
 }
@@ -700,8 +700,8 @@ bool sgi_kona_gl_pixel_index(uint32_t type, const uint32_t *source,
     return true;
 }
 
-bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
-                                       int32_t offset, uint32_t *out)
+static bool sgi_kona_gl_pixel_index_fixed(double index, int32_t shift,
+                                         int32_t offset, uint64_t *out)
 {
     double whole, fraction;
     uint64_t fixed;
@@ -724,7 +724,31 @@ bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
         fixed >>= -shift;
     }
     fixed += (uint64_t)(uint32_t)offset << 32;
+    *out = fixed;
+    return true;
+}
+
+bool sgi_kona_gl_pixel_index_transfer(double index, int32_t shift,
+                                       int32_t offset, uint32_t *out)
+{
+    uint64_t fixed;
+
+    if (!out || !sgi_kona_gl_pixel_index_fixed(index, shift, offset, &fixed)) {
+        return false;
+    }
     *out = fixed >> 32;
+    return true;
+}
+
+bool sgi_kona_gl_pixel_index_round(double index, int32_t shift,
+                                    int32_t offset, uint32_t *out)
+{
+    uint64_t fixed;
+
+    if (!out || !sgi_kona_gl_pixel_index_fixed(index, shift, offset, &fixed)) {
+        return false;
+    }
+    *out = (fixed + UINT64_C(0x80000000)) >> 32;
     return true;
 }
 
