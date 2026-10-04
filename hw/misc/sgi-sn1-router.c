@@ -183,7 +183,8 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
                 notify = false;
                 break;
             }
-            if (address == bank[p] + 8 && !write) {
+            if (!write && (address == bank[p] + 8 ||
+                           address == bank[p] + 0x88)) {
                 packet->value = 0;
                 return SGI_NET_PACKET_OK;
             }

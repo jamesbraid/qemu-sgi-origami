@@ -71,6 +71,116 @@ static void test_registers(void)
     qtest_quit(s);
 }
 
+static void test_error_clear(void)
+{
+    QTestState *s = qtest_init(ARGS);
+
+    qtest_writeq(s, BASE + 0x10, 0x400);
+    qtest_writeq(s, BASE + 0x20, 0x5678);
+    qtest_writeq(s, BASE + 0x28, 0x9abc);
+    qtest_writeq(s, BASE + 0x50, 0x800);
+    for (unsigned i = 0; i < 5; i++) {
+        qtest_writeq(s, BASE + 0x100 + 8 * i, i < 3 ? 0x1234 + i : 1);
+    }
+    for (unsigned p = 0; p < 8; p++) {
+        uint64_t address = BASE + bank[p] + 0x88;
+
+        qtest_writeq(s, BASE + bank[p], 0x1234000 + p);
+        qtest_writeq(s, BASE + bank[p] + 0x100, p);
+        qtest_writeq(s, BASE + bank[p] + 0x200, 7 - p);
+        qtest_writeq(s, BASE + 0x8008 + 8 * p, p + 1);
+        for (unsigned repeat = 0; repeat < 2; repeat++) {
+            g_assert_cmphex(qtest_readq(s, address), ==, 0);
+            g_assert_cmpuint(get(s, "result"), ==, 2);
+            g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 8), ==, 0);
+        }
+        set(s, "operation", 2);
+        qtest_readq(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 5);
+        set(s, "operation", UINT64_MAX);
+        qtest_writeq(s, address, UINT64_MAX);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readq(s, address + 1);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readl(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readw(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readb(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeq(s, address + 1, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writel(s, address, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readq(s, address - 8);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readq(s, address + 8);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0x1234000 + p);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x100), ==, p);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x200), ==, 7 - p);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x8008 + 8 * p), ==, p + 1);
+    }
+    g_assert_cmphex(qtest_readq(s, BASE + 0x10), ==, 0x400);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x20), ==, 0x5678);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x9abc);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==, 0x300800);
+    for (unsigned i = 0; i < 5; i++) {
+        g_assert_cmphex(qtest_readq(s, BASE + 0x100 + 8 * i), ==,
+                        i < 3 ? 0x1234 + i : 1);
+    }
+    for (unsigned p = 0; p < 8; p++) {
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0x1234000 + p);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x100), ==, p);
+        g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 0x200), ==, 7 - p);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x8008 + 8 * p), ==, p + 1);
+    }
+    qtest_readq(s, BASE + 8);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_writeq(s, BASE + 8, 0);
+    g_assert_cmpuint(get(s, "failure"), ==, 4);
+    qtest_quit(s);
+}
+
+static void test_error_clear_vector(void)
+{
+    const uint64_t lb = UINT64_C(0x20600000);
+    const uint64_t sentinel = UINT64_C(0xdeadbeefdeadbeef);
+    const uint64_t valid = UINT64_C(1) << 63;
+    QTestState *s = qtest_init(ARGS " -m 256M "
+        "-object memory-backend-ram,id=dma,size=2M "
+        "-device sgi-bedrock,id=a,revision=2,dma-memory=/objects/dma/dma[0] "
+        "-device sgi-net-cable,id=c,end0=a,end1=r,end1-index=1");
+    uint64_t status;
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/a','property':'net-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/r','property':'port1-cable',"
+        "'value':'/machine/peripheral/c'}}");
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/a", 0, 0x20000000);
+    status = qtest_readq(s, BASE);
+    g_assert_true(status & (UINT64_C(1) << 37));
+    for (unsigned p = 0; p < 8; p++) {
+        uint64_t params = (bank[p] + 0x88) | (UINT64_C(0x5a) << 40);
+
+        for (unsigned write = 0; write <= 1; write++) {
+            qtest_readq(s, lb + 0xc038);
+            qtest_writeq(s, lb + 0xc030, sentinel);
+            qtest_writeq(s, lb + 0xc008, 0);
+            qtest_writeq(s, lb + 0xc010, UINT64_MAX);
+            qtest_writeq(s, lb + 0xc000, params | write);
+            g_assert_cmphex(qtest_readq(s, lb + 0xc020), ==,
+                            valid | params | (write ? 4 : 0));
+            g_assert_cmphex(qtest_readq(s, lb + 0xc030), ==,
+                            write ? sentinel : 0);
+        }
+        g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+    }
+    qtest_quit(s);
+}
+
 static void test_inactive_barrier_storage(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -442,6 +552,9 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/sn1-router/registers", test_registers);
+    qtest_add_func("/sgi/sn1-router/error-clear", test_error_clear);
+    qtest_add_func("/sgi/sn1-router/error-clear-vector",
+                   test_error_clear_vector);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-storage",
                    test_inactive_barrier_storage);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-no-effects",
