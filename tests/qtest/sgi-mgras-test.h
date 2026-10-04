@@ -173,11 +173,16 @@ static inline uint64_t mgras_qom_get_uint(QTestState *qts, const char *property)
  * error here is what proves it: a case cannot silently inherit the
  * register face the previous case left behind.
  */
-static inline void mgras_reset(void)
+static inline void mgras_reset_state(QTestState *qts)
 {
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x13);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static inline void mgras_reset(void)
+{
+    mgras_reset_state(qts);
 }
 
 static inline void mgras_assert_width_error(QTestState *qts, uint64_t addr)
@@ -991,7 +996,7 @@ static inline uint32_t gl_dump_pixel(const uint32_t *rgb, int x, int y)
 /* The probe's window, display on, and the state every scene case sets. */
 static inline void gl_scene_start(QTestState *qts, uint32_t shade)
 {
-    mgras_reset();
+    mgras_reset_state(qts);
     mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     gl_viewport(qts, 0, 0, 128, 128);
@@ -1076,7 +1081,7 @@ static inline void gl_rotate(QTestState *qts, float angle, float x, float y,
 /* A window-unit viewport, glOrtho(0, 128, 0, 128, -1, 1), modelview mode. */
 static inline void gl_transform_start(QTestState *qts)
 {
-    mgras_reset();
+    mgras_reset_state(qts);
     mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
     gl_viewport(qts, 0, 0, 128, 128);
     gl_window_projection(qts);
