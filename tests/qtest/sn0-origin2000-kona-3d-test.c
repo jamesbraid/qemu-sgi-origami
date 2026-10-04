@@ -230,7 +230,7 @@ static const struct {
     { 0x11, 5 }, { 0x12, 5 },
     { 0x3a, 8 }, { 0x39, 7 }, { 0x4c, 1 }, { 0xc9, 1 }, { 0xc8, 1 },
     { 0x176, 1 }, { 0x178, 1 }, { 0x179, 22 }, { 0x17d, 6 }, { 0x1d5, 5 },
-    { 0x106, 5 }, { 0xed, 4 },
+    { 0x106, 5 }, { 0x17b, 14 }, { 0x17c, 4 }, { 0xed, 4 },
 };
 
 /*
@@ -2837,9 +2837,9 @@ static void assert_stencil_colour(QTestState *s, uint32_t rgb)
     unsigned at = ((FB_HEIGHT - 1 - (PROBE_Y + PROBE_SIZE / 2)) *
                    FB_WIDTH + PROBE_X + PROBE_SIZE / 2) * 3;
 
-    g_assert_cmphex(image[at], ==, (rgb >> 16) & 255);
-    g_assert_cmphex(image[at + 1], ==, (rgb >> 8) & 255);
-    g_assert_cmphex(image[at + 2], ==, rgb & 255);
+    uint32_t actual = (image[at] << 16) | (image[at + 1] << 8) | image[at + 2];
+
+    g_assert_cmphex(actual, ==, rgb);
 }
 
 static void test_stencil_visual_present_and_absent(void)
@@ -4636,6 +4636,145 @@ static void test_texture_native_detail(gconstpointer opaque)
     assert_stencil_colour(s, expected);
     assert_textport_in_step(s);
     qtest_quit(s);
+    if (from) {
+        qtest_quit(from);
+        g_rmdir(dir);
+    }
+}
+
+static void texture_volume_bind(QTestState *s, bool linear, bool mipmapped)
+{
+    uint32_t bind[] = {
+        0, (3u << 28) | (41 << 12),
+        (0x30 << 14) | (mipmapped ? 3 << 2 : linear ? (1 << 2) | (1 << 5) : 0),
+        0x111, 0,
+    };
+    uint32_t mip[] = { 0, 0x101010, 256u << 10, 0, 0x55, 0x66,
+                       UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
+                       UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX };
+
+    kona_command(s, 0x1d5, bind, 5);
+    if (mipmapped) {
+        kona_command(s, 0x17b, mip, ARRAY_SIZE(mip));
+    } else {
+        kona_command(s, 0x17c, (uint32_t[]) { 0, 0, 0x55, 0x66 }, 4);
+    }
+}
+
+static void texture_volume_header(QTestState *s, unsigned z, bool dma,
+                                   bool odd)
+{
+    uint32_t h[20];
+
+    memcpy(h, texture_header, sizeof(h));
+    h[0] = 0x806f;
+    h[1] = h[2] = odd ? 1 : 2;
+    h[5] = dma ? 3 : 0;
+    h[6] = h[7] = dma;
+    h[13] = h[14] = odd ? 0 : 1;
+    h[15] = z;
+    h[16] = 0x111;
+    h[17] = 0x21c1 | (dma ? 4 : 0) | (odd ? 8 : 0);
+    h[18] = 0x55;
+    h[19] = 0x66;
+    kona_command(s, 0x174, h, 20);
+}
+
+static void test_texture_native_volume(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool linear = mode == 1, dma = mode == 2, missing = mode == 4;
+    bool mipmapped = mode >= 5;
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = missing ? kona_init_logged(&log) : qtest_init(MACHINE_ARGS);
+    QTestState *from = NULL;
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    static const double tri[3][3] = {
+        { -0.8, -0.8, 0 }, { 0.8, -0.8, 0 }, { 0, 0.8, 0 },
+    };
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 1);
+    texture_volume_bind(s, linear, mipmapped);
+    for (unsigned z = 0; z < (missing ? 1 : 2); z++) {
+        uint32_t pixel = z ? 0x0000ffff : 0xff0000ff;
+
+        texture_volume_header(s, z, dma, false);
+        if (dma) {
+            uint8_t bytes[16];
+
+            for (unsigned k = 0; k < 4; k++) {
+                stl_be_p(bytes + k * 4, pixel);
+            }
+            qtest_memwrite(s, 0x380003, bytes, sizeof(bytes));
+            qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+            texture_dma_packet(s, 3, sizeof(bytes), 8, 0);
+            g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, 0x100);
+        } else {
+            for (unsigned k = 0; k < 4; k++) {
+                qtest_writel(s, REG_COMMAND, pixel);
+                if (mode == 3 && z == 1 && k == 1) {
+                    dir = g_dir_make_tmp("sn0-kona-volume-XXXXXX", &error);
+                    g_assert_no_error(error);
+                    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+                    from = s;
+                    s = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+                    sgi_migrate_stopped(from, uri);
+                }
+            }
+        }
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    }
+    if (mipmapped) {
+        texture_volume_header(s, 0, false, true);
+        qtest_writel(s, REG_COMMAND, 0x00ff00ff);
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        if (mode == 6) {
+            dir = g_dir_make_tmp("sn0-kona-volume-XXXXXX", &error);
+            g_assert_no_error(error);
+            uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+            from = s;
+            s = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+            sgi_migrate_stopped(from, uri);
+        }
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
+    kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+    if (mipmapped) {
+        /* Only R varies; its native derivative must select the green mip. */
+        gl_begin(s, 4);
+        for (unsigned k = 0; k < 3; k++) {
+            kona_command_f(s, 0x84,
+                           (float[]) { 0.25, 0.25, k == 1 ? 128 : 0 }, 3);
+            kona_command_f(s, 0x90,
+                           (float[]) { tri[k][0], tri[k][1], 0 }, 3);
+        }
+        gl_end(s);
+        assert_stencil_colour(s, 0x00ff00);
+    } else {
+        kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
+        gl_triangle_z(s, tri, 0);
+        assert_stencil_colour(s, missing ? 0xffffff : 0xff0000);
+        if (!missing) {
+            kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.75 }, 3);
+            gl_triangle_z(s, tri, 0);
+            assert_stencil_colour(s, 0x0000ff);
+            kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.5 }, 3);
+            gl_triangle_z(s, tri, 0);
+            assert_stencil_colour(s, linear ? 0x800080 : 0x0000ff);
+            kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 1.25 }, 3);
+            gl_triangle_z(s, tri, 0);
+            assert_stencil_colour(s, 0xff0000);
+        }
+    }
+    assert_textport_in_step(s);
+    qtest_quit(s);
+    if (missing) {
+        found = kona_log_read(log);
+        g_assert_nonnull(strstr(found, "incomplete texture image pyramid, "
+                                      "texturing disabled for draw"));
+    }
     if (from) {
         qtest_quit(from);
         g_rmdir(dir);
@@ -6489,6 +6628,18 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(4), test_texture_native_rgb);
     qtest_add_data_func("sn0/origin2000/kona-3d/texture/rgb/source-rgba",
                         GUINT_TO_POINTER(5), test_texture_native_rgb);
+    static const char *volume_cases[] = {
+        "nearest", "linear", "dma", "migrate-partial", "missing-slice",
+        "mipmap-r", "mipmap-migrates",
+    };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/texture/volume/%s", volume_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_texture_native_volume);
+    }
     static const char *detail_cases[] = {
         "add", "modulate", "colour", "alpha", "absent", "missing",
         "migrates", "invalid-retained", "scaled",

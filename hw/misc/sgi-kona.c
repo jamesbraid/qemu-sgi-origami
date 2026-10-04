@@ -4302,11 +4302,29 @@ static uint32_t sgi_kona_gl_pixel_bytes(uint32_t format, uint32_t type)
  */
 #define SGI_KONA_GL_IMAGE_MAX 8192
 
+/* Destination layout is shared by ingress and migration validation. */
+static bool sgi_kona_texture_native_header(const uint32_t *h)
+{
+    bool volume = h[0] == SGI_GL_TEXTURE_3D;
+    uint32_t layout = (volume ? 0x21c0 : 0x2180) | (h[6] << 2);
+
+    return (volume || h[0] == SGI_GL_TEXTURE_2D) && h[6] <= 1 &&
+           h[7] <= h[6] && !h[8] &&
+           sgi_kona_texture_storage_base(h) && h[10] != UINT32_MAX &&
+           (volume ? h[15] < SGI_KONA_GL_IMAGE_MAX : !h[15]) &&
+           h[16] <= (volume ? 0xfff : 0xff) && (h[16] & 15) <= 13 &&
+           ((h[16] >> 4) & 15) <= 13 && (h[16] >> 8) <= 13 &&
+           ((h[17] & ~1u) == layout || (h[17] & ~1u) == (layout | 8)) &&
+           (uint64_t)h[11] + h[1] - 1 == h[13] &&
+           (uint64_t)h[12] + h[2] - 1 == h[14];
+}
+
 /* Rebuild the active sampler only from complete native records. */
 static void sgi_kona_gl_texture_bind(SGIKonaState *s)
 {
     SGIKonaTextureParams params;
-    uint32_t handle = s->texture_bind[0], width, height, base, internal;
+    uint32_t handle = s->texture_bind[0], width, height, depth, base, internal;
+    bool volume = (s->texture_bind[1] >> 28) == 3;
     uint32_t storage = (s->texture_bind[2] >> 14) & 0x7f;
 
     if (!s->texture_bind_valid || handle == UINT32_MAX) {
@@ -4319,8 +4337,17 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
                                              &base, &internal) ||
         storage != (base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ?
                     0xd : base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
-        !sgi_kona_gl_texture_sampler(s->texture_bind, s->texture_record,
-                                     &params) ||
+        (volume ?
+            ((s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
+              s->texture_record_token !=
+                  SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT) ||
+             !sgi_kona_gl_texture_volume_sampler(s->texture_bind,
+                 s->texture_record,
+                 s->texture_record_token == SGI_KONA_CMD_GL_TEX_BIND_VOLUME,
+                 &params)) :
+            (s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D ||
+             !sgi_kona_gl_texture_sampler(s->texture_bind, s->texture_record,
+                                          &params))) ||
         !sgi_kona_gl_texture_transform(s->texture_transform[1],
                                        s->texture_transform[2],
                                        s->texture_transform[3],
@@ -4330,12 +4357,16 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
                       " textured draws refused\n");
         return;
     }
-    sgi_kona_gl_texture_dimensions(s->texture_bind, &width, &height);
+    sgi_kona_gl_texture_volume_dimensions(s->texture_bind, &width, &height,
+                                           &depth);
     if (!sgi_kona_texture_native_format(&s->textures, handle, storage) ||
         !sgi_kona_texture_native_internal_format(&s->textures, handle, base,
                                                  internal) ||
-        !sgi_kona_texture_native_dimensions(&s->textures, handle, width,
-                                            height) ||
+        (volume ?
+            !sgi_kona_texture_native_volume_dimensions(&s->textures, handle,
+                                                        width, height, depth) :
+            !sgi_kona_texture_native_dimensions(&s->textures, handle, width,
+                                                 height)) ||
         !sgi_kona_texture_bind(&s->textures, handle, &params)) {
         sgi_kona_texture_bind(&s->textures, UINT32_MAX, NULL);
         qemu_log_mask(LOG_UNIMP, "sgi-kona: native texture binding refused for"
@@ -4380,14 +4411,8 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
     framing.source_stride = stride;
     pixels = (uint64_t)h[1] * h[2];
     words = sgi_kona_texture_words(&framing);
-    if (h[0] != 0xde1 || h[7] > h[6] || h[8] ||
-        (h[6] && stride < (uint64_t)h[1] * bytes) ||
-        !sgi_kona_texture_storage_base(h) || h[10] == UINT32_MAX || h[15] ||
-        h[16] > 0xff || (h[16] & 15) > 13 || (h[16] >> 4) > 13 ||
-        ((h[17] & ~1u) != (0x2180 | (h[6] << 2)) &&
-         (h[17] & ~1u) != (0x2188 | (h[6] << 2))) ||
-        (uint64_t)h[11] + h[1] - 1 != h[13] ||
-        (uint64_t)h[12] + h[2] - 1 != h[14]) {
+    if (!sgi_kona_texture_native_header(h) ||
+        (h[6] && stride < (uint64_t)h[1] * bytes)) {
         reason = "unsupported native destination layout";
     } else if (pixels * DIV_ROUND_UP(MAX(bytes, 4), 4) >
                SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
@@ -4609,15 +4634,30 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         memcpy(s->texture_bind, args, sizeof(s->texture_bind));
         s->texture_bind_valid = true;
         s->texture_record_valid = false;
+        s->texture_record_token = 0;
         sgi_kona_gl_texture_bind(s);
         return;
     case SGI_KONA_CMD_GL_TEX_BIND_2D:
+    case SGI_KONA_CMD_GL_TEX_BIND_VOLUME:
+    case SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT: {
+        uint32_t table[16];
+
         s->texture_state_used = true;
-        memcpy(s->texture_record, args, sizeof(s->texture_record));
+        memset(s->texture_record, 0, sizeof(s->texture_record));
+        memcpy(s->texture_record, args, argc * sizeof(*args));
+        s->texture_record_token = selector;
         s->texture_record_valid = true;
+        memset(table, 0xff, sizeof(table));
+        if (selector == SGI_KONA_CMD_GL_TEX_BIND_2D) {
+            memcpy(table, args + 6, sizeof(table));
+        } else if (selector == SGI_KONA_CMD_GL_TEX_BIND_VOLUME) {
+            memcpy(table, args + 4, 10 * sizeof(*args));
+        } else {
+            memcpy(table, args + 2, 2 * sizeof(*args));
+        }
         if (s->texture_bind_valid && s->texture_bind[0] != UINT32_MAX) {
             if (!sgi_kona_texture_native_table(&s->textures,
-                                               s->texture_bind[0], args + 6)) {
+                                               s->texture_bind[0], table)) {
                 s->texture_record_valid = false;
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-kona: native texture table refused for"
@@ -4626,6 +4666,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         }
         sgi_kona_gl_texture_bind(s);
         return;
+    }
     case SGI_KONA_CMD_GL_TEX_POST_SCALE:
     case SGI_KONA_CMD_GL_TEX_SCALE_BIAS:
         if (args[0] < 2) {
@@ -8069,6 +8110,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_kona_texture_upload_clear(s);
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
+    s->texture_record_token = 0;
     memset(s->texture_transform, 0, sizeof(s->texture_transform));
     s->texture_bind_valid = false;
     s->texture_record_valid = false;
@@ -8338,6 +8380,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     sgi_kona_texture_upload_clear(s);
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
+    s->texture_record_token = 0;
     memset(s->texture_transform, 0, sizeof(s->texture_transform));
     s->texture_bind_valid = false;
     s->texture_record_valid = false;
@@ -9257,18 +9300,12 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
         return !u->complete && !u->source_stride && !u->swap_bytes &&
                !memcmp(h, empty, sizeof(empty));
     }
-    return h[0] == 0xde1 && h[1] && h[2] &&
+    return h[1] && h[2] && sgi_kona_texture_native_header(h) &&
            h[1] <= SGI_KONA_GL_IMAGE_MAX && h[2] <= SGI_KONA_GL_IMAGE_MAX &&
            sgi_kona_gl_texture_pixel_bytes(h[3], h[4]) && h[5] < 4 &&
-           h[6] <= 1 && h[7] <= h[6] && !h[8] && u->source_stride &&
+           u->source_stride &&
            (!h[6] || u->source_stride >=
             (uint64_t)h[1] * sgi_kona_gl_texture_pixel_bytes(h[3], h[4])) &&
-           sgi_kona_texture_storage_base(h) && h[10] != UINT32_MAX && !h[15] &&
-           h[16] <= 0xff && (h[16] & 15) <= 13 && (h[16] >> 4) <= 13 &&
-           ((h[17] & ~1u) == (0x2180 | (h[6] << 2)) ||
-            (h[17] & ~1u) == (0x2188 | (h[6] << 2))) &&
-           (uint64_t)h[11] + h[1] - 1 == h[13] &&
-           (uint64_t)h[12] + h[2] - 1 == h[14] &&
            (uint64_t)h[1] * h[2] == u->count &&
            (uint64_t)u->count * sgi_kona_texture_source_words(u) <=
            SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t);
@@ -9362,7 +9399,15 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
     const SGIKonaTextureUpload *u = &s->texture_upload;
 
-    if (!s->texture_state_used || !sgi_kona_texture_upload_valid(u)) {
+    if (version_id < 2) {
+        s->texture_record_token = s->texture_record_valid ?
+                                  SGI_KONA_CMD_GL_TEX_BIND_2D : 0;
+    }
+    if (!s->texture_state_used || !sgi_kona_texture_upload_valid(u) ||
+        (s->texture_record_valid &&
+         s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_2D &&
+         s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME &&
+         s->texture_record_token != SGI_KONA_CMD_GL_TEX_BIND_VOLUME_SHORT)) {
         return -EINVAL;
     }
     if (u->count) {
@@ -9424,7 +9469,7 @@ static bool sgi_kona_textures_needed(void *opaque)
 
 static const VMStateDescription vmstate_sgi_kona_textures = {
     .name = TYPE_SGI_KONA "/textures",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .needed = sgi_kona_textures_needed,
     .post_load = sgi_kona_textures_post_load,
@@ -9438,6 +9483,7 @@ static const VMStateDescription vmstate_sgi_kona_textures = {
         VMSTATE_BOOL(texture_bind_valid, SGIKonaState),
         VMSTATE_BOOL(texture_record_valid, SGIKonaState),
         VMSTATE_BOOL(texture_state_used, SGIKonaState),
+        VMSTATE_UINT32_V(texture_record_token, SGIKonaState, 2),
         VMSTATE_END_OF_LIST()
     },
 };

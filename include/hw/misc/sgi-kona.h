@@ -899,6 +899,7 @@ struct SGIKonaState {
     SGIKonaTextureUpload texture_upload;
     uint32_t texture_bind[5];
     uint32_t texture_record[22];
+    uint32_t texture_record_token;
     uint32_t texture_transform[8];
     bool texture_bind_valid;
     bool texture_record_valid;
