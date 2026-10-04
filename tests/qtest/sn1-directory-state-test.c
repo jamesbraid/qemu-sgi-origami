@@ -696,7 +696,7 @@ static bool flat_view_type_is(QTestState *s, uint64_t address,
     bool found = false;
 
     g_assert_nonnull(view);
-    end = strstr(view + 1, "\nFlatView #");
+    end = strstr(view, "\nFlatView #");
     if (!end) {
         end = view + strlen(view);
     }
