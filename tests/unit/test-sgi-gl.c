@@ -4220,6 +4220,40 @@ static void test_alpha_test(void)
     g_assert_cmpuint(frag_count(&f, 1), ==, W * H);
 }
 
+static void test_alpha_compare_precision(void)
+{
+    static const struct {
+        unsigned colour_bits, alpha_bits;
+        int half_relation, one_relation;
+    } widths[] = {
+        { 1, 0, 0, 0 }, { 8, 0, 0, 0 },
+        { 8, 10, -1, 1 }, { 10, 0, -1, 1 },
+    };
+    static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(widths); i++) {
+        SGIRasterRules rules = {
+            .color_bits = widths[i].colour_bits,
+            .alpha_bits = widths[i].alpha_bits,
+        };
+        const double values[][2] = {
+            { 0.5, 0.501 }, { 1, 0.999 },
+            { -1, 0 }, { 2, 1 }, { NAN, 0 }, { 0, NAN },
+        };
+
+        for (unsigned func = 0; func <= SGI_GL_ALWAYS; func++) {
+            for (unsigned j = 0; j < ARRAY_SIZE(values); j++) {
+                int relation = j == 0 ? widths[i].half_relation :
+                               j == 1 ? widths[i].one_relation : 0;
+                bool kept = passes[func] & (1 << (1 - relation));
+
+                g_assert_cmpint(sgi_raster_alpha_test(&rules, func,
+                    values[j][0], values[j][1]), ==, kept);
+            }
+        }
+    }
+}
+
 static void frag_stencil(FragScene *f, uint32_t func, int32_t ref,
                          uint32_t mask, uint32_t fail, uint32_t zfail,
                          uint32_t zpass)
@@ -12397,6 +12431,8 @@ int main(int argc, char **argv)
                     test_empty_clip_without_a_window);
     g_test_add_func("/sgi-gl/scissor", test_scissor);
     g_test_add_func("/sgi-gl/alpha-test", test_alpha_test);
+    g_test_add_func("/sgi-gl/alpha-compare-precision",
+                    test_alpha_compare_precision);
     g_test_add_func("/sgi-gl/stencil-test", test_stencil_test);
     g_test_add_func("/sgi-gl/blend", test_blend);
     g_test_add_func("/sgi-gl/logic-op", test_logic_op);

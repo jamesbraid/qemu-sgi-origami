@@ -125,6 +125,9 @@ typedef struct SGIRasterRules {
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
 /* Packed RGB bits selected by channel masks under supported rules. */
 uint32_t sgi_raster_colour_mask(const SGIRasterRules *r, uint32_t mask);
+/* Compare incoming alpha and reference at the rules' alpha-test precision. */
+bool sgi_raster_alpha_test(const SGIRasterRules *r, uint32_t func,
+                           double alpha, double ref);
 
 /*
  * A vertex in clip coordinates, as view-volume clipping (OpenGL 1.2.1,
