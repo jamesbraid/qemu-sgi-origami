@@ -4421,14 +4421,11 @@ static void test_nmi_register_write_is_inert(const void *data)
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
     /*
-     * Both processors run from reset to the ready marker. The stock PROM
-     * stores 0x100 to this register during per-node bring-up; that store must
-     * not deliver an NMI. A MIPS NMI vectors through the reset vector, which
-     * this control PROM records as the taken marker, so a delivered NMI would
-     * move the addressed processor off its ready marker. Neither processor
-     * moves: the store is inert. This is the same wiring that formerly
-     * carried the NMI to the processor, so it still exercises that path, now
-     * silent.
+     * Both processors run from reset to the ready marker. A store of 0x100,
+     * bit 0 clear, must not deliver an NMI. A MIPS NMI vectors through the
+     * reset vector, which this control PROM records as the taken marker, so
+     * a delivered NMI would move the addressed processor off its ready
+     * marker. Neither processor moves: the store is inert.
      */
     wait_for_cpu_gpr(qts, 0, "s0", NMI_READY_MARKER);
     wait_for_cpu_gpr(qts, 1, "s0", NMI_READY_MARKER);
@@ -4437,6 +4434,42 @@ static void test_nmi_register_write_is_inert(const void *data)
     for (unsigned int tries = 0; tries < NMI_SETTLE_TRIES; tries++) {
         g_assert_cmphex(cpu_gpr(qts, 0, "s0"), ==, NMI_READY_MARKER);
         g_assert_cmphex(cpu_gpr(qts, 1, "s0"), ==, NMI_READY_MARKER);
+        g_usleep(NMI_SETTLE_INTERVAL_US);
+    }
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
+ * Linux's SEND_NMI stores 1 to the target slot's NMI register through the
+ * remote form, at +0x200000 for PI1 (the public IP35 series' patch 14/38).
+ * The addressed processor takes the NMI and the other does not.
+ */
+static void test_nmi_store_reaches_cpu(const void *data)
+{
+    const uint64_t *target = data;
+    uint64_t address = BEDROCK_NODE0 + target[0];
+    unsigned int cpu = target[1];
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_nmi_control_prom();
+    qts = machine_start_with(path,
+                             "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s0", NMI_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s0", NMI_READY_MARKER);
+
+    qtest_writeq(qts, address, 1);
+    wait_for_cpu_gpr(qts, cpu, "s0", NMI_TAKEN_MARKER);
+    for (unsigned int tries = 0; tries < NMI_SETTLE_TRIES; tries++) {
+        g_assert_cmphex(cpu_gpr(qts, !cpu, "s0"), ==, NMI_READY_MARKER);
         g_usleep(NMI_SETTLE_INTERVAL_US);
     }
 
@@ -4845,6 +4878,9 @@ int main(int argc, char **argv)
 {
     static const uint64_t nmi_a = PI_NMI_A;
     static const uint64_t nmi_b = PI_NMI_B;
+    /* The register's remote-form offset, then the processor it reaches. */
+    static const uint64_t nmi_store_a[] = { PI_NMI_A, 0 };
+    static const uint64_t nmi_store_c[] = { BEDROCK_PI1 + PI_NMI_A, 1 };
     static const struct {
         const char *name;
         const char *value;
@@ -5022,6 +5058,10 @@ int main(int argc, char **argv)
                         test_nmi_register_write_is_inert);
     qtest_add_data_func("sn1/address-map/pi1-a-nmi-reaches-cpu-c", NULL,
                         test_pi1_a_nmi_reaches_cpu_c);
+    qtest_add_data_func("sn1/address-map/nmi-store-a-reaches-cpu-a",
+                        nmi_store_a, test_nmi_store_reaches_cpu);
+    qtest_add_data_func("sn1/address-map/nmi-store-c-reaches-cpu-c",
+                        nmi_store_c, test_nmi_store_reaches_cpu);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
     qtest_add_data_func("sn1/address-map/cpu-c-enable-migration", NULL,
