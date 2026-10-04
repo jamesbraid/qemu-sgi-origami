@@ -267,6 +267,7 @@ hw/pci-host/sgi-bridge.c
 hw/pci-host/sgi-xbridge.c
 hw/rtc/ds1685.c
 hw/rtc/ds1742.c
+hw/rtc/m48t35-ip27.c
 hw/rtc/m48t35.c
 hw/scsi/qlogic-isp.c
 include/hw/1wire/crc.h
@@ -334,6 +335,7 @@ include/hw/net/xframe.h
 include/hw/pci-host/sgi-bridge.h
 include/hw/pci-host/sgi-xbridge.h
 include/hw/rtc/ds1685.h
+include/hw/rtc/m48t35-ip27.h
 include/hw/rtc/m48t35.h
 include/hw/scsi/qlogic-isp.h
 qapi/misc-mips.json

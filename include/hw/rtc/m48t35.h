@@ -10,15 +10,15 @@
 #include "hw/core/sysbus.h"
 #include "system/runstate.h"
 #include "qom/object.h"
+#include "hw/rtc/m48t35-ip27.h"
 
 #define TYPE_M48T35 "m48t35"
 OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
 
 /*
- * 32 KB of byte-wide cells: storage, then an unidentified bank of eight,
- * then the clock in the top eight.
+ * 32 KB of byte-wide cells (M48T35_SIZE): storage, then an unidentified
+ * bank of eight, then the clock in the top eight.
  */
-#define M48T35_SIZE         0x8000
 
 /* The clock: control first, then the six fields, the order drivers read. */
 #define M48T35_CONTROL      0x7ff8
@@ -38,11 +38,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
  */
 #define M48T35_CSR_READ     0x40
 #define M48T35_CSR_WRITE    0x80
-
-/*
- * Default software year base. The chip itself only keeps two year digits.
- */
-#define M48T35_YEAR_BASE    1970
 
 /*
  * The part's calendar: two BCD year digits and no century, with February 29

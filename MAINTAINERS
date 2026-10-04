@@ -1504,7 +1504,7 @@ F: hw/net/sgi-ioc3-eth.c
 F: hw/net/net-rx-latency.c
 F: hw/pci-host/sgi-bridge.c
 F: hw/pci-host/sgi-xbridge.c
-F: hw/rtc/m48t35.c
+F: hw/rtc/m48t35*.c
 F: hw/scsi/qlogic-isp.c
 F: include/hw/1wire/
 F: include/hw/audio/sgi-rad1-audio.h
@@ -1520,7 +1520,7 @@ F: include/hw/net/sgi-ioc3-eth.h
 F: include/hw/net/net-rx-latency.h
 F: include/hw/pci-host/sgi-bridge.h
 F: include/hw/pci-host/sgi-xbridge.h
-F: include/hw/rtc/m48t35.h
+F: include/hw/rtc/m48t35*.h
 F: include/hw/scsi/qlogic-isp.h
 F: qapi/misc-mips.json
 F: docs/devel/testing/sgi.rst
