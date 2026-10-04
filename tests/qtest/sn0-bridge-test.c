@@ -1204,12 +1204,15 @@ static void test_dma_buffer_pages(const void *data)
 
 static void test_dma_buffer_speed(const void *data)
 {
-    const unsigned lengths[] = { 16, 64, 1500, 4096, 65536 };
+    const unsigned lengths[] = { 16, 64, 1024, 1500, 4096, 65536 };
     const char *trace = g_getenv("QEMU_DMA_BENCH_TRACE");
+    const hwaddr destination = 0x300000;
+    const unsigned guard = 8;
 
-    for (unsigned swap = 0; swap < 2; swap++) {
-        for (unsigned native = 0; native < 2; native++) {
-            for (unsigned i = 0; i < G_N_ELEMENTS(lengths); i++) {
+    for (unsigned i = 0; i < G_N_ELEMENTS(lengths); i++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            for (unsigned order = 0; order < 2; order++) {
+                unsigned native = order ^ ((i + swap) & 1);
                 unsigned length = lengths[i];
                 unsigned repeats = trace ? 1 : length < 4096 ? 4096 : 256;
                 g_autofree char *tracing = trace ? g_strdup_printf(
@@ -1219,12 +1222,14 @@ static void test_dma_buffer_speed(const void *data)
                 QTestState *qts = qtest_initf(MACHINE_WITH_BRIDGE DMA_CARD
                     ",dma-buffer=%s,repetitions=%u %s",
                     native ? "off" : "on", repeats, tracing);
+                g_autofree uint8_t *seen = g_malloc(length + 2 * guard);
                 int64_t begin, elapsed;
-                uint8_t seen[64];
 
                 bridge_start_the_transfer_source(qts);
                 bridge_source_with_swap(qts, swap ? DEV_SWAP_DIRECT : 0);
                 qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0xaU << 20);
+                qtest_memset(qts, TARGET_PAGE_A - guard, SWAP_SENTINEL,
+                              length + 2 * guard);
                 qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
                              0x80000000U | TARGET_PAGE_A);
                 qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_LENGTH, length);
@@ -1237,19 +1242,43 @@ static void test_dma_buffer_speed(const void *data)
                 elapsed = g_get_monotonic_time() - begin;
                 g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
                                 MEMTX_OK);
-                qtest_memread(qts, TARGET_PAGE_A, seen,
-                               MIN(length, sizeof(seen)));
-                for (unsigned j = 0; j < MIN(length, sizeof(seen)); j++) {
-                    unsigned index = swap ? j : j ^ 3;
-                    g_assert_cmpuint(seen[j], ==, (uint8_t)(SWAP_SEED + index));
+                qtest_memread(qts, TARGET_PAGE_A - guard, seen,
+                               length + 2 * guard);
+                for (unsigned j = 0; j < length + 2 * guard; j++) {
+                    unsigned index = swap ? j - guard : (j - guard) ^ 3;
+                    uint8_t expected = j < guard || j >= guard + length ?
+                        SWAP_SENTINEL : (uint8_t)(SWAP_SEED + index);
+
+                    g_assert_cmpuint(seen[j], ==, expected);
                 }
-                g_test_message("%s swap32=%u length=%u repeats=%u us=%" PRId64
-                               " ns/transfer=%.2f MiB/s=%.2f",
-                               native ? "native" : "buffer", !swap, length,
-                               repeats, elapsed,
+                g_test_message("%s order=%u swap32=%u length=%u repeats=%u "
+                               "us=%" PRId64 " ns/transfer=%.2f MiB/s=%.2f",
+                               native ? "native" : "buffer", order, !swap,
+                               length, repeats, elapsed,
                                (double)elapsed * 1000 / repeats,
                                (double)length * repeats * 1000000 / elapsed /
                                (1 << 20));
+
+                /* The opposite read control leaves one R32 conversion. */
+                bridge_source_with_swap(qts, swap ? 0 : DEV_SWAP_DIRECT);
+                qtest_memset(qts, destination - guard, SWAP_SENTINEL,
+                              length + 2 * guard);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_SOURCE,
+                             0x80000000U | TARGET_PAGE_A);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_ADDRESS,
+                             destination);
+                qtest_writel(qts, WINDOW(DMA_SLOT) + DMA_REG_GO, 2);
+                g_assert_cmphex(qtest_readl(qts, WINDOW(DMA_SLOT) + 0x28), ==,
+                                MEMTX_OK);
+                qtest_memread(qts, destination - guard, seen,
+                               length + 2 * guard);
+                for (unsigned j = 0; j < length + 2 * guard; j++) {
+                    uint8_t expected = j < guard || j >= guard + length ?
+                        SWAP_SENTINEL :
+                        (uint8_t)(SWAP_SEED + ((j - guard) ^ 3));
+
+                    g_assert_cmpuint(seen[j], ==, expected);
+                }
                 qtest_quit(qts);
             }
         }

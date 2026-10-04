@@ -32,7 +32,7 @@ static void __attribute__((noinline)) optimized(uint8_t *dst,
 
 static void speed(void)
 {
-    const size_t lengths[] = { 8, 16, 32, 64, 128, 1500, 4096, 65536 };
+    const size_t lengths[] = { 8, 16, 32, 64, 128, 1024, 1500, 4096, 65536 };
     uint8_t *src = g_malloc(65540), *dst = g_malloc(65540);
 
     struct {
@@ -49,7 +49,10 @@ static void speed(void)
     for (unsigned size = 0; size < G_N_ELEMENTS(lengths); size++) {
         for (unsigned align = 0; align < 4; align++) {
             for (unsigned inplace = 0; inplace < 2; inplace++) {
-                for (unsigned mode = 0; mode < G_N_ELEMENTS(methods); mode++) {
+                for (unsigned order = 0; order < G_N_ELEMENTS(methods);
+                     order++) {
+                    unsigned mode = (order + size + align + inplace) %
+                                    G_N_ELEMENTS(methods);
                     void (*convert)(uint8_t *, const uint8_t *, size_t) =
                         methods[mode].convert;
                     uint64_t count = 0;
@@ -72,9 +75,9 @@ static void speed(void)
                         count += 1000;
                         elapsed = g_test_timer_elapsed();
                     } while (elapsed < 0.03);
-                    g_test_message("%s length=%zu alignment=%u inplace=%u "
-                                   "ns=%.2f MiB/s=%.2f",
-                                   methods[mode].name, lengths[size],
+                    g_test_message("%s order=%u length=%zu alignment=%u "
+                                   "inplace=%u ns=%.2f MiB/s=%.2f",
+                                   methods[mode].name, order, lengths[size],
                                    align, inplace, elapsed * 1e9 / count,
                                    lengths[size] * count / elapsed / (1 << 20));
                 }
