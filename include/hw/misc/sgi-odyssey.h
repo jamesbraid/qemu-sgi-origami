@@ -291,8 +291,9 @@ struct SGIOdysseyState {
     uint32_t tex_coord_q;
     /* Effective object-space linear planes from public API controls. */
     uint32_t tex_linear_plane[2][4];
-    /* R is separate to preserve the earlier S/T migration layout. */
+    /* Later axes preserve the earlier S/T and R migration layouts. */
     uint32_t tex_linear_plane_r[4];
+    uint32_t tex_linear_plane_q[4];
     uint32_t tex_linear_valid;
     bool tex_rect_reported;
     uint64_t dma_seq;

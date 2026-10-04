@@ -4449,9 +4449,10 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
             vertex[0] = (int32_t)s->cmd_operand[0];
             vertex[1] = (int32_t)s->cmd_operand[1];
         }
-        for (unsigned axis = 0; axis < 3; axis++) {
-            const uint32_t *plane = axis == 2 ? s->tex_linear_plane_r :
-                                              s->tex_linear_plane[axis];
+        for (unsigned axis = 0; axis < 4; axis++) {
+            const uint32_t *plane = axis == 3 ? s->tex_linear_plane_q :
+                                   axis == 2 ? s->tex_linear_plane_r :
+                                   s->tex_linear_plane[axis];
             float value = 0;
 
             if (!(s->gl_linear_texgen & s->tex_linear_valid & (1u << axis))) {
@@ -5001,7 +5002,7 @@ static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
             continue;
         }
         /*
-         * Matched public S, T and R controls identify these numeric list
+         * Matched public S, T, R and Q controls identify these numeric list
          * selectors as generation stages, an experimental model policy.
          * Other fragments retain their diagnostic; no whole program is matched.
          */
@@ -5016,10 +5017,11 @@ static bool odyssey_gl_walk_list(SGIOdysseyState *s, uint32_t k, bool strict,
                 n += 2;
                 continue;
             }
-            if ((next == 0x04d || next == 0x057 || next == 0x061) &&
+            if ((next == 0x04d || next == 0x057 ||
+                 next == 0x061 || next == 0x066) &&
                 third == 0x06c && fourth == 0x077) {
                 p->linear_texgen = next == 0x04d ? 1 :
-                                   next == 0x057 ? 2 : 4;
+                                   next == 0x057 ? 2 : next == 0x061 ? 4 : 8;
                 n += 3;
                 continue;
             }
@@ -7717,7 +7719,13 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
          */
         break;
     case ODSY_GL_CLIP_PLANE_LOAD:
-        /* Matched public controls identify the effective S, T and R planes. */
+        /* Public controls identify the effective S, T, R and Q planes. */
+        if (s->gl_light_vec_sel == 0x10c) {
+            memcpy(s->tex_linear_plane_q, s->cmd_operand,
+                   sizeof(s->tex_linear_plane_q));
+            s->tex_linear_valid |= 8;
+            break;
+        }
         if (s->gl_light_vec_sel == 0x108) {
             memcpy(s->tex_linear_plane_r, s->cmd_operand,
                    sizeof(s->tex_linear_plane_r));
@@ -9266,6 +9274,7 @@ static void odyssey_reset_registers(SGIOdysseyState *s)
     s->gl_linear_texgen = 0;
     memset(s->tex_linear_plane, 0, sizeof(s->tex_linear_plane));
     memset(s->tex_linear_plane_r, 0, sizeof(s->tex_linear_plane_r));
+    memset(s->tex_linear_plane_q, 0, sizeof(s->tex_linear_plane_q));
     s->tex_linear_valid = 0;
     s->gl_clip_logged = false;
     s->gl_texture_stage_logged = false;
@@ -9922,6 +9931,10 @@ static int odyssey_post_load(void *opaque, int version_id)
         s->line_stipple[0] = s->line_stipple[1] = 0xffff;
         s->line_stipple[2] = 0;
     }
+    if (version_id < 39) {
+        memset(s->tex_linear_plane_q, 0, sizeof(s->tex_linear_plane_q));
+        s->tex_linear_valid &= 7;
+    }
     if (version_id < 38) {
         memset(s->tex_linear_plane_r, 0, sizeof(s->tex_linear_plane_r));
         s->tex_linear_valid &= 3;
@@ -9979,7 +9992,7 @@ static int odyssey_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_odyssey = {
     .name = TYPE_SGI_ODYSSEY,
-    .version_id = 38,
+    .version_id = 39,
     .minimum_version_id = 5,
     .pre_load = odyssey_pre_load,
     .post_load = odyssey_post_load,
@@ -10140,6 +10153,7 @@ static const VMStateDescription vmstate_sgi_odyssey = {
         VMSTATE_UINT32_2DARRAY_V(tex_linear_plane, SGIOdysseyState, 2, 4, 36),
         VMSTATE_UINT32_V(tex_linear_valid, SGIOdysseyState, 36),
         VMSTATE_UINT32_ARRAY_V(tex_linear_plane_r, SGIOdysseyState, 4, 38),
+        VMSTATE_UINT32_ARRAY_V(tex_linear_plane_q, SGIOdysseyState, 4, 39),
         /* The colour-mode words (v24). */
         VMSTATE_UINT32_ARRAY_V(colour_mode, SGIOdysseyState, 2, 24),
         /* Program memory and the per-context windows (v25). */
