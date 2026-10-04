@@ -2353,13 +2353,13 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       SGIRendererRequest *request,
                                       SGIColourTarget *target)
 {
-    static const int32_t viewport[4] = { 0, 0, 128, 128 };
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
     const uint32_t *visual;
     const SGIClipRect *clip;
     int bank;
     int64_t x = drawable->origin[0], y = drawable->origin[1];
+    bool outside_patch = false;
 
     if (d->context >= SGI_KONA_CONTEXTS ||
         d->context != s->context_current || !s->gl_grammar ||
@@ -2413,7 +2413,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
-        memcmp(st->viewport, viewport, sizeof(viewport))) {
+        st->viewport[2] < 0 || st->viewport[3] < 0) {
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
@@ -2442,14 +2442,20 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         for (unsigned axis = 0; axis < 2; axis++) {
             double position = window[axis];
 
-            if (!isfinite(position) || position < 0 ||
-                position > SGI_RENDERER_SIZE) {
+            if (!isfinite(position) ||
+                fabs(position) > SGI_RENDERER_COORD_LIMIT) {
                 return false;
             }
-            request->vertices[i][axis] = floor(position * 256 + 0.5) / 256;
+            outside_patch |= position < 0 || position > SGI_RENDERER_SIZE;
+            request->vertices[i][axis] = round(position * 256) / 256;
         }
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
+    }
+    /* Geometry outside staging is safe only when all owned pixels fit. */
+    if (outside_patch && (clip->x0 < x || clip->y0 < y ||
+                          clip->x1 > x + 127 || clip->y1 > y + 127)) {
+        return false;
     }
     if (provoking[SGI_GL_V_COLOR + 3] != 1) {
         return false;

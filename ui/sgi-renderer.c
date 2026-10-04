@@ -193,8 +193,8 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
         for (unsigned axis = 0; axis < 2; axis++) {
             double subpixel = vertex[axis] * 256.0;
 
-            if (!isfinite(subpixel) || vertex[axis] < 0 ||
-                vertex[axis] > SGI_RENDERER_SIZE ||
+            if (!isfinite(subpixel) ||
+                fabs(vertex[axis]) > SGI_RENDERER_COORD_LIMIT ||
                 subpixel != floor(subpixel)) {
                 return false;
             }

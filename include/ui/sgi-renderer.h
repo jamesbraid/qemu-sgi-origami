@@ -5,6 +5,7 @@
 #include "qapi/error.h"
 
 #define SGI_RENDERER_SIZE 128
+#define SGI_RENDERER_COORD_LIMIT 16384
 #define SGI_RENDERER_BYTES (SGI_RENDERER_SIZE * SGI_RENDERER_SIZE * 4)
 
 typedef struct SGIRenderer SGIRenderer;
