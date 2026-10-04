@@ -4,16 +4,16 @@
 /*
  * This models a compatibility profile for one exact stock software path
  * (PsiTech release 1.3k kernel driver and
- * standalone X server, the driver's mode zero at 1280x1024), not recovered
- * RAD4 hardware fidelity. The
+ * standalone X server, in any of the driver's 13 display modes), not
+ * recovered RAD4 hardware fidelity. The
  * expansion-ROM-route DMA registers (RAD4_ROM_MODE/RAD4_ROM_DESC/
  * RAD4_ROM_COMMAND) model the PLX
  * PCI9060/9054-family scatter/gather engine the driver's buffered/type-3 path
  * drives; every other pixel path still
  * moves data through ordinary CPU-issued BAR2 stores.
  *
- * The one-mode fixed timing sequence gating scanout comes from a generated
- * fixture (psitech-rad4-mode0-fixture.h),
+ * The per-mode timing sequences gating scanout come from a generated
+ * fixture (psitech-rad4-modes-fixture.h),
  * not from vendor source or a copied instruction listing.
  *
  * This file also answers the PCI identity 12d1:0105 (RAD4-KM), selected by
@@ -57,7 +57,7 @@
 #include "qom/object.h"
 #include "trace.h"
 
-#include "psitech-rad4-mode0-fixture.h"
+#include "psitech-rad4-modes-fixture.h"
 
 #define TYPE_PSITECH_RAD4 "psitech-rad4"
 OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
@@ -81,9 +81,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_BAR2_SIZE          (16 * MiB)
 #define RAD4_ROMROUTE_SIZE      (8 * MiB)
 
-#define RAD4_MODE0_WIDTH        1280
-#define RAD4_MODE0_HEIGHT       1024
-#define RAD4_MODE0_STRIDE       (RAD4_MODE0_WIDTH * 4)
 #define RAD4_FB_SIZE            (8 * MiB)
 
 /* BAR0 offsets, PLX9060-compatible. */
@@ -171,14 +168,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_BAR2_MASK          0xd00000
 #define RAD4_BAR2_CTRL          0xf00000
 
-#define RAD4_HORIZ_WORDS        422
-#define RAD4_VERT_WORDS         1065
+/*
+ * Timing memory depths. The physical depths are unknown; these hold the
+ * largest bank of any driver mode (781 horizontal words, 1656 vertical),
+ * and a horizontal bank cannot exceed the 4 KiB stride between banks.
+ */
+#define RAD4_HORIZ_WORDS        1024
+#define RAD4_VERT_WORDS         2048
 
 #define RAD4_CTRL_MODE_CMD      0x20u
 #define RAD4_CTRL_STORED_BIT    0x02u
 #define RAD4_STATUS_FRAME       0x20u
-
-#define RAD4_FRAME_HZ           60
 
 /*
  * RGB561 indexed cursor registers. IBM Microelectronics, "RGB561
@@ -648,10 +648,55 @@ struct PsitechRad4State {
     uint32_t bar2_ctrl_bit;
     bool frame_pending;
 
-    /* Mode recognizer. */
+    /*
+     * Mode recognizer: the position reached in the write sequence and the
+     * modes (bits of rad4_modes[]) whose sequence matches every write so
+     * far. mode is the last recognized mode, mode 0 until one is.
+     */
     int rec_state; /* Rad4RecState, as plain int for VMState */
     uint32_t rec_index;
+    uint32_t rec_candidates;
+    uint32_t mode;
 };
+
+static const Rad4ModeFixture *rad4_mode(PsitechRad4State *s)
+{
+    return &rad4_modes[s->mode];
+}
+
+/* display_buffer holds the largest mode's image. */
+static size_t rad4_max_pixels(void)
+{
+    size_t pixels = 0;
+
+    for (int m = 0; m < RAD4_MODE_COUNT; m++) {
+        pixels = MAX(pixels, (size_t)rad4_modes[m].width *
+                             rad4_modes[m].height);
+    }
+    return pixels;
+}
+
+static int rad4_width(PsitechRad4State *s)
+{
+    return rad4_mode(s)->width;
+}
+
+static int rad4_height(PsitechRad4State *s)
+{
+    return rad4_mode(s)->height;
+}
+
+/* Every mode's rows are 4 * width bytes apart in the framebuffer. */
+static uint32_t rad4_stride(PsitechRad4State *s)
+{
+    return rad4_width(s) * 4;
+}
+
+/* One frame at the mode's refresh label, the table's nominal rate. */
+static int64_t rad4_frame_period(PsitechRad4State *s)
+{
+    return NANOSECONDS_PER_SECOND / rad4_mode(s)->refresh_hz;
+}
 
 static uint16_t rad4_rgb_index(PsitechRad4State *s)
 {
@@ -1138,6 +1183,7 @@ static void rad4_recognizer_reset(PsitechRad4State *s)
 {
     s->rec_state = RAD4_REC_UNARMED;
     s->rec_index = 0;
+    s->rec_candidates = 0;
 }
 
 /* Mark [y_start, y_end] (inclusive, clipped to the visible image) dirty. */
@@ -1146,8 +1192,8 @@ static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
     if (y_start < 0) {
         y_start = 0;
     }
-    if (y_end >= RAD4_MODE0_HEIGHT) {
-        y_end = RAD4_MODE0_HEIGHT - 1;
+    if (y_end >= rad4_height(s)) {
+        y_end = rad4_height(s) - 1;
     }
     if (y_start > y_end) {
         return;
@@ -1168,28 +1214,33 @@ static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
  */
 static void rad4_mark_all_dirty(PsitechRad4State *s)
 {
-    rad4_mark_dirty_rows(s, 0, RAD4_MODE0_HEIGHT - 1);
+    /*
+     * Replace rather than merge: after a mode change the old range can
+     * reach below the new mode's last row.
+     */
+    s->dirty_y_start = 0;
+    s->dirty_y_end = rad4_height(s) - 1;
 }
 
 /*
  * Mark the scanlines touched by a raw-framebuffer byte range dirty. offset
  * and len are relative to s->framebuffer;
- * a range outside the visible mode-zero image (the RAD4_FB_SIZE allocation is
- * larger than RAD4_MODE0_STRIDE *
- * RAD4_MODE0_HEIGHT) contributes nothing, matching how rad4_convert_scanout()
+ * a range outside the current mode's visible image (the RAD4_FB_SIZE
+ * allocation is larger than any mode's stride times height) contributes
+ * nothing, matching how rad4_convert_scanout()
  * never reads past the visible image
  * either.
  */
 static void rad4_mark_dirty_range(PsitechRad4State *s, uint32_t offset,
                                   uint32_t len)
 {
-    uint32_t visible = (uint32_t)RAD4_MODE0_STRIDE * RAD4_MODE0_HEIGHT;
+    uint32_t stride = rad4_stride(s);
+    uint32_t visible = stride * rad4_height(s);
 
     if (len == 0 || offset >= visible) {
         return;
     }
-    rad4_mark_dirty_rows(s, offset / RAD4_MODE0_STRIDE,
-                         (offset + len - 1) / RAD4_MODE0_STRIDE);
+    rad4_mark_dirty_rows(s, offset / stride, (offset + len - 1) / stride);
 }
 
 static void rad4_disable_scanout(PsitechRad4State *s)
@@ -1213,21 +1264,174 @@ static void rad4_frame_timer_cb(void *opaque)
 
     timer_mod(s->frame_timer,
              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-             NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
+             rad4_frame_period(s));
+}
+
+static void rad4_ensure_surface(PsitechRad4State *s)
+{
+    DisplaySurface *ds = qemu_console_surface(s->con);
+
+    /*
+     * qemu_graphic_console_create() starts the console on a small placeholder
+     * surface of its own; checking for any
+     * non-NULL surface here (rather than specifically this device's own one)
+     * would leave that placeholder in place
+     * forever, since it is never NULL once set. Recognize our own surface by
+     * its backing buffer, exactly as this
+     * device recognized its old direct-alias surface before this conversion
+     * pass existed.
+     */
+    if (ds && surface_data(ds) == (uint8_t *)s->display_buffer &&
+        surface_width(ds) == rad4_width(s) &&
+        surface_height(ds) == rad4_height(s)) {
+        return;
+    }
+    /*
+     * A new mode reuses the same buffer, sized for the largest mode, at the
+     * new geometry; display_buffer rows are packed at the mode's width.
+     */
+    ds = qemu_create_displaysurface_from(rad4_width(s), rad4_height(s),
+                                         PIXMAN_x8r8g8b8,
+                                         rad4_width(s) * 4,
+                                         (uint8_t *)s->display_buffer);
+    qemu_console_set_surface(s->con, ds);
+}
+
+/*
+ * Event @pos of mode @m's write sequence: board control, the PLL index and
+ * the mode's two PLL bytes, its four timing banks expanded from their runs,
+ * then the sync register and board control again. Position 0, the control
+ * write that arms recognition, is never compared through here.
+ */
+static void rad4_mode_event(const Rad4ModeFixture *m, uint32_t pos,
+                            uint32_t *offset, uint32_t *value)
+{
+    static const uint32_t prefix[][2] = {
+        { RAD4_BAR2_CTRL, 0 },
+        { RAD4_BAR2_RGB_LO, 0x21 },
+        { RAD4_BAR2_RGB_HI, 0 },
+    };
+    static const uint32_t suffix[][2] = {
+        { RAD4_BAR2_RGB_LO, 0x20 },
+        { RAD4_BAR2_RGB_HI, 0 },
+        { RAD4_BAR2_RGB_DATA, 1 },
+        { RAD4_BAR2_CTRL, RAD4_CTRL_MODE_CMD },
+    };
+    static const uint32_t bank_base[RAD4_MODE_BANKS] = {
+        RAD4_BAR2_VERT, RAD4_BAR2_HORIZ0, RAD4_BAR2_HORIZ1, RAD4_BAR2_HORIZ3,
+    };
+
+    if (pos < ARRAY_SIZE(prefix)) {
+        *offset = prefix[pos][0];
+        *value = prefix[pos][1];
+        return;
+    }
+    pos -= ARRAY_SIZE(prefix);
+    if (pos < ARRAY_SIZE(m->pll)) {
+        *offset = RAD4_BAR2_RGB_DATA;
+        *value = m->pll[pos];
+        return;
+    }
+    pos -= ARRAY_SIZE(m->pll);
+    for (int b = 0; b < RAD4_MODE_BANKS; b++) {
+        const Rad4TimingBank *bank = &m->banks[b];
+
+        if (pos >= bank->words) {
+            pos -= bank->words;
+            continue;
+        }
+        *offset = bank_base[b] + 4 * pos;
+        for (int r = 0; r < bank->run_count; r++) {
+            if (pos < bank->runs[r].count) {
+                *value = bank->runs[r].value;
+                return;
+            }
+            pos -= bank->runs[r].count;
+        }
+        g_assert_not_reached();
+    }
+    assert(pos < ARRAY_SIZE(suffix));
+    *offset = suffix[pos][0];
+    *value = suffix[pos][1];
+}
+
+static void rad4_recognition_failed(PsitechRad4State *s, uint32_t offset,
+                                    uint32_t value)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "psitech-rad4: mode recognition mismatch at "
+                  "+0x%06x=0x%08x, failing until the next mode sequence\n",
+                  offset, value);
+    rad4_disable_scanout(s);
+    s->rec_state = RAD4_REC_FAILED;
+}
+
+/*
+ * The whole sequence of mode @mode has been seen: present its geometry and
+ * start its frame schedule.
+ */
+static void rad4_mode_recognized(PsitechRad4State *s, uint32_t mode)
+{
+    s->mode = mode;
+    s->rec_state = RAD4_REC_RECOGNIZED;
+    s->cursor_shown_y_start = rad4_height(s);
+    s->cursor_shown_y_end = -1;
+    rad4_ensure_surface(s);
+    rad4_mark_all_dirty(s);
+    timer_mod(s->frame_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + rad4_frame_period(s));
+}
+
+/*
+ * One event while collecting: keep the modes whose sequence has exactly
+ * this write at the current position. Modes 4 and 11, and 5 and 6, share
+ * PLL bytes and modes 2 and 3 share every timing bank, so a single field
+ * never decides; only the whole sequence does. No candidate left is a
+ * mismatch.
+ */
+static void rad4_recognizer_collect(PsitechRad4State *s, uint32_t offset,
+                                    uint32_t value)
+{
+    uint32_t keep = 0;
+
+    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
+        uint32_t expected_offset, expected_value;
+
+        if (!(s->rec_candidates & BIT(m)) ||
+            s->rec_index >= rad4_modes[m].event_count) {
+            continue;
+        }
+        rad4_mode_event(&rad4_modes[m], s->rec_index,
+                        &expected_offset, &expected_value);
+        if (expected_offset == offset && expected_value == value) {
+            keep |= BIT(m);
+        }
+    }
+    if (!keep) {
+        rad4_recognition_failed(s, offset, value);
+        return;
+    }
+    s->rec_candidates = keep;
+    s->rec_index++;
+    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
+        if ((keep & BIT(m)) && s->rec_index == rad4_modes[m].event_count) {
+            rad4_mode_recognized(s, m);
+            return;
+        }
+    }
 }
 
 /*
  * Feed one recognition-relevant (address, value) event through the exact
- * mode-zero grammar. Addresses are
- * BAR2-relative. Returns true if the event was consumed as part of that
- * grammar (whether or not it advanced
- * recognition); the caller still applies the event's own register effect
- * separately, since recognition state and
- * register storage are distinct.
+ * grammar of the driver's 13 mode sequences. Addresses are BAR2-relative.
+ * The caller still applies the event's own register effect separately,
+ * since recognition state and register storage are distinct.
  */
 static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
                                  uint32_t value)
 {
+    uint32_t arm_offset, arm_value;
+
     if (offset == RAD4_BAR2_CTRL) {
         if (value == 0) {
             /*
@@ -1240,28 +1444,8 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
             s->rec_index = 0;
             return;
         }
-        if (s->rec_state == RAD4_REC_COLLECTING &&
-            s->rec_index < RAD4_MODE0_EVENT_COUNT &&
-            rad4_mode0_events[s->rec_index].bar2_offset == offset &&
-            rad4_mode0_events[s->rec_index].value == value) {
-            s->rec_index++;
-            if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
-                s->rec_state = RAD4_REC_RECOGNIZED;
-                rad4_mark_all_dirty(s);
-                timer_mod(s->frame_timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                         NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
-            }
-            return;
-        }
         if (s->rec_state == RAD4_REC_COLLECTING) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: mode recognition mismatch at "
-                         "+0x%06x=0x%08x, failing until reset\n",
-                         offset, value);
-            rad4_disable_scanout(s);
-            s->rec_state = RAD4_REC_FAILED;
-            return;
+            rad4_recognizer_collect(s, offset, value);
         }
         /*
          * An unrecognized control write in another state has no bearing on
@@ -1274,15 +1458,12 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
     /* Every other recognition-relevant address. */
     switch (s->rec_state) {
     case RAD4_REC_PREFIX_SEEN:
-        if (s->rec_index == 0 &&
-            rad4_mode0_events[1].bar2_offset == offset &&
-            rad4_mode0_events[1].value == value) {
+        /* The first write after arming is common to every mode. */
+        rad4_mode_event(&rad4_modes[0], 1, &arm_offset, &arm_value);
+        if (s->rec_index == 0 && arm_offset == offset && arm_value == value) {
             s->rec_state = RAD4_REC_COLLECTING;
             s->rec_index = 2;
-            if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
-                s->rec_state = RAD4_REC_RECOGNIZED;
-                rad4_mark_all_dirty(s);
-            }
+            s->rec_candidates = MAKE_64BIT_MASK(0, RAD4_MODE_COUNT);
         } else {
             /* Not the expected next event: quietly returns to unarmed, no
              * failure logged. */
@@ -1290,32 +1471,14 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
         }
         break;
     case RAD4_REC_COLLECTING:
-        if (s->rec_index < RAD4_MODE0_EVENT_COUNT &&
-            rad4_mode0_events[s->rec_index].bar2_offset == offset &&
-            rad4_mode0_events[s->rec_index].value == value) {
-            s->rec_index++;
-            if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
-                s->rec_state = RAD4_REC_RECOGNIZED;
-                rad4_mark_all_dirty(s);
-                timer_mod(s->frame_timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                         NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
-            }
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: mode recognition mismatch at "
-                         "+0x%06x=0x%08x, failing until reset\n",
-                         offset, value);
-            rad4_disable_scanout(s);
-            s->rec_state = RAD4_REC_FAILED;
-        }
+        rad4_recognizer_collect(s, offset, value);
         break;
     case RAD4_REC_UNARMED:
     case RAD4_REC_RECOGNIZED: {
-        bool timing_bank = offset == RAD4_BAR2_VERT ||
-                            offset == RAD4_BAR2_HORIZ0 ||
-                            offset == RAD4_BAR2_HORIZ1 ||
-                            offset == RAD4_BAR2_HORIZ3;
+        bool timing_bank = (offset >= RAD4_BAR2_VERT &&
+                            offset < RAD4_BAR2_VERT + 4 * RAD4_VERT_WORDS) ||
+                           (offset >= RAD4_BAR2_HORIZ0 &&
+                            offset < RAD4_BAR2_HORIZ3 + 4 * RAD4_HORIZ_WORDS);
         bool mutating_rgb = offset == RAD4_BAR2_RGB_DATA &&
                              rad4_rgb_index_is_mode_mutating(
                                  rad4_rgb_index(s));
@@ -1323,7 +1486,7 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
         if (timing_bank || mutating_rgb) {
             qemu_log_mask(LOG_GUEST_ERROR,
                          "psitech-rad4: timing/PLL/sync write while %s, "
-                         "failing until reset\n",
+                         "failing until the next mode sequence\n",
                          s->rec_state == RAD4_REC_UNARMED ?
                          "unarmed" : "recognized");
             rad4_disable_scanout(s);
@@ -1427,7 +1590,7 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
 {
     int x0, y0, row, col;
 
-    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_start = rad4_height(s);
     s->cursor_shown_y_end = -1;
     if (!rad4_cursor_origin(s, &x0, &y0)) {
         return;
@@ -1436,10 +1599,10 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
         int y = y0 + row;
         uint32_t *dst;
 
-        if (y < y_start || y > y_end || y < 0 || y >= RAD4_MODE0_HEIGHT) {
+        if (y < y_start || y > y_end || y < 0 || y >= rad4_height(s)) {
             continue;
         }
-        dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
+        dst = s->display_buffer + (size_t)y * rad4_width(s);
         for (col = 0; col < RAD4_CURSOR_WIDTH; col++) {
             int x = x0 + col;
             uint8_t byte = s->rgb_store[RAD4_RGB_CURSOR_PIXMAP_BASE +
@@ -1447,7 +1610,7 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
                                         col / 4];
             unsigned val = (byte >> (6 - (col % 4) * 2)) & 0x3;
 
-            if (val == 0 || x < 0 || x >= RAD4_MODE0_WIDTH) {
+            if (val == 0 || x < 0 || x >= rad4_width(s)) {
                 continue;
             }
             dst[x] = ((uint32_t)s->cursor_lut[val][0] << 16) |
@@ -1471,7 +1634,7 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
      */
     s->cursor_shown_y_start = MAX(y0, 0);
     s->cursor_shown_y_end = MIN(y0 + RAD4_CURSOR_HEIGHT - 1,
-                                RAD4_MODE0_HEIGHT - 1);
+                                rad4_height(s) - 1);
 }
 
 /*
@@ -1487,14 +1650,15 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
 static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 {
     Rad4WatLayout layout;
+    int width = rad4_width(s);
     int x, y;
 
     rad4_wat_layout(s, &layout);
     for (y = y_start; y <= y_end; y++) {
-        uint32_t row = (uint32_t)y * RAD4_MODE0_STRIDE;
-        uint32_t *dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
+        uint32_t row = (uint32_t)y * rad4_stride(s);
+        uint32_t *dst = s->display_buffer + (size_t)y * width;
 
-        for (x = 0; x < RAD4_MODE0_WIDTH; x++) {
+        for (x = 0; x < width; x++) {
             uint32_t word = ldl_be_p(s->framebuffer + row + x * 4);
 
             *dst++ = rad4_pixel_to_rgb(s, &layout, word);
@@ -1505,7 +1669,7 @@ static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 /*
  * Convert and push only the scanlines the guest actually touched since the
  * last refresh, instead of the whole
- * 1280x1024 frame every ~30 Hz tick regardless of change. The old
+ * frame every ~30 Hz tick regardless of change. The old
  * unconditional full-frame path made VNC re-encode
  * and send a full frame continuously even for a static screen, which
  * saturates the VNC path into flicker, blackout
@@ -1526,9 +1690,9 @@ static bool rad4_gfx_update(void *opaque)
     trace_rad4_gfx_update_push(s->dirty_y_start, s->dirty_y_end);
     rad4_convert_scanout(s, s->dirty_y_start, s->dirty_y_end);
     rad4_cursor_compose(s, s->dirty_y_start, s->dirty_y_end);
-    qemu_console_update(s->con, 0, s->dirty_y_start, RAD4_MODE0_WIDTH,
+    qemu_console_update(s->con, 0, s->dirty_y_start, rad4_width(s),
                         s->dirty_y_end - s->dirty_y_start + 1);
-    s->dirty_y_start = RAD4_MODE0_HEIGHT;
+    s->dirty_y_start = rad4_height(s);
     s->dirty_y_end = -1;
     return true;
 }
@@ -1536,30 +1700,6 @@ static bool rad4_gfx_update(void *opaque)
 static const GraphicHwOps rad4_gfx_ops = {
     .gfx_update = rad4_gfx_update,
 };
-
-static void rad4_ensure_surface(PsitechRad4State *s)
-{
-    DisplaySurface *ds = qemu_console_surface(s->con);
-
-    /*
-     * qemu_graphic_console_create() starts the console on a small placeholder
-     * surface of its own; checking for any
-     * non-NULL surface here (rather than specifically this device's own one)
-     * would leave that placeholder in place
-     * forever, since it is never NULL once set. Recognize our own surface by
-     * its backing buffer, exactly as this
-     * device recognized its old direct-alias surface before this conversion
-     * pass existed.
-     */
-    if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
-        return;
-    }
-    ds = qemu_create_displaysurface_from(RAD4_MODE0_WIDTH, RAD4_MODE0_HEIGHT,
-                                         PIXMAN_x8r8g8b8,
-                                         RAD4_MODE0_WIDTH * 4,
-                                         (uint8_t *)s->display_buffer);
-    qemu_console_set_surface(s->con, ds);
-}
 
 static bool rad4_index_is_cursor_lut(uint16_t index)
 {
@@ -2348,6 +2488,8 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     PsitechRad4State *s = PSITECH_RAD4(obj);
 
     timer_del(s->frame_timer);
+    /* No mode is recognized yet; show mode 0's geometry until one is. */
+    s->mode = 0;
 
     s->reg14 = 0;
     s->reg18 = 0;
@@ -2413,6 +2555,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->frame_pending = false;
 
     rad4_recognizer_reset(s);
+    rad4_ensure_surface(s);
 
     /*
      * The km child sits on the default sysbus, not a dedicated internal qbus,
@@ -2426,7 +2569,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     rad4_update_irq(s);
     /* The full repaint above recomputes where the (now disabled) cursor
      * is. */
-    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_start = rad4_height(s);
     s->cursor_shown_y_end = -1;
 }
 
@@ -2475,7 +2618,7 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     }
     s->framebuffer = g_malloc0(RAD4_FB_SIZE);
     s->rgb_store = g_malloc0(0x10000);
-    s->display_buffer = g_malloc0(RAD4_MODE0_WIDTH * RAD4_MODE0_HEIGHT * 4);
+    s->display_buffer = g_new0(uint32_t, rad4_max_pixels());
 
     s->con = qemu_graphic_console_create(DEVICE(dev), 0, &rad4_gfx_ops, s);
 
@@ -2543,6 +2686,10 @@ static int rad4_post_load(void *opaque, int version_id)
 {
     PsitechRad4State *s = opaque;
 
+    if (s->mode >= RAD4_MODE_COUNT) {
+        return -EINVAL;
+    }
+
     /*
      * display_buffer is not itself part of VMState (only the raw framebuffer
      * it is converted from is);
@@ -2553,7 +2700,7 @@ static int rad4_post_load(void *opaque, int version_id)
      * would show a stale or blank display_buffer until the guest next writes.
      */
     rad4_mark_all_dirty(s);
-    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_start = rad4_height(s);
     s->cursor_shown_y_end = -1;
     rad4_ensure_surface(s);
     rad4_update_irq(s);
@@ -2561,15 +2708,15 @@ static int rad4_post_load(void *opaque, int version_id)
         !timer_pending(s->frame_timer)) {
         timer_mod(s->frame_timer,
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                 NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
+                 rad4_frame_period(s));
     }
     return 0;
 }
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2613,6 +2760,8 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_BOOL(frame_pending, PsitechRad4State),
         VMSTATE_INT32(rec_state, PsitechRad4State),
         VMSTATE_UINT32(rec_index, PsitechRad4State),
+        VMSTATE_UINT32(rec_candidates, PsitechRad4State),
+        VMSTATE_UINT32(mode, PsitechRad4State),
         VMSTATE_BOOL(km_irq_level, PsitechRad4State),
         VMSTATE_END_OF_LIST()
     },
@@ -2662,7 +2811,7 @@ static void rad4_class_init(ObjectClass *klass, const void *data)
 
     rc->phases.hold = rad4_reset_hold;
 
-    dc->desc = "PsiTech RAD4 (one-mode functional approximation)";
+    dc->desc = "PsiTech RAD4 (driver-mode functional approximation)";
     dc->vmsd = &vmstate_psitech_rad4;
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
     device_class_set_props(dc, psitech_rad4_properties);

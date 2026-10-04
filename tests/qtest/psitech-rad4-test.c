@@ -15,6 +15,7 @@
 #include "libqtest.h"
 
 #include "psitech-rad4-mode0-fixture.h"
+#include "psitech-rad4-modes-fixture.h"
 #include "sgi-test.h"
 
 /*
@@ -2298,6 +2299,417 @@ static void test_gamma_overlay_bypass(void)
     qtest_quit(qts);
 }
 
+/*
+ * The driver's 13 display modes. Each sequence is the shared grammar --
+ * board control with bit 0x20 clear, the PLL index, the mode's two PLL
+ * bytes, its vertical and three horizontal timing banks, the sync register
+ * and board control with bit 0x20 set -- around timing banks expanded from
+ * the generated per-mode fixture.
+ */
+typedef struct Rad4Event {
+    uint32_t offset;
+    uint32_t value;
+} Rad4Event;
+
+#define B_HORIZ1        0xa01000
+#define B_HORIZ3        0xa03000
+#define EV_PLL0         3
+#define EV_PLL1         4
+#define EV_BANKS        5
+
+static const uint32_t mode_bank_base[RAD4_MODE_BANKS] = {
+    B_VERT, B_HORIZ0, B_HORIZ1, B_HORIZ3,
+};
+
+static void events_append(GArray *events, uint32_t offset, uint32_t value)
+{
+    Rad4Event event = { offset, value };
+
+    g_array_append_val(events, event);
+}
+
+/* Bank @bank of @m, expanded, appended to @events. */
+static void events_append_bank(GArray *events, const Rad4ModeFixture *m,
+                               int bank)
+{
+    const Rad4TimingBank *b = &m->banks[bank];
+    uint32_t address = mode_bank_base[bank];
+
+    for (int r = 0; r < b->run_count; r++) {
+        for (int i = 0; i < b->runs[r].count; i++) {
+            events_append(events, address, b->runs[r].value);
+            address += 4;
+        }
+    }
+    g_assert_cmpuint((address - mode_bank_base[bank]) / 4, ==, b->words);
+}
+
+/*
+ * One mode-programming sequence. The PLL bytes come from @pll and the
+ * vertical bank and horizontal banks from @vertical and @horizontal, so a
+ * test can splice two modes; pass the same mode three times for a real one.
+ */
+static GArray *mode_events_spliced(const Rad4ModeFixture *pll,
+                                   const Rad4ModeFixture *vertical,
+                                   const Rad4ModeFixture *horizontal)
+{
+    GArray *events = g_array_new(false, false, sizeof(Rad4Event));
+
+    events_append(events, B_CTRL, 0);
+    events_append(events, B_RGB_LO, 0x21);
+    events_append(events, B_RGB_HI, 0);
+    events_append(events, B_RGB_DATA, pll->pll[0]);
+    events_append(events, B_RGB_DATA, pll->pll[1]);
+    events_append_bank(events, vertical, 0);
+    for (int bank = 1; bank < RAD4_MODE_BANKS; bank++) {
+        events_append_bank(events, horizontal, bank);
+    }
+    events_append(events, B_RGB_LO, 0x20);
+    events_append(events, B_RGB_HI, 0);
+    events_append(events, B_RGB_DATA, 1);
+    events_append(events, B_CTRL, CTRL_MODE_CMD);
+    return events;
+}
+
+static GArray *mode_events(int mode)
+{
+    GArray *events = mode_events_spliced(&rad4_modes[mode], &rad4_modes[mode],
+                                         &rad4_modes[mode]);
+
+    g_assert_cmpuint(events->len, ==, rad4_modes[mode].event_count);
+    return events;
+}
+
+static Rad4Event *event_at(GArray *events, unsigned i)
+{
+    return &g_array_index(events, Rad4Event, i);
+}
+
+/*
+ * Write @events in order. The Bridge window only moves when an event leaves
+ * the current 1 MiB region, which keeps a 3,000-event replay quick.
+ */
+static void play_events(QTestState *qts, GArray *events)
+{
+    uint32_t window = UINT32_MAX;
+
+    for (unsigned i = 0; i < events->len; i++) {
+        uint32_t pci = RAD4_BAR2_PCI + event_at(events, i)->offset;
+
+        if ((pci & ~(WINDOW_SIZE - 1)) != window) {
+            window = pci & ~(WINDOW_SIZE - 1);
+            rad4_window_to(qts, pci);
+        }
+        qtest_writel(qts, WINDOW_RAD4 + (pci & (WINDOW_SIZE - 1)),
+                     event_at(events, i)->value);
+    }
+}
+
+static void play_mode(QTestState *qts, int mode)
+{
+    g_autoptr(GArray) events = mode_events(mode);
+
+    play_events(qts, events);
+}
+
+/* A QMP screendump's geometry and pixels, as 0xRRGGBB words. */
+typedef struct Screen {
+    unsigned width;
+    unsigned height;
+    uint32_t *pixels;
+} Screen;
+
+static Screen *screen_capture(QTestState *qts)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    Screen *screen = g_new0(Screen, 1);
+    unsigned header = 0;
+    const uint8_t *rgb;
+    gsize length;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-mode-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
+    unlink(path);
+    g_assert_cmpint(sscanf(contents, "P6\n%u %u\n255\n%n", &screen->width,
+                           &screen->height, &header), ==, 2);
+    g_assert_cmpuint(header, >, 0);
+    g_assert_cmpuint(header + screen->width * screen->height * 3, <=, length);
+    rgb = (const uint8_t *)contents + header;
+    screen->pixels = g_new(uint32_t, screen->width * screen->height);
+    for (unsigned i = 0; i < screen->width * screen->height; i++) {
+        screen->pixels[i] = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2];
+        rgb += 3;
+    }
+    return screen;
+}
+
+static void screen_free(Screen *screen)
+{
+    g_free(screen->pixels);
+    g_free(screen);
+}
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(Screen, screen_free)
+
+static uint32_t screen_pixel(Screen *screen, unsigned x, unsigned y)
+{
+    g_assert_cmpuint(x, <, screen->width);
+    g_assert_cmpuint(y, <, screen->height);
+    return screen->pixels[y * screen->width + x];
+}
+
+static bool frame_pending(QTestState *qts)
+{
+    return bar2_read(qts, B_CTRL) & STATUS_FRAME;
+}
+
+/* The driver's interrupt handler: control with bit 1 clear, 0x20 kept. */
+static void frame_acknowledge(QTestState *qts)
+{
+    bar2_write(qts, B_CTRL, CTRL_MODE_CMD);
+    g_assert_false(frame_pending(qts));
+}
+
+/*
+ * Right after recognition, frames arrive exactly every 1/@hz s of virtual
+ * time: none a microsecond before each one, one a microsecond after. The
+ * labels are at least 0.25 ms apart in period, so this tells every pair of
+ * modes with different labels apart.
+ */
+static void check_frame_cadence(QTestState *qts, unsigned hz)
+{
+    int64_t period = 1000000000 / hz;
+
+    g_assert_false(frame_pending(qts));
+    qtest_clock_step(qts, period - 1000);
+    g_assert_false(frame_pending(qts));
+    qtest_clock_step(qts, 2000);
+    g_assert_true(frame_pending(qts));
+    frame_acknowledge(qts);
+    qtest_clock_step(qts, period - 2000);
+    g_assert_false(frame_pending(qts));
+    qtest_clock_step(qts, 2000);
+    g_assert_true(frame_pending(qts));
+    frame_acknowledge(qts);
+}
+
+/*
+ * The scanout has the mode's geometry and rows 4 * width bytes apart: a
+ * pixel stored at the last column of the last row shows there, and one at
+ * the start of row 1 shows at (0, 1). FB_WAT entry 0 is set to 24-bit true
+ * color so the stored words display as themselves.
+ */
+static void check_mode_scanout(QTestState *qts, int mode)
+{
+    const Rad4ModeFixture *m = &rad4_modes[mode];
+    uint32_t stride = m->width * 4;
+    g_autoptr(Screen) screen = NULL;
+
+    rgb_write_wat(qts, WAT_BASE, 0, FB_WAT_TRUE_24);
+    bar2_write(qts, stride * (m->height - 1) + 4 * (m->width - 1),
+               0x00a1b2c3);
+    bar2_write(qts, stride, 0x00445566);
+    screen = screen_capture(qts);
+    g_assert_cmpuint(screen->width, ==, m->width);
+    g_assert_cmpuint(screen->height, ==, m->height);
+    g_assert_cmphex(screen_pixel(screen, m->width - 1, m->height - 1), ==,
+                    0xa1b2c3);
+    g_assert_cmphex(screen_pixel(screen, 0, 1), ==, 0x445566);
+    g_assert_cmphex(screen_pixel(screen, m->width - 2, m->height - 1), ==, 0);
+    g_assert_cmphex(screen_pixel(screen, m->width - 1, 0), ==, 0);
+    bar2_write(qts, stride * (m->height - 1) + 4 * (m->width - 1), 0);
+    bar2_write(qts, stride, 0);
+}
+
+static void check_mode_active(QTestState *qts, int mode)
+{
+    check_frame_cadence(qts, rad4_modes[mode].refresh_hz);
+    check_mode_scanout(qts, mode);
+}
+
+/* No frame arrives for a whole second: no mode is active. */
+static void check_no_mode(QTestState *qts)
+{
+    qtest_clock_step(qts, 1000000000);
+    g_assert_false(frame_pending(qts));
+}
+
+/*
+ * Each of the 13 sequences, replayed alone, is recognized as its own mode:
+ * the scanout takes the mode's size and stride and the frame interrupt
+ * its refresh label.
+ */
+static void test_mode_recognized(const void *data)
+{
+    int mode = GPOINTER_TO_INT(data);
+    QTestState *qts = rad4_init();
+
+    if (mode == 0) {
+        /* The generated fixture's mode 0 is the reviewed mode-zero one. */
+        g_autoptr(GArray) events = mode_events(0);
+
+        g_assert_cmpuint(events->len, ==, RAD4_MODE0_EVENT_COUNT);
+        for (unsigned i = 0; i < events->len; i++) {
+            g_assert_cmphex(event_at(events, i)->offset, ==,
+                            rad4_mode0_events[i].bar2_offset);
+            g_assert_cmphex(event_at(events, i)->value, ==,
+                            rad4_mode0_events[i].value);
+        }
+    }
+    play_mode(qts, mode);
+    check_mode_active(qts, mode);
+    qtest_quit(qts);
+}
+
+typedef enum MutationKind {
+    MUTATE_XOR,
+    MUTATE_DROP,
+    MUTATE_DUPLICATE,
+} MutationKind;
+
+typedef struct Mutation {
+    const char *what;
+    MutationKind kind;
+    /* The bank holding the event, or -1 for one outside the banks. */
+    int bank;
+    /* Index within that bank or the sequence; negative counts from the end. */
+    int index;
+} Mutation;
+
+static const Mutation mode_mutations[] = {
+    { "first PLL byte", MUTATE_XOR, -1, EV_PLL0 },
+    { "second PLL byte", MUTATE_XOR, -1, EV_PLL1 },
+    { "first vertical word", MUTATE_XOR, 0, 0 },
+    { "last vertical word", MUTATE_XOR, 0, -1 },
+    { "horizontal bank 0 word", MUTATE_XOR, 1, 7 },
+    { "horizontal bank 1 word", MUTATE_XOR, 2, -2 },
+    { "horizontal bank 3 word", MUTATE_XOR, 3, 20 },
+    { "sync value", MUTATE_XOR, -1, -2 },
+    { "vertical bank one word short", MUTATE_DROP, 0, -1 },
+    { "horizontal bank 3 one word long", MUTATE_DUPLICATE, 3, -1 },
+};
+
+static unsigned mutation_position(int mode, const Mutation *mutation)
+{
+    const Rad4ModeFixture *m = &rad4_modes[mode];
+    unsigned start = EV_BANKS;
+
+    if (mutation->bank < 0) {
+        return mutation->index < 0 ? m->event_count + mutation->index
+                                   : mutation->index;
+    }
+    for (int b = 0; b < mutation->bank; b++) {
+        start += m->banks[b].words;
+    }
+    return start + (mutation->index < 0 ?
+                    m->banks[mutation->bank].words + mutation->index :
+                    mutation->index);
+}
+
+/*
+ * Every distinguishing field of a sequence is checked: changing one PLL
+ * byte, one word of each bank or the sync value, or making a bank one word
+ * shorter or longer, leaves no mode recognized. The unmodified sequence
+ * then still recognizes the mode, so the failures are not a broken replay.
+ */
+static void test_mode_rejects_mutation(const void *data)
+{
+    int mode = GPOINTER_TO_INT(data);
+    QTestState *qts = rad4_init();
+
+    play_mode(qts, mode);
+    check_mode_active(qts, mode);
+    for (unsigned i = 0; i < ARRAY_SIZE(mode_mutations); i++) {
+        const Mutation *mutation = &mode_mutations[i];
+        g_autoptr(GArray) events = mode_events(mode);
+        unsigned pos = mutation_position(mode, mutation);
+        Rad4Event copy = *event_at(events, pos);
+
+        if (g_test_verbose()) {
+            g_test_message("mode %d: %s", mode, mutation->what);
+        }
+        switch (mutation->kind) {
+        case MUTATE_XOR:
+            event_at(events, pos)->value ^= 0x01;
+            break;
+        case MUTATE_DROP:
+            g_array_remove_index(events, pos);
+            break;
+        case MUTATE_DUPLICATE:
+            copy.offset += 4;
+            g_array_insert_val(events, pos + 1, copy);
+            break;
+        }
+        play_events(qts, events);
+        check_no_mode(qts);
+    }
+    play_mode(qts, mode);
+    check_mode_active(qts, mode);
+    qtest_quit(qts);
+}
+
+/*
+ * Modes 4 and 11 program the same PLL bytes, as do modes 5 and 6, so only
+ * their timing banks tell them apart: each is recognized with its own
+ * refresh label and geometry, and one mode's vertical bank followed by the
+ * other's horizontal banks is no mode at all.
+ */
+static void test_mode_shared_pll(void)
+{
+    static const int pairs[][2] = { { 4, 11 }, { 5, 6 } };
+    QTestState *qts = rad4_init();
+
+    for (unsigned p = 0; p < ARRAY_SIZE(pairs); p++) {
+        const Rad4ModeFixture *a = &rad4_modes[pairs[p][0]];
+        const Rad4ModeFixture *b = &rad4_modes[pairs[p][1]];
+        g_autoptr(GArray) ab = mode_events_spliced(a, a, b);
+        g_autoptr(GArray) ba = mode_events_spliced(b, b, a);
+
+        g_assert_cmpmem(a->pll, 2, b->pll, 2);
+        play_mode(qts, pairs[p][0]);
+        check_mode_active(qts, pairs[p][0]);
+        play_mode(qts, pairs[p][1]);
+        check_mode_active(qts, pairs[p][1]);
+        play_events(qts, ab);
+        check_no_mode(qts);
+        play_events(qts, ba);
+        check_no_mode(qts);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * Modes 2 and 3 write identical timing banks and differ only in their PLL
+ * bytes: the same banks are 1600x1200 at 60 Hz after mode 2's PLL bytes
+ * and at 72 Hz after mode 3's, and mixing one byte from each is neither.
+ */
+static void test_mode_shared_banks(void)
+{
+    const Rad4ModeFixture *two = &rad4_modes[2];
+    const Rad4ModeFixture *three = &rad4_modes[3];
+    QTestState *qts = rad4_init();
+    g_autoptr(GArray) mixed = mode_events(2);
+
+    for (int b = 0; b < RAD4_MODE_BANKS; b++) {
+        g_assert_cmpuint(two->banks[b].words, ==, three->banks[b].words);
+    }
+    play_mode(qts, 2);
+    check_mode_active(qts, 2);
+    play_mode(qts, 3);
+    check_mode_active(qts, 3);
+    event_at(mixed, EV_PLL0)->value = three->pll[0];
+    play_events(qts, mixed);
+    check_no_mode(qts);
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -2466,6 +2878,21 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/gamma-overlay-bypass",
                    test_gamma_overlay_bypass);
     qtest_add_func("/psitech-rad4/reset", test_reset);
+    for (int mode = 0; mode < RAD4_MODE_COUNT; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "/psitech-rad4/mode-recognized/%d", mode);
+
+        qtest_add_data_func(path, GINT_TO_POINTER(mode), test_mode_recognized);
+    }
+    /* The smallest, a portrait, the shortest frame and the largest mode. */
+    qtest_add_data_func("/psitech-rad4/mode-rejects-mutation/7",
+                        GINT_TO_POINTER(7), test_mode_rejects_mutation);
+    qtest_add_data_func("/psitech-rad4/mode-rejects-mutation/5",
+                        GINT_TO_POINTER(5), test_mode_rejects_mutation);
+    qtest_add_data_func("/psitech-rad4/mode-rejects-mutation/11",
+                        GINT_TO_POINTER(11), test_mode_rejects_mutation);
+    qtest_add_func("/psitech-rad4/mode-shared-pll", test_mode_shared_pll);
+    qtest_add_func("/psitech-rad4/mode-shared-banks", test_mode_shared_banks);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
 
