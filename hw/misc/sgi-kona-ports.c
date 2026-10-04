@@ -190,8 +190,8 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     { SGI_KONA_CMD_X_BACKGROUND_POINT6, 6 },
     { SGI_KONA_CMD_X_BACKGROUND_POINT24, 24 },
     /* Established relative-point and line lengths. */
-    { 0x14f, 1 },
-    { 0x150, 6 },
+    { SGI_KONA_CMD_X_RELATIVE_POINT, 1 },
+    { SGI_KONA_CMD_X_RELATIVE_POINT6, 6 },
     { 0x159, 2 },
     { 0x15b, 1 },
     { 0x15c, 7 },
