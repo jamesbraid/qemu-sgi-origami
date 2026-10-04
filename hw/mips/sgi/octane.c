@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
 /*
- * Octane (IP30) functional profile with optional textureless SI.
+ * Octane (IP30) functional profile with optional IMPACT or VPro graphics.
  * Fitted populations come from the checked IP30 catalogue. Device models
  * retain their documented functional approximations; catalogue data does
  * not establish additional physical behavior.
@@ -29,6 +29,7 @@
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-mgras.h"
+#include "hw/misc/sgi-odyssey.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
@@ -91,8 +92,9 @@ static void octane_set_graphics_board(Object *obj, const char *value,
 {
     OctaneMachineState *s = (OctaneMachineState *)obj;
 
-    if (strcmp(value, "none") && !sgi_mgras_board_known(value)) {
-        error_setg(errp, "octane graphics must be none or an MGRAS board: "
+    if (strcmp(value, "none") && strcmp(value, "vpro") &&
+        !sgi_mgras_board_known(value)) {
+        error_setg(errp, "octane graphics must be none, vpro or an MGRAS board: "
                    "si, si-t, ssi, mxi, esi, esi-t, essi or emxi");
         return;
     }
@@ -436,8 +438,10 @@ static void octane_init_common(MachineState *machine, bool octane2)
     int loaded;
     uint8_t *flash_image = NULL;
     bool sharp_flash = !strcmp(s->flash_profile, "sharp-lh28f800su");
-    bool graphics = strcmp(s->graphics_board, "none");
-    unsigned int widget = s->graphics_widget;
+    bool mgras = sgi_mgras_board_known(s->graphics_board);
+    bool vpro = !strcmp(s->graphics_board, "vpro");
+    bool graphics = mgras || vpro;
+    unsigned int widget = mgras ? s->graphics_widget : OCTANE_GRAPHICS_WIDGET;
     uint16_t links = (1 << 8) | (1 << 15);
 
     s->model = octane_model(octane2 ? "octane2" : "octane",
@@ -445,7 +449,7 @@ static void octane_init_common(MachineState *machine, bool octane2)
     s->node = s->model->nodes->value;
     processor = s->node->cpu_slots->value->assembly;
 
-    if (s->graphics_widget_set && !graphics) {
+    if (s->graphics_widget_set && !mgras) {
         error_setg(&error_fatal,
                    "graphics-widget requires an MGRAS graphics-board");
     }
@@ -654,38 +658,41 @@ static void octane_init_common(MachineState *machine, bool octane2)
                           s->model->crossbars->value->widget_revision);
     qdev_prop_set_uint64(xbow, "span", OCTANE_SHORT_SPAN);
     if (graphics) {
-        DeviceState *mgras = qdev_new(TYPE_SGI_MGRAS);
+        const char *name = mgras ? "mgras" : "odyssey";
+        DeviceState *board = qdev_new(mgras ? TYPE_SGI_MGRAS : TYPE_SGI_ODYSSEY);
         MemoryRegion *face;
+        g_autofree char *slot = g_strdup_printf("%u", widget);
 
         memory_region_init(&s->graphics_fabric, OBJECT(machine),
                            "octane.graphics-fabric",
                            SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
-        object_property_add_child(OBJECT(machine), "mgras", OBJECT(mgras));
-        mgras->id = g_strdup("mgras");
-        g_autofree char *slot = g_strdup_printf("%u", widget);
+        object_property_add_child(OBJECT(machine), name, OBJECT(board));
+        board->id = g_strdup(name);
 
-        qdev_prop_set_uint32(mgras, "module", 0);
-        qdev_prop_set_string(mgras, "slot", slot);
-        qdev_prop_set_string(mgras, "board", s->graphics_board);
-        /*
-         * The PROM names the board from its serial-number record. Barcode
-         * and ROM serial are fictitious, like the other IP30 identities.
-         */
-        qdev_prop_set_bit(mgras, "board-record", true);
-        qdev_prop_set_string(mgras, "board-record-barcode",
-                             octane2 ? "SIM3020005" : "SIM3010005");
-        qdev_prop_set_uint64(mgras, "board-record-serial",
-                             octane2 ? 0x7a3002000005ULL :
-                                       0x7a3001000005ULL);
-        object_property_set_link(OBJECT(mgras), "fabric",
+        qdev_prop_set_uint32(board, "module", 0);
+        qdev_prop_set_string(board, "slot", slot);
+        if (mgras) {
+            qdev_prop_set_string(board, "board", s->graphics_board);
+            /*
+             * The PROM names the board from its serial-number record. Barcode
+             * and ROM serial are fictitious, like the other IP30 identities.
+             */
+            qdev_prop_set_bit(board, "board-record", true);
+            qdev_prop_set_string(board, "board-record-barcode",
+                                 octane2 ? "SIM3020005" : "SIM3010005");
+            qdev_prop_set_uint64(board, "board-record-serial",
+                                 octane2 ? 0x7a3002000005ULL :
+                                           0x7a3001000005ULL);
+        }
+        object_property_set_link(OBJECT(board), "fabric",
                                  OBJECT(&s->graphics_fabric), &error_fatal);
-        sysbus_realize(SYS_BUS_DEVICE(mgras), &error_fatal);
-        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(mgras), 0);
+        sysbus_realize(SYS_BUS_DEVICE(board), &error_fatal);
+        face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board), 0);
         if (!sgi_xbow_attach_endpoint(crossbow, widget,
                                       face, face, &error_fatal)) {
             return;
         }
-        object_unref(OBJECT(mgras));
+        object_unref(OBJECT(board));
         links |= 1 << widget;
     }
     qdev_prop_set_uint16(xbow, "links-present", links);
@@ -780,7 +787,7 @@ static void octane_instance_init_common(Object *obj, const char *product)
     object_property_add_str(obj, "graphics-board", octane_get_graphics_board,
                             octane_set_graphics_board);
     object_property_set_description(obj, "graphics-board",
-                                    "Optional IMPACT (MGRAS) board: none, si, "
+                                    "Optional graphics board: none, vpro, si, "
                                     "si-t, ssi, mxi, esi, esi-t, essi or emxi");
     s->graphics_widget = OCTANE_GRAPHICS_WIDGET;
     object_property_add(obj, "graphics-widget", "uint8",

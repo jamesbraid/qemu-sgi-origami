@@ -15,9 +15,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = (
-    "479fef37379e4a8ad21f440fea6eddad350d610f9f7f074e8a19602085e4bddb"
-)
+EXPECTED_CATALOGUE_SHA256 = "b0dbdf4acf524b3e8220128b2d6e8a0f28b8c0123ace926221692e0a3d7167d4"
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -132,9 +130,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 104)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 33)
-        self.assertEqual(len(layers), 71)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 107)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 34)
+        self.assertEqual(len(layers), 73)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {
@@ -226,7 +224,7 @@ class FuelTests(unittest.TestCase):
         offerings = [row for row in catalogue["offerings"]
                      if row["product"] == "fuel"]
         self.assertEqual({row["topology"] for row in offerings},
-                         {"fuel"})
+                         {"fuel", "fuel-vpro"})
         expected = [
             {"kind": "system-controller", "node": 0,
              "argument": "-serial chardev:l1"},

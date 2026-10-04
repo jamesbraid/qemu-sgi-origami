@@ -39,6 +39,10 @@ slow_qtests = {
   'sn0-pi-gfx-test': 180,
   # Six cases run processors under TCG; one boots two chassis.
   'sn1-pi-gfx-test': 180,
+  # 138 cases, each its own guest with the PROM. Three whole runs took
+  # 165.9s, 191.9s and 172.1s at load averages of 76 to 124 with no
+  # TIMEOUT_MULTIPLIER; the budget is three times the highest.
+  'sn1-odyssey-test': 576,
   # The 38-case Fuel suite took 59.71s before backed clock migration
   # added two cases taking 27.99s. Keep headroom beyond the 60s default.
   'sn1-fuel-test': 180,
@@ -509,7 +513,10 @@ sn1_board_qtests = \
      'sn1-cpu-identity-test', 'sn1-directory-state-test',
      'sn1-presence-test', 'sn1-system-request-test',
      'sn1-io8-scsi-test', 'sn1-warm-reset-test',
-     'sn1-pi-gfx-test', 'sn1-fuel-test', 'sn1-fuel-usb-test'] : [])
+     'sn1-pi-gfx-test', 'sn1-fuel-test', 'sn1-fuel-usb-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-fuel-vpro-test'] : [])
 
 sn0_machine_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
@@ -576,6 +583,8 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['octane-test', 'octane-mgras-test', 'lh28f800su-test',
      'sgi-bridge-sharp-flash-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
+    ['octane-vpro-test'] : []) + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \
@@ -586,7 +595,7 @@ sgi_qtests = \
     ['sn-promdata-window-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-odyssey-test'] : []) + \
+    ['sn1-odyssey-test', 'sn1-odyssey-query-test'] : []) + \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \

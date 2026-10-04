@@ -89,6 +89,7 @@ hw/mips/sgi/board-pci-expansion.c
 hw/mips/sgi/board-pci-shoehorn.c
 hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
+hw/mips/sgi/models/fuel-vpro.yaml
 hw/mips/sgi/models/layers/architectures/sn0.yaml
 hw/mips/sgi/models/layers/architectures/sn1.yaml
 hw/mips/sgi/models/layers/assemblies/ip27.yaml
@@ -98,6 +99,7 @@ hw/mips/sgi/models/layers/assemblies/ip45.yaml
 hw/mips/sgi/models/layers/assemblies/ip53-tezro.yaml
 hw/mips/sgi/models/layers/assemblies/ip53.yaml
 hw/mips/sgi/models/layers/modules/c-brick.yaml
+hw/mips/sgi/models/layers/modules/fuel-vpro.yaml
 hw/mips/sgi/models/layers/modules/i-brick.yaml
 hw/mips/sgi/models/layers/modules/ip27-node-board.yaml
 hw/mips/sgi/models/layers/modules/ir-graphics-module.yaml
@@ -121,6 +123,7 @@ hw/mips/sgi/models/layers/modules/origin350-module.yaml
 hw/mips/sgi/models/layers/modules/pci-carrier.yaml
 hw/mips/sgi/models/layers/modules/pci-shoehorn.yaml
 hw/mips/sgi/models/layers/modules/r-brick.yaml
+hw/mips/sgi/models/layers/products/fuel-vpro.yaml
 hw/mips/sgi/models/layers/products/onyx2-deskside.yaml
 hw/mips/sgi/models/layers/products/onyx2-rack.yaml
 hw/mips/sgi/models/layers/products/onyx350-base.yaml
@@ -219,6 +222,7 @@ hw/misc/sgi-board-record.c
 hw/misc/sgi-bridge-dma-test.c
 hw/misc/sgi-command-port-test.c
 hw/misc/sgi-command-port.c
+hw/misc/sgi-dma-word-test.c
 hw/misc/sgi-elsc.c
 hw/misc/sgi-hub-test.c
 hw/misc/sgi-hub.c
@@ -295,6 +299,7 @@ include/hw/misc/sgi-bedrock.h
 include/hw/misc/sgi-bic-board-interface.h
 include/hw/misc/sgi-board-record.h
 include/hw/misc/sgi-command-port.h
+include/hw/misc/sgi-dma-word-test.h
 include/hw/misc/sgi-elsc.h
 include/hw/misc/sgi-hub.h
 include/hw/misc/sgi-ioc3.h
@@ -648,6 +653,7 @@ tests/qtest/libqos/pci-sgi-bridge.c
 tests/qtest/libqos/pci-sgi-bridge.h
 tests/qtest/libqos/sgi-bridge-machine.c
 tests/qtest/mips64-qtest-optional-skips.txt
+tests/qtest/octane-vpro-test.c
 tests/qtest/psitech-rad1-test.c
 tests/qtest/psitech-rad4-mode0-fixture.h
 tests/qtest/psitech-rad4-test.c
@@ -745,8 +751,10 @@ tests/qtest/sn1-bedrock-xb-test.c
 tests/qtest/sn1-cpu-identity-test.c
 tests/qtest/sn1-cross-node-test.c
 tests/qtest/sn1-directory-state-test.c
+tests/qtest/sn1-fuel-vpro-test.c
 tests/qtest/sn1-io8-scsi-test.c
 tests/qtest/sn1-l1-test.c
+tests/qtest/sn1-odyssey-query-test.c
 tests/qtest/sn1-odyssey-test.c
 tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c

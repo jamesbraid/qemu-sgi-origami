@@ -645,7 +645,8 @@ static void replay_line(QTestState *qts, const ReplayHead *head,
     } else if (!strcmp(words[0], "pixel")) {
         replay_pixel(qts, head, path, line, words, "x-test-pixel");
     } else if (!strcmp(words[0], "display-pixel")) {
-        replay_pixel(qts, head, path, line, words, "x-test-display-pixel");
+        replay_pixel(qts, head, path, line, words,
+                     head->display_pixel_property);
     } else if (!strcmp(words[0], "back-pixel")) {
         replay_pixel(qts, head, path, line, words, "x-test-back-pixel");
     } else if (!strcmp(words[0], "pixels")) {

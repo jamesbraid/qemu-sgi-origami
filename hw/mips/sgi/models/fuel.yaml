@@ -6,3 +6,11 @@ layers:
   - layers/assemblies/ip34.yaml
   - layers/modules/fuel-base.yaml
   - layers/products/fuel.yaml
+connector_population:
+  - component: graphics-connector
+    occupancy: empty
+    reason: >-
+      The base profile is the serial-console Fuel. The fuel-vpro profile fits
+      the graphics board.
+    provenance: derived
+    sources: ["boot-logs/tingo-sgi-fuel-irix-console.html raw HTML lines 138 to 146: a fitted board answers at xtalk/13"]

@@ -1964,7 +1964,11 @@ static bool sgi_machine_instantiate_mgras(
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
-/* The direct V12 profile occupies the Origin 300 XBridge's external port. */
+/*
+ * A VPro wired straight to a node's XBridge: the Origin 300's direct V12
+ * profile on the cable port, or a Fuel's graphics board at widget 13. The
+ * node already selected that widget as the chip's external port.
+ */
 static bool sgi_machine_instantiate_odyssey(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXioAttachment *attachment,
@@ -3956,6 +3960,28 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 error_setg(errp, "topology '%s' node %u has no XBridge "
                            "I/O board", t->name, node_index);
                 return false;
+            }
+            /*
+             * A graphics board wired straight to this node's XBridge
+             * occupies the chip's external port at its own widget: 0xb
+             * behind the Origin 300's cable connector, 13 in a Fuel.
+             */
+            for (board_entry = t->io_boards; board_entry;
+                 board_entry = board_entry->next) {
+                const SGIModelIoBoard *board = board_entry->value;
+                const SGIModelXioAttachment *placement;
+
+                if (board->preset != SGI_MODEL_IO_BOARD_PRESET_ODYSSEY ||
+                    !board->populated ||
+                    board->attachment >= attachment_count) {
+                    continue;
+                }
+                placement = attachments[board->attachment];
+                if (placement->node_index == node_index &&
+                    placement->crossbar_index < 0) {
+                    qdev_prop_set_uint8(DEVICE(node), "xbridge-xio-port",
+                                        placement->widget);
+                }
             }
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;

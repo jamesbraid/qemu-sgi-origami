@@ -71,6 +71,8 @@ typedef struct SN1NodeState {
     uint8_t installed_bank_mask;
     uint8_t io_board_widget;
     char *io_board_part;
+    /* The XBridge port a directly attached graphics board answers on. */
+    uint8_t xbridge_xio_port;
     bool last_node;
     bool promdata_filter;
     bool promdata_fast;

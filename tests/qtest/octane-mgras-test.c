@@ -616,7 +616,7 @@ static void test_rejected_selection(gconstpointer data)
         "octane,graphics-board=v12", "-display", "none", "-qmp", "stdio", NULL,
     };
 
-    assert_launch_rejected(args, "graphics must be none or an MGRAS board");
+    assert_launch_rejected(args, "graphics must be none, vpro or an MGRAS board");
 }
 
 static void test_rejected_widget(gconstpointer data)
@@ -643,6 +643,7 @@ static void test_rejected_widget_without_board(gconstpointer data)
     const char *selections[] = {
         ",graphics-widget=11",
         ",graphics-board=none,graphics-widget=9",
+        ",graphics-board=vpro,graphics-widget=11",
     };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(selections); i++) {
