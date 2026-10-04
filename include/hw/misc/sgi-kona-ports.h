@@ -303,6 +303,8 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_DRAW_PIXELS 0x3a
 #define SGI_KONA_CMD_GL_READ_PIXELS 0x39
 #define SGI_KONA_CMD_GL_COPY_PIXELS 0x38
+#define SGI_KONA_CMD_GL_COPY_OVERLAP 0x110
+#define SGI_KONA_CMD_GL_COPY_CONVOLUTION 0x115
 #define SGI_KONA_CMD_GL_GET         0x4c
 #define SGI_KONA_CMD_GL_PUSH_ATTRIB 0xc9
 #define SGI_KONA_CMD_GL_POP_ATTRIB  0xc8
