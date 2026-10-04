@@ -111,7 +111,7 @@
 #define OHCI_HCCA_IOVA 0x40000000
 #define XBRIDGE_ATE0 0x10000
 #define XBRIDGE_ATE_VALID 1
-#define XBRIDGE_ATE_NO_SWAP (1U << 5)
+#define XBRIDGE_ATE_SWAP (1U << 5)
 
 static bool fuel_cpu_readq(QTestState *qts, uint64_t address, uint64_t *value)
 {
@@ -601,7 +601,7 @@ static void test_fuel_ohci_interrupt(const void *data)
     qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0,
                  OHCI_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_SWAP | XBRIDGE_ATE_VALID);
     qtest_writel(qts, OHCI_WINDOW + OHCI_HCCA, OHCI_HCCA_IOVA);
     qtest_writel(qts, OHCI_WINDOW + OHCI_INTERRUPT_ENABLE,
                  OHCI_INTERRUPT_MIE | OHCI_INTERRUPT_SF);
@@ -652,6 +652,7 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     };
     const unsigned int pin = 4, pending_bit = 20;
     uint8_t packet[4 + sizeof(frame)];
+    uint8_t received[sizeof(frame)];
     g_autofree char *quoted = g_shell_quote(data);
     QTestState *qts;
     int sv[2];
@@ -669,11 +670,11 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0,
                  IOC3_RX_RING_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_VALID);
     qtest_writeq(qts, XTALK_WIDGET(FUEL_XBRIDGE) + XBRIDGE_ATE0 + 8,
                  IOC3_RX_BUFFER_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_VALID);
     qtest_writel(qts, IOC3_RX_RING_PHYS, 0);
     qtest_writel(qts, IOC3_RX_RING_PHYS + 4, IOC3_RX_BUFFER_IOVA);
     qtest_writel(qts, IOC3_WINDOW + IOC3_ENET_MAC_CONTROL,
@@ -704,6 +705,8 @@ static void test_fuel_ioc3_ethernet_interrupt(const void *data)
     g_assert_cmphex(qtest_readl(qts, IOC3_RX_BUFFER_PHYS) &
                     IOC3_ENET_RX_HEADER_VALID, ==,
                     IOC3_ENET_RX_HEADER_VALID);
+    qtest_memread(qts, IOC3_RX_BUFFER_PHYS + 66, received, sizeof(received));
+    g_assert_cmpmem(received, sizeof(received), frame, sizeof(frame));
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_ENET_INT_STATUS) &
                     IOC3_ENET_INT_RX_TIMER, ==, IOC3_ENET_INT_RX_TIMER);
     fuel_expect_irq(qts, pin, pending_bit);

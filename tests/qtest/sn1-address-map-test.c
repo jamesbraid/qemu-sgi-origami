@@ -265,7 +265,7 @@
 #define XBRIDGE_LINK_ALIVE (1U << 31)
 #define XBRIDGE_LINK_WIDGET_PRESENT (1U << 5)
 #define XBRIDGE_ATE_VALID 1
-#define XBRIDGE_ATE_NO_SWAP (1U << 5)
+#define XBRIDGE_ATE_SWAP (1U << 5)
 #define XBRIDGE_INT_STATUS 0x100
 #define XBRIDGE_INT_ENABLE 0x108
 #define XBRIDGE_INT_RESET 0x110
@@ -1310,7 +1310,7 @@ static void test_io8_usb_attachment(const void *data)
     qtest_writeq(qts, IO_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
                  IO8_USB_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_SWAP | XBRIDGE_ATE_VALID);
 
     widget_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_INT_UPPER,
                      XBRIDGE_HOST_PORT << 16);
@@ -1384,7 +1384,7 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
     qtest_writeq(qts, IO_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
                  IO8_USB_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP);
+                 XBRIDGE_ATE_SWAP);
 
     io8_usb_writel(qts, OHCI_HC_HCCA, IO8_USB_HCCA_IOVA);
     io8_usb_writel(qts, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
@@ -1627,6 +1627,7 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     const unsigned int pending_bit = 19;
     const uint64_t pending = UINT64_C(1) << pending_bit;
     uint8_t packet[4 + sizeof(frame)];
+    uint8_t received[sizeof(frame)];
     g_autofree char *extra = NULL;
     QTestState *qts;
     int sv[2];
@@ -1642,11 +1643,11 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     qtest_writeq(qts, IO_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0,
                  IOC3_RX_RING_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_VALID);
     qtest_writeq(qts, IO_WIDGET(IO8_IOC3_WIDGET) + XBRIDGE_ATE0 + 8,
                  IOC3_RX_BUFFER_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
-                 XBRIDGE_ATE_NO_SWAP | XBRIDGE_ATE_VALID);
+                 XBRIDGE_ATE_VALID);
     io8_route_interrupt(qts, XBRIDGE_IOC3_ETH_PIN, pending_bit);
 
     qtest_writel(qts, IOC3_RX_RING_PHYS, 0);
@@ -1680,6 +1681,8 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     g_assert_cmphex(qtest_readl(qts, IOC3_RX_BUFFER_PHYS) &
                     IOC3_ENET_RX_HEADER_VALID, ==,
                     IOC3_ENET_RX_HEADER_VALID);
+    qtest_memread(qts, IOC3_RX_BUFFER_PHYS + 66, received, sizeof(received));
+    g_assert_cmpmem(received, sizeof(received), frame, sizeof(frame));
     g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_INT_STATUS) &
                     IOC3_ENET_INT_RX_TIMER, ==, IOC3_ENET_INT_RX_TIMER);
     g_assert_cmphex(widget_reg_read(qts, IO8_IOC3_WIDGET,
