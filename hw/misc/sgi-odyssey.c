@@ -7140,8 +7140,8 @@ static void odyssey_query_cancel(SGIOdysseyState *s)
  * The consumer indexes a 256-entry table with a byte colour's raw words and
  * no mask, so a byte operand above 255 has no defined answer. Such a record
  * is retained for the context save but makes queries fail observably until
- * the next colour setter. Texture-coordinate forms other than the two-float
- * one stay unsupported the same way.
+ * the next colour setter. The current texture record admits the captured
+ * two- and four-float setters. Other formats remain unsupported.
  */
 static void odyssey_query_update(SGIOdysseyState *s, uint32_t tag)
 {
