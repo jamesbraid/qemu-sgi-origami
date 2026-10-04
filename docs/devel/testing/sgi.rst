@@ -374,3 +374,107 @@ or icount. These modes change translation behavior or the counters, so rerun
 without them before using this diagnostic. The included Origin 300 and Origin
 200 counter samples were captured from QEMU using a development harness.
 Their exact QEMU revision and capture environment were not recorded.
+
+Whole-system performance workloads
+----------------------------------
+
+``mips64-irix_performance`` boots the installed IRIX 6.5.30 disk once
+on an Origin 200 with 128 MiB and one R10000 CPU. It then warms and repeats
+four checked workloads: stock ``compress``/``uncompress`` round trips,
+IOC3 TCP receive, IOC3 TCP transmit, and an idle shell window. Transfers use
+SLIRP. Each workload has one warmup and three measured samples by default.
+The CPU workload is single-process even when the machine has two CPUs.
+
+Use an optimized build with tests, HMP and SLIRP enabled. Run the native
+Meson benchmark:
+
+.. code-block:: sh
+
+   export QEMU_TEST_SGI_ASSET_DIR=/path/to/sgi-assets
+   build/pyvenv/bin/meson test -C build --benchmark \
+       --suite qemu:sgi --print-errorlogs
+
+The inputs are the checksum-pinned IP27 PROM and ``irix/6.5.30/root.qcow2``
+listed above. Guest writes use snapshot mode. QEMU also generates
+``make bench-sgi`` from this registration. Ordinary ``meson test`` and
+``make check`` runs do not select benchmarks. Meson runs benchmarks serially
+and does not inject random ``MALLOC_PERTURB_`` values. The report records its
+effective value, with an unset value treated as zero. An unset asset root
+skips the case.
+Require its named JUnit case with ``scripts/check-sgi-test-results.py`` when
+a skip would invalidate the experiment.
+
+These environment variables resize the work without changing the launcher:
+
+.. list-table:: Workload parameters
+   :header-rows: 1
+
+   * - Variable
+     - Default and permitted values
+   * - ``QEMU_TEST_PERF_REPEATS``
+     - 3 measured samples. 2 through 20
+   * - ``QEMU_TEST_PERF_BYTES``
+     - 4194304 bytes. 8192 through 33554432, divisible by 8192
+   * - ``QEMU_TEST_PERF_ITERATIONS``
+     - 8 compression round trips. 1 through 100
+   * - ``QEMU_TEST_PERF_IDLE_SECONDS``
+     - 5 host seconds. 1 through 60
+   * - ``QEMU_TEST_PERF_CPUS``
+     - 1 (single-thread TCG) or 2 (MTTCG)
+   * - ``QEMU_TEST_PERF_HOST``
+     - Hostname. Set the physical host name inside containers
+
+Each timed operation includes its correctness check. Compression compares
+every decompressed output with the provisioned input. Force mode retains
+output for the deterministic high-entropy payload even when it expands. Receive waits for guest
+completion and verifies the received count and checksum. Transmit waits for
+host EOF and checks every byte. Idle checks the shell and running VM after
+the requested idle window. Boot, initial data provisioning and receive-listener
+startup are outside these intervals. The report records each interval, so
+results describe these complete operations rather than isolated codec or
+network speed.
+
+``performance.json`` is retained in the functional case's log directory.
+It contains raw host monotonic wall time, QEMU process user plus system CPU
+time, normalized throughput and CPU cost, and repeated-sample statistics.
+CPU accounting covers all QEMU threads and excludes the Python driver and
+other host processes. Unsupported host accounting is JSON null. Linux uses
+``/proc/PID/stat``. macOS uses ``ps`` process time. macOS accounting has parser
+coverage but still requires native qualification.
+
+The report also records machine settings, input hashes, build options,
+host identity and source/binary identity. Preserve the baseline report before
+rerunning the same case: its native log directory is reused. Run baseline and
+candidate sequentially on the same host, with the same settings and host
+load conditions. Repeat in alternating order if timing dispersion obscures
+the change. Do not use ``-icount`` to stabilize timing: it changes execution
+and cannot be used with MTTCG.
+
+Compare two saved successful reports with:
+
+.. code-block:: sh
+
+   python3 scripts/performance/compare-system.py baseline.json candidate.json
+
+The command refuses incomplete reports, failed samples, changed inputs or
+changed configurations. Source revisions and binary hashes may differ.
+Workload, machine, host and build settings must match. Ratios are median
+candidate divided by median baseline, so values below one indicate less wall
+or CPU time for the same work. A zero baseline CPU median cannot support a
+ratio. No speed threshold determines functional success.
+
+Use host sampling for attribution in a separate profiling run of the same
+work. QEMU's functional logs identify its command and process. On Linux,
+``perf record`` and ``perf report`` can locate host hot paths. On macOS,
+``sample`` or Instruments can do the same. Keep instrumented results separate
+from timing baselines. Guest instruction-count plugins answer different
+questions and add overhead. A profile identifies where host time went.
+It does not prove that a proposed change preserves guest behavior.
+
+Perfly is a separate graphics workload. Its fixed input, bounded invocation
+and rendered-result check still need runtime qualification before it can
+produce comparable measurements. A 2026-10-03 probe on the two-CPU SI profile
+with the supplied desktop disk reached serial root, but an attempted help
+invocation timed out and both captured frames were black. This establishes a
+runtime blocker without identifying its cause. CPU and network results do
+not establish graphics performance.

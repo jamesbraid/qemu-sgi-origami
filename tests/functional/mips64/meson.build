@@ -186,6 +186,7 @@ test_mips64_timeouts = {
   # The real PROM boot dominates the run; the transfer checks have fixed
   # per-operation timeouts.
   'irix_ef' : 2700,
+  'irix_performance' : 2700,
   # Same boot, then bulk transfers on top of it: throughput needs the traffic
   # to run long enough to be worth timing.
   'irix_tg_perf' : 2700,
@@ -331,6 +332,8 @@ tests_mips64_system_thorough = [
   'xframe_pci',
 ]
 
+benchmarks_mips64_system = ['irix_performance']
+
 subdir('roms')
 if sgi_roms_available
   tests_mips64_system_thorough += ['sgi_roms']
@@ -363,6 +366,7 @@ tests_mips64_unit = [
   'lib_mips',
   'lib_net',
   'lib_origin300',
+  'lib_performance',
   'lib_prom',
   'lib_prom_smdk',
   'lib_screen',
