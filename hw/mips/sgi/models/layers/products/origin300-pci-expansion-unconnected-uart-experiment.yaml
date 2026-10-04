@@ -68,10 +68,10 @@ layer:
         io_boards:
           compute-xbridge-bridge-f:
             ioc3_subsystem_id: 65535
-            mac_source: none
+            mac_source: module-l1
             provenance: derived
-            sources: [hw/mips/sgi/baseio.c]
-            notes: Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.
+            sources: [hw/mips/sgi/baseio.c, docs/datasheets/l1-controller.md]
+            notes: The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.
         system_timekeepers:
           compute-xbridge-bridge-f:
             kind: m48t35-compatible

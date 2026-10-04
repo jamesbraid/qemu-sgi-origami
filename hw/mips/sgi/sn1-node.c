@@ -1581,8 +1581,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
     }
-    if (!sgi_machine_set_l1_identity_records(machine, node->l1, node->nasid,
-                                             errp)) {
+    if (!sgi_machine_set_l1_identity_records(
+            machine, node->l1,
+            sgi_machine_bedrock_node_index(machine, DEVICE(node)), errp)) {
         return false;
     }
     /*

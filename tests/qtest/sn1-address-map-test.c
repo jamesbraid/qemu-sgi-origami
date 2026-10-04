@@ -17,6 +17,7 @@
 #include "sgi-prom-container.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
+#include "sgi-l1-identity-vectors.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
@@ -2809,7 +2810,8 @@ static void test_configured_mac_in_board_record(const void *data)
     qts = qtest_init(extra);
 
     /*
-     * This property reports -nic's configured MAC, not a BIA-derived value.
+     * The supplied board area replaces the synthetic one; the IOC3 takes
+     * its address from it, matching -nic's.
      */
     result = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
                            "{'path':'" IOC3_PATH "','property':'mac'}}");
@@ -2849,6 +2851,183 @@ static void test_configured_mac_in_board_record(const void *data)
     g_assert_cmpint(g_unlink(chassis_path), ==, 0);
     g_assert_cmpint(g_unlink(board_path), ==, 0);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+static char *ioc3_mac(QTestState *qts, const char *path)
+{
+    g_autoptr(QDict) result = qtest_qmp(
+        qts, "{'execute':'qom-get','arguments':{'path':%s,'property':'mac'}}",
+        path);
+
+    g_assert_true(qdict_haskey(result, "return"));
+    return g_strdup(qdict_get_str(result, "return"));
+}
+
+static void expect_l1_area(QTestState *qts, unsigned component,
+                           unsigned area, const uint8_t *expected,
+                           size_t length)
+{
+    uint8_t reply[131];
+
+    g_assert_cmpuint(l1_eeprom_read(qts, component, area, 0, length, reply),
+                     ==, 12 + length);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmpmem(reply + 12, length, expected, length);
+}
+
+/*
+ * Without mac= or a raw IO8 record the machine still has one: the default
+ * placeholder address, in the IO8 board area and on the IOC3 alike.
+ */
+static void test_io8_default_mac(const void *data)
+{
+    QTestState *qts = machine_start_with(prom_path, "-S");
+    g_autofree char *mac = ioc3_mac(qts, IOC3_PATH);
+
+    g_assert_cmpstr(mac, ==, "08:00:69:12:34:56");
+    expect_l1_area(qts, 1, L1_EEPROM_CHASSIS, expected_chassis,
+                   sizeof(expected_chassis));
+    expect_l1_area(qts, 1, L1_EEPROM_BOARD, expected_io8_board_default,
+                   sizeof(expected_io8_board_default));
+    qtest_quit(qts);
+}
+
+static void test_io8_mac_property(const void *data)
+{
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    g_autofree char *mac = NULL;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin300,mac=02:00:5d:aa:bb:cc -cpu R14000 "
+                      "-smp 2 -bios %s -S -nic user,mac=02:00:5d:aa:bb:cc",
+                      quoted);
+    mac = ioc3_mac(qts, IOC3_PATH);
+    g_assert_cmpstr(mac, ==, "02:00:5d:aa:bb:cc");
+    expect_l1_area(qts, 1, L1_EEPROM_CHASSIS, expected_chassis,
+                   sizeof(expected_chassis));
+    expect_l1_area(qts, 1, L1_EEPROM_BOARD, expected_io8_board_custom,
+                   sizeof(expected_io8_board_custom));
+    qtest_quit(qts);
+
+    /* Each further chassis takes the next address. */
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis,"
+                      "mac=02:00:5d:aa:bb:cc -cpu R14000 -smp 4 -m 1024 "
+                      "-bios %s -S", quoted);
+    g_free(mac);
+    mac = ioc3_mac(qts, "/machine/node0/baseio/ioc3");
+    g_assert_cmpstr(mac, ==, "02:00:5d:aa:bb:cc");
+    g_free(mac);
+    mac = ioc3_mac(qts, "/machine/node1/baseio/ioc3");
+    g_assert_cmpstr(mac, ==, "02:00:5d:aa:bb:cd");
+    qtest_quit(qts);
+}
+
+/* A -nic address that differs from the identity record is refused. */
+static void test_io8_mac_conflicts(const void *data)
+{
+    static const char *const machines[] = {
+        "origin300", "origin300,mac=02:00:5d:aa:bb:cc",
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(machines); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", machines[i], "-cpu", "R14000",
+            "-smp", "2", "-bios", prom_path, "-S", "-nic",
+            "user,mac=02:00:5d:aa:bb:dd", "-display", "none",
+            "-qtest", "stdio", "-accel", "qtest", NULL,
+        };
+
+        assert_qemu_rejects(args,
+                            "IOC3 NIC MAC conflicts with board identity");
+    }
+}
+
+static void test_mac_rejects(const void *data)
+{
+    static const struct {
+        const char *machine;
+        const char *smp;
+        const char *memory;
+        const char *message;
+    } cases[] = {
+        { "origin300,mac=01:00:5d:aa:bb:cc", "2", "512",
+          "mac must be a nonzero unicast address" },
+        { "origin300,mac=00:00:00:00:00:00", "2", "512",
+          "mac must be a nonzero unicast address" },
+        { "origin300,mac=02:00:5d:aa:bb", "2", "512",
+          "mac must be a nonzero unicast address" },
+        { "origin300,topology=origin300-two-chassis,mac=fe:ff:ff:ff:ff:ff",
+          "4", "1024", "mac leaves node 1 without a unicast address" },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", cases[i].machine, "-cpu",
+            "R14000", "-smp", cases[i].smp, "-m", cases[i].memory, "-bios",
+            prom_path, "-S", "-display", "none", "-qtest", "stdio",
+            "-accel", "qtest", NULL,
+        };
+
+        assert_qemu_rejects(args, cases[i].message);
+    }
+
+    /* Origin 200 has no L1 record to carry the address. */
+    {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200,mac=02:00:5d:aa:bb:cc",
+            "-S", "-display", "none", "-qtest", "stdio", "-accel", "qtest",
+            NULL,
+        };
+
+        assert_qemu_rejects(args, "mac name an L1 identity controller");
+    }
+}
+
+static void l1_expect_mac_text(QTestState *qts, const char *text)
+{
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 8, 0 };
+    uint8_t reply[131];
+
+    l1_send_at(qts, L1_UART_LOCAL_BASE, request, sizeof(request));
+    g_assert_cmpuint(l1_receive_at(qts, L1_UART_LOCAL_BASE, reply), ==, 20);
+    g_assert_cmpuint(ldl_be_p(reply + 1), ==, 0);
+    g_assert_cmpmem(reply + 7, 12, text, 12);
+}
+
+/*
+ * Fuel's L1 keeps the address as MAC text for request 0x0008 and has no IO8
+ * record; the IOC3 takes the same address.
+ */
+static void test_fuel_mac(const void *data)
+{
+    static const struct {
+        const char *option;
+        const char *text;
+        const char *mac;
+    } cases[] = {
+        { "", "080069123456", "08:00:69:12:34:56" },
+        { ",mac=02:a1:b2:c3:d4:e5", "02A1B2C3D4E5", "02:a1:b2:c3:d4:e5" },
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = qtest_initf(
+            "-M fuel,fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
+            "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2%s "
+            "-cpu R14000 -smp 1 -m 512M -bios %s -S", cases[i].option,
+            quoted);
+        g_autofree char *mac = ioc3_mac(qts, IOC3_PATH);
+        uint8_t reply[131];
+
+        g_assert_cmpstr(mac, ==, cases[i].mac);
+        l1_expect_mac_text(qts, cases[i].text);
+        qtest_system_reset(qts);
+        l1_expect_mac_text(qts, cases[i].text);
+        g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_BOARD, 0, 1, reply),
+                         ==, 6);
+        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+        qtest_quit(qts);
+    }
 }
 
 static char *create_flash_image(void)
@@ -4393,6 +4572,15 @@ int main(int argc, char **argv)
                         test_io8bt_configuration_reads_and_writes);
     qtest_add_data_func("origin300/io8/mac/record-matches-configured-mac",
                         NULL, test_configured_mac_in_board_record);
+    qtest_add_data_func("origin300/io8/mac/default", NULL,
+                        test_io8_default_mac);
+    qtest_add_data_func("origin300/io8/mac/property", NULL,
+                        test_io8_mac_property);
+    qtest_add_data_func("origin300/io8/mac/nic-conflict", NULL,
+                        test_io8_mac_conflicts);
+    qtest_add_data_func("sn1/address-map/mac-rejects", NULL,
+                        test_mac_rejects);
+    qtest_add_data_func("fuel/mac/text-record", NULL, test_fuel_mac);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func(

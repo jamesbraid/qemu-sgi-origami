@@ -2711,20 +2711,22 @@
       "io_boards": {
         "master-xbridge-bridge-f": {
           "ioc3_subsystem_id": 65535,
-          "mac_source": "none",
-          "notes": "Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.",
+          "mac_source": "module-l1",
+          "notes": "The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.",
           "provenance": "derived",
           "sources": [
-            "hw/mips/sgi/baseio.c"
+            "hw/mips/sgi/baseio.c",
+            "docs/datasheets/l1-controller.md"
           ]
         },
         "slave-xbridge-bridge-f": {
           "ioc3_subsystem_id": 65535,
-          "mac_source": "none",
-          "notes": "Preserves existing subsystem and supplied MAC policy. The unavailable physical subsystem field remains explicit.",
+          "mac_source": "module-l1",
+          "notes": "The IOC3 takes its station address from the IO8 board record in the node's L1, the record the stock BASEIO PROM reads through request 0x0006. The unavailable physical subsystem field remains explicit.",
           "provenance": "derived",
           "sources": [
-            "hw/mips/sgi/baseio.c"
+            "hw/mips/sgi/baseio.c",
+            "docs/datasheets/l1-controller.md"
           ]
         }
       },

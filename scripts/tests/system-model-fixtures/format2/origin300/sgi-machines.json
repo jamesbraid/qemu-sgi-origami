@@ -327,7 +327,7 @@
           "id": "xbridge-bridge-f",
           "ioc3-serial": 103835129348098,
           "ioc3-subsystem-id": 65535,
-          "mac-source": "none",
+          "mac-source": "module-l1",
           "module-index": 0,
           "other-identity-parts": [],
           "part": "030-1673-003",
