@@ -11436,8 +11436,14 @@ static void test_texture_refused(void)
         memcpy(h, texture_header, sizeof(h));
         if (k < ARRAY_SIZE(fields)) {
             h[fields[k]] ^= 1;
-            if (fields[k] == 4) {
+            if (fields[k] == 0) {
+                h[0] = 0xde2; /* Neither a 1D, 2D nor 3D target. */
+            } else if (fields[k] == 4) {
                 h[4] = 7; /* All native component types 0 through 6 work. */
+            } else if (fields[k] == 6) {
+                h[15] = 1; /* DMA with an unsupported 2D destination. */
+            } else if (fields[k] == 7) {
+                h[7] = 2; /* Both zero and one have known source framing. */
             }
         } else {
             return_context_deactivate(s);
@@ -11456,6 +11462,7 @@ static void test_texture_refused(void)
     }
     qtest_quit(s);
     found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
     g_assert_cmpuint(count_occurrences(found, "native texture header refused:"),
                      ==, ARRAY_SIZE(fields) + 1);
     g_assert_cmpuint(count_occurrences(found, "payload length unknown"), ==, 5);
