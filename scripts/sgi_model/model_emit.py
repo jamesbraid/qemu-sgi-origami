@@ -445,10 +445,21 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
             {"kind": "second-port", "node": 0, "argument": "-serial chardev:ioc3_b"},
         ]
     if topology["generation"] == "SN1":
-        # Each chassis has an L1 line. Fuel also exposes its two IOC3 ports.
+        # Each chassis has an L1 line. The first node's IOC3 serial A and
+        # B follow its L1 (sn-machine.h's sgi_sn1_serial_line()).
         consoles = [{"kind": "console" if harness["console"] == "l1-uart"
                      else "system-controller", "node": 0,
                      "argument": "-serial chardev:l1"}]
+        ports = harness.get("ioc3_serial_ports",
+                            ["ioc3-serial-a"]
+                            if harness["console"] == "ioc3-serial-a" else [])
+        for port in sorted(ports):
+            consoles.append({
+                "kind": ("console" if harness["console"] == port
+                         else "second-port"),
+                "node": 0,
+                "argument": f"-serial chardev:ioc3_{port[-1]}",
+            })
         for controller in topology["controllers"]:
             nodes = topology["modules"][controller["module_index"]]["nodes"]
             if not nodes:
@@ -459,13 +470,6 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
                     "kind": "system-controller", "node": node,
                     "argument": f"-serial chardev:l1_node{node}",
                 })
-        if harness["console"] == "ioc3-serial-a":
-            consoles.extend([
-                {"kind": "second-port", "node": 0,
-                 "argument": "-serial chardev:ioc3_b"},
-                {"kind": "console", "node": 0,
-                 "argument": "-serial chardev:ioc3_a"},
-            ])
         return consoles
     consoles = [
         {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
