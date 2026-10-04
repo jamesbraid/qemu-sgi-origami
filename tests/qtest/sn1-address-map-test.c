@@ -2713,18 +2713,75 @@ static void test_l1_identity_records_come_from_the_command_line(
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_l1_has_no_identity_records_by_default(const void *data)
+static void expect_l1_area(QTestState *qts, unsigned component,
+                           unsigned area, const uint8_t *expected,
+                           size_t length);
+
+/*
+ * Without files the L1 builds the node board's chassis and board areas
+ * for the fitted processor count, byte for byte as the launcher's Python
+ * encoder did. No memory record is invented.
+ */
+static void test_l1_default_identity_records(const void *data)
 {
-    QTestState *qts = machine_start();
-    uint8_t reply[131];
+    static const struct {
+        const char *smp;
+        const uint8_t *board;
+    } cases[] = {
+        { "2", expected_node_board_2cpu },
+        { "4", expected_node_board_4cpu },
+    };
 
-    /* No file, no record: the machine supplies nothing of its own. */
-    for (unsigned area = 1; area <= 4; area++) {
-        g_assert_cmpuint(l1_eeprom_read(qts, 0, area, 0, 1, reply), ==, 6);
-        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *extra = g_strdup_printf("-cpu R14000 -smp %s -S",
+                                                 cases[i].smp);
+        QTestState *qts = machine_start_bare(extra);
+        uint8_t reply[131];
+
+        for (unsigned reset = 0; reset < 2; reset++) {
+            expect_l1_area(qts, 0, L1_EEPROM_CHASSIS, expected_chassis,
+                           sizeof(expected_chassis));
+            expect_l1_area(qts, 0, L1_EEPROM_BOARD, cases[i].board, 72);
+            g_assert_cmpuint(l1_eeprom_read(qts, 0, L1_EEPROM_SPD, 0, 1,
+                                            reply), ==, 6);
+            g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+            g_assert_cmpuint(l1_eeprom_read(qts, 2, L1_EEPROM_BOARD, 0, 1,
+                                            reply), ==, 6);
+            g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+            qtest_system_reset(qts);
+        }
+        qtest_quit(qts);
     }
+}
 
+/* A raw node board file replaces only the area it names. */
+static void test_l1_raw_node_board_keeps_default_chassis(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-node-board-XXXXXX", &error);
+    g_autofree char *board_path = NULL;
+    g_autofree char *extra = NULL;
+    uint8_t board[16];
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    /* Synthetic bytes owned by this test, summing to zero. */
+    memset(board, 0x31, sizeof(board));
+    board[sizeof(board) - 1] = 0x21;
+    board_path = write_record(directory, "board.bin", board, sizeof(board));
+    extra = g_strdup_printf("-M origin300,board-eeprom.0=%s,board-eeprom.1= "
+                            "-cpu R14000 -smp 2 -bios %s -S", board_path,
+                            prom_path);
+    qts = qtest_init(extra);
+    expect_l1_area(qts, 0, L1_EEPROM_CHASSIS, expected_chassis,
+                   sizeof(expected_chassis));
+    expect_l1_area(qts, 0, L1_EEPROM_BOARD, board, sizeof(board));
+    expect_l1_area(qts, 1, L1_EEPROM_BOARD, expected_io8_board_default,
+                   sizeof(expected_io8_board_default));
     qtest_quit(qts);
+    g_assert_cmpint(g_unlink(board_path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 /* The 16-byte CIA and 80-byte BIA use the documented field boundaries. */
@@ -2996,7 +3053,8 @@ static void l1_expect_mac_text(QTestState *qts, const char *text)
 
 /*
  * Fuel's L1 keeps the address as MAC text for request 0x0008 and has no IO8
- * record; the IOC3 takes the same address.
+ * record; the IOC3 takes the same address. Fuel gets no default node board
+ * record.
  */
 static void test_fuel_mac(const void *data)
 {
@@ -3023,9 +3081,12 @@ static void test_fuel_mac(const void *data)
         l1_expect_mac_text(qts, cases[i].text);
         qtest_system_reset(qts);
         l1_expect_mac_text(qts, cases[i].text);
-        g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_BOARD, 0, 1, reply),
-                         ==, 6);
-        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+        /* No IO8 record, and no node board record is established. */
+        for (unsigned component = 0; component < 2; component++) {
+            g_assert_cmpuint(l1_eeprom_read(qts, component, L1_EEPROM_BOARD,
+                                            0, 1, reply), ==, 6);
+            g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
+        }
         qtest_quit(qts);
     }
 }
@@ -4620,8 +4681,10 @@ int main(int argc, char **argv)
                         test_fuel_l1_revision_migration);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
-    qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
-                        test_l1_has_no_identity_records_by_default);
+    qtest_add_data_func("sn1/address-map/l1-identity-records-default", NULL,
+                        test_l1_default_identity_records);
+    qtest_add_data_func("sn1/address-map/l1-identity-records-raw-node-board",
+                        NULL, test_l1_raw_node_board_keeps_default_chassis);
     qtest_add_data_func("sn1/address-map/board-identification", NULL,
                         test_board_identification);
     qtest_add_data_func("sn1/address-map/ecc-backdoor-window", NULL,

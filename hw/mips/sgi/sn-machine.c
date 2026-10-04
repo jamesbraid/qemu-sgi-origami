@@ -473,17 +473,50 @@ static bool sgi_machine_node_io_preset(const SGIModelTopology *t,
 }
 
 /*
- * Gives a node's L1 the station address its identity record carries: the
- * IO8 board area on an Origin 300, the MAC text record on a Fuel. Each
- * further node takes the next address, so two chassis' IOC3s differ. A
- * raw record supplied for that area still wins inside the L1.
+ * The Origin 300 node board each processor count is, as real inventories
+ * print its name, part and revision. Another four-processor part,
+ * 030-1797-001 revision B, also appears in real inventories; the default
+ * keeps the one the launcher used.
  */
-static bool sgi_machine_set_l1_mac(SGIMachineState *s, DeviceState *l1,
-                                   unsigned int node_index, Error **errp)
+static const struct {
+    uint32_t processors;
+    const char *name;
+    const char *part;
+    const char *revision;
+} sgi_ip45_node_boards[] = {
+    { 2, "IP45_2CPU", "030-1780-001", "-C" },
+    { 4, "IP45_4CPU", "030-1779-001", "-C" },
+};
+
+static uint32_t sgi_machine_l1_node_processors(SGIMachineState *s,
+                                               DeviceState *l1)
+{
+    for (unsigned int i = 0; s->bedrock_nodes && i < s->num_nodes; i++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[i]);
+
+        if (node->l1 == l1) {
+            return node->nr_cpus;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Gives a node's L1 what its synthetic identity records carry. The station
+ * address goes in the IO8 board area on an Origin 300 and the MAC text
+ * record on a Fuel; each further node takes the next address, so two
+ * chassis' IOC3s differ. An Origin 300 node also gets its node board's
+ * identity for its processor count. No Fuel node board identity is
+ * established as a default, so Fuel gets none. A raw record supplied for
+ * an area still wins inside the L1.
+ */
+static bool sgi_machine_set_l1_defaults(SGIMachineState *s, DeviceState *l1,
+                                        unsigned int node_index, Error **errp)
 {
     SGIModelIoBoardPreset preset;
     uint8_t mac[6];
     uint64_t value = 0;
+    uint32_t processors;
     g_autofree char *address = NULL;
 
     if (!s->view || !sgi_machine_node_io_preset(s->view, node_index,
@@ -512,6 +545,20 @@ static bool sgi_machine_set_l1_mac(SGIMachineState *s, DeviceState *l1,
     qdev_prop_set_string(l1, "mac-record",
                          preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ?
                          "io8-board" : "mac-text");
+    if (preset != SGI_MODEL_IO_BOARD_PRESET_IO8) {
+        return true;
+    }
+    processors = sgi_machine_l1_node_processors(s, l1);
+    for (size_t i = 0; i < ARRAY_SIZE(sgi_ip45_node_boards); i++) {
+        if (sgi_ip45_node_boards[i].processors == processors) {
+            qdev_prop_set_string(l1, "node-board-name",
+                                 sgi_ip45_node_boards[i].name);
+            qdev_prop_set_string(l1, "node-board-part",
+                                 sgi_ip45_node_boards[i].part);
+            qdev_prop_set_string(l1, "node-board-revision",
+                                 sgi_ip45_node_boards[i].revision);
+        }
+    }
     return true;
 }
 
@@ -580,7 +627,7 @@ bool sgi_machine_set_l1_identity_records(MachineState *machine,
         }
         qdev_prop_set_array(l1, records->name, files);
     }
-    return sgi_machine_set_l1_mac(s, l1, node_index, errp);
+    return sgi_machine_set_l1_defaults(s, l1, node_index, errp);
 }
 
 static bool sgi_machine_controller_input(const char *text, bool component,
