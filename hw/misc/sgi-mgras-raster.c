@@ -2226,28 +2226,10 @@ static int mgras_raster_dma_run_client_read(SGIMgrasState *s, SGIPixelDMA *d,
             uint32_t color = color_plane[index];
             uint8_t *p = bytes + col * d->guest_bpp;
 
-            if (d->guest_bpp == 16) {
-                uint8_t rgba[] = {
-                    color >> 16, color >> 8, color, alpha_plane[index]
-                };
-
-                for (uint32_t component = 0; component < ARRAY_SIZE(rgba);
-                     component++) {
-                    uint32_t normalized =
-                        (uint32_t)rgba[component] * 0x01010101u;
-                    uint8_t *out = p + component * sizeof(normalized);
-
-                    out[0] = normalized >> 24;
-                    out[1] = normalized >> 16;
-                    out[2] = normalized >> 8;
-                    out[3] = normalized;
-                }
-            } else {
-                p[0] = color >> 16;
-                p[1] = color >> 8;
-                p[2] = color;
-                p[3] = alpha_plane[index];
-            }
+            p[0] = color >> 16;
+            p[1] = color >> 8;
+            p[2] = color;
+            p[3] = alpha_plane[index];
         }
         destination = d->offset + (uint64_t)row * d->pitch;
         copied = sgi_dma_map_copy(&d->map, destination, bytes, bpr, true);
@@ -2457,7 +2439,6 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
                            (signature_width == 23 && signature_height == 32 &&
                             signature_format == 0xc10480);
     bool captured_split;
-    bool captured_float_rgba;
     bool one_descriptor, per_row_descriptors;
     bool client_read_active;
     uint32_t signature_word3 =
@@ -2474,18 +2455,11 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     rows = s->dma_desc_20000[MGRAS_DESC_20000_REG_ROWS];
     bpr = s->dma_desc_20000[MGRAS_DESC_20000_REG_BPR];
     mode = s->rss[MGRAS_RSS_BYTE_XFER_PACKING];
-    captured_float_rgba = signature_width == 8 &&
-                          (signature_height == 1 || signature_height == 8) &&
-                          signature_format == 0x00c00083 &&
-                          mode == 0x00c00083;
-    captured_format |= captured_float_rgba;
-
     if (!client_read_active) {
         return false;
     } else if (!signature_width || !signature_height) {
         return false;
-    } else if (signature_size != signature_width *
-               (captured_float_rgba ? 16 : 4)) {
+    } else if (signature_size != signature_width * 4) {
         return false;
     } else if (!captured_format) {
         return false;
@@ -2535,8 +2509,7 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         s->rss[MGRAS_RSS_XFRCOUNTERS] != ((height << 16) | width) ||
         (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) !=
             MGRAS_XFRMODE_GL_FORMAT_RGBA ||
-        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split &&
-         !captured_float_rgba)) {
+        ((mode & MGRAS_XFRMODE_GL_ALIGN_MASK) && !captured_split)) {
         goto rejected;
     }
     source_x0 = (uint64_t)origin_x + x0;
@@ -2550,15 +2523,14 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     }
 
     pixels = (uint64_t)width * height;
-    image_bytes = pixels * (captured_float_rgba ? 16 : 4);
-    row_bytes = (uint64_t)width * (captured_float_rgba ? 16 : 4);
+    image_bytes = pixels * 4;
+    row_bytes = (uint64_t)width * 4;
     if (image_bytes > UINT32_MAX || row_bytes > UINT32_MAX) {
         goto rejected;
     }
     one_descriptor = rows == 1 && pitch == image_bytes &&
                      bpr == image_bytes;
-    per_row_descriptors = !captured_float_rgba && rows == height &&
-                          bpr == row_bytes &&
+    per_row_descriptors = rows == height && bpr == row_bytes &&
                           (pitch == row_bytes || captured_split);
     if (!one_descriptor && !per_row_descriptors) {
         goto rejected;
@@ -2571,7 +2543,7 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
         .w = width,
         .h = height,
         .pitch = per_row_descriptors ? pitch : row_bytes,
-        .guest_bpp = captured_float_rgba ? 16 : 4,
+        .guest_bpp = 4,
         .offset = mgras_raster_dma_src_offset(s),
     };
     mgras_raster_dma_transfer(s, slot, &d, 0, 0, false, width, height);

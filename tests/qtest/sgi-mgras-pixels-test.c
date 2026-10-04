@@ -4126,12 +4126,11 @@ static void test_gl_readpixels_dma_bounded_rgba(void)
                     sizeof(unbracketed));
 }
 
-static void test_gl_readpixels_dma_float_rgba(void)
+static void test_gl_readpixels_dma_unsupported_float_rgba(void)
 {
     enum { WIDTH = 8, HEIGHT = 8, PAGE_BYTES = 4096, FLOAT_OFFSET = 0x800,
            BYTE_OFFSET = 0xc00, FLOAT_ROW_BYTES = WIDTH * 16 };
     uint32_t pixels[WIDTH * HEIGHT];
-    uint8_t want_float[WIDTH * HEIGHT * 16];
     uint8_t want_byte[WIDTH * HEIGHT * 4];
     uint8_t poison[PAGE_BYTES];
     uint8_t got[PAGE_BYTES];
@@ -4153,18 +4152,12 @@ static void test_gl_readpixels_dma_float_rgba(void)
                                  (uint32_t)green << 16 |
                                  (uint32_t)blue << 8 | alpha;
                 uint32_t index = row * WIDTH + col;
-                uint8_t channel[] = { red, green, blue, alpha };
 
                 pixels[index] = pixel;
                 want_byte[index * 4] = red;
                 want_byte[index * 4 + 1] = green;
                 want_byte[index * 4 + 2] = blue;
                 want_byte[index * 4 + 3] = alpha;
-                /* The observed GL_FLOAT client normalizes 32-bit words. */
-                for (uint32_t component = 0; component < 4; component++) {
-                    stl_be_p(want_float + index * 16 + component * 4,
-                             (uint32_t)channel[component] * 0x01010101u);
-                }
             }
             gl_draw_rgba_row(qts, 1, 1 + row, pixels + row * WIDTH, WIDTH);
         }
@@ -4187,12 +4180,7 @@ static void test_gl_readpixels_dma_float_rgba(void)
         gl_word(qts, GL_READ_CLOSE);
 
         qtest_memread(qts, 0x30000, got, sizeof(got));
-        g_assert_cmpmem(got, FLOAT_OFFSET, poison, FLOAT_OFFSET);
-        g_assert_cmpmem(got + FLOAT_OFFSET, bytes, want_float, bytes);
-        g_assert_cmpmem(got + FLOAT_OFFSET + bytes,
-                        sizeof(got) - FLOAT_OFFSET - bytes,
-                        poison + FLOAT_OFFSET + bytes,
-                        sizeof(got) - FLOAT_OFFSET - bytes);
+        g_assert_cmpmem(got, sizeof(got), poison, sizeof(poison));
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
 
@@ -5796,8 +5784,8 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/gl-readpixels-dma-bounded-rgba",
         test_gl_readpixels_dma_bounded_rgba, true);
     mgras_qtest_add_func(
-        "sn0/origin2000/mgras/gl-readpixels-dma-float-rgba",
-        test_gl_readpixels_dma_float_rgba, true);
+        "sn0/origin2000/mgras/gl-readpixels-dma-float-format-unsupported",
+        test_gl_readpixels_dma_unsupported_float_rgba, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-copypixels-slow-path",
         test_gl_copypixels_slow_path, true);
