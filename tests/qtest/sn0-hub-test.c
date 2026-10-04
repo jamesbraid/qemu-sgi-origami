@@ -2002,6 +2002,86 @@ static void test_cpu_enable_registers_control_matching_processors(
     qtest_quit(qts);
 }
 
+/*
+ * loadvm resets the machine before it loads the saved state, and that reset
+ * halts and then releases every processor. If either step is still queued
+ * when loading finishes, it runs afterwards and overwrites the halted state
+ * the snapshot restored, so a processor the guest had disabled starts
+ * running again with its cpu-enable register still reading 0.
+ */
+static void test_loadvm_keeps_a_disabled_processor_halted(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    g_autofree gchar *dir = NULL;
+    g_autofree gchar *qcow2 = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+    uint64_t stopped;
+    uint64_t start;
+    uint64_t now;
+    int64_t deadline;
+    char *ret;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+
+    dir = g_dir_make_tmp("sn0-hub-loadvm-XXXXXX", &err);
+    g_assert_no_error(err);
+    qcow2 = g_strdup_printf("%s/state.qcow2", dir);
+    g_assert(mkimg(qcow2, "qcow2", 128));
+
+    build_cpu_enable_heartbeat_image(image);
+    path = sn0_image_write(image, "sn0-hub-loadvm");
+    qts = qtest_initf(
+        "-M origin200 -smp 2 -bios %s -accel tcg,thread=multi -S "
+        "-no-shutdown -drive file=%s,format=qcow2,if=none", path, qcow2);
+    unlink(path);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 1, 0), !=, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 0);
+    assert_cpu_stopped_while_peer_advances(qts, 1, 0);
+
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    ret = qtest_hmp(qts, "savevm disabled");
+    g_assert_cmpstr(ret, ==, "");
+    g_free(ret);
+    ret = qtest_hmp(qts, "loadvm disabled");
+    g_assert_cmpstr(ret, ==, "");
+    g_free(ret);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    stopped = cpu_heartbeat(qts, 1);
+    start = cpu_heartbeat(qts, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+
+    /*
+     * Give a released processor ample time to show itself: the running one
+     * has to complete a million loop passes, or five seconds pass.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    do {
+        now = cpu_heartbeat(qts, 0);
+        if (now - start >= 1000000) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    g_assert_cmphex(now, !=, start);
+    g_assert_cmphex(cpu_heartbeat(qts, 1), ==, stopped);
+
+    qtest_quit(qts);
+    unlink(qcow2);
+    rmdir(dir);
+}
+
 /* The Hub register window as the processors reach it, uncached. */
 #define SN0_HUB_LOCAL_BASE      0x9200000001000000ULL
 #define RENDEZVOUS_VALUE        0x24
@@ -6246,6 +6326,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/cpu-enable-controls-matching-processors",
                         NULL,
                         test_cpu_enable_registers_control_matching_processors);
+    qtest_add_data_func("sn0/hub/loadvm-keeps-a-disabled-processor-halted",
+                        NULL, test_loadvm_keeps_a_disabled_processor_halted);
     qtest_add_data_func("sn0/hub/matched-comparator-post-waits-for-partner",
                         NULL,
                         test_a_matched_comparator_post_waits_for_its_partner);
