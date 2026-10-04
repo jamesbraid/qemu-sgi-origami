@@ -15,6 +15,7 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "sn-promdata.h"
@@ -274,10 +275,6 @@ extern const SN0FlashImplementation sn0_flash;
 extern const SN0ModelAddressMap sn0_hub_address_map;
 extern const SN0ModelMemory sn0_hub_memory;
 extern const SN0ModelMemory sn0_ip27_memory;
-
-/* The Hub's two fixed clock rates: hardwired, not configuration. */
-#define SN0_HUB_CLOCK_HZ     0x55d4a80ULL
-#define SN0_HUB_RTC_CLOCK_HZ 0x1312d0ULL
 
 /*
  * The Hub register offset its I2C adapter answers at, whether it carries a

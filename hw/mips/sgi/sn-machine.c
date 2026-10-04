@@ -70,6 +70,7 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
@@ -3133,130 +3134,6 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
 /* ---- The builder ---- */
 
 /*
- * The IP27 PROM jump table at flash offset zero: ten entries, real
- * hardware's own layout.
- */
-#define SGI_MACHINE_FLASH_ENTRIES       10
-#define SGI_MACHINE_FLASH_ENTRY_STRIDE  8
-
-/*
- * The firmware configuration block, at flash offset 0x60 -- real
- * hardware's own layout.
- */
-#define SGI_MACHINE_CONFIG_OFFSET              0x60
-/* "ip27conf" */
-#define SGI_MACHINE_CONFIG_MAGIC               0x69703237636f6e66ULL
-#define SGI_MACHINE_CONFIG_SIZE                0x50
-#define SGI_MACHINE_CONFIG_FPROM_CYC_OFFSET    0x2c
-#define SGI_MACHINE_CONFIG_MACHINE_TYPE_OFFSET 0x30
-#define SGI_MACHINE_CONFIG_CHECKSUM_OFFSET     0x34
-#define SGI_MACHINE_CONFIG_FPROM_WR_OFFSET     0x3c
-
-/* Where the factory-fresh environment log sits in the flash image. */
-#define SGI_MACHINE_PROMLOG_SECTOR    14
-#define SGI_MACHINE_PROMLOG_MAGIC     0x504c4f47
-#define SGI_MACHINE_PROMLOG_VERSION   1
-
-/*
- * The default flash template: entry zero spins (an unprogrammed reset
- * vector), the rest return, plus a configuration block and factory-
- * fresh environment log in the real IP27 firmware's own layout. A
- * -bios image shorter than the flash overlays only its own bytes, so a
- * short image still finds these pre-formatted underneath.
- */
-static void sgi_machine_build_flash(const SGIModelTopology *t,
-                                    const SGIMachineClass *smc,
-                                    uint8_t *flash, uint64_t flash_size)
-{
-    static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
-    static const uint32_t branch_to_self = 0x1000ffff; /* b . */
-    const SGIModelProcessor *cpu =
-        sgi_machine_topology_node0(t)->cpu_slots->value->assembly;
-    uint8_t *config = flash + SGI_MACHINE_CONFIG_OFFSET;
-    int i;
-
-    g_assert(flash_size >=
-             (SGI_MACHINE_PROMLOG_SECTOR + 1) * sn0_flash.sector_size);
-    memset(flash, 0xff, flash_size);
-
-    for (i = 0; i < SGI_MACHINE_FLASH_ENTRIES; i++) {
-        uint8_t *entry = flash + i * SGI_MACHINE_FLASH_ENTRY_STRIDE;
-
-        stl_be_p(entry, i == 0 ? branch_to_self : jr_ra);
-        stl_be_p(entry + 4, 0);                    /* the delay slot */
-    }
-
-    /* The field order and widths are the IP27 firmware's. */
-    stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, cpu->mode_bits);
-    stq_be_p(config + 0x08, SGI_MACHINE_CONFIG_MAGIC);
-    stq_be_p(config + 0x10, cpu->clock_hz);
-    stq_be_p(config + 0x18, SN0_HUB_CLOCK_HZ);
-    stq_be_p(config + 0x20, SN0_HUB_RTC_CLOCK_HZ);
-    stl_be_p(config + 0x28, 1);                    /* error correction on */
-    stl_be_p(config + SGI_MACHINE_CONFIG_FPROM_CYC_OFFSET,
-             smc->flash_read_cycles);
-    stl_be_p(config + SGI_MACHINE_CONFIG_MACHINE_TYPE_OFFSET,
-             smc->firmware_machine_type);
-    /* checksum adjustment */
-    stl_be_p(config + SGI_MACHINE_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + 0x38, 0);                    /* flash program count */
-    stl_be_p(config + SGI_MACHINE_CONFIG_FPROM_WR_OFFSET,
-             smc->flash_write_cycles);
-    stl_be_p(config + 0x40, 6);                    /* firmware version */
-    stl_be_p(config + 0x44, 11);                   /* firmware revision */
-    stl_be_p(config + 0x48, 0);                    /* configuration flags */
-
-    /* The factory-fresh environment log; an erased first entry ends it. */
-    config = flash + SGI_MACHINE_PROMLOG_SECTOR * sn0_flash.sector_size;
-    stl_be_p(config + 0x10, SGI_MACHINE_PROMLOG_MAGIC);
-    stl_be_p(config + 0x14, SGI_MACHINE_PROMLOG_VERSION);
-    stl_be_p(config + 0x18, 1);                    /* initial sequence */
-}
-
-static uint8_t sgi_machine_config_byte_sum(const uint8_t *config)
-{
-    uint8_t sum = 0;
-    unsigned int i;
-
-    for (i = 0; i < SGI_MACHINE_CONFIG_SIZE; i++) {
-        sum += config[i];
-    }
-    return sum;
-}
-
-/*
- * The flasher's contract: the three product values in, every other field
- * and the old block sum preserved; no IP27 signature, no touch. Runs
- * whether the configuration block present is this file's own default
- * template or a real PROM image's -- every stock PROM image carries one
- * at this same offset with this same magic.
- */
-static void sgi_machine_configure_flash(const SGIMachineClass *smc,
-                                        uint8_t *flash)
-{
-    uint8_t *config = flash + SGI_MACHINE_CONFIG_OFFSET;
-    uint8_t old_sum;
-    uint8_t new_sum;
-
-    if (ldq_be_p(config + 0x08) != SGI_MACHINE_CONFIG_MAGIC) {
-        return;
-    }
-
-    old_sum = sgi_machine_config_byte_sum(config);
-    stl_be_p(config + SGI_MACHINE_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + SGI_MACHINE_CONFIG_FPROM_CYC_OFFSET,
-             smc->flash_read_cycles);
-    stl_be_p(config + SGI_MACHINE_CONFIG_MACHINE_TYPE_OFFSET,
-             smc->firmware_machine_type);
-    stl_be_p(config + SGI_MACHINE_CONFIG_FPROM_WR_OFFSET,
-             smc->flash_write_cycles);
-    new_sum = sgi_machine_config_byte_sum(config);
-    stl_be_p(config + SGI_MACHINE_CONFIG_CHECKSUM_OFFSET,
-             (uint8_t)(old_sum - new_sum));
-}
-
-/*
  * Bedrock's own PROM policy: -bios names the required stock image and a
  * per-node pflash drive (unit node_index) overrides it, the same two
  * inputs the Hub path below resolves, but with no synthesized default --
@@ -3307,34 +3184,34 @@ static bool sgi_machine_load_bedrock_flash(MachineState *machine,
 /*
  * -bios fills every node's boot flash unless a pflash drive already backs
  * it (set on the node before it realized); a short -bios image leaves the
- * default template's own bytes behind it, matching a factory-formatted
- * chip rather than a merely erased one. Bedrock's own policy has no
- * synthesized default and lives in sgi_machine_load_bedrock_flash above;
- * this function's own body stays the Hub's.
+ * default template's own bytes behind it (sgi_ip27_initial_flash()),
+ * matching a factory-formatted chip rather than a merely erased one.
+ * Bedrock's own policy has no synthesized default and lives in
+ * sgi_machine_load_bedrock_flash above; this function's own body stays the
+ * Hub's.
  */
 static bool sgi_machine_load_flash(MachineState *machine,
                                    const SGIModelTopology *t,
                                    SGIMachineState *s, Error **errp)
 {
     const SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
+    const SGIModelProcessor *cpu;
+    SGIIP27FlashValues values;
+    g_autoptr(SGIPromImage) image = NULL;
+    g_autofree uint8_t *flash = NULL;
+    const uint8_t *payload = NULL;
+    size_t length = 0;
     uint64_t flash_size;
+    unsigned int node_index;
 
     if (sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         return sgi_machine_load_bedrock_flash(machine, s, errp);
     }
 
     flash_size = sn0_hub_address_map.flash_reset.size;
-    g_autofree uint8_t *flash = NULL;
-    unsigned int node_index;
-
-    flash = g_malloc(flash_size);
-    sgi_machine_build_flash(t, smc, flash, flash_size);
     if (machine->firmware) {
         g_autofree char *path =
             qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-        g_autoptr(SGIPromImage) image = NULL;
-        const uint8_t *payload;
-        size_t length;
 
         if (!path) {
             error_setg(errp, "%s: cannot read the firmware image '%s'",
@@ -3346,9 +3223,18 @@ static bool sgi_machine_load_flash(MachineState *machine,
             return false;
         }
         payload = g_bytes_get_data(image->payload, &length);
-        memcpy(flash, payload, length);
     }
-    sgi_machine_configure_flash(smc, flash);
+
+    cpu = sgi_machine_topology_node0(t)->cpu_slots->value->assembly;
+    values = (SGIIP27FlashValues) {
+        .machine_type = smc->firmware_machine_type,
+        .read_cycles = smc->flash_read_cycles,
+        .write_cycles = smc->flash_write_cycles,
+        .cpu_mode_bits = cpu->mode_bits,
+        .cpu_clock_hz = cpu->clock_hz,
+    };
+    flash = g_malloc(flash_size);
+    sgi_ip27_initial_flash(flash, flash_size, &values, payload, length);
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
         MemoryRegion *chip;

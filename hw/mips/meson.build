@@ -27,7 +27,8 @@ mips_ss.add(when: 'CONFIG_SGI_PROM_IMAGE',
 # The family machine base and builder over the compiled catalogue
 # (qapi/sgi-machines.json, embedded and parsed by sgi/sgi-machines.c below).
 mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c'))
+            if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c',
+                           'sgi/initial-flash.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sgi/sn1-fabric.c',
