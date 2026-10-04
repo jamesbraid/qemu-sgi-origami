@@ -2313,7 +2313,8 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         (st->colour_mask & 7) != 7 || (st->colour_mask & ~15) ||
         st->cull_face || st->alpha_test || st->depth_test || st->stencil_test ||
         st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
-        st->polygon_offset || st->texture_2d || st->dither || st->clip_planes ||
+        st->polygon_offset || st->texture_2d || st->texture_3d || st->dither ||
+        st->clip_planes ||
         st->scissor_test || st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         memcmp(st->modelview, identity, sizeof(identity)) ||
@@ -3906,6 +3907,7 @@ static void sgi_kona_gl_restore(SGIGLContext *c, const SGIGLContext *saved,
         SGI_KONA_RESTORE(cur.scissor_test);
         SGI_KONA_RESTORE(cur.stencil_test);
         SGI_KONA_RESTORE(cur.texture_2d);
+        SGI_KONA_RESTORE(cur.texture_3d);
         SGI_KONA_RESTORE(cur.clip_planes);
         enables |= enables_point | enables_line | enables_polygon;
     }
