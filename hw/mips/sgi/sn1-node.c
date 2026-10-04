@@ -562,80 +562,114 @@ static void sn1_node_init_claims(SN1NodeState *node)
 
 
 /*
- * Creates the node's boot-flash part from -drive if=pflash and returns the
- * processor's read view of its first selection, or NULL with no error when no
- * such drive was given (the caller then falls back to an immutable -bios
- * image). node_index selects the pflash unit the way sgi_machine_
- * load_flash's own per-node override does for the Hub path: unit N for node
- * N, so a second node (once one ships) takes its drive rather than colliding
- * with the first's.
+ * Opens the part's two 8 MiB positions over @backing and hands them to the
+ * flash device. The legacy pflash backend @blk, when given, is moved onto
+ * the lower position so the drive stays claimed; a bound block node is
+ * instead named directly.
+ */
+static bool sn1_node_attach_flash_slices(SN1NodeState *node,
+                                         BlockDriverState *backing,
+                                         BlockBackend *blk, Error **errp)
+{
+    int flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
+    BlockDriverState *lower, *upper;
+    bool ok;
+
+    lower = sgi_bedrock_flash_open_slice(backing, 0, flags, errp);
+    if (!lower) {
+        return false;
+    }
+    upper = sgi_bedrock_flash_open_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE,
+                                         flags, errp);
+    if (!upper) {
+        bdrv_unref(lower);
+        return false;
+    }
+    if (blk) {
+        ok = blk_replace_bs(blk, lower, errp) == 0 &&
+             qdev_prop_set_drive_err(node->boot_flash, "drive0", blk, errp);
+    } else {
+        ok = object_property_set_str(OBJECT(node->boot_flash), "drive0",
+                                     bdrv_get_node_name(lower), errp);
+    }
+    ok = ok && object_property_set_str(OBJECT(node->boot_flash), "drive1",
+                                       bdrv_get_node_name(upper), errp);
+    bdrv_unref(upper);
+    bdrv_unref(lower);
+    return ok;
+}
+
+/*
+ * Creates the node's boot-flash part from the machine's node<N>-flash
+ * binding or a -drive if=pflash and returns the processor's read view of
+ * its first selection, or NULL with no error when neither was given (the
+ * caller then falls back to an immutable -bios image). node_index selects
+ * the pflash unit the way sgi_machine_load_flash's own per-node override
+ * does for the Hub path: unit N for node N, so a second node takes its
+ * drive rather than colliding with the first's.
  */
 static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
                                                 unsigned int node_index,
                                                 Error **errp)
 {
+    const char *machine = MACHINE_GET_CLASS(qdev_get_machine())->name;
     DriveInfo *dinfo = drive_get(IF_PFLASH, 0, node_index);
     DriveInfo *extra = node->last_node ?
         drive_get(IF_PFLASH, 0, node_index + 1) : NULL;
-    BlockBackend *blk;
+    BlockBackend *blk = NULL;
     BlockDriverState *backing;
-    BlockDriverState *lower;
-    BlockDriverState *upper;
-    int flags;
     SysBusDevice *flash;
 
-    if (!dinfo && !extra) {
-        return NULL;
+    if (node->flash_node) {
+        if (dinfo) {
+            error_setg(errp, "%s: node%u-flash and -drive if=pflash,unit=%u "
+                       "both back node %u's flash", machine, node_index,
+                       node_index, node_index);
+            return NULL;
+        }
+        if (extra) {
+            error_setg(errp, "%s accepts one 16 MiB pflash image per node",
+                       machine);
+            return NULL;
+        }
+        /*
+         * The machine checked the binding's size against the catalogue.
+         * Any node will do, as for the Hub and Octane flash: the two
+         * positions are raw slices over it.
+         */
+        backing = bdrv_lookup_bs(node->flash_node, node->flash_node, errp);
+        if (!backing) {
+            return NULL;
+        }
+    } else {
+        if (!dinfo && !extra) {
+            return NULL;
+        }
+        if (!dinfo || extra) {
+            error_setg(errp, "%s accepts one 16 MiB pflash image per node",
+                       machine);
+            return NULL;
+        }
+        blk = blk_by_legacy_dinfo(dinfo);
+        backing = blk_bs(blk);
+        if (blk_getlength(blk) != SGI_BEDROCK_FLASH_SIZE) {
+            error_setg(errp, "%s pflash image must be exactly 16 MiB",
+                       machine);
+            return NULL;
+        }
+        if (strcmp(bdrv_get_format_name(backing), "raw")) {
+            error_setg(errp, "%s pflash image must use raw format", machine);
+            return NULL;
+        }
     }
-    if (!dinfo || extra) {
-        error_setg(errp, "%s accepts one 16 MiB pflash image per node",
-                   MACHINE_GET_CLASS(qdev_get_machine())->name);
-        return NULL;
-    }
-
-    blk = blk_by_legacy_dinfo(dinfo);
-    backing = blk_bs(blk);
-    if (strcmp(bdrv_get_format_name(backing), "raw")) {
-        error_setg(errp, "%s pflash image must use raw format",
-                   MACHINE_GET_CLASS(qdev_get_machine())->name);
-        return NULL;
-    }
-    if (blk_getlength(blk) != SGI_BEDROCK_FLASH_SIZE) {
-        error_setg(errp, "%s pflash image must be exactly 16 MiB",
-                   MACHINE_GET_CLASS(qdev_get_machine())->name);
-        return NULL;
-    }
-
-    flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
-    lower = sgi_bedrock_flash_open_slice(backing, 0, flags, errp);
-    if (!lower) {
-        return NULL;
-    }
-    upper = sgi_bedrock_flash_open_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE,
-                                      flags, errp);
-    if (!upper) {
-        bdrv_unref(lower);
-        return NULL;
-    }
-
-    if (blk_replace_bs(blk, lower, errp) < 0) {
-        bdrv_unref(upper);
-        bdrv_unref(lower);
-        return NULL;
-    }
-    bdrv_unref(lower);
 
     node->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
     object_property_add_child(OBJECT(node), "boot-flash",
                               OBJECT(node->boot_flash));
     qdev_prop_set_uint32(node->boot_flash, "node", node_index);
-    if (!qdev_prop_set_drive_err(node->boot_flash, "drive0", blk, errp) ||
-        !object_property_set_str(OBJECT(node->boot_flash), "drive1",
-                                 bdrv_get_node_name(upper), errp)) {
-        bdrv_unref(upper);
+    if (!sn1_node_attach_flash_slices(node, backing, blk, errp)) {
         return NULL;
     }
-    bdrv_unref(upper);
     flash = SYS_BUS_DEVICE(node->boot_flash);
     if (!sysbus_realize_and_unref(flash, errp)) {
         return NULL;
@@ -2087,6 +2121,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_STRING("io-board-part", SN1NodeState, io_board_part),
     DEFINE_PROP_UINT8("xbridge-xio-port", SN1NodeState, xbridge_xio_port,
                       SGI_XBRIDGE_XIO_PORT_DEFAULT),
+    DEFINE_PROP_STRING("flash-node", SN1NodeState, flash_node),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),

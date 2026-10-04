@@ -73,6 +73,11 @@ typedef struct SN1NodeState {
     char *io_board_part;
     /* The XBridge port a directly attached graphics board answers on. */
     uint8_t xbridge_xio_port;
+    /*
+     * The block node or drive the machine's node<N>-flash property binds
+     * to this node's 16 MiB boot flash, in place of a pflash drive.
+     */
+    char *flash_node;
     bool last_node;
     bool promdata_filter;
     bool promdata_fast;
