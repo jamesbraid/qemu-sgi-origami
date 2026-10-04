@@ -83,10 +83,11 @@ typedef struct SGIRasterBitmap {
     float distance;
 } SGIRasterBitmap;
 
-/* Unit-zoom, untextured RGBA8 pixel rectangles (OpenGL 1.2.1, 3.6.4). */
+/* Untextured RGBA8 pixel rectangles (OpenGL 1.2.1, 3.6.4). */
 typedef struct SGIRasterPixels {
     const struct SGIGLDrawState *state;
-    int64_t x, y;               /* window pixel of the lower-left corner */
+    double x, y;               /* raster position in window coordinates */
+    float zoom[2];
     uint32_t width, height;
     const uint32_t *rgba;       /* 0xRRGGBBAA, bottom row first */
     float z;                   /* raster position's window depth */
@@ -1067,6 +1068,11 @@ void sgi_gl_bitmap_bytes(SGIGLContext *c, const SGIGLSink *sink,
 void sgi_gl_draw_pixels_rgba(SGIGLContext *c, const SGIGLSink *sink,
                             uint32_t width, uint32_t height,
                             const uint32_t *rgba);
+/* As above with explicit pixel zoom; zero scales produce no fragments. */
+void sgi_gl_draw_pixels_rgba_zoom(SGIGLContext *c, const SGIGLSink *sink,
+                                 uint32_t width, uint32_t height,
+                                 const uint32_t *rgba, float zoom_x,
+                                 float zoom_y);
 /*
  * The cosine glLightfv stores for a spot cutoff of degrees: -1 for 180,
  * no spot, and otherwise the single-precision cosine.
