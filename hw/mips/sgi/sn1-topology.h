@@ -1,15 +1,15 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Origin 300 ("SN1") CPU population-to-Bedrock-slot topology. A pure lookup
- * on the compiled catalogue's Bedrock node record (qapi/sgi-sn.json), with no
- * device state, so the node realizer and its regression test share one
- * implementation.
+ * on the compiled catalogue's Bedrock node record (qapi/sgi-machines.json),
+ * with no device state, so the node realizer and its regression test share
+ * one implementation.
  */
 
 #ifndef HW_MIPS_SGI_SN1_TOPOLOGY_H
 #define HW_MIPS_SGI_SN1_TOPOLOGY_H
 
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 
 /*
  * The physical Bedrock processor-interface slot (0..3: interface *

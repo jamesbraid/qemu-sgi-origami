@@ -33,7 +33,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 200 (one-module form)",
+      "display-name": "Origin 200 GIGAchannel loopback",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -117,7 +117,7 @@
         "gentoo"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin200"
+      "topology": "origin200-gigachannel-loopback"
     },
     {
       "console": "ioc3-serial-a",
@@ -152,7 +152,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 200 (one-module form)",
+      "display-name": "Origin 200 GIGAchannel loopback",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -236,10 +236,10 @@
         "gentoo"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin200"
+      "topology": "origin200-gigachannel-loopback"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [],
@@ -258,7 +258,7 @@
           "other-identity-parts": [],
           "part": "030-1244-001",
           "populated": true,
-          "preset": "ip29-io",
+          "preset": "ip29-io-crosstown",
           "revision": 4,
           "serial": 6618611909121
         }
@@ -267,7 +267,7 @@
       "modules": [
         {
           "controller-index": -1,
-          "id": "cpu-module",
+          "id": "base-cpu-module",
           "initial-module-number": 0,
           "nodes": [
             0
@@ -275,7 +275,7 @@
           "serial": ""
         }
       ],
-      "name": "origin200",
+      "name": "origin200-gigachannel-loopback",
       "node-populations": [
         {
           "cables": [],
@@ -352,7 +352,7 @@
             "kind": "am29f080",
             "size": 1048576
           },
-          "id": "hub",
+          "id": "base-hub",
           "identity": {
             "i2c-controller": true,
             "ni-revision": 3,

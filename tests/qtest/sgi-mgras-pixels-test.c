@@ -124,7 +124,7 @@ static void test_dma_map_close_marker_and_discard(void)
 /*
  * Host-memory DMA image transfer: plant a one-entry page list and eight
  * source bytes in node 0's own memory, the node MGRAS itself sits behind
- * (sn-catalogue.json: xio-slot-3, MGRAS's own attachment, is
+ * (sgi-machines.json: xio-slot-3, MGRAS's own attachment, is
  * controlling-node 0 -- the same node qtest's first CPU boots on, so no
  * inter-Hub claim needs programming before the plant writes or the
  * engine's own read land). Map that node through DMA-map slot 0 with the

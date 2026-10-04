@@ -1663,7 +1663,7 @@
       "topology": "origin2000-deskside"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [

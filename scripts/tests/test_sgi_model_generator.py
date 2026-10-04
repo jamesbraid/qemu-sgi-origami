@@ -15,7 +15,9 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
-EXPECTED_CATALOGUE_SHA256 = "b0dbdf4acf524b3e8220128b2d6e8a0f28b8c0123ace926221692e0a3d7167d4"
+EXPECTED_CATALOGUE_SHA256 = (
+    "a3eca891d926681afe25aefa24de87af1750de244294a39de13d943cb4507399"
+)
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -31,7 +33,7 @@ from sgi_model.registry import IMPLEMENTED_TOPOLOGIES, PRODUCT_NAMES
 class GeneratorTests(unittest.TestCase):
     def test_default_export_is_complete_and_compatible(self):
         outputs = render_qemu_inputs(INPUTS)
-        catalogue_text = outputs["hw/mips/sgi/sn-catalogue.json"]
+        catalogue_text = outputs["hw/mips/sgi/sgi-machines.json"]
         catalogue = json.loads(catalogue_text)
         manifest = json.loads(outputs["hw/mips/sgi/sn-model.json"])
         self.assertEqual(
@@ -62,7 +64,7 @@ class GeneratorTests(unittest.TestCase):
             hashlib.sha256(catalogue_text.encode()).hexdigest(),
             EXPECTED_CATALOGUE_SHA256)
         self.assertEqual(
-            manifest["outputs"]["hw/mips/sgi/sn-catalogue.json"],
+            manifest["outputs"]["hw/mips/sgi/sgi-machines.json"],
             EXPECTED_CATALOGUE_SHA256)
         checked = load_checked_system_models(
             discover_model_paths(INPUTS), model_root=INPUTS)
@@ -78,7 +80,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(manifest["source_sha256"], expected_source_digest)
         self.assertEqual(render_qemu_inputs(INPUTS), outputs)
         self.assertEqual(set(manifest["outputs"]),
-                         {"hw/mips/sgi/sn-catalogue.json"})
+                         {"hw/mips/sgi/sgi-machines.json"})
 
     def test_cli_rejects_an_incompatible_tree_before_writing(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -89,7 +91,7 @@ class GeneratorTests(unittest.TestCase):
                 cwd=ROOT, text=True, capture_output=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("cannot read QEMU model format declarations", result.stderr)
-            self.assertFalse((tree / "hw/mips/sgi/sn-catalogue.json").exists())
+            self.assertFalse((tree / "hw/mips/sgi/sgi-machines.json").exists())
             self.assertFalse((tree / "hw/mips/sgi/sn-model.json").exists())
 
     def test_cli_rejects_a_wrong_format_before_writing(self):
@@ -106,7 +108,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("does not accept the sgi-sn model at format 4",
                           result.stderr)
-            self.assertFalse((tree / "hw/mips/sgi/sn-catalogue.json").exists())
+            self.assertFalse((tree / "hw/mips/sgi/sgi-machines.json").exists())
             self.assertFalse((tree / "hw/mips/sgi/sn-model.json").exists())
 
     def test_cli_installs_into_a_format_four_tree(self):
@@ -156,11 +158,11 @@ class GeneratorTests(unittest.TestCase):
             paths = generate_qemu_inputs(INPUTS, tree)
             self.assertEqual(
                 {str(path.relative_to(tree)) for path in paths},
-                {"hw/mips/sgi/sn-catalogue.json", "hw/mips/sgi/sn-model.json"})
+                {"hw/mips/sgi/sgi-machines.json", "hw/mips/sgi/sn-model.json"})
             files = {str(path.relative_to(tree)) for path in tree.rglob("*")
                      if path.is_file()}
             self.assertEqual(files, {
-                "hw/mips/sgi/sn-catalogue.json", "hw/mips/sgi/sn-model.json"})
+                "hw/mips/sgi/sgi-machines.json", "hw/mips/sgi/sn-model.json"})
             self.assertFalse((tree / "docs/datasheets").exists())
             self.assertFalse((tree / "assets").exists())
 
@@ -168,7 +170,7 @@ class GeneratorTests(unittest.TestCase):
 class Origin300TimekeeperTests(unittest.TestCase):
     def test_origin300_export_has_per_node_timekeeper_policy(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
-            "hw/mips/sgi/sn-catalogue.json"])
+            "hw/mips/sgi/sgi-machines.json"])
         topologies = {row["name"]: row for row in catalogue["topologies"]
                       if row["product"] == "origin300"}
         policy = {"kind": "m48t35-compatible", "year-base": 1968,
@@ -220,7 +222,7 @@ class Origin300TimekeeperTests(unittest.TestCase):
 class FuelTests(unittest.TestCase):
     def test_fuel_offerings_keep_all_console_ports(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
-            "hw/mips/sgi/sn-catalogue.json"])
+            "hw/mips/sgi/sgi-machines.json"])
         offerings = [row for row in catalogue["offerings"]
                      if row["product"] == "fuel"]
         self.assertEqual({row["topology"] for row in offerings},
@@ -240,7 +242,7 @@ class FuelTests(unittest.TestCase):
 
     def test_fuel_export_has_system_timekeeper(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
-            "hw/mips/sgi/sn-catalogue.json"])
+            "hw/mips/sgi/sgi-machines.json"])
         topologies = {row["name"]: row for row in catalogue["topologies"]}
         self.assertIn("fuel", topologies)
         self.assertNotIn("fuel-m48t35-compatible", topologies)

@@ -3,10 +3,10 @@
 """Generate QEMU inputs from the implemented machine profiles.
 
 One export for every product: the compiled catalogue
-`hw/mips/sgi/sn-catalogue.json` (format 4, `topologies` trimmed to
+`hw/mips/sgi/sgi-machines.json` (format 4, `topologies` trimmed to
 the catalogue output rule plus the launcher-facing `offerings`
 list) and its manifest `sn-model.json`. QEMU parses the catalogue at
-build time into the types `qapi/sgi-sn.json` declares; nothing here
+build time into the types `qapi/sgi-machines.json` declares; nothing here
 renders C any more. `model_compile.compile_model` makes no per-product
 distinction, so there is one compile call here too, not one per machine
 name.
@@ -25,7 +25,7 @@ from .registry import PRODUCT_MODELS, PRODUCT_NAMES
 from .model_validation import load_checked_system_models, discover_model_paths
 
 SN_MODEL_JSON = "hw/mips/sgi/sn-model.json"
-SN_CATALOGUE_JSON = "hw/mips/sgi/sn-catalogue.json"
+SGI_MACHINES_JSON = "hw/mips/sgi/sgi-machines.json"
 
 # The supported catalogue product names come from the local registry.
 _MACHINE_NAMES = PRODUCT_NAMES
@@ -102,8 +102,8 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
     _check_default_topology(topologies, machine_names, product_models)
     catalogue = render_catalogue_json(
         list(source_models.values()), product_models=product_models)
-    manifest = render_manifest(source_models, {SN_CATALOGUE_JSON: catalogue})
-    return {SN_CATALOGUE_JSON: catalogue, SN_MODEL_JSON: manifest}
+    manifest = render_manifest(source_models, {SGI_MACHINES_JSON: catalogue})
+    return {SGI_MACHINES_JSON: catalogue, SN_MODEL_JSON: manifest}
 
 
 def generate_qemu_inputs(model_root: pathlib.Path, tree: pathlib.Path, *,

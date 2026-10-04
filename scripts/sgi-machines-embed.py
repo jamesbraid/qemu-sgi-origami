@@ -26,7 +26,7 @@ def _escape(line: str) -> str:
 
 def main(args: list[str]) -> int:
     file_path = args[1]
-    varname = "sn_catalogue_json"
+    varname = "sgi_machines_json"
 
     with open(file_path, "r", encoding="utf-8") as source:
         lines = source.read().splitlines()

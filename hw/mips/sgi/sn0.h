@@ -15,7 +15,7 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "sn-promdata.h"
 
@@ -26,8 +26,8 @@
  * defined once in sn0.c (sn0_hub_address_map, sn0_hub_memory below). A node's
  * fitted-part facts (identity, slot, flash kind, populated memory banks)
  * come straight from its compiled-catalogue record (SGIModelNode,
- * qapi/sgi-sn.json); the node device takes that record directly, the way the
- * SN1 node does, rather than through a repacked copy.
+ * qapi/sgi-machines.json); the node device takes that record directly, the
+ * way the SN1 node does, rather than through a repacked copy.
  */
 
 typedef struct SN0ModelAddressSpace {
@@ -154,7 +154,7 @@ typedef struct SN0NodeState {
     /*
      * The topology's node record, set by the machine before realize: the
      * compiled catalogue's descriptor this node builds from
-     * (qapi/sgi-sn.json).
+     * (qapi/sgi-machines.json).
      */
     const SGIModelNode *model_node;
 

@@ -18,7 +18,7 @@
  * instead of at every launch.
  *
  * Every fixture topology below is built once, at type-registration time,
- * from plain arrays into the QAPI-generated list types qapi/sgi-sn.json
+ * from plain arrays into the QAPI-generated list types qapi/sgi-machines.json
  * declares (hand-building a SGIModelTopology in C has no JSON to visit, so
  * nothing here goes through qobject_input_visitor. The list nodes just
  * point at the arrays' own elements, the same sharing the old

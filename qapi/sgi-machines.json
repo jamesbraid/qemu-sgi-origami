@@ -3,12 +3,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 ##
-# ***********************************
-# SGI Scalable Node compiled catalogue
-# ***********************************
+# *********************
+# SGI machine catalogue
+# *********************
 #
 # The record types of the compiled machine catalogue (`hw/mips/sgi/
-# sn-catalogue.json`, embedded into the emulator at build time): one
+# sgi-machines.json`, embedded into the emulator at build time): one
 # `topologies` entry per configuration the SGI Scalable Node family
 # builder can construct, and one `offerings` entry per accepted CPU
 # population a launcher may select.  A `topologies` record carries
@@ -1579,15 +1579,15 @@
             'needs-debug-leds-off': 'bool' } }
 
 ##
-# @SGIModelCatalogue:
+# @SGIMachines:
 #
-# The compiled machine catalogue: every configuration the SGI Scalable
-# Node family builder can construct, and every configuration a
-# launcher may select.  The same document, embedded at build time,
-# backs @query-sgi-sn-catalogue, the running emulator's own copy for a
+# The compiled machine catalogue: every SGI machine configuration this
+# emulator can construct, and every configuration a launcher may
+# select.  The same document, embedded at build time,
+# backs @query-sgi-machines, the running emulator's own copy for a
 # package build to read, and external launch tooling.
 #
-# @schema: catalogue schema name (`sgi-sn-catalogue`)
+# @schema: catalogue schema name (`sgi-machines`)
 #
 # @version: catalogue schema version
 #
@@ -1597,16 +1597,16 @@
 #
 # Since: 11.2
 ##
-{ 'struct': 'SGIModelCatalogue',
+{ 'struct': 'SGIMachines',
   'data': { 'schema': 'str',
             'version': 'uint32',
             'topologies': ['SGIModelTopology'],
             'offerings': ['SGIModelOffering'] } }
 
 ##
-# @query-sgi-sn-catalogue:
+# @query-sgi-machines:
 #
-# Return the SGI Scalable Node family's compiled catalogue: the same
+# Return the compiled SGI machine catalogue: the same
 # document embedded into this emulator at build time, so a package
 # build can read it back from the emulator it ships rather than
 # carrying its own copy out of band.
@@ -1615,5 +1615,5 @@
 #
 # Since: 11.2
 ##
-{ 'command': 'query-sgi-sn-catalogue',
-  'returns': 'SGIModelCatalogue' }
+{ 'command': 'query-sgi-machines',
+  'returns': 'SGIMachines' }

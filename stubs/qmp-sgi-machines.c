@@ -3,11 +3,11 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qapi/qapi-commands-sgi-sn.h"
+#include "qapi/qapi-commands-sgi-machines.h"
 
-SGIModelCatalogue *qmp_query_sgi_sn_catalogue(Error **errp)
+SGIMachines *qmp_query_sgi_machines(Error **errp)
 {
     error_setg(errp,
-               "the SGI Scalable Node catalogue is not supported on this target");
+               "the SGI machine catalogue is not supported on this target");
     return NULL;
 }

@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The SGI Scalable Node family's compiled catalogue: hw/mips/sgi/
- * sn-catalogue.json, embedded into the emulator at build time and parsed once,
- * into the QAPI-generated types qapi/sgi-sn.json declares.
+ * The compiled SGI machine catalogue: hw/mips/sgi/sgi-machines.json,
+ * embedded into the emulator at build time and parsed once into the
+ * QAPI-generated types qapi/sgi-machines.json declares.
  */
 
-#ifndef HW_MIPS_SGI_SN_CATALOGUE_H
-#define HW_MIPS_SGI_SN_CATALOGUE_H
+#ifndef HW_MIPS_SGI_SGI_MACHINES_H
+#define HW_MIPS_SGI_SGI_MACHINES_H
 
-#include "qapi/qapi-types-sgi-sn.h"
+#include "qapi/qapi-types-sgi-machines.h"
 #include "qapi/error.h"
 
 /*
@@ -16,7 +16,7 @@
  * lifetime. Never NULL and never returns after a parse failure: a malformed
  * embedded catalogue is a build defect, not a runtime one.
  */
-const SGIModelCatalogue *sgi_model_catalogue(void);
+const SGIMachines *sgi_machines(void);
 
 /* The catalogue's topology named @name, or NULL. */
 const SGIModelTopology *sgi_model_find_topology(const char *name);
@@ -59,4 +59,4 @@ const SGIModelTopology *sgi_model_population_view(
     const SGIModelTopology *t, const SGIModelNodePopulation *row,
     Error **errp);
 
-#endif /* HW_MIPS_SGI_SN_CATALOGUE_H */
+#endif /* HW_MIPS_SGI_SGI_MACHINES_H */

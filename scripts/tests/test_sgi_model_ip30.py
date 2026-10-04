@@ -33,7 +33,7 @@ class IP30CatalogueTests(unittest.TestCase):
 
     def test_octane2_keeps_all_operator_cpu_inputs(self):
         catalogue = json.loads(render_qemu_inputs(MODELS)[
-            "hw/mips/sgi/sn-catalogue.json"])
+            "hw/mips/sgi/sgi-machines.json"])
         topology = next(t for t in catalogue["topologies"] if t["name"] == "octane2")
         cpu = topology["nodes"][0]["cpu-slots"][0]["assembly"]
         self.assertNotIn("prid", cpu)

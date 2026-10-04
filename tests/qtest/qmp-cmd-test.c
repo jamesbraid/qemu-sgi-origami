@@ -63,8 +63,8 @@ static int query_error_class(const char *cmd)
         !g_str_has_prefix(qtest_get_arch(), "mips")) {
         return ERROR_CLASS_GENERIC_ERROR;
     }
-    /* Likewise for the SGI Scalable Node compiled catalogue. */
-    if (!strcmp(cmd, "query-sgi-sn-catalogue") &&
+    /* Likewise for the compiled SGI machine catalogue. */
+    if (!strcmp(cmd, "query-sgi-machines") &&
         !g_str_has_prefix(qtest_get_arch(), "mips")) {
         return ERROR_CLASS_GENERIC_ERROR;
     }

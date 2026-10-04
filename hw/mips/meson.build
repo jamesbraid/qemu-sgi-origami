@@ -22,7 +22,7 @@ mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
 # The family machine base and builder over the compiled catalogue
-# (qapi/sgi-sn.json, embedded and parsed by sgi/sn-catalogue.c below).
+# (qapi/sgi-machines.json, embedded and parsed by sgi/sgi-machines.c below).
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sgi/sn-machine.c', 'sgi/sn-model-runtime.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
