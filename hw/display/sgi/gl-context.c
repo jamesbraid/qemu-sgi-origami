@@ -2142,14 +2142,20 @@ void sgi_gl_draw_pixels_rgba_zoom(SGIGLContext *c, const SGIGLSink *sink,
                                      zoom_y, NULL);
 }
 
-void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
-                                     uint32_t width, uint32_t height,
-                                     const uint32_t *rgba, float zoom_x,
-                                     float zoom_y,
-                                     const SGIGLPixelTransfer *transfer)
+typedef enum SGIGLPixelRectangleResult {
+    SGI_GL_PIXELS_REFUSED,
+    SGI_GL_PIXELS_EMPTY,
+    SGI_GL_PIXELS_READY,
+} SGIGLPixelRectangleResult;
+
+static SGIGLPixelRectangleResult sgi_gl_pixel_rectangle(
+    SGIGLContext *c, const SGIGLSink *sink, const char *call,
+    uint32_t width, uint32_t height, float zoom_x, float zoom_y,
+    const SGIGLPixelTransfer *transfer, SGIRasterOp *op)
 {
     const SGIGLDrawable *d = &c->cur.drawable;
-    SGIRasterOp op = {
+
+    *op = (SGIRasterOp) {
         .kind = SGI_RASTER_PIXELS,
         .pixels = {
             .state = &c->cur,
@@ -2159,56 +2165,134 @@ void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
             .transfer.scale = { 1, 1, 1, 1 },
             .width = width,
             .height = height,
-            .rgba = rgba,
             .z = c->raster_pos[2],
             .distance = c->raster_distance,
         },
     };
-
     if (c->in_begin) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-gl: glDrawPixels inside glBegin dropped\n");
-        return;
+                      "sgi-gl: %s inside glBegin dropped\n", call);
+        return SGI_GL_PIXELS_REFUSED;
     }
     if (!c->raster_valid || !width || !height) {
-        return;
+        return SGI_GL_PIXELS_EMPTY;
     }
     if (!isfinite(zoom_x) || !isfinite(zoom_y) ||
-        !isfinite(op.pixels.x) || !isfinite(op.pixels.y)) {
+        !isfinite(op->pixels.x) || !isfinite(op->pixels.y)) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-gl: nonfinite glDrawPixels placement dropped\n");
-        return;
+                      "sgi-gl: nonfinite %s placement dropped\n", call);
+        return SGI_GL_PIXELS_REFUSED;
     }
     if (!zoom_x || !zoom_y) {
-        return;
+        return SGI_GL_PIXELS_EMPTY;
     }
     if (transfer) {
         for (int k = 0; k < 4; k++) {
             if (!isfinite(transfer->scale[k]) || !isfinite(transfer->bias[k])) {
                 qemu_log_mask(LOG_UNIMP, "sgi-gl: nonfinite pixel transfer "
                               "dropped\n");
-                return;
+                return SGI_GL_PIXELS_REFUSED;
             }
         }
-        op.pixels.transfer = *transfer;
+        op->pixels.transfer = *transfer;
     }
     if (c->cur.index_bits || c->cur.texture_1d || c->cur.texture_2d ||
         c->cur.texture_3d) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: textured or colour-index "
-                      "glDrawPixels is unsupported; image dropped\n");
-        return;
+                      "%s is unsupported; image dropped\n", call);
+        return SGI_GL_PIXELS_REFUSED;
     }
-    if (!d->bound || !rgba) {
-        qemu_log_mask(LOG_UNIMP, "sgi-gl: glDrawPixels with no window or "
-                      "image bound dropped\n");
-        return;
+    if (!d->bound) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: %s with no window bound dropped\n",
+                      call);
+        return SGI_GL_PIXELS_REFUSED;
+    }
+    if (!sink || !sink->raster) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: %s with no raster sink dropped\n",
+                      call);
+        return SGI_GL_PIXELS_REFUSED;
     }
     if (!d->clip.n) {
+        return SGI_GL_PIXELS_EMPTY;
+    }
+    op->ntargets = sgi_gl_draw_targets(&c->cur, op->targets);
+    op->clip = d->clip;
+    return SGI_GL_PIXELS_READY;
+}
+
+void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                     uint32_t width, uint32_t height,
+                                     const uint32_t *rgba, float zoom_x,
+                                     float zoom_y,
+                                     const SGIGLPixelTransfer *transfer)
+{
+    SGIRasterOp op;
+
+    if (sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
+                               zoom_x, zoom_y, transfer, &op) !=
+        SGI_GL_PIXELS_READY) {
         return;
     }
-    op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
-    op.clip = d->clip;
+    if (!rgba) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: glDrawPixels with no image bound "
+                      "dropped\n");
+        return;
+    }
+    op.pixels.rgba = rgba;
     sink->raster(sink->opaque, &op);
+}
+
+bool sgi_gl_copy_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                     int32_t x, int32_t y,
+                                     uint32_t width, uint32_t height,
+                                     bool (*read_rgba)(void *, int32_t, int32_t,
+                                                       uint32_t *),
+                                     void *source, float zoom_x, float zoom_y,
+                                     const SGIGLPixelTransfer *transfer)
+{
+    SGIRasterOp op;
+    SGIGLPixelRectangleResult result;
+    uint64_t count = (uint64_t)width * height;
+    g_autofree uint32_t *pixels = NULL;
+
+    result = sgi_gl_pixel_rectangle(c, sink, "glCopyPixels", width, height,
+                                    zoom_x, zoom_y, transfer, &op);
+    if (result != SGI_GL_PIXELS_READY) {
+        return result == SGI_GL_PIXELS_EMPTY;
+    }
+    if (!read_rgba || (int64_t)x + width - 1 > INT32_MAX ||
+        (int64_t)y + height - 1 > INT32_MAX) {
+        qemu_log_mask(LOG_UNIMP, "sgi-gl: glCopyPixels source unavailable "
+                      "or outside coordinate range\n");
+        return false;
+    }
+    if (count > SIZE_MAX / sizeof(*pixels)) {
+        goto out_of_memory;
+    }
+    pixels = g_try_new(uint32_t, count);
+    if (!pixels) {
+        goto out_of_memory;
+    }
+    /* Complete the snapshot before a destination can overwrite its source. */
+    for (uint32_t row = 0; row < height; row++) {
+        for (uint32_t col = 0; col < width; col++) {
+            if (!read_rgba(source, (int64_t)x + col, (int64_t)y + row,
+                           &pixels[(uint64_t)row * width + col])) {
+                qemu_log_mask(LOG_UNIMP, "sgi-gl: glCopyPixels source read "
+                              "failed; image dropped\n");
+                return false;
+            }
+        }
+    }
+    op.pixels.rgba = pixels;
+    sink->raster(sink->opaque, &op);
+    return true;
+
+out_of_memory:
+    if (!c->polygon.error) {
+        c->polygon.error = SGI_GL_OUT_OF_MEMORY;
+    }
+    return false;
 }
 
 static bool sgi_gl_hint_mode(uint32_t mode)

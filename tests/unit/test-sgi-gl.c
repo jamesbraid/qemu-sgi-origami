@@ -1360,6 +1360,173 @@ static void test_draw_pixels_zoom(void)
     g_assert_cmphex(p.colour[0][planes_index(W - 1, H - 1)], ==, 0xff0000);
 }
 
+typedef struct CopySource {
+    Planes *planes;
+    uint32_t target;
+    unsigned reads;
+    int32_t fail_x, fail_y;
+} CopySource;
+
+static bool copy_source_read(void *opaque, int32_t x, int32_t y, uint32_t *rgba)
+{
+    CopySource *source = opaque;
+
+    source->reads++;
+    if (x < 0 || y < 0 || x >= W || y >= H ||
+        (x == source->fail_x && y == source->fail_y)) {
+        return false;
+    }
+    *rgba = (source->planes->colour[source->target][planes_index(x, y)] << 8) |
+            0xff;
+    return true;
+}
+
+static void test_copy_pixels_overlap(void)
+{
+    static const int offset[][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 },
+                                     { 0, -1 }, { 1, 1 }, { -1, -1 } };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    for (unsigned k = 0; k < ARRAY_SIZE(offset); k++) {
+        CopySource source = { .planes = &p, .fail_x = -1, .fail_y = -1 };
+        uint32_t original[3][3];
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        c.raster_pos[0] = 10 + offset[k][0];
+        c.raster_pos[1] = 20 + offset[k][1];
+        for (int y = 0; y < 3; y++) {
+            for (int x = 0; x < 3; x++) {
+                original[y][x] = 0x10000 * (x + 1) + 0x100 * (y + 1);
+                p.colour[0][planes_index(10 + x, 20 + y)] = original[y][x];
+            }
+        }
+        g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 10, 20, 3, 3,
+                                                       copy_source_read,
+                                                       &source, 1, 1, NULL));
+        g_assert_cmpuint(source.reads, ==, 9);
+        for (int y = 0; y < 3; y++) {
+            for (int x = 0; x < 3; x++) {
+                size_t dst = planes_index(10 + offset[k][0] + x,
+                                           20 + offset[k][1] + y);
+
+                g_assert_cmphex(p.colour[0][dst], ==, original[y][x]);
+            }
+        }
+        g_assert_cmpfloat(c.raster_pos[0], ==, 10 + offset[k][0]);
+        g_assert_cmpfloat(c.raster_pos[1], ==, 20 + offset[k][1]);
+    }
+}
+
+static void test_copy_pixels_source_failure(void)
+{
+    static Planes p, before;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    CopySource source = { .planes = &p, .fail_x = 11, .fail_y = 21 };
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0x32, sizeof(p));
+    memcpy(&before, &p, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 12;
+    c.raster_pos[1] = 22;
+    g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 10, 20, 2, 2,
+                                                   copy_source_read, &source,
+                                                   1, 1, NULL));
+    g_assert_cmpuint(source.reads, ==, 4);
+    g_assert_cmpuint(rec.ops, ==, 0);
+    g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
+}
+
+static void test_copy_pixels_buffers_zoom_transfer(void)
+{
+    SGIGLPixelTransfer transfer = { .scale = { 1, 1, 1, 1 },
+                                     .bias = { 0.25f, 0, 0, 0 } };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    CopySource source = { .planes = &p, .target = 1,
+                          .fail_x = -1, .fail_y = -1 };
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 12;
+    c.raster_pos[1] = 22;
+    c.raster_pos[2] = 0.25f;
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_ALWAYS;
+    p.colour[1][planes_index(1, 2)] = 0x00ff00;
+    p.colour[1][planes_index(2, 2)] = 0x0000ff;
+    g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 1, 2, 2, 1,
+                                                  copy_source_read, &source,
+                                                  -2, 2, &transfer));
+    g_assert_cmphex(p.colour[0][planes_index(8, 22)], ==, 0x4000ff);
+    g_assert_cmphex(p.colour[0][planes_index(9, 23)], ==, 0x4000ff);
+    g_assert_cmphex(p.colour[0][planes_index(10, 22)], ==, 0x40ff00);
+    g_assert_cmphex(p.colour[0][planes_index(11, 23)], ==, 0x40ff00);
+    g_assert_cmphex(p.colour[0][planes_index(12, 22)], ==, 0);
+    g_assert_cmphex(p.depth[planes_index(8, 22)], ==, 0x400000);
+    g_assert_cmphex(p.colour[1][planes_index(1, 2)], ==, 0x00ff00);
+    g_assert_cmphex(p.colour[1][planes_index(2, 2)], ==, 0x0000ff);
+}
+
+static void test_copy_pixels_noop_and_refusal(void)
+{
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    CopySource source = { .planes = &p, .fail_x = -1, .fail_y = -1 };
+    uint32_t error;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    context_init(&c);
+    c.raster_valid = 0;
+    g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 1, 1,
+                                                  copy_source_read, &source,
+                                                  1, 1, NULL));
+    c.raster_valid = 1;
+    g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 0, 1,
+                                                  NULL, NULL, 1, 1, NULL));
+    g_assert_true(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 1, 1,
+                                                  copy_source_read, &source,
+                                                  0, 1, NULL));
+    c.in_begin = 1;
+    g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 1, 1,
+                                                   copy_source_read, &source,
+                                                   1, 1, NULL));
+    c.in_begin = 0;
+    c.cur.texture_2d = 1;
+    g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, 0, 0, 1, 1,
+                                                   copy_source_read, &source,
+                                                   1, 1, NULL));
+    c.cur.texture_2d = 0;
+    g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, INT32_MAX, 0,
+                                                   2, 1, copy_source_read,
+                                                   &source, 1, 1, NULL));
+    g_assert_false(sgi_gl_copy_pixels_rgba_transfer(&c, &sink, INT32_MIN,
+                                                   INT32_MIN, UINT32_MAX,
+                                                   UINT32_MAX,
+                                                   copy_source_read, &source,
+                                                   1, 1, NULL));
+    g_assert_true(sgi_gl_consume_error(&c, &error));
+    g_assert_cmphex(error, ==, SGI_GL_OUT_OF_MEMORY);
+    g_assert_cmpuint(source.reads, ==, 0);
+    g_assert_cmpuint(rec.ops, ==, 0);
+}
+
 static void test_draw_pixels_fragment_operations(void)
 {
     static const uint32_t image[] = { 0xff000000, 0xff000080, 0xff0000ff };
@@ -11514,5 +11681,13 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/hints", test_hints);
     g_test_add_func("/sgi-gl/hints-ignore-rendering",
                     test_hints_ignore_rendering);
+    g_test_add_func("/sgi-gl/copy-pixels/overlap",
+                    test_copy_pixels_overlap);
+    g_test_add_func("/sgi-gl/copy-pixels/source-failure",
+                    test_copy_pixels_source_failure);
+    g_test_add_func("/sgi-gl/copy-pixels/buffers-zoom-transfer",
+                    test_copy_pixels_buffers_zoom_transfer);
+    g_test_add_func("/sgi-gl/copy-pixels/noop-and-refusal",
+                    test_copy_pixels_noop_and_refusal);
     return g_test_run();
 }

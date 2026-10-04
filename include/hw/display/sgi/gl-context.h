@@ -1087,6 +1087,20 @@ void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                      float zoom_y,
                                      const SGIGLPixelTransfer *transfer);
 /*
+ * Copy an RGBA8 source snapshot through pixel transfer and fragment operations.
+ * The family bounds the source and resolves the read buffer; read_rgba gets
+ * window-local coordinates and returns raw RRGGBBAA. Failed reads or allocation
+ * write no fragments. Raster position stays unchanged. False means refusal;
+ * allocation failure additionally retains OUT_OF_MEMORY in shared error state.
+ */
+bool sgi_gl_copy_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                     int32_t x, int32_t y,
+                                     uint32_t width, uint32_t height,
+                                     bool (*read_rgba)(void *, int32_t, int32_t,
+                                                       uint32_t *),
+                                     void *source, float zoom_x, float zoom_y,
+                                     const SGIGLPixelTransfer *transfer);
+/*
  * The cosine glLightfv stores for a spot cutoff of degrees: -1 for 180,
  * no spot, and otherwise the single-precision cosine.
  */
