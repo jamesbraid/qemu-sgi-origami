@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include <math.h>
+#include "qemu/bswap.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
 
 typedef struct Expected {
@@ -1221,7 +1222,7 @@ static void test_texture_pixel_conversion(void)
                                                 false, &rgba));
     g_assert_cmphex(rgba, ==, 0x00ff0000);
     for (uint32_t format = 0; format <= 8; format++) {
-        if (format < 3 || format > 7) {
+        if (format > 7) {
             rgba = 0x12345678;
             g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==, 0);
             g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==, 0);
@@ -1389,7 +1390,7 @@ static void test_texture_swap_bytes(void)
     g_assert_cmphex(rgba, ==, 0);
     for (uint32_t format = 0; format < 10; format++) {
         for (uint32_t type = 0; type < 9; type++) {
-            if (format < 3 || format > 7 || type > 6) {
+            if (format > 7 || type > 6) {
                 rgba = 0x12345678;
                 g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
                                                               cases[6].source,
@@ -1882,7 +1883,7 @@ static void test_pixels_pio_refusals(void)
     header[5] = 0;
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 3, &l));
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 2, 0, 0, 4, &l));
-    header[2] = 2;
+    header[2] = 11;
     g_assert_false(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 4, &l));
     header[2] = 5;
     g_assert_true(sgi_kona_gl_pixels_pio_layout(header, 0, 0, 0, 4, &l));
@@ -1984,7 +1985,7 @@ static void test_pixels_dma_refusals(void)
         { { 1, 1, 5, 1, 0, 1, 0, 0 }, 0, 1, 4 },
         { { 1, 1, 5, 1, 0, 1, 1, 0 }, 0, 0, 4 },
         { { 2, 1, 5, 1, 0, 1, 1, 0 }, 1, 0, 4 },
-        { { 1, 1, 2, 1, 0, 1, 0, 0 }, 0, 0, 4 },
+        { { 1, 1, 11, 1, 0, 1, 0, 0 }, 0, 0, 4 },
         { { UINT32_MAX, 2, 3, 1, 0, 1, 0, 0 }, 0, 0, 1 },
         { { UINT32_MAX, UINT32_MAX, 5, 6, 0, 1, 0, 0 }, 0, 0, 4 },
         { { 1, 1, 5, 6, 0, 1, 1, 0 }, UINT32_MAX, 0, 4 },
@@ -2102,7 +2103,7 @@ static void test_pixel_double_conversion(void)
     g_assert_cmpfloat(rgba[3], ==, 1);
     memcpy(rgba, before, sizeof(rgba));
     g_assert_false(sgi_kona_gl_pixel_rgba_double(5, 5, NULL, false, rgba));
-    g_assert_false(sgi_kona_gl_pixel_rgba_double(2, 5, source, false, rgba));
+    g_assert_false(sgi_kona_gl_pixel_rgba_double(11, 5, source, false, rgba));
     g_assert_cmpmem(rgba, sizeof(rgba), before, sizeof(before));
 }
 
@@ -2159,13 +2160,96 @@ static void test_texture_pixel_transfer_refusals(void)
     source[3] = 0x7fc00000;
     g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
                                                       scale, bias, &rgba));
-    g_assert_false(sgi_kona_gl_texture_pixel_transfer(2, 6, source, false,
+    g_assert_false(sgi_kona_gl_texture_pixel_transfer(11, 6, source, false,
                                                       scale, bias, &rgba));
     g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, NULL, false,
                                                       scale, bias, &rgba));
     g_assert_false(sgi_kona_gl_texture_pixel_transfer(5, 6, source, false,
                                                       NULL, bias, &rgba));
     g_assert_cmphex(rgba, ==, 0xa5a5a5a5);
+}
+
+static void test_pixel_single_channel_decode(void)
+{
+    static const uint32_t full[] = {
+        0x7f000000, 0xff000000, 0x7fff0000, 0xffff0000,
+        0x7fffffff, 0xffffffff, 0x3f800000,
+    };
+    static const uint32_t sizes[] = { 1, 1, 2, 2, 4, 4, 4 };
+
+    for (uint32_t format = 0; format < 3; format++) {
+        for (uint32_t type = 0; type < ARRAY_SIZE(full); type++) {
+            for (unsigned swap = 0; swap < 2; swap++) {
+                uint32_t source = full[type];
+                double rgba[4];
+
+                if (swap && sizes[type] == 2) {
+                    source = bswap16(source >> 16) << 16;
+                } else if (swap && sizes[type] == 4) {
+                    source = bswap32(source);
+                }
+                g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, type),
+                                 ==, sizes[type]);
+                g_assert_true(sgi_kona_gl_pixel_rgba_double(format, type,
+                                                            &source, swap,
+                                                            rgba));
+                for (unsigned k = 0; k < 4; k++) {
+                    g_assert_cmpfloat(rgba[k], ==, k == format || k == 3);
+                }
+            }
+        }
+    }
+}
+
+static void test_pixel_single_channel_transfer(void)
+{
+    const uint32_t source = 0x7fffffff;
+    const float scale[] = { -4294967296.0f, -4294967296.0f,
+                           -4294967296.0f, 0.5f };
+    const float bias[] = { 2147483648.0f, 2147483648.0f,
+                          2147483648.0f, 0.25f };
+    static const uint32_t expected[] = {
+        0x80ffffbf, 0xff80ffbf, 0xffff80bf,
+    };
+
+    for (uint32_t format = 0; format < 3; format++) {
+        uint32_t rgba;
+
+        g_assert_true(sgi_kona_gl_texture_pixel_transfer(format, 5, &source,
+                                                        false, scale, bias,
+                                                        &rgba));
+        g_assert_cmphex(rgba, ==, expected[format]);
+    }
+}
+
+static void test_pixel_single_channel_pack(void)
+{
+    const double rgba[] = { 0.125, 0.5, 0.875, 0.25 };
+    static const uint8_t expected[] = { 32, 128, 223 };
+    uint8_t out[16], full[16];
+
+    for (uint32_t format = 0; format < 3; format++) {
+        for (uint32_t type = 0; type < 7; type++) {
+            unsigned size = sgi_kona_gl_texture_pixel_bytes(3, type);
+
+            for (unsigned swap = 0; swap < 2; swap++) {
+                memset(out, 0xa5, sizeof(out));
+                g_assert_true(sgi_kona_gl_pixel_pack_double(5, type, rgba,
+                                                           swap, full,
+                                                           sizeof(full)));
+                g_assert_true(sgi_kona_gl_pixel_pack_double(format, type, rgba,
+                                                           swap, out,
+                                                           sizeof(out)));
+                g_assert_cmpmem(out, size, full + format * size, size);
+                for (unsigned k = size; k < sizeof(out); k++) {
+                    g_assert_cmphex(out[k], ==, 0xa5);
+                }
+            }
+        }
+        g_assert_true(sgi_kona_gl_pixel_pack_double(format, 1, rgba, false,
+                                                   out, sizeof(out)));
+        g_assert_cmpuint(out[0], ==, expected[format]);
+    }
 }
 
 static void test_pixel_pack_types(void)
@@ -2313,7 +2397,8 @@ static void test_pixel_pack_refusals(void)
     uint8_t out[16];
 
     memcpy(out, before, sizeof(out));
-    g_assert_false(sgi_kona_gl_pixel_pack(2, 1, rgba, false, out, sizeof(out)));
+    g_assert_false(sgi_kona_gl_pixel_pack(11, 1, rgba, false,
+                                         out, sizeof(out)));
     g_assert_false(sgi_kona_gl_pixel_pack(5, 7, rgba, false, out, sizeof(out)));
     g_assert_false(sgi_kona_gl_pixel_pack(5, 3, rgba, false, out, 7));
     for (unsigned k = 0; k < 4; k++) {
@@ -2452,6 +2537,12 @@ int main(int argc, char **argv)
                     test_texture_pixel_transfer_expansion);
     g_test_add_func("/sgi-kona-gl-decode/texture-pixel-transfer/refusals",
                     test_texture_pixel_transfer_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/single-channel/decode",
+                    test_pixel_single_channel_decode);
+    g_test_add_func("/sgi-kona-gl-decode/single-channel/transfer",
+                    test_pixel_single_channel_transfer);
+    g_test_add_func("/sgi-kona-gl-decode/single-channel/pack",
+                    test_pixel_single_channel_pack);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/types",
                     test_pixel_pack_types);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/expansion-and-swap",
