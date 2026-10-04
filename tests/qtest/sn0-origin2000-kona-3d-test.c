@@ -6543,8 +6543,8 @@ static void assert_colour_matrix_isolated(QTestState *s)
     expected[12] = fbits(0.25);
     assert_native_depth(s, 0xba0, (uint32_t[]){ 0x1800 }, 1);
     kona_command(s, 0xd2, (uint32_t[]){ 0 }, 1);
-    kona_command_f(s, 0xd3, (float[16]){ 0 }, 16);
-    kona_command_f(s, 0xd5, (float[16]){ 0 }, 16);
+    kona_command_f(s, 0xd3, (float[16]) { 0 }, 16);
+    kona_command_f(s, 0xd5, (float[16]) { 0 }, 16);
     kona_command_f(s, 0xdd, (float[]){ 2, 3, 4 }, 3);
     kona_command_f(s, 0xdb, (float[]){ 45, 0, 0, 1 }, 4);
     kona_command_f(s, 0xdf, (float[]){ 1, 2, 3 }, 3);
@@ -6581,6 +6581,146 @@ static void test_native_colour_matrix(gconstpointer opaque)
         g_rmdir(tmpfs);
     }
     qtest_quit(from);
+}
+
+static void assert_native_error(QTestState *s, uint32_t error)
+{
+    prepare_refused_reply(s);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    assert_reply_posted(s);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, error);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 4), ==, 0xa5a5a5a5);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 12), ==, 0xa5a5a5a5);
+}
+
+static void test_native_error_state(void)
+{
+    static const uint32_t codes[] = {
+        0x500, 0x501, 0x502, 0x503, 0x504, 0x505, 0x8031,
+    };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    assert_native_error(s, 0);
+    for (unsigned k = 0; k < ARRAY_SIZE(codes); k++) {
+        kona_command(s, 0xe4, &codes[k], 1);
+        kona_command(s, 0xe4, (uint32_t[]){ 0 }, 1);
+        kona_command(s, 0xe4, (uint32_t[]){ 0x501 }, 1);
+        kona_command(s, 0xe4, (uint32_t[]){ 0x506 }, 1);
+        kona_command(s, 0xe4, (uint32_t[]){ UINT32_MAX }, 1);
+        assert_native_error(s, codes[k]);
+        assert_native_error(s, 0);
+    }
+    kona_command(s, 0xc9, (uint32_t[]){ 0x2000 }, 1);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x502 }, 1);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_error(s, 0x502);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x504 }, 1);
+    kona_command(s, 0xc9, (uint32_t[]){ 0x2000 }, 1);
+    assert_native_error(s, 0x504);
+    kona_command(s, 0xc8, (uint32_t[]){ 0 }, 1);
+    assert_native_error(s, 0);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x503 }, 1);
+    kona_command(s, 0x57, (uint32_t[]){ 0 }, 1);
+    prepare_refused_reply(s);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    assert_reply_unchanged(s);
+    kona_command(s, 0x71, (uint32_t[]){ 0 }, 1);
+    assert_native_error(s, 0x503);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x503 }, 1);
+    qtest_system_reset(s);
+    gl_make_current(s);
+    assert_native_error(s, 0);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unrecognized native GL error 0x506"));
+    g_assert_false(log_shows_misframing(found));
+}
+
+static void test_native_error_failed_reply(void)
+{
+    const uint64_t save_b = SAVE_AREA + 0x20000;
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x500 }, 1);
+    return_context_deactivate(s);
+    prepare_refused_reply(s);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    assert_reply_unchanged(s);
+    attrib_context_fresh(s, save_b);
+    assert_native_error(s, 0);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x504 }, 1);
+    return_context_deactivate(s);
+    return_context_restore(s, SAVE_AREA);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(0x08000000),
+                                      tagged_offset_word(0x08000000),
+                                      0x4000 }, 3);
+    prepare_refused_reply(s);
+    kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    assert_reply_unchanged(s);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(RETURN_PAGE),
+                                      tagged_offset_word(RETURN_PAGE),
+                                      0x4000 }, 3);
+    assert_native_error(s, 0x500);
+    assert_native_error(s, 0);
+    return_context_deactivate(s);
+    return_context_restore(s, save_b);
+    assert_native_error(s, 0x504);
+    assert_native_error(s, 0);
+    return_context_deactivate(s);
+    kona_command_kicked(s, 0x1fd,
+                        (uint32_t[]){ physical_page_word(save_b + 0x20000),
+                                      tagged_offset_word(save_b + 0x20000),
+                                      0x10000 }, 3);
+    kona_command_kicked(s, 0x1f2,
+                        (uint32_t[]){ physical_page_word(0x08000000),
+                                      tagged_offset_word(0x08000000),
+                                      0x4000 }, 3);
+    kona_command(s, 0xe4, (uint32_t[]){ 0x505 }, 1);
+    for (unsigned k = 0; k < 2; k++) {
+        kona_command(s, 0x3e, (uint32_t[]){ 0xdbdbdbdb }, 1);
+    }
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_cmpuint(count_occurrences(found,
+        "GL error reply failed; error 0x505 retained"), ==, 2);
+    g_assert_nonnull(strstr(found, "4-byte write to"));
+    g_assert_false(log_shows_misframing(found));
+}
+
+static void test_native_error_migrates(gconstpointer opaque)
+{
+    bool partial = GPOINTER_TO_INT(opaque);
+    g_autofree char *dir = NULL, *uri = NULL, *args = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-kona-error-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    args = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    from = qtest_init(MACHINE_ARGS);
+    to = qtest_init(args);
+    gl_make_current(from);
+    if (partial) {
+        qtest_writel(from, REG_COMMAND, 0xe4);
+    } else {
+        kona_command(from, 0xe4, (uint32_t[]){ 0x8031 }, 1);
+    }
+    sgi_migrate_stopped(from, uri);
+    if (partial) {
+        qtest_writel(to, REG_COMMAND, 0x8031);
+    }
+    assert_native_error(to, 0x8031);
+    assert_native_error(to, 0);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(dir);
 }
 
 int main(int argc, char **argv)
@@ -7078,6 +7218,14 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(0), test_native_colour_matrix);
     qtest_add_data_func("sn0/origin2000/kona-3d/colour-matrix/migrates",
                         GINT_TO_POINTER(1), test_native_colour_matrix);
+    qtest_add_func("sn0/origin2000/kona-3d/native-error/state",
+                   test_native_error_state);
+    qtest_add_func("sn0/origin2000/kona-3d/native-error/failed-reply",
+                   test_native_error_failed_reply);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-error/migrates",
+                        GINT_TO_POINTER(0), test_native_error_migrates);
+    qtest_add_data_func("sn0/origin2000/kona-3d/native-error/partial-migrates",
+                        GINT_TO_POINTER(1), test_native_error_migrates);
     qts = qtest_init(MACHINE_ARGS);
     ret = g_test_run();
     qtest_quit(qts);
