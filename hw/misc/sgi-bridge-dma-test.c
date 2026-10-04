@@ -7,6 +7,8 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/rcu.h"
+#include "system/ram_addr.h"
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -77,6 +79,11 @@ struct SGIBridgeDMATestState {
     uint64_t read_data;
     uint32_t repetitions;
 
+    /* Host-only observation of one translated RAM range; never migrated. */
+    MemoryRegion *dirty_region;
+    hwaddr dirty_offset;
+    hwaddr dirty_length;
+
     /* Settable: the four-onto-eight pin fold needs more than one pin. */
     uint8_t interrupt_pin;
 };
@@ -100,6 +107,8 @@ struct SGIBridgeDMATestState {
 #define REG_RESULT      0x28
 #define REG_READ_DATA   0x2c
 #define REG_READ_DATA_HI 0x30
+/* Write 1 to observe/clear this range, 0 to stop; reads consume its bitmap. */
+#define REG_DIRTY       0x34
 #define REG_WINDOW      0x40   /* size of the register block */
 #define IO_WINDOW       0x08   /* size of the I/O-space scratch */
 
@@ -126,6 +135,72 @@ static AddressSpace *sgi_bridge_dma_test_as(SGIBridgeDMATestState *s)
 {
     return s->dma_memory ? &s->linked_dma_as :
                           pci_get_address_space(PCI_DEVICE(s));
+}
+
+static void sgi_bridge_dma_test_dirty_stop(SGIBridgeDMATestState *s)
+{
+    if (s->dirty_region) {
+        memory_region_set_log(s->dirty_region, false, DIRTY_MEMORY_VGA);
+        memory_region_unref(s->dirty_region);
+        s->dirty_region = NULL;
+    }
+}
+
+static void sgi_bridge_dma_test_dirty_start(SGIBridgeDMATestState *s)
+{
+    AddressSpace *as = s->plain_dma ?
+        sgi_bridge_plain_dma_as(PCI_DEVICE(s)) :
+        sgi_bridge_dma_test_as(s);
+    MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
+    MemoryRegion *mr;
+    hwaddr offset, length = s->length;
+
+    sgi_bridge_dma_test_dirty_stop(s);
+    if (!length || length > SGI_BRIDGE_DMA_TEST_MAX ||
+        s->address > UINT64_MAX - (length - 1)) {
+        return;
+    }
+    attrs.memory = s->memory_only;
+    rcu_read_lock();
+    mr = address_space_translate(as, s->address, &offset, &length, true, attrs);
+    /* Clearing another display client's bitmap would corrupt its state. */
+    if (!memory_region_is_ram(mr) || memory_region_is_rom(mr) ||
+        length < s->length ||
+        memory_region_is_logging(mr, DIRTY_MEMORY_VGA)) {
+        rcu_read_unlock();
+        return;
+    }
+    memory_region_ref(mr);
+    rcu_read_unlock();
+    s->dirty_region = mr;
+    s->dirty_offset = offset;
+    s->dirty_length = s->length;
+    memory_region_set_log(mr, true, DIRTY_MEMORY_VGA);
+    memory_region_reset_dirty(mr, offset, s->dirty_length, DIRTY_MEMORY_VGA);
+}
+
+static uint32_t sgi_bridge_dma_test_dirty_read(SGIBridgeDMATestState *s)
+{
+    g_autofree DirtyBitmapSnapshot *snapshot = NULL;
+
+    if (!s->dirty_region) {
+        return UINT32_MAX;
+    }
+    /* A client that joined later owns the same bitmap; leave it untouched. */
+    if (s->dirty_region->vga_logging_count != 1) {
+        sgi_bridge_dma_test_dirty_stop(s);
+        return UINT32_MAX;
+    }
+    snapshot = memory_region_snapshot_and_clear_dirty(s->dirty_region,
+        s->dirty_offset, s->dirty_length, DIRTY_MEMORY_VGA);
+    return memory_region_snapshot_get_dirty(s->dirty_region, snapshot,
+        s->dirty_offset, s->dirty_length);
+}
+
+static int sgi_bridge_dma_test_dirty_migration(void *opaque)
+{
+    sgi_bridge_dma_test_dirty_stop(opaque);
+    return 0;
 }
 
 static MemTxResult dma_view_read(void *opaque, hwaddr addr, uint64_t *value,
@@ -280,6 +355,8 @@ static uint64_t sgi_bridge_dma_test_read(void *opaque, hwaddr addr,
         return (uint32_t)s->read_data;
     case REG_READ_DATA_HI:
         return s->read_data >> 32;
+    case REG_DIRTY:
+        return sgi_bridge_dma_test_dirty_read(s);
     case REG_LANE_FIXED:
         return 0x12345678;
     case REG_LANE_SCRATCH:
@@ -309,6 +386,13 @@ static void sgi_bridge_dma_test_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case REG_SEED:
         s->seed = val;
+        break;
+    case REG_DIRTY:
+        if (val == 1) {
+            sgi_bridge_dma_test_dirty_start(s);
+        } else {
+            sgi_bridge_dma_test_dirty_stop(s);
+        }
         break;
     case REG_GO:
         if (val == GO_COPY) {
@@ -476,6 +560,8 @@ static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
 
+    sgi_bridge_dma_test_dirty_stop(s);
+
     if (s->dma_r32) {
         address_space_destroy(&s->dma_view_as);
     }
@@ -487,6 +573,8 @@ static void sgi_bridge_dma_test_exit(PCIDevice *dev)
 static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
 {
     SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(obj);
+
+    sgi_bridge_dma_test_dirty_stop(s);
 
     s->address = 0;
     s->length = 0;
@@ -505,6 +593,8 @@ static const VMStateDescription vmstate_sgi_bridge_dma_test = {
     .name = "sgi-bridge-dma-test",
     .version_id = 7,
     .minimum_version_id = 7,
+    .pre_save = sgi_bridge_dma_test_dirty_migration,
+    .pre_load = sgi_bridge_dma_test_dirty_migration,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIBridgeDMATestState),
         VMSTATE_UINT64(address, SGIBridgeDMATestState),

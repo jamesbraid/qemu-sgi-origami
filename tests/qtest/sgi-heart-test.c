@@ -558,6 +558,8 @@ static void test_ecc_migration(gconstpointer data)
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0xa0), ==,
                     pattern ^ (double_bit ? 3 : 1));
     g_assert_true(qtest_get_irq(to, 4));
+    g_assert_cmpuint(memtx_readq(to, HEART_PACKET + word, &value), ==,
+                     MEMTX_ERROR);
     qtest_writeq(to, HEART_REGS + 0x10040, 3);
     qtest_writeq(to, HEART_REGS + 0x10028, HEART_ECC_IRQ);
     g_assert_false(qtest_get_irq(to, 4));
@@ -574,7 +576,9 @@ static void test_ecc_migration(gconstpointer data)
     qtest_writeq(to, other + 2 * UNIT, 0x0192837465abcedfULL);
     qtest_writeq(to, HEART_REGS + 0x10040, 3);
     qtest_writeq(to, HEART_REGS + 0x10028, HEART_ECC_IRQ);
-    g_assert_cmphex(qtest_readq(to, other), ==, 0x0192837465abcedfULL);
+    g_assert_cmpuint(memtx_readq(to, HEART_PACKET + other, &value), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x0192837465abcedfULL);
     g_assert_cmphex(qtest_readq(to, HEART_REGS + 0x10040), ==, 0);
     if (double_bit) {
         g_assert_cmpuint(memtx_readq(to, word + 2 * UNIT, &value), ==,
@@ -806,6 +810,7 @@ static void test_projection(gconstpointer data)
     uint64_t alias = mib == 256 ? 4 * UNIT : UNIT;
     uint64_t offsets[] = { 0, 8, 0x100, UNIT, 2 * UNIT,
                            4 * UNIT, 8 * UNIT, 32 * UNIT };
+    uint64_t packet_value;
     uint64_t first = 0x1021324354657687ULL;
     uint64_t second = 0x98a9bacbdcedfe0fULL;
     uint32_t final_desc = 0x80000000U | ((capacity / UNIT - 1) << 16);
@@ -815,11 +820,19 @@ static void test_projection(gconstpointer data)
         uint64_t physical = HEART_RAM + projected_offset(mib, offsets[i]);
         uint64_t probe = PROBE_RAM + offsets[i];
 
-        qtest_writeq(s, probe, first);
+        qtest_writeq(s, probe, second);
+        g_assert_cmpuint(memtx_readq(s, HEART_PACKET + probe, &packet_value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(packet_value, ==, second);
+        g_assert_cmpuint(memtx_writeq(s, HEART_PACKET + probe, first), ==,
+                         MEMTX_OK);
         qtest_writel(s, HEART_REGS + 0x20, final_desc);
         g_assert_cmphex(qtest_readq(s, physical), ==, first);
         qtest_writeq(s, physical, second);
         qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+        g_assert_cmpuint(memtx_readq(s, HEART_PACKET + probe, &packet_value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(packet_value, ==, second);
         g_assert_cmphex(qtest_readq(s, probe), ==, second);
     }
     qtest_writeq(s, PROBE_RAM, first);
@@ -1411,7 +1424,12 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x20000), ==, 0);
     g_assert_cmpuint(memtx_readq(s, PROBE_RAM, &value), ==,
                      MEMTX_DECODE_ERROR);
+    g_assert_cmpuint(memtx_readq(s, HEART_PACKET + PROBE_RAM, &value), ==,
+                     MEMTX_ERROR);
     qtest_writel(s, HEART_REGS + 0x20, PROBE_DESC);
+    g_assert_cmpuint(memtx_readq(s, HEART_PACKET + PROBE_RAM, &value), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xfeedface);
     g_assert_cmpuint(memtx_readq(s, PROBE_RAM, &value), ==, MEMTX_OK);
     g_assert_cmphex(value, ==, 0xfeedface);
     g_assert_cmphex(qtest_readq(s, PROBE_RAM + UNIT), ==, 0xfeedface);
@@ -1426,6 +1444,7 @@ static void test_migration(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     QTestState *from, *to;
+    uint64_t value;
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -1485,6 +1504,12 @@ static void test_migration(void)
         g_assert_cmphex(qtest_readl(to, HEART_REGS + 0x20 + 4 * i), ==,
                         heart_descriptor(i));
     }
+    g_assert_cmpuint(memtx_readq(to, HEART_PACKET + PROBE_RAM, &value), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x123456789abcdef0ULL);
+    g_assert_cmpuint(memtx_readq(to, HEART_PACKET + PROBE_RAM + 2 * UNIT,
+                                &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x87654321fedcba98ULL);
     g_assert_cmphex(qtest_readq(to, PROBE_RAM), ==, 0x123456789abcdef0ULL);
     g_assert_cmphex(qtest_readq(to, PROBE_RAM + 2 * UNIT), ==,
                     0x87654321fedcba98ULL);
@@ -1649,6 +1674,99 @@ static void test_bridge_dma(void)
     heart_bridge_fill(s, 0xa0001000, 0x70);
     qtest_memread(s, where, seen, sizeof(seen));
     g_assert_cmpmem(seen, sizeof(seen), (uint8_t[8]) { 0 }, 8);
+    qtest_quit(s);
+}
+
+/* RAM-only DMA distinguishes a RAM alias from a scalar MMIO forwarding loop. */
+static void test_bridge_bulk_ram(void)
+{
+    QTestState *s = heart_xtalk_start(
+        "-device sgi-bridge,id=bridge,board-part=123-4567-890,"
+        "fabric=/machine/peripheral/heart-xtalk/xbow/"
+        "sgi-xbow.widget15.ingress.packet[0] "
+        "-device sgi-bridge-dma-test,bus=pci,addr=6,memory-only=true");
+    uint8_t seen[256], expected[256];
+    const uint64_t where = HEART_RAM + 0x1003;
+
+    qtest_sysbus_mmio_map(s, HEART_BRIDGE_PATH, 0, HEART_BRIDGE);
+    qtest_writel(s, HEART_XTALK_REGS + 0x20, 0x80030000);
+    qtest_writel(s, HEART_BRIDGE + 0x020000 + 6 * 0x1000 + 0x10,
+                 0x10000000);
+    qtest_writel(s, HEART_BRIDGE + 0x020000 + 6 * 0x1000 + 0x04, 6);
+    qtest_writel(s, HEART_BRIDGE + 0x200 + 6 * 8 + 4,
+                 (1u << 19) | (1u << 12) | (0x10000000 >> 20));
+    qtest_writel(s, HEART_BRIDGE + 0x80 + 4, 8u << 20);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x00, 0xa0001003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x04, sizeof(seen));
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x08, 0x31);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 0);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 1);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 0);
+    g_assert_cmphex(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, UINT32_MAX);
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        expected[i] = 0x31 + i;
+    }
+    qtest_memread(s, where, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x14, 0xa0001003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x00, 0xa0002003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 0);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 2);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==, MEMTX_OK);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 1);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 0);
+    qtest_memread(s, HEART_RAM + 0x2003, seen, sizeof(seen));
+    g_assert_cmpmem(seen, sizeof(seen), expected, sizeof(expected));
+
+    /* Descriptor spans repeat the fitted bank rather than allocating RAM. */
+    qtest_writel(s, HEART_XTALK_REGS + 0x20, 0x80070000);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x00, 0xa8001003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x04, 1);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x08, 0xa5);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readb(s, where), ==, 0xa5);
+
+    /* A higher-priority absent bank must hide the fitted bank's alias. */
+    qtest_writel(s, HEART_XTALK_REGS + 0x28, 0x80000000);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x00, 0xa0001003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==,
+                     MEMTX_ACCESS_ERROR);
+    qtest_writel(s, HEART_XTALK_REGS + 0x28, 0);
+    g_assert_cmphex(qtest_readb(s, where), ==, 0xa5);
+
+    /* Generation and poison remain callback-only on the packet face. */
+    qtest_writeq(s, HEART_XTALK_REGS,
+                 HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 1);
+    g_assert_cmphex(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, UINT32_MAX);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==,
+                     MEMTX_ACCESS_ERROR);
+    qtest_writeq(s, HEART_RAM + 0x1000, 0x0123456789abcdefULL);
+    qtest_writeq(s, HEART_XTALK_REGS, HEART_ECC_ENABLE);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==,
+                     MEMTX_ACCESS_ERROR);
+    qtest_writeb(s, HEART_RAM + 0x3000, 0x99);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x14, 0xa0001003);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x00, 0xa0003000);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 1);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 0);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x0c, 2);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x28), ==,
+                     MEMTX_ACCESS_ERROR);
+    g_assert_cmpuint(qtest_readl(s, HEART_BRIDGE_CARD + 0x34), ==, 0);
+    qtest_writel(s, HEART_BRIDGE_CARD + 0x34, 0);
+    g_assert_cmphex(qtest_readb(s, HEART_RAM + 0x3000), ==, 0x99);
+    g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10040), ==, 0);
+    g_assert_cmphex(qtest_readq(s, HEART_XTALK_REGS + 0x10030), ==, 0);
     qtest_quit(s);
 }
 
@@ -1820,6 +1938,7 @@ int main(int argc, char **argv)
     g_test_add_func("/heart/xtalk-routing", test_xtalk_routing);
     g_test_add_func("/heart/xtalk-dma", test_xtalk_dma);
     qtest_add_func("/heart/bridge-dma", test_bridge_dma);
+    qtest_add_func("/heart/bridge-bulk-ram", test_bridge_bulk_ram);
     g_test_add_func("/heart/xtalk-migration", test_xtalk_migration);
     return g_test_run();
 }

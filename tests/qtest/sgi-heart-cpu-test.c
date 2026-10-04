@@ -1,12 +1,16 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /* Copyright (c) 2026 James Braid */
-/* Synthetic CPU loads exercise HEART's bounded direct-memory ECC contract. */
+/* Synthetic CPU accesses exercise HEART memory and DMA behavior. */
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "memtx.h"
 #include "sn0-user-image.h"
 
 #define HEART_REGS 0x0ff00000ULL
 #define WORD 0x20008000ULL
+#define DMA_SOURCE 0x20009000ULL
+#define DMA_BRIDGE 0x1f000000ULL
+#define DMA_CARD (DMA_BRIDGE + 0xa00000)
 #define MAILBOX 0x20004000ULL
 #define UNCACHED(address) (0x9000000000000000ULL | (address))
 #define PATTERN 0x87541230abcdef69ULL
@@ -182,6 +186,69 @@ static void test_double_bit_cpu(gconstpointer data)
     qtest_quit(s);
 }
 
+/* The CPU must execute the replacement without a stop or map update. */
+static void test_dma_code(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *s;
+    uint8_t word[4];
+    uint32_t seen, replacement = mips_addiu(SN0_R_V0, SN0_R_ZERO, 2);
+    int64_t deadline;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    if (!qtest_has_device("sgi-bridge-dma-test")) {
+        g_test_skip("DMA test device is unavailable");
+        return;
+    }
+    sn0_emit_li(image, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(image, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li64(image, SN0_R_K0, UNCACHED(MAILBOX));
+    sn0_emit_li64(image, SN0_R_T0, UNCACHED(WORD));
+    sn0_emit(image, (SN0_R_T0 << 21) | 8); /* jr t0 */
+    sn0_emit_nop(image);
+    path = sn0_image_write(image, "heart-dma-code");
+    s = qtest_initf("-M octane -cpu R10000 -accel tcg -S -bios %s "
+        "-device sgi-bridge-dma-test,id=dma-card,bus=pci,"
+        "addr=6,memory-only=true", path);
+    unlink(path);
+    qtest_writel(s, HEART_REGS + 0x20, 0x80030000);
+    qtest_writel(s, DMA_BRIDGE + 0x020000 + 6 * 0x1000 + 0x10, 0x10000000);
+    qtest_writel(s, DMA_BRIDGE + 0x020000 + 6 * 0x1000 + 0x04, 6);
+    qtest_writel(s, DMA_BRIDGE + 0x200 + 6 * 8 + 4,
+                 (1u << 19) | (1u << 12) | (0x10000000 >> 20));
+    qtest_writel(s, DMA_BRIDGE + 0x80 + 4, 8u << 20);
+    qtest_writel(s, WORD, mips_addiu(SN0_R_V0, SN0_R_ZERO, 1));
+    qtest_writel(s, WORD + 4,
+                 mips_branch(SN0_OPC_SW << 26, SN0_R_K0, SN0_R_V0, 0));
+    qtest_writel(s, WORD + 8, mips_branch(SN0_OPC_BEQ << 26, 0, 0, -3));
+    qtest_writel(s, WORD + 12, mips_nop());
+    qtest_writel(s, DMA_SOURCE, replacement);
+    qtest_writel(s, DMA_CARD + 0x14, 0xa0009000);
+    qtest_writel(s, DMA_CARD + 0x00, 0xa0008000);
+    qtest_writel(s, DMA_CARD + 0x04, sizeof(word));
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    g_assert_cmpuint(sn0_wait_word(s, 0, MAILBOX, 10), ==, 1);
+
+    qtest_writel(s, DMA_CARD + 0x0c, 2);
+    g_assert_cmpuint(qtest_readl(s, DMA_CARD + 0x28), ==, MEMTX_OK);
+    g_assert_cmphex(qtest_readl(s, WORD), ==, replacement);
+    deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+    do {
+        g_assert_true(qtest_memread_cpu(s, 0, MAILBOX, word, sizeof(word)));
+        seen = ldl_be_p(word);
+        if (seen == 2) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    g_assert_cmpuint(seen, ==, 2);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     static const HeartCPUCase cases[] = {
@@ -196,6 +263,7 @@ int main(int argc, char **argv)
     };
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("/heart/cpu/dma-code", test_dma_code);
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         unsigned cpu = 10000;
         g_autofree char *name = NULL;

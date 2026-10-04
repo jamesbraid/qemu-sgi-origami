@@ -491,6 +491,7 @@ static bool heart_ecc_dma_allowed(SGIHeartState *s, hwaddr address,
 
 typedef struct HeartECCRegion {
     MemoryRegion memory;
+    MemoryRegion packet_memory;
     bool mapped;
 } HeartECCRegion;
 
@@ -612,17 +613,49 @@ static int heart_ecc_range_compare(const void *a, const void *b)
     return left->base < right->base ? -1 : left->base > right->base;
 }
 
+/* Keep one scalar operation whole when it straddles a descriptor edge. */
+static void heart_packet_map_guards(SGIHeartState *s)
+{
+    for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
+        uint32_t d = s->descriptor[bank];
+        hwaddr base = HEART_RAM_BASE + (uint64_t)(d & 0x1ff) * HEART_UNIT;
+        hwaddr end = base + (uint64_t)(((d >> 16) & 0x3f) + 1) * HEART_UNIT;
+
+        for (unsigned edge = 0; edge < 2; edge++) {
+            unsigned index = bank * 2 + edge;
+            MemoryRegion *guard = &s->packet_guards[index];
+            hwaddr boundary = edge ? end : base;
+            hwaddr start = MAX(HEART_RAM_BASE, boundary - 8);
+
+            if (s->packet_guard_mapped[index]) {
+                memory_region_del_subregion(&s->packet, guard);
+                s->packet_guard_mapped[index] = false;
+            }
+            if (!(d & 0x80000000U)) {
+                continue;
+            }
+            memory_region_set_alias_offset(guard, start - HEART_RAM_BASE);
+            memory_region_set_size(guard, boundary + 8 - start);
+            memory_region_add_subregion_overlap(&s->packet, start, guard,
+                                                 HEART_BANKS + 2);
+            s->packet_guard_mapped[index] = true;
+        }
+    }
+}
+
 static void heart_ecc_map(SGIHeartState *s)
 {
     MemoryRegion *memory = s->cpu_memory ?: get_system_memory();
     g_autoptr(GArray) ranges = g_array_new(false, false, sizeof(HeartECCRange));
 
     memory_region_transaction_begin();
+    heart_packet_map_guards(s);
     for (unsigned i = 0; i < s->ecc_regions->len; i++) {
         HeartECCRegion *region = g_ptr_array_index(s->ecc_regions, i);
 
         if (region->mapped) {
             memory_region_del_subregion(memory, &region->memory);
+            memory_region_del_subregion(&s->packet, &region->packet_memory);
             region->mapped = false;
         }
     }
@@ -693,14 +726,26 @@ static void heart_ecc_map(SGIHeartState *s)
                                      "heart.ecc-alias", &s->ecc_memory,
                                      range.base - HEART_RAM_BASE,
                                      range.end - range.base);
+            memory_region_init_alias(&region->packet_memory, OBJECT(s),
+                                     "heart.packet-ecc-alias", &s->packet_ram,
+                                     range.base - HEART_RAM_BASE,
+                                     range.end - range.base);
             g_ptr_array_add(s->ecc_regions, region);
         } else {
             memory_region_set_alias_offset(&region->memory,
                                            range.base - HEART_RAM_BASE);
             memory_region_set_size(&region->memory, range.end - range.base);
+            memory_region_set_alias_offset(&region->packet_memory,
+                                           range.base - HEART_RAM_BASE);
+            memory_region_set_size(&region->packet_memory,
+                                    range.end - range.base);
         }
         memory_region_add_subregion_overlap(memory, range.base,
                                              &region->memory, HEART_BANKS + 1);
+        /* DMA must reject poison instead of using the CPU ECC response. */
+        memory_region_add_subregion_overlap(&s->packet, range.base,
+                                             &region->packet_memory,
+                                             HEART_BANKS + 1);
         region->mapped = true;
     }
     memory_region_transaction_commit();
@@ -717,6 +762,8 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
     for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
         if (s->mapped[bank][unit]) {
             memory_region_del_subregion(memory, &s->views[bank][unit]);
+            memory_region_del_subregion(&s->packet,
+                                         &s->packet_views[bank][unit]);
             s->mapped[bank][unit] = false;
         }
     }
@@ -726,10 +773,16 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
                 memory_region_set_alias_offset(&s->views[bank][unit],
                     heart_bank_offset(d, s->capacity[bank],
                                       (uint64_t)unit * HEART_UNIT));
+            } else {
+                memory_region_set_alias_offset(&s->packet_views[bank][unit],
+                    base + (uint64_t)unit * HEART_UNIT - HEART_RAM_BASE);
             }
             memory_region_add_subregion_overlap(memory,
                 base + (uint64_t)unit * HEART_UNIT,
                 &s->views[bank][unit], bank + 1);
+            memory_region_add_subregion_overlap(&s->packet,
+                base + (uint64_t)unit * HEART_UNIT,
+                &s->packet_views[bank][unit], bank + 1);
             s->mapped[bank][unit] = true;
         }
     }
@@ -738,10 +791,12 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
 
 static void heart_map_all(SGIHeartState *s)
 {
+    memory_region_transaction_begin();
     for (unsigned bank = 0; bank < HEART_BANKS; bank++) {
         heart_map_bank(s, bank);
     }
     heart_ecc_map(s);
+    memory_region_transaction_commit();
 }
 
 static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
@@ -828,20 +883,24 @@ static MemTxResult heart_write(void *opaque, hwaddr offset, uint64_t value,
         }
 
         if (size == 4) {
+            memory_region_transaction_begin();
             s->descriptor[n] = value;
             if (n < HEART_BANKS) {
                 heart_map_bank(s, n);
             }
             heart_ecc_map(s);
+            memory_region_transaction_commit();
             return MEMTX_OK;
         }
         if (size == 8 && !(n & 1)) {
+            memory_region_transaction_begin();
             s->descriptor[n] = value >> 32;
             s->descriptor[n + 1] = value;
             for (unsigned i = n; i < n + 2 && i < HEART_BANKS; i++) {
                 heart_map_bank(s, i);
             }
             heart_ecc_map(s);
+            memory_region_transaction_commit();
             return MEMTX_OK;
         }
     }
@@ -1074,6 +1133,8 @@ static void heart_realize(DeviceState *dev, Error **errp)
         for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
             g_autofree char *name = g_strdup_printf("heart.bank%u.unit%u",
                                                      bank, unit);
+            g_autofree char *packet_name =
+                g_strdup_printf("heart.packet-bank%u.unit%u", bank, unit);
 
             if (capacity) {
                 memory_region_init_alias(&s->views[bank][unit], OBJECT(dev),
@@ -1083,6 +1144,9 @@ static void heart_realize(DeviceState *dev, Error **errp)
                 memory_region_init_io(&s->views[bank][unit], OBJECT(dev),
                     &heart_absent_ops, s, name, HEART_UNIT);
             }
+            memory_region_init_alias(&s->packet_views[bank][unit], OBJECT(dev),
+                packet_name, capacity ? &s->views[bank][unit] : &s->packet_ram,
+                0, HEART_UNIT);
         }
     }
 }
@@ -1122,6 +1186,11 @@ static void heart_init(Object *obj)
     memory_region_init_io(&s->packet_ram, obj, &heart_packet_ram_ops, s,
                           "sgi-heart.packet-ram", HEART_RAM_PACKET_SIZE);
     memory_region_add_subregion(&s->packet, HEART_RAM_BASE, &s->packet_ram);
+    for (unsigned i = 0; i < ARRAY_SIZE(s->packet_guards); i++) {
+        memory_region_init_alias(&s->packet_guards[i], obj,
+                                 "heart.packet-boundary",
+                                 &s->packet_ram, 0, 16);
+    }
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->packet);
     qdev_init_gpio_out_named(DEVICE(obj), s->processor, "processor", 5);
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "onewire");
