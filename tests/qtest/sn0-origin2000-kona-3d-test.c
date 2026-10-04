@@ -4704,7 +4704,7 @@ static void test_texture_native_volume(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool linear = mode == 1, dma = mode == 2, missing = mode == 4;
-    bool mipmapped = mode >= 5;
+    bool mipmapped = mode == 5 || mode == 6;
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = missing ? kona_init_logged(&log) : qtest_init(MACHINE_ARGS);
     QTestState *from = NULL;
@@ -4761,7 +4761,20 @@ static void test_texture_native_volume(gconstpointer opaque)
     }
     kona_command(s, 0x24, (uint32_t[]) { 0x806f }, 1);
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
-    if (mipmapped) {
+    if (mode >= 7) {
+        bool enabled = mode == 7;
+
+        kona_command(s, enabled ? 0x24 : 0x25,
+                     (uint32_t[]) { 0x806f }, 1);
+        kona_command(s, 0xc9, (uint32_t[]) { 0x2000 }, 1);
+        assert_reply_posted(s);
+        kona_command(s, enabled ? 0x25 : 0x24,
+                     (uint32_t[]) { 0x806f }, 1);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+        kona_command_f(s, 0x84, (float[]) { 0.25, 0.25, 0.25 }, 3);
+        gl_triangle_z(s, tri, 0);
+        assert_stencil_colour(s, enabled ? 0xff0000 : 0xffffff);
+    } else if (mipmapped) {
         /* Only R varies; its native derivative must select the green mip. */
         gl_begin(s, 4);
         for (unsigned k = 0; k < 3; k++) {
@@ -6432,7 +6445,7 @@ static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
         0xb44, 0xbc0, 0xb71, 0xb90, 0xbe2, 0xbf1, 0xbf2, 0xb60,
-        0x8037, 0xde1, 0xbd0, 0x3000, 0xc11, 0xb41, 0xb42,
+        0x8037, 0xde1, 0x806f, 0xbd0, 0x3000, 0xc11, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
@@ -6941,7 +6954,7 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(5), test_texture_native_rgb);
     static const char *volume_cases[] = {
         "nearest", "linear", "dma", "migrate-partial", "missing-slice",
-        "mipmap-r", "mipmap-migrates",
+        "mipmap-r", "mipmap-migrates", "restore-enabled", "restore-disabled",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(volume_cases); mode++) {
