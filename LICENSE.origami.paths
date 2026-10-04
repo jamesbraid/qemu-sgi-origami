@@ -90,6 +90,7 @@ hw/mips/sgi/board-gigachannel.c
 hw/mips/sgi/board-pci-expansion.c
 hw/mips/sgi/board-pci-shoehorn.c
 hw/mips/sgi/initial-flash.c
+hw/mips/sgi/machine-storage.c
 hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
 hw/mips/sgi/models/fuel-vpro.yaml
@@ -294,6 +295,7 @@ include/hw/mips/sgi/net-cable.h
 include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
 include/hw/mips/sgi/sgi-machines.h
+include/hw/mips/sgi/sgi-storage.h
 include/hw/mips/sgi/sn-machine.h
 include/hw/mips/sgi/xio-widget.h
 include/hw/misc/sgi-bedrock-flash.h
