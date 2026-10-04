@@ -13998,7 +13998,7 @@ static void test_texture_native_1d(gconstpointer opaque)
 
 int main(int argc, char **argv)
 {
-    static const uint32_t bad_format[] = { 0, 0, 1, 1, 11, 1, 0 };
+    static const uint32_t bad_format[] = { 0, 0, 1, 1, 14, 1, 0 };
     static const uint32_t bad_type[] = { 0, 0, 1, 1, 4, 7, 0 };
     static const uint32_t too_large[] = { 0, 0, 5457, 1, 4, 1, 0 };
     static const uint32_t huge_width[] = {
