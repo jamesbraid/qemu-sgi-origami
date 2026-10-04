@@ -287,7 +287,7 @@ def _io_board(raw: dict) -> dict:
     if "system_timekeeper" in raw:
         board["system-timekeeper"] = _kebab_keys(raw["system_timekeeper"])
 
-    for key in ("ioc3_subsystem_id", "ioc3_subsystem_input", "mac_source"):
+    for key in ("ioc3_subsystem_id", "mac_source"):
         if key in raw:
             board[key.replace("_", "-")] = _kebab_keys(raw[key])
     if "pci_functions" in raw:
@@ -636,16 +636,15 @@ def _resources_for(topology: dict, harness: dict,
 
 
 def _hardware_inputs(topology: dict) -> list[dict]:
+    """Launch inputs this configuration binds by name. The family overrides
+    of catalogue board values (board-id-word and the rest) are machine
+    properties every SN product accepts, so they are not listed here.
+    """
     bindings = []
-    records = ([node.get("bedrock", {}) for node in topology["nodes"]]
-               + [controller.get("l1", {})
-                  for controller in topology["controllers"]]
-               + topology["io_boards"])
-    for record in records:
-        for field in ("board_id_input", "revision_input", "reported_type_input",
-                      "mac_eeprom_input", "ioc3_subsystem_input"):
-            if field in record:
-                bindings.append(dict(record[field]))
+    for controller in topology["controllers"]:
+        record = controller.get("l1", {})
+        if "mac_eeprom_input" in record:
+            bindings.append(dict(record["mac_eeprom_input"]))
     return sorted(bindings, key=lambda entry: entry["option"])
 
 

@@ -168,9 +168,9 @@ static const Recipe recipes[] = {
     { "octane", "-M octane -m 128M -cpu R10000", 0, NULL, 0x3000 },
     { "octane2", "-M octane2 -m 256M -cpu " OCTANE2_CPU,
       0, NULL, 0x3000 },
-    { "fuel", "-M fuel,fuel-board-id-word=0x4abc,"
-              "fuel-ioc3-subsystem-id=0xc30a,"
-              "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2",
+    { "fuel", "-M fuel,board-id-word=0x4abc,"
+              "ioc3-subsystem-id=0xc30a,"
+              "l1-type-code=0x61,bedrock-revision=0x2",
               0x1686a8, prepare_fuel },
 };
 

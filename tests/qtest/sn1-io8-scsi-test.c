@@ -234,8 +234,8 @@ static const MachineConfig origin300 = {
 
 /* Match sn1-fuel-test.c's explicit synthetic inputs, not factory records. */
 static const MachineConfig fuel = {
-    "-M fuel,fuel-board-id-word=0x4abc,fuel-ioc3-subsystem-id=0xc30a,"
-    "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+    "-M fuel,board-id-word=0x4abc,ioc3-subsystem-id=0xc30a,"
+    "l1-type-code=0x61,bedrock-revision=0x2 "
     "-cpu R14000 -smp 1 -m 512M",
     0x33,
 };

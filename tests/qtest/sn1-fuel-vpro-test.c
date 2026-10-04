@@ -83,9 +83,9 @@ static QTestState *fuel_start_profile(const char *topology,
         g_strdup_printf("-global sgi-odyssey.profile=%s", profile) :
         g_strdup("");
 
-    return qtest_initf("-M fuel,topology=%s,fuel-board-id-word=0x4abc,"
-                       "fuel-ioc3-subsystem-id=0xc30a,"
-                       "fuel-l1-type-code=0x61,fuel-bedrock-revision=0x2 "
+    return qtest_initf("-M fuel,topology=%s,board-id-word=0x4abc,"
+                       "ioc3-subsystem-id=0xc30a,"
+                       "l1-type-code=0x61,bedrock-revision=0x2 "
                        "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
                        topology, quoted, global);
 }

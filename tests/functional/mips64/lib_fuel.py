@@ -32,6 +32,14 @@ _REQUIRED_PROPERTIES = {
     'fuel-l1-type-code', 'fuel-bedrock-revision',
 }
 _OPTIONAL_PROPERTIES = {'fuel-l1-revision', 'fuel-rtc-decode'}
+# The pinned fixture predates the family machine properties.
+_PROPERTY_NAMES = {
+    'fuel-board-id-word': 'board-id-word',
+    'fuel-ioc3-subsystem-id': 'ioc3-subsystem-id',
+    'fuel-l1-type-code': 'l1-type-code',
+    'fuel-l1-revision': 'l1-revision',
+    'fuel-bedrock-revision': 'bedrock-revision',
+}
 _REQUIRED_PAYLOADS = {'prom', 'boot_flash', 'disk', 'fuel-mac-eeprom'}
 _IDENTITY_PAYLOADS = {'chassis-eeprom.0', 'board-eeprom.0'}
 _FIELDS = {
@@ -103,7 +111,7 @@ def launch_args(fixture, files, scratch):
     shutil.copyfile(files['boot_flash'], private_flash)
     # Preserve the pinned fixture while replacing its legacy RTC experiment.
     properties = [
-        f'{key}={value}'
+        f'{_PROPERTY_NAMES.get(key, key)}={value}'
         for key, value in sorted(fixture['machine_properties'].items())
         if key != 'fuel-rtc-decode'
     ]

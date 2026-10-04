@@ -336,10 +336,10 @@ static QTestState *fuel_parallel_start(char **prom_path, const char *extra)
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     quoted = g_shell_quote(*prom_path);
-    qts = qtest_initf("-M fuel,fuel-board-id-word=0x4abc,"
-                      "fuel-ioc3-subsystem-id=0xc30a,"
-                      "fuel-l1-type-code=0x61,"
-                      "fuel-bedrock-revision=0x2 "
+    qts = qtest_initf("-M fuel,board-id-word=0x4abc,"
+                      "ioc3-subsystem-id=0xc30a,"
+                      "l1-type-code=0x61,"
+                      "bedrock-revision=0x2 "
                       "-cpu R14000 -smp 1 -m 512M -bios %s -S %s",
                       quoted, extra);
 

@@ -802,23 +802,15 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 "sMDK discovery prerequisites must be unique diagnostic names")
     components = {c["id"]: c for c in model.get("components", [])}
     allowed = {
-        "bedrock_nodes": {"board_id_word", "board_id_input", "board_id_mask",
-                          "board_id_required_bits", "revision_input",
-                          "local_region",
+        "bedrock_nodes": {"board_id_word", "board_id_mask",
+                          "board_id_required_bits", "local_region",
                           "initiator_region", "installed_bank_mask"},
-        "l1_controllers": {"reported_type", "reported_type_input", "revision",
-                           "revision_input", "mac_eeprom_input"},
-        "io_boards": {"ioc3_subsystem_id", "ioc3_subsystem_input",
-                      "mac_source"},
+        "l1_controllers": {"reported_type", "revision", "mac_eeprom_input"},
+        "io_boards": {"ioc3_subsystem_id", "mac_source"},
         "pci_function_revisions": {"revision"},
     }
     bindings = {
-        ("bedrock_nodes", "board_id_input"): "fuel-board-id-word",
-        ("bedrock_nodes", "revision_input"): "fuel-bedrock-revision",
-        ("l1_controllers", "reported_type_input"): "fuel-l1-type-code",
-        ("l1_controllers", "revision_input"): "fuel-l1-revision",
         ("l1_controllers", "mac_eeprom_input"): "fuel-mac-eeprom",
-        ("io_boards", "ioc3_subsystem_input"): "fuel-ioc3-subsystem-id",
     }
     seen = set()
 
@@ -826,12 +818,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
         if type(value) is not int or not minimum <= value <= maximum:
             raise ResolutionError(
                 f"{label} must be an integer from {minimum} through {maximum}")
-
-    def known_or_required(entry, field, input_field, label):
-        if (field not in entry
-                and not entry.get(input_field, {}).get("required")):
-            raise ResolutionError(
-                f"{label} requires {field} or a required input")
 
     for section, fields in allowed.items():
         selected = emulation.get(section, {})
@@ -880,7 +866,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         f"input alias '{expected}' has multiple owners")
                 seen.add(expected)
             if section == "bedrock_nodes":
-                known_or_required(entry, "board_id_word", "board_id_input", cid)
                 if "board_id_word" in entry:
                     integer(entry["board_id_word"], (1 << 64) - 1,
                             f"'{cid}' board_id_word")
@@ -904,10 +889,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                 if "hardware_revision" in identity:
                     integer(identity["hardware_revision"], 15,
                             f"'{cid}' hardware_revision")
-                elif not entry.get("revision_input", {}).get("required"):
-                    raise ResolutionError(
-                        f"'{cid}' requires a Bedrock revision "
-                        "or required input")
                 integer(entry.get("local_region"), 63, f"'{cid}' local_region")
                 integer(entry.get("initiator_region"), 63,
                         f"'{cid}' initiator_region")
@@ -922,8 +903,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                     raise ResolutionError(
                         f"'{cid}' installed bank mask policy is invalid")
             elif section == "l1_controllers":
-                known_or_required(
-                    entry, "reported_type", "reported_type_input", cid)
                 if "reported_type" in entry:
                     integer(entry["reported_type"], 255,
                             f"'{cid}' reported_type", 1)
@@ -937,8 +916,6 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         integer(value, 2147483647,
                                 f"'{cid}' L1 revision {field}")
             elif section == "io_boards":
-                known_or_required(
-                    entry, "ioc3_subsystem_id", "ioc3_subsystem_input", cid)
                 if "ioc3_subsystem_id" in entry:
                     integer(entry["ioc3_subsystem_id"], 65535,
                             f"'{cid}' ioc3_subsystem_id")

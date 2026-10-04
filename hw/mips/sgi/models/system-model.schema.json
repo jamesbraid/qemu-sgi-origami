@@ -1315,11 +1315,6 @@
       "properties": {
         "option": {
           "enum": [
-            "fuel-board-id-word",
-            "fuel-bedrock-revision",
-            "fuel-l1-type-code",
-            "fuel-l1-revision",
-            "fuel-ioc3-subsystem-id",
             "fuel-mac-eeprom"
           ]
         },
@@ -1371,9 +1366,6 @@
           "minimum": 0,
           "maximum": 18446744073709551615
         },
-        "board_id_input": {
-          "$ref": "#/$defs/initialization-input"
-        },
         "board_id_mask": {
           "type": "integer",
           "minimum": 0,
@@ -1383,9 +1375,6 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 18446744073709551615
-        },
-        "revision_input": {
-          "$ref": "#/$defs/initialization-input"
         },
         "local_region": {
           "type": "integer",
@@ -1457,14 +1446,8 @@
           "minimum": 1,
           "maximum": 255
         },
-        "reported_type_input": {
-          "$ref": "#/$defs/initialization-input"
-        },
         "revision": {
           "$ref": "#/$defs/l1-revision"
-        },
-        "revision_input": {
-          "$ref": "#/$defs/initialization-input"
         },
         "mac_eeprom_input": {
           "$ref": "#/$defs/initialization-input"
@@ -1495,9 +1478,6 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 65535
-        },
-        "ioc3_subsystem_input": {
-          "$ref": "#/$defs/initialization-input"
         },
         "mac_source": {
           "enum": [
