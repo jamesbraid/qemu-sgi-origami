@@ -5769,8 +5769,8 @@ static void test_points_ignore_polygon_modes(void)
  * Smoothing parity with the scalar path. Under rules that do not smooth,
  * sgi_soft_draw() ignores the point, line and polygon enables and draws
  * aliased, and Mesa must draw the same pixels. Under rules that smooth,
- * the scalar path smooths points and lines, so those are refused before
- * the snapshot, but it never smooths polygons, so they still match.
+ * the scalar path smooths points, lines and polygons, so those are
+ * refused before the snapshot.
  */
 static void test_smoothing_parity(void)
 {
@@ -5808,7 +5808,10 @@ static void test_smoothing_parity(void)
                     ((enables[i].mode == SGI_GL_POINTS && enables[i].point) ||
                      (enables[i].mode >= SGI_GL_LINES &&
                       enables[i].mode <= SGI_GL_LINE_STRIP &&
-                      enables[i].line));
+                      enables[i].line) ||
+                     (enables[i].mode >= SGI_GL_TRIANGLES &&
+                      enables[i].mode <= SGI_GL_POLYGON &&
+                      enables[i].polygon));
                 g_autofree char *name = g_strdup_printf(
                     "%s rules mode %u point %d line %d polygon %d %s",
                     smooth_rules ? "smoothing" : "aliased", enables[i].mode,
