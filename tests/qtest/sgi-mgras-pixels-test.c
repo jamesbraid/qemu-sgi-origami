@@ -4943,6 +4943,63 @@ static void test_gl_pixels_captured_float_rgba_small_shapes(void)
     }
 }
 
+static void test_gl_pixels_captured_float_rgba_32x1(void)
+{
+    enum { WIDTH = 32 };
+    uint32_t components[WIDTH * 4];
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      3 + WIDTH, 6, 1);
+    gl_pixels_float_program(qts, true, false, 0x10, 0x204);
+    gl_pixels_draw(qts, WIDTH * 4);
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        uint8_t red = 16 + 13 * col;
+        uint8_t blue = 41 + 3 * col;
+
+        components[col * 4] = gl_bits((float)red / 255.0f);
+        components[col * 4 + 1] = gl_bits(23.0f / 255.0f);
+        components[col * 4 + 2] = gl_bits((float)blue / 255.0f);
+        components[col * 4 + 3] = gl_bits(1.0f);
+    }
+    gl_pixels_row(qts, 0, components, ARRAY_SIZE(components));
+    gl_pixels_fence(qts);
+
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        uint8_t red = 16 + 13 * col;
+        uint8_t blue = 41 + 3 * col;
+        uint32_t expected = (uint32_t)red << 16 | 23 << 8 | blue;
+
+        g_assert_cmphex(gl_window_pixel(qts, 4 + col, 6), ==, expected);
+    }
+    g_assert_cmphex(gl_window_pixel(qts, 4 + WIDTH, 6), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_gl_pixels_captured_float_rgba_32x1_bad_signature(void)
+{
+    enum { WIDTH = 32 };
+    uint32_t components[WIDTH * 4];
+
+    gl_pixels_context(qts, 0);
+    gl_pixels_program(qts, GL_PIX_4UB, WIDTH * 4, 4, 6,
+                      3 + WIDTH, 6, 1);
+    gl_pixels_float_program(qts, true, false, 0x10, 0x200);
+    gl_pixels_draw(qts, WIDTH * 4);
+    for (uint32_t col = 0; col < WIDTH; col++) {
+        components[col * 4] = gl_bits((float)(16 + 13 * col) / 255.0f);
+        components[col * 4 + 1] = gl_bits(23.0f / 255.0f);
+        components[col * 4 + 2] = gl_bits((float)(41 + 3 * col) / 255.0f);
+        components[col * 4 + 3] = gl_bits(1.0f);
+    }
+    gl_pixels_row(qts, 0, components, ARRAY_SIZE(components));
+    gl_pixels_fence(qts);
+
+    g_assert_cmphex(gl_window_pixel(qts, 4, 6), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, 4 + WIDTH - 1, 6), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
 static void test_gl_pixels_captured_float_rgba_wide_strips(void)
 {
     static const struct {
@@ -5266,6 +5323,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-pixels-captured-float-rgba-small-shapes",
                    test_gl_pixels_captured_float_rgba_small_shapes);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-pixels-captured-float-rgba-32x1",
+                   test_gl_pixels_captured_float_rgba_32x1);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "gl-pixels-captured-float-rgba-32x1-bad-signature",
+                   test_gl_pixels_captured_float_rgba_32x1_bad_signature);
     qtest_add_func("sn0/origin2000/mgras/"
                    "gl-pixels-captured-float-rgba-wide-strips",
                    test_gl_pixels_captured_float_rgba_wide_strips);

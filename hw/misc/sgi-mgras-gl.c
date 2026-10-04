@@ -3633,6 +3633,8 @@ static bool mgras_gl_pixels_captured_float_rgba(uint32_t width,
              unpack_first == 0) ||
             (width == 17 && height == 1 && row_words == pixels * 4 &&
              unpack_first == 8) ||
+            (width == 32 && height == 1 && row_words == pixels * 4 &&
+             unpack_first == 0x10) ||
             (width == 2 && height == 32 && row_words == 0x80 &&
              unpack_first == 0x10));
 }
