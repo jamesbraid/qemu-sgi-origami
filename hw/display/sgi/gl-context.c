@@ -2152,7 +2152,7 @@ typedef enum SGIGLPixelRectangleResult {
 static SGIGLPixelRectangleResult sgi_gl_pixel_rectangle(
     SGIGLContext *c, const SGIGLSink *sink, const char *call,
     uint32_t width, uint32_t height, float zoom_x, float zoom_y,
-    const SGIGLPixelTransfer *transfer, SGIRasterOp *op)
+    const SGIGLPixelTransfer *transfer, bool colour, SGIRasterOp *op)
 {
     const SGIGLDrawable *d = &c->cur.drawable;
 
@@ -2197,7 +2197,7 @@ static SGIGLPixelRectangleResult sgi_gl_pixel_rectangle(
         }
         op->pixels.transfer = *transfer;
     }
-    if (c->cur.index_bits) {
+    if (colour && c->cur.index_bits) {
         qemu_log_mask(LOG_UNIMP, "sgi-gl: colour-index "
                       "%s is unsupported; image dropped\n", call);
         return SGI_GL_PIXELS_REFUSED;
@@ -2231,7 +2231,7 @@ void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
     SGIRasterOp op;
 
     if (sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
-                               zoom_x, zoom_y, transfer, &op) !=
+                               zoom_x, zoom_y, transfer, true, &op) !=
         SGI_GL_PIXELS_READY) {
         return;
     }
@@ -2254,7 +2254,7 @@ static bool sgi_gl_draw_pixels_unquantized_transfer(
     uint64_t count = (uint64_t)width * height;
 
     result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
-                                    zoom_x, zoom_y, transfer, &op);
+                                    zoom_x, zoom_y, transfer, true, &op);
     if (result != SGI_GL_PIXELS_READY) {
         return result == SGI_GL_PIXELS_EMPTY;
     }
@@ -2304,6 +2304,28 @@ bool sgi_gl_draw_pixels_double_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                                    transfer);
 }
 
+bool sgi_gl_draw_pixels_stencil(SGIGLContext *c, const SGIGLSink *sink,
+                                 uint32_t width, uint32_t height,
+                                 const uint32_t *stencil, float zoom_x,
+                                 float zoom_y)
+{
+    SGIRasterOp op;
+    SGIGLPixelRectangleResult result;
+
+    result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
+                                    zoom_x, zoom_y, NULL, false, &op);
+    if (result != SGI_GL_PIXELS_READY) {
+        return result == SGI_GL_PIXELS_EMPTY;
+    }
+    if (!stencil) {
+        return false;
+    }
+    op.pixels.stencil = stencil;
+    op.ntargets = 0;
+    sink->raster(sink->opaque, &op);
+    return true;
+}
+
 bool sgi_gl_draw_pixels_depth_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                        uint32_t width, uint32_t height,
                                        const double *depth, float zoom_x,
@@ -2314,7 +2336,7 @@ bool sgi_gl_draw_pixels_depth_transfer(SGIGLContext *c, const SGIGLSink *sink,
     uint64_t count = (uint64_t)width * height;
 
     result = sgi_gl_pixel_rectangle(c, sink, "glDrawPixels", width, height,
-                                    zoom_x, zoom_y, NULL, &op);
+                                    zoom_x, zoom_y, NULL, true, &op);
     if (result != SGI_GL_PIXELS_READY) {
         return result == SGI_GL_PIXELS_EMPTY;
     }
@@ -2351,7 +2373,7 @@ bool sgi_gl_copy_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
     g_autofree uint32_t *pixels = NULL;
 
     result = sgi_gl_pixel_rectangle(c, sink, "glCopyPixels", width, height,
-                                    zoom_x, zoom_y, transfer, &op);
+                                    zoom_x, zoom_y, transfer, true, &op);
     if (result != SGI_GL_PIXELS_READY) {
         return result == SGI_GL_PIXELS_EMPTY;
     }

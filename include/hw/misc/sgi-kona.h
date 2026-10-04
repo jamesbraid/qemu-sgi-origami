@@ -325,6 +325,9 @@ typedef struct SGIKonaGLPixelTransfer {
     uint32_t bias[4];
     uint32_t depth_scale;
     uint32_t depth_bias;
+    uint32_t index_shift;
+    uint32_t index_offset;
+    uint32_t map_stencil;
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {
