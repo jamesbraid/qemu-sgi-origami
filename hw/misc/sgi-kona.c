@@ -2328,7 +2328,8 @@ static void sgi_kona_renderer_stop(SGIKonaState *s)
 }
 
 static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
-                                    SGIPlaneFormat format, int64_t x, int64_t y)
+                                    SGIPlaneFormat format, int64_t x, int64_t y,
+                                    unsigned width, unsigned height)
 {
     unsigned bpp = sgi_plane_bytes_per_pixel(format);
     uint64_t end;
@@ -2336,30 +2337,31 @@ static bool sgi_kona_renderer_plane(SGIKonaState *s, const SGIPlane *p,
     if (!p || p->format != format || !p->bottom_origin ||
         p->packing != (format == SGI_PLANE_RGB24 ? SGI_PACK_LE_RED_HIGH :
                                                     SGI_PACK_LE_RED_LOW) ||
-        x < 0 || y < 0 ||
-        x + SGI_RENDERER_SIZE > p->width ||
-        y + SGI_RENDERER_SIZE > p->height ||
+        x < 0 || y < 0 || !width || !height ||
+        x + width > p->width || y + height > p->height ||
         p->stride < (uint64_t)p->width * bpp ||
         p->base > s->mem.bytes_len || p->len > s->mem.bytes_len - p->base) {
         return false;
     }
-    end = (y + SGI_RENDERER_SIZE - 1) * p->stride +
-          (x + SGI_RENDERER_SIZE) * bpp;
+    end = (y + height - 1) * p->stride + (x + width) * bpp;
     return end <= p->len;
 }
 
 static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                                       const float *provoking,
+                                      const SGIClipRect *tile,
                                       SGIRendererRequest *request,
                                       SGIColourTarget *target)
 {
     const SGIGLDrawState *st = d->state;
     const SGIGLDrawable *drawable = &st->drawable;
     const uint32_t *visual;
-    const SGIClipRect *clip;
     int bank;
-    int64_t x = drawable->origin[0], y = drawable->origin[1];
-    bool outside_patch = false;
+    int64_t x = tile->x0, y = tile->y0;
+    unsigned width = tile->x1 - tile->x0 + 1;
+    unsigned height = tile->y1 - tile->y0 + 1;
+    int64_t tx = x - drawable->origin[0], ty = y - drawable->origin[1];
+    int64_t bounds[4] = { tx, ty, tx + width - 1, ty + height - 1 };
 
     if (d->context >= SGI_KONA_CONTEXTS ||
         d->context != s->context_current || !s->gl_grammar ||
@@ -2391,18 +2393,16 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     *target = st->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
                                                     drawable->back;
     bank = sgi_kona_target_bank(s, *target);
-    clip = &drawable->clip.r[0];
-    if (bank < 0 || clip->x0 > clip->x1 || clip->y0 > clip->y1 ||
-        clip->x1 < x || clip->y1 < y ||
-        clip->x0 > x + 127 || clip->y0 > y + 127 ||
+    if (bank < 0 || width > SGI_RENDERER_SIZE || height > SGI_RENDERER_SIZE ||
         !s->mem.bytes || s->mem.pages || !s->scanout.dirty ||
-        y < 0 || y + 128 > s->scanout.frame_height ||
+        x < 0 || y < 0 || x + width > s->scanout.frame_width ||
+        y + height > s->scanout.frame_height ||
         !sgi_kona_renderer_plane(s, sgi_kona_plane(s,
                                    sgi_kona_bank_plane(s, bank)),
-                                  SGI_PLANE_RGB24, x, y) ||
+                                  SGI_PLANE_RGB24, x, y, width, height) ||
         !sgi_kona_renderer_plane(s, sgi_kona_plane(s,
                                    sgi_kona_bank_tag_plane(s, bank)),
-                                  SGI_PLANE_TAG, x, y)) {
+                                  SGI_PLANE_TAG, x, y, width, height)) {
         return false;
     }
     if (st->shade_model != SGI_GL_FLAT ||
@@ -2446,16 +2446,10 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                 fabs(position) > SGI_RENDERER_COORD_LIMIT) {
                 return false;
             }
-            outside_patch |= position < 0 || position > SGI_RENDERER_SIZE;
             request->vertices[i][axis] = round(position * 256) / 256;
         }
         request->vertices[i][2] = 0;
         request->vertices[i][3] = 1;
-    }
-    /* Geometry outside staging is safe only when all owned pixels fit. */
-    if (outside_patch && (clip->x0 < x || clip->y0 < y ||
-                          clip->x1 > x + 127 || clip->y1 > y + 127)) {
-        return false;
     }
     if (provoking[SGI_GL_V_COLOR + 3] != 1) {
         return false;
@@ -2468,30 +2462,16 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         }
         request->rgb[c] = floor(CLAMP((double)colour, 0, 1) * 255 + 0.5);
     }
-    request->clip[0] = MAX((int64_t)clip->x0 - x, 0);
-    request->clip[1] = MAX((int64_t)clip->y0 - y, 0);
-    request->clip[2] = MIN((int64_t)clip->x1 - x, 127);
-    request->clip[3] = MIN((int64_t)clip->y1 - y, 127);
     if (st->scissor_test) {
-        int64_t x0 = MAX(request->clip[0], st->scissor[0]);
-        int64_t y0 = MAX(request->clip[1], st->scissor[1]);
-        int64_t x1 = MIN(request->clip[2],
+        bounds[0] = MAX(bounds[0], st->scissor[0]);
+        bounds[1] = MAX(bounds[1], st->scissor[1]);
+        bounds[2] = MIN(bounds[2],
                          (int64_t)st->scissor[0] + st->scissor[2] - 1);
-        int64_t y1 = MIN(request->clip[3],
+        bounds[3] = MIN(bounds[3],
                          (int64_t)st->scissor[1] + st->scissor[3] - 1);
-
-        if (x0 > x1 || y0 > y1) {
-            request->clip[0] = request->clip[1] = 0;
-            request->clip[2] = request->clip[3] = -1;
-        } else {
-            request->clip[0] = x0;
-            request->clip[1] = y0;
-            request->clip[2] = x1;
-            request->clip[3] = y1;
-        }
     }
     request->generation = s->renderer_generation;
-    return sgi_renderer_request_valid(request);
+    return sgi_renderer_request_tile(request, tx, ty, width, height, bounds);
 }
 
 static unsigned sgi_kona_renderer_count(const SGIGLDraw *d)
@@ -2529,11 +2509,29 @@ static void sgi_kona_renderer_indices(const SGIGLDraw *d, unsigned piece,
     }
 }
 
+static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
+                                         unsigned columns, unsigned index)
+{
+    SGIClipRect tile = {
+        .x0 = bounds->x0 + index % columns * SGI_RENDERER_SIZE,
+        .y0 = bounds->y0 + index / columns * SGI_RENDERER_SIZE,
+    };
+
+    tile.x1 = MIN((int64_t)tile.x0 + SGI_RENDERER_SIZE - 1, bounds->x1);
+    tile.y1 = MIN((int64_t)tile.y0 + SGI_RENDERER_SIZE - 1, bounds->y1);
+    return tile;
+}
+
 static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
 {
     SGIRendererRequest *requests;
     SGIColourTarget target;
-    unsigned indices[4], count;
+    const SGIGLDrawable *drawable = &d->state->drawable;
+    const SGIPlane *plane;
+    SGIClipRect bounds;
+    unsigned indices[4], count, columns, rows, tiles;
+    uint64_t tile_count;
+    int bank;
     SGIGLDraw triangle = *d;
     float vertices[3][SGI_GL_VERTEX_FLOATS];
     Error *err = NULL;
@@ -2545,10 +2543,37 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     assert(bql_locked());
     s->renderer_fallbacks++;
     count = sgi_kona_renderer_count(d);
-    /* Bound host staging to 256 triangles. Larger draws use software. */
-    if (s->renderer_failed || !count || count > 256) {
+    if (s->renderer_failed || !count || count > 256 ||
+        drawable->bound != 1 || drawable->clip.n != 1 || drawable->clip.empty) {
         return false;
     }
+    target = d->state->draw_buffers == SGI_GL_DRAW_FRONT ? drawable->front :
+                                                         drawable->back;
+    bank = sgi_kona_target_bank(s, target);
+    if (bank < 0) {
+        return false;
+    }
+    plane = sgi_kona_plane(s, sgi_kona_bank_plane(s, bank));
+    if (!plane) {
+        return false;
+    }
+    bounds = drawable->clip.r[0];
+    bounds.x0 = MAX(bounds.x0, 0);
+    bounds.y0 = MAX(bounds.y0, 0);
+    bounds.x1 = MIN((int64_t)bounds.x1, (int64_t)plane->width - 1);
+    bounds.y1 = MIN((int64_t)bounds.y1, (int64_t)plane->height - 1);
+    if (bounds.x0 > bounds.x1 || bounds.y0 > bounds.y1) {
+        return false;
+    }
+    columns = DIV_ROUND_UP(bounds.x1 - bounds.x0 + 1, SGI_RENDERER_SIZE);
+    rows = DIV_ROUND_UP(bounds.y1 - bounds.y0 + 1, SGI_RENDERER_SIZE);
+    tile_count = (uint64_t)columns * rows;
+    /* Bound staging across all triangles and tiles before allocating. */
+    if (tile_count > 256 / count) {
+        return false;
+    }
+    tiles = tile_count;
+    count *= tiles;
     requests = g_try_new0(SGIRendererRequest, count);
     if (!requests) {
         s->renderer_failed = true;
@@ -2559,15 +2584,16 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     triangle.vertices = &vertices[0][0];
     for (unsigned i = 0; i < count; i++) {
         const float *provoking;
+        SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
 
-        sgi_kona_renderer_indices(d, i, indices);
+        sgi_kona_renderer_indices(d, i / tiles, indices);
         provoking = d->vertices + indices[3] * SGI_GL_VERTEX_FLOATS;
         for (unsigned v = 0; v < 3; v++) {
             memcpy(vertices[v], d->vertices +
                                 indices[v] * SGI_GL_VERTEX_FLOATS,
                    sizeof(vertices[v]));
         }
-        if (!sgi_kona_renderer_request(s, &triangle, provoking,
+        if (!sgi_kona_renderer_request(s, &triangle, provoking, &tile,
                                        &requests[i], &target)) {
             goto out;
         }
@@ -2587,6 +2613,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     /* Commit only complete batches, so fallback cannot replay a prefix. */
     for (unsigned i = 0; i < count; i++) {
         SGIRendererRequest *request = &requests[i];
+        SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
 
         assert(request->generation == s->renderer_generation);
         for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
@@ -2596,8 +2623,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
 
                 if (pixel[3]) {
                     sgi_kona_gl_store_colour(s, target,
-                        d->state->drawable.origin[0] + x,
-                        d->state->drawable.origin[1] + y,
+                        tile.x0 + x, tile.y0 + y,
                         (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]);
                 }
             }
