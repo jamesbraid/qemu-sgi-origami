@@ -38,7 +38,6 @@
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
-#include "hw/core/loader.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -71,6 +70,7 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sgi/net-cable.h"
@@ -3269,15 +3269,15 @@ static void sgi_machine_configure_flash(const SGIMachineClass *smc,
 static bool sgi_machine_load_bedrock_flash(MachineState *machine,
                                            SGIMachineState *s, Error **errp)
 {
-    g_autoptr(GError) local_error = NULL;
-    g_autofree char *contents = NULL;
+    SN1NodeState *first = SN1_NODE(s->bedrock_nodes[0]);
+    g_autoptr(SGIPromImage) image = NULL;
     g_autofree char *path = NULL;
-    gsize length;
+    const uint8_t *contents;
+    size_t length;
     unsigned int node_index;
 
     if (!machine->firmware) {
-        error_setg(errp,
-                   "%s requires -bios with a raw stock PROM payload",
+        error_setg(errp, "%s requires -bios with a stock PROM image",
                    MACHINE_GET_CLASS(machine)->name);
         return false;
     }
@@ -3287,18 +3287,17 @@ static bool sgi_machine_load_bedrock_flash(MachineState *machine,
                   MACHINE_GET_CLASS(machine)->name, machine->firmware);
         return false;
     }
-    if (!g_file_get_contents(path, &contents, &length, &local_error)) {
-        error_setg(errp, "%s: cannot read PROM image '%s': %s",
-                  MACHINE_GET_CLASS(machine)->name, machine->firmware,
-                  local_error->message);
+    image = sgi_prom_image_load(path, first->model_node->flash->size, errp);
+    if (!image) {
         return false;
     }
+    contents = g_bytes_get_data(image->payload, &length);
 
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
 
-        if (!sn1_node_attach_prom(node, node_index, (const uint8_t *)contents,
-                                  length, errp)) {
+        if (!sn1_node_attach_prom(node, node_index, contents, length,
+                                  errp)) {
             return false;
         }
     }
@@ -3333,26 +3332,21 @@ static bool sgi_machine_load_flash(MachineState *machine,
     if (machine->firmware) {
         g_autofree char *path =
             qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-        int64_t image_size = path ? get_image_size(path, NULL) : -1;
-        ssize_t size;
+        g_autoptr(SGIPromImage) image = NULL;
+        const uint8_t *payload;
+        size_t length;
 
-        if (image_size < 0) {
+        if (!path) {
             error_setg(errp, "%s: cannot read the firmware image '%s'",
                       MACHINE_GET_CLASS(machine)->name, machine->firmware);
             return false;
         }
-        if ((uint64_t)image_size > flash_size) {
-            error_setg(errp, "%s: firmware image '%s' exceeds flash "
-                      "capacity", MACHINE_GET_CLASS(machine)->name,
-                      machine->firmware);
+        image = sgi_prom_image_load(path, flash_size, errp);
+        if (!image) {
             return false;
         }
-        size = load_image_size(path, flash, flash_size);
-        if (size != image_size) {
-            error_setg(errp, "%s: cannot load firmware image '%s'",
-                      MACHINE_GET_CLASS(machine)->name, machine->firmware);
-            return false;
-        }
+        payload = g_bytes_get_data(image->payload, &length);
+        memcpy(flash, payload, length);
     }
     sgi_machine_configure_flash(smc, flash);
     for (node_index = 0; node_index < s->num_nodes; node_index++) {

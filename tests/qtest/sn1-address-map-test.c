@@ -14,6 +14,7 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include "sgi-migrate.h"
+#include "sgi-prom-container.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -3559,6 +3560,58 @@ static void test_boot_flash_nonraw_image(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/*
+ * -bios takes the stock PROM in SGI's distribution container too. The
+ * machine must place the decoded payload, so its first, configuration and
+ * last bytes answer at every PROM view, and its exact-size rule must apply
+ * to the payload rather than to the larger file.
+ */
+static void test_prom_container_payload(const void *data)
+{
+    static const uint64_t views[] = {
+        PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
+    };
+    static const struct {
+        uint64_t offset;
+        uint8_t value;
+    } probes[] = {
+        { 0, 0x4c },
+        { PROM_CONFIG_OFFSET, 0x5d },
+        { PROM_SIZE - 1, 0x6e },
+    };
+    g_autofree uint8_t *payload = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    g_autofree char *short_path = NULL;
+    const char *short_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", NULL, "-display", "none",
+        NULL,
+    };
+    QTestState *qts;
+
+    payload[0] = probes[0].value;
+    payload[PROM_CONFIG_OFFSET] = probes[1].value;
+    payload[PROM_SIZE - 1] = probes[2].value;
+    path = sgi_prom_container_write(payload, PROM_SIZE,
+                                    "sn1-container-prom-XXXXXX.img");
+    qts = machine_start_with(path, "-S");
+    for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
+        for (size_t j = 0; j < ARRAY_SIZE(probes); j++) {
+            g_assert_cmphex(qtest_readb(qts, views[i] + probes[j].offset), ==,
+                            probes[j].value);
+        }
+    }
+    qtest_quit(qts);
+
+    short_path = sgi_prom_container_write(payload, PROM_SIZE - 1,
+                                          "sn1-short-container-XXXXXX.img");
+    short_args[8] = short_path;
+    assert_qemu_rejects(short_args, "must be exactly 1476264 bytes");
+
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(short_path), ==, 0);
+}
+
 static void test_prom_size_is_exact(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -3599,7 +3652,7 @@ static void test_prom_size_is_exact(const void *data)
 
     assert_qemu_rejects(empty_args, "must be exactly 1476264 bytes");
     assert_qemu_rejects(short_args, "must be exactly 1476264 bytes");
-    assert_qemu_rejects(long_args, "must be exactly 1476264 bytes");
+    assert_qemu_rejects(long_args, "exceeds flash capacity");
 
     g_assert_cmpint(g_unlink(empty), ==, 0);
     g_assert_cmpint(g_unlink(short_path), ==, 0);
@@ -4397,6 +4450,8 @@ int main(int argc, char **argv)
                         test_boot_flash_migration);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,
                         test_prom_size_is_exact);
+    qtest_add_data_func("sn1/address-map/prom-container-payload", NULL,
+                        test_prom_container_payload);
     qtest_add_data_func("sn1/address-map/boot-flash-image-contract", NULL,
                         test_boot_flash_image_contract);
     qtest_add_data_func("sn1/address-map/boot-flash-nonraw-image", NULL,

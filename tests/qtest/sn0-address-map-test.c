@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sgi-prom-container.h"
 #include "sgi-test.h"
 #include "sgi-wait.h"
 
@@ -159,13 +160,34 @@ static void test_flash_three_views(const void *data)
 static void test_flash_configure_patches_model_fields(const void *data)
 {
     g_autofree char *path = write_config_block_fixture();
-    g_autofree char *args = g_strdup_printf("-M origin200 -bios %s", path);
-    QTestState *qts = qtest_init(args);
+    g_autofree char *args = NULL;
     /* The fixture is all zero except the eight magic bytes "ip27conf". */
     uint8_t sum = (uint8_t)(0x69 + 0x70 + 0x32 + 0x37 +
                             0x63 + 0x6f + 0x6e + 0x66);
+    QTestState *qts;
     int i;
 
+    /*
+     * With @data set, -bios names the same fixture wrapped in an SGI
+     * distribution container: the machine must patch the decoded payload
+     * exactly as it patches the raw image, not copy the container header.
+     */
+    if (data) {
+        g_autofree char *raw = path;
+        g_autofree char *contents = NULL;
+        gsize length;
+
+        g_assert_true(g_file_get_contents(raw, &contents, &length, NULL));
+        path = sgi_prom_container_write((const uint8_t *)contents, length,
+                                        "sn0-address-map-wrapped-XXXXXX.img");
+        unlink(raw);
+    }
+    args = g_strdup_printf("-M origin200 -bios %s", path);
+    qts = qtest_init(args);
+    unlink(path);
+
+    g_assert_cmphex(qtest_readq(qts, FLASH_RESET + CONFIG_OFFSET +
+                                FIELD_MAGIC), ==, CONFIG_MAGIC);
     g_assert_cmphex(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
                                 FIELD_FPROM_CYC), ==, 15);
     g_assert_cmphex(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
@@ -1601,6 +1623,9 @@ int main(int argc, char **argv)
                         test_flash_three_views);
     qtest_add_data_func("sn0/address-map/flash-configure-patches-model-fields",
                         NULL, test_flash_configure_patches_model_fields);
+    qtest_add_data_func(
+        "sn0/address-map/flash-configure-patches-container-payload",
+        "container", test_flash_configure_patches_model_fields);
     qtest_add_data_func("sn0/address-map/dual-node-boot-windows", NULL,
                         test_dual_node_boot_windows);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,
