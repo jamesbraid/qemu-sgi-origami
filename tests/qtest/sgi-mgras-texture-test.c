@@ -702,6 +702,7 @@ static void test_gl_texture_pixel_rgba_nearest(gconstpointer data)
     tex_bind(t, TEX_TEXMODE1_ON, TEX_TEXMODE2_RGBA8);
     tex_record(t, TEX_TXSIZE, TEX_TXSIZE_2X2);
     tex_record(t, TEX_TXCLAMPSIZE, 0x4002);
+    tex_record(t, 0x18a, TEX_MDDMA_PIXEL_ON);
 
     /* These GE parameter loads precede the public pixel-texture draw. */
     gl_ge_load(t, GL_GE_ERAM, 0x187, pixel_texgen_state,
@@ -722,6 +723,7 @@ static void test_gl_texture_pixel_rgba_nearest(gconstpointer data)
     gl_word(t, 0x4fc5);
     gl_word(t, 0x98);
     gl_pixels_dma_on(t, 0, pixels, sizeof(pixels), 8, 2, 8, 0xa7);
+    tex_record(t, 0x18a, TEX_MDDMA_PIXEL_OFF);
     gl_pixels_fence(t);
 
     for (uint32_t i = 0; i < ARRAY_SIZE(expected); i++) {
