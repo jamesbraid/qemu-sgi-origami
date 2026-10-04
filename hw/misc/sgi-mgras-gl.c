@@ -4141,6 +4141,16 @@ static bool mgras_gl_pixels_block(SGIMgrasState *s, uint32_t header)
     if (!px->active || px->dma_only || px->apart) {
         return false;
     }
+    if (px->format == MGRAS_GL_PIXELS_FORMATS) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-mgras: rejected pixel block context=%u slot=0x%x "
+                      "w=%u h=%u row=%u col=%u active=%u dma_only=%u "
+                      "apart=%u offset=%u bytes=%u words=%u\n",
+                      s->gl_current, s->gl_slot[s->gl_current], px->w, px->h,
+                      px->row, px->col, px->active, px->dma_only, px->apart,
+                      offset, bytes,
+                      (unsigned int)DIV_ROUND_UP(bytes, sizeof(uint32_t)));
+    }
     /*
      * The row's length counts the offset's word (0xd967118-0xd967140):
      * the words sent, not the bytes after the offset.
