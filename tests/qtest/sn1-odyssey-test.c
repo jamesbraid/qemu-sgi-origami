@@ -11953,7 +11953,7 @@ static void test_texture_adapter_linear_r(void)
 }
 
 /* Captured combined selectors and planes, with an original synthetic volume. */
-static void test_texture_adapter_linear_strq(void)
+static void texture_adapter_linear_strq(bool t_enabled)
 {
     const uint32_t matrix[16] = {
         0x3f800000, 0, 0, 0,
@@ -11961,7 +11961,7 @@ static void test_texture_adapter_linear_strq(void)
         0x80000000, 0x80000000, 0x4f7fffc0, 0xcf7fffc0,
         0, 0, 0, 0x3f800000,
     };
-    const uint32_t setup[] = {
+    const uint32_t setup_a[] = {
         0x28008000, 0x600080f3, 0x28008001, 0x6000810c,
         0x28008002, 0x60008033, 0x28008003, 0x6000804d,
         0x28008004, 0x60008057, 0x28008005, 0x60008061,
@@ -11974,6 +11974,19 @@ static void test_texture_adapter_linear_strq(void)
         0x3100810c, 0x908091bb, 0x3c000000, 0, 0, 0x3f000000,
         0x31008000,
         0x33008001, 0x290080f3, 0x2a008100, 0x2c00810c,
+    };
+    const uint32_t setup_b[] = {
+        0x28008000, 0x600080f3, 0x28008001, 0x6000810c,
+        0x28008002, 0x60008033, 0x28008003, 0x6000804d,
+        0x28008004, 0x60008061, 0x28008005, 0x60008066,
+        0x28008006, 0x6000806c, 0x28008007, 0x60008077,
+        0x28008008, 0x6080809a, 0x28008009, 0x60008203,
+        0x2800800a, 0x608080c5,
+        0x31008100, 0x908091bb, 0x3d000000, 0, 0, 0xbf800000,
+        0x31008108, 0x908091bb, 0, 0x3d000000, 0, 0xbf800000,
+        0x3100810c, 0x908091bb, 0, 0x3c000000, 0, 0x3f000000,
+        0x31008000,
+        0x3300800a, 0x33008001, 0x290080f3, 0x2a008100, 0x2c00810c,
     };
     const uint32_t quad[] = {
         0x00014400, 7,
@@ -11999,17 +12012,27 @@ static void test_texture_adapter_linear_strq(void)
     push_window_transform(qts, matrix);
     push_block_16(qts, 0xbf800000);
     texture_adapter_bind_3d(qts, 0x16a800, 2, 4, 2, 1, 1);
-    push_user_words(qts, query_texture_4f[0], 5);
-    push_user_words(qts, setup, ARRAY_SIZE(setup));
+    push_user_words(qts, query_texture_4f[t_enabled ? 0 : 1], 5);
+    if (t_enabled) {
+        push_user_words(qts, setup_a, ARRAY_SIZE(setup_a));
+    } else {
+        /* Retain the earlier A plane while B leaves T generation disabled. */
+        push_user_words(qts, (uint32_t[]) {
+            0x31008104, 0x908091bb, 0, 0x3c800000, 0, 0xbf000000,
+        }, 6);
+        push_user_words(qts, setup_b, ARRAY_SIZE(setup_b));
+    }
     push_user_words(qts, quad, ARRAY_SIZE(quad));
     for (unsigned y = 32; y < 96; y++) {
         for (unsigned x = 32; x < 96; x++) {
             /* Public linear planes evaluated at the pixel's object position. */
             double px = x + 0.5, py = 127.99609375 - (y + 0.5);
-            double q = px / 128 + 0.5;
-            double str[3] = { (px / 64 - 0.5) / q,
-                              (py / 64 - 0.5) / q,
-                              (px / 32 - 1) / q };
+            double q = (t_enabled ? px : py) / 128 + 0.5;
+            double str[3] = {
+                (t_enabled ? px / 64 - 0.5 : px / 32 - 1) / q,
+                (t_enabled ? py / 64 - 0.5 : 0.75) / q,
+                ((t_enabled ? px : py) / 32 - 1) / q,
+            };
             unsigned s_coord = (unsigned)floor(str[0] * 2) % 2;
             unsigned t_coord = (unsigned)floor(str[1] * 2) % 2;
             unsigned r_coord = (unsigned)floor(str[2] * 4) % 4;
@@ -12025,11 +12048,23 @@ static void test_texture_adapter_linear_strq(void)
             }
         }
     }
-    g_test_message("combined STRQ mismatches %u/4096", mismatches);
+    g_test_message("combined %s mismatches %u/4096",
+                   t_enabled ? "STRQ" : "SRQ", mismatches);
     /* Generated values must leave the explicit current coordinate intact. */
-    texture_current_query(qts, query_texture_4f[0], 5, 2, 5, 1);
+    texture_current_query(qts, query_texture_4f[t_enabled ? 0 : 1],
+                          5, 2, 5, 1);
     qtest_quit(qts);
     g_assert_cmpuint(mismatches, ==, 0);
+}
+
+static void test_texture_adapter_linear_strq(void)
+{
+    texture_adapter_linear_strq(true);
+}
+
+static void test_texture_adapter_linear_srq(void)
+{
+    texture_adapter_linear_strq(false);
 }
 
 static void test_texture_adapter_linear_q(void)
@@ -15182,6 +15217,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_level_zero_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-r",
                    test_texture_adapter_linear_r);
+    qtest_add_func("sn1/odyssey/texture-adapter/linear-srq",
+                   test_texture_adapter_linear_srq);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-strq",
                    test_texture_adapter_linear_strq);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-q",
