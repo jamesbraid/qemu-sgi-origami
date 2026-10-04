@@ -16,6 +16,9 @@ typedef struct Expected {
 } Expected;
 
 static const Expected subset[] = {
+    { 0x34, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
+    { 0x35, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
+    { 0x36, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0xc71 },
     { 0x17b, SGI_KONA_GL_LAYOUT_ESTABLISHED, 14, 0 },
     { 0x17c, SGI_KONA_GL_LAYOUT_ESTABLISHED, 4, 0 },
     { 0x179, SGI_KONA_GL_LAYOUT_ESTABLISHED, 22, 0 },

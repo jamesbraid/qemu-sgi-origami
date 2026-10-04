@@ -272,6 +272,9 @@ extern const unsigned sgi_kona_doorbell_num_selectors;
 #define SGI_KONA_CMD_GL_PIXEL_ZOOM 0x2f
 #define SGI_KONA_CMD_GL_PIXEL_TRANSFER 0x30
 #define SGI_KONA_CMD_GL_PIXEL_STORE 0x33
+#define SGI_KONA_CMD_GL_PIXEL_MAP_F 0x34
+#define SGI_KONA_CMD_GL_PIXEL_MAP_UI 0x35
+#define SGI_KONA_CMD_GL_PIXEL_MAP_US 0x36
 #define SGI_KONA_CMD_GL_READ_BUFFER 0x37
 #define SGI_KONA_CMD_GL_CLIP_PLANE  0xb4
 #define SGI_KONA_CMD_GL_CULL_FACE   0xb6

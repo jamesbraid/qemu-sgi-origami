@@ -320,6 +320,21 @@ typedef struct SGIKonaGLPixelZoom {
     bool unsupported;
 } SGIKonaGLPixelZoom;
 
+#define SGI_KONA_GL_PIXEL_MAP_MAX 4096
+
+typedef struct SGIKonaGLPixelMap {
+    uint32_t count;
+    uint32_t values[SGI_KONA_GL_PIXEL_MAP_MAX];
+} SGIKonaGLPixelMap;
+
+typedef struct SGIKonaGLPixelMapUpload {
+    uint32_t header[4];
+    uint32_t token;
+    uint32_t context;
+    bool refused;
+    uint32_t values[SGI_KONA_GL_PIXEL_MAP_MAX];
+} SGIKonaGLPixelMapUpload;
+
 typedef struct SGIKonaGLPixelTransfer {
     uint32_t scale[4];
     uint32_t bias[4];
@@ -328,6 +343,7 @@ typedef struct SGIKonaGLPixelTransfer {
     uint32_t index_shift;
     uint32_t index_offset;
     uint32_t map_stencil;
+    SGIKonaGLPixelMap stencil_map;
 } SGIKonaGLPixelTransfer;
 
 typedef struct SGIKonaGLPipe {
@@ -963,6 +979,7 @@ struct SGIKonaState {
     SGIKonaTextureState textures;
     SGIKonaTextureUpload texture_upload;
     SGIKonaGLBitmapUpload gl_bitmap_upload;
+    SGIKonaGLPixelMapUpload gl_map_upload;
     SGIKonaGLImageUpload gl_image_upload;
     uint32_t texture_bind[5];
     uint32_t texture_record[22];

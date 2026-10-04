@@ -1234,6 +1234,10 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
         (fresh || s->context_current != slot)) {
         s->gl_bitmap_upload.refused = true;
     }
+    if (s->gl_map_upload.header[1] &&
+        (fresh || s->context_current != slot)) {
+        s->gl_map_upload.refused = true;
+    }
     if (fresh) {
         sgi_kona_gl_reset_context(s, slot);
     }
@@ -1415,6 +1419,7 @@ static void sgi_kona_context_deactivate(SGIKonaState *s, uint32_t index)
     if (s->gl_bitmap_upload.count) {
         s->gl_bitmap_upload.refused = true;
     }
+    s->gl_map_upload.refused = true;
     s->context_current = SGI_KONA_CONTEXT_NONE;
     s->context_page_pending = false;
     sgi_kona_post_reason(s, SGI_KONA_CMD_CONTEXT_DEACTIVATE,
@@ -3580,14 +3585,21 @@ static bool sgi_kona_gl_stencil_index(const SGIKonaGLPipe *p, double index,
     double rounded_shift = floor((double)shift + 0.5);
     double rounded_offset = floor((double)offset + 0.5);
 
-    if (p->pixel_transfer.map_stencil ||
-        !isfinite(shift) || !isfinite(offset) ||
+    if (!isfinite(shift) || !isfinite(offset) ||
         rounded_shift < INT32_MIN || rounded_shift > INT32_MAX ||
         rounded_offset < INT32_MIN || rounded_offset > INT32_MAX) {
         return false;
     }
-    return sgi_kona_gl_pixel_index_transfer(index, rounded_shift,
-                                             rounded_offset, out);
+    if (!sgi_kona_gl_pixel_index_transfer(index, rounded_shift,
+                                           rounded_offset, out)) {
+        return false;
+    }
+    if (p->pixel_transfer.map_stencil) {
+        const SGIKonaGLPixelMap *map = &p->pixel_transfer.stencil_map;
+
+        *out = map->count ? map->values[*out & (map->count - 1)] : 0;
+    }
+    return true;
 }
 
 typedef struct SGIKonaGLCopySource {
@@ -4894,6 +4906,11 @@ static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
     if (token != SGI_KONA_CMD_GL_BITMAP_INLINE) {
         memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
     }
+    if (token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
+        token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
+        token != SGI_KONA_CMD_GL_PIXEL_MAP_US) {
+        memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
+    }
     s->gl_data_token = token;
     s->gl_data_remaining = words;
     s->gl_data_have = 0;
@@ -4929,6 +4946,10 @@ static void sgi_kona_gl_data_word(SGIKonaState *s, uint32_t word)
         s->gl_image_upload.count &&
         !s->gl_image_upload.refused) {
         s->gl_image_upload.words[s->gl_data_have] = word;
+    }
+    if (s->gl_map_upload.header[1] && !s->gl_map_upload.refused &&
+        s->gl_data_have < SGI_KONA_GL_PIXEL_MAP_MAX) {
+        s->gl_map_upload.values[s->gl_data_have] = word;
     }
     s->gl_data_have++;
     if (--s->gl_data_remaining == 0) {
@@ -5721,6 +5742,77 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
     }
 }
 
+static bool sgi_kona_gl_pixel_map_header(const uint32_t *a)
+{
+    return a[0] == 0xc71 && a[1] &&
+           a[1] <= SGI_KONA_GL_PIXEL_MAP_MAX && is_power_of_2(a[1]) &&
+           sgi_kona_gl_float(a[2]) == a[1] - 1 && a[3] >= a[1] &&
+           (a[3] == 256 || a[3] == 1024 || a[3] == 4096);
+}
+
+static uint32_t sgi_kona_gl_pixel_map_open(SGIKonaState *s, int i,
+                                         uint32_t token, const uint32_t *a)
+{
+    SGIKonaGLPixelMapUpload *u = &s->gl_map_upload;
+
+    memset(u, 0, sizeof(*u));
+    memcpy(u->header, a, sizeof(u->header));
+    u->token = token;
+    u->context = i;
+    u->refused = i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+                 !sgi_kona_gl_pixel_map_header(a);
+    if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
+        sgi_kona_gl_set_error(s, 0x502);
+    } else if (a[0] < 0xc70 || a[0] > 0xc79) {
+        sgi_kona_gl_set_error(s, 0x500);
+    } else if (!a[1] || a[1] > SGI_KONA_GL_PIXEL_MAP_MAX ||
+               (a[0] <= 0xc75 && !is_power_of_2(a[1]))) {
+        sgi_kona_gl_set_error(s, 0x501);
+    }
+    if (u->refused) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported pixel map upload;"
+                      " draining table entries\n");
+    }
+    if (!a[1]) {
+        memset(u, 0, sizeof(*u));
+    }
+    return a[1];
+}
+
+static void sgi_kona_gl_pixel_map_done(SGIKonaState *s)
+{
+    SGIKonaGLPixelMapUpload *u = &s->gl_map_upload;
+    SGIKonaGLPixelMap *map;
+
+    if (u->refused || u->context != s->context_current) {
+        goto out;
+    }
+    for (unsigned k = 0; k < u->header[1]; k++) {
+        uint32_t value = u->values[k];
+
+        if (u->token == SGI_KONA_CMD_GL_PIXEL_MAP_F) {
+            double rounded = floor((double)sgi_kona_gl_float(value) + 0.5);
+
+            if (!sgi_kona_gl_pixel_index_transfer(rounded, 0, 0,
+                                                    &u->values[k])) {
+                qemu_log_mask(LOG_UNIMP, "sgi-kona: nonfinite stencil map;"
+                              " upload refused\n");
+                goto out;
+            }
+        } else if (u->token == SGI_KONA_CMD_GL_PIXEL_MAP_US && value > 0xffff) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-kona: oversized short pixel"
+                          " map entry; upload refused\n");
+            goto out;
+        }
+    }
+    map = &s->gl_pipe[u->context].pixel_transfer.stencil_map;
+    memset(map, 0, sizeof(*map));
+    map->count = u->header[1];
+    memcpy(map->values, u->values, map->count * sizeof(*map->values));
+out:
+    memset(u, 0, sizeof(*u));
+}
+
 static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
                                        uint32_t pname, uint32_t value)
 {
@@ -6039,6 +6131,14 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             sgi_kona_gl_pixel_transfer(s, i, args[0], args[1]);
         }
         return;
+    case SGI_KONA_CMD_GL_PIXEL_MAP_F:
+    case SGI_KONA_CMD_GL_PIXEL_MAP_UI:
+    case SGI_KONA_CMD_GL_PIXEL_MAP_US:
+        words = sgi_kona_gl_pixel_map_open(s, i, selector, args);
+        if (words) {
+            sgi_kona_gl_data_open(s, selector, words);
+        }
+        return;
     case SGI_KONA_CMD_GL_PIXEL_STORE:
         if (i != SGI_KONA_CONTEXT_NONE) {
             sgi_kona_gl_pixel_store(s, i, args[0], args[1]);
@@ -6121,6 +6221,11 @@ static void sgi_kona_gl_data_done(SGIKonaState *s)
         } else {
             sgi_kona_gl_draw_pixels_done(s);
         }
+    }
+    if (s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_F ||
+        s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_UI ||
+        s->gl_data_token == SGI_KONA_CMD_GL_PIXEL_MAP_US) {
+        sgi_kona_gl_pixel_map_done(s);
     }
     trace_sgi_kona_command_unmodelled(s->gl_data_token, s->gl_data_have);
     s->gl_data_token = 0;
@@ -8648,6 +8753,7 @@ static void sgi_kona_command_page_write(SGIKonaState *s, uint32_t offset,
         sgi_kona_texture_upload_clear(s);
         sgi_kona_gl_image_clear(s);
         memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+        memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
         s->gl_data_remaining = 0;
         s->gl_data_token = 0;
         s->gl_data_have = 0;
@@ -9892,6 +9998,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     sgi_kona_texture_upload_clear(s);
     sgi_kona_gl_image_clear(s);
     memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+    memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
     s->texture_record_token = 0;
@@ -10129,6 +10236,7 @@ static int sgi_kona_cursor_pre_load(void *opaque)
     sgi_kona_texture_upload_clear(s);
     sgi_kona_gl_image_clear(s);
     memset(&s->gl_bitmap_upload, 0, sizeof(s->gl_bitmap_upload));
+    memset(&s->gl_map_upload, 0, sizeof(s->gl_map_upload));
     memset(s->texture_bind, 0, sizeof(s->texture_bind));
     memset(s->texture_record, 0, sizeof(s->texture_record));
     s->texture_record_token = 0;
@@ -10334,7 +10442,10 @@ static int sgi_kona_post_load(void *opaque, int version_id)
           s->gl_data_token != SGI_KONA_CMD_GL_TEX_LOAD &&
           s->gl_data_token != SGI_KONA_CMD_GL_DRAW_PIXELS &&
           s->gl_data_token != SGI_KONA_CMD_GL_BITMAP_INLINE &&
-          s->gl_data_token != SGI_KONA_CMD_GL_BITMAP))) {
+          s->gl_data_token != SGI_KONA_CMD_GL_BITMAP &&
+          s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
+          s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
+          s->gl_data_token != SGI_KONA_CMD_GL_PIXEL_MAP_US))) {
         return -EINVAL;
     }
     if (s->gl_sync_held &&
@@ -10747,6 +10858,9 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 {
     SGIKonaGLPixelTransfer *t = opaque;
 
+    if (version_id < 4) {
+        memset(&t->stencil_map, 0, sizeof(t->stencil_map));
+    }
     if (version_id < 3) {
         t->index_shift = t->index_offset = t->map_stencil = 0;
     }
@@ -10754,12 +10868,22 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
         t->depth_scale = 0x3f800000;
         t->depth_bias = 0;
     }
+    if (t->stencil_map.count > SGI_KONA_GL_PIXEL_MAP_MAX ||
+        (t->stencil_map.count && !is_power_of_2(t->stencil_map.count))) {
+        return -EINVAL;
+    }
+    for (unsigned k = t->stencil_map.count;
+         k < SGI_KONA_GL_PIXEL_MAP_MAX; k++) {
+        if (t->stencil_map.values[k]) {
+            return -EINVAL;
+        }
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
     .name = TYPE_SGI_KONA "/gl-transfer",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = sgi_kona_gl_transfer_post_load,
     .fields = (const VMStateField[]) {
@@ -10770,6 +10894,9 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
         VMSTATE_UINT32_V(index_shift, SGIKonaGLPixelTransfer, 3),
         VMSTATE_UINT32_V(index_offset, SGIKonaGLPixelTransfer, 3),
         VMSTATE_UINT32_V(map_stencil, SGIKonaGLPixelTransfer, 3),
+        VMSTATE_UINT32_V(stencil_map.count, SGIKonaGLPixelTransfer, 4),
+        VMSTATE_UINT32_ARRAY_V(stencil_map.values, SGIKonaGLPixelTransfer,
+                               SGI_KONA_GL_PIXEL_MAP_MAX, 4),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -11138,6 +11265,57 @@ static const VMStateDescription vmstate_sgi_kona_gl_bitmap = {
         VMSTATE_BOOL(gl_bitmap_upload.refused, SGIKonaState),
         VMSTATE_UINT8_ARRAY(gl_bitmap_upload.bytes, SGIKonaState,
                             SGI_KONA_GL_BITMAP_BYTES),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static bool sgi_kona_gl_pixel_map_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+
+    return s->gl_map_upload.header[1] != 0;
+}
+
+static int sgi_kona_gl_pixel_map_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+    const SGIKonaGLPixelMapUpload *u = &s->gl_map_upload;
+
+    if (!u->header[1] || u->token != s->gl_data_token ||
+        (u->token != SGI_KONA_CMD_GL_PIXEL_MAP_F &&
+         u->token != SGI_KONA_CMD_GL_PIXEL_MAP_UI &&
+         u->token != SGI_KONA_CMD_GL_PIXEL_MAP_US) ||
+        s->gl_data_have >= u->header[1] ||
+        s->gl_data_remaining != u->header[1] - s->gl_data_have ||
+        (!u->refused && (u->context >= SGI_KONA_CONTEXTS ||
+                        u->context != s->context_current ||
+                        !s->contexts[u->context].valid ||
+                        s->gl[u->context].in_begin ||
+                        !sgi_kona_gl_pixel_map_header(u->header)))) {
+        return -EINVAL;
+    }
+    for (unsigned k = MIN(s->gl_data_have, SGI_KONA_GL_PIXEL_MAP_MAX);
+         k < SGI_KONA_GL_PIXEL_MAP_MAX; k++) {
+        if (u->values[k]) {
+            return -EINVAL;
+        }
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_gl_pixel_map = {
+    .name = TYPE_SGI_KONA "/gl-pixel-map",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_gl_pixel_map_needed,
+    .post_load = sgi_kona_gl_pixel_map_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(gl_map_upload.header, SGIKonaState, 4),
+        VMSTATE_UINT32(gl_map_upload.token, SGIKonaState),
+        VMSTATE_UINT32(gl_map_upload.context, SGIKonaState),
+        VMSTATE_BOOL(gl_map_upload.refused, SGIKonaState),
+        VMSTATE_UINT32_ARRAY(gl_map_upload.values, SGIKonaState,
+                             SGI_KONA_GL_PIXEL_MAP_MAX),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -11886,6 +12064,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_gl_attrib,
         &vmstate_sgi_kona_textures,
         &vmstate_sgi_kona_gl_bitmap,
+        &vmstate_sgi_kona_gl_pixel_map,
         &vmstate_sgi_kona_gl_raw_bitmap,
         &vmstate_sgi_kona_gl_raw_pixels,
         &vmstate_sgi_kona_x_read,
