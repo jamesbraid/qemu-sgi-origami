@@ -2354,6 +2354,7 @@ static bool sgi_kona_renderer_logic_op(const SGIGLDrawState *st)
 }
 
 static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
+                                      const SGIVolumeVertex vertices[3],
                                       const float *provoking,
                                       const SGIClipRect *tile,
                                       SGIRendererRequest *request,
@@ -2446,21 +2447,15 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     }
     request->smooth = st->shade_model == SGI_GL_SMOOTH;
     for (unsigned i = 0; i < 3; i++) {
-        const float *vertex = d->vertices + i * SGI_GL_VERTEX_FLOATS;
-        double eye[4] = { 0 }, clip_position[4], window[3];
+        const float *vertex = vertices[i].attr;
+        const double *clip_position = vertices[i].clip;
+        double window[3];
 
-        for (unsigned row = 0; row < 4; row++) {
-            for (unsigned k = 0; k < 4; k++) {
-                eye[row] += st->modelview[k * 4 + row] * (double)vertex[k];
-            }
-        }
-        sgi_gl_eye_to_clip(st, eye, clip_position);
         if (!isfinite(clip_position[3]) || clip_position[3] <= 0) {
             return false;
         }
         for (unsigned axis = 0; axis < 3; axis++) {
-            if (!isfinite(clip_position[axis]) ||
-                fabs(clip_position[axis]) > clip_position[3]) {
+            if (!isfinite(clip_position[axis])) {
                 return false;
             }
         }
@@ -2562,6 +2557,50 @@ static void sgi_kona_renderer_indices(const SGIGLDraw *d, unsigned piece,
     }
 }
 
+typedef struct SGIKonaRendererTriangle {
+    SGIVolumeVertex vertices[3];
+    const float *provoking;
+} SGIKonaRendererTriangle;
+
+static bool sgi_kona_renderer_triangles(const SGIGLDraw *d, unsigned pieces,
+                                        SGIKonaRendererTriangle *triangles,
+                                        unsigned limit, unsigned *count)
+{
+    unsigned indices[4];
+
+    *count = 0;
+    for (unsigned piece = 0; piece < pieces; piece++) {
+        SGIVolumeVertex in[3], poly[SGI_VOLUME_TRIANGLE_MAX];
+        unsigned n;
+
+        sgi_kona_renderer_indices(d, piece, indices);
+        for (unsigned v = 0; v < 3; v++) {
+            sgi_volume_from_draw_vertex(d->state,
+                d->vertices + indices[v] * SGI_GL_VERTEX_FLOATS, &in[v]);
+            for (unsigned k = 0; k < 4; k++) {
+                if (!isfinite(in[v].clip[k]) || !isfinite(in[v].eye[k])) {
+                    return false;
+                }
+            }
+        }
+        n = sgi_volume_clip_triangle(in, poly);
+        for (unsigned v = 1; v + 1 < n; v++) {
+            SGIKonaRendererTriangle *triangle;
+
+            if (*count == limit) {
+                return false;
+            }
+            triangle = &triangles[(*count)++];
+            triangle->vertices[0] = poly[0];
+            triangle->vertices[1] = poly[v];
+            triangle->vertices[2] = poly[v + 1];
+            triangle->provoking = d->vertices +
+                                  indices[3] * SGI_GL_VERTEX_FLOATS;
+        }
+    }
+    return *count != 0;
+}
+
 static SGIClipRect sgi_kona_renderer_tile(const SGIClipRect *bounds,
                                          unsigned columns, unsigned index)
 {
@@ -2580,16 +2619,16 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
                                    const SGIRasterTarget *t)
 {
     SGIRendererRequest *requests;
+    g_autofree SGIKonaRendererTriangle *triangles = NULL;
     SGIColourTarget target;
     const SGIGLDrawable *drawable = &d->state->drawable;
     const SGIPlane *plane;
     SGIClipRect bounds;
-    unsigned indices[4], count, columns, rows, tiles;
+    unsigned count, columns, rows, tiles;
     uint64_t tile_count;
     uint32_t colour_mask;
     int bank;
     SGIGLDraw triangle = *d;
-    float vertices[3][SGI_GL_VERTEX_FLOATS];
     Error *err = NULL;
     bool success = false;
     bool logic_op = sgi_kona_renderer_logic_op(d->state);
@@ -2630,6 +2669,15 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     if (tile_count > 256 / count) {
         return false;
     }
+    triangles = g_try_new(SGIKonaRendererTriangle, 256 / tile_count);
+    if (!triangles) {
+        s->renderer_failed = true;
+        return false;
+    }
+    if (!sgi_kona_renderer_triangles(d, count, triangles, 256 / tile_count,
+                                    &count)) {
+        return false;
+    }
     tiles = tile_count;
     count *= tiles;
     requests = g_try_new0(SGIRendererRequest, count);
@@ -2639,20 +2687,13 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d,
     }
     triangle.mode = SGI_GL_TRIANGLES;
     triangle.count = 3;
-    triangle.vertices = &vertices[0][0];
     for (unsigned i = 0; i < count; i++) {
-        const float *provoking;
+        const SGIKonaRendererTriangle *piece = &triangles[i / tiles];
         SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
 
-        sgi_kona_renderer_indices(d, i / tiles, indices);
-        provoking = d->vertices + indices[3] * SGI_GL_VERTEX_FLOATS;
-        for (unsigned v = 0; v < 3; v++) {
-            memcpy(vertices[v], d->vertices +
-                                indices[v] * SGI_GL_VERTEX_FLOATS,
-                   sizeof(vertices[v]));
-        }
-        if (!sgi_kona_renderer_request(s, &triangle, provoking, &tile,
-                                       &requests[i], &target, rules)) {
+        if (!sgi_kona_renderer_request(s, &triangle, piece->vertices,
+                                       piece->provoking, &tile, &requests[i],
+                                       &target, rules)) {
             goto out;
         }
     }
