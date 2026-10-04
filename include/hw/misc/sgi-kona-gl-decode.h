@@ -147,6 +147,11 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                     const uint32_t *source, bool swap_bytes,
                                     uint32_t *rgba);
 
+/* Retain finite scalar values before pixel transfer, without quantization. */
+bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
+                                  const uint32_t *source, bool swap_bytes,
+                                  float rgba[4]);
+
 /*
  * The first 32 words hold 64 signed mantissa/exponent coefficients. Word 32
  * is transport padding. Invalid coefficient words leave values unchanged.
@@ -172,5 +177,23 @@ bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *layout,
                                  const uint32_t *words, size_t nwords,
                                  bool lsb_first, uint32_t row, uint32_t byte,
                                  uint8_t *out);
+
+/* Ordinary DrawPixels PIO carries raw scalar bytes, including row padding. */
+typedef struct SGIKonaGLPixelLayout {
+    uint32_t width, height, pixel_bytes;
+    uint64_t stride, row_bytes, payload_words;
+    uint32_t phase;
+    bool strided;
+} SGIKonaGLPixelLayout;
+
+/* Unsupported headers or overflowing spans leave layout unchanged. */
+bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLPixelLayout *layout);
+/* Extract a useful row byte; missing words leave output unchanged. */
+bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *layout,
+                                 const uint32_t *words, size_t nwords,
+                                 uint32_t row, uint64_t byte, uint8_t *out);
 
 #endif /* HW_MISC_SGI_KONA_GL_DECODE_H */

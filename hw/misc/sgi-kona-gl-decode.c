@@ -11,6 +11,7 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qemu/host-utils.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
 
 #include "sgi-kona-gl-selectors.c.inc"
@@ -623,17 +624,18 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
     return type < ARRAY_SIZE(widths) ? components * widths[type] : 0;
 }
 
-bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
                                     const uint32_t *source, bool swap_bytes,
-                                    uint32_t *rgba)
+                                    double values[4])
 {
     uint32_t components = sgi_kona_gl_texture_pixel_bytes(format, 1);
-    uint32_t values[4] = { 0, 0, 0, 255 };
-    uint32_t r, g, b, a;
+    double r, g, b, a;
 
     if (!sgi_kona_gl_texture_pixel_bytes(format, type)) {
         return false;
     }
+    values[0] = values[1] = values[2] = 0;
+    values[3] = 1;
     for (uint32_t i = 0; i < components; i++) {
         double component;
         uint32_t raw;
@@ -675,7 +677,7 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
         default:
             g_assert_not_reached();
         }
-        values[i] = (uint32_t)(CLAMP(component, 0.0, 1.0) * 255.0 + 0.5);
+        values[i] = component;
     }
     r = values[0];
     g = values[1];
@@ -687,18 +689,55 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
         r = g = b = 0;
         break;
     case 4:
-        a = 255;
+        a = 1;
         break;
     case 6:
         g = b = r;
-        a = 255;
+        a = 1;
         break;
     case 7:
         a = g;
         g = b = r;
         break;
     }
-    *rgba = (r << 24) | (g << 16) | (b << 8) | a;
+    values[0] = r;
+    values[1] = g;
+    values[2] = b;
+    values[3] = a;
+    return true;
+}
+
+bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
+                                    const uint32_t *source, bool swap_bytes,
+                                    uint32_t *rgba)
+{
+    double values[4];
+    uint32_t pixel = 0;
+
+    if (!sgi_kona_gl_pixel_values(format, type, source, swap_bytes, values)) {
+        return false;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t component = CLAMP(values[i], 0.0, 1.0) * 255.0 + 0.5;
+
+        pixel |= component << (24 - i * 8);
+    }
+    *rgba = pixel;
+    return true;
+}
+
+bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
+                                  const uint32_t *source, bool swap_bytes,
+                                  float rgba[4])
+{
+    double values[4];
+
+    if (!sgi_kona_gl_pixel_values(format, type, source, swap_bytes, values)) {
+        return false;
+    }
+    for (unsigned i = 0; i < 4; i++) {
+        rgba[i] = values[i];
+    }
     return true;
 }
 
@@ -817,5 +856,100 @@ bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *l,
         value |= ((raw >> (lsb_first ? bit : 7 - bit)) & 1) << (7 - i);
     }
     *out = value;
+    return true;
+}
+
+static bool sgi_kona_gl_pixels_words_before(const SGIKonaGLPixelLayout *l,
+                                            uint32_t row, uint64_t *out)
+{
+    uint64_t cycle = 0, tail = 0, full;
+
+    for (uint32_t i = 0; i < 4; i++) {
+        uint32_t phase = (l->phase + i * (l->stride & 3)) & 3;
+        uint64_t words = (phase + l->row_bytes + 3) / 4;
+
+        cycle += words;
+        if (i < row % 4) {
+            tail += words;
+        }
+    }
+    if (umul64_overflow(cycle, row / 4, &full) ||
+        uadd64_overflow(full, tail, out)) {
+        return false;
+    }
+    return true;
+}
+
+bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
+                                   uint32_t row_length, uint32_t skip_rows,
+                                   uint32_t skip_pixels, uint32_t alignment,
+                                   SGIKonaGLPixelLayout *layout)
+{
+    SGIKonaGLPixelLayout l = { 0 };
+    uint64_t length, bytes, padding, span;
+
+    if (!header || !layout || !header[0] || !header[1] || header[4] > 3 ||
+        header[5] || header[6] > 1 ||
+        (alignment != 1 && alignment != 2 &&
+         alignment != 4 && alignment != 8)) {
+        return false;
+    }
+    l.pixel_bytes = sgi_kona_gl_texture_pixel_bytes(header[2], header[3]);
+    if (!l.pixel_bytes) {
+        return false;
+    }
+    l.width = header[0];
+    l.height = header[1];
+    length = row_length ? row_length : l.width;
+    bytes = length * l.pixel_bytes;
+    l.row_bytes = (uint64_t)l.width * l.pixel_bytes;
+    l.stride = (bytes + alignment - 1) & ~(uint64_t)(alignment - 1);
+    padding = l.stride - bytes;
+    l.strided = padding >= 4 || length != l.width || skip_pixels;
+    if (header[6] != l.strided) {
+        return false;
+    }
+    l.phase = (header[4] + skip_rows * (l.stride & 3) +
+               skip_pixels * (l.pixel_bytes & 3)) & 3;
+    if (l.strided) {
+        if (!sgi_kona_gl_pixels_words_before(&l, l.height, &l.payload_words)) {
+            return false;
+        }
+    } else {
+        if (umul64_overflow(l.height - 1, l.stride, &span) ||
+            uadd64_overflow(span, l.row_bytes + l.phase + 3, &span)) {
+            return false;
+        }
+        l.payload_words = span / 4;
+    }
+    *layout = l;
+    return true;
+}
+
+bool sgi_kona_gl_pixels_pio_byte(const SGIKonaGLPixelLayout *l,
+                                 const uint32_t *words, size_t nwords,
+                                 uint32_t row, uint64_t byte, uint8_t *out)
+{
+    uint64_t start, pos;
+
+    if (!l || !words || !out || row >= l->height || byte >= l->row_bytes) {
+        return false;
+    }
+    if (l->strided) {
+        uint32_t phase = (l->phase + row * (l->stride & 3)) & 3;
+
+        if (!sgi_kona_gl_pixels_words_before(l, row, &start) ||
+            umul64_overflow(start, 4, &start) ||
+            uadd64_overflow(start, phase, &start)) {
+            return false;
+        }
+    } else if (umul64_overflow(row, l->stride, &start) ||
+               uadd64_overflow(start, l->phase, &start)) {
+        return false;
+    }
+    if (uadd64_overflow(start, byte, &pos) || pos / 4 >= nwords) {
+        return false;
+    }
+    *out = words[pos / 4] >> (24 - 8 * (pos & 3));
     return true;
 }
