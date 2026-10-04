@@ -472,8 +472,8 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
 
     res = stl_be_dma(&s->dma_as, buf_addr + 4, short_circuit ? 0 : word1,
                      MEMTXATTRS_UNSPECIFIED);
-    res |= dma_memory_write(&s->dma_as, buf_addr + offset, buf, size,
-                            MEMTXATTRS_UNSPECIFIED);
+    res |= sgi_dma_buffer_write(&s->dma_context, buf_addr + offset, buf,
+                                 size);
     if (!short_circuit) {
         /* The phantom FCS bytes, written as the zero they were summed as. */
         res |= stl_be_dma(&s->dma_as, buf_addr + offset + size, 0,
@@ -555,8 +555,7 @@ static MemTxResult sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
         if (n > sizeof(s->frame) - len) {
             n = sizeof(s->frame) - len;
         }
-        res |= dma_memory_read(&s->dma_as, buf1, s->frame + len, n,
-                               MEMTXATTRS_UNSPECIFIED);
+        res |= sgi_dma_buffer_read(&s->dma_context, buf1, s->frame + len, n);
         len += n;
     }
     if (cmd & SGI_IOC3_ENET_TXD_BUF2_VALID) {
@@ -565,8 +564,7 @@ static MemTxResult sgi_ioc3_eth_tx_gather(SGIIOC3EthState *s, uint32_t cmd,
         if (n > sizeof(s->frame) - len) {
             n = sizeof(s->frame) - len;
         }
-        res |= dma_memory_read(&s->dma_as, buf2, s->frame + len, n,
-                               MEMTXATTRS_UNSPECIFIED);
+        res |= sgi_dma_buffer_read(&s->dma_context, buf2, s->frame + len, n);
         len += n;
     }
 
@@ -954,6 +952,10 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
         return;
     }
     address_space_init(&s->dma_as, s->dma_mr, "sgi-ioc3-eth-dma");
+    sgi_dma_buffer_init_as(&s->dma_context, &s->dma_as);
+    if (!s->dma_buffer) {
+        s->dma_context.provider = NULL;
+    }
 
     memory_region_init_io(&s->mmio, OBJECT(dev), &sgi_ioc3_enet_ops, s,
                           "sgi-ioc3.eth", SGI_IOC3_ENET_SIZE);
@@ -1060,6 +1062,7 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
 };
 
 static const Property sgi_ioc3_eth_properties[] = {
+    DEFINE_PROP_BOOL("dma-buffer", SGIIOC3EthState, dma_buffer, true),
     DEFINE_NIC_PROPERTIES(SGIIOC3EthState, conf),
     DEFINE_PROP_BOOL("phy-ics1890", SGIIOC3EthState, phy_ics1890, false),
     DEFINE_PROP_BOOL("phy-dp83843", SGIIOC3EthState, phy_dp83843, false),

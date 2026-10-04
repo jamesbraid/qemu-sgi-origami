@@ -382,31 +382,41 @@ static AddressSpace *xbridge_dma_as(PCIBus *bus, void *opaque, int devfn)
 static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
                                         void *buf, dma_addr_t *len,
                                         DMADirection dir, MemTxAttrs attrs,
-                                        bool swap32, MemTxResult *result)
+                                        const SGIDMABufferRequest *request,
+                                        MemTxResult *result)
 {
     struct XBridgeDMA *dma = opaque;
     SGIXBridgeHeadState *s = dma->head;
     bool write = dir == DMA_DIRECTION_FROM_DEVICE;
     IOMMUTLBEntry entry;
-    hwaddr translated, length;
+    hwaddr translated, length, span;
     AddressSpace *target;
     bool correct;
+    SGIDMABufferRequest composed = *request;
 
-    if (attrs.memory || s->packet_sender) {
+    if (attrs.memory || s->packet_sender ||
+        (request->swap32 && ((addr & 3) || *len < 4 ||
+                            (request->max_access_size &&
+                             request->max_access_size < 4)))) {
         return false;
     }
-    assert(!swap32);
     entry = xbridge_translate(&dma->iommu, addr,
                                write ? IOMMU_WO : IOMMU_RO, 0);
-    length = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    span = MIN(*len, (addr | entry.addr_mask) - addr + 1);
+    length = span;
     if (!(entry.perm & (1 << write))) {
         length = memory_access_size(&s->denied, length, addr);
-        *result = address_space_rw(&s->denied_as, addr, attrs, buf,
-                                    length, write);
+        if (request->swap32 || request->max_access_size) {
+            length = MIN(span, request->swap32 ? 4 :
+                               request->max_access_size);
+        }
+        *result = sgi_dma_buffer_native_rw(&s->denied_as, addr, buf,
+                                            length, dir, attrs, request);
     } else {
         translated = (entry.translated_addr & ~entry.addr_mask) |
                      (addr & entry.addr_mask);
         correct = entry.target_as->root->ops == &xbridge_swap_ops;
+        composed.swap32 ^= correct;
         target = entry.target_as;
         if (correct) {
             struct XBridgeTarget *endpoint = target->root->opaque;
@@ -414,13 +424,18 @@ static bool xbridge_dma_buffer_transfer(void *opaque, dma_addr_t addr,
             target = &endpoint->as;
         }
         if (!sgi_dma_buffer_try_rw(target, translated, buf, &length, dir,
-                                   attrs, correct, result)) {
+                                   attrs, &composed, result)) {
             if (correct) {
                 length = memory_access_size(entry.target_as->root,
                     MIN(*len, (addr | entry.addr_mask) - addr + 1), translated);
             }
-            *result = address_space_rw(entry.target_as, translated, attrs,
-                                        buf, length, write);
+            /* The outer facade splits the operation before leaf dispatch. */
+            if (request->swap32 || request->max_access_size) {
+                length = MIN(span, request->swap32 ? 4 :
+                                   request->max_access_size);
+            }
+            *result = sgi_dma_buffer_native_rw(entry.target_as, translated, buf,
+                                               length, dir, attrs, request);
         }
     }
     *len = length;

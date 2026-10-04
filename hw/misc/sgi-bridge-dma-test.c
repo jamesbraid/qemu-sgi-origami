@@ -66,6 +66,9 @@ struct SGIBridgeDMATestState {
 
     bool plain_dma;
     bool dma_buffer;
+    bool dma_r32;
+    MemoryRegion dma_view;
+    AddressSpace dma_view_as;
     SGIDMABufferContext dma_context;
     bool memory_only;
     uint32_t result;
@@ -117,11 +120,46 @@ static uint8_t sgi_bridge_dma_test_byte(uint32_t seed, unsigned int i)
     return (uint8_t)(seed + i);
 }
 
+static MemTxResult dma_view_read(void *opaque, hwaddr addr, uint64_t *value,
+                                 unsigned size, MemTxAttrs attrs)
+{
+    SGIBridgeDMATestState *s = opaque;
+    uint8_t bytes[4] = { 0 };
+    MemTxResult result;
+
+    assert(size <= sizeof(bytes));
+    result = address_space_read(pci_get_address_space(PCI_DEVICE(s)),
+                                addr ^ (4 - size), attrs, bytes, size);
+    *value = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult dma_view_write(void *opaque, hwaddr addr, uint64_t value,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    SGIBridgeDMATestState *s = opaque;
+    uint8_t bytes[4];
+
+    assert(size <= sizeof(bytes));
+    stn_be_p(bytes, size, value);
+    return address_space_write(pci_get_address_space(PCI_DEVICE(s)),
+                               addr ^ (4 - size), attrs, bytes, size);
+}
+
+static const MemoryRegionOps dma_view_ops = {
+    .read_with_attrs = dma_view_read,
+    .write_with_attrs = dma_view_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 4 },
+};
+
 static MemTxResult sgi_bridge_dma_test_transfer(SGIBridgeDMATestState *s,
                                                hwaddr addr, void *buf,
                                                bool write)
 {
-    AddressSpace *as = pci_get_address_space(PCI_DEVICE(s));
+    AddressSpace *as = s->dma_r32 ? &s->dma_view_as :
+                       pci_get_address_space(PCI_DEVICE(s));
     DMADirection dir = write ? DMA_DIRECTION_FROM_DEVICE :
                               DMA_DIRECTION_TO_DEVICE;
     MemTxAttrs attrs = MEMTXATTRS_UNSPECIFIED;
@@ -387,6 +425,17 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
     }
 
     sgi_dma_buffer_init_pci(&s->dma_context, dev);
+    if (s->dma_r32) {
+        memory_region_init_io(&s->dma_view, OBJECT(s), &dma_view_ops, s,
+                              "sgi-bridge-dma-test.r32", UINT64_MAX);
+        s->dma_view.disable_reentrancy_guard = true;
+        address_space_init(&s->dma_view_as, &s->dma_view,
+                            "sgi-bridge-dma-test.r32");
+        s->dma_context.as = &s->dma_view_as;
+        s->dma_context.request = (SGIDMABufferRequest) {
+            .swap32 = true, .max_access_size = 4,
+        };
+    }
 
     /* Say in configuration space which pin this device uses. */
     pci_config_set_interrupt_pin(dev->config, s->interrupt_pin);
@@ -407,6 +456,15 @@ static void sgi_bridge_dma_test_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->io, OBJECT(s), &sgi_bridge_dma_test_io_ops, s,
                           "sgi-bridge-dma-test.io", IO_WINDOW);
     pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_IO, &s->io);
+}
+
+static void sgi_bridge_dma_test_exit(PCIDevice *dev)
+{
+    SGIBridgeDMATestState *s = SGI_BRIDGE_DMA_TEST(dev);
+
+    if (s->dma_r32) {
+        address_space_destroy(&s->dma_view_as);
+    }
 }
 
 static void sgi_bridge_dma_test_reset_hold(Object *obj, ResetType type)
@@ -456,6 +514,7 @@ static const Property sgi_bridge_dma_test_properties[] = {
     /* Settable, so one card type covers both sides of the exemption. */
     DEFINE_PROP_BOOL("plain-dma", SGIBridgeDMATestState, plain_dma, false),
     DEFINE_PROP_BOOL("dma-buffer", SGIBridgeDMATestState, dma_buffer, true),
+    DEFINE_PROP_BOOL("dma-r32", SGIBridgeDMATestState, dma_r32, false),
     DEFINE_PROP_UINT32("repetitions", SGIBridgeDMATestState, repetitions, 1),
     DEFINE_PROP_BOOL("memory-only", SGIBridgeDMATestState, memory_only, false),
 };
@@ -467,6 +526,7 @@ static void sgi_bridge_dma_test_class_init(ObjectClass *oc, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     k->realize = sgi_bridge_dma_test_realize;
+    k->exit = sgi_bridge_dma_test_exit;
     k->vendor_id = SGI_BRIDGE_DMA_TEST_VENDOR;
     k->device_id = SGI_BRIDGE_DMA_TEST_DEVICE;
     k->class_id = PCI_CLASS_OTHERS;

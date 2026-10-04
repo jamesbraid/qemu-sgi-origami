@@ -1840,11 +1840,12 @@ static void test_the_ethernet_mac_reset_reports_idle(const void *data)
 
 /* -nic is what qemu_configure_nic_device finds for an on-board controller;
  * also sets bus-master, which only DMA needs. */
-static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
+static QTestState *sn0_ioc3_attach_with_netdev_options(int host_fd,
+                                                      const char *extra)
 {
     QTestState *qts;
     char *args = g_strdup_printf("-M origin200 "
-                                 "-nic socket,fd=%d,id=n0", host_fd);
+                                 "-nic socket,fd=%d,id=n0 %s", host_fd, extra);
 
     qts = qtest_init(args);
     g_free(args);
@@ -1852,6 +1853,11 @@ static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     return qts;
+}
+
+static QTestState *sn0_ioc3_attach_with_netdev(int host_fd)
+{
+    return sn0_ioc3_attach_with_netdev_options(host_fd, "");
 }
 
 /* The one-wire tests need a known MAC to check the part against, which the
@@ -2736,6 +2742,107 @@ static void test_the_ethernet_transmit_gathers_two_buffers(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+}
+
+
+/* Whole payloads traverse IOC3, Bridge and the Hub's current RAM mapping. */
+static void test_dma_buffer_payloads(const void *data)
+{
+    const unsigned lengths[] = { 1024, 1500 };
+    const char *trace = g_getenv("QEMU_DMA_IOC3_TRACE");
+    const uint32_t desc = RAM_SCRATCH;
+    const uint32_t payload = RAM_SCRATCH + 0x4000;
+    const uint32_t ring = RAM_SCRATCH + 0x8000;
+    const uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint8_t frame[1500], seen[1500], received[66 + 1500 + 8];
+    uint8_t guard[8];
+
+    for (unsigned i = 0; i < sizeof(frame); i++) {
+        frame[i] = 0x30 + i;
+    }
+    memset(frame, 0xff, 6);
+    for (unsigned size = 0; size < G_N_ELEMENTS(lengths); size++) {
+        for (unsigned offset = 64; offset <= 66; offset += 2) {
+            for (unsigned order = 0; order < 2; order++) {
+                bool native = order ^ ((size + offset / 2) & 1);
+                unsigned length = lengths[size];
+                size_t span = offset + length + 8;
+                g_autofree char *tracing = trace ? g_strdup_printf(
+                    "-trace enable=sgi_hub_ii_*,file=%s/ioc3-%s-%u-%u.trace",
+                    trace, native ? "native" : "buffer", offset, length) :
+                    g_strdup("");
+                g_autofree char *extra = g_strdup_printf(
+                    "-global sgi-ioc3-eth.dma-buffer=%s %s",
+                    native ? "off" : "on", tracing);
+                QTestState *qts;
+                int sv[2], attempt;
+
+                g_test_message("%s order=%u offset=%u length=%u",
+                               native ? "native" : "buffer", order,
+                               offset, length);
+                g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+                net_socket_set_recv_timeout(sv[0], 10);
+                qts = sn0_ioc3_attach_with_netdev_options(sv[1], extra);
+                qtest_writel(qts, MAC_CONTROL,
+                    MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
+                    MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(offset / 2));
+                qtest_memset(qts, payload - sizeof(guard), 0xee,
+                             length + 2 * sizeof(guard));
+                qtest_memwrite(qts, payload, frame, length);
+                qtest_writel(qts, desc, length | TXD_BUF1_VALID);
+                qtest_writel(qts, desc + 4, length << TXD_BUF1_LEN_SHIFT);
+                qtest_writel(qts, desc + 8, 0);
+                qtest_writel(qts, desc + 12, pci_dma_address(payload));
+                qtest_writel(qts, TX_RING_HI, 0);
+                qtest_writel(qts, TX_RING_LO, pci_dma_address(desc));
+                qtest_writel(qts, TX_PRODUCE, 128);
+                g_assert_cmpuint(net_socket_recv_frame(sv[0], seen,
+                                                      sizeof(seen)), ==,
+                                 length);
+                g_assert_cmpmem(seen, length, frame, length);
+                qtest_memread(qts, payload, seen, length);
+                g_assert_cmpmem(seen, length, frame, length);
+                for (unsigned side = 0; side < 2; side++) {
+                    qtest_memread(qts, side ? payload + length :
+                                  payload - sizeof(guard),
+                                  guard, sizeof(guard));
+                    for (unsigned i = 0; i < sizeof(guard); i++) {
+                        g_assert_cmphex(guard[i], ==, 0xee);
+                    }
+                }
+                qtest_memset(qts, rxbuf, 0xee, span);
+                qtest_writel(qts, ring, 0);
+                qtest_writel(qts, ring + 4, pci_dma_address(rxbuf));
+                qtest_writel(qts, RX_RING_HI, 0);
+                qtest_writel(qts, RX_RING_LO, pci_dma_address(ring));
+                qtest_writel(qts, RX_PRODUCE, 8);
+                net_socket_send_frame(sv[0], frame, length);
+                for (attempt = 0; attempt < 50; attempt++) {
+                    if (qtest_readl(qts, RX_CONSUME)) {
+                        break;
+                    }
+                    g_usleep(10000);
+                    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
+                }
+                g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+                qtest_memread(qts, rxbuf, received, span);
+                g_assert_cmphex(ldl_be_p(received) & 0x87ff0000, ==,
+                                0x80000000 | ((length + 4) << 16));
+                g_assert_cmphex(ldl_be_p(received + 4) & ENET_RXE_GOODPKT, ==,
+                                ENET_RXE_GOODPKT);
+                g_assert_cmpmem(received + offset, length, frame, length);
+                for (unsigned i = 8; i < span; i++) {
+                    if (i < offset || i >= offset + length + 4) {
+                        g_assert_cmphex(received[i], ==, 0xee);
+                    } else if (i >= offset + length) {
+                        g_assert_cmphex(received[i], ==, 0);
+                    }
+                }
+                qtest_quit(qts);
+                close(sv[0]);
+            }
+        }
+    }
 }
 
 /* RFC 1071, hand rolled: the assertion is against an independent
@@ -6017,6 +6124,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-honours-total-byte-count",
                         NULL,
                         test_the_ethernet_transmit_honours_total_byte_count);
+    qtest_add_data_func("sn0/ioc3/dma-buffer-payloads", NULL,
+                        test_dma_buffer_payloads);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-gathers-two-buffers",
                         NULL, test_the_ethernet_transmit_gathers_two_buffers);
     qtest_add_data_func("sn0/ioc3/ethernet-transmit-inserts-udp-checksum",

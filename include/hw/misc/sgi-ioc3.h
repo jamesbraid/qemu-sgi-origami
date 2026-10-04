@@ -7,6 +7,7 @@
 #define HW_MISC_SGI_IOC3_H
 
 #include "hw/1wire/onewire.h"
+#include "hw/misc/sgi-dma-buffer.h"
 #include "hw/core/irq.h"
 #include "hw/pci/pci_device.h"
 #include "hw/char/serial.h"
@@ -427,6 +428,8 @@ struct SGIIOC3State {
     MemoryRegion bar;
     MemoryRegion pci_bar;
     MemoryRegion pci_dma;
+    SGIDMABufferContext pci_dma_context;
+    SGIDMABufferProvider dma_provider;
     AddressSpace bar_as;
     AddressSpace dma_view_as;
 

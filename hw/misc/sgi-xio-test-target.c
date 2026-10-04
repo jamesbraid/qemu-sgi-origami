@@ -25,6 +25,7 @@ struct SGIXioTestTargetState {
     uint64_t mmio_writes;
     uint64_t mmio_size;
     uint64_t overlap_calls;
+    uint32_t overlap_offset;
     uint64_t size;
     Object *target_port;
     SGIBedrockIOState *target_peer;
@@ -214,7 +215,8 @@ static void target_realize(DeviceState *dev, Error **errp)
                               name, s->size);
         memory_region_init_io(&s->overlap, OBJECT(s), &target_overlap_ops, s,
                               "overlap", 1);
-        memory_region_add_subregion_overlap(&s->ram, 0x8004, &s->overlap, 1);
+        memory_region_add_subregion_overlap(&s->ram, s->overlap_offset,
+                                            &s->overlap, 1);
     } else if (!strcmp(s->memory_kind, "ram-device")) {
         s->backing = g_malloc0(s->size);
         memory_region_init_ram_device_ptr(&s->ram, OBJECT(s), name, s->size,
@@ -262,6 +264,8 @@ static void target_realize(DeviceState *dev, Error **errp)
 
 static const Property target_properties[] = {
     DEFINE_PROP_STRING("memory-kind", SGIXioTestTargetState, memory_kind),
+    DEFINE_PROP_UINT32("overlap-offset", SGIXioTestTargetState,
+                       overlap_offset, 0x8004),
     DEFINE_PROP_BOOL("destination-callback", SGIXioTestTargetState,
                       destination_callback, false),
     DEFINE_PROP_SIZE("size", SGIXioTestTargetState, size, 64 * KiB),
