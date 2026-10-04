@@ -684,6 +684,7 @@ typedef struct Rad4WatLayout {
     bool aux_ol_msb;
     unsigned overlay;
     bool overlay_reported;
+    bool fb_reported;
 } Rad4WatLayout;
 
 /* The low @bits bits of a window ID; @bits may be 0 to 8. */
@@ -740,6 +741,7 @@ static void rad4_wat_layout(PsitechRad4State *s, Rad4WatLayout *l)
         l->overlay = RAD4_CONF1_OVLY_MASK + 1;
     }
     l->overlay_reported = false;
+    l->fb_reported = false;
 }
 
 /*
@@ -818,12 +820,14 @@ static uint32_t rad4_rgb(uint8_t r, uint8_t g, uint8_t b)
  * Table 16's positions (R3G3B2, R4G4B4 and R5G6B5) and widen through Table
  * 18's bypass conversion.
  *
- * Index and Grey Scale pixels other than 8 bits, Direct RGB mode and the BGR
- * component order CONF/3 can select are not exercised by the qualified
- * guest workload and are traced rather than guessed at.
+ * Index and Grey Scale pixels other than 8 bits, Direct RGB mode and buffer
+ * B of a 24-bit pixel are not exercised by the qualified guest workload and
+ * are reported once per scanout pass rather than guessed at. Components are
+ * always in RGB order: the guest sets CONF/3's RGB bit, and this model does
+ * not implement the BGR order it could select.
  */
-static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
-                               uint8_t fb_addr)
+static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
+                               uint32_t word, uint8_t fb_addr)
 {
     uint16_t wat = s->fb_wat[fb_addr];
     unsigned mode = (wat >> RAD4_WAT_MODE_SHIFT) & RAD4_WAT_MODE_MASK;
@@ -847,6 +851,19 @@ static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
         break;
     }
 
+    if ((mode != RAD4_WAT_MODE_TRUE && mode != RAD4_WAT_MODE_INDEX &&
+         mode != RAD4_WAT_MODE_GREY) ||
+        (mode != RAD4_WAT_MODE_TRUE && pix_form != RAD4_WAT_PIXFORM_8BPP) ||
+        (pix_form == RAD4_WAT_PIXFORM_24BPP && buffer_b)) {
+        if (!l->fb_reported) {
+            l->fb_reported = true;
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: FB_WAT entry 0x%02x = 0x%03x is "
+                         "unimplemented; showing its low bits as 24-bit or "
+                         "8-bit data\n", fb_addr, wat);
+        }
+    }
+
     if (mode == RAD4_WAT_MODE_TRUE) {
         switch (pix_form) {
         case RAD4_WAT_PIXFORM_8BPP:
@@ -867,20 +884,9 @@ static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
     }
 
     if (mode != RAD4_WAT_MODE_INDEX && mode != RAD4_WAT_MODE_GREY) {
-        qemu_log_mask(LOG_UNIMP,
-                     "psitech-rad4: FB_WAT color mode %u for entry 0x%02x is "
-                     "unimplemented; treating as direct pass-through\n",
-                     mode, fb_addr);
         return word & 0x00ffffffu;
     }
-    if (pix_form != RAD4_WAT_PIXFORM_8BPP) {
-        qemu_log_mask(LOG_UNIMP,
-                     "psitech-rad4: FB_WAT PIX_FORM %u for entry 0x%02x "
-                     "in color mode %u is unimplemented; treating pixel "
-                     "data as 8 bits regardless\n",
-                     pix_form, fb_addr, mode);
-        pixel &= 0xff;
-    }
+    pixel &= 0xff;
     if (mode == RAD4_WAT_MODE_GREY) {
         return rad4_rgb(pixel, pixel, pixel);
     }
@@ -988,7 +994,7 @@ static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
     if (rad4_overlay_to_rgb(s, l, word, ol_addr, aux_addr, &rgb)) {
         return rgb;
     }
-    return rad4_fb_to_rgb(s, word, fb_addr);
+    return rad4_fb_to_rgb(s, l, word, fb_addr);
 }
 
 static void rad4_update_irq(PsitechRad4State *s)
