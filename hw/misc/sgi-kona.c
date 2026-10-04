@@ -3627,6 +3627,28 @@ static bool sgi_kona_gl_index_rgba(const SGIKonaGLPipe *p, double index,
     return true;
 }
 
+static bool sgi_kona_gl_rgba_transfer(const SGIKonaGLPixelTransfer *t,
+                                     double rgba[4])
+{
+    for (unsigned k = 0; k < 4; k++) {
+        double scale = sgi_kona_gl_float(t->scale[k]);
+        double bias = sgi_kona_gl_float(t->bias[k]);
+
+        if (!isfinite(rgba[k]) || !isfinite(scale) || !isfinite(bias)) {
+            return false;
+        }
+        rgba[k] = rgba[k] * scale + bias;
+        if (t->map_colour) {
+            const SGIKonaGLPixelMap *map = &t->colour_rgba[k];
+            unsigned at = CLAMP(rgba[k], 0.0, 1.0) *
+                          (map->count ? map->count - 1 : 0) + 0.5;
+
+            rgba[k] = map->count ? sgi_kona_gl_float(map->values[at]) : 0;
+        }
+    }
+    return true;
+}
+
 typedef struct SGIKonaGLCopySource {
     SGIKonaState *s;
     const SGIKonaGLWindow *window;
@@ -3677,7 +3699,9 @@ static bool sgi_kona_gl_copy_source_ready(SGIKonaState *s, int i,
         !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])) ||
         !width || !height ||
         (uint64_t)width * height > SGI_KONA_TEXTURE_BYTES /
-                                (depth ? sizeof(double) : sizeof(uint32_t))) {
+                                (depth ? sizeof(double) :
+                                 !stencil && p->pixel_transfer.map_colour ?
+                                 4 * sizeof(double) : sizeof(uint32_t))) {
         return false;
     }
     for (unsigned k = 0; !depth && !stencil && k < 4; k++) {
@@ -3819,6 +3843,39 @@ static void sgi_kona_gl_copy_pixels(SGIKonaState *s, const uint32_t *a)
         }
         goto refused;
     }
+    if (p->pixel_transfer.map_colour) {
+        uint64_t count = (uint64_t)a[2] * a[3];
+        g_autofree double (*pixels)[4] = g_try_malloc_n(count, sizeof(*pixels));
+        const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
+
+        if (!pixels) {
+            sgi_kona_gl_set_error(s, 0x505);
+            goto refused;
+        }
+        for (uint32_t row = 0; row < a[3]; row++) {
+            for (uint32_t col = 0; col < a[2]; col++) {
+                uint64_t at = (uint64_t)row * a[2] + col;
+                uint32_t rgba;
+
+                if (!sgi_kona_gl_copy_read(&source, x + col, y + row, &rgba)) {
+                    goto refused;
+                }
+                for (unsigned k = 0; k < 4; k++) {
+                    pixels[at][k] = ((rgba >> (24 - k * 8)) & 255) / 255.0;
+                }
+                if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer,
+                                                pixels[at])) {
+                    goto refused;
+                }
+            }
+        }
+        if (sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, a[2], a[3],
+                                                pixels, zoom_x, zoom_y,
+                                                &identity)) {
+            return;
+        }
+        goto refused;
+    }
     for (unsigned k = 0; k < 4; k++) {
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
@@ -3848,7 +3905,6 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     uint32_t w = args[2], h = args[3], format = args[4], type = args[5];
     const SGIKonaGLWindow *win;
     const SGIKonaGLPipe *p;
-    float scale[4], bias[4];
     uint32_t pixel_bytes;
     uint64_t row, len;
     int64_t px, py;
@@ -3889,9 +3945,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
         return false;
     }
     for (unsigned k = 0; !depth && !stencil && k < 4; k++) {
-        scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
-        bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
-        if (!isfinite(scale[k]) || !isfinite(bias[k])) {
+        if (!isfinite(sgi_kona_gl_float(p->pixel_transfer.scale[k])) ||
+            !isfinite(sgi_kona_gl_float(p->pixel_transfer.bias[k]))) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels nonfinite"
                           " transfer; no reply\n");
             return false;
@@ -3975,13 +4030,10 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
                 ((rgb >> 8) & 255) / 255.0,
                 (rgb & 255) / 255.0, 1,
             };
-            double rgba[4];
             uint8_t *out = data + r * row + c * pixel_bytes;
 
-            for (unsigned k = 0; k < 4; k++) {
-                rgba[k] = source[k] * scale[k] + bias[k];
-            }
-            if (!sgi_kona_gl_pixel_pack_double(format, type, rgba,
+            if (!sgi_kona_gl_rgba_transfer(&p->pixel_transfer, source) ||
+                !sgi_kona_gl_pixel_pack_double(format, type, source,
                                                   p->pack_swap_bytes,
                                          out, pixel_bytes)) {
                 return false;
@@ -4875,26 +4927,29 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
 {
     uint32_t base = sgi_kona_texture_storage_base(u->header);
     uint32_t words = sgi_kona_texture_source_words(u);
-    float scale[4] = { 1, 1, 1, 1 }, bias[4] = { 0 };
+    const SGIKonaGLPixelTransfer identity = {
+        .scale = { 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000 },
+    };
+    const SGIKonaGLPixelTransfer *t = u->transfer_captured ?
+                                     &u->transfer : &identity;
 
-    if (u->transfer_captured) {
-        for (unsigned k = 0; k < 4; k++) {
-            scale[k] = sgi_kona_gl_float(u->transfer.scale[k]);
-            bias[k] = sgi_kona_gl_float(u->transfer.bias[k]);
-        }
-    }
     for (uint32_t at = 0; at < u->count; at++) {
+        double values[4];
+        uint8_t bytes[4];
         uint32_t rgba;
 
-        if (!sgi_kona_gl_texture_pixel_transfer(u->header[3], u->header[4],
-                                                u->pixels + at * words,
-                                                u->swap_bytes, scale, bias,
-                                                &rgba)) {
+        if (!sgi_kona_gl_pixel_rgba_double(u->header[3], u->header[4],
+                                          u->pixels + at * words,
+                                          u->swap_bytes, values) ||
+            !sgi_kona_gl_rgba_transfer(t, values) ||
+            !sgi_kona_gl_pixel_pack_double(5, 1, values, false,
+                                            bytes, sizeof(bytes))) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: native texture component is unsupported;"
                           " upload refused\n");
             return false;
         }
+        rgba = ldl_be_p(bytes);
         switch (base) {
         case SGI_GL_ALPHA:
             rgba &= 0xff;
@@ -4917,11 +4972,21 @@ static void sgi_kona_gl_image_clear(SGIKonaState *s)
     memset(&s->gl_image_upload, 0, sizeof(s->gl_image_upload));
 }
 
+static bool sgi_kona_gl_pixel_map_token(uint32_t token)
+{
+    return token == SGI_KONA_CMD_GL_PIXEL_MAP_F ||
+           token == SGI_KONA_CMD_GL_PIXEL_MAP_UI ||
+           token == SGI_KONA_CMD_GL_PIXEL_MAP_US;
+}
+
 static void sgi_kona_gl_data_open(SGIKonaState *s, uint32_t token,
                                   uint32_t words)
 {
     if (token != SGI_KONA_CMD_GL_TEX_LOAD &&
-        token != SGI_KONA_CMD_GL_DRAW_PIXELS) {
+        token != SGI_KONA_CMD_GL_DRAW_PIXELS &&
+        !(sgi_kona_gl_pixel_map_token(token) &&
+          s->texture_upload.count && !s->texture_upload.draw_pixels &&
+          (s->texture_upload.complete || s->texture_upload.header[6]))) {
         sgi_kona_texture_upload_clear(s);
     }
     if (token != SGI_KONA_CMD_GL_BITMAP &&
@@ -5265,7 +5330,8 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
         count > SGI_KONA_TEXTURE_BYTES /
-                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(double))) {
+                (a[3] == 1 && !p->pixel_transfer.map_colour ?
+                 sizeof(uint32_t) : 4 * sizeof(double))) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels capacity exceeded; %s\n",
                       a[5] ? "DMA not staged" : "draining framed words");
         return a[5] ? 0 : layout.payload_words;
@@ -5314,7 +5380,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     bool depth_image = u->header[2] == 13;
     bool stencil_image = u->header[2] == 12;
     bool indexed_image = u->header[2] == 11;
-    bool scalar = u->header[3] != 1 || indexed_image, rendered = false;
+    bool scalar, mapped, rendered = false;
     uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
@@ -5325,6 +5391,9 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
     if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported) {
         goto out;
     }
+    mapped = !depth_image && !stencil_image && !indexed_image &&
+             p->pixel_transfer.map_colour;
+    scalar = u->header[3] != 1 || indexed_image || mapped;
     count = (uint64_t)layout.width * layout.height;
     if (depth_image) {
         depth = g_try_new(double, count);
@@ -5389,6 +5458,11 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
                     source, false, &rgba[pixel])) {
                 goto out;
             }
+            if (mapped &&
+                !sgi_kona_gl_rgba_transfer(&p->pixel_transfer,
+                                            rgba_double[pixel])) {
+                goto out;
+            }
         }
     }
     sgi_kona_gl_sink(s, &sink);
@@ -5408,7 +5482,7 @@ static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
             sgi_kona_gl_float(p->pixel_transfer.depth_bias));
         goto out;
     }
-    if (indexed_image) {
+    if (indexed_image || mapped) {
         const SGIGLPixelTransfer identity = { .scale = { 1, 1, 1, 1 } };
 
         sgi_gl_draw_pixels_double_transfer(&s->gl[i], &sink, layout.width,
@@ -5791,8 +5865,9 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
 
 static bool sgi_kona_gl_pixel_map_header(const uint32_t *a)
 {
-    return a[0] >= 0xc71 && a[0] <= 0xc75 && a[1] &&
-           a[1] <= SGI_KONA_GL_PIXEL_MAP_MAX && is_power_of_2(a[1]) &&
+    return a[0] >= 0xc71 && a[0] <= 0xc79 && a[1] &&
+           a[1] <= SGI_KONA_GL_PIXEL_MAP_MAX &&
+           (a[0] >= 0xc76 || is_power_of_2(a[1])) &&
            sgi_kona_gl_float(a[2]) == a[1] - 1 && a[3] >= a[1] &&
            (a[3] == 256 || a[3] == 1024 || a[3] == 4096);
 }
@@ -5860,9 +5935,15 @@ static void sgi_kona_gl_pixel_map_done(SGIKonaState *s)
             memcpy(&u->values[k], &component, sizeof(component));
         }
     }
-    map = u->header[0] == 0xc71 ?
-        &s->gl_pipe[u->context].pixel_transfer.stencil_map :
-        &s->gl_pipe[u->context].pixel_transfer.index_rgba[u->header[0] - 0xc72];
+    if (u->header[0] == 0xc71) {
+        map = &s->gl_pipe[u->context].pixel_transfer.stencil_map;
+    } else if (u->header[0] <= 0xc75) {
+        map = &s->gl_pipe[u->context].pixel_transfer.index_rgba[
+            u->header[0] - 0xc72];
+    } else {
+        map = &s->gl_pipe[u->context].pixel_transfer.colour_rgba[
+            u->header[0] - 0xc76];
+    }
     memset(map, 0, sizeof(*map));
     map->count = u->header[1];
     memcpy(map->values, u->values, map->count * sizeof(*map->values));
@@ -5925,11 +6006,8 @@ static void sgi_kona_gl_pixel_transfer(SGIKonaState *s, int i,
         destination = &p->pixel_transfer.depth_bias;
         break;
     case 0x0d10:                /* GL_MAP_COLOR */
-        if (!sgi_kona_gl_float(value)) {
-            return;
-        }
-        /* Nonidentity colour maps are not retained by the model. */
-        /* fall through */
+        p->pixel_transfer.map_colour = sgi_kona_gl_float(value) != 0;
+        return;
     default:
         p->pixel_transfer_unsupported = true;
         qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported pixel transfer 0x%x;"
@@ -10916,10 +10994,10 @@ static const VMStateDescription vmstate_sgi_kona_gl_bitmap_unpack = {
 };
 
 static bool sgi_kona_gl_pixel_map_valid(const SGIKonaGLPixelMap *map,
-                                       bool colour)
+                                       bool colour, bool indexed)
 {
     if (map->count > SGI_KONA_GL_PIXEL_MAP_MAX ||
-        (map->count && !is_power_of_2(map->count))) {
+        (indexed && map->count && !is_power_of_2(map->count))) {
         return false;
     }
     for (unsigned k = 0; k < SGI_KONA_GL_PIXEL_MAP_MAX; k++) {
@@ -10948,6 +11026,10 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 {
     SGIKonaGLPixelTransfer *t = opaque;
 
+    if (version_id < 6) {
+        t->map_colour = 0;
+        memset(t->colour_rgba, 0, sizeof(t->colour_rgba));
+    }
     if (version_id < 5) {
         memset(t->index_rgba, 0, sizeof(t->index_rgba));
     }
@@ -10961,11 +11043,13 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
         t->depth_scale = 0x3f800000;
         t->depth_bias = 0;
     }
-    if (!sgi_kona_gl_pixel_map_valid(&t->stencil_map, false)) {
+    if (t->map_colour > 1 ||
+        !sgi_kona_gl_pixel_map_valid(&t->stencil_map, false, true)) {
         return -EINVAL;
     }
     for (unsigned k = 0; k < 4; k++) {
-        if (!sgi_kona_gl_pixel_map_valid(&t->index_rgba[k], true)) {
+        if (!sgi_kona_gl_pixel_map_valid(&t->index_rgba[k], true, true) ||
+            !sgi_kona_gl_pixel_map_valid(&t->colour_rgba[k], true, false)) {
             return -EINVAL;
         }
     }
@@ -10974,7 +11058,7 @@ static int sgi_kona_gl_transfer_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
     .name = TYPE_SGI_KONA "/gl-transfer",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = sgi_kona_gl_transfer_post_load,
     .fields = (const VMStateField[]) {
@@ -10989,6 +11073,10 @@ static const VMStateDescription vmstate_sgi_kona_gl_transfer = {
         VMSTATE_UINT32_ARRAY_V(stencil_map.values, SGIKonaGLPixelTransfer,
                                SGI_KONA_GL_PIXEL_MAP_MAX, 4),
         VMSTATE_STRUCT_ARRAY(index_rgba, SGIKonaGLPixelTransfer, 4, 5,
+                             vmstate_sgi_kona_gl_pixel_map_table,
+                             SGIKonaGLPixelMap),
+        VMSTATE_UINT32_V(map_colour, SGIKonaGLPixelTransfer, 6),
+        VMSTATE_STRUCT_ARRAY(colour_rgba, SGIKonaGLPixelTransfer, 4, 6,
                              vmstate_sgi_kona_gl_pixel_map_table,
                              SGIKonaGLPixelMap),
         VMSTATE_END_OF_LIST()
@@ -11739,7 +11827,16 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
     if (u->transfer_captured && (!u->count || u->draw_pixels)) {
         return false;
     }
+    if (u->transfer.map_colour > 1 ||
+        (!u->transfer_captured && u->transfer.map_colour)) {
+        return false;
+    }
     for (unsigned k = 0; k < 4; k++) {
+        if (!sgi_kona_gl_pixel_map_valid(&u->transfer.colour_rgba[k],
+                                         true, false) ||
+            (!u->transfer_captured && u->transfer.colour_rgba[k].count)) {
+            return false;
+        }
         if (u->transfer_captured ?
             (!isfinite(sgi_kona_gl_float(u->transfer.scale[k])) ||
              !isfinite(sgi_kona_gl_float(u->transfer.bias[k]))) :
@@ -11799,6 +11896,15 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_be32(f, u->pio_phase);
     qemu_put_byte(f, u->dma_layout);
     qemu_put_be32(f, u->dma_phase);
+    qemu_put_byte(f, u->transfer.map_colour);
+    for (unsigned k = 0; k < 4; k++) {
+        const SGIKonaGLPixelMap *map = &u->transfer.colour_rgba[k];
+
+        qemu_put_be32(f, map->count);
+        for (unsigned at = 0; at < map->count; at++) {
+            qemu_put_be32(f, map->values[at]);
+        }
+    }
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
@@ -11846,6 +11952,18 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     dma = qemu_get_byte(f);
     tmp.dma_layout = dma;
     tmp.dma_phase = qemu_get_be32(f);
+    tmp.transfer.map_colour = qemu_get_byte(f);
+    for (unsigned k = 0; k < 4; k++) {
+        SGIKonaGLPixelMap *map = &tmp.transfer.colour_rgba[k];
+
+        map->count = qemu_get_be32(f);
+        if (map->count > SGI_KONA_GL_PIXEL_MAP_MAX) {
+            goto invalid;
+        }
+        for (unsigned at = 0; at < map->count; at++) {
+            map->values[at] = qemu_get_be32(f);
+        }
+    }
     tmp.complete = complete;
     tmp.swap_bytes = swap;
     if (complete > 1 || swap > 1 || draw > 1 || transfer > 1 || pio > 1 ||
@@ -11903,7 +12021,8 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
         }
 
         if (!u->complete && u->header[6]) {
-            if (s->gl_data_remaining) {
+            if (s->gl_data_remaining &&
+                !sgi_kona_gl_pixel_map_token(s->gl_data_token)) {
                 return -EINVAL;
             }
             for (uint32_t at = 0; at < sgi_kona_texture_buffer_words(u); at++) {
@@ -11913,7 +12032,9 @@ static int sgi_kona_textures_post_load(void *opaque, int version_id)
             }
             return 0;
         }
-        if (u->complete ? s->gl_data_remaining != 0 :
+        if (u->complete ?
+            (s->gl_data_remaining &&
+             !sgi_kona_gl_pixel_map_token(s->gl_data_token)) :
             (s->gl_data_token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
                                                   SGI_KONA_CMD_GL_TEX_LOAD) ||
              !s->gl_data_remaining || s->gl_data_have >= words ||

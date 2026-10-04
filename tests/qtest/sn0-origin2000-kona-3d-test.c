@@ -6795,6 +6795,280 @@ static void test_indexed_colour_pixels(gconstpointer opaque)
     }
 }
 
+static void colour_map_upload(QTestState *s, unsigned component,
+                              uint32_t token, const float *values,
+                              unsigned count)
+{
+    unsigned capacity = count <= 256 ? 256 : count <= 1024 ? 1024 : 4096;
+
+    kona_command(s, token,
+                 (uint32_t[]) { 0xc76 + component, count,
+                                fbits(count - 1), capacity }, 4);
+    for (unsigned k = 0; k < count; k++) {
+        uint32_t value = token == 0x34 ? fbits(values[k]) :
+            values[k] * (token == 0x35 ? 4294967295.0 : 65535.0) + 0.5;
+
+        qtest_writel(s, REG_COMMAND, value);
+    }
+}
+
+static void colour_maps(QTestState *s, uint32_t token)
+{
+    static const float values[][3] = {
+        { 1, 0.5, 0 }, { 0, 1 }, { 1, 0, 1 }, { 1 },
+    };
+    static const unsigned counts[] = { 3, 2, 3, 1 };
+
+    for (unsigned k = 0; k < 4; k++) {
+        colour_map_upload(s, k, token, values[k], counts[k]);
+    }
+}
+
+static void test_colour_pixel_maps(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint8_t got[6], expected[] = { 0x80, 0xff, 0xff, 0, 0, 0 };
+    uint32_t data[] = { 0x4080c0ff, 0xc04080ff };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+    bool texture = (mode >= 3 && mode <= 6) || mode == 20 || mode == 21;
+    bool dma = mode == 4 || mode == 6 || mode == 19 || mode == 20;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode != 9) {
+        colour_maps(s, mode == 10 ? 0x36 : mode == 11 ? 0x35 : 0x34);
+    } else {
+        memset(expected, 0, sizeof(expected));
+    }
+    pixel_transfer_set(s, 0xd10, mode == 1 || mode == 2 ? 0 : 1);
+    if (texture) {
+        uint32_t h[20];
+        uint8_t bytes[16];
+
+        texture_native_bind(s, 0);
+        memcpy(h, texture_header, sizeof(h));
+        h[6] = dma;
+        h[7] = 0;
+        h[17] |= dma ? 4 : 0;
+        kona_command(s, 0x174, h, ARRAY_SIZE(h));
+        if (!dma) {
+            qtest_writel(s, REG_COMMAND, data[0]);
+            if (mode == 21) {
+                for (unsigned k = 1; k < 4; k++) {
+                    qtest_writel(s, REG_COMMAND, data[0]);
+                }
+            }
+        }
+        if (mode == 20 || mode == 21) {
+            kona_command(s, 0x34,
+                         (uint32_t[]) { 0xc76, 3, fbits(2), 256 }, 4);
+            qtest_writel(s, REG_COMMAND, fbits(0));
+            read_dma_migrate(from, &s, &to, &dir);
+            qtest_writel(s, REG_COMMAND, fbits(0));
+            qtest_writel(s, REG_COMMAND, fbits(0));
+        }
+        if (mode == 5 || mode == 6) {
+            read_dma_migrate(from, &s, &to, &dir);
+        }
+        if (dma) {
+            colour_map_upload(s, 0, 0x34, (float[]) { 0 }, 1);
+            pixel_transfer_set(s, 0xd10, 0);
+            for (unsigned k = 0; k < 4; k++) {
+                stl_be_p(bytes + 4 * k, data[0]);
+            }
+            qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+            qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+            texture_dma_packet(s, 0, sizeof(bytes), sizeof(bytes), 0);
+        } else if (mode != 21) {
+            for (unsigned k = 1; k < 4; k++) {
+                qtest_writel(s, REG_COMMAND, data[0]);
+            }
+        }
+        kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+        for (unsigned k = 0; k < 4; k++) {
+            assert_texture_pixel(s, k % 2, k / 2, 0x80ffffff);
+        }
+        goto out;
+    }
+    if (mode == 7) {
+        kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+        colour_map_upload(s, 0, 0x34, (float[]) { 0 }, 1);
+        pixel_transfer_set(s, 0xd10, 0);
+        read_dma_migrate(from, &s, &to, &dir);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    } else if (mode == 8) {
+        kona_command(s, 0x34,
+                     (uint32_t[]) { 0xc76, 3, fbits(2), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, fbits(1));
+        read_dma_migrate(from, &s, &to, &dir);
+        qtest_writel(s, REG_COMMAND, fbits(0.5));
+        qtest_writel(s, REG_COMMAND, fbits(0));
+    } else if (mode == 12) {
+        pixel_transfer_set(s, 0xd14, 2);
+        pixel_transfer_set(s, 0xd1b, -0.5);
+        expected[0] = 0x80;
+        expected[1] = 0xff;
+        expected[2] = 0;
+        expected[3] = 0;
+        expected[4] = 0;
+        expected[5] = 0xff;
+    } else if (mode == 13) {
+        pixel_transfer_set(s, 0xd14, 10);
+        pixel_transfer_set(s, 0xd19, -10);
+        expected[0] = expected[1] = 0;
+        expected[2] = 0xff;
+    } else if (mode == 14) {
+        pixel_transfer_set(s, 0xd10, -0.0f);
+        uint8_t plain[] = { 0x40, 0x80, 0xc0, 0xc0, 0x40, 0x80 };
+
+        memcpy(expected, plain, sizeof(expected));
+    } else if (mode == 15) {
+        colour_map_upload(s, 0, 0x34, (float[]) { 0, NAN, 1 }, 3);
+    } else if (mode == 16) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        colour_map_upload(s, 0, 0x34, (float[]) { 0 }, 1);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    } else if (mode == 17) {
+        qtest_system_reset(s);
+        gl_make_current(s);
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        pixel_transfer_set(s, 0xd10, 1);
+        memset(expected, 0, sizeof(expected));
+    } else if (mode == 18) {
+        colour_map_upload(s, 3, 0x34, (float[]) { 0 }, 1);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+        kona_command(s, 0xca, (uint32_t[]) { 0x204, fbits(0.5) }, 2);
+        memset(expected, 0, sizeof(expected));
+    }
+    if (dma) {
+        uint8_t bytes[8];
+
+        stl_be_p(bytes, data[0]);
+        stl_be_p(bytes + 4, data[1]);
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+    }
+    kona_command(s, 0x3a, (uint32_t[]) { 2, 1, 5, 1, 0, dma, 0, 0 }, 8);
+    if (dma) {
+        texture_dma_packet(s, 0, 8, 8, 0);
+    } else {
+        qtest_writel(s, REG_COMMAND, data[0]);
+        qtest_writel(s, REG_COMMAND, data[1]);
+    }
+    if (mode == 1 || mode == 2) {
+        pixel_transfer_set(s, 0xd10, 1);
+    }
+    if (mode == 2) {
+        kona_command_f(s, 0xa9, (float[]) { 1.0f / 64, 0 }, 2);
+        kona_command(s, 0x38,
+                     (uint32_t[]) { 64, 64, 2, 1, 0, 0x1800, 0x80000000 }, 7);
+    }
+    if (mode != 1) {
+        pixel_transfer_set(s, 0xd10, 0);
+    }
+    pixel_transfer_set(s, 0xd14, 1);
+    pixel_transfer_set(s, 0xd19, 0);
+    pixel_transfer_set(s, 0xd1b, 0);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39,
+                 (uint32_t[]) { mode == 2 ? 65 : 64, 64, 2, 1, 4, 1, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+out:
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
+static void test_colour_map_source_types(gconstpointer opaque)
+{
+    static const unsigned types[] = { 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12 };
+    static const unsigned packed_bits[][4] = {
+        { 3, 3, 2, 0 }, { 4, 4, 4, 4 }, { 5, 5, 5, 1 },
+        { 8, 8, 8, 8 }, { 10, 10, 10, 2 },
+    };
+    static const double values[][4] = {
+        { 0.375, 0.625, 0.875, 1 }, { 0.875, 0.375, 0.625, 1 },
+    };
+    static const uint32_t maxima[] = {
+        0x7f, 0xff, 0x7fff, 0xffff, 0x7fffffff, 0xffffffff,
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned type = types[mode % ARRAY_SIZE(types)];
+    bool dma = (mode / ARRAY_SIZE(types)) & 1;
+    bool swap = (mode / ARRAY_SIZE(types)) & 2;
+    unsigned size = type < 2 || type == 8 ? 1 :
+                    type < 4 || type == 9 || type == 10 ? 2 : 4;
+    unsigned pixel_bytes = type >= 8 ? size : 4 * size;
+    uint8_t bytes[40] = { 0 }, got[6];
+    const uint8_t expected[] = { 0x80, 0xff, 0xff, 0, 0, 0 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    colour_maps(s, 0x34);
+    pixel_transfer_set(s, 0xd10, 1);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf5, 1 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf0, swap }, 2);
+    for (unsigned pixel = 0; pixel < 2; pixel++) {
+        if (type >= 8) {
+            uint32_t packed = 0;
+            unsigned shift = size * 8;
+
+            for (unsigned k = 0; k < 4; k++) {
+                unsigned bits = packed_bits[type - 8][k];
+                unsigned maximum = (1u << bits) - 1;
+                unsigned value = values[pixel][k] * maximum + 0.5;
+
+                shift -= bits;
+                packed |= value << shift;
+            }
+            packed_pixel_bytes(bytes + 1 + pixel * pixel_bytes,
+                               packed, size, swap);
+        } else {
+            for (unsigned k = 0; k < 4; k++) {
+                uint32_t value = type == 6 ? fbits(values[pixel][k]) :
+                    values[pixel][k] * maxima[type] + 0.5;
+
+                packed_pixel_bytes(bytes + 1 + pixel * pixel_bytes + k * size,
+                                   value, size, swap);
+            }
+        }
+    }
+    if (dma) {
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380001, bytes + 1, 2 * pixel_bytes);
+    }
+    kona_command(s, 0x3a,
+                 (uint32_t[]) { 2, 1, type == 8 ? 4 : 5, type, 1, dma, 0, 0 },
+                 8);
+    if (dma) {
+        texture_dma_packet(s, 1, 2 * pixel_bytes, 2 * pixel_bytes, 0);
+    } else {
+        for (unsigned k = 0; k < DIV_ROUND_UP(1 + 2 * pixel_bytes, 4); k++) {
+            qtest_writel(s, REG_COMMAND, ldl_be_p(bytes + 4 * k));
+        }
+    }
+    pixel_transfer_set(s, 0xd10, 0);
+    prepare_refused_reply(s);
+    kona_command(s, 0x39, (uint32_t[]) { 64, 64, 2, 1, 4, 1, 0 }, 7);
+    assert_reply_posted(s);
+    qtest_memread(s, RETURN_PAGE + 8, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
+    qtest_quit(s);
+}
+
 static void test_stencil_pixels_transport(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -7953,7 +8227,7 @@ static void test_draw_pixels_transfer(gconstpointer opaque)
     unsigned mode = GPOINTER_TO_UINT(opaque);
     bool dma = mode == 1;
     bool migrate = mode == 2 || mode == 5 || mode == 10;
-    bool refused = mode == 9 || mode == 10 || mode == 12 || mode == 13;
+    bool refused = mode == 9 || mode == 10 || mode == 12;
     uint32_t rgb = 0x80c060;
     uint32_t h[] = { 2, 2, 5, 1, 0, dma, 0, 0 };
     QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
@@ -8359,7 +8633,7 @@ static void test_native_image_state_refusal(gconstpointer opaque)
     gl_make_current(s);
     gl_rect_scene(s);
     if (mode < 2) {
-        pixel_transfer_set(s, mode == 1 ? 0xd10 : 0xd14,
+        pixel_transfer_set(s, mode == 1 ? 0xffff : 0xd14,
                            mode == 1 ? 1 : INFINITY);
     } else {
         kona_command(s, 0x33,
@@ -8705,7 +8979,7 @@ static void test_copy_pixels(gconstpointer opaque)
     uint32_t copy[] = { 64, 64, 2, 2, 0, 0x1800, 0x80000000 };
     uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
     unsigned dx = mode == 1 ? 65 : 68, dy = mode == 1 ? 64 : 68;
-    bool refused = mode >= 4 && mode <= 14 && mode != 12;
+    bool refused = mode >= 4 && mode <= 14 && mode != 12 && mode != 9;
     g_autofree Expected *e = g_new(Expected, 1);
 
     gl_make_current(s);
@@ -8735,6 +9009,7 @@ static void test_copy_pixels(gconstpointer opaque)
         gl_begin(s, 4);
     } else if (mode == 9) {
         pixel_transfer_set(s, 0xd10, 1);
+        memset(colours, 0, sizeof(colours));
     } else if (mode == 10) {
         copy[0] = 127;
     } else if (mode == 11) {
@@ -8850,7 +9125,7 @@ static void test_copy_pixels_query(gconstpointer opaque)
     uint32_t colours[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
     uint32_t query[] = { 64, 64, 2, 2 };
     uint32_t selector = mode == 9 ? 0x115 : 0x110;
-    bool refused = mode >= 4 && mode <= 16 && mode != 8;
+    bool refused = mode >= 4 && mode <= 16 && mode != 8 && mode != 7;
     float zx = mode == 1 ? -2 : 2, zy = mode == 1 ? -1 : 3;
     int dx = mode == 2 ? 65 : 68, dy = mode == 2 ? 64 : 68;
 
@@ -8887,6 +9162,7 @@ static void test_copy_pixels_query(gconstpointer opaque)
         pixel_transfer_set(s, 0xd14, INFINITY);
     } else if (mode == 7) {
         pixel_transfer_set(s, 0xd10, 1);
+        memset(colours, 0, sizeof(colours));
     } else if (mode == 8) {
         kona_command(s, 0x24, (uint32_t[]) { 0xde0 }, 1);
     } else if (mode == 10) {
@@ -11525,7 +11801,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/origin2000/kona-3d/image-transfer-refusal/scale",
                         GUINT_TO_POINTER(0), test_native_image_state_refusal);
     qtest_add_data_func(
-        "sn0/origin2000/kona-3d/image-transfer-refusal/map-color",
+        "sn0/origin2000/kona-3d/image-transfer-refusal/unknown-transfer",
                         GUINT_TO_POINTER(1), test_native_image_state_refusal);
     qtest_add_data_func(
         "sn0/origin2000/kona-3d/image-transfer-refusal/contradictory-source",
@@ -11557,7 +11833,7 @@ int main(int argc, char **argv)
     static const char *copy_pixels_cases[] = {
         "color", "overlap", "transfer", "queried-zero-flags",
         "unknown-flags-refused", "split-refused", "depth-refused",
-        "nonidentity-zoom-refused", "begin-refused", "map-color-refused",
+        "nonidentity-zoom-refused", "begin-refused", "default-color-map",
         "clipped-source-refused", "invalid-raster", "incomplete-texture",
         "no-context", "nonfinite-transfer-refused", "packet-migrates",
         "raster-position-preserved",
@@ -11603,7 +11879,7 @@ int main(int argc, char **argv)
         "attrib-migrates", "contexts", "fresh-context-default", "reset-default",
         "nonfinite", "nonfinite-migrates", "begin-setter-refused",
         "unknown-sticky",
-        "map-color-sticky-pop", "finite-restored", "irrelevant-state", "clamp",
+        "map-color-pop", "finite-restored", "irrelevant-state", "clamp",
         "before-alpha-test", "before-blend",
     };
     for (unsigned mode = 0; mode < ARRAY_SIZE(transfer_cases); mode++) {
@@ -11734,6 +12010,28 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_depth_pixel_boundaries);
+    }
+    for (unsigned mode = 0; mode < 48; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/colour-map-source-types/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_colour_map_source_types);
+    }
+    static const char *colour_map_names[] = {
+        "draw", "read", "copy-overlap", "texture-pio", "texture-dma",
+        "texture-partial-migration", "texture-dma-migration", "attributes",
+        "partial-map-migration", "default", "ushort", "uint", "arithmetic",
+        "clamping", "negative-zero", "late-nan", "contexts", "reset",
+        "alpha-test", "draw-dma", "pending-texture-with-partial-map",
+        "complete-texture-with-partial-map",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(colour_map_names); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/colour-maps/%s", colour_map_names[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_colour_pixel_maps);
     }
     for (unsigned mode = 0; mode < 37; mode++) {
         g_autofree char *path = g_strdup_printf(
