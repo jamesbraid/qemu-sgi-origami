@@ -391,6 +391,12 @@ static void test_origin2000(void)
 
     /* Every node gets the same PROM. */
     g_assert_cmpmem(node0, size, node1, size1);
+    /* Origin 2000's catalogue values are the stock image's own. */
+    g_assert_cmphex(ldq_be_p(node0 + IP27_CONFIG + 0x08), ==,
+                    0x69703237636f6e66ULL);
+    g_assert_cmpuint(ldl_be_p(node0 + IP27_CONFIG + 0x2c), ==, 8);
+    g_assert_cmpuint(ldl_be_p(node0 + IP27_CONFIG + 0x30), ==, 0);
+    g_assert_cmpuint(ldl_be_p(node0 + IP27_CONFIG + 0x3c), ==, 1);
     /* The I/O PROM is kept as supplied, erased after it. */
     for (i = 0; i < IO_PROM_SIZE; i++) {
         g_assert_cmphex(io[i], ==, (uint8_t)(0x06 + i * 7));
