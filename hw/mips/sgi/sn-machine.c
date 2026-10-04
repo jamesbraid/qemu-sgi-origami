@@ -4051,6 +4051,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
             qdev_prop_set_bit(DEVICE(node), "last-node",
                               node_index == node_count - 1);
+            {
+                g_autofree char *name =
+                    g_strdup_printf("node%u-flash", node_index);
+                const char *flash = sgi_machine_storage_node(s, name);
+
+                if (flash) {
+                    qdev_prop_set_string(DEVICE(node), "flash-node", flash);
+                }
+            }
             qdev_prop_set_uint32(DEVICE(node), "l1-bay",
                                  sgi_machine_node_module(t, node_index) ?
                                  sgi_machine_node_module(t, node_index)->
@@ -5083,7 +5092,8 @@ static bool sgi_machine_storage_bindable(const SGIMachineClass *smc,
     if (g_str_has_prefix(name, "node") &&
         !qemu_strtoui(name + strlen("node"), &end, 10, &index) &&
         g_str_equal(end, "-flash")) {
-        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB;
+        return t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_HUB ||
+               t->nodes->value->asic_kind == SGI_MODEL_ASIC_KIND_BEDROCK;
     }
     return false;
 }

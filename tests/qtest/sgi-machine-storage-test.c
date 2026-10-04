@@ -14,6 +14,13 @@
 #define SN0_FLASH_MARK 0x100
 #define SN0_FLASH_PROBE 0x8000
 
+/* Origin 300's 16 MiB two-position flash and the PROM image -bios takes. */
+#define SN1_FLASH_SIZE (16 * 1024 * 1024)
+#define SN1_PROM_SIZE 0x1686a8
+#define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_FLASH_MARK 0x2000
+#define SN1_MACHINE "-cpu R14000 -smp 2"
+
 static char *directory;
 
 static char *store_path(const char *name)
@@ -198,6 +205,121 @@ static void test_shared_node_refused(void)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+/* A zero-filled stand-in for the IP35 PROM -bios requires. */
+static char *make_sn1_prom(void)
+{
+    g_autofree char *bytes = g_malloc0(SN1_PROM_SIZE);
+    char *path = store_path("ip35-prom");
+
+    g_assert_true(g_file_set_contents(path, bytes, SN1_PROM_SIZE, NULL));
+    return path;
+}
+
+/* A 16 MiB flash image with @mark at SN1_FLASH_MARK of position zero. */
+static char *make_sn1_flash(const char *name, size_t size, uint8_t mark)
+{
+    g_autofree char *bytes = g_malloc(size);
+    char *path = store_path(name);
+
+    memset(bytes, 0xff, size);
+    bytes[SN1_FLASH_MARK] = mark;
+    g_assert_true(g_file_set_contents(path, bytes, size, NULL));
+    return path;
+}
+
+/* The reset view answers from the bound flash, not the -bios image. */
+static void test_sn1_node_flash_bound(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *path = make_sn1_flash("o300-node0", SN1_FLASH_SIZE,
+                                           0x35);
+    g_autofree char *node = blockdev("flash", path);
+    QTestState *qts = qtest_initf("-M origin300,node0-flash=flash "
+                                  SN1_MACHINE " -bios %s -blockdev %s",
+                                  prom, node);
+
+    g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
+                    0x35);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+/* A protocol node backs the flash as well as a raw one, as on the Hub. */
+static void test_sn1_node_flash_protocol_node(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *path = make_sn1_flash("o300-file", SN1_FLASH_SIZE,
+                                           0x36);
+    QTestState *qts = qtest_initf("-M origin300,node0-flash=flash "
+                                  SN1_MACHINE " -bios %s -blockdev "
+                                  "driver=file,node-name=flash,filename=%s",
+                                  prom, path);
+
+    g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
+                    0x36);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_sn1_node_flash_legacy_drive(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *path = make_sn1_flash("o300-legacy", SN1_FLASH_SIZE,
+                                           0x53);
+    QTestState *qts = qtest_initf("-M origin300 " SN1_MACHINE " -bios %s "
+                                  "-drive if=pflash,file=%s,format=raw",
+                                  prom, path);
+
+    g_assert_cmphex(qtest_readb(qts, SN1_PROM_RESET + SN1_FLASH_MARK), ==,
+                    0x53);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
+static void test_sn1_node_flash_refusals(void)
+{
+    g_autofree char *prom = make_sn1_prom();
+    g_autofree char *small = make_sn1_flash("o300-small", SN1_FLASH_SIZE / 2,
+                                            0);
+    g_autofree char *right = make_sn1_flash("o300-right", SN1_FLASH_SIZE, 0);
+    g_autofree char *small_node = blockdev("flash", small);
+    g_autofree char *right_node = blockdev("flash", right);
+    g_autofree char *legacy = g_strdup_printf("if=pflash,file=%s,format=raw",
+                                              right);
+    const char *wrong_size[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
+        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-S", "-qmp", "stdio", "-blockdev", small_node, NULL,
+    };
+    const char *both[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
+        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-S", "-qmp", "stdio", "-blockdev", right_node, "-drive", legacy,
+        NULL,
+    };
+    g_autofree char *stray = g_strdup_printf("if=pflash,unit=1,file=%s,"
+                                             "format=raw", right);
+    const char *extra[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,node0-flash=flash",
+        "-cpu", "R14000", "-smp", "2", "-bios", prom, "-display", "none",
+        "-S", "-qmp", "stdio", "-blockdev", right_node, "-drive", stray,
+        NULL,
+    };
+
+    assert_launch_rejected(wrong_size, "origin300: node0-flash is 8388608 "
+                           "bytes; it must be exactly 16777216");
+    assert_launch_rejected(both, "origin300: node0-flash and -drive "
+                           "if=pflash,unit=0 both back node 0's flash");
+    assert_launch_rejected(extra, "origin300 accepts one 16 MiB pflash "
+                           "image per node");
+    g_assert_cmpint(g_unlink(small), ==, 0);
+    g_assert_cmpint(g_unlink(right), ==, 0);
+    g_assert_cmpint(g_unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_autoptr(GError) error = NULL;
@@ -217,6 +339,14 @@ int main(int argc, char **argv)
                    test_sn0_node_flash_refusals);
     qtest_add_func("/sgi-machine-storage/shared-node-refused",
                    test_shared_node_refused);
+    qtest_add_func("/sgi-machine-storage/sn1-node-flash/bound",
+                   test_sn1_node_flash_bound);
+    qtest_add_func("/sgi-machine-storage/sn1-node-flash/protocol-node",
+                   test_sn1_node_flash_protocol_node);
+    qtest_add_func("/sgi-machine-storage/sn1-node-flash/legacy-drive",
+                   test_sn1_node_flash_legacy_drive);
+    qtest_add_func("/sgi-machine-storage/sn1-node-flash/refusals",
+                   test_sn1_node_flash_refusals);
     ret = g_test_run();
     g_assert_cmpint(g_rmdir(directory), ==, 0);
     g_free(directory);

@@ -212,11 +212,12 @@ and a backing whose size is not the item's size.
 
 The machines bind these items today:
 
-- ``node<N>-flash`` on ``origin200``, ``origin2000`` and ``onyx2``.
+- ``node<N>-flash`` on ``origin200``, ``origin2000``, ``onyx2``,
+  ``origin300`` and ``fuel``. A Bedrock node's 16 MiB store holds both
+  of its 8 MiB flash positions, lower first.
 
 The older forms still work but are deprecated, and giving both forms for
-one store is refused: ``-drive if=pflash,unit=N`` for an SN0 node's
-flash.
+one store is refused: ``-drive if=pflash,unit=N`` for node N's flash.
 
 Serial line order
 =================
