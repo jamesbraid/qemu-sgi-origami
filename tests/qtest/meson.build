@@ -942,10 +942,12 @@ foreach dir : target_dirs
          depends: [test_deps, qtest_emulator, emulator_modules],
          env: qtest_env,
          args: test_args,
-         is_parallel: not test.startswith('sgi-mgras-'),
+         is_parallel: not test.startswith('sgi-mgras-') and
+                      test != 'sgi-replay-test',
          protocol: 'tap',
          timeout: slow_qtests.get(test, 60),
-         priority: slow_qtests.get(test, 60),
+         priority: test == 'sgi-replay-test' ? 1100 :
+                   slow_qtests.get(test, 60),
          suite: groups.keys().length() > 0 ? [] : test_suites)
   endforeach
 endforeach
