@@ -1435,22 +1435,30 @@ static void test_point_gc_refusal(void)
 
 static void test_point_run_discard(void)
 {
-    static const struct { uint32_t token; unsigned count; } unsupported[] = {
+    static const struct { uint32_t token; unsigned count; } lines[] = {
         { 0x159, 2 },
         { 0x15b, 1 }, { 0x15c, 7 }, { 0x15d, 2 }, { 0x15e, 7 },
     };
     g_autofree char *log = NULL, *found = NULL;
     QTestState *s = kona_init_logged(MACHINE_ARGS, &log);
     uint32_t words[24];
+    const uint32_t gc[] = {
+        0x3c000, 0x1ffe, 0, 0, 0xf00fff, 0,
+        0xc, 2, 1, 6, 0, 1, 1,
+    };
 
-    load_point_gc(s, 0x3c);
-    for (unsigned i = 0; i < ARRAY_SIZE(unsupported); i++) {
+    for (unsigned i = 0; i < ARRAY_SIZE(lines); i++) {
+        /* Solid lines require operation one; reject the complete run. */
+        kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
         for (unsigned j = 0; j < ARRAY_SIZE(words); j++) {
             words[j] = 0x14c;
         }
         kona_command(s, 0x143,
                      (uint32_t[]){ XY(10, 20), XY(30, 40), XY(50, 60) }, 3);
-        kona_command(s, unsupported[i].token, words, unsupported[i].count);
+        kona_command(s, lines[i].token, words, lines[i].count);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+        g_assert_cmphex(front_at(s, 0, 332), ==, 0);
+        load_point_gc(s, 0x3c);
         kona_command(s, TOKEN_BOX, (uint32_t[]){ XY(70, 80), XY(72, 82) }, 2);
         assert_box(s, 70, 80, 72, 82, 0x3c);
         g_assert_cmphex(front_at(s, 10, 20), ==, 0);
@@ -1471,7 +1479,8 @@ static void test_point_run_discard(void)
     g_assert_cmphex(front_at(s, 110, 120), ==, 0x3c);
     qtest_quit(s);
     found = kona_log_read(log);
-    g_assert_nonnull(strstr(found, "unsupported X drawing token"));
+    g_assert_nonnull(strstr(found, "unsupported X solid-line GC"));
+    g_assert_null(strstr(found, "X data run of 3 words dropped before 0x129"));
     g_assert_nonnull(strstr(found, "X data run of 3 words dropped"));
     g_assert_nonnull(strstr(found, "more than 32 box words"));
 }
