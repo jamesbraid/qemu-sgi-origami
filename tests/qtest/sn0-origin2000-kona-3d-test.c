@@ -1858,6 +1858,9 @@ static void test_read_indexed_source_refused(void)
     gl_window_cleared(qts, 0, 0, 1);
     x_read_fixture_command(qts, 0x12e, (uint32_t[]){ 0x2d07, 1, 0x304c1304 },
                             3);
+    x_read_fixture_command(qts, 0x129,
+                            (uint32_t[]){ 0, 0, 0, 0, 0xf00fff, 0, 0x180c,
+                                          0x40001, 1, 6, 5, 1, 1 }, 13);
     x_read_fixture_command(qts, 0x136, (uint32_t[]){ 0, 0, 1, 8, 1, 1, 0 }, 7);
     x_read_fixture_command(qts, 0x139,
                             (uint32_t[]){ PROBE_X + 2, 1023 - PROBE_Y - 1 }, 2);
@@ -1875,7 +1878,7 @@ static void test_read_indexed_source_refused(void)
     reply = qtest_qmp(qts,
         "{'execute':'qom-get','arguments':{'path':'/machine/module0/kona0',"
         "'property':'x-test-plane-word'}}");
-    g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 2);
+    g_assert_cmpuint(qdict_get_int(reply, "return"), ==, 3);
     qobject_unref(reply);
     prepare_refused_reply(qts);
     kona_command(qts, 0x39, (uint32_t[]){ 0, 0, 3, 2, 4, 1, 0 }, 7);
