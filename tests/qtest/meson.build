@@ -632,8 +632,7 @@ sgi_qtests = \
     ['sgi-heart-cpu-test', 'r10000-identity-test', 'ics1890-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
-    ['octane-test', 'octane-mgras-test', 'lh28f800su-test',
-     'sgi-bridge-sharp-flash-test'] : []) + \
+    ['octane-test', 'octane-mgras-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['octane-vpro-test'] : []) + \
   sn0_router_qtests + \

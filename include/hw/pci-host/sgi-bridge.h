@@ -19,6 +19,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
 #include "qom/object.h"
+#include "hw/block/flash.h"
 
 #define TYPE_SGI_BRIDGE "sgi-bridge"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBridgeState, SGI_BRIDGE)
@@ -165,12 +166,7 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 #define SGI_BRIDGE_PACKET_ADDRESS_BITS 48
 
 MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s);
-bool sgi_bridge_install_flash_read_view(SGIBridgeState *s,
-                                        const uint8_t *image, size_t size,
-                                        Error **errp);
-bool sgi_bridge_install_flash_device_read_view(SGIBridgeState *s,
-                                               MemoryRegion *part,
-                                               Error **errp);
+void sgi_bridge_connect_cfi_flash(SGIBridgeState *s, PFlashCFI01 *flash);
 
 /*
  * The local register block: 64 KB decoded, the first 0x300 bytes defined, one
@@ -206,6 +202,11 @@ bool sgi_bridge_install_flash_device_read_view(SGIBridgeState *s,
  */
 #define SGI_BRIDGE_ATE_ENTRIES  128
 
+typedef struct SGIBridgeFlashBoundary {
+    SGIBridgeState *bridge;
+    hwaddr offset;
+} SGIBridgeFlashBoundary;
+
 struct SGIBridgeState {
     PCIHostState parent_obj;
 
@@ -228,12 +229,13 @@ struct SGIBridgeState {
      * set. CS1 is unpopulated unless a board links a "flash-select1" part.
      */
     MemoryRegion flash_window;
-    MemoryRegion flash_read_view;
-    MemoryRegion flash_boundary;
-    MemoryRegion *flash_read_source;
-    hwaddr flash_read_view_offset;
     MemoryRegion *flash;
     MemoryRegion *flash_select1;
+    PFlashCFI01 *flash_cfi01;
+    MemoryRegion flash_alias[2];
+    MemoryRegion flash_boundary[2];
+    hwaddr flash_offset;
+    SGIBridgeFlashBoundary flash_edge[2];
     bool flash_select;
     bool flash_reject_invalid_writes;
 
