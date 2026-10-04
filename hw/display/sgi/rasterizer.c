@@ -3363,7 +3363,8 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     SGISoftDraw r = {
         .rules = rules, .t = t, .st = d->state,
         .back_colors = d->back_colors,
-        .point_smooth = d->point_smooth, .line_smooth = d->line_smooth,
+        .point_smooth = rules->smooth_primitives && d->point_smooth,
+        .line_smooth = rules->smooth_primitives && d->line_smooth,
         .smooth_point_size = d->point_size,
         .smooth_line_width = d->line_width,
         .polygon_stipple = d->polygon_stipple_enabled ?

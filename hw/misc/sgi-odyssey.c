@@ -3872,6 +3872,7 @@ static const SGIRasterRules odyssey_gl_rules = {
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_COVERAGE_DOUBLE,
     .alpha_test_bits = 12,
+    .smooth_primitives = true,
     .evidence = "chosen, pending capture: borrowed from MGRAS (Octane RE4); "
                 "Odyssey's subpixel grid and GL colour depth are unmeasured "
                 "(odyssey-gl-family-side.md)",
