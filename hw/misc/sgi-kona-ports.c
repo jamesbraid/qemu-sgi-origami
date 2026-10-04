@@ -59,8 +59,8 @@ const unsigned sgi_kona_doorbell_num_selectors =
  * KONAsetdisplaymode and the swap paths send it.
  *
  * The X server's own tokens count the first argument, which travels
- * in the token's slot, and the data words after it. Each count comes
- * from one caller. A wrong count is not reliably detectable: a surplus
+ * in the token's slot, and the data words after it. Counts come from
+ * inspected senders unless marked inferred. A surplus
  * word would open a command of its own.
  *
  * Every other word stays on the textport's unexpected-word path.
@@ -193,7 +193,9 @@ const SGICommandPortSelector sgi_kona_command_tokens[] = {
     /* Established relative-point and line lengths. */
     { SGI_KONA_CMD_X_RELATIVE_POINT, 1 },
     { SGI_KONA_CMD_X_RELATIVE_POINT6, 6 },
-    { 0x159, 2 },
+    { SGI_KONA_CMD_X_SEGMENT, 2 },
+    /* Inferred six independent endpoint pairs, without an inspected sender. */
+    { SGI_KONA_CMD_X_SEGMENT6, 12 },
     { 0x15b, 1 },
     { 0x15c, 7 },
     { 0x15d, 2 },

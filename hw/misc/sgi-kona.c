@@ -7397,9 +7397,10 @@ static bool sgi_kona_x_segment(SGIKonaState *s, uint32_t first,
 static void sgi_kona_x_lines(SGIKonaState *s, uint32_t token,
                              const uint32_t *args, unsigned argc)
 {
-    uint32_t vertices[SGI_KONA_X_BOX_RUN_WORDS + 7];
+    uint32_t vertices[SGI_KONA_X_BOX_RUN_WORDS + 12];
     unsigned count = s->x_boxes_have + argc;
-    bool segments = token == SGI_KONA_CMD_X_SEGMENT;
+    bool segments = token == SGI_KONA_CMD_X_SEGMENT ||
+                    token == SGI_KONA_CMD_X_SEGMENT6;
     bool relative = token == SGI_KONA_CMD_X_RELATIVE_LINE ||
                     token == SGI_KONA_CMD_X_RELATIVE_LINE6;
     bool endpoint = token != SGI_KONA_CMD_X_LINE6 &&
@@ -8659,6 +8660,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
     case SGI_KONA_CMD_X_RELATIVE_POINT:
     case SGI_KONA_CMD_X_RELATIVE_POINT6:
     case SGI_KONA_CMD_X_SEGMENT:
+    case SGI_KONA_CMD_X_SEGMENT6:
     case SGI_KONA_CMD_X_LINE:
     case SGI_KONA_CMD_X_LINE6:
     case SGI_KONA_CMD_X_RELATIVE_LINE:
@@ -8858,6 +8860,7 @@ static void sgi_kona_kernel_packet(void *opaque, unsigned port_id,
         sgi_kona_x_relative_points(s, args, argc);
         break;
     case SGI_KONA_CMD_X_SEGMENT:
+    case SGI_KONA_CMD_X_SEGMENT6:
     case SGI_KONA_CMD_X_LINE:
     case SGI_KONA_CMD_X_LINE6:
     case SGI_KONA_CMD_X_RELATIVE_LINE:
