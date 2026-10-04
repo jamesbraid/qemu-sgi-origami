@@ -819,6 +819,11 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
             raise ResolutionError(
                 f"{label} must be an integer from {minimum} through {maximum}")
 
+    def required(entry, field, label):
+        # Machine properties only override; the catalogue owns the value.
+        if field not in entry:
+            raise ResolutionError(f"{label} requires a catalogue {field}")
+
     for section, fields in allowed.items():
         selected = emulation.get(section, {})
         if not isinstance(selected, dict):
@@ -866,9 +871,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         f"input alias '{expected}' has multiple owners")
                 seen.add(expected)
             if section == "bedrock_nodes":
-                if "board_id_word" in entry:
-                    integer(entry["board_id_word"], (1 << 64) - 1,
-                            f"'{cid}' board_id_word")
+                required(entry, "board_id_word", f"'{cid}'")
+                integer(entry["board_id_word"], (1 << 64) - 1,
+                        f"'{cid}' board_id_word")
                 if ("board_id_mask" in entry) != (
                         "board_id_required_bits" in entry):
                     raise ResolutionError(
@@ -886,9 +891,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         raise ResolutionError(
                             f"'{cid}' board identity violates configured mask")
                 identity = component.get("identity", {})
-                if "hardware_revision" in identity:
-                    integer(identity["hardware_revision"], 15,
-                            f"'{cid}' hardware_revision")
+                required(identity, "hardware_revision", f"Bedrock '{cid}'")
+                integer(identity["hardware_revision"], 15,
+                        f"'{cid}' hardware_revision")
                 integer(entry.get("local_region"), 63, f"'{cid}' local_region")
                 integer(entry.get("initiator_region"), 63,
                         f"'{cid}' initiator_region")
@@ -903,9 +908,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                     raise ResolutionError(
                         f"'{cid}' installed bank mask policy is invalid")
             elif section == "l1_controllers":
-                if "reported_type" in entry:
-                    integer(entry["reported_type"], 255,
-                            f"'{cid}' reported_type", 1)
+                required(entry, "reported_type", f"'{cid}'")
+                integer(entry["reported_type"], 255,
+                        f"'{cid}' reported_type", 1)
                 if "revision" in entry:
                     revision = entry["revision"]
                     if (not isinstance(revision, dict)
@@ -916,9 +921,9 @@ def validate_initialization_policy(model: dict[str, Any]) -> None:
                         integer(value, 2147483647,
                                 f"'{cid}' L1 revision {field}")
             elif section == "io_boards":
-                if "ioc3_subsystem_id" in entry:
-                    integer(entry["ioc3_subsystem_id"], 65535,
-                            f"'{cid}' ioc3_subsystem_id")
+                required(entry, "ioc3_subsystem_id", f"'{cid}'")
+                integer(entry["ioc3_subsystem_id"], 65535,
+                        f"'{cid}' ioc3_subsystem_id")
                 if entry.get("mac_source") not in {"none", "module-l1"}:
                     raise ResolutionError(
                         f"'{cid}' has no supported MAC source")

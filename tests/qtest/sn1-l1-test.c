@@ -2722,6 +2722,30 @@ static void test_general_reads(void)
     qtest_quit(s);
 }
 
+/*
+ * An ip34 controller has no stored type of its own: the machine supplies
+ * the catalogue's code. Without one the identity request is an error,
+ * never an implicit reply.
+ */
+static void test_ip34_identity_needs_supplied_type(void)
+{
+    uint8_t reply[129];
+    QTestState *s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,"
+                               "id=l1c,brick-type=ip34" UART);
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x98);
+    qtest_quit(s);
+
+    s = qtest_init("-M none -cpu R10000 -S -device sgi-l1,id=l1c,"
+                   "brick-type=ip34,brick-type-code=0x61" UART);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    g_assert_cmpuint(general(s, 0x0003, NULL, 0, 0, reply), ==, 16);
+    g_assert_cmphex(reply[15], ==, 0x61);
+    qtest_quit(s);
+}
+
 static void fuel_mac_checksum(uint8_t *image)
 {
     unsigned sum = 0;
@@ -4598,6 +4622,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/console-short-frames", test_console_short_frames);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
+    qtest_add_func("sn1/l1/ip34-identity-needs-supplied-type",
+                   test_ip34_identity_needs_supplied_type);
     qtest_add_func("sn1/l1/fuel-mac-eeprom", test_fuel_mac_eeprom);
     qtest_add_func("sn1/l1/identity-defaults", test_identity_defaults);
     qtest_add_func("sn1/l1/identity-raw-override",

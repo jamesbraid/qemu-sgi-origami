@@ -105,29 +105,41 @@ class BedrockConfigurationTests(unittest.TestCase):
             "revision": {"major": 2, "minor": 3, "patch": 4},
         })
 
-    def test_fuel_unknowns_carry_no_input_bindings(self):
+    def test_fuel_board_values_come_from_its_catalogue(self):
         topology = self.catalogue(_resolved("fuel"))
         node = topology["nodes"][0]
-        self.assertNotIn("widget-revision", node["identity"])
-        self.assertNotIn("board-id-word", node["bedrock"])
-        self.assertEqual(node["bedrock"]["installed-bank-mask"], 3)
-        self.assertEqual(
-            set(node["bedrock"]),
-            {"board-id-mask", "board-id-required-bits", "initiator-region",
-             "installed-bank-mask", "local-region"})
+        self.assertEqual(node["identity"]["widget-revision"], 2)
+        self.assertEqual(node["bedrock"], {
+            "board-id-word": 0x4001, "board-id-mask": 0xf000,
+            "board-id-required-bits": 0x4000, "initiator-region": 0,
+            "installed-bank-mask": 3, "local-region": 0})
+        # The L1 revision stays unknown: no capture fits the selected board.
         l1 = topology["controllers"][0]["l1"]
-        self.assertEqual(l1, {"mac-eeprom-input": {
-            "option": "fuel-mac-eeprom", "required": False}})
+        self.assertEqual(l1, {
+            "reported-type": 0x41,
+            "mac-eeprom-input": {
+                "option": "fuel-mac-eeprom", "required": False}})
         board = topology["io-boards"][0]
         self.assertTrue(board["populated"])
         self.assertEqual(board["mac-source"], "module-l1")
-        self.assertNotIn("ioc3-subsystem-id", board)
-        self.assertNotIn("ioc3-subsystem-input", board)
+        self.assertEqual(board["ioc3-subsystem-id"], 0xc30a)
         self.assertEqual(board["pci-functions"], [
             {"kind": "isp12160", "revision": 6},
             {"kind": "ioc3", "revision": 1},
             {"kind": "lucent-ohci", "revision": 16},
         ])
+
+    def test_fuel_vpro_board_values_match_fuel(self):
+        fuel = self.catalogue(_resolved("fuel"))
+        vpro = self.catalogue(_resolved("fuel-vpro"))
+        self.assertEqual(vpro["nodes"][0]["identity"],
+                         fuel["nodes"][0]["identity"])
+        self.assertEqual(vpro["nodes"][0]["bedrock"],
+                         fuel["nodes"][0]["bedrock"])
+        self.assertEqual(vpro["controllers"][0]["l1"],
+                         fuel["controllers"][0]["l1"])
+        self.assertEqual(vpro["io-boards"][0]["ioc3-subsystem-id"],
+                         fuel["io-boards"][0]["ioc3-subsystem-id"])
 
     def test_fitted_assembly_presence_does_not_depend_on_serial(self):
         model = _resolved("origin300")
@@ -265,7 +277,29 @@ class BedrockConfigurationTests(unittest.TestCase):
         self.assertEqual(
             [board["populated"] for board in boards], [False, True])
 
-    def test_missing_l1_configuration_is_rejected(self):
+    def test_missing_board_values_are_rejected(self):
+        # No product may leave a board value to a launch option.
+        for name in ("origin300", "fuel"):
+            for section, owner, field in (
+                    ("bedrock_nodes", "bedrock", "board_id_word"),
+                    ("l1_controllers", "l1", "reported_type"),
+                    ("io_boards", None, "ioc3_subsystem_id")):
+                with self.subTest(machine=name, field=field):
+                    model = _resolved(name)
+                    policies = model["machine"]["emulation"][section]
+                    owner = owner or next(iter(policies))
+                    del policies[owner][field]
+                    with self.assertRaisesRegex(ValueError,
+                                                f"catalogue {field}"):
+                        compile_model(model)
+            with self.subTest(machine=name, field="hardware_revision"):
+                model = _resolved(name)
+                bedrock = next(c for c in model["components"]
+                               if c["id"] == "bedrock")
+                del bedrock["identity"]["hardware_revision"]
+                with self.assertRaisesRegex(ValueError,
+                                            "catalogue hardware_revision"):
+                    compile_model(model)
         model = _resolved("origin300")
         model["machine"]["emulation"].pop("l1_controllers")
         with self.assertRaisesRegex(ValueError, "configured L1"):

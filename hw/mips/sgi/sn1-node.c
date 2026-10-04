@@ -1061,8 +1061,10 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
 /*
  * The board-identification register both consumers read: OpenBSD through the
  * remote form and the stock firmware through the local one, each taking the
- * product code from bits 15 through 12. Fuel's full response is an explicit
- * supplied launch input because its physical reset value is unknown.
+ * product code from bits 15 through 12; the stock firmware also takes a
+ * CPU-configuration selector from the low nibble. Fuel's catalogue word
+ * carries that code and the selector its recorded runs used, because the rest
+ * of its physical reset value is unknown.
  * Only the aligned 64-bit read is answered; everything else is refused and
  * said out loud, because nothing establishes what the other bits or widths
  * do.
