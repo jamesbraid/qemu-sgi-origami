@@ -3074,9 +3074,8 @@ static void l1_expect_mac_text(QTestState *qts, const char *text)
 }
 
 /*
- * Fuel's L1 keeps the address as MAC text for request 0x0008 and has no IO8
- * record; the IOC3 takes the same address. Fuel gets no default node board
- * record.
+ * Fuel's L1 keeps the address as MAC text for request 0x0008, and in its
+ * system board's component 1 area; the IOC3 takes the same address.
  */
 static void test_fuel_mac(const void *data)
 {
@@ -3103,14 +3102,284 @@ static void test_fuel_mac(const void *data)
         l1_expect_mac_text(qts, cases[i].text);
         qtest_system_reset(qts);
         l1_expect_mac_text(qts, cases[i].text);
-        /* No IO8 record, and no node board record is established. */
-        for (unsigned component = 0; component < 2; component++) {
-            g_assert_cmpuint(l1_eeprom_read(qts, component, L1_EEPROM_BOARD,
-                                            0, 1, reply), ==, 6);
-            g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
-        }
+        g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_BOARD, 66, 12,
+                                        reply), ==, 24);
+        g_assert_cmpmem(reply + 12, 12, cases[i].text, 12);
+        /* Nothing past the system board's two components. */
+        g_assert_cmpuint(l1_eeprom_read(qts, 2, L1_EEPROM_BOARD, 0, 1,
+                                        reply), ==, 6);
+        g_assert_cmphex(reply[4], ==, L1_REPLY_ABSENT);
         qtest_quit(qts);
     }
+}
+
+/*
+ * The public Linux IP35 series' board-area reader (patches 29/38 "wire the
+ * L1 into reset and the Ethernet address" and 30/38 "take the board part
+ * number from the L1", arch/mips/sgi-ip27/ip27-l1.c), ported so the test
+ * reads the L1 as that kernel does. It probes for the area length, fetches
+ * 64-byte chunks and requires a zero byte sum.
+ */
+#define LINUX_IA_BUF_SIZE 512
+#define LINUX_IA_EOF 0xc1
+
+static int linux_l1_read_board_ia(QTestState *qts, unsigned component,
+                                  uint8_t *ia, size_t *ialen)
+{
+    uint8_t reply[131];
+    size_t length, pos = 0, chunk;
+    unsigned sum = 0;
+
+    length = l1_eeprom_read(qts, component, L1_EEPROM_BOARD, 0, 0, reply);
+    if (length < 6 || ldl_be_p(reply + 1)) {
+        return -EIO;
+    }
+    if (reply[5] != 1 || length < 11 || reply[6] != 0) {
+        return -EIO;
+    }
+    *ialen = ldl_be_p(reply + 7);
+    if (*ialen == 0 || *ialen > LINUX_IA_BUF_SIZE) {
+        return -ENOMEM;
+    }
+    while (pos < *ialen) {
+        length = l1_eeprom_read(qts, component, L1_EEPROM_BOARD, pos, 64,
+                                reply);
+        if (length < 6 || ldl_be_p(reply + 1)) {
+            return -EIO;
+        }
+        if (reply[5] != 2 || length < 12 || reply[6] != 0 ||
+            !(reply[11] & 0x80)) {
+            return -EIO;
+        }
+        chunk = reply[11] & 0x7f;
+        if (!chunk || length < 12 + chunk) {
+            return -EIO;
+        }
+        chunk = MIN(chunk, *ialen - pos);
+        memcpy(ia + pos, reply + 12, chunk);
+        pos += chunk;
+    }
+    for (pos = 0; pos < *ialen; pos++) {
+        sum += ia[pos];
+    }
+    return (sum & 0xff) ? -EINVAL : 0;
+}
+
+static size_t linux_ia_skip(const uint8_t *ia, size_t pos, size_t ialen)
+{
+    size_t next;
+
+    if (ia[pos] == LINUX_IA_EOF) {
+        return pos;
+    }
+    next = pos + 1 + (ia[pos] & 0x3f);
+    return next >= ialen ? pos : next;
+}
+
+/* The fourth record, ASCII, with underscores read as dashes. */
+static int linux_l1_board_partnum(QTestState *qts, unsigned component,
+                                  char *buf, size_t len)
+{
+    uint8_t ia[LINUX_IA_BUF_SIZE];
+    size_t ialen, pos, field;
+    int rc = linux_l1_read_board_ia(qts, component, ia, &ialen);
+
+    if (rc) {
+        return rc;
+    }
+    if (ia[1] < 2 || ia[1] * 8UL > ialen) {
+        return -EINVAL;
+    }
+    pos = 6;
+    for (unsigned i = 0; i < 3; i++) {
+        pos = linux_ia_skip(ia, pos, ialen);
+    }
+    if (pos >= ialen || (ia[pos] >> 6) != 3) {
+        return -EINVAL;
+    }
+    field = ia[pos] & 0x3f;
+    if (field == 0 || pos + 1 + field > ialen || field >= len) {
+        return -EINVAL;
+    }
+    for (size_t i = 0; i < field; i++) {
+        buf[i] = ia[pos + 1 + i] == '_' ? '-' : ia[pos + 1 + i];
+    }
+    buf[field] = 0;
+    return 0;
+}
+
+/* Component 1's Ethernet field, after the fixed records and key group. */
+static int linux_l1_ethernet_address(QTestState *qts, uint8_t mac[6])
+{
+    uint8_t ia[LINUX_IA_BUF_SIZE], group;
+    size_t ialen, pos;
+    int rc = linux_l1_read_board_ia(qts, 1, ia, &ialen);
+
+    if (rc) {
+        return rc;
+    }
+    if (ia[1] < 2 || ia[1] * 8UL > ialen) {
+        return -EINVAL;
+    }
+    pos = 6;
+    for (unsigned i = 0; i < 4; i++) {
+        pos = linux_ia_skip(ia, pos, ialen);
+    }
+    if (pos < ialen - 1) {
+        pos++;
+    }
+    for (unsigned i = 0; i < 3; i++) {
+        pos = linux_ia_skip(ia, pos, ialen);
+    }
+    if (ia[0] >= 2) {
+        if (pos + 1 >= ialen) {
+            return -ENXIO;
+        }
+        group = ia[pos + 1];
+        pos = linux_ia_skip(ia, pos, ialen);
+        if (group != 1) {
+            return -ENXIO;
+        }
+        for (unsigned i = 0; i < 3; i++) {
+            pos = linux_ia_skip(ia, pos, ialen);
+        }
+    } else if (pos < ialen && ia[pos] == 0x04) {
+        for (unsigned i = 0; i < 3; i++) {
+            pos = linux_ia_skip(ia, pos, ialen);
+        }
+    }
+    if (pos >= ialen - 1 - 12 || ia[pos] != 0xcc) {
+        return -EINVAL;
+    }
+    pos++;
+    for (unsigned i = 0; i < 6; i++) {
+        int hi = g_ascii_xdigit_value(ia[pos + i * 2]);
+        int lo = g_ascii_xdigit_value(ia[pos + i * 2 + 1]);
+
+        if (hi < 0 || lo < 0) {
+            return -EINVAL;
+        }
+        mac[i] = hi << 4 | lo;
+    }
+    return (!memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) ? -EINVAL : 0;
+}
+
+/*
+ * Linux finds a Fuel by the first component in 0..7 whose part number
+ * starts 030-1707-, and takes the onboard Ethernet address from component 1.
+ * Both come from a plain -M fuel's built-in records.
+ */
+static void test_fuel_linux_identity(const void *data)
+{
+    static const struct {
+        const char *option;
+        uint8_t mac[6];
+    } cases[] = {
+        { "", { 0x08, 0x00, 0x69, 0x12, 0x34, 0x56 } },
+        { ",mac=02:a1:b2:c3:d4:e5", { 0x02, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5 } },
+    };
+    g_autofree char *quoted = g_shell_quote(prom_path);
+
+    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = qtest_initf("-M fuel%s -cpu R14000 -smp 1 -m 512M "
+                                      "-bios %s -S", cases[i].option,
+                                      quoted);
+        char part[24];
+        uint8_t mac[6];
+        int found = -1;
+
+        for (unsigned component = 0; component < 8; component++) {
+            int rc = linux_l1_board_partnum(qts, component, part,
+                                            sizeof(part));
+
+            if (component < 2) {
+                g_assert_cmpint(rc, ==, 0);
+                g_assert_cmpstr(part, ==, "030-1707-003");
+            } else {
+                g_assert_cmpint(rc, ==, -EIO);
+            }
+            if (!rc && found < 0 && g_str_has_prefix(part, "030-1707-")) {
+                found = component;
+            }
+        }
+        g_assert_cmpint(found, ==, 0);
+        g_assert_cmpint(linux_l1_ethernet_address(qts, mac), ==, 0);
+        g_assert_cmpmem(mac, 6, cases[i].mac, 6);
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * Raw board files replace the built-in areas, and Linux then reads theirs:
+ * here a stored-underscore part number at component 0 and another address
+ * at component 1.
+ */
+static void test_fuel_linux_identity_raw_override(const void *data)
+{
+    static const char logic[] = "SYNTHETIC";
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-fuel-raw-XXXXXX", &error);
+    g_autofree char *node_path = NULL, *logic_path = NULL;
+    g_autofree char *quoted = g_shell_quote(prom_path);
+    uint8_t node[24] = { 0x00, 0x03 }, board[48] = { 0x00, 0x06 };
+    static const uint8_t expected[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
+    uint8_t mac[6];
+    char part[24];
+    size_t pos;
+    unsigned sum;
+    QTestState *qts;
+
+    g_assert_no_error(error);
+    /* Test-owned records: empty mfg, name and serial, then the part. */
+    pos = 6;
+    node[pos++] = 0xc0;
+    node[pos++] = 0xc0;
+    node[pos++] = 0xc0;
+    node[pos++] = 0xcc;
+    memcpy(node + pos, "030_1707_005", 12);
+    pos += 12;
+    node[pos++] = LINUX_IA_EOF;
+    sum = 0;
+    for (size_t i = 0; i < sizeof(node); i++) {
+        sum += node[i];
+    }
+    node[sizeof(node) - 1] = -sum;
+
+    pos = 6;
+    board[pos++] = 0xc0 | (sizeof(logic) - 1);
+    memcpy(board + pos, logic, sizeof(logic) - 1);
+    pos += sizeof(logic) - 1;
+    for (unsigned i = 0; i < 3; i++) {
+        board[pos++] = 0xc0;
+    }
+    board[pos++] = 0;
+    for (unsigned i = 0; i < 3; i++) {
+        board[pos++] = 0xc0;
+    }
+    board[pos++] = 0xcc;
+    memcpy(board + pos, "021122334455", 12);
+    pos += 12;
+    board[pos++] = LINUX_IA_EOF;
+    sum = 0;
+    for (size_t i = 0; i < sizeof(board); i++) {
+        sum += board[i];
+    }
+    board[sizeof(board) - 1] = -sum;
+
+    node_path = write_record(directory, "node.bin", node, sizeof(node));
+    logic_path = write_record(directory, "logic.bin", board, sizeof(board));
+    qts = qtest_initf("-M fuel,board-eeprom.0=%s,board-eeprom.1=%s "
+                      "-cpu R14000 -smp 1 -m 512M -bios %s -S", node_path,
+                      logic_path, quoted);
+    g_assert_cmpint(linux_l1_board_partnum(qts, 0, part, sizeof(part)), ==,
+                    0);
+    g_assert_cmpstr(part, ==, "030-1707-005");
+    g_assert_cmpint(linux_l1_ethernet_address(qts, mac), ==, 0);
+    g_assert_cmpmem(mac, 6, expected, 6);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(node_path), ==, 0);
+    g_assert_cmpint(g_unlink(logic_path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static char *create_flash_image(void)
@@ -4664,6 +4933,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn1/address-map/mac-rejects", NULL,
                         test_mac_rejects);
     qtest_add_data_func("fuel/mac/text-record", NULL, test_fuel_mac);
+    qtest_add_data_func("fuel/identity/linux-reader", NULL,
+                        test_fuel_linux_identity);
+    qtest_add_data_func("fuel/identity/linux-reader-raw-override", NULL,
+                        test_fuel_linux_identity_raw_override);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func(

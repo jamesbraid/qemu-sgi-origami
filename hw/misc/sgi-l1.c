@@ -2514,7 +2514,9 @@ static const VMStateDescription vmstate_l1 = {
  * The contents are not factory data: serials, dates, keys and the IO8 part
  * are placeholders, and only the node board's name, part and revision
  * letter come from real inventories (the caller supplies them). Every area
- * sums to zero modulo 256.
+ * sums to zero modulo 256. A Fuel's single system board answers as both
+ * the node board and the I/O logic board, the second area carrying the
+ * station address in the IO8 position.
  */
 #define L1_IA_BINARY 0
 #define L1_IA_ASCII 3
@@ -2571,7 +2573,7 @@ static void l1_build_chassis_area(SGIL1EEPROM *record)
 /*
  * A board area: placeholder manufacturer "SYNTHETIC", serial "000000" and
  * a zero date, the given name, part and revision, zeroed unknown binary
- * fields, and for an IO8 the twelve ASCII hex digits of its station
+ * fields, and for an I/O board the twelve ASCII hex digits of its station
  * address after them.
  */
 static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
@@ -2643,23 +2645,34 @@ static bool l1_component_selected(SGIL1State *s, unsigned component)
 
 /*
  * Fills each identity area no raw file supplied. Component 0 is the node
- * board, component 1 the IO8; a selected record on a component leaves it
- * alone. The Fuel-family MAC text record has no modeled EEPROM bytes: only
- * the RAM copy the firmware serves through request 0x0008 is seeded.
+ * board, component 1 the IO8 or, for a system board, the node board's
+ * identity again with the station address; a selected record on a
+ * component leaves it alone. The Fuel-family MAC text record has no modeled
+ * EEPROM bytes: only the RAM copy the firmware serves through request
+ * 0x0008 is seeded. A system board seeds that text too, and its component 1
+ * area carries the same address, so every reader sees one MAC.
  */
 static bool l1_build_identity(SGIL1State *s, Error **errp)
 {
-    bool io8 = false, mac_text = false;
+    bool io8 = false, mac_text = false, system_board = false;
     uint8_t mac[6];
 
     if (s->mac_record && s->mac_record[0]) {
         io8 = !strcmp(s->mac_record, "io8-board");
         mac_text = !strcmp(s->mac_record, "mac-text");
-        if (!io8 && !mac_text) {
-            error_setg(errp, "L1 mac-record must be io8-board or mac-text");
+        system_board = !strcmp(s->mac_record, "system-board");
+        if (!io8 && !mac_text && !system_board) {
+            error_setg(errp, "L1 mac-record must be io8-board, mac-text or "
+                       "system-board");
             return false;
         }
     }
+    if (system_board && !s->node_board_name) {
+        error_setg(errp, "L1 system-board mac-record needs a node board "
+                   "identity");
+        return false;
+    }
+    mac_text |= system_board;
     if (s->mac) {
         if (!io8 && !mac_text) {
             error_setg(errp, "L1 mac needs a mac-record");
@@ -2726,6 +2739,16 @@ static bool l1_build_identity(SGIL1State *s, Error **errp)
                                            mac[4], mac[5]);
         memcpy(s->board_mac, mac, sizeof(s->board_mac));
         s->board_mac_valid = true;
+    }
+    if (system_board && !l1_component_selected(s, 1)) {
+        if (!s->records[1].length) {
+            l1_build_chassis_area(&s->records[1]);
+        }
+        if (!s->records[17].length) {
+            l1_build_board_area(&s->records[17], s->node_board_name,
+                                s->node_board_part, s->node_board_revision,
+                                s->board_mac);
+        }
     }
     return true;
 }
