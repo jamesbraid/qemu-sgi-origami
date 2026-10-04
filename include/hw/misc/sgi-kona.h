@@ -332,6 +332,9 @@ typedef struct SGIKonaGLPipe {
     bool pixel_transfer_unsupported;
     SGIKonaGLPixelTransfer pixel_transfer;
     bool unpack_swap_bytes;
+    bool unpack_lsb_first;
+    uint32_t unpack_skip_rows;
+    uint32_t unpack_skip_pixels;
     uint32_t unpack_alignment;
     uint32_t unpack_row_length;
     uint32_t pack_alignment;
@@ -714,6 +717,14 @@ typedef struct SGIKonaTextureUpload {
     bool swap_bytes; /* captured when the native header arrives */
 } SGIKonaTextureUpload;
 
+typedef struct SGIKonaGLRawBitmapUpload {
+    uint32_t header[9];
+    uint32_t row_length, skip_rows, skip_pixels, alignment;
+    uint32_t context, count;
+    bool lsb_first, refused;
+    uint32_t *words;
+} SGIKonaGLRawBitmapUpload;
+
 #define SGI_KONA_GL_BITMAP_BYTES 3136
 
 typedef struct SGIKonaGLBitmapUpload {
@@ -929,6 +940,7 @@ struct SGIKonaState {
     SGIKonaTextureState textures;
     SGIKonaTextureUpload texture_upload;
     SGIKonaGLBitmapUpload gl_bitmap_upload;
+    SGIKonaGLRawBitmapUpload gl_raw_bitmap_upload;
     uint32_t texture_bind[5];
     uint32_t texture_record[22];
     uint32_t texture_record_token;
