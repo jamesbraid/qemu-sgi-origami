@@ -2519,8 +2519,14 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     PsitechRad4State *s = PSITECH_RAD4(obj);
 
     timer_del(s->frame_timer);
-    /* No mode is recognized yet; show mode 0's geometry until one is. */
+    /*
+     * No mode is recognized yet; show mode 0's geometry until one is, and
+     * blank it: display_buffer still holds the previous mode's rows packed
+     * at that mode's width, and nothing converts the cleared framebuffer
+     * into it until a mode is recognized.
+     */
     s->mode = 0;
+    memset(s->display_buffer, 0, rad4_max_pixels() * sizeof(uint32_t));
 
     s->reg14 = 0;
     s->reg18 = 0;
@@ -2587,6 +2593,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     rad4_recognizer_reset(s);
     rad4_ensure_surface(s);
+    qemu_console_update(s->con, 0, 0, rad4_width(s), rad4_height(s));
 
     /*
      * The km child sits on the default sysbus, not a dedicated internal qbus,
