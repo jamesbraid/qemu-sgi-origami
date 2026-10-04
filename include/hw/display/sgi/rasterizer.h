@@ -109,6 +109,7 @@ typedef struct SGIRasterRules {
     /* Where the values come from, for logs and reports. */
     const char *evidence;
     uint8_t alpha_bits;         /* stored A width, zero means no alpha */
+    uint8_t alpha_test_bits; /* Zero derives precision from color/alpha bits. */
 } SGIRasterRules;
 
 /*

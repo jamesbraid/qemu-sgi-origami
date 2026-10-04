@@ -12186,6 +12186,59 @@ static void test_texture_adapter_detail_zero_identity(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+static void test_texture_adapter_detail_zero_alpha_reference(void)
+{
+    const uint32_t base = 0x8040c080;
+    const uint32_t detail[4] = {
+        0xff0000ff, 0x00ffffff, 0xffff0000, 0x0000ffff,
+    };
+    const uint32_t state[] = {
+        0x00010405, 0x10,
+        0x00011c16, 0x04108000, 1, 1, 1, 0x13000044, 0, 0,
+        0x0001141b, 2, 0, 0, 0, 0,
+        0x00010e80, 0x0016a800, 0x41100002, 0,
+        0x00010ebe, 0x0016a880, 0x41100002, 0,
+        0x00010406, 0,
+    };
+    const uint32_t ordinary_sampler[] = {
+        0x00011c16, 0x08000000, 1, 1, 1, 0x13000040, 0, 0,
+    };
+    QTestState *qts = board_start("");
+
+    upload_begin(qts, 0x16a800, 2, 0x080024d0, 1, 1);
+    upload_first_header(qts, 0x4b);
+    user_cmd_push(qts, ODSY_IMAGE_BURST(1, ODSY_IMAGE_FMT_RGB));
+    user_cmd_push(qts, base);
+    upload_end(qts);
+    texture_adapter_upload(qts, 0x16a880, detail);
+    texture_adapter_window(qts);
+    push_user_words(qts, state, ARRAY_SIZE(state));
+    texture_adapter_upload_detail_function(qts, 0);
+
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    push_user_words(qts, ordinary_sampler, ARRAY_SIZE(ordinary_sampler));
+    texture_adapter_point(qts, 10, 10, 0.125f, 0.125f);
+    g_assert_cmphex(odsy_test_pixel(qts, 10, 10), ==, 0x80400080);
+
+    set_reg(qts, ODSY_REG_GL_MODE, 0x02046200);
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4c00);
+    texture_adapter_point(qts, 11, 10, 0.125f, 0.125f);
+    g_assert_cmphex(odsy_test_pixel(qts, 11, 10), ==, 0x0000ffff);
+
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4800);
+    texture_adapter_point(qts, 12, 10, 0.125f, 0.125f);
+    g_assert_cmphex(odsy_test_pixel(qts, 12, 10), ==, 0x80400080);
+
+    push_user_words(qts, state, ARRAY_SIZE(state));
+    texture_adapter_upload_detail_function(qts, 0);
+    set_reg(qts, ODSY_REG_GL_MODE, 0x02046200);
+    set_reg(qts, ODSY_REG_ALPHA_FUNC, 0x4800);
+    texture_adapter_point(qts, 13, 10, 0.125f, 0.125f);
+    g_assert_cmphex(odsy_test_pixel(qts, 13, 10), ==, 0x80400080);
+
+    qtest_quit(qts);
+}
+
 static void test_texture_adapter_detail_rectangular_migration(void)
 {
     const uint32_t primary[4] = {
@@ -17013,6 +17066,8 @@ int main(int argc, char **argv)
                    test_texture_adapter_nearest);
     qtest_add_func("sn1/odyssey/texture-adapter/detail-zero-identity",
                    test_texture_adapter_detail_zero_identity);
+    qtest_add_func("sn1/odyssey/texture-adapter/detail-zero-alpha-reference",
+                   test_texture_adapter_detail_zero_alpha_reference);
     qtest_add_func("sn1/odyssey/texture-adapter/detail-rectangular-migration",
                    test_texture_adapter_detail_rectangular_migration);
     qtest_add_func("sn1/odyssey/texture-adapter/nearest-clamp",

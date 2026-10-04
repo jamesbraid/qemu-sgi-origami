@@ -129,6 +129,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->color_bits >= 1 && r->color_bits <= 10 &&
            r->depth_bits >= 1 && r->depth_bits <= 32 &&
            r->stencil_bits <= 16 && r->alpha_bits <= 10 &&
+           r->alpha_test_bits <= 16 &&
            r->rounding <= SGI_ROUND_HALF_AWAY &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
@@ -214,6 +215,14 @@ static uint32_t sgi_soft_alpha_max(const SGIRasterRules *r)
 static uint32_t sgi_soft_alpha(const SGIRasterRules *r, double value)
 {
     uint32_t max = sgi_soft_alpha_max(r);
+
+    return !(value > 0) ? 0 : value >= 1 ? max : value * max + 0.5;
+}
+
+static uint32_t sgi_soft_alpha_test(const SGIRasterRules *r, double value)
+{
+    uint32_t max = r->alpha_test_bits ?
+                   (1u << r->alpha_test_bits) - 1 : sgi_soft_alpha_max(r);
 
     return !(value > 0) ? 0 : value >= 1 ? max : value * max + 0.5;
 }
@@ -1621,8 +1630,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
      */
     if (r->st->alpha_test && !r->st->index_bits &&
         !sgi_soft_compare(r->st->alpha_func,
-                          sgi_soft_alpha(r->rules, f->rgba[3]),
-                          sgi_soft_alpha(r->rules, r->st->alpha_ref))) {
+                          sgi_soft_alpha_test(r->rules, f->rgba[3]),
+                          sgi_soft_alpha_test(r->rules, r->st->alpha_ref))) {
         return;
     }
     if (!r->st->index_bits && t->store_rgba && r->rgba_read &&
