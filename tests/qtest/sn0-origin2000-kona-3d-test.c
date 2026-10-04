@@ -12446,8 +12446,9 @@ static void test_renderer_large_polygon(gconstpointer opaque)
         gl_vertex2f(s, x, y);
     }
     gl_end(s);
+    /* Clipping the fifth vertex adds two intersections to the four inside. */
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==,
-                     mode == 3 || mode == 4 ? 0 : count - 2);
+                     mode == 4 ? 0 : mode == 3 ? 4 : count - 2);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
     g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
     expected_clear(expected, 0xff0000);
