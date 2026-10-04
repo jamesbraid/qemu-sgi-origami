@@ -143,7 +143,8 @@ jobs:
               sh -euxc 'git submodule update --init --depth=1; \
                         mkdir -p build-ci; cd build-ci; \
                         ../configure --target-list=mips64-softmmu --disable-docs \
-                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg; \
+                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg \
+                          --enable-opengl; \
                         pyvenv/bin/python3 ../python/scripts/mkvenv.py ensuregroup \
                           --online ../pythondeps.toml sgi-model; \
                         ninja'
@@ -394,7 +395,8 @@ jobs:
               sh -euxc 'git submodule update --init --depth=1; \
                         mkdir -p build-ci; cd build-ci; \
                         ../configure --target-list=mips64-softmmu --disable-docs \
-                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg; \
+                          --enable-tests --enable-hmp --enable-slirp --enable-debug-tcg \
+                          --enable-opengl; \
                         ninja'
 
       - name: run the SGI test suite

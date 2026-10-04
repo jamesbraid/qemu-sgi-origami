@@ -9,7 +9,16 @@ RUN apt-get update && \
         ca-certificates \
         gcc-mips64-linux-gnuabi64 \
         git \
+        libegl-dev \
+        libegl-mesa0 \
+        libegl1 \
+        libepoxy-dev \
         libfdt-dev \
+        libgbm-dev \
+        libgbm1 \
+        libgl-dev \
+        libgl1 \
+        libgl1-mesa-dri \
         libglib2.0-dev \
         libpixman-1-dev \
         libslirp-dev \
