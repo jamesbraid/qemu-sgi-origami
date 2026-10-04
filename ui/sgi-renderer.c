@@ -184,11 +184,26 @@ SGIRenderer *sgi_renderer_new(Error **errp)
 
 bool sgi_renderer_request_valid(const SGIRendererRequest *request)
 {
+    if (!isfinite(request->alpha)) {
+        return false;
+    }
     for (unsigned i = 0; i < 3; i++) {
         const float *vertex = request->vertices[i];
 
         if (vertex[2] != 0 || vertex[3] != 1) {
             return false;
+        }
+        if (request->smooth) {
+            if (!isfinite(request->inverse_w[i]) ||
+                request->inverse_w[i] <= 0) {
+                return false;
+            }
+            for (unsigned c = 0; c < 4; c++) {
+                if (!(request->colour[i][c] >= 0 &&
+                      request->colour[i][c] <= 1)) {
+                    return false;
+                }
+            }
         }
         for (unsigned axis = 0; axis < 2; axis++) {
             double subpixel = vertex[axis] * 256.0;
@@ -303,14 +318,56 @@ static bool renderer_covered(const int64_t vertices[3][2], int64_t area,
     return true;
 }
 
-bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
+static bool renderer_fragment(const SGIRendererRequest *request,
+                               const int64_t vertices[3][2], int64_t area,
+                               const unsigned indices[3], unsigned x,
+                               unsigned y, double colour[4])
 {
-    int64_t vertices[3][2], area;
+    double b1, b2, weights[3], sum;
 
-    if (!sgi_renderer_request_valid(request)) {
+    if ((int32_t)x < request->clip[0] || (int32_t)x > request->clip[2] ||
+        (int32_t)y < request->clip[1] || (int32_t)y > request->clip[3] ||
+        !renderer_covered(vertices, area, x, y)) {
         return false;
     }
-    area = renderer_triangle(request, vertices);
+    if (!request->smooth) {
+        for (unsigned c = 0; c < 3; c++) {
+            colour[c] = request->rgb[c] / 255.0;
+        }
+        colour[3] = request->alpha;
+        return true;
+    }
+    b1 = (double)renderer_edge(vertices[2], vertices[0],
+                                x * 256 + 128, y * 256 + 128) / area;
+    b2 = (double)renderer_edge(vertices[0], vertices[1],
+                                x * 256 + 128, y * 256 + 128) / area;
+    weights[0] = (1.0 - b1 - b2) * request->inverse_w[indices[0]];
+    weights[1] = b1 * request->inverse_w[indices[1]];
+    weights[2] = b2 * request->inverse_w[indices[2]];
+    sum = weights[0] + weights[1] + weights[2];
+    if (!isfinite(sum) || sum <= 0) {
+        return false;
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        colour[c] = (weights[0] * request->colour[indices[0]][c] +
+                     weights[1] * request->colour[indices[1]][c] +
+                     weights[2] * request->colour[indices[2]][c]) / sum;
+        if (!isfinite(colour[c])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int64_t renderer_positive_triangle(const SGIRendererRequest *request,
+                                           int64_t vertices[3][2],
+                                           unsigned indices[3])
+{
+    int64_t area = renderer_triangle(request, vertices);
+
+    indices[0] = 0;
+    indices[1] = area < 0 ? 2 : 1;
+    indices[2] = area < 0 ? 1 : 2;
     if (area < 0) {
         for (unsigned axis = 0; axis < 2; axis++) {
             int64_t tmp = vertices[1][axis];
@@ -318,9 +375,37 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
             vertices[1][axis] = vertices[2][axis];
             vertices[2][axis] = tmp;
         }
+        area = -area;
     }
+    return area;
+}
+
+bool sgi_renderer_fragment(const SGIRendererRequest *request, unsigned x,
+                            unsigned y, double colour[4])
+{
+    int64_t vertices[3][2], area;
+    unsigned indices[3];
+
+    if (x >= SGI_RENDERER_SIZE || y >= SGI_RENDERER_SIZE ||
+        !sgi_renderer_request_valid(request)) {
+        return false;
+    }
+    area = renderer_positive_triangle(request, vertices, indices);
+    return renderer_fragment(request, vertices, area, indices, x, y, colour);
+}
+
+bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
+{
+    int64_t vertices[3][2], area;
+    unsigned indices[3];
+
+    if (!sgi_renderer_request_valid(request)) {
+        return false;
+    }
+    area = renderer_positive_triangle(request, vertices, indices);
     for (unsigned y = 0; y < SGI_RENDERER_SIZE; y++) {
         for (unsigned x = 0; x < SGI_RENDERER_SIZE; x++) {
+            double colour[4];
             bool covered = (int32_t)x >= request->clip[0] &&
                            (int32_t)x <= request->clip[2] &&
                            (int32_t)y >= request->clip[1] &&
@@ -329,11 +414,18 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
             const uint8_t *pixel = request->rgba +
                                   (y * SGI_RENDERER_SIZE + x) * 4;
 
+            if (covered && !renderer_fragment(request, vertices, area, indices,
+                                               x, y, colour)) {
+                return false;
+            }
             if (pixel[3] != (covered ? 255 : 0)) {
                 return false;
             }
             for (unsigned c = 0; c < 3; c++) {
-                if (pixel[c] != (covered ? request->rgb[c] : 0)) {
+                uint8_t expected = covered ?
+                    floor(CLAMP(colour[c], 0, 1) * 255 + 0.5) : 0;
+
+                if (pixel[c] != expected) {
                     return false;
                 }
             }
@@ -360,7 +452,12 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     uint8_t rgb[3];
     float vertices[3][4];
     int32_t clip[4];
+    bool smooth = request->smooth;
+    double alpha = request->alpha;
+    double colour[3][4], inverse_w[3];
 
+    memcpy(colour, request->colour, sizeof(colour));
+    memcpy(inverse_w, request->inverse_w, sizeof(inverse_w));
     memcpy(rgb, request->rgb, sizeof(rgb));
     memcpy(clip, request->clip, sizeof(clip));
     memcpy(vertices, request->vertices, sizeof(vertices));
@@ -380,6 +477,9 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         memcmp(request->rgb, rgb, sizeof(rgb)) ||
         memcmp(request->clip, clip, sizeof(clip)) ||
         memcmp(request->vertices, vertices, sizeof(vertices)) ||
+        request->smooth != smooth || request->alpha != alpha ||
+        memcmp(request->colour, colour, sizeof(colour)) ||
+        memcmp(request->inverse_w, inverse_w, sizeof(inverse_w)) ||
         !sgi_renderer_staging_valid(request)) {
         renderer->failed = true;
         error_setg(errp, "Invalid SGI OpenGL renderer staging");
