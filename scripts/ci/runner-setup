@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # The Forgejo jobs share a Docker daemon. Pass its workspace volume to
 # sibling containers instead of a path inside the job container.
 set -eu
@@ -18,17 +18,50 @@ case "${1-}" in
     echo "WORKSPACE_VOLUME=$volume" >> "$GITHUB_ENV"
     echo "workspace volume: $volume"
     ;;
+  run)
+    shift
+    : "${IMAGE_ID:?IMAGE_ID is required}"
+    parent=$(docker inspect "$(hostname)" --format '{{.Id}}')
+    started=$(docker inspect "$parent" --format '{{.Created}}')
+    # Leave five minutes for job cleanup before its 175-minute deadline.
+    remaining=$(( $(date -d "$started" +%s) + 170 * 60 - $(date +%s) ))
+    if [ "$remaining" -le 0 ]; then
+      echo 'The job has exhausted its child-container deadline.' >&2
+      exit 124
+    fi
+    options=()
+    while [ "$#" -gt 0 ] && [ "$1" != "$IMAGE_ID" ]; do
+      options+=("$1")
+      shift
+    done
+    [ "$#" -gt 1 ] || { echo 'run requires IMAGE_ID and a command' >&2; exit 2; }
+    shift
+    child="qemu-ci-${parent:0:12}-$$"
+    cleanup() {
+      if docker inspect "$child" >/dev/null 2>&1; then
+        docker rm -f "$child"
+      fi
+    }
+    trap cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # The daemon owns this sibling. Its deadline must survive losing this shell.
+    docker run --rm --name "$child" --label "ci.parent=$parent" \
+      --ulimit core=0:0 --entrypoint /usr/bin/timeout "${options[@]}" \
+      "$IMAGE_ID" --signal=TERM --kill-after=30s "${remaining}s" "$@"
+    ;;
   check)
     : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
     : "${IMAGE_ID:?IMAGE_ID is required}"
-    if ! docker run --rm -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
+    if ! bash "$0" run -v "$WORKSPACE_VOLUME:/src" "$IMAGE_ID" \
          test -f /src/meson.build; then
       echo "The guest's Docker daemon cannot see this job's checkout."
       exit 1
     fi
     ;;
   *)
-    echo 'usage: runner-setup volume|check' >&2
+    echo 'usage: runner-setup volume|check|run [Docker options] IMAGE_ID command' >&2
     exit 2
     ;;
 esac
