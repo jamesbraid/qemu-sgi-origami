@@ -358,6 +358,16 @@ void sgi_kona_gl_texture_dimensions(const uint32_t bind[5], uint32_t *width,
     *height = 1u << ((bind[3] >> 4) & 15);
 }
 
+/* Decode the effective bound, rather than reconstructing the caller's LOD. */
+static double sgi_kona_gl_texture_lod(unsigned code)
+{
+    if (code >= 64) {
+        return code / 64.0 - 1;
+    }
+    /* The negative producer rounds a footprint ratio scaled by 64. */
+    return code ? log2(code / 64.0) : -1000;
+}
+
 /* Native min selectors group spatial and mipmap interpolation separately. */
 bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
                                  const uint32_t record[22],
@@ -380,7 +390,8 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
      * Non-repeat S/T collapse three public clamp modes into the same bits.
      * Their border storage is not established by this sampler record.
      */
-    if (bind[4] != 1 || !min_filter[min] ||
+    if (bind[4] != 1 || params->base_level || !min_filter[min] ||
+        (record[2] & 0xfff00000) || lo > hi ||
         (mag > 1 && (mag < 3 || mag > 5)) ||
         (bind[3] & 0x7000) || (bind[2] & 0xc00) ||
         !scale_s || !scale_t) {
@@ -409,10 +420,6 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
             return false;
         }
         next.filter_curve_slot = bind[1] & 0xfff;
-        /* Categorical negative bounds cannot evaluate a filter curve. */
-        if ((lo && lo < 64) || hi < 64) {
-            return false;
-        }
     }
     if (mag == 3 || mag == 4) {
         unsigned detail_level = (bind[2] >> 21) & 7;
@@ -426,24 +433,8 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     next.wrap_s = next.wrap_t = SGI_GL_REPEAT;
     next.lod_scale_s = scale_s / 16.0;
     next.lod_scale_t = scale_t / 16.0;
-    if (min >= 3 || mag >= 3) {
-        /*
-         * Positive effective LOD bounds encode trunc(64 * (LOD + 1)).
-         * Below 64 the base-zero producer uses a quantized exponential.
-         * Its exact negative lambda cannot be recovered. For ordinary
-         * filters every negative lambda selects magnification, so retain
-         * that decision with categorical bounds rather than invert it.
-         * Nonzero base levels use another metric and remain unsupported.
-         */
-        if (params->base_level || (record[2] & 0xfff00000) || lo > hi) {
-            return false;
-        }
-        next.min_lod = lo >= 64 ? lo / 64.0 - 1.0 : -1000.0;
-        next.max_lod = hi >= 64 ? hi / 64.0 - 1.0 : -1.0;
-        if (next.min_lod > next.max_lod) {
-            return false;
-        }
-    }
+    next.min_lod = sgi_kona_gl_texture_lod(lo);
+    next.max_lod = sgi_kona_gl_texture_lod(hi);
     *params = next;
     return true;
 }

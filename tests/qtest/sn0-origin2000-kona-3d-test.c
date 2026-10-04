@@ -4698,6 +4698,44 @@ static void test_texture_native_rgb(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_texture_negative_bound_filters(void)
+{
+    static const float vertices[3][2] = {
+        { -0.5, -0.5 }, { 0.5, -0.5 }, { 0, 0.5 },
+    };
+    uint32_t bind[5] = { 0, (2u << 28) | (41 << 12),
+                         (0x30 << 14) | (1 << 5), 0x11, 1 };
+    uint32_t record[22] = { 0x43, 0x101010, 256u << 10 };
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_make_current(s);
+    texture_native_bind(s, 0);
+    kona_command(s, 0x174, texture_header, ARRAY_SIZE(texture_header));
+    for (unsigned k = 0; k < 4; k++) {
+        qtest_writel(s, REG_COMMAND, texture_source[k]);
+    }
+    kona_command(s, 0x176, (uint32_t[]) { 0 }, 1);
+    kona_command(s, 0x1d5, bind, ARRAY_SIZE(bind));
+    for (unsigned pass = 0; pass < 2; pass++) {
+        gl_window_cleared(s, 0, 0, 1);
+        record[2] = (pass ? 32 : 256) << 10;
+        kona_command(s, 0x179, record, ARRAY_SIZE(record));
+        kona_command(s, 0x24, (uint32_t[]) { 0xde1 }, 1);
+        kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
+        gl_begin(s, 4);
+        for (unsigned k = 0; k < 3; k++) {
+            kona_command_f(s, 0x80,
+                (float[]) { 128 * vertices[k][0] + 0.5,
+                             128 * vertices[k][1] + 0.5 }, 2);
+            kona_command_f(s, 0x8c, vertices[k], 2);
+        }
+        gl_end(s);
+        /* Negative MAX_LOD chooses linear magnification for this footprint. */
+        assert_stencil_colour(s, pass ? 0x808080 : 0xffffff);
+    }
+    qtest_quit(s);
+}
+
 static void test_texture_native_detail(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -4705,7 +4743,9 @@ static void test_texture_native_detail(gconstpointer opaque)
     uint32_t args[] = { mode == 4 ? UINT32_MAX : mode == 5 ? 2 : 1,
                         1, 1, 41, 0, 0 };
     uint32_t expected = mode == 1 ? 0x5060c0 : mode == 3 ? 0x3060d0 :
-                        mode == 4 ? 0x4080c0 : mode == 5 ? 0x0000ff : 0x8040c0;
+                        mode == 4 ? 0x4080c0 : mode == 5 ? 0x0000ff :
+                        mode == 9 || mode == 11 || mode == 13 ? 0x6060c0 :
+                                                              0x8040c0;
     QTestState *s = qtest_init(MACHINE_ARGS), *from = NULL;
     g_autofree char *dir = NULL, *uri = NULL;
     GError *error = NULL;
@@ -4718,12 +4758,14 @@ static void test_texture_native_detail(gconstpointer opaque)
     texture_native_bind(s, 0);
     texture_constant_upload(s, 0, 5, 0x4080c080);
     texture_constant_upload(s, 1, 5, 0xff0080ff);
-    /* Every node is 0.5; the native detail coefficient scale gives 0.25. */
+    /* Negative bound cases distinguish curve nodes 16 and 32. */
     for (unsigned group = 0; group < 16; group++) {
         uint64_t packed = 0;
 
         for (unsigned k = 0; k < 4; k++) {
-            packed |= UINT64_C(256) << (10 * k);
+            uint64_t coefficient = mode >= 9 ? (group * 4 + k) * 8 : 256;
+
+            packed |= coefficient << (10 * k);
         }
         words[group * 2] = packed;
         words[group * 2 + 1] = packed >> 32;
@@ -4738,7 +4780,15 @@ static void test_texture_native_detail(gconstpointer opaque)
     texture_native_format_bind(s, 41, mode == 1 ? 4 : 3,
                                mode == 2 ? 1 : mode == 3 ? 2 : 0,
                                mode == 8 ? 4 : 0);
-    if (mode == 6) {
+    if (mode >= 9) {
+        uint32_t record[22] = { 0x43, 0x101010, 0 };
+        unsigned bound = mode == 10 || mode == 12 ? 32 : 16;
+
+        record[2] = mode == 11 || mode == 12 ? bound << 10 :
+                                                    bound | (256 << 10);
+        kona_command(s, 0x179, record, ARRAY_SIZE(record));
+    }
+    if (mode == 6 || mode == 13) {
         dir = g_dir_make_tmp("sn0-kona-detail-XXXXXX", &error);
         g_assert_no_error(error);
         uri = g_strdup_printf("unix:%s/migrate.sock", dir);
@@ -4753,7 +4803,18 @@ static void test_texture_native_detail(gconstpointer opaque)
     }
     kona_command_f(s, 0x63, (float[]) { 1, 1, 1 }, 3);
     kona_command_f(s, 0x80, (float[]) { 0.25, 0.25 }, 2);
-    gl_triangle_z(s, tri, 0);
+    if (mode == 11 || mode == 12) {
+        gl_begin(s, 4);
+        for (unsigned k = 0; k < 3; k++) {
+            kona_command_f(s, 0x80,
+                           (float[]) { 100 * tri[k][0], 100 * tri[k][1] }, 2);
+            kona_command_f(s, 0x90,
+                           (float[]) { tri[k][0], tri[k][1], tri[k][2] }, 3);
+        }
+        gl_end(s);
+    } else {
+        gl_triangle_z(s, tri, 0);
+    }
     assert_stencil_colour(s, expected);
     assert_textport_in_step(s);
     qtest_quit(s);
@@ -12778,9 +12839,13 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                             test_texture_native_volume);
     }
+    qtest_add_func("sn0/origin2000/kona-3d/texture/negative-bound-filters",
+                   test_texture_negative_bound_filters);
     static const char *detail_cases[] = {
         "add", "modulate", "colour", "alpha", "absent", "missing",
-        "migrates", "invalid-retained", "scaled",
+        "migrates", "invalid-retained", "scaled", "minimum-rho-quarter",
+        "minimum-rho-half", "maximum-rho-quarter", "maximum-rho-half",
+        "negative-bound-migrates",
     };
 
     for (unsigned mode = 0; mode < ARRAY_SIZE(detail_cases); mode++) {
