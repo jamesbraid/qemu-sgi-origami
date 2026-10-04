@@ -4090,6 +4090,27 @@ static bool odyssey_texture_read_level(void *opaque, uint32_t level,
            odyssey_texture_read(&chain->storage[level], x, y, rgba);
 }
 
+static bool odyssey_texture_read_border_level(void *opaque, uint32_t level,
+                                              int32_t x, int32_t y,
+                                              uint32_t *rgba)
+{
+    OdysseyTextureChain *chain = opaque;
+    OdysseyTexture texture;
+
+    if (level >= ARRAY_SIZE(chain->storage) || y != 0 ||
+        (x != -1 && x != 2)) {
+        return false;
+    }
+    texture = chain->storage[level];
+    if (texture.width != 2 || texture.height != 1 || !texture.offset) {
+        return false;
+    }
+    /* Setup checks the complete captured row, including both border texels. */
+    texture.offset--;
+    texture.width += 2;
+    return odyssey_texture_read(&texture, x + 1, 0, rgba);
+}
+
 /* Each normalized component indexes the table after filtering. */
 static void odyssey_texture_colour_table(void *opaque, double rgba[4])
 {
@@ -4127,11 +4148,16 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
     uint32_t ws = (word >> 12) & 3, wt = (word >> 10) & 3;
     bool clamp = ws == 2 || wt == 2;
     bool border = ws == 3 || wt == 3;
-    bool one_d_clamp =
+    bool one_d_shape =
         (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                         ODSY_TEX_MODE_3D)) == ODSY_TEX_MODE_1D &&
-        height == 1 && depth == 1 && !s->tex_level0 &&
-        (word == 0x13002000 || word == 0x13002022);
+        height == 1 && depth == 1 && !s->tex_level0;
+    bool stored_border = one_d_shape && width == 2 &&
+        (word == 0x03002000 || word == 0x03002022) &&
+        !(s->tex_sampler[5] & 0xff000000) &&
+        (s->tex_sampler[6] & 0xff000000) == 0x01000000;
+    bool one_d_clamp = stored_border ||
+        (one_d_shape && (word == 0x13002000 || word == 0x13002022));
     uint32_t filter = word & 0xe2, min = filter & 0xe0;
     bool colour_table_l8 = word == 0x11500001 || word == 0x11500003 ||
                            word == 0x11600001;
@@ -4192,7 +4218,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         ws > 3 || wt > 3 ||
         (!border && !one_d_clamp &&
          (s->tex_sampler[5] || s->tex_sampler[6])) ||
-        (one_d_clamp &&
+        (one_d_clamp && !stored_border &&
          ((s->tex_sampler[5] | s->tex_sampler[6]) & 0xff000000)) ||
         (border && (ws != 3 || wt != 3 ||
                     width_word != (0x00fc0000 | width) ||
@@ -4206,7 +4232,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
           image->base_format != SGI_GL_RGBA || filter)) ||
         (min != 0 && min != 0x20 && min != 0x40 && min != 0x60 &&
          min != 0x80 && min != 0xa0) ||
-        (!colour_table && !colour_table_disabled &&
+        (!colour_table && !colour_table_disabled && !stored_border &&
          word != (0x10000000 | components | (ws << 12) | (wt << 10) |
                   filter)) ||
         s->tex_lod[0] || s->tex_lod[1] ||
@@ -4237,6 +4263,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
           s->tex_env[3] || s->tex_env[4]))) {
         goto unsupported;
     }
+    image->border = stored_border;
     image->width = width;
     image->height = height;
     image->wrap_s = border ? SGI_GL_CLAMP_TO_BORDER :
@@ -4387,11 +4414,14 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         uint32_t level_width = MAX(1, width >> i);
         uint32_t level_height = MAX(1, height >> i);
         uint32_t stride_units = entry[1] & 0xfff;
-        uint32_t expected_units = ((level_width + 15) / 16 + 1) & ~1u;
+        uint32_t expected_units = stored_border ? 4 :
+                                  ((level_width + 15) / 16 + 1) & ~1u;
         uint32_t base = entry[0] & 0x1fffffffu;
+        uint32_t interior = stored_border ? 16 : 0;
         int object;
 
-        if ((entry[1] & 0x3c0ff000u) || entry[2] ||
+        if ((stored_border && (entry[1] != 0x41100004 || !base)) ||
+            (entry[1] & 0x3c0ff000u) || entry[2] ||
             (i && (entry[1] & 0xc3f00000u) !=
                   (s->tex_levels[first * 3 + 1] & 0xc3f00000u)) ||
             (base && stride_units != expected_units &&
@@ -4400,7 +4430,7 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
         }
         chain->levels[i] = (SGIGLTexLevel) {
             .level = i, .width = level_width, .height = level_height,
-            .base_format = image->base_format,
+            .border = stored_border, .base_format = image->base_format,
             .internal_format = image->base_format,
             .opaque = chain,
         };
@@ -4413,17 +4443,24 @@ static bool odyssey_texture_setup(SGIOdysseyState *s, SGIGLTexImage *image,
             s->obj_rows[object] < level_height ||
             umul64_overflow(level_height - 1, s->obj_width[object], &end) ||
             uadd64_overflow(end, s->obj_offset[object], &end) ||
-            uadd64_overflow(end, level_width, &end) || end > s->obj_used ||
+            uadd64_overflow(end, interior, &end) ||
+            uadd64_overflow(end, level_width + stored_border, &end) ||
+            end > s->obj_used ||
             end > s->obj_mem.bytes_len / 4) {
             continue;
         }
         chain->storage[i] = (OdysseyTexture) {
-            .s = s, .offset = s->obj_offset[object],
+            /* Captured width-two PIO puts the interior at row column 16. */
+            .s = s, .offset = s->obj_offset[object] + interior,
             .stride = s->obj_width[object], .width = level_width,
             .height = level_height, .base_format = image->base_format,
             .words = s->obj_used,
         };
         chain->levels[i].read_texel = odyssey_texture_read_level;
+        if (stored_border) {
+            chain->levels[i].read_border_texel =
+                odyssey_texture_read_border_level;
+        }
     }
     chain->pyramid = (SGIGLTexPyramid) {
         .levels = chain->levels, .count = count, .base_level = 0,
