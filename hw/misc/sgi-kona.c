@@ -3889,8 +3889,17 @@ refused:
     qemu_log_mask(LOG_UNIMP, "sgi-kona: native CopyPixels profile refused\n");
 }
 
+static uint64_t sgi_kona_gl_read_row_bytes(uint32_t width, uint32_t format,
+                                          uint32_t type)
+{
+    if (format == 12 && type == 7) {
+        return DIV_ROUND_UP((uint64_t)width, 8);
+    }
+    return (uint64_t)width * sgi_kona_gl_native_pixel_bytes(format, type);
+}
+
 /*
- * Ordinary colour reads stage dense rows for either return transport.
+ * Reads stage dense rows for either return transport.
  * The pointer's low bits do not offset the framebuffer source.
  * The selected logical bank supplies direct RGB at drawable-local lower-
  * left coordinates, bottom-first. Unsupported visuals/bindings, indexed
@@ -3911,6 +3920,7 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     uint32_t selection;
     int bank;
     bool depth = format == 13, stencil = format == 12;
+    bool bitmap = stencil && type == 7;
     uint32_t index;
     float depth_scale, depth_bias;
     g_autofree uint8_t *data = NULL;
@@ -3952,7 +3962,8 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
             return false;
         }
     }
-    if (!sgi_kona_gl_native_pixel_bytes(format, type) || args[6] > 3) {
+    row = sgi_kona_gl_read_row_bytes(w, format, type);
+    if (!row || args[6] > 3) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of format 0x%"
                       PRIx32 " type 0x%" PRIx32 " low bits 0x%" PRIx32
                       " is not modelled; no reply\n", format, type, args[6]);
@@ -3960,7 +3971,6 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
     }
     /* Check the complete dense extent before allocating or writing. */
     pixel_bytes = sgi_kona_gl_native_pixel_bytes(format, type);
-    row = (uint64_t)w * pixel_bytes;
     if ((int32_t)w <= 0 || (int32_t)h <= 0 ||
         row > limit || h > limit / row || (w == 8 && h == 1)) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glReadPixels of %" PRIu32 "x%"
@@ -3995,14 +4005,22 @@ static bool sgi_kona_gl_read_payload(SGIKonaState *s, const uint32_t *args,
             }
         }
     }
-    data = g_malloc(len);
+    data = bitmap ? g_malloc0(len) : g_malloc(len);
     for (uint32_t r = 0; r < h; r++) {
         for (uint32_t c = 0; c < w; c++) {
             if (stencil) {
                 uint32_t raw = sgi_kona_gl_load_stencil(s, px + c, py + r);
 
-                if (!sgi_kona_gl_stencil_index(p, raw, &index) ||
-                    !sgi_kona_gl_pixel_index_pack(type, index,
+                if (!sgi_kona_gl_stencil_index(p, raw, &index)) {
+                    return false;
+                }
+                if (bitmap) {
+                    unsigned bit = p->pack_lsb_first ? c & 7 : 7 - (c & 7);
+
+                    data[r * row + c / 8] |= (index & 1) << bit;
+                    continue;
+                }
+                if (!sgi_kona_gl_pixel_index_pack(type, index,
                         p->pack_swap_bytes, data + r * row + c * pixel_bytes,
                         pixel_bytes)) {
                     return false;
@@ -4069,28 +4087,27 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
                                         const uint32_t *h, uint32_t selector)
 {
     uint64_t io, pitch, row, total;
-    uint32_t lines, pixel_bytes;
+    uint32_t lines;
 
     if (selector == SGI_KONA_CMD_X_PIXEL_READ) {
         if ((h[4] != 1 && h[4] != 2 && h[4] != 4) || h[5] || h[6]) {
             return false;
         }
-        pixel_bytes = h[4];
+        row = (uint64_t)h[2] * h[4];
     } else if (selector == SGI_KONA_CMD_GL_READ_PIXELS) {
-        pixel_bytes = sgi_kona_gl_native_pixel_bytes(h[4], h[5]);
+        row = sgi_kona_gl_read_row_bytes(h[2], h[4], h[5]);
         if ((h[2] == 8 && h[3] == 1) || h[6] > 3) {
             return false;
         }
     } else {
         return false;
     }
-    if (!pixel_bytes || (int32_t)h[2] <= 0 || (int32_t)h[3] <= 0 ||
+    if (!row || (int32_t)h[2] <= 0 || (int32_t)h[3] <= 0 ||
         h[2] > SGI_KONA_FB_WIDTH || h[3] > SGI_KONA_FB_HEIGHT ||
         !sgi_kona_gl_read_dma_descriptor(d, &io, &pitch, &lines) ||
         (selector == SGI_KONA_CMD_GL_READ_PIXELS && (io & 3) != h[6])) {
         return false;
     }
-    row = (uint64_t)h[2] * pixel_bytes;
     total = row * h[3];
     return d->descriptor[2] == total &&
            ((d->descriptor[3] == total && !d->descriptor[4]) ||
@@ -5930,6 +5947,9 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
         break;
     case 0x0cf5:                /* GL_UNPACK_ALIGNMENT */
         p->unpack_alignment = value;
+        break;
+    case 0x0d01:                /* GL_PACK_LSB_FIRST */
+        p->pack_lsb_first = value != 0;
         break;
     case 0x0d00:                /* GL_PACK_SWAP_BYTES */
         p->pack_swap_bytes = value != 0;
@@ -11073,6 +11093,16 @@ static const VMStateDescription vmstate_sgi_kona_gl_pack = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_gl_bitmap_pack = {
+    .name = TYPE_SGI_KONA "/gl-bitmap-pack",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(pack_lsb_first, SGIKonaGLPipe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_bitmap_unpack = {
     .name = TYPE_SGI_KONA "/gl-bitmap-unpack",
     .version_id = 1,
@@ -11301,6 +11331,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              vmstate_sgi_kona_gl_bitmap_unpack, SGIKonaGLPipe),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_pack, SGIKonaGLPipe),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
+                             vmstate_sgi_kona_gl_bitmap_pack, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
