@@ -315,9 +315,15 @@ typedef struct SGIKonaGLReturnState {
  * use dense rows regardless of pack state. Complete visual records and read
  * bindings authorize their source separately from the renderer's state.
  */
+typedef struct SGIKonaGLPixelZoom {
+    uint32_t factors[2];
+    bool unsupported;
+} SGIKonaGLPixelZoom;
+
 typedef struct SGIKonaGLPipe {
     uint32_t pending_error;
     bool pixel_zoom_unsupported;
+    uint32_t pixel_zoom[2];
     bool pixel_transfer_unsupported;
     bool unpack_swap_bytes;
     uint32_t unpack_alignment;
@@ -917,6 +923,8 @@ struct SGIKonaState {
     SGIGLContext gl_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     SGIKonaGLReturnState
         gl_return_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
+    SGIKonaGLPixelZoom
+        gl_zoom_attrib[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t gl_attrib_mask[SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH];
     uint32_t gl_attrib_depth[SGI_KONA_CONTEXTS];
 

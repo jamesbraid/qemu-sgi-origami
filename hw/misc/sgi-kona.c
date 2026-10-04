@@ -21,6 +21,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qapi/error.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
@@ -2559,6 +2560,7 @@ static void sgi_kona_gl_reset_context(SGIKonaState *s, unsigned i)
     sgi_gl_enable_line_stipple(&s->gl[i], &sink);
     memset(&s->gl_window[i], 0, sizeof(s->gl_window[i]));
     s->gl_pipe[i] = (SGIKonaGLPipe) {
+        .pixel_zoom = { 0x3f800000, 0x3f800000 },
         .unpack_alignment = 4,
         .pack_alignment = 4,
         .returns.depth_range = { 0, UINT64_C(0x3ff0000000000000) },
@@ -2835,6 +2837,14 @@ static uint32_t sgi_kona_gl_bits(float f)
 
     memcpy(&bits, &f, sizeof(bits));
     return bits;
+}
+
+static float sgi_kona_gl_float(uint32_t bits)
+{
+    float value;
+
+    memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 /*
@@ -3775,6 +3785,12 @@ static void sgi_kona_gl_push_attrib(SGIKonaState *s, uint32_t mask)
                                           *depth], &s->gl[i])) {
         s->gl_return_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
             s->gl_pipe[i].returns;
+        s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] =
+            (SGIKonaGLPixelZoom) {
+                .factors = { s->gl_pipe[i].pixel_zoom[0],
+                             s->gl_pipe[i].pixel_zoom[1] },
+                .unsupported = s->gl_pipe[i].pixel_zoom_unsupported,
+            };
         s->gl_attrib_mask[i * SGI_KONA_GL_ATTRIB_DEPTH + *depth] = mask;
         ++*depth;
     } else {
@@ -3989,6 +4005,10 @@ static void sgi_kona_gl_pop_attrib(SGIKonaState *s)
         s->gl_pipe[i].returns.clear_depth = s->gl_return_attrib[k].clear_depth;
     }
     if (s->gl_attrib_mask[k] & 0x20) {
+        memcpy(s->gl_pipe[i].pixel_zoom, s->gl_zoom_attrib[k].factors,
+               sizeof(s->gl_pipe[i].pixel_zoom));
+        s->gl_pipe[i].pixel_zoom_unsupported =
+            s->gl_zoom_attrib[k].unsupported;
         s->gl_pipe[i].returns.read_buffer = s->gl_return_attrib[k].read_buffer;
         s->gl_pipe[i].returns.read_buffer_unsupported =
             s->gl_return_attrib[k].read_buffer_unsupported;
@@ -4595,8 +4615,12 @@ static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
         !s->gl_pipe[i].pixel_zoom_unsupported &&
         !s->gl_pipe[i].pixel_transfer_unsupported) {
         sgi_kona_gl_sink(s, &sink);
-        sgi_gl_draw_pixels_rgba(&s->gl[i], &sink, u->header[1],
-                                u->header[2], u->pixels);
+        sgi_gl_draw_pixels_rgba_zoom(&s->gl[i], &sink, u->header[1],
+                                     u->header[2], u->pixels,
+                                     sgi_kona_gl_float(
+                                         s->gl_pipe[i].pixel_zoom[0]),
+                                     sgi_kona_gl_float(
+                                         s->gl_pipe[i].pixel_zoom[1]));
     }
     sgi_kona_texture_upload_clear(s);
 }
@@ -4891,9 +4915,20 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         }
         return;
     case SGI_KONA_CMD_GL_PIXEL_ZOOM:
-        if (i != SGI_KONA_CONTEXT_NONE && !s->gl[i].in_begin) {
+        if (i != SGI_KONA_CONTEXT_NONE) {
+            if (s->gl[i].in_begin) {
+                sgi_kona_gl_set_error(s, 0x502);
+                return;
+            }
+            memcpy(s->gl_pipe[i].pixel_zoom, args,
+                   sizeof(s->gl_pipe[i].pixel_zoom));
             s->gl_pipe[i].pixel_zoom_unsupported =
-                args[0] != 0x3f800000 || args[1] != 0x3f800000;
+                !isfinite(sgi_kona_gl_float(args[0])) ||
+                !isfinite(sgi_kona_gl_float(args[1]));
+            if (s->gl_pipe[i].pixel_zoom_unsupported) {
+                qemu_log_mask(LOG_UNIMP, "sgi-kona: nonfinite pixel zoom;"
+                              " DrawPixels refused\n");
+            }
         }
         return;
     case SGI_KONA_CMD_GL_PIXEL_TRANSFER:
@@ -9259,6 +9294,27 @@ static const VMStateDescription vmstate_sgi_kona_gl_pixels = {
     },
 };
 
+static const VMStateDescription vmstate_sgi_kona_gl_zoom = {
+    .name = TYPE_SGI_KONA "/gl-zoom",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(pixel_zoom, SGIKonaGLPipe, 2),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_sgi_kona_gl_zoom_attrib = {
+    .name = TYPE_SGI_KONA "/gl-zoom-attrib",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(factors, SGIKonaGLPixelZoom, 2),
+        VMSTATE_BOOL(unsupported, SGIKonaGLPixelZoom),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_gl_pipe = {
     .name = TYPE_SGI_KONA "/gl-pipe",
     .version_id = 2,
@@ -9303,6 +9359,11 @@ static int sgi_kona_contexts_post_load(void *opaque, int version_id)
         const SGIKonaGLWindow *w = &s->gl_window[i];
         const SGIKonaGLPipe *p = &s->gl_pipe[i];
 
+        if (!p->pixel_zoom_unsupported &&
+            (!isfinite(sgi_kona_gl_float(p->pixel_zoom[0])) ||
+             !isfinite(sgi_kona_gl_float(p->pixel_zoom[1])))) {
+            return -EINVAL;
+        }
         if (!sgi_kona_gl_error_valid(p->pending_error) ||
             w->placed > 1 || w->double_buffered > 1 ||
             w->displayed_bank > 1 ||
@@ -9361,6 +9422,8 @@ static const VMStateDescription vmstate_sgi_kona_contexts = {
                              vmstate_sgi_kona_gl_error, SGIKonaGLPipe),
         VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
                              vmstate_sgi_kona_gl_pixels, SGIKonaGLPipe),
+        VMSTATE_STRUCT_ARRAY(gl_pipe, SGIKonaState, SGI_KONA_CONTEXTS, 0,
+                             vmstate_sgi_kona_gl_zoom, SGIKonaGLPipe),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -9390,13 +9453,27 @@ static int sgi_kona_gl_attrib_post_load(void *opaque, int version_id)
         if (s->gl_attrib_depth[i] > SGI_KONA_GL_ATTRIB_DEPTH) {
             return -EINVAL;
         }
+        for (unsigned depth = 0; depth < s->gl_attrib_depth[i]; depth++) {
+            SGIKonaGLPixelZoom *z =
+                &s->gl_zoom_attrib[i * SGI_KONA_GL_ATTRIB_DEPTH + depth];
+
+            if (version_id < 3) {
+                /* Older snapshots did not retain the captured zoom. */
+                z->factors[0] = z->factors[1] = 0x3f800000;
+                z->unsupported = true;
+            } else if (!z->unsupported &&
+                       (!isfinite(sgi_kona_gl_float(z->factors[0])) ||
+                        !isfinite(sgi_kona_gl_float(z->factors[1])))) {
+                return -EINVAL;
+            }
+        }
     }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
     .name = TYPE_SGI_KONA "/gl-attrib",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 2,
     .needed = sgi_kona_gl_attrib_needed,
     .post_load = sgi_kona_gl_attrib_post_load,
@@ -9411,6 +9488,10 @@ static const VMStateDescription vmstate_sgi_kona_gl_attrib = {
         VMSTATE_STRUCT_ARRAY(gl_return_attrib, SGIKonaState,
                              SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 0,
                              vmstate_sgi_kona_gl_returns, SGIKonaGLReturnState),
+        VMSTATE_STRUCT_ARRAY(gl_zoom_attrib, SGIKonaState,
+                             SGI_KONA_CONTEXTS * SGI_KONA_GL_ATTRIB_DEPTH, 3,
+                             vmstate_sgi_kona_gl_zoom_attrib,
+                             SGIKonaGLPixelZoom),
         VMSTATE_END_OF_LIST()
     },
 };
