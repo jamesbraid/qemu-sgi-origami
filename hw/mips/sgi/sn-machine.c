@@ -736,16 +736,6 @@ static bool sgi_machine_set_expansion_inputs(SGIMachineState *s,
 
 /* ---- Topology resolution and the CPU-population contract ---- */
 
-static bool sgi_machine_topology_matches_product(const SGIModelTopology *t,
-                                                  const char *product)
-{
-    size_t len = strlen(product);
-    size_t name_len = strlen(t->name);
-
-    return name_len >= len && !strncmp(t->name, product, len) &&
-           (t->name[len] == '\0' || t->name[len] == '-');
-}
-
 /*
  * The compiled catalogue holds every product's topologies in one list,
  * so a name match alone is not enough: topology= is product-scoped
@@ -756,7 +746,6 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     const char *name;
-    const SGIModelTopology *t;
 
     if (smc->test_topology) {
         return smc->test_topology;
@@ -766,28 +755,7 @@ static const SGIModelTopology *sgi_machine_chassis(MachineState *machine)
     if (!name || !smc->product) {
         return NULL;
     }
-    t = sgi_model_find_topology(name);
-
-    if (t && !sgi_machine_topology_matches_product(t, smc->product)) {
-        return NULL;
-    }
-    return t;
-}
-
-/* "1, 2, 3 or 4": a chassis's accepted node counts, for a refusal. */
-static char *sgi_machine_accepted_node_counts(const SGIModelTopology *t)
-{
-    GString *out = g_string_new(NULL);
-    const SGIModelNodePopulationList *entry;
-
-    for (entry = t->node_populations; entry; entry = entry->next) {
-        if (out->len) {
-            g_string_append(out, entry->next ? ", " : " or ");
-        }
-        g_string_append_printf(out, "%zu",
-                               QAPI_LIST_LENGTH(entry->value->nodes));
-    }
-    return g_string_free(out, false);
+    return sgi_model_product_topology(sgi_machines(), smc->product, name);
 }
 
 /*
@@ -800,7 +768,6 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     const SGIModelTopology *chassis = sgi_machine_chassis(machine);
-    const SGIModelNodePopulation *row;
 
     if (s->view) {
         return s->view;
@@ -809,29 +776,8 @@ static const SGIModelTopology *sgi_machine_resolve(MachineState *machine,
         error_setg(errp, "unknown topology");
         return NULL;
     }
-    if (!sgi_model_check_runtime_endpoints(chassis, errp)) {
-        return NULL;
-    }
-    row = s->nodes_requested ?
-        sgi_model_find_population(chassis, s->nodes_requested) :
-        sgi_model_default_population(chassis);
-    if (!row) {
-        g_autofree char *counts = sgi_machine_accepted_node_counts(chassis);
-
-        error_setg(errp, "topology '%s' fits %s node board%s, not %u",
-                   chassis->name, counts,
-                   g_str_equal(counts, "1") ? "" : "s", s->nodes_requested);
-        return NULL;
-    }
-    if (row->grade == SGI_MODEL_EVIDENCE_GRADE_UNKNOWN) {
-        size_t count = QAPI_LIST_LENGTH(row->nodes);
-
-        error_setg(errp, "topology '%s' with %zu node board%s rests on "
-                   "evidence that does not settle its wiring; it is not "
-                   "built", chassis->name, count, count == 1 ? "" : "s");
-        return NULL;
-    }
-    s->view = sgi_model_population_view(chassis, row, errp);
+    s->view = sgi_model_resolve_population(chassis, s->nodes_requested,
+                                           errp);
     return s->view;
 }
 
@@ -889,7 +835,7 @@ unsigned int sgi_machine_product_max_cpus(const char *product)
         const SGIModelTopology *t = entry->value;
         const SGIModelNodePopulationList *row;
 
-        if (!sgi_machine_topology_matches_product(t, product)) {
+        if (!sgi_model_topology_matches_product(t, product)) {
             continue;
         }
         for (row = t->node_populations; row; row = row->next) {
@@ -3622,8 +3568,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
         for (entry = sgi_machines()->topologies; entry;
              entry = entry->next) {
-            if (sgi_machine_topology_matches_product(entry->value,
-                                                      smc->product)) {
+            if (sgi_model_topology_matches_product(entry->value,
+                                                   smc->product)) {
                 if (names->len) {
                     g_string_append(names, ", ");
                 }

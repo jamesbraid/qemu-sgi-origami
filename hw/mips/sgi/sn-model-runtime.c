@@ -1,8 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Validate machine endpoints and project structural population views. */
+/*
+ * Validate machine endpoints, resolve a machine selection to the catalogue
+ * topology it builds, and project structural population views.
+ */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/util.h"
+#include "qemu/cutils.h"
+#include "qemu/keyval.h"
+#include "qobject/qdict.h"
 #include "hw/mips/sgi/sgi-machines.h"
 
 /* The @index'th element of a QAPI list, which the caller has range-checked. */
@@ -596,4 +602,186 @@ const SGIModelTopology *sgi_model_population_view(
         g_hash_table_insert(views, (gpointer)row, view);
     }
     return view;
+}
+
+const SGIModelNodePopulation *sgi_model_find_population(
+    const SGIModelTopology *t, unsigned int nodes)
+{
+    const SGIModelNodePopulationList *entry;
+
+    for (entry = t->node_populations; entry; entry = entry->next) {
+        if (QAPI_LIST_LENGTH(entry->value->nodes) == nodes) {
+            return entry->value;
+        }
+    }
+    return NULL;
+}
+
+const SGIModelNodePopulation *sgi_model_default_population(
+    const SGIModelTopology *t)
+{
+    const SGIModelNodePopulationList *entry;
+    const SGIModelNodePopulation *largest = NULL;
+
+    for (entry = t->node_populations; entry; entry = entry->next) {
+        if (!largest || QAPI_LIST_LENGTH(entry->value->nodes) >
+                        QAPI_LIST_LENGTH(largest->nodes)) {
+            largest = entry->value;
+        }
+    }
+    return largest;
+}
+
+bool sgi_model_topology_matches_product(const SGIModelTopology *t,
+                                        const char *product)
+{
+    size_t len = strlen(product);
+    size_t name_len = strlen(t->name);
+
+    return name_len >= len && !strncmp(t->name, product, len) &&
+           (t->name[len] == '\0' || t->name[len] == '-');
+}
+
+const SGIModelTopology *sgi_model_product_topology(
+    const SGIMachines *machines, const char *product, const char *name)
+{
+    const SGIModelTopologyList *entry;
+
+    for (entry = machines->topologies; entry; entry = entry->next) {
+        if (!strcmp(entry->value->name, name)) {
+            return sgi_model_topology_matches_product(entry->value, product) ?
+                   entry->value : NULL;
+        }
+    }
+    return NULL;
+}
+
+/* "1, 2, 3 or 4": a chassis's accepted node counts, for a refusal. */
+static char *sgi_model_accepted_node_counts(const SGIModelTopology *t)
+{
+    GString *out = g_string_new(NULL);
+    const SGIModelNodePopulationList *entry;
+
+    for (entry = t->node_populations; entry; entry = entry->next) {
+        if (out->len) {
+            g_string_append(out, entry->next ? ", " : " or ");
+        }
+        g_string_append_printf(out, "%zu",
+                               QAPI_LIST_LENGTH(entry->value->nodes));
+    }
+    return g_string_free(out, false);
+}
+
+const SGIModelTopology *sgi_model_resolve_population(
+    const SGIModelTopology *chassis, unsigned int nodes, Error **errp)
+{
+    const SGIModelNodePopulation *row;
+
+    if (!sgi_model_check_runtime_endpoints(chassis, errp)) {
+        return NULL;
+    }
+    row = nodes ? sgi_model_find_population(chassis, nodes) :
+        sgi_model_default_population(chassis);
+    if (!row) {
+        g_autofree char *counts = sgi_model_accepted_node_counts(chassis);
+
+        error_setg(errp, "topology '%s' fits %s node board%s, not %u",
+                   chassis->name, counts,
+                   g_str_equal(counts, "1") ? "" : "s", nodes);
+        return NULL;
+    }
+    if (row->grade == SGI_MODEL_EVIDENCE_GRADE_UNKNOWN) {
+        size_t count = QAPI_LIST_LENGTH(row->nodes);
+
+        error_setg(errp, "topology '%s' with %zu node board%s rests on "
+                   "evidence that does not settle its wiring; it is not "
+                   "built", chassis->name, count, count == 1 ? "" : "s");
+        return NULL;
+    }
+    return sgi_model_population_view(chassis, row, errp);
+}
+
+/* The topology @product builds with no topology=, as its offerings name. */
+static const char *sgi_model_offered_default(const SGIMachines *machines,
+                                             const char *product)
+{
+    const SGIModelOfferingList *entry;
+
+    for (entry = machines->offerings; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->product, product)) {
+            return entry->value->default_topology;
+        }
+    }
+    return NULL;
+}
+
+const SGIModelOffering *sgi_model_resolve_options(const SGIMachines *machines,
+                                                  const char *options,
+                                                  Error **errp)
+{
+    g_autoptr(QDict) args = keyval_parse(options, "type", NULL, errp);
+    const SGIModelOfferingList *entry;
+    const SGIModelTopology *chassis, *view;
+    const QDictEntry *option;
+    const char *product, *name, *nodes_text;
+    uint64_t nodes = 0;
+
+    if (!args) {
+        return NULL;
+    }
+    for (option = qdict_first(args); option;
+         option = qdict_next(args, option)) {
+        const char *key = qdict_entry_key(option);
+
+        if (!g_str_equal(key, "type") && !g_str_equal(key, "topology") &&
+            !g_str_equal(key, "nodes")) {
+            error_setg(errp, "machine option '%s' is not part of a "
+                       "catalogue selection; give only the machine, "
+                       "topology= and nodes=", key);
+            return NULL;
+        }
+    }
+    product = qdict_get_try_str(args, "type");
+    if (!product) {
+        error_setg(errp, "no machine named in '%s'", options);
+        return NULL;
+    }
+    name = qdict_get_try_str(args, "topology");
+    if (!name) {
+        name = sgi_model_offered_default(machines, product);
+        if (!name) {
+            error_setg(errp, "unknown machine '%s'", product);
+            return NULL;
+        }
+    }
+    nodes_text = qdict_get_try_str(args, "nodes");
+    if (nodes_text &&
+        (qemu_strtou64(nodes_text, NULL, 10, &nodes) < 0 || !nodes ||
+         nodes > UINT32_MAX)) {
+        error_setg(errp, "nodes must be a node board count, not '%s'",
+                   nodes_text);
+        return NULL;
+    }
+    chassis = sgi_model_product_topology(machines, product, name);
+    if (!chassis) {
+        error_setg(errp, "%s has no topology '%s'", product, name);
+        return NULL;
+    }
+    view = sgi_model_resolve_population(chassis, nodes, errp);
+    if (!view) {
+        return NULL;
+    }
+    for (entry = machines->offerings; entry; entry = entry->next) {
+        const SGIModelOffering *offering = entry->value;
+
+        if (g_str_equal(offering->product, product) &&
+            g_str_equal(offering->topology, chassis->name) &&
+            offering->nodes == QAPI_LIST_LENGTH(view->nodes)) {
+            return offering;
+        }
+    }
+    error_setg(errp, "topology '%s' with %zu node board%s is not offered",
+               chassis->name, QAPI_LIST_LENGTH(view->nodes),
+               QAPI_LIST_LENGTH(view->nodes) == 1 ? "" : "s");
+    return NULL;
 }
