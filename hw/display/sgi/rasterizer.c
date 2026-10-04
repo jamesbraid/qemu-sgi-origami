@@ -3869,7 +3869,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                             const SGIRasterTarget *t, const SGIRasterOp *op)
 {
     const SGIRasterPixels *p = &op->pixels;
-    bool image = p->rgba || p->rgba_float;
+    bool image = p->rgba || p->rgba_float || p->rgba_double;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = { .fog = p->distance };
     bool rgba_reported = false;
@@ -3922,9 +3922,10 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                 continue;
             }
             at = (uint64_t)sy * p->width + (uint32_t)sx;
-            rgba = p->rgba_float ? 0 : p->rgba[at];
+            rgba = p->rgba ? p->rgba[at] : 0;
             for (int k = 0; k < 4; k++) {
-                double component = p->rgba_float ? p->rgba_float[at][k] :
+                double component = p->rgba_double ? p->rgba_double[at][k] :
+                                   p->rgba_float ? p->rgba_float[at][k] :
                                    ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
 
                 frag.rgba[k] = CLAMP(component * p->transfer.scale[k] +

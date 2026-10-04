@@ -746,6 +746,20 @@ bool sgi_kona_gl_texture_pixel_rgba(uint32_t format, uint32_t type,
                                                scale, bias, rgba);
 }
 
+bool sgi_kona_gl_pixel_rgba_double(uint32_t format, uint32_t type,
+                                   const uint32_t *source, bool swap_bytes,
+                                   double rgba[4])
+{
+    double values[4];
+
+    if (!source || !rgba ||
+        !sgi_kona_gl_pixel_values(format, type, source, swap_bytes, values)) {
+        return false;
+    }
+    memcpy(rgba, values, sizeof(values));
+    return true;
+}
+
 bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
                                   const uint32_t *source, bool swap_bytes,
                                   float rgba[4])

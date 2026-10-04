@@ -153,6 +153,11 @@ bool sgi_kona_gl_texture_pixel_transfer(uint32_t format, uint32_t type,
                                         const float scale[4],
                                         const float bias[4], uint32_t *rgba);
 
+/* Preserve normalized 32-bit scalar precision before ordinary transfer. */
+bool sgi_kona_gl_pixel_rgba_double(uint32_t format, uint32_t type,
+                                   const uint32_t *source, bool swap_bytes,
+                                   double rgba[4]);
+
 /* Retain finite scalar values before pixel transfer, without quantization. */
 bool sgi_kona_gl_pixel_rgba_float(uint32_t format, uint32_t type,
                                   const uint32_t *source, bool swap_bytes,

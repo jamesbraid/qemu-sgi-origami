@@ -2242,11 +2242,10 @@ void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
     sink->raster(sink->opaque, &op);
 }
 
-bool sgi_gl_draw_pixels_float_transfer(SGIGLContext *c, const SGIGLSink *sink,
-                                       uint32_t width, uint32_t height,
-                                       const float (*rgba)[4], float zoom_x,
-                                       float zoom_y,
-                                       const SGIGLPixelTransfer *transfer)
+static bool sgi_gl_draw_pixels_unquantized_transfer(
+    SGIGLContext *c, const SGIGLSink *sink, uint32_t width, uint32_t height,
+    const float (*rgba_float)[4], const double (*rgba_double)[4],
+    float zoom_x, float zoom_y, const SGIGLPixelTransfer *transfer)
 {
     SGIRasterOp op;
     SGIGLPixelRectangleResult result;
@@ -2257,22 +2256,50 @@ bool sgi_gl_draw_pixels_float_transfer(SGIGLContext *c, const SGIGLSink *sink,
     if (result != SGI_GL_PIXELS_READY) {
         return result == SGI_GL_PIXELS_EMPTY;
     }
-    if (!rgba || count > SIZE_MAX / sizeof(*rgba)) {
+    if ((!rgba_float && !rgba_double) ||
+        count > SIZE_MAX / (rgba_double ? sizeof(*rgba_double) :
+                                         sizeof(*rgba_float))) {
         return false;
     }
     /* Validate the complete image before publishing any fragment. */
     for (uint64_t i = 0; i < count; i++) {
         for (unsigned k = 0; k < 4; k++) {
-            if (!isfinite(rgba[i][k])) {
+            double component = rgba_double ? rgba_double[i][k] :
+                                             rgba_float[i][k];
+
+            if (!isfinite(component)) {
                 qemu_log_mask(LOG_UNIMP, "sgi-gl: nonfinite glDrawPixels "
                               "source dropped\n");
                 return false;
             }
         }
     }
-    op.pixels.rgba_float = rgba;
+    op.pixels.rgba_float = rgba_float;
+    op.pixels.rgba_double = rgba_double;
     sink->raster(sink->opaque, &op);
     return true;
+}
+
+bool sgi_gl_draw_pixels_float_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                       uint32_t width, uint32_t height,
+                                       const float (*rgba)[4], float zoom_x,
+                                       float zoom_y,
+                                       const SGIGLPixelTransfer *transfer)
+{
+    return sgi_gl_draw_pixels_unquantized_transfer(c, sink, width, height,
+                                                   rgba, NULL, zoom_x, zoom_y,
+                                                   transfer);
+}
+
+bool sgi_gl_draw_pixels_double_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                        uint32_t width, uint32_t height,
+                                        const double (*rgba)[4], float zoom_x,
+                                        float zoom_y,
+                                        const SGIGLPixelTransfer *transfer)
+{
+    return sgi_gl_draw_pixels_unquantized_transfer(c, sink, width, height,
+                                                   NULL, rgba, zoom_x, zoom_y,
+                                                   transfer);
 }
 
 bool sgi_gl_copy_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
