@@ -14,7 +14,7 @@
  * alpha test, the stencil test, the depth test, blending, dithering and
  * the logical operation, and is stored under the write masks through the
  * family's target. What it draws follows OpenGL 1.2.1 for
- * aliased points and lines, polygons, untextured bitmaps and unit-zoom
+ * aliased points and lines, polygons, untextured bitmaps and
  * RGBA8 pixel rectangles,
  * flat or smooth shaded, in RGBA or colour-index mode, from vertex colours
  * the context has already lit, with a back-facing polygon's back colours under
@@ -3872,11 +3872,16 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = { .fog = p->distance };
     bool rgba_reported = false;
+    double ex = p->x + (double)p->zoom[0] * p->width;
+    double ey = p->y + (double)p->zoom[1] * p->height;
+    double bx0, by0, bx1, by1;
     int64_t x0, y0, x1, y1;
 
     r.rgba_reported = &rgba_reported;
     if (!p->width || !p->height || !p->rgba ||
-        !sgi_soft_window(p->state, &r.win)) {
+        !isfinite(p->x) || !isfinite(p->y) ||
+        !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
+        !p->zoom[0] || !p->zoom[1] || !sgi_soft_window(p->state, &r.win)) {
         return;
     }
     r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
@@ -3884,19 +3889,41 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     if (!sgi_soft_setup_ops(&r)) {
         return;
     }
-    /* Clip before indexing the image or iterating over off-window rows. */
-    x0 = MAX(0, (int64_t)r.win.x0 - r.win.ox - p->x);
-    y0 = MAX(0, (int64_t)r.win.y0 - r.win.oy - p->y);
-    x1 = MIN((int64_t)p->width - 1, (int64_t)r.win.x1 - r.win.ox - p->x);
-    y1 = MIN((int64_t)p->height - 1, (int64_t)r.win.y1 - r.win.oy - p->y);
+    /* Include lower/left centres and exclude upper/right centres (3.6.4). */
+    bx0 = MAX(ceil(MIN(p->x, ex) - 0.5), (int64_t)r.win.x0 - r.win.ox);
+    by0 = MAX(ceil(MIN(p->y, ey) - 0.5), (int64_t)r.win.y0 - r.win.oy);
+    bx1 = MIN(ceil(MAX(p->x, ex) - 0.5) - 1,
+               (int64_t)r.win.x1 - r.win.ox);
+    by1 = MIN(ceil(MAX(p->y, ey) - 0.5) - 1,
+               (int64_t)r.win.y1 - r.win.oy);
+    if (bx0 > bx1 || by0 > by1) {
+        return;
+    }
+    /* Visible bounds keep conversion and work independent of zoom size. */
+    x0 = bx0;
+    y0 = by0;
+    x1 = bx1;
+    y1 = by1;
     for (int64_t y = y0; y <= y1; y++) {
-        for (int64_t x = x0; x <= x1; x++) {
-            uint32_t rgba = p->rgba[(uint64_t)y * p->width + x];
+        double qy = (y + 0.5 - p->y) / p->zoom[1];
+        double sy = p->zoom[1] > 0 ? floor(qy) : ceil(qy) - 1;
 
+        if (!(sy >= 0 && sy < p->height)) {
+            continue;
+        }
+        for (int64_t x = x0; x <= x1; x++) {
+            double qx = (x + 0.5 - p->x) / p->zoom[0];
+            double sx = p->zoom[0] > 0 ? floor(qx) : ceil(qx) - 1;
+            uint32_t rgba;
+
+            if (!(sx >= 0 && sx < p->width)) {
+                continue;
+            }
+            rgba = p->rgba[(uint64_t)sy * p->width + (uint32_t)sx];
             for (int k = 0; k < 4; k++) {
                 frag.rgba[k] = ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
             }
-            sgi_soft_fragment_at(&r, p->x + x, p->y + y, p->z, &frag, 1, false);
+            sgi_soft_fragment_at(&r, x, y, p->z, &frag, 1, false);
         }
     }
 }
@@ -3907,7 +3934,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
  * clear depth to the depth plane and the clear stencil value under its
  * mask to the stencil buffer, where the planes have one, at every pixel of
  * its rectangle its clip list keeps. BITMAP draws its run of a bitmap,
- * and PIXELS draws a unit-zoom RGBA8 rectangle.
+ * and PIXELS draws a zoomed RGBA8 rectangle.
  * The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,

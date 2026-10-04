@@ -1248,6 +1248,92 @@ static void test_draw_pixels_placement(void)
     }
 }
 
+static void test_draw_pixels_zoom(void)
+{
+    static const uint32_t image[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    static const struct {
+        float x, y, zx, zy;
+        int x0, y0, size;
+        bool flip_x, flip_y;
+    } cases[] = {
+        { 10, 20, 2, 2, 10, 20, 2, false, false },
+        { 10, 20, -2, 2, 6, 20, 2, true, false },
+        { 10, 20, 2, -2, 10, 16, 2, false, true },
+        { 10, 20, -2, -2, 6, 16, 2, true, true },
+        { 10.5f, 20.5f, -1, -1, 8, 18, 1, true, true },
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    for (unsigned k = 0; k < ARRAY_SIZE(cases); k++) {
+        int extent = 2 * cases[k].size;
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        c.raster_pos[0] = cases[k].x;
+        c.raster_pos[1] = cases[k].y;
+        sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 2, 2, image,
+                                     cases[k].zx, cases[k].zy);
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                int dx = x - cases[k].x0, dy = y - cases[k].y0;
+                uint32_t expected = 0;
+
+                if (dx >= 0 && dx < extent && dy >= 0 && dy < extent) {
+                    int sx = dx / cases[k].size, sy = dy / cases[k].size;
+
+                    if (cases[k].flip_x) {
+                        sx = 1 - sx;
+                    }
+                    if (cases[k].flip_y) {
+                        sy = 1 - sy;
+                    }
+                    expected = image[sy * 2 + sx] >> 8;
+                }
+                g_assert_cmphex(p.colour[0][planes_index(x, y)], ==, expected);
+            }
+        }
+        g_assert_cmpfloat(c.raster_pos[0], ==, cases[k].x);
+        g_assert_cmpfloat(c.raster_pos[1], ==, cases[k].y);
+    }
+
+    memset(&p, 0, sizeof(p));
+    c.raster_pos[0] = 10;
+    c.raster_pos[1] = 20;
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 2, 2, image, 0.5f, 0.5f);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xffffff);
+    g_assert_cmphex(p.colour[0][planes_index(11, 20)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(10, 21)], ==, 0);
+    rec.ops = 0;
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 2, 2, image, 0, 1);
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 2, 2, image, 1, 0);
+    g_assert_cmpuint(rec.ops, ==, 0);
+
+    /* A fractional scale gives the first texel one centre, the next two. */
+    memset(&p, 0, sizeof(p));
+    c.raster_pos[0] = 10.25f;
+    c.raster_pos[1] = 20.25f;
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 2, 2, image, 1.25f, 1.25f);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xff0000);
+    g_assert_cmphex(p.colour[0][planes_index(11, 20)], ==, 0x00ff00);
+    g_assert_cmphex(p.colour[0][planes_index(12, 20)], ==, 0x00ff00);
+    g_assert_cmphex(p.colour[0][planes_index(10, 21)], ==, 0x0000ff);
+    g_assert_cmphex(p.colour[0][planes_index(12, 22)], ==, 0xffffff);
+    g_assert_cmphex(p.colour[0][planes_index(13, 22)], ==, 0);
+
+    /* Work is bounded by the visible window even at extreme scales. */
+    c.raster_pos[0] = c.raster_pos[1] = -1.0e30f;
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, image, 2.0e30f, 2.0e30f);
+    g_assert_cmphex(p.colour[0][planes_index(0, 0)], ==, 0xff0000);
+    g_assert_cmphex(p.colour[0][planes_index(W - 1, H - 1)], ==, 0xff0000);
+}
+
 static void test_draw_pixels_fragment_operations(void)
 {
     static const uint32_t image[] = { 0xff000000, 0xff000080, 0xff0000ff };
@@ -3087,6 +3173,8 @@ static void draw_pixels_refusals(void)
     c.cur.texture_3d = 1;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
     c.cur.texture_3d = 0;
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, NAN, 1);
+    sgi_gl_draw_pixels_rgba_zoom(&c, &sink, 1, 1, &pixel, 1, INFINITY);
     c.cur.drawable.bound = false;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
     g_assert_cmpuint(rec.ops, ==, 0);
@@ -3103,6 +3191,7 @@ static void test_draw_pixels_refusals(void)
     g_assert_nonnull(strstr(log, "glDrawPixels inside glBegin"));
     g_assert_nonnull(strstr(log, "textured or colour-index"));
     g_assert_nonnull(strstr(log, "glDrawPixels with no window"));
+    g_assert_nonnull(strstr(log, "nonfinite glDrawPixels placement"));
     context_init(&c);
     c.raster_valid = 0;
     sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
@@ -11120,6 +11209,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/index-draw", test_index_draw);
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
     g_test_add_func("/sgi-gl/draw-pixels/refusals", test_draw_pixels_refusals);
+    g_test_add_func("/sgi-gl/draw-pixels/zoom", test_draw_pixels_zoom);
     g_test_add_func("/sgi-gl/draw-pixels/placement",
                     test_draw_pixels_placement);
     g_test_add_func("/sgi-gl/draw-pixels/fragment-operations",
