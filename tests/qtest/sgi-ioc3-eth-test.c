@@ -22,12 +22,6 @@
  * past it: a transfer that runs off the end has nothing to land in.
  */
 #define RAM_SCRATCH     0x02000000u
-
-/* PCI direct-window addresses, distinct from qtest backing RAM addresses. */
-static uint32_t pci_dma_address(uint32_t physical)
-{
-    return 0x80000000u | physical;
-}
 #define RAM_END         0x03000000u
 
 #define IOC3_PCI_SLOT   4
@@ -198,7 +192,13 @@ static uint32_t ioc3_readl(QTestState *qts, uint64_t off)
     return qpci_io_readl(ioc3_dev, ioc3_window, off);
 }
 
-/* The device reads rings big-endian everywhere: write them as bytes. */
+/* PCI direct-window addresses, distinct from qtest backing RAM addresses. */
+static uint32_t pci_dma_address(uint32_t physical)
+{
+    return 0x80000000u | physical;
+}
+
+/* Write the engine's big-endian descriptor words as bytes. */
 static void dma_stl_be(QTestState *qts, uint64_t addr, uint32_t val)
 {
     uint8_t b[4] = { val >> 24, val >> 16, val >> 8, val };
@@ -1101,6 +1101,48 @@ static void test_a_burst_behind_one_doorbell(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
                     (BURST * TX_DESC_SIZE) | TX_CONSUME_IDLE);
 
+    ioc3_quit(qts);
+    close(sv[0]);
+}
+
+/* The chip-owned view must still obey native PCI bus-master enablement. */
+static void test_dma_bus_master_disable(const void *data)
+{
+    enum { LEN = 64 };
+    const uint32_t desc = RAM_SCRATCH;
+    uint8_t frame[LEN], got[LEN];
+    QTestState *qts;
+    uint16_t command;
+    unsigned int i;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = 0x30 + i;
+    }
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = ioc3_attach_socket(sv[1], 4);
+    dma_stl_be(qts, desc, LEN | TXD_DATA_VALID);
+    dma_stl_be(qts, desc + 4, LEN);
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, pci_dma_address(desc));
+
+    command = qpci_config_readw(ioc3_dev, PCI_COMMAND);
+    g_assert_cmphex(command & PCI_COMMAND_MASTER, ==, PCI_COMMAND_MASTER);
+    qpci_config_writew(ioc3_dev, PCI_COMMAND, command & ~PCI_COMMAND_MASTER);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+    net_socket_expect_no_frame(sv[0]);
+    /* A refused descriptor fetch leaves the walk at its current entry. */
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==, 0);
+
+    qpci_config_writew(ioc3_dev, PCI_COMMAND, command);
+    ioc3_writel(qts, ENET_TX_PRODUCE, TX_DESC_SIZE);
+    net_socket_set_recv_timeout(sv[0], 10);
+    g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==, LEN);
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
+                    TX_DESC_SIZE | TX_CONSUME_IDLE);
     ioc3_quit(qts);
     close(sv[0]);
 }
@@ -2912,6 +2954,8 @@ int main(int argc, char **argv)
                         test_stopped_storage_migration);
 
     /* The transmit path changes at 104; the receive size at each. */
+    qtest_add_data_func("sgi-ioc3-eth/dma-bus-master-disable", NULL,
+                        test_dma_bus_master_disable);
     qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
     qtest_add_data_func("sgi-ioc3-eth/deferred-receive-delivers-without-reset",

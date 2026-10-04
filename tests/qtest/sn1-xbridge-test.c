@@ -390,6 +390,7 @@ static void test_ioc3_pio_swap_controls(void)
     const uint64_t bar = BASE + 0x600000;
     const uint64_t ssram = bar + 0x40000;
     const uint64_t uart = bar + 0x20178;
+    const uint64_t nvram = bar + 0x80000 + 0x100;
 
     qtest_writel(qts, BASE + 0x22010, 0x01400000);
     qtest_writel(qts, BASE + 0x22004, 6);
@@ -397,17 +398,40 @@ static void test_ioc3_pio_swap_controls(void)
     qtest_writel(qts, ssram, 0x00012345);
     qtest_writeb(qts, uart + 4, 0x05);
     qtest_writeb(qts, uart + 7, 0x5a);
+    qtest_writeb(qts, nvram, 0x31);
+    qtest_writeb(qts, nvram + 1, 0x57);
+    qtest_writeb(qts, nvram + 2, 0x9b);
+    qtest_writeb(qts, nvram + 3, 0xde);
+    qtest_writew(qts, nvram + 4, 0xeeee);
+    qtest_writew(qts, nvram + 6, 0xeeee);
+    /* Halfwords report the PCI scalar value in little-endian order. */
+    g_assert_cmphex(qtest_readw(qts, nvram), ==, 0x5731);
+    g_assert_cmphex(qtest_readw(qts, nvram + 2), ==, 0xde9b);
     g_assert_cmphex(qtest_readl(qts, ssram), ==, 0x00012345);
     g_assert_cmphex(qtest_readb(qts, uart + 4), ==, 0x05);
     g_assert_cmphex(qtest_readb(qts, uart + 7), ==, 0x5a);
 
     reg_write(qts, 0x210, 0x3014);
+    g_assert_cmphex(qtest_readb(qts, nvram), ==, 0xde);
+    g_assert_cmphex(qtest_readb(qts, nvram + 3), ==, 0x31);
+    g_assert_cmphex(qtest_readw(qts, nvram), ==, 0x9bde);
+    g_assert_cmphex(qtest_readw(qts, nvram + 2), ==, 0x3157);
+    qtest_writeb(qts, nvram + 1, 0xa5);
+    qtest_writew(qts, nvram + 4, 0x1234);
     g_assert_cmphex(qtest_readl(qts, ssram), ==, 0x45230100);
     g_assert_cmphex(qtest_readb(qts, uart + 4), ==, 0x5a);
     g_assert_cmphex(qtest_readb(qts, uart + 7), ==, 0x05);
     qtest_writel(qts, ssram + 4, 0x21430000);
     qtest_writeb(qts, uart + 4, 0xa5);
     reg_write(qts, 0x210, 0x1014);
+    g_assert_cmphex(qtest_readb(qts, nvram), ==, 0x31);
+    g_assert_cmphex(qtest_readb(qts, nvram + 1), ==, 0x57);
+    g_assert_cmphex(qtest_readb(qts, nvram + 2), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, nvram + 3), ==, 0xde);
+    g_assert_cmphex(qtest_readw(qts, nvram + 4), ==, 0xeeee);
+    g_assert_cmphex(qtest_readw(qts, nvram + 6), ==, 0x3412);
+    g_assert_cmphex(qtest_readb(qts, nvram + 6), ==, 0x12);
+    g_assert_cmphex(qtest_readb(qts, nvram + 7), ==, 0x34);
     g_assert_cmphex(qtest_readl(qts, ssram + 4), ==, 0x00004321);
     g_assert_cmphex(qtest_readb(qts, uart + 4), ==, 0x05);
     g_assert_cmphex(qtest_readb(qts, uart + 7), ==, 0xa5);
