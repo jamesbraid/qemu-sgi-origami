@@ -7352,6 +7352,45 @@ out:
     }
 }
 
+static void test_native_packed_index(gconstpointer opaque)
+{
+    static const struct {
+        uint32_t payload, expected;
+    } cases[] = {
+        { 0x01230000, 0x123 }, { 0xfffd0000, 0xffd },
+        { 0x80010000, 1 }, { 0x7fff0000, 0xfff }, { 0, 0 },
+        { 0x01000000, 0x234 }, { 0x12000000, 0x234 },
+        { 0x80000000, 0x234 }, { 0xff000000, 0x234 },
+        { 0x01230001, 0x234 }, { 0x00000001, 0x234 },
+    };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned k = mode % ARRAY_SIZE(cases);
+    bool migrate = mode >= ARRAY_SIZE(cases);
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    native_index_visual(s, 12);
+    native_index_set(s, 2, 0x234);
+    if (migrate) {
+        qtest_writel(s, REG_COMMAND, 0x75);
+        read_dma_migrate(from, &s, &to, &dir);
+        qtest_writel(s, REG_COMMAND, cases[k].payload);
+    } else {
+        kona_command(s, 0x75, &cases[k].payload, 1);
+    }
+    gl_begin(s, 0);
+    gl_vertex2f(s, 0, 0);
+    gl_end(s);
+    assert_native_index_pixels(s, 64, &cases[k].expected, 1);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_native_index_sources(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -13586,6 +13625,13 @@ int main(int argc, char **argv)
         }
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_bitmap_stencil_read);
+    }
+    for (unsigned mode = 0; mode < 22; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-packed-index/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_packed_index);
     }
     for (unsigned mode = 0; mode < 16; mode++) {
         g_autofree char *path = g_strdup_printf(

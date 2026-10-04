@@ -3205,9 +3205,16 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
         cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, a };
         break;
     case SGI_KONA_CMD_GL_INDEX_PACKED:
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: ambiguous packed index type;"
-                      " current index preserved\n");
-        return true;
+        /* Byte and short senders overlap when the short's low byte is zero. */
+        if ((args[0] & 0xffff) ||
+            (args[0] && !(args[0] & 0xff0000))) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported packed index type;"
+                          " current index preserved\n");
+            return true;
+        }
+        a[0] = sgi_kona_gl_int((int16_t)(args[0] >> 16));
+        cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, a };
+        break;
     case SGI_KONA_CMD_GL_COLOR4F:
         cmd = (SGIGLCmd) { SGI_GL_OP_COLOR4F, 4, args };
         break;
