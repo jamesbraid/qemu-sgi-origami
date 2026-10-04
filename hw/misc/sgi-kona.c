@@ -3801,7 +3801,7 @@ static bool sgi_kona_gl_read_dma_layout(const SGIKonaGLReadDMA *d,
     uint32_t lines, pixel_bytes;
 
     if (selector == SGI_KONA_CMD_X_PIXEL_READ) {
-        if ((h[4] != 1 && h[4] != 2) || h[5] || h[6]) {
+        if ((h[4] != 1 && h[4] != 2 && h[4] != 4) || h[5] || h[6]) {
             return false;
         }
         pixel_bytes = h[4];
@@ -6586,14 +6586,19 @@ static void sgi_kona_x_pixel_setup(SGIKonaState *s, const uint32_t *args)
                                  args[5], args[6]);
 }
 
-/* Main-index reads ignore foreground and write masks. */
-static bool sgi_kona_x_read_gc(const uint32_t *gc)
+/* Main-plane reads ignore foreground and write masks. */
+static bool sgi_kona_x_read_gc(const uint32_t *gc, bool rgb)
 {
     static const uint32_t forms[][7] = {
         { 0x180c, 0x40001, 1, 6, 5, 1, 1 },
         { 0xc, 1, 1, 6, 0, 1, 1 },
     };
 
+    static const uint32_t rgb_form[] = { 0x2804, 0x60001, 1, 6, 8, 0, 0 };
+
+    if (rgb) {
+        return !memcmp(gc + 6, rgb_form, sizeof(rgb_form));
+    }
     return !memcmp(gc + 6, forms[0], sizeof(forms[0])) ||
            !memcmp(gc + 6, forms[1], sizeof(forms[1]));
 }
@@ -6626,8 +6631,10 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
     unsigned bytes = setup[SGI_KONA_X_SETUP_DST_PACK] == 0 &&
                      setup[SGI_KONA_X_SETUP_SHIFT] == 8 ? 1 :
                      setup[SGI_KONA_X_SETUP_DST_PACK] == 1 &&
-                     setup[SGI_KONA_X_SETUP_SHIFT] == 12 ? 2 : 0;
-    uint64_t pitch = QEMU_ALIGN_UP(width * bytes, 4);
+                     setup[SGI_KONA_X_SETUP_SHIFT] == 12 ? 2 :
+                     setup[SGI_KONA_X_SETUP_DST_PACK] == 2 &&
+                     (int32_t)setup[SGI_KONA_X_SETUP_SHIFT] == -8 ? 4 : 0;
+    uint64_t pitch = width * bytes;
     int64_t plane_y;
     const char *reason;
     g_autofree uint8_t *data = NULL;
@@ -6640,13 +6647,13 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
         reason = "an incompatible transfer is open";
     } else if (!s->x_read_gc_valid || !s->x_read_setup_valid) {
         reason = "GC or setup not loaded in this activation";
-    } else if (!sgi_kona_x_read_gc(s->x_gc)) {
-        reason = "unsupported main-index GC";
+    } else if (!sgi_kona_x_read_gc(s->x_gc, bytes == 4)) {
+        reason = "unsupported main-plane GC";
     } else if (setup[SGI_KONA_X_SETUP_MODE] != 2 ||
-               setup[SGI_KONA_X_SETUP_SRC_PACK] != 1 ||
+               setup[SGI_KONA_X_SETUP_SRC_PACK] != (bytes == 4 ? 2 : 1) ||
                !bytes ||
                setup[SGI_KONA_X_SETUP_PAD] != 0) {
-        reason = "unsupported indexed-read setup";
+        reason = "unsupported X read setup";
     } else if ((int32_t)width <= 0 || (int32_t)height <= 0 ||
                x < 0 || y < 0 || x + width > SGI_KONA_FB_WIDTH ||
                y + height > SGI_KONA_FB_HEIGHT) {
@@ -6669,8 +6676,10 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                 uint32_t word = sgi_plane_load(&s->mem,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c, py);
 
-                if (tag != SGI_KONA_TAG_X_INDEX16 || word > 0xffff) {
-                    reason = "source is not a native main index";
+                if (tag != (bytes == 4 ? SGI_KONA_TAG_DIRECT :
+                                        SGI_KONA_TAG_X_INDEX16) ||
+                    word > (bytes == 4 ? 0xffffff : 0xffff)) {
+                    reason = "source is not supported main-plane colour";
                     goto refused;
                 }
             }
@@ -6682,7 +6691,10 @@ static bool sgi_kona_x_read_payload(SGIKonaState *s, const uint32_t *args,
                     sgi_kona_plane(s, sgi_kona_bank_plane(s, 0)), x + c,
                     SGI_KONA_FB_HEIGHT - 1 - y - r);
 
-                if (bytes == 2) {
+                if (bytes == 4) {
+                    /* The model stores logical RGB, not physical components. */
+                    stl_be_p(data + r * pitch + c * 4, word);
+                } else if (bytes == 2) {
                     /* Physical halfword extraction remains inferred. */
                     stw_be_p(data + r * pitch + c * 2, (word >> 4) & 0xfff);
                 } else {
@@ -6712,7 +6724,8 @@ static void sgi_kona_x_pixel_read(SGIKonaState *s, const uint32_t *args)
 
     if (d->active) {
         uint32_t header[] = { args[0], args[1], setup[4], setup[5],
-                              setup[2] == 0 ? 1 : 2, 0, 0 };
+                              setup[2] == 0 ? 1 : setup[2] == 1 ? 2 :
+                              setup[2] == 2 ? 4 : 0, 0, 0 };
 
         if (d->refused || d->count || d->context != s->context_current ||
             !sgi_kona_gl_read_dma_layout(d, header,

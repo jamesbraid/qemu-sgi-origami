@@ -2175,15 +2175,46 @@ static void read_dma_clear_notifications(QTestState *s, uint64_t page)
     }
 }
 
-static void test_read_indexed_dma(gconstpointer opaque)
+static uint32_t read_rgb_pattern(unsigned x, unsigned y)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
-    bool halfword = mode == 2 || mode == 3 || mode == 10;
+    static const uint32_t pixels[] = {
+        0x000001, 0xff0000, 0x0080ff,
+        0x962ca5, 0x01fe80, 0xfffefd,
+        0x001122, 0x123456, 0xabcdef,
+    };
+
+    return pixels[y * 3 + x];
+}
+
+static void read_rgb_gc(QTestState *s)
+{
+    x_command(s, TOKEN_GC,
+              (uint32_t[]) { 0, 0, 0, 0, 0, 0,
+                             0x2804, 0x60001, 1, 6, 8, 0, 0 }, 13);
+}
+
+static void read_rgb_scene(QTestState *s)
+{
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 3; x++) {
+            seed_rgb(s, 10 + x, 20 + y, read_rgb_pattern(x, y));
+        }
+    }
+    read_rgb_gc(s);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]) { 2, 2, 2, -8, 3, 3, 0 }, 7);
+}
+
+static void test_read_dma(gconstpointer opaque)
+{
+    unsigned value = GPOINTER_TO_UINT(opaque), mode = value % 32;
+    bool rgb = value >= 32;
+    bool halfword = !rgb && (mode == 2 || mode == 3 || mode == 10);
     bool strided = mode == 1 || mode == 3 || mode == 19;
     bool refused = mode >= 11 && mode != 25;
     unsigned width = mode == 25 ? 1280 : 3;
     unsigned height = mode == 25 ? 16 : 3;
-    unsigned bytes = halfword ? 2 : 1;
+    unsigned bytes = rgb ? 4 : halfword ? 2 : 1;
     unsigned row_bytes = width * bytes, total = row_bytes * height;
     unsigned phase = mode == 4 ? 3 : 0;
     unsigned gap = mode == 19 ? 16384 - row_bytes : strided ? 5 : 0;
@@ -2208,7 +2239,9 @@ static void test_read_indexed_dma(gconstpointer opaque)
     QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
 
     read_activate(s, READ_SAVE, READ_PAGE);
-    if (halfword) {
+    if (rgb) {
+        read_rgb_scene(s);
+    } else if (halfword) {
         index12_gc(s, 0xfff, 3);
         x_command(s, TOKEN_PIXEL_SETUP,
                   (uint32_t[]){ 0, 1, 1, 4, 3, 3, 0 }, 7);
@@ -2218,10 +2251,15 @@ static void test_read_indexed_dma(gconstpointer opaque)
     } else {
         read_write_pattern(s, coordinates[0], 20, width, height);
     }
-    read_gc(s);
+    if (rgb) {
+        read_rgb_gc(s);
+    } else {
+        read_gc(s);
+    }
     x_command(s, TOKEN_PIXEL_SETUP,
-              (uint32_t[]){ 2, 1, halfword ? 1 : 0, halfword ? 12 : 8,
-                            width, height, 0 }, 7);
+              (uint32_t[]) { 2, rgb ? 2 : 1, rgb ? 2 : halfword ? 1 : 0,
+                             rgb ? -8 : halfword ? 12 : 8,
+                             width, height, 0 }, 7);
     read_gl_command(s, 0x1f1,
                     (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3, true);
     qtest_writel(s, KONA_REG(0x000034), 0x98000);
@@ -2241,8 +2279,15 @@ static void test_read_indexed_dma(gconstpointer opaque)
     } else if (mode == 13) {
         descriptor[5] = 0x100;
     } else if (mode == 14) {
-        seed_rgb(s, 12, 22, 0xabcdef);
-        read_gc(s);
+        if (rgb) {
+            read_write_pattern(s, 12, 22, 1, 1);
+            read_rgb_gc(s);
+            x_command(s, TOKEN_PIXEL_SETUP,
+                      (uint32_t[]) { 2, 2, 2, -8, 3, 3, 0 }, 7);
+        } else {
+            seed_rgb(s, 12, 22, 0xabcdef);
+            read_gc(s);
+        }
     } else if (mode == 20) {
         x_command(s, TOKEN_PIXEL_SETUP,
                   (uint32_t[]){ 2, 1, 0, 9, 3, 3, 0 }, 7);
@@ -2318,7 +2363,9 @@ static void test_read_indexed_dma(gconstpointer opaque)
             for (unsigned c = 0; c < width; c++) {
                 uint8_t *out = expected + phase + r * pitch + c * bytes;
 
-                if (halfword) {
+                if (rgb) {
+                    stl_be_p(out, read_rgb_pattern(c, r));
+                } else if (halfword) {
                     stw_be_p(out, indices[r * width + c]);
                 } else {
                     *out = read_pattern(c, r);
@@ -2346,6 +2393,71 @@ static void test_read_indexed_dma(gconstpointer opaque)
                     refused ? 0 : UINT64_C(1) << 0x11);
     g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x10), ==, 0);
     read_unchanged(s, READ_PAGE);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
+static void test_read_rgb(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool refused = mode >= 1 && mode <= 3;
+    uint8_t got[0x4000], expected[0x4000];
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    read_activate(s, READ_SAVE, READ_PAGE);
+    read_rgb_scene(s);
+    if (mode == 1) {
+        read_write_pattern(s, 12, 22, 1, 1);
+        read_rgb_gc(s);
+        x_command(s, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]) { 2, 2, 2, -8, 3, 3, 0 }, 7);
+    } else if (mode == 2) {
+        x_command(s, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]) { 2, 2, 2, 8, 3, 3, 0 }, 7);
+    } else if (mode == 3) {
+        read_gc(s);
+    } else if (mode == 6) {
+        x_command(s, TOKEN_POSITION, (uint32_t[]) { 90, 70, 1, 1 }, 4);
+        x_command(s, TOKEN_CLIP, (uint32_t[]) { 1, 0, 0, 1, 1 }, 5);
+    } else if (mode == 7) {
+        x_command(s, TOKEN_COLOR_MAP,
+                  (uint32_t[]) { X_MAP_WINDOW, 1, 0x3ff00000 }, 3);
+    }
+    read_prepare(s, READ_PAGE);
+    if (mode == 4) {
+        x_command(s, TOKEN_PIXEL_READ, (uint32_t[]) { 10 }, 1);
+    }
+    if (mode == 4 || mode == 5) {
+        dir = g_dir_make_tmp("kona-rgb-read-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 4) {
+        qtest_writel(s, REG_COMMAND_DATA, 20);
+    } else {
+        x_command(s, TOKEN_PIXEL_READ, (uint32_t[]) { 10, 20 }, 2);
+    }
+    memset(expected, 0xa5, sizeof(expected));
+    memset(expected, 0, 4);
+    if (!refused) {
+        stl_be_p(expected, 1);
+        for (unsigned y = 0; y < 3; y++) {
+            for (unsigned x = 0; x < 3; x++) {
+                stl_be_p(expected + 8 + 4 * (y * 3 + x),
+                         read_rgb_pattern(x, y));
+            }
+        }
+    }
+    qtest_memread(s, READ_PAGE, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
     if (to) {
         qtest_quit(to);
         g_rmdir(dir);
@@ -3231,7 +3343,28 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-pixel/read-dma/%s", read_dma_cases[mode]);
 
         qtest_add_data_func(name, GUINT_TO_POINTER(mode),
-                            test_read_indexed_dma);
+                            test_read_dma);
+    }
+    for (unsigned mode = 0; mode < ARRAY_SIZE(read_dma_cases); mode++) {
+        if (mode == 2 || mode == 3 || mode == 10 || mode == 25) {
+            continue;
+        }
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/read-rgb-dma/%s", read_dma_cases[mode]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(32 + mode),
+                            test_read_dma);
+    }
+    static const char *read_rgb_cases[] = {
+        "rows", "late-indexed-tag", "wrong-shift", "indexed-gc",
+        "partial-migrates", "state-migrates", "ignores-write-state",
+        "ignores-colour-map",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(read_rgb_cases); mode++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/read-rgb/%s", read_rgb_cases[mode]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(mode), test_read_rgb);
     }
     qtest_add_func("sn0/origin2000/kona-pixel/read-shapes", test_read_shapes);
     qtest_add_func("sn0/origin2000/kona-pixel/read-write-state",
