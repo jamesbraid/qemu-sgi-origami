@@ -2713,11 +2713,46 @@ static void rad4_exit(PCIDevice *dev)
     g_free(s->display_buffer);
 }
 
+/*
+ * Whether migrated state that indexes arrays or feeds shifts is in range:
+ * every state the device itself can reach passes.
+ */
+static bool rad4_migrated_state_valid(PsitechRad4State *s)
+{
+    uint32_t longest = 0;
+
+    for (int q = 0; q < RAD4_SEQUENCE_COUNT; q++) {
+        longest = MAX(longest, rad4_sequences[q].event_count);
+    }
+    if (s->mode >= RAD4_MODE_COUNT ||
+        s->rec_state < RAD4_REC_UNARMED || s->rec_state > RAD4_REC_FAILED ||
+        s->rec_index >= longest ||
+        s->eeprom_address >= RAD4_EEPROM_WORDS ||
+        s->rgb_reserved_phase >= RAD4_COLOR_LUT_CYCLES) {
+        return false;
+    }
+    switch (s->serial_state) {
+    case RAD4_SERIAL_IDLE:
+    case RAD4_SERIAL_START:
+    case RAD4_SERIAL_READ_DUMMY:
+    case RAD4_SERIAL_WRITE_READY:
+    case RAD4_SERIAL_DONE:
+        return true;
+    case RAD4_SERIAL_COMMAND:
+        return s->serial_bit_count < RAD4_EEPROM_CMD_BITS;
+    case RAD4_SERIAL_READ:
+    case RAD4_SERIAL_WRITE_DATA:
+        return s->serial_bit_count < 16;
+    default:
+        return false;
+    }
+}
+
 static int rad4_post_load(void *opaque, int version_id)
 {
     PsitechRad4State *s = opaque;
 
-    if (s->mode >= RAD4_MODE_COUNT) {
+    if (!rad4_migrated_state_valid(s)) {
         return -EINVAL;
     }
 
