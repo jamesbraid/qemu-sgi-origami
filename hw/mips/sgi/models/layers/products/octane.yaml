@@ -66,11 +66,17 @@ layer:
         disk_bus: scsi
         netboot_adapter: none
         default_topology: octane
-        firmware_bytes: 2097152
+        # The candidate part's 1 MiB array (Origami docs/designs/
+        # ip30-flash-configuration.md), which the reviewed CFI01 boot flash
+        # ("hw/mips/sgi: use CFI01 for Octane boot flash") implements as
+        # octane.c's OCTANE_FLASH_SIZE. The fitted physical part is still
+        # unknown.
+        firmware_bytes: 1048576
         identity_inputs: []
         supported_guests:
         - irix
         install_media: []
         provenance: derived
         sources:
+        - hw/mips/sgi/octane.c
         - docs/datasheets/ip30-machine.md
