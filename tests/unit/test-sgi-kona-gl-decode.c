@@ -1910,6 +1910,39 @@ static void test_pixels_pio_refusals(void)
     g_assert_cmpuint(l.payload_words, ==, (uint64_t)UINT32_MAX * 4);
 }
 
+static void test_pixels_bitmap_layout(void)
+{
+    uint32_t h[8] = { 9, 2, 11, 7, 3, 0, 0, 0 };
+    SGIKonaGLPixelLayout l;
+    SGIKonaGLPixelDMALayout d;
+    uint64_t offset;
+
+    g_assert_true(sgi_kona_gl_pixels_pio_layout(h, 0, 0, 0, 4, &l));
+    g_assert_cmpuint(l.pixel_bytes, ==, 0);
+    g_assert_cmpuint(l.row_bytes, ==, 2);
+    g_assert_cmpuint(l.stride, ==, 4);
+    g_assert_cmpuint(l.phase, ==, 3);
+    g_assert_cmpuint(l.payload_words, ==, 3);
+    g_assert_true(sgi_kona_gl_pixels_pio_offset(&l, 1, 1, &offset));
+    g_assert_cmpuint(offset, ==, 8);
+    h[5] = 1;
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(h, 0, 0, 0, 4, &d));
+    g_assert_cmpuint(d.total_bytes, ==, 12);
+    g_assert_cmpuint(d.source_phase, ==, 0);
+    g_assert_cmpuint(d.lines, ==, 1);
+    h[2] = 12;
+    h[4] = 1;
+    h[6] = 1;
+    g_assert_true(sgi_kona_gl_pixels_dma_layout(h, 24, 1, 3, 4, &d));
+    g_assert_cmpuint(d.total_bytes, ==, 4);
+    g_assert_cmpuint(d.line_bytes, ==, 2);
+    g_assert_cmpuint(d.pitch, ==, 4);
+    g_assert_cmpuint(d.source_phase, ==, 1);
+    g_assert_cmpuint(d.lines, ==, 2);
+    h[2] = 13;
+    g_assert_false(sgi_kona_gl_pixels_dma_layout(h, 24, 1, 3, 4, &d));
+}
+
 static void test_pixels_dma_contiguous_padding(void)
 {
     const uint32_t header[8] = { 1, 3, 4, 1, 2, 1, 0, 0 };
@@ -2941,6 +2974,8 @@ int main(int argc, char **argv)
                     test_pixels_pio_scalar_widths);
     g_test_add_func("/sgi-kona-gl-decode/pixels-pio/refusals",
                     test_pixels_pio_refusals);
+    g_test_add_func("/sgi-kona-gl-decode/pixels-bitmap-layout",
+                    test_pixels_bitmap_layout);
     g_test_add_func("/sgi-kona-gl-decode/pixels-dma/contiguous-padding",
                     test_pixels_dma_contiguous_padding);
     g_test_add_func("/sgi-kona-gl-decode/pixels-dma/strided-skips",

@@ -1189,6 +1189,23 @@ bool sgi_kona_gl_pixels_pio_layout(const uint32_t header[8],
          alignment != 4 && alignment != 8)) {
         return false;
     }
+    if (header[3] == 7 && (header[2] == 11 || header[2] == 12)) {
+        uint32_t bitmap_header[9] = { header[0], header[1], header[4],
+                                     0, header[6] };
+        SGIKonaGLBitmapLayout bitmap;
+
+        if (!sgi_kona_gl_bitmap_pio_layout(bitmap_header, row_length,
+            skip_rows, skip_pixels, alignment, &bitmap)) {
+            return false;
+        }
+        *layout = (SGIKonaGLPixelLayout) {
+            .width = bitmap.width, .height = bitmap.height,
+            .stride = bitmap.stride, .row_bytes = bitmap.row_bytes,
+            .payload_words = bitmap.payload_words, .phase = bitmap.phase,
+            .strided = bitmap.strided,
+        };
+        return true;
+    }
     l.pixel_bytes = sgi_kona_gl_native_pixel_bytes(header[2], header[3]);
     if (!l.pixel_bytes) {
         return false;
@@ -1242,6 +1259,25 @@ bool sgi_kona_gl_pixels_dma_layout(const uint32_t header[8],
         uadd64_overflow(d.span, l->row_bytes, &d.span)) {
         return false;
     }
+    if (header[3] == 7 && (header[2] == 11 || header[2] == 12)) {
+        uint32_t bitmap_header[9] = { header[0], header[1], header[4],
+                                     1, header[6] };
+        SGIKonaGLBitmapDMALayout bitmap;
+
+        if (!sgi_kona_gl_bitmap_dma_layout(bitmap_header, row_length,
+            skip_rows, skip_pixels, alignment, &bitmap)) {
+            return false;
+        }
+        d.total_bytes = bitmap.total_bytes;
+        d.line_bytes = bitmap.line_bytes;
+        d.pitch = bitmap.pitch;
+        d.span = bitmap.span;
+        d.lines = bitmap.lines;
+        d.source_phase = bitmap.source_phase;
+        *layout = d;
+        return true;
+    }
+    d.source_phase = l->phase;
     if (l->strided) {
         d.lines = l->height;
         d.line_bytes = l->row_bytes;
