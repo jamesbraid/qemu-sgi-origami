@@ -4767,6 +4767,29 @@ static uint32_t odyssey_front_face(uint32_t pattern_mode)
  * already has. Feeding the enable keeps the decoded GL state faithful
  * without drawing a stencil test that could never do anything.
  */
+static void odyssey_gl_apply_polygon_stipple(SGIOdysseyState *s)
+{
+    uint32_t cap = SGI_GL_POLYGON_STIPPLE;
+    bool enable = (s->pattern_mode & ODSY_GL_RECT_PATTERN_ENABLE) &&
+                  s->pattern_shape == 0;
+
+    if (s->gl_in_prim) {
+        return;
+    }
+    if (enable) {
+        uint32_t rows[32];
+
+        for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+            rows[i] = s->pattern_buffer[31 - i];
+        }
+        if (!sgi_gl_polygon_stipple(&s->gl_ctx, rows)) {
+            return;
+        }
+    }
+    odyssey_gl_feed(s, enable ? SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE,
+                    &cap, 1);
+}
+
 static void odyssey_gl_apply_mode(SGIOdysseyState *s)
 {
     uint32_t shade = s->pattern_mode & ODSY_MODE_FLAT_SHADE ?
@@ -4823,6 +4846,7 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
                     SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &line_stipple, 1);
     odyssey_gl_feed(s, SGI_GL_OP_CULL_FACE, &cull_mode, 1);
     odyssey_gl_feed(s, SGI_GL_OP_FRONT_FACE, &front_face, 1);
+    odyssey_gl_apply_polygon_stipple(s);
 }
 
 static void odyssey_gl_apply_line_stipple(SGIOdysseyState *s)
@@ -8293,6 +8317,7 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     }
     case ODSY_REG_PATTERN_SHAPE:
         s->pattern_shape = s->cmd_operand[0];
+        odyssey_gl_apply_polygon_stipple(s);
         break;
     case ODSY_REG_PATTERN_MODE:
         s->pattern_mode = s->cmd_operand[0];
@@ -8714,6 +8739,7 @@ static void odyssey_cmd_word(SGIOdysseyState *s, uint32_t word)
                 word;
         }
         if (++s->cmd_operand_index == s->cmd_operand_count) {
+            odyssey_gl_apply_polygon_stipple(s);
             s->cmd_state = ODSY_CMD_IDLE;
         }
         break;
