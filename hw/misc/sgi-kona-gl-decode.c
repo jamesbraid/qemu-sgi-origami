@@ -618,6 +618,7 @@ uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type)
         components = 3;
         break;
     case 5:                     /* RGBA */
+    case 8:                     /* ABGR */
     case 10:                    /* BGRA */
         components = 4;
         break;
@@ -712,6 +713,12 @@ static bool sgi_kona_gl_pixel_values(uint32_t format, uint32_t type,
     case 7:
         a = g;
         g = b = r;
+        break;
+    case 8:
+        r = values[3];
+        g = values[2];
+        b = values[1];
+        a = values[0];
         break;
     case 9:
     case 10:
@@ -1157,6 +1164,10 @@ bool sgi_kona_gl_pixel_pack_double(uint32_t format, uint32_t type,
         /* ReadPixels luminance sums channels before clamping. */
         values[0] = values[0] + values[1] + values[2];
         values[1] = values[3];
+    } else if (format == 8) {
+        for (unsigned k = 0; k < 4; k++) {
+            values[k] = rgba[3 - k];
+        }
     } else if (format == 9 || format == 10) {
         values[0] = rgba[2];
         values[2] = rgba[0];

@@ -1221,16 +1221,14 @@ static void test_texture_pixel_conversion(void)
     g_assert_true(sgi_kona_gl_texture_pixel_rgba(5, 6, saturated,
                                                 false, &rgba));
     g_assert_cmphex(rgba, ==, 0x00ff0000);
-    for (uint32_t format = 0; format <= 8; format++) {
-        if (format > 7) {
-            rgba = 0x12345678;
-            g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==, 0);
-            g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==, 0);
-            g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 1,
-                                                          byte_source, false,
-                                                          &rgba));
-            g_assert_cmphex(rgba, ==, 0x12345678);
-        }
+    for (uint32_t format = 11; format <= 13; format++) {
+        rgba = 0x12345678;
+        g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 1), ==, 0);
+        g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(format, 6), ==, 0);
+        g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, 1,
+                                                      byte_source, false,
+                                                      &rgba));
+        g_assert_cmphex(rgba, ==, 0x12345678);
     }
 }
 
@@ -1388,9 +1386,9 @@ static void test_texture_swap_bytes(void)
     g_assert_true(sgi_kona_gl_texture_pixel_rgba(3, 6, raw_infinity,
                                                 true, &rgba));
     g_assert_cmphex(rgba, ==, 0);
-    for (uint32_t format = 0; format < 10; format++) {
+    for (uint32_t format = 0; format < 14; format++) {
         for (uint32_t type = 0; type < 9; type++) {
-            if ((format > 7 && format != 9 && format != 10) || type > 6) {
+            if (format > 10 || type > 6) {
                 rgba = 0x12345678;
                 g_assert_false(sgi_kona_gl_texture_pixel_rgba(format, type,
                                                               cases[6].source,
@@ -2252,6 +2250,82 @@ static void test_pixel_single_channel_pack(void)
     }
 }
 
+static void test_pixel_abgr_decode(void)
+{
+    const uint32_t integers[] = {
+        0x10203040, 0x50607080, 0x90a0b0c0, 0xd0e0f000,
+    };
+    const uint32_t floats[] = {
+        0x3e000000, 0x3f000000, 0x3f600000, 0x3e800000,
+    };
+    const uint32_t precise[] = {
+        0x10000000, 0x20000000, 0x40000000, 0x7fffffff,
+    };
+    const float scale[] = { -4294967296.0f, 1, 1, 1 };
+    const float bias[] = { 2147483648.0f, 0, 0, 0 };
+    uint32_t pixel;
+
+    for (uint32_t type = 0; type < 7; type++) {
+        for (unsigned swap = 0; swap < 2; swap++) {
+            uint32_t source[4];
+            double original[4], rgba[4];
+            unsigned size = sgi_kona_gl_texture_pixel_bytes(3, type);
+
+            memcpy(source, type == 6 ? floats : integers, sizeof(source));
+            if (type == 6 && swap) {
+                for (unsigned k = 0; k < 4; k++) {
+                    source[k] = bswap32(source[k]);
+                }
+            }
+            g_assert_cmpuint(sgi_kona_gl_texture_pixel_bytes(8, type),
+                             ==, 4 * size);
+            g_assert_true(sgi_kona_gl_pixel_rgba_double(5, type, source,
+                                                       swap, original));
+            g_assert_true(sgi_kona_gl_pixel_rgba_double(8, type, source,
+                                                       swap, rgba));
+            for (unsigned k = 0; k < 4; k++) {
+                g_assert_cmpfloat(rgba[k], ==, original[3 - k]);
+            }
+        }
+    }
+    g_assert_true(sgi_kona_gl_texture_pixel_rgba(8, 1, integers, false,
+                                                 &pixel));
+    g_assert_cmphex(pixel, ==, 0x40302010);
+    g_assert_true(sgi_kona_gl_texture_pixel_transfer(8, 5, precise, false,
+                                                     scale, bias, &pixel));
+    g_assert_cmphex(pixel, ==, 0x80402010);
+}
+
+static void test_pixel_abgr_pack(void)
+{
+    const double rgba[] = { 0.125, 0.5, 0.875, 0.25 };
+    const uint8_t bytes[] = { 64, 223, 128, 32 };
+    uint8_t original[16], out[16];
+
+    for (uint32_t type = 0; type < 7; type++) {
+        unsigned size = sgi_kona_gl_texture_pixel_bytes(3, type);
+
+        for (unsigned swap = 0; swap < 2; swap++) {
+            g_assert_true(sgi_kona_gl_pixel_pack_double(5, type, rgba, swap,
+                                                       original,
+                                                       sizeof(original)));
+            memset(out, 0xa5, sizeof(out));
+            g_assert_true(sgi_kona_gl_pixel_pack_double(8, type, rgba, swap,
+                                                       out, sizeof(out)));
+            for (unsigned k = 0; k < 4; k++) {
+                g_assert_cmpmem(out + k * size, size,
+                                original + (3 - k) * size, size);
+            }
+            for (unsigned k = 4 * size; k < sizeof(out); k++) {
+                g_assert_cmphex(out[k], ==, 0xa5);
+            }
+        }
+    }
+    g_assert_true(sgi_kona_gl_pixel_pack_double(8, 1, rgba, false,
+                                               out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(bytes), bytes, sizeof(bytes));
+}
+
 static void test_pixel_bgr_decode(void)
 {
     const uint32_t integer_source[] = {
@@ -2610,6 +2684,8 @@ int main(int argc, char **argv)
                     test_pixel_single_channel_transfer);
     g_test_add_func("/sgi-kona-gl-decode/single-channel/pack",
                     test_pixel_single_channel_pack);
+    g_test_add_func("/sgi-kona-gl-decode/abgr/decode", test_pixel_abgr_decode);
+    g_test_add_func("/sgi-kona-gl-decode/abgr/pack", test_pixel_abgr_pack);
     g_test_add_func("/sgi-kona-gl-decode/bgr/decode", test_pixel_bgr_decode);
     g_test_add_func("/sgi-kona-gl-decode/bgr/pack", test_pixel_bgr_pack);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/types",
