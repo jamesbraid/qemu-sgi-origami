@@ -1031,15 +1031,37 @@ static void sgi_hub_update_irq(SGIHubState *s)
     }
 }
 
+/*
+ * A request queued on a processor can run after something else has set its
+ * enable since: a later guest write, a reset or a snapshot load. The
+ * register the Hub holds now is the request that stands, so a request that
+ * no longer matches it does nothing. One gap remains: an unhalt runs as
+ * exclusive work with the BQL dropped, so with several processors one
+ * already running can still check and clear the halt while the main
+ * thread resets the machine or loads a snapshot. Record/replay has a
+ * single processor and never reaches it.
+ */
+static bool sgi_hub_cpu_enable_stands(CPUState *cs, run_on_cpu_data data,
+                                      bool enabled)
+{
+    SGIHubState *s = data.host_ptr;
+
+    return !!s->pi_cpu_enable[cs->cpu_index - s->cpu_base] == enabled;
+}
+
 static void sgi_hub_cpu_unhalt(CPUState *cs, run_on_cpu_data data)
 {
-    cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
-    cs->halted = 0;
+    if (sgi_hub_cpu_enable_stands(cs, data, true)) {
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+        cs->halted = 0;
+    }
 }
 
 static void sgi_hub_cpu_halt(CPUState *cs, run_on_cpu_data data)
 {
-    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    if (sgi_hub_cpu_enable_stands(cs, data, false)) {
+        cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    }
 }
 
 /*
@@ -1073,20 +1095,34 @@ static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
                                      bool enabled, bool synchronous)
 {
     CPUState *cs = sgi_hub_cpu(s, cpu);
+    run_on_cpu_func fn = enabled ? sgi_hub_cpu_unhalt : sgi_hub_cpu_halt;
+    run_on_cpu_data data = RUN_ON_CPU_HOST_PTR(s);
 
     if (!cs) {
         return;
     }
     sgi_hub_trace_kick(cs, enabled ? "cpu-enable" : "cpu-disable");
     if (synchronous) {
-        run_on_cpu(cs, enabled ? sgi_hub_cpu_unhalt : sgi_hub_cpu_halt,
-                   RUN_ON_CPU_NULL);
+        /*
+         * A system reset runs with every processor paused, and a paused
+         * processor's state is safe to change from here under the BQL.
+         * Waiting for its thread instead deadlocks under record/replay:
+         * that thread needs the replay lock this thread holds. Work the
+         * guest queued before the pause may still run afterwards, which
+         * is why each request checks the enable it was made for
+         * (sgi_hub_cpu_enable_stands() names the one gap left).
+         */
+        if (cs->stopped) {
+            fn(cs, data);
+        } else {
+            run_on_cpu(cs, fn, data);
+        }
         return;
     }
     if (enabled) {
-        async_safe_run_on_cpu(cs, sgi_hub_cpu_unhalt, RUN_ON_CPU_NULL);
+        async_safe_run_on_cpu(cs, fn, data);
     } else {
-        async_run_on_cpu(cs, sgi_hub_cpu_halt, RUN_ON_CPU_NULL);
+        async_run_on_cpu(cs, fn, data);
     }
 }
 
