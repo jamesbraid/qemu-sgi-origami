@@ -1431,12 +1431,16 @@ static void rad4_recognizer_collect(PsitechRad4State *s, uint32_t offset,
 /*
  * A write to board control at BAR2 +0xf00000. The driver keeps bit 0x20
  * set in its saved control word from the end of its first mode sequence
- * on, and only the mode routine's opening write clears it, so a write
- * with bit 0x20 clear starts a mode sequence whatever its other bits: bit
+ * on. With one board, only the mode routine's opening write clears it, so
+ * a write with bit 0x20 clear starts a mode sequence whatever its other
+ * bits: bit
  * 1 when a palette or cursor update is waiting for the next frame, bit
  * 0x80 for the keyboard serial port. It arms recognition from any state,
  * including a recognized mode, whose scanout stops until the new
- * sequence completes, and including after a failed sequence.
+ * sequence completes, and including after a failed sequence. With two or
+ * more boards the driver's open path also writes the word with bit 0x20
+ * clear and then restores it; this model does not support that
+ * configuration, and such an open stops the display.
  *
  * The same write may also have acknowledged a pending frame
  * (@acknowledged); a mode change requested while a frame is pending is
