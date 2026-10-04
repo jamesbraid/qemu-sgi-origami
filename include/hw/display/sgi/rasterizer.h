@@ -110,6 +110,7 @@ typedef struct SGIRasterRules {
     const char *evidence;
     uint8_t alpha_bits;         /* stored A width, zero means no alpha */
     uint8_t alpha_test_bits; /* Zero derives precision from color/alpha bits. */
+    bool smooth_primitives; /* Enable area coverage for smooth primitives. */
 } SGIRasterRules;
 
 /*

@@ -4570,9 +4570,12 @@ static void test_raster_state_kept(void)
 static void test_point_smoothing_coverage(void)
 {
     FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
     uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
 
+    smooth_rules.smooth_primitives = true;
     frag_init(&f);
+    f.rec.rules = &smooth_rules;
     frag_quad(&f, 0, 0, 1, 1);
     frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
                SGI_GL_FUNC_ADD);
@@ -4610,9 +4613,12 @@ static void test_point_smoothing_coverage(void)
 static void test_line_smoothing_coverage(void)
 {
     FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
     uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
 
+    smooth_rules.smooth_primitives = true;
     frag_init(&f);
+    f.rec.rules = &smooth_rules;
     frag_quad(&f, 0, 0, 1, 1);
     frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
                SGI_GL_FUNC_ADD);
@@ -4658,11 +4664,14 @@ static void test_line_smoothing_coverage(void)
 static void test_line_smoothing_stipple(void)
 {
     FragScene f;
+    SGIRasterRules smooth_rules = rules_stencil;
     uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
     uint32_t stipple[2] = { 2, 1 };
     uint32_t p;
 
+    smooth_rules.smooth_primitives = true;
     frag_init(&f);
+    f.rec.rules = &smooth_rules;
     frag_quad(&f, 0, 0, 1, 1);
     frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
                SGI_GL_FUNC_ADD);
@@ -4697,6 +4706,50 @@ static void test_line_smoothing_stipple(void)
     g_assert_cmpuint((p >> 16) & 0xff, >, 0);
     g_assert_cmpuint(p & 0xff, >, 0);
     g_assert_cmpuint((p >> 8) & 0xff, ==, 0);
+}
+
+static void test_smoothing_rules_disabled(void)
+{
+    FragScene aliased, requested;
+    uint32_t red[4] = { bits(1), bits(0), bits(0), bits(1) };
+
+    frag_init(&aliased);
+    frag_init(&requested);
+    frag_quad(&aliased, 0, 0, 1, 1);
+    frag_quad(&requested, 0, 0, 1, 1);
+    frag_blend(&aliased, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    frag_blend(&requested, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+               SGI_GL_FUNC_ADD);
+    enable(&aliased.c, SGI_GL_BLEND, true);
+    enable(&requested.c, SGI_GL_BLEND, true);
+    frag_command(&aliased, SGI_GL_OP_COLOR4F, red, ARRAY_SIZE(red));
+    frag_command(&requested, SGI_GL_OP_COLOR4F, red, ARRAY_SIZE(red));
+
+    frag_command(&aliased, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&aliased, 10, 10);
+    frag_command(&aliased, SGI_GL_OP_END, NULL, 0);
+    enable(&requested.c, SGI_GL_POINT_SMOOTH, true);
+    frag_command(&requested, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_POINTS }, 1);
+    wide_vertex(&requested, 10, 10);
+    frag_command(&requested, SGI_GL_OP_END, NULL, 0);
+
+    frag_command(&aliased, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&aliased, 10, 20);
+    wide_vertex(&aliased, 14, 20);
+    frag_command(&aliased, SGI_GL_OP_END, NULL, 0);
+    enable(&requested.c, SGI_GL_LINE_SMOOTH, true);
+    frag_command(&requested, SGI_GL_OP_BEGIN,
+                 (uint32_t[]) { SGI_GL_LINES }, 1);
+    wide_vertex(&requested, 10, 20);
+    wide_vertex(&requested, 14, 20);
+    frag_command(&requested, SGI_GL_OP_END, NULL, 0);
+
+    g_assert(memcmp(aliased.p.colour, requested.p.colour,
+                    sizeof(aliased.p.colour)) == 0);
 }
 
 #define CLIP_EPSILON (1.0 / (1ull << 40))
@@ -10386,6 +10439,8 @@ int main(int argc, char **argv)
                     test_line_smoothing_coverage);
     g_test_add_func("/sgi-gl/line-smoothing-stipple",
                     test_line_smoothing_stipple);
+    g_test_add_func("/sgi-gl/smoothing-rules-disabled",
+                    test_smoothing_rules_disabled);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",
                     test_volume_clip_triangle_near_and_far);
     g_test_add_func("/sgi-gl/volume-clip-segment-side-planes",
