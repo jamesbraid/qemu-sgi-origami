@@ -4043,13 +4043,6 @@ static SGIGLDrawResult sgi_soft_polygon(const SGISoftDraw *r,
     mode = d->polygon_modes[front ? 0 : 1];
     if (mode == SGI_GL_FILL) {
         if (r->polygon_smooth) {
-            if (r->st->index_bits) {
-                qemu_log_mask(LOG_UNIMP, "sgi-gl: polygon smoothing in "
-                              "colour-index mode is unsupported; "
-                              "polygon drawn aliased\n");
-                sgi_soft_polygon_fill(r, d, indices, count, provoking);
-                goto out;
-            }
             sgi_soft_polygon_smooth(r, poly, n, provoking, front, slope);
             goto out;
         }
