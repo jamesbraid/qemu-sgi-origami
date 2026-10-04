@@ -149,6 +149,10 @@ disk image, the same as real hardware.
 Firmware supply
 ===============
 
+``-bios`` accepts a raw PROM image or SGI's own distribution container,
+decoded as :doc:`sgi-prom-image` describes; the machine uses the decoded
+payload either way.
+
 ``origin200`` and ``origin2000`` take ``-bios`` to supply one PROM
 image, copied into every node's boot flash identically; a node whose
 flash is instead named explicitly with ``-drive if=pflash,unit=N``
@@ -165,7 +169,7 @@ timings and its machine-type word) are patched into whichever block is
 actually present -- the template's own or a loaded image's --
 preserving every other field and the block's stored checksum.
 
-``origin300`` takes ``-bios`` with a raw stock PROM payload of exactly
+``origin300`` takes ``-bios`` with a stock PROM whose payload is exactly
 the size its one node's flash answers for; there is no per-node
 override; the image is also rejected outright if it exceeds the flash
 part ``sn1_node_create_boot_flash()`` expects. Its boot flash can instead

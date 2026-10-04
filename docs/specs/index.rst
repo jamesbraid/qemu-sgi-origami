@@ -48,6 +48,7 @@ guest hardware that is specific to QEMU.
    sgi-elsc
    sgi-hub
    sgi-ioc3
+   sgi-prom-image
    sgi-qlogic-isp
    sgi-sn
    sgi-xbridge

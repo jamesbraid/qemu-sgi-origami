@@ -21,6 +21,9 @@ mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
+# The PROM image decoder behind the family machines' -bios.
+mips_ss.add(when: 'CONFIG_SGI_PROM_IMAGE',
+            if_true: [files('sgi/prom-image.c'), zlib])
 # The family machine base and builder over the compiled catalogue
 # (qapi/sgi-machines.json, embedded and parsed by sgi/sgi-machines.c below).
 mips_ss.add(when: 'CONFIG_SGI_SN0',

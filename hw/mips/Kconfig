@@ -46,6 +46,9 @@ config SGI_DEVICES
 config SGI_CATALOGUE
     bool
 
+config SGI_PROM_IMAGE
+    bool
+
 config SGI_OCTANE
     bool
     select PFLASH_CFI01
@@ -64,6 +67,7 @@ config SGI_OCTANE
 config SGI_SN0
     bool
     select SGI_CATALOGUE
+    select SGI_PROM_IMAGE
     default y
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES

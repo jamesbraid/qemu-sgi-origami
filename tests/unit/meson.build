@@ -6,7 +6,8 @@ fork_unit_tests = [
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
-  'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-pi-gfx',
+  'test-sn-model', 'test-sgi-prom-image', 'test-sgi-bedrock-ni',
+  'test-sgi-pi-gfx',
   'test-sgi-rad1-audio-pcm', 'test-dma-buffer',
   'test-sgi-kona-ports', 'test-sgi-kona-gl-decode', 'test-sgi-x-gc',
   'test-sgi-memory', 'test-sgi-dma', 'test-sgi-scanout', 'test-sgi-gl',
@@ -113,6 +114,7 @@ tests = {
                             qom, hwcore, migration, io],
   'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
   'test-sn-model': ['../../hw/mips/sgi/sn-model-runtime.c'],
+  'test-sgi-prom-image': ['../../hw/mips/sgi/prom-image.c', zlib],
   # all code tested by test-sgi-rad1-audio-pcm is inside sgi-rad1-audio-pcm.h
   'test-sgi-rad1-audio-pcm': [],
   'test-logging': [],

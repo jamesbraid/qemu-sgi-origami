@@ -55,6 +55,7 @@ docs/specs/sgi-bridge.rst
 docs/specs/sgi-elsc.rst
 docs/specs/sgi-hub.rst
 docs/specs/sgi-ioc3.rst
+docs/specs/sgi-prom-image.rst
 docs/specs/sgi-qlogic-isp.rst
 docs/specs/sgi-sn.rst
 docs/specs/sgi-xbridge.rst
@@ -192,6 +193,7 @@ hw/mips/sgi/origin300-pci-expansion.c
 hw/mips/sgi/origin300-pci-expansion.h
 hw/mips/sgi/pi-gfx-state.c
 hw/mips/sgi/pi-gfx.c
+hw/mips/sgi/prom-image.c
 hw/mips/sgi/sgi-machines-qmp-stub.c
 hw/mips/sgi/sgi-machines.c
 hw/mips/sgi/sgi-machines.json
@@ -288,6 +290,7 @@ include/hw/mips/sgi/baseio-flash.h
 include/hw/mips/sgi/baseio.h
 include/hw/mips/sgi/net-cable.h
 include/hw/mips/sgi/pi-gfx.h
+include/hw/mips/sgi/prom-image.h
 include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sn-machine.h
 include/hw/mips/sgi/xio-widget.h
@@ -691,6 +694,7 @@ tests/qtest/sgi-migrate.h
 tests/qtest/sgi-mips-emit.h
 tests/qtest/sgi-pci-expansion-ni-fixture.c
 tests/qtest/sgi-pci-expansion-ni-test.c
+tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-test.h
 tests/qtest/sn-builder-fault-test.c
@@ -806,6 +810,7 @@ tests/unit/test-sgi-o2000-module-mgmt-real.c
 tests/unit/test-sgi-o2000-module-mgmt-stubs.c
 tests/unit/test-sgi-o2000-module-mgmt.c
 tests/unit/test-sgi-pi-gfx.c
+tests/unit/test-sgi-prom-image.c
 tests/unit/test-sgi-rad1-audio-pcm.c
 tests/unit/test-sgi-router.c
 tests/unit/test-sgi-scanout.c
