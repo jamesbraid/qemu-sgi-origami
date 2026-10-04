@@ -374,6 +374,12 @@ static void sgi_kona_dma_packet_run(SGIKonaState *s, const uint32_t *w)
 
     if (record) {
         sgi_kona_dma_list(s, &pl, in_page, lines, total, cookie);
+    } else if (sgi_kona_bitmap_dma_waiting(s)) {
+        if (sgi_kona_bitmap_image_dma(s, io, lines, per_line, pitch) &&
+            cookie != SGI_KONA_DMA_COOKIE_NONE) {
+            sgi_head_publish(&sgi_kona_dma_head_ops, s, d->seq++,
+                             SGI_DONE_WRITTEN, cookie, total);
+        }
     } else if (texture) {
         /* Publish only after the complete source was read and staged. */
         if (sgi_kona_texture_image_dma(s, io, lines, per_line, pitch) &&
