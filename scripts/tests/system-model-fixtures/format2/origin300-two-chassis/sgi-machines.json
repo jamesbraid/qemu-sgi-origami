@@ -725,7 +725,7 @@
       "topology": "origin300-two-chassis"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [

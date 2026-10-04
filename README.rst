@@ -49,7 +49,7 @@ SGI model catalogue
 
 The SGI machine-model inputs and schema are in ``hw/mips/sgi/models/``.
 ``scripts/sgi-model.py`` validates those files and regenerates the checked-in
-``hw/mips/sgi/sn-catalogue.json`` and ``sn-model.json`` outputs. The original
+``hw/mips/sgi/sgi-machines.json`` and ``sn-model.json`` outputs. The original
 project-authored model inputs, schema and generator are licensed under
 BSD-3-Clause; see ``hw/mips/sgi/models/LICENSE`` and the SPDX notices in the
 Python files. Cited sources remain under their own terms.

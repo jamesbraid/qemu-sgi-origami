@@ -26,7 +26,7 @@
         2
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
@@ -34,7 +34,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -67,7 +67,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -118,7 +118,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -146,7 +146,7 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
@@ -154,7 +154,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -187,7 +187,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -238,7 +238,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -266,7 +266,7 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
@@ -274,7 +274,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -307,7 +307,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -358,7 +358,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -386,7 +386,7 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
@@ -394,7 +394,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -427,7 +427,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -478,7 +478,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -506,7 +506,7 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
@@ -514,7 +514,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -547,7 +547,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -598,7 +598,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -625,14 +625,14 @@
         2
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -665,7 +665,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -716,7 +716,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -743,14 +743,14 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -783,7 +783,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -834,7 +834,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -861,14 +861,14 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -901,7 +901,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -952,7 +952,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -979,14 +979,14 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1019,7 +1019,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1070,7 +1070,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -1096,13 +1096,13 @@
         2
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1135,7 +1135,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1186,7 +1186,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -1212,13 +1212,13 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1251,7 +1251,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1302,7 +1302,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -1328,13 +1328,13 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2,
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1367,7 +1367,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1418,7 +1418,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -1443,12 +1443,12 @@
         2
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1481,7 +1481,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1532,7 +1532,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     },
     {
       "console": "ioc3-serial-a",
@@ -1557,12 +1557,12 @@
         1
       ],
       "default-cpu-model": "R10000",
-      "default-topology": "origin2000-rack",
+      "default-topology": "onyx2-rack",
       "dimms-per-node": [
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 2000 rack module",
+      "display-name": "Onyx2 rack with one InfiniteReality pipe",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
@@ -1595,7 +1595,7 @@
         "clock-hz": 180000000,
         "part": "R10000"
       },
-      "product": "origin2000",
+      "product": "onyx2",
       "prom-dialogue": "ip27-menu",
       "resources": [
         {
@@ -1646,10 +1646,10 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin2000-rack"
+      "topology": "onyx2-rack"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [
@@ -1756,7 +1756,7 @@
           "widget-revision": 2
         }
       ],
-      "description": "SGI Origin 2000 rack module",
+      "description": "SGI Onyx2 rack, one InfiniteReality pipe cabled from IO3",
       "generation": "sn0",
       "io-boards": [
         {
@@ -1767,11 +1767,26 @@
           "label": "io1",
           "module-index": 0,
           "other-identity-parts": [],
-          "part": "030-1124-002",
+          "part": "030-0734-002",
           "populated": true,
-          "preset": "io6",
+          "preset": "io6g",
           "revision": 4,
           "serial": 17592186044423
+        },
+        {
+          "attachment": 3,
+          "carrier": "xio-slot",
+          "id": "io3-pipe",
+          "label": "io3",
+          "module-index": 0,
+          "other-identity-parts": [
+            "030-1067-001"
+          ],
+          "part": "030-1398-001",
+          "populated": true,
+          "preset": "kona",
+          "revision": 0,
+          "serial": 17592186044425
         }
       ],
       "junk-uart": -1,
@@ -1789,7 +1804,7 @@
           "serial": "SGIMODULE1"
         }
       ],
-      "name": "origin2000-rack",
+      "name": "onyx2-rack",
       "node-populations": [
         {
           "cables": [],
@@ -1826,10 +1841,6 @@
             {
               "controlling-node": 0,
               "slot": 3
-            },
-            {
-              "controlling-node": 0,
-              "slot": 4
             }
           ]
         },
@@ -1886,7 +1897,7 @@
               "slot": 3
             },
             {
-              "controlling-node": 0,
+              "controlling-node": 1,
               "slot": 4
             },
             {
@@ -1908,10 +1919,6 @@
             {
               "controlling-node": 1,
               "slot": 9
-            },
-            {
-              "controlling-node": 1,
-              "slot": 10
             }
           ]
         },
@@ -1968,19 +1975,19 @@
               "slot": 0
             },
             {
-              "controlling-node": 0,
+              "controlling-node": 2,
               "slot": 1
             },
             {
-              "controlling-node": 2,
+              "controlling-node": 0,
               "slot": 2
             },
             {
-              "controlling-node": 0,
+              "controlling-node": 2,
               "slot": 3
             },
             {
-              "controlling-node": 2,
+              "controlling-node": 1,
               "slot": 4
             },
             {
@@ -2002,10 +2009,6 @@
             {
               "controlling-node": 1,
               "slot": 9
-            },
-            {
-              "controlling-node": 1,
-              "slot": 10
             }
           ]
         },
@@ -2076,44 +2079,40 @@
               "slot": 0
             },
             {
-              "controlling-node": 0,
+              "controlling-node": 2,
               "slot": 1
             },
             {
-              "controlling-node": 2,
+              "controlling-node": 0,
               "slot": 2
             },
             {
-              "controlling-node": 0,
+              "controlling-node": 2,
               "slot": 3
             },
             {
-              "controlling-node": 2,
+              "controlling-node": 1,
               "slot": 4
             },
             {
-              "controlling-node": 1,
+              "controlling-node": 3,
               "slot": 5
             },
             {
-              "controlling-node": 3,
+              "controlling-node": 1,
               "slot": 6
             },
             {
-              "controlling-node": 1,
+              "controlling-node": 3,
               "slot": 7
             },
             {
-              "controlling-node": 3,
+              "controlling-node": 1,
               "slot": 8
             },
             {
-              "controlling-node": 1,
-              "slot": 9
-            },
-            {
               "controlling-node": 3,
-              "slot": 10
+              "slot": 9
             }
           ]
         }
@@ -2364,7 +2363,7 @@
           "slot": 4
         }
       ],
-      "product": "origin2000",
+      "product": "onyx2",
       "routers": [
         {
           "chip-inputs": 15,
@@ -2402,6 +2401,11 @@
           "widget": 8
         },
         {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 15
+        },
+        {
           "crossbar-index": 1,
           "node-index": 1,
           "widget": 10
@@ -2419,13 +2423,6 @@
           "id": "pci-expansion",
           "label": "io2",
           "widget": 12
-        },
-        {
-          "controlling-node": 0,
-          "crossbar-index": 0,
-          "id": "xio-slot-3",
-          "label": "io3",
-          "widget": 15
         },
         {
           "controlling-node": 2,

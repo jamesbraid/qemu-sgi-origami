@@ -17,7 +17,7 @@
 #include "hw/core/clock.h"
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/xio-link.h"
 #include "cpu.h"
 #include "sn-promdata.h"
@@ -80,8 +80,8 @@ typedef struct SN1NodeState {
     /*
      * The topology's Bedrock node record, set by the machine before
      * realize -- the compiled catalogue this node builds from
-     * (qapi/sgi-sn.json). The machine passes the I/O board's fitted identity
-     * through properties before this node realizes the XBridge.
+     * (qapi/sgi-machines.json). The machine passes the I/O board's fitted
+     * identity through properties before this node realizes the XBridge.
      */
     const SGIModelNode *model_node;
     /*

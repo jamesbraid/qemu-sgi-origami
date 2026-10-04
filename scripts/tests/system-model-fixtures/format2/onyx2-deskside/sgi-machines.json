@@ -577,7 +577,7 @@
       "topology": "onyx2-deskside"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [

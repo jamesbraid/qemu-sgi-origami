@@ -1902,12 +1902,12 @@ class RefusalTests(unittest.TestCase):
 class ManifestTests(unittest.TestCase):
     def test_manifest_format(self):
         manifest_text = render_manifest(
-            {"origin200": {"a": 1}}, {"sn-catalogue.json": "{}"})
+            {"origin200": {"a": 1}}, {"sgi-machines.json": "{}"})
         manifest = json.loads(manifest_text)
         self.assertEqual(manifest["format"], 4)
         self.assertEqual(manifest["format_key"], "sgi-sn")
         self.assertIn("source_sha256", manifest)
-        self.assertIn("sn-catalogue.json", manifest["outputs"])
+        self.assertIn("sgi-machines.json", manifest["outputs"])
 
 
 class CatalogueJsonTests(unittest.TestCase):
@@ -1918,7 +1918,7 @@ class CatalogueJsonTests(unittest.TestCase):
 
     def test_document_shape(self):
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
-        self.assertEqual(catalogue["schema"], "sgi-sn-catalogue")
+        self.assertEqual(catalogue["schema"], "sgi-machines")
         self.assertEqual(catalogue["version"], 1)
         self.assertEqual(set(catalogue), {"schema", "version", "topologies", "offerings"})
 
@@ -2276,8 +2276,9 @@ class GoldenTests(unittest.TestCase):
                     expected = {"refused.txt": str(exc) + "\n"}
                 else:
                     manifest = render_manifest(
-                        {name: model}, {"sn-catalogue.json": catalogue})
-                    expected = {"sn-model.json": manifest, "sn-catalogue.json": catalogue}
+                        {name: model}, {"sgi-machines.json": catalogue})
+                    expected = {"sn-model.json": manifest,
+                                "sgi-machines.json": catalogue}
                 if update:
                     directory.mkdir(parents=True, exist_ok=True)
                     for stale in directory.iterdir():

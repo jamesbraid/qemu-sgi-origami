@@ -85,7 +85,7 @@
 
 /*
  * origin2000's default topology is the full four-node/multi-CPU module
- * sn-catalogue.json describes, with a matching multi-gigabyte default RAM
+ * sgi-machines.json describes, with a matching multi-gigabyte default RAM
  * size -- fine for every other case here, which shares one already-running
  * instance for plain register I/O, but too large to migrate twice (once
  * per instance) inside a single qtest's time budget. Pinned down the same

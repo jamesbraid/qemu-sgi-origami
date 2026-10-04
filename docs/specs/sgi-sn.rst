@@ -22,11 +22,11 @@ QEMU models the abstract family as ``sgi-sn`` (``TYPE_SGI_SN_MACHINE``,
 parents. It owns the family's own machine properties and a builder,
 ``sgi_machine_init()``, that constructs a machine from a compiled
 catalogue: a list of ``SGIModelTopology`` entries
-(``qapi/sgi-sn.json``, embedded into the emulator and parsed at first
-use by ``hw/mips/sgi/sn-catalogue.c``) naming every node, module,
+(``qapi/sgi-machines.json``, embedded into the emulator and parsed at first
+use by ``hw/mips/sgi/sgi-machines.c``) naming every node, module,
 fabric link, I/O board and controller a product's configuration ships.
-The same compiled document backs the ``query-sgi-sn-catalogue`` QMP command
-(``SGIModelCatalogue`` in ``qapi/sgi-sn.json``): the emulator returns its own
+The same compiled document backs the ``query-sgi-machines`` QMP command
+(``SGIMachines`` in ``qapi/sgi-machines.json``): the emulator returns its own
 embedded copy verbatim, so a package build can read the catalogue back from
 the binary it ships instead of carrying a second copy out of band. The
 catalogue carries two sections; only ``topologies`` reaches this builder.

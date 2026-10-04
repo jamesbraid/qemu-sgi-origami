@@ -42,7 +42,7 @@
 #include "migration/register.h"
 #include "system/runstate.h"
 #include "target/mips/cpu.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 
 #define OCTANE_SHORT_BASE 0x10000000ULL
 #define OCTANE_SHORT_SPAN (16 * MiB)

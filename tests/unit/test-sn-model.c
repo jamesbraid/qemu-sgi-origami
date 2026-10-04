@@ -1,18 +1,18 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Check the shipped hw/mips/sgi/sn-catalogue.json topology once; sn-machine.c
+ * Check the shipped hw/mips/sgi/sgi-machines.json topology once; sn-machine.c
  * trusts the compiler and golden data at machine launch. Parse the tracked
  * file with qobject_from_json() and qobject_input_visitor_new(), as
- * sn-catalogue.c parses its embedded copy and hw/uefi/var-service-json.c
+ * sgi-machines.c parses its embedded copy and hw/uefi/var-service-json.c
  * does. Reading the file avoids target/mips linkage and keeps this test
  * host-native, as direct sn-model.c linkage did before catalogue compilation.
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/mips/sgi/sn-catalogue.h"
-#include "qapi/qapi-types-sgi-sn.h"
-#include "qapi/qapi-visit-sgi-sn.h"
+#include "hw/mips/sgi/sgi-machines.h"
+#include "qapi/qapi-types-sgi-machines.h"
+#include "qapi/qapi-visit-sgi-machines.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/util.h"
 #include "qobject/qjson.h"
@@ -527,24 +527,24 @@ static void check_bedrock_has_populated_io(const SGIModelTopology *t)
 static char *catalogue_path(void)
 {
     return g_build_filename(g_test_get_dir(G_TEST_DIST), "..", "..", "hw",
-                            "mips", "sgi", "sn-catalogue.json", NULL);
+                            "mips", "sgi", "sgi-machines.json", NULL);
 }
 
-static SGIModelCatalogue *load_catalogue(void)
+static SGIMachines *load_catalogue(void)
 {
     g_autofree char *path = catalogue_path();
     g_autofree char *contents = NULL;
     g_autoptr(GError) local_error = NULL;
     QObject *qobj;
     Visitor *v;
-    SGIModelCatalogue *catalogue = NULL;
+    SGIMachines *catalogue = NULL;
 
     if (!g_file_get_contents(path, &contents, NULL, &local_error)) {
         g_error("cannot read %s: %s", path, local_error->message);
     }
     qobj = qobject_from_json(contents, &error_abort);
     v = qobject_input_visitor_new(qobj);
-    visit_type_SGIModelCatalogue(v, NULL, &catalogue, &error_abort);
+    visit_type_SGIMachines(v, NULL, &catalogue, &error_abort);
     visit_free(v);
     qobject_unref(qobj);
     return catalogue;
@@ -552,7 +552,7 @@ static SGIModelCatalogue *load_catalogue(void)
 
 static void test_every_topology_is_well_formed(void)
 {
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
     size_t topology_count = 0;
 
@@ -580,7 +580,7 @@ static void test_origin300_graphics_attachment(gconstpointer data)
     const char *name = data;
     SGIModelIoBoardPreset preset = g_str_equal(name, "origin300-v12-direct") ?
         SGI_MODEL_IO_BOARD_PRESET_ODYSSEY : SGI_MODEL_IO_BOARD_PRESET_VBRICK;
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
 
     for (entry = catalogue->topologies; entry; entry = entry->next) {
@@ -716,7 +716,7 @@ static void test_io_peer_rejects_processors(void)
 
 static void test_existing_topologies_have_no_io_peers(void)
 {
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
 
     for (entry = catalogue->topologies; entry; entry = entry->next) {
@@ -746,7 +746,7 @@ static void test_existing_topologies_have_no_io_peers(void)
 
 static void test_expansion_offering(void)
 {
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
     const SGIModelTopology *t = NULL;
     SGIModelIoAssembly *a;
@@ -812,7 +812,7 @@ static void test_expansion_offering(void)
 
 static void test_expansion_storage_offering(void)
 {
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     SGIModelTopologyList *entry;
     SGIModelTopology *topology = NULL;
     SGIModelIoAssembly *assembly;
@@ -1029,7 +1029,7 @@ static void test_io_peer_population_rejects_missing_cable(void)
 static void test_existing_population_views(void)
 {
     /* Like the embedded catalogue, inputs outlive all cached projections. */
-    SGIModelCatalogue *catalogue = load_catalogue();
+    SGIMachines *catalogue = load_catalogue();
     const SGIModelTopologyList *topology;
 
     for (topology = catalogue->topologies; topology;
@@ -1067,7 +1067,7 @@ static void test_io_peer_runtime_accepts_absent_and_empty(void)
     SGIModelCable cable = { .ends = &ends };
     SGIModelCableList cables = { .value = &cable };
     Error *err = NULL;
-    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    g_autoptr(SGIMachines) catalogue = load_catalogue();
     const SGIModelTopologyList *entry;
 
     g_assert_true(sgi_model_check_runtime_endpoints(&topology, &err));

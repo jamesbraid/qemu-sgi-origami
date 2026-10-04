@@ -3,12 +3,12 @@
 """Emit the compiled catalogue and its manifest.
 
 Takes the dictionaries `model_compile.compile_model` produces, one per
-configuration, and renders `hw/mips/sgi/sn-catalogue.json` (`topologies`
+configuration, and renders `hw/mips/sgi/sgi-machines.json` (`topologies`
 trimmed to what the catalogue output rule keeps, plus the
 launcher-facing `offerings` list -- see `render_catalogue_json`) and the
 manifest `sn-model.json` (`format: 4`, format key `"sgi-sn"`). QEMU parses
-the catalogue into QAPI-generated types (`qapi/sgi-sn.json`) at build time;
-this module no longer renders C.
+the catalogue into QAPI-generated types (`qapi/sgi-machines.json`) at build
+time; this module no longer renders C.
 """
 
 from __future__ import annotations
@@ -744,7 +744,7 @@ def render_catalogue_json(models: list[dict], *,
         topologies.append(_render_topology(topology, machine_name))
         offerings.extend(_offerings_for(model, topology, product_models))
     catalogue = {
-        "schema": "sgi-sn-catalogue",
+        "schema": "sgi-machines",
         "version": 1,
         # QAPI's optional-member convention: an absent key, never a JSON
         # null, so both sections drop their None values; the harness reads

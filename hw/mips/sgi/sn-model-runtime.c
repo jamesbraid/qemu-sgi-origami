@@ -3,7 +3,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qapi/util.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 
 /* The @index'th element of a QAPI list, which the caller has range-checked. */
 #define SGI_MODEL_NTH(list, index) ({                                  \

@@ -44,7 +44,7 @@ class ExportTests(unittest.TestCase):
             paths = generate_qemu_inputs(INPUTS, tree, machines=("origin300",))
             self.assertEqual(
                 {p.name for p in paths},
-                {"sn-model.json", "sn-catalogue.json"})
+                {"sn-model.json", "sgi-machines.json"})
             manifest = json.loads((tree / "hw/mips/sgi/sn-model.json").read_text())
             self.assertEqual(manifest["format"], 4)
             self.assertEqual(manifest["format_key"], "sgi-sn")
@@ -74,7 +74,7 @@ class ExportTests(unittest.TestCase):
 
     def test_graphics_profiles_are_in_the_origin300_export(self):
         outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
-        catalogue = json.loads(outputs["hw/mips/sgi/sn-catalogue.json"])
+        catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual(sorted(topology["name"] for topology in catalogue["topologies"]),
                          ["origin300", "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
@@ -102,7 +102,7 @@ class ExportTests(unittest.TestCase):
         with mock.patch.object(model_qemu, "load_checked_system_models",
                                return_value=selected):
             outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
-        catalogue = json.loads(outputs["hw/mips/sgi/sn-catalogue.json"])
+        catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         self.assertEqual({topology["name"] for topology in catalogue["topologies"]},
                          {"origin300", "origin300-pci-expansion-configuration-storage-experiment",
                           "origin300-pci-expansion-experiment",
@@ -136,10 +136,10 @@ class ExportTests(unittest.TestCase):
                 contract.write_text(json.dumps(declaration))
                 with self.assertRaisesRegex(ValueError, "does not accept"):
                     install_qemu_inputs(INPUTS, tree, machines=("origin300",))
-                self.assertFalse((target / "sgi/sn-catalogue.json").exists())
+                self.assertFalse((target / "sgi/sgi-machines.json").exists())
             contract.write_text('{"sgi-sn": 4}')
             install_qemu_inputs(INPUTS, tree, machines=("origin300",))
-            self.assertTrue((target / "sgi/sn-catalogue.json").is_file())
+            self.assertTrue((target / "sgi/sgi-machines.json").is_file())
 
     def test_firmware_path_metadata_is_preserved_in_export(self):
         original = next(model for path, model in self.checked_models
@@ -153,7 +153,7 @@ class ExportTests(unittest.TestCase):
             with mock.patch.object(model_qemu, "load_checked_system_models",
                                    return_value=selected):
                 outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
-            return (json.loads(outputs["hw/mips/sgi/sn-catalogue.json"]),
+            return (json.loads(outputs["hw/mips/sgi/sgi-machines.json"]),
                     json.loads(outputs["hw/mips/sgi/sn-model.json"]))
 
         expected_catalogue, expected_manifest = export(original)
@@ -178,7 +178,7 @@ class ExportTests(unittest.TestCase):
         baseline, code 3, unaffected by the override existing at all.
         """
         outputs = render_qemu_inputs(INPUTS, machines=("origin2000", "origin200"))
-        catalogue = json.loads(outputs["hw/mips/sgi/sn-catalogue.json"])
+        catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])
         topologies = {topology["name"]: topology for topology in catalogue["topologies"]}
 
         graphics_hubs = {

@@ -4,7 +4,7 @@
  * product's machine class parents this one, which carries the family's
  * machine properties once (topology, debug-leds, junk-uart,
  * elsc-dip-switches) and the builder that reads an SGIModelTopology from the
- * compiled catalogue (qapi/sgi-sn.json, hw/mips/sgi/sn-catalogue.c) to
+ * compiled catalogue (qapi/sgi-machines.json, hw/mips/sgi/sgi-machines.c) to
  * construct one. Origin 200 is the first product on this base.
  */
 
@@ -12,7 +12,7 @@
 #define HW_MIPS_SGI_SN_MACHINE_H
 
 #include "hw/core/boards.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 
 #define TYPE_SGI_SN_MACHINE MACHINE_TYPE_NAME("sgi-sn")
 

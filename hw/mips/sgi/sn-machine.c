@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The abstract SGI Scalable Node family machine and its builder over an
- * SGIModelTopology from the compiled catalogue (qapi/sgi-sn.json,
- * embedded and parsed by hw/mips/sgi/sn-catalogue.c). Origin 200 is the
+ * SGIModelTopology from the compiled catalogue (qapi/sgi-machines.json,
+ * embedded and parsed by hw/mips/sgi/sgi-machines.c). Origin 200 is the
  * first product on this base; see docs/specs/sgi-sn.rst.
  *
  * Fixed here rather than carried in the descriptor, because they are Hub
@@ -70,7 +70,7 @@
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
-#include "hw/mips/sgi/sn-catalogue.h"
+#include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sgi/net-cable.h"
@@ -78,7 +78,7 @@
 #include "origin300-pci-expansion.h"
 
 /*
- * The compiled catalogue's QAPI-generated types (qapi/sgi-sn.json) hold
+ * The compiled catalogue's QAPI-generated types (qapi/sgi-machines.json) hold
  * every repeated field as a NULL-terminated linked list, where the old
  * hand-written sn-model.h used a flat array and a count; the builder
  * below still wants positional indexing (a node's own position in
@@ -881,7 +881,7 @@ unsigned int sgi_machine_product_max_cpus(const char *product)
     unsigned int max_cpus = 0;
     const SGIModelTopologyList *entry;
 
-    for (entry = sgi_model_catalogue()->topologies; entry; entry = entry->next) {
+    for (entry = sgi_machines()->topologies; entry; entry = entry->next) {
         const SGIModelTopology *t = entry->value;
         const SGIModelNodePopulationList *row;
 
@@ -3723,7 +3723,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
         error_free(local_err);
 
-        for (entry = sgi_model_catalogue()->topologies; entry;
+        for (entry = sgi_machines()->topologies; entry;
              entry = entry->next) {
             if (sgi_machine_topology_matches_product(entry->value,
                                                       smc->product)) {

@@ -18,7 +18,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300",
+      "display-name": "Origin 300 with a direct V12 widget",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
@@ -145,7 +145,7 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300"
+      "topology": "origin300-v12-direct"
     },
     {
       "console": "l1-uart",
@@ -165,7 +165,7 @@
         2
       ],
       "disk-bus": "scsi.0",
-      "display-name": "Origin 300",
+      "display-name": "Origin 300 with a direct V12 widget",
       "firmware": {
         "argument": "-bios",
         "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
@@ -292,10 +292,10 @@
         "irix"
       ],
       "synthesized-firmware-toggle": false,
-      "topology": "origin300"
+      "topology": "origin300-v12-direct"
     }
   ],
-  "schema": "sgi-sn-catalogue",
+  "schema": "sgi-machines",
   "topologies": [
     {
       "cables": [],
@@ -316,7 +316,7 @@
         }
       ],
       "crossbars": [],
-      "description": "SGI Origin 300 (IP45)",
+      "description": "SGI Origin 300 (IP45), approximate V12",
       "generation": "sn1",
       "io-boards": [
         {
@@ -364,6 +364,19 @@
             "kind": "m48t35-compatible",
             "year-base": 1968
           }
+        },
+        {
+          "attachment": 2,
+          "carrier": "machine-placed",
+          "id": "graphics-v12",
+          "label": "rear panel",
+          "module-index": 0,
+          "other-identity-parts": [],
+          "part": "",
+          "populated": true,
+          "preset": "odyssey",
+          "revision": 10,
+          "serial": 47413004297
         }
       ],
       "junk-uart": -1,
@@ -378,7 +391,7 @@
           "serial": ""
         }
       ],
-      "name": "origin300",
+      "name": "origin300-v12-direct",
       "node-populations": [
         {
           "cables": [],
@@ -511,6 +524,11 @@
           "crossbar-index": -1,
           "node-index": 0,
           "widget": 15
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 11
         }
       ],
       "xio-slots": []
