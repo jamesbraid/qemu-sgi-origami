@@ -2054,20 +2054,45 @@ static void test_gamma_tables(void)
     g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0x102030);
 
     rgb_write_wat(qts, GAMMA_RED, 0x10, 0x3ff);
-    rgb_write_wat(qts, GAMMA_GREEN, 0x20, 0x100);
+    rgb_write_wat(qts, GAMMA_GREEN, 0x20, 0x101);
     rgb_write_wat(qts, GAMMA_BLUE, 0x30, 0x000);
     g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0xff4000);
     g_assert_cmphex(rad4_screendump_pixel(qts, 11, 60), ==, 0xff4000);
 
     rgb_set_index(qts, GAMMA_GREEN + 0x20);
-    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x100 >> 2);
-    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x101 >> 2);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, (0x101 & 3) << 6);
     g_assert_cmphex(rgb_current_index(qts), ==, GAMMA_GREEN + 0x21);
 
     /* Window 0x00 bypasses gamma; window 0x40 uses AUX_FB_WAT entry 4. */
     rgb_write_byte(qts, RGB_AUX_FB_WAT, AUX_WAT_GAMMA_BYPASS);
     g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0x102030);
     g_assert_cmphex(rad4_screendump_pixel(qts, 11, 60), ==, 0xff4000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The overlay layer takes its gamma bypass from its own AUX_OL_WAT entry's
+ * GB bit, not from the frame-buffer layer's AUX_FB_WAT entry (page 46).
+ */
+static void test_gamma_overlay_bypass(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, OL_WAT_4BIT_INDEX(2, 0));
+    bar2_write(qts, 70 * TEST_FB_STRIDE + 10 * 4, 0x05abcdefu);
+    rgb_write_wat(qts, GAMMA_RED, 0x11, 0x3ff);
+    rgb_write_wat(qts, GAMMA_RED, 0xab, 0x000);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 70), ==, 0xff2233);
+
+    /* Bypassing the frame-buffer layer leaves the overlay pixel alone. */
+    rgb_write_byte(qts, RGB_AUX_FB_WAT, AUX_WAT_GAMMA_BYPASS);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 70), ==, 0xff2233);
+
+    rgb_write_byte(qts, RGB_AUX_OL_WAT,
+                   AUX_OL_WAT_CK0_ENABLED | AUX_WAT_GAMMA_BYPASS);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 70), ==, 0x112233);
 
     qtest_quit(qts);
 }
@@ -2233,6 +2258,8 @@ int main(int argc, char **argv)
                    test_overlay_wat_addressing_shapes);
     qtest_add_func("/psitech-rad4/fb-pixel-formats", test_fb_pixel_formats);
     qtest_add_func("/psitech-rad4/gamma-tables", test_gamma_tables);
+    qtest_add_func("/psitech-rad4/gamma-overlay-bypass",
+                   test_gamma_overlay_bypass);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
