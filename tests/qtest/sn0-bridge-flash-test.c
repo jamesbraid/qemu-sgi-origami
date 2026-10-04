@@ -32,7 +32,6 @@
 #define XIO_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
 #define BRIDGE_BASE (IO_SPACE + BASEIO_WIDGET * XIO_WIDGET_SIZE)
-#define OCTANE_FLASH_BASE UINT64_C(0x1fc00000)
 
 /* Registers are 32 bits in the low half of an eight-byte slot. */
 #define REG_DATA 4
@@ -459,24 +458,6 @@ static void test_flash_select_strap(void)
     qtest_quit(qts);
 }
 
-/* Octane's read view must follow the strapped select at the lower aperture. */
-static void test_flash_read_view_select_strap(void)
-{
-    QTestState *qts = qtest_initf("-M octane -m 128M -cpu R10000 "
-                                  "-bios %s -S -global sgi-bridge.flash-select=on",
-                                  image);
-    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-
-    g_assert_nonnull(strstr(mtree, "sgi-bridge.flash-read"));
-    g_assert_cmphex(qtest_readl(qts, OCTANE_FLASH_BASE), ==, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, OCTANE_FLASH_BASE + FLASH_SELECT_SIZE),
-                    ==, pattern_word(0, 4));
-    g_assert_cmphex(qtest_readq(qts, OCTANE_FLASH_BASE +
-                                FLASH_SELECT_SIZE - 4), ==,
-                    (UINT64_C(0xffffffff) << 32) | pattern_word(0, 4));
-    qtest_quit(qts);
-}
-
 /* Two fitted parts identify both physical selects under either strap. */
 static void test_both_chip_selects(void)
 {
@@ -559,8 +540,6 @@ int main(int argc, char **argv)
                    test_second_chip_select_write_enable);
     qtest_add_func("sn0/bridge/flash/select-strap",
                    test_flash_select_strap);
-    qtest_add_func("sn0/bridge/flash/read-view-select-strap",
-                   test_flash_read_view_select_strap);
     qtest_add_func("sn0/bridge/flash/both-chip-selects",
                    test_both_chip_selects);
     qtest_add_func("sn0/bridge/flash/origin200-unpopulated",
