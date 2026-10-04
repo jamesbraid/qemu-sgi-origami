@@ -1398,6 +1398,8 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  */
 #define ODSY_REG_LINE_STIPPLE 0x0c48    /* 3 operands */
 #define ODSY_MODE_GL_LINE_STIPPLE (1u << 3)
+#define ODSY_MODE_POINT_SMOOTH (1u << 0)
+#define ODSY_MODE_LINE_SMOOTH (1u << 1)
 #define ODSY_LINE_STIPPLE_PATTERN 1     /* the 32-bit rotated row */
 #define ODSY_LINE_STIPPLE_CONTROL 2
 #define ODSY_LINE_STIPPLE_CONTROL_32 0x30f
@@ -5175,8 +5177,18 @@ static void odyssey_gl_apply_mode(SGIOdysseyState *s)
     uint32_t front_face = odyssey_front_face(s->pattern_mode);
     uint32_t line_stipple = SGI_GL_LINE_STIPPLE;
     uint32_t fog = SGI_GL_FOG;
+    uint32_t point_smooth = SGI_GL_POINT_SMOOTH;
+    uint32_t line_smooth = SGI_GL_LINE_SMOOTH;
 
     odyssey_gl_feed(s, SGI_GL_OP_SHADE_MODEL, &shade, 1);
+    /*
+     * Bit assignments are established by claim 1 in
+     * docs/reviews/odyssey-fragment-state-evidence-20261001.md.
+     */
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_POINT_SMOOTH ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &point_smooth, 1);
+    odyssey_gl_feed(s, s->pattern_mode & ODSY_MODE_LINE_SMOOTH ?
+                    SGI_GL_OP_ENABLE : SGI_GL_OP_DISABLE, &line_smooth, 1);
     /*
      * The shared layer has no dither rule yet, so the bit is kept as family
      * state and reported at the first draw it would affect
