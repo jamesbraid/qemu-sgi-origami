@@ -332,6 +332,7 @@ typedef struct SGIKonaGLPipe {
     bool pixel_transfer_unsupported;
     SGIKonaGLPixelTransfer pixel_transfer;
     bool unpack_swap_bytes;
+    bool pack_swap_bytes;
     bool unpack_lsb_first;
     uint32_t unpack_skip_rows;
     uint32_t unpack_skip_pixels;
