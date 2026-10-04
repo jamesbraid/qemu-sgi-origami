@@ -4357,7 +4357,8 @@ static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
         return SGI_GL_LUMINANCE_ALPHA;
     }
     /* Preserve source alpha until the binding selects RGB or RGBA. */
-    if (h[9] == 0x30 && (h[17] & 1) && (h[3] == 4 || h[3] == 5)) {
+    if (h[9] == 0x30 && (h[17] & 1) &&
+        sgi_kona_gl_texture_pixel_bytes(h[3], h[4])) {
         return SGI_GL_RGBA;
     }
     return 0;
