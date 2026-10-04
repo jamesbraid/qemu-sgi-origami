@@ -2710,6 +2710,44 @@ static void test_mode_shared_banks(void)
     qtest_quit(qts);
 }
 
+/*
+ * A runtime mode change (the driver's set-mode request) arrives while the
+ * old mode is scanning out, often with a frame pending. Its opening control
+ * write is the driver's saved word with bit 0x20 clear: zero when nothing
+ * else is waiting, which also acknowledges the frame, or bit 1 set when a
+ * palette update waits for the next frame, which does not. Either way it
+ * must start the new sequence. The interrupt handler may acknowledge the
+ * pending frame part-way through, and the closing write is the saved word
+ * with bit 0x20 set.
+ */
+static void test_mode_switch_with_frame_pending(void)
+{
+    QTestState *qts = rad4_init();
+    g_autoptr(GArray) back = mode_events(0);
+    Rad4Event acknowledge = { B_CTRL, CTRL_MODE_CMD };
+
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+    play_mode(qts, 0);
+    check_mode_active(qts, 0);
+
+    qtest_clock_step(qts, 1000000000 / rad4_modes[0].refresh_hz + 1000);
+    g_assert_true(frame_pending(qts));
+    play_mode(qts, 11);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+    check_mode_active(qts, 11);
+
+    qtest_clock_step(qts, 1000000000 / rad4_modes[11].refresh_hz + 1000);
+    g_assert_true(frame_pending(qts));
+    event_at(back, 0)->value = CTRL_STORED_BIT;
+    event_at(back, back->len - 1)->value = CTRL_MODE_CMD | CTRL_STORED_BIT;
+    g_array_insert_val(back, EV_BANKS + 100, acknowledge);
+    play_events(qts, back);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+    check_mode_active(qts, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -2893,6 +2931,8 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(11), test_mode_rejects_mutation);
     qtest_add_func("/psitech-rad4/mode-shared-pll", test_mode_shared_pll);
     qtest_add_func("/psitech-rad4/mode-shared-banks", test_mode_shared_banks);
+    qtest_add_func("/psitech-rad4/mode-switch-with-frame-pending",
+                   test_mode_switch_with_frame_pending);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
 

@@ -1300,8 +1300,9 @@ static void rad4_ensure_surface(PsitechRad4State *s)
 /*
  * Event @pos of mode @m's write sequence: board control, the PLL index and
  * the mode's two PLL bytes, its four timing banks expanded from their runs,
- * then the sync register and board control again. Position 0, the control
- * write that arms recognition, is never compared through here.
+ * then the sync register and board control again. The two control writes
+ * are never compared through here: rad4_recognizer_control() matches them
+ * on bit 0x20 alone.
  */
 static void rad4_mode_event(const Rad4ModeFixture *m, uint32_t pos,
                             uint32_t *offset, uint32_t *value)
@@ -1422,8 +1423,52 @@ static void rad4_recognizer_collect(PsitechRad4State *s, uint32_t offset,
 }
 
 /*
- * Feed one recognition-relevant (address, value) event through the exact
- * grammar of the driver's 13 mode sequences. Addresses are BAR2-relative.
+ * A write to board control at BAR2 +0xf00000. The driver keeps bit 0x20
+ * set in its saved control word from the end of its first mode sequence
+ * on, and only the mode routine's opening write clears it, so a write
+ * with bit 0x20 clear starts a mode sequence whatever its other bits: bit
+ * 1 when a palette or cursor update is waiting for the next frame, bit
+ * 0x80 for the keyboard serial port. It arms recognition from any state,
+ * including a recognized mode, whose scanout stops until the new
+ * sequence completes, and including after a failed sequence.
+ *
+ * The same write may also have acknowledged a pending frame
+ * (@acknowledged); a mode change requested while a frame is pending is
+ * still a mode change. The sequence ends with the saved word with bit 0x20
+ * set. While collecting, a write with bit 0x20 set completes a mode at
+ * that sequence's last position. Anywhere else, the driver's interrupt
+ * handler acknowledging a frame part-way through is not part of the
+ * sequence and is ignored; any other control write fails recognition.
+ */
+static void rad4_recognizer_control(PsitechRad4State *s, uint32_t value,
+                                    bool acknowledged)
+{
+    if (!(value & RAD4_CTRL_MODE_CMD)) {
+        rad4_disable_scanout(s);
+        s->rec_state = RAD4_REC_PREFIX_SEEN;
+        s->rec_index = 0;
+        return;
+    }
+    if (s->rec_state != RAD4_REC_COLLECTING) {
+        return;
+    }
+    for (uint32_t m = 0; m < RAD4_MODE_COUNT; m++) {
+        if ((s->rec_candidates & BIT(m)) &&
+            s->rec_index == rad4_modes[m].event_count - 1u) {
+            s->rec_index++;
+            rad4_mode_recognized(s, m);
+            return;
+        }
+    }
+    if (!acknowledged) {
+        rad4_recognition_failed(s, RAD4_BAR2_CTRL, value);
+    }
+}
+
+/*
+ * Feed one recognition-relevant (address, value) event other than a board
+ * control write (rad4_recognizer_control()) through the exact grammar of
+ * the driver's 13 mode sequences. Addresses are BAR2-relative.
  * The caller still applies the event's own register effect separately,
  * since recognition state and register storage are distinct.
  */
@@ -1432,30 +1477,6 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
 {
     uint32_t arm_offset, arm_value;
 
-    if (offset == RAD4_BAR2_CTRL) {
-        if (value == 0) {
-            /*
-             * Arms/re-arms the sequence from any state, including an
-             * already-recognized mode: a fresh mode-set
-             * invalidates the active mode until the new sequence completes.
-             */
-            rad4_disable_scanout(s);
-            s->rec_state = RAD4_REC_PREFIX_SEEN;
-            s->rec_index = 0;
-            return;
-        }
-        if (s->rec_state == RAD4_REC_COLLECTING) {
-            rad4_recognizer_collect(s, offset, value);
-        }
-        /*
-         * An unrecognized control write in another state has no bearing on
-         * recognition; the register-level effect
-         * is handled by the caller.
-         */
-        return;
-    }
-
-    /* Every other recognition-relevant address. */
     switch (s->rec_state) {
     case RAD4_REC_PREFIX_SEEN:
         /* The first write after arming is common to every mode. */
@@ -2454,17 +2475,19 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     case RAD4_BAR2_MASK:
         rad4_apply_mask_write(s, v);
         break;
-    case RAD4_BAR2_CTRL:
-        if (s->frame_pending && (v & RAD4_CTRL_STORED_BIT) == 0) {
+    case RAD4_BAR2_CTRL: {
+        bool acknowledged = s->frame_pending &&
+                            (v & RAD4_CTRL_STORED_BIT) == 0;
+
+        if (acknowledged) {
             s->frame_pending = false;
             s->intcsr &= ~RAD4_INTCSR_PENDING;
-            s->bar2_ctrl_bit = v & RAD4_CTRL_STORED_BIT;
             rad4_update_irq(s);
-            break;
         }
         s->bar2_ctrl_bit = v & RAD4_CTRL_STORED_BIT;
-        rad4_recognizer_feed(s, offset, v);
+        rad4_recognizer_control(s, v, acknowledged);
         break;
+    }
     default:
         qemu_log_mask(LOG_UNIMP,
                      "psitech-rad4: unsupported BAR2 write at +0x%06x\n",
