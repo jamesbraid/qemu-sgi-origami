@@ -211,7 +211,8 @@ static bool texture_apply(void *opaque, const double coord[4], double colour[4])
 
 static void test_shader_texture(gconstpointer opaque)
 {
-    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned input = GPOINTER_TO_UINT(opaque);
+    unsigned mode = input >= 8 ? input - 8 : input;
     const char *node = g_getenv("QEMU_TEST_SGI_RENDER_NODE");
     QemuEGLDisplayLease *provider = NULL;
     SGIRendererTexture texture = {
@@ -252,6 +253,10 @@ static void test_shader_texture(gconstpointer opaque)
         request->texcoord[i][0] = (i == 1 ? 1.25 : -0.25) * q;
         request->texcoord[i][1] = (i == 2 ? 1.25 : -0.25) * q;
         request->texcoord[i][3] = q;
+        if (input >= 8) {
+            request->clip_planes = 1u << mode;
+            request->clip_distance[i][mode] = (i == 1 ? 64 : -64) * q;
+        }
         memcpy(request->colour[i], (double[]) { 0.5, 0.25, 0.75, 0.5 },
                sizeof(request->colour[i]));
     }
@@ -6141,6 +6146,13 @@ int main(int argc, char **argv)
 
             g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_shader_texture);
         }
+    }
+    for (unsigned plane = 0; plane < SGI_RENDERER_CLIP_PLANES; plane++) {
+        g_autofree char *path = g_strdup_printf("/sgi-renderer-gl/user-clip/%u",
+                                                plane);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(8 + plane),
+                             test_shader_texture);
     }
     g_test_add_data_func("/sgi-renderer-gl/context-failure",
                          GUINT_TO_POINTER(1), test_worker_fault);

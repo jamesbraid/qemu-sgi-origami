@@ -117,6 +117,90 @@ static void test_smooth(gconstpointer opaque)
     g_assert_false(sgi_renderer_staging_valid(request));
 }
 
+static void test_user_clip(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned plane = mode < 6 ? mode : 0;
+    g_autofree SGIRendererRequest *request = g_new0(SGIRendererRequest, 1);
+    double threshold = mode == 9 ? 64.5 : 64;
+
+    request->clip_planes = 1u << plane;
+    request->vertices[1][0] = request->vertices[2][1] = 128;
+    request->rgb[0] = 255;
+    request->clip[2] = request->clip[3] = 127;
+    for (unsigned i = 0; i < 3; i++) {
+        double w = mode == 8 ? 1 << i : 1;
+
+        request->vertices[i][3] = 1;
+        request->inverse_w[i] = 1 / w;
+        request->clip_distance[i][plane] = mode == 11 ? -1 :
+                                           (i == 1 ? 128 - threshold :
+                                                     -threshold) * w;
+        if (mode == 6) {
+            request->clip_planes |= 1u << 5;
+            request->clip_distance[i][5] = i == 2 ? 96 : -32;
+        }
+    }
+    if (mode == 7) {
+        float vertex[4];
+        double distance[SGI_RENDERER_CLIP_PLANES];
+
+        memcpy(vertex, request->vertices[1], sizeof(vertex));
+        memcpy(request->vertices[1], request->vertices[2], sizeof(vertex));
+        memcpy(request->vertices[2], vertex, sizeof(vertex));
+        memcpy(distance, request->clip_distance[1], sizeof(distance));
+        memcpy(request->clip_distance[1], request->clip_distance[2],
+               sizeof(distance));
+        memcpy(request->clip_distance[2], distance, sizeof(distance));
+    } else if (mode == 10) {
+        const int64_t bounds[4] = { 0, 0, 127, 127 };
+
+        g_assert_true(sgi_renderer_request_tile(request, 16, 32, 64, 64,
+                                               bounds));
+    }
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            unsigned wx = x + (mode == 10 ? 16 : 0);
+            unsigned wy = y + (mode == 10 ? 32 : 0);
+            bool covered = wx + wy < 127 && wx + 0.5 >= threshold &&
+                           (mode != 6 || wy >= 32) && mode != 11 &&
+                           (mode != 10 || (x < 64 && y < 64));
+            double colour[4], depth;
+            uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
+
+            g_assert_cmpint(sgi_renderer_fragment(request, x, y, colour), ==,
+                            covered);
+            g_assert_cmpint(sgi_renderer_depth(request, x, y, &depth), ==,
+                            covered);
+            if (covered) {
+                g_assert_cmpfloat(colour[0], ==, 1);
+                pixel[0] = pixel[3] = 255;
+            }
+        }
+    }
+    g_assert_true(sgi_renderer_staging_valid(request));
+    request->rgba[4 * (16 * 128 + 16) + 3] = 255;
+    g_assert_false(sgi_renderer_staging_valid(request));
+}
+
+static void test_user_clip_invalid(void)
+{
+    g_autofree SGIRendererRequest *request = fixture();
+
+    request->clip_planes = 1u << SGI_RENDERER_CLIP_PLANES;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->clip_planes = 1;
+    g_assert_false(sgi_renderer_request_valid(request));
+    for (unsigned i = 0; i < 3; i++) {
+        request->inverse_w[i] = 1;
+    }
+    request->clip_distance[0][0] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->clip_distance[0][0] = 0;
+    request->clip_distance[0][5] = NAN;
+    g_assert_true(sgi_renderer_staging_valid(request));
+}
+
 static const uint8_t texture_pixels[16] = {
     255, 0, 0, 0, 0, 255, 0, 85, 0, 0, 255, 170, 255, 255, 255, 255,
 };
@@ -651,6 +735,10 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
         static const SGIRendererTexture texture;
 
         request->texture = &texture;
+    } else if (corrupt_attributes == 8) {
+        request->clip_planes = 1;
+    } else if (corrupt_attributes == 9) {
+        request->clip_distance[0][5] = 1;
     } else if (corrupt_vertices) {
         float vertex[4];
 
@@ -1312,6 +1400,13 @@ int main(int argc, char **argv)
 
         g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_texture);
     }
+    for (unsigned mode = 0; mode < 12; mode++) {
+        g_autofree char *path = g_strdup_printf("/sgi-renderer/user-clip/%u",
+                                                mode);
+
+        g_test_add_data_func(path, GUINT_TO_POINTER(mode), test_user_clip);
+    }
+    g_test_add_func("/sgi-renderer/user-clip/invalid", test_user_clip_invalid);
     g_test_add_func("/sgi-renderer/texture/invalid", test_texture_invalid);
     g_test_add_func("/sgi-renderer/smooth/invalid", test_smooth_invalid);
     g_test_add_func("/sgi-renderer/staging", test_staging);
@@ -1342,7 +1437,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
     g_test_add_func("/sgi-renderer/input-texture", test_input_texture);
-    for (unsigned input = 0; input < 8; input++) {
+    for (unsigned input = 0; input < 10; input++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-renderer/input-attributes/%u", input);
 

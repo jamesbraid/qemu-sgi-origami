@@ -529,15 +529,20 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         "layout(location=1) in vec4 projected_colour;\n"
         "layout(location=2) in float reciprocal_w;\n"
         "layout(location=3) in vec4 projected_texcoord;\n"
+        "layout(location=4) in vec4 projected_clip0;\n"
+        "layout(location=5) in vec2 projected_clip1;\n"
+        "out vec4 clip0; out vec2 clip1;\n"
         "out vec4 interpolated_colour; out float inverse_w;\n"
         "out vec4 texcoord;\n"
         "void main() { gl_Position = vec4(vertex.xy / 64.0 - 1.0,"
         "vertex.z, vertex.w); interpolated_colour = projected_colour;"
-        "inverse_w = reciprocal_w; texcoord = projected_texcoord; }\n";
+        "inverse_w = reciprocal_w; texcoord = projected_texcoord;"
+        "clip0 = projected_clip0; clip1 = projected_clip1; }\n";
     static const char *fragment_source =
         "#version 330 core\n"
         "uniform vec4 colour; uniform bool smooth_shading;\n"
         "uniform bool textured; uniform sampler2D image;\n"
+        "uniform int clip_planes; in vec4 clip0; in vec2 clip1;\n"
         "uniform int texture_format, environment; uniform ivec2 wraps;\n"
         "uniform bool linear_filter;\n"
         "uniform vec4 border_colour, env_colour, post_scale, post_bias;\n"
@@ -589,7 +594,10 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
         "    else c[k] = alpha && texture_format != 3 ? c[k] * t[k] :"
         "c[k] * (1.0 - t[k]) + env_colour[k] * t[k]; }\n"
         "  return c; }\n"
-        "void main() { vec4 c = smooth_shading ? "
+        "void main() { for (int p = 0; p < 6; p++) {"
+        "float d = p < 4 ? clip0[p] : clip1[p - 4];"
+        "if ((clip_planes & (1 << p)) != 0 && !(d / inverse_w >= 0.0))"
+        "discard; } vec4 c = smooth_shading ? "
         "interpolated_colour / inverse_w : colour;\n"
         "  if (textured) { vec4 t = sample_image(texcoord.xy / texcoord.w);"
         "t = clamp(t * post_scale + post_bias, 0.0, 1.0);"
@@ -653,17 +661,23 @@ static bool renderer_gl_start(SGIRendererGL *renderer)
     glBindVertexArray(renderer->vao);
     glGenBuffers(1, &renderer->vbo);
     glBindBuffer(GL_ARRAY_BUFFER, renderer->vbo);
-    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float), NULL);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 19 * sizeof(float), NULL);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, 19 * sizeof(float),
                             (void *)(4 * sizeof(float)));
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 19 * sizeof(float),
                             (void *)(8 * sizeof(float)));
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 13 * sizeof(float),
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, 19 * sizeof(float),
                             (void *)(9 * sizeof(float)));
     glEnableVertexAttribArray(3);
+    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, 19 * sizeof(float),
+                            (void *)(13 * sizeof(float)));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(5, 2, GL_FLOAT, GL_FALSE, 19 * sizeof(float),
+                            (void *)(17 * sizeof(float)));
+    glEnableVertexAttribArray(5);
     glGenTextures(1, &renderer->sampled_texture);
     glGenTextures(1, &renderer->texture);
     glBindTexture(GL_TEXTURE_2D, renderer->texture);
@@ -779,7 +793,7 @@ static bool renderer_gl_texture(SGIRendererGL *renderer,
 static bool renderer_gl_execute(SGIRendererGL *renderer)
 {
     SGIRendererRequest *request = &renderer->request;
-    float vertices[3][13] = { 0 };
+    float vertices[3][19] = { 0 };
     double scale = MAX(request->inverse_w[0],
                         MAX(request->inverse_w[1], request->inverse_w[2]));
     static const GLenum disabled[] = {
@@ -795,7 +809,7 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     }
     for (unsigned i = 0; i < 3; i++) {
         memcpy(vertices[i], request->vertices[i], sizeof(request->vertices[i]));
-        if (request->smooth || request->texture) {
+        if (request->smooth || request->texture || request->clip_planes) {
             float inverse_w = request->inverse_w[i] / scale;
 
             if (!isfinite(inverse_w) || inverse_w <= 0) {
@@ -811,6 +825,17 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
                         error_setg(&renderer->error,
                                    "SGI texture coordinates exceed host "
                                    "precision");
+                        return false;
+                    }
+                }
+            }
+            for (unsigned p = 0; p < SGI_RENDERER_CLIP_PLANES; p++) {
+                if (request->clip_planes & (1u << p)) {
+                    vertices[i][13 + p] = request->clip_distance[i][p] *
+                                          inverse_w;
+                    if (!isfinite(vertices[i][13 + p])) {
+                        error_setg(&renderer->error,
+                                   "SGI clip distance exceeds host precision");
                         return false;
                     }
                 }
@@ -850,6 +875,8 @@ static bool renderer_gl_execute(SGIRendererGL *renderer)
     }
     glUniform1i(glGetUniformLocation(renderer->program, "smooth_shading"),
                  request->smooth);
+    glUniform1i(glGetUniformLocation(renderer->program, "clip_planes"),
+                 request->clip_planes);
     glUniform1i(glGetUniformLocation(renderer->program, "textured"),
                  request->texture != NULL);
     if (!renderer_gl_texture(renderer, request->texture)) {

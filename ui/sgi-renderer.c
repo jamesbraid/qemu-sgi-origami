@@ -184,7 +184,8 @@ SGIRenderer *sgi_renderer_new(Error **errp)
 
 bool sgi_renderer_request_valid(const SGIRendererRequest *request)
 {
-    if (!isfinite(request->alpha) || !isfinite(request->offset)) {
+    if (!isfinite(request->alpha) || !isfinite(request->offset) ||
+        request->clip_planes >> SGI_RENDERER_CLIP_PLANES) {
         return false;
     }
     if (request->texture) {
@@ -219,11 +220,17 @@ bool sgi_renderer_request_valid(const SGIRendererRequest *request)
         if (vertex[2] != 0 || vertex[3] != 1) {
             return false;
         }
-        if (request->smooth || request->texture) {
-            if (!isfinite(request->inverse_w[i]) ||
-                request->inverse_w[i] <= 0) {
+        if ((request->smooth || request->texture || request->clip_planes) &&
+            (!isfinite(request->inverse_w[i]) || request->inverse_w[i] <= 0)) {
+            return false;
+        }
+        for (unsigned p = 0; p < SGI_RENDERER_CLIP_PLANES; p++) {
+            if ((request->clip_planes & (1u << p)) &&
+                !isfinite(request->clip_distance[i][p])) {
                 return false;
             }
+        }
+        if (request->smooth || request->texture) {
             for (unsigned c = 0; c < 4; c++) {
                 if (!(request->colour[i][c] >= 0 &&
                       request->colour[i][c] <= 1)) {
@@ -354,6 +361,42 @@ static bool renderer_covered(const int64_t vertices[3][2], int64_t area,
     return true;
 }
 
+static bool renderer_user_clipped(const SGIRendererRequest *request,
+                                   const int64_t vertices[3][2], int64_t area,
+                                   const unsigned indices[3], unsigned x,
+                                   unsigned y)
+{
+    double b1, b2, weights[3], sum;
+
+    if (!request->clip_planes) {
+        return false;
+    }
+    b1 = (double)renderer_edge(vertices[2], vertices[0],
+                                x * 256 + 128, y * 256 + 128) / area;
+    b2 = (double)renderer_edge(vertices[0], vertices[1],
+                                x * 256 + 128, y * 256 + 128) / area;
+    weights[0] = (1.0 - b1 - b2) * request->inverse_w[indices[0]];
+    weights[1] = b1 * request->inverse_w[indices[1]];
+    weights[2] = b2 * request->inverse_w[indices[2]];
+    sum = weights[0] + weights[1] + weights[2];
+    if (!isfinite(sum) || sum <= 0) {
+        return true;
+    }
+    for (unsigned p = 0; p < SGI_RENDERER_CLIP_PLANES; p++) {
+        if (request->clip_planes & (1u << p)) {
+            double distance =
+                (weights[0] * request->clip_distance[indices[0]][p] +
+                 weights[1] * request->clip_distance[indices[1]][p] +
+                 weights[2] * request->clip_distance[indices[2]][p]) / sum;
+
+            if (!(distance >= 0)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static bool renderer_fragment(const SGIRendererRequest *request,
                                const int64_t vertices[3][2], int64_t area,
                                const unsigned indices[3], unsigned x,
@@ -363,7 +406,8 @@ static bool renderer_fragment(const SGIRendererRequest *request,
 
     if ((int32_t)x < request->clip[0] || (int32_t)x > request->clip[2] ||
         (int32_t)y < request->clip[1] || (int32_t)y > request->clip[3] ||
-        !renderer_covered(vertices, area, x, y)) {
+        !renderer_covered(vertices, area, x, y) ||
+        renderer_user_clipped(request, vertices, area, indices, x, y)) {
         return false;
     }
     if (!request->smooth && !request->texture) {
@@ -463,7 +507,8 @@ bool sgi_renderer_depth(const SGIRendererRequest *request, unsigned x,
     area = renderer_positive_triangle(request, vertices, indices);
     if ((int32_t)x < request->clip[0] || (int32_t)x > request->clip[2] ||
         (int32_t)y < request->clip[1] || (int32_t)y > request->clip[3] ||
-        !renderer_covered(vertices, area, x, y)) {
+        !renderer_covered(vertices, area, x, y) ||
+        renderer_user_clipped(request, vertices, area, indices, x, y)) {
         return false;
     }
     b1 = (double)renderer_edge(vertices[2], vertices[0],
@@ -492,7 +537,9 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
                            (int32_t)x <= request->clip[2] &&
                            (int32_t)y >= request->clip[1] &&
                            (int32_t)y <= request->clip[3] &&
-                           renderer_covered(vertices, area, x, y);
+                           renderer_covered(vertices, area, x, y) &&
+                           !renderer_user_clipped(request, vertices, area,
+                                                   indices, x, y);
             const uint8_t *pixel = request->rgba +
                                   (y * SGI_RENDERER_SIZE + x) * 4;
 
@@ -535,6 +582,8 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
     float vertices[3][4];
     int32_t clip[4];
     bool smooth = request->smooth;
+    uint32_t clip_planes = request->clip_planes;
+    double clip_distance[3][SGI_RENDERER_CLIP_PLANES];
     double alpha = request->alpha, offset = request->offset;
     double colour[3][4], inverse_w[3], depth[3], texcoord[3][4];
     const SGIRendererTexture *texture = request->texture;
@@ -544,6 +593,7 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         memcpy(&texture_inputs, texture, sizeof(texture_inputs));
     }
     memcpy(texcoord, request->texcoord, sizeof(texcoord));
+    memcpy(clip_distance, request->clip_distance, sizeof(clip_distance));
 
     memcpy(depth, request->depth, sizeof(depth));
     memcpy(colour, request->colour, sizeof(colour));
@@ -574,6 +624,8 @@ bool sgi_renderer_draw(SGIRenderer *renderer, SGIRendererRequest *request,
         memcmp(request->depth, depth, sizeof(depth)) ||
         memcmp(request->texcoord, texcoord, sizeof(texcoord)) ||
         request->texture != texture ||
+        request->clip_planes != clip_planes ||
+        memcmp(request->clip_distance, clip_distance, sizeof(clip_distance)) ||
         (texture && memcmp(texture, &texture_inputs, sizeof(texture_inputs))) ||
         !sgi_renderer_staging_valid(request)) {
         renderer->failed = true;
