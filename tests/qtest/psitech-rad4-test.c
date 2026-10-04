@@ -133,6 +133,9 @@
 #define WAT_BASE        0x1000
 #define OL_WAT_BASE     0x1400
 #define COLOR_LUT_BASE  0x4000
+#define GAMMA_RED       0x3000
+#define GAMMA_GREEN     0x3400
+#define GAMMA_BLUE      0x3800
 
 /*
  * Single-cycle registers that address the window attribute tables and
@@ -148,7 +151,9 @@
 #define RGB_AUX_OL_WAT_SEGMENT  0x0009
 #define RGB_CHROMA_KEY0         0x0010
 #define RGB_CHROMA_MASK0        0x0012
+#define RGB_AUX_FB_WAT          0x0e00
 #define RGB_AUX_OL_WAT          0x0f00
+#define AUX_WAT_GAMMA_BYPASS    0x04
 
 #define CONF1_4TO1_OVLY8_LWID8  0x2c
 #define CONF4_SPLIT_FB8         0x45
@@ -2026,6 +2031,47 @@ static void test_fb_pixel_formats(void)
     qtest_quit(qts);
 }
 
+/*
+ * Gamma tables (IBM RGB561 Architecture pages 3, 27 and 46): each displayed
+ * component addresses its own 256x10 table, loaded in two cycles like a WAT
+ * entry, unless the pixel's auxiliary WAT entry bypasses gamma. With CONF/4's
+ * AFW set, AUX_FB_WAT follows the window ID's upper four bits. The display
+ * shows each 10-bit entry's upper 8 bits.
+ */
+static void test_gamma_tables(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_play_mode0(qts);
+    rgb_write_byte(qts, RGB_CONF1, CONF1_4TO1_OVLY8_LWID8);
+    rgb_write_byte(qts, RGB_CONF4, CONF4_SPLIT_FB8);
+    rgb_write_wat(qts, WAT_BASE, 0x00, FB_WAT_TRUE_24);
+    rgb_write_wat(qts, WAT_BASE, 0x40, FB_WAT_TRUE_24);
+    bar2_write(qts, 60 * TEST_FB_STRIDE + 10 * 4, 0x00102030u);
+    bar2_write(qts, 60 * TEST_FB_STRIDE + 11 * 4, 0x40102030u);
+
+    /* The reset tables are the linear ramp: colors unchanged. */
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0x102030);
+
+    rgb_write_wat(qts, GAMMA_RED, 0x10, 0x3ff);
+    rgb_write_wat(qts, GAMMA_GREEN, 0x20, 0x100);
+    rgb_write_wat(qts, GAMMA_BLUE, 0x30, 0x000);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0xff4000);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 11, 60), ==, 0xff4000);
+
+    rgb_set_index(qts, GAMMA_GREEN + 0x20);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x100 >> 2);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0);
+    g_assert_cmphex(rgb_current_index(qts), ==, GAMMA_GREEN + 0x21);
+
+    /* Window 0x00 bypasses gamma; window 0x40 uses AUX_FB_WAT entry 4. */
+    rgb_write_byte(qts, RGB_AUX_FB_WAT, AUX_WAT_GAMMA_BYPASS);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 60), ==, 0x102030);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 11, 60), ==, 0xff4000);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -2186,6 +2232,7 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/overlay-wat-addressing-shapes",
                    test_overlay_wat_addressing_shapes);
     qtest_add_func("/psitech-rad4/fb-pixel-formats", test_fb_pixel_formats);
+    qtest_add_func("/psitech-rad4/gamma-tables", test_gamma_tables);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
