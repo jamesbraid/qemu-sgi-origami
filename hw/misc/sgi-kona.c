@@ -2406,7 +2406,7 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
         return false;
     }
     if (st->shade_model != SGI_GL_FLAT ||
-        (st->colour_mask & 7) != 7 || (st->colour_mask & ~15) ||
+        (st->colour_mask & ~15) ||
         st->alpha_test || st->depth_test || st->stencil_test ||
         st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
@@ -2544,6 +2544,7 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
     SGIClipRect bounds;
     unsigned indices[4], count, columns, rows, tiles;
     uint64_t tile_count;
+    uint32_t colour_mask;
     int bank;
     SGIGLDraw triangle = *d;
     float vertices[3][SGI_GL_VERTEX_FLOATS];
@@ -2624,6 +2625,8 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
         goto out;
     }
     /* Commit only complete batches, so fallback cannot replay a prefix. */
+    colour_mask = sgi_raster_colour_mask(&sgi_kona_gl_rules,
+                                         d->state->colour_mask);
     for (unsigned i = 0; i < count; i++) {
         SGIRendererRequest *request = &requests[i];
         SGIClipRect tile = sgi_kona_renderer_tile(&bounds, columns, i % tiles);
@@ -2634,10 +2637,19 @@ static bool sgi_kona_renderer_draw(SGIKonaState *s, const SGIGLDraw *d)
                 const uint8_t *pixel = request->rgba +
                                       (y * SGI_RENDERER_SIZE + x) * 4;
 
-                if (pixel[3]) {
+                if (pixel[3] && colour_mask) {
+                    uint32_t colour = (pixel[0] << 16) |
+                                      (pixel[1] << 8) | pixel[2];
+
+                    if (colour_mask != 0xffffff) {
+                        uint32_t old = sgi_kona_gl_load_colour(s, target,
+                                                              tile.x0 + x,
+                                                              tile.y0 + y);
+
+                        colour = (colour & colour_mask) | (old & ~colour_mask);
+                    }
                     sgi_kona_gl_store_colour(s, target,
-                        tile.x0 + x, tile.y0 + y,
-                        (pixel[0] << 16) | (pixel[1] << 8) | pixel[2]);
+                                             tile.x0 + x, tile.y0 + y, colour);
                 }
             }
         }

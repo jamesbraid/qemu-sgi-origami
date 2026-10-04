@@ -123,6 +123,8 @@ typedef struct SGIRasterRules {
  * checked without a dither.
  */
 bool sgi_raster_rules_supported(const SGIRasterRules *r);
+/* Packed RGB bits selected by channel masks under supported rules. */
+uint32_t sgi_raster_colour_mask(const SGIRasterRules *r, uint32_t mask);
 
 /*
  * A vertex in clip coordinates, as view-volume clipping (OpenGL 1.2.1,
