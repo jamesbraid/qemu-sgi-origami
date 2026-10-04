@@ -665,7 +665,8 @@ static bool texture_native_read_border(void *opaque, uint32_t level,
     uint32_t sx, sy;
     uint64_t at;
 
-    if (!n || x < -1 || y < -1 || x > (int32_t)l->width ||
+    if (!n || (n->header[0] == SGI_GL_TEXTURE_1D && y) ||
+        x < -1 || y < -1 || x > (int32_t)l->width ||
         y > (int32_t)l->height ||
         (x >= 0 && x < l->width && y >= 0 && y < l->height)) {
         return false;
@@ -739,9 +740,6 @@ static bool texture_native_interior(const SGIKonaTextureObject *o,
                         (MAX(pt - (int)level, 2) << 4);
 
     if (o->params.base_level || !o->native_width ||
-        (o->native_one_dimensional &&
-         (texture_native_uses_border(o->params.wrap_s) ||
-          texture_native_uses_border(o->params.wrap_t))) ||
         (n->header[17] & 0x60) || n->header[16] != geometry ||
         width > n->image.width || height > n->image.height) {
         return false;
@@ -823,10 +821,10 @@ static uint32_t texture_native_view(SGIKonaTextureObject *o)
             }
         } else if (image) {
             SGIKonaTextureLevel *view = &o->native_view[count];
-            bool border = !volume && !o->native_one_dimensional &&
-                o->native_layout_valid &&
+            bool border = !volume && o->native_layout_valid &&
                 (texture_native_uses_border(o->params.wrap_s) ||
-                 texture_native_uses_border(o->params.wrap_t));
+                 (!o->native_one_dimensional &&
+                  texture_native_uses_border(o->params.wrap_t)));
 
             *view = *image;
             if (!volume && o->native_layout_valid) {
