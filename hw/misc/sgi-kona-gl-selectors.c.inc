@@ -7,6 +7,31 @@
 
 static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
     {
+        .selector = 0x72,
+        .call = "glIndexd",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 2,
+    },
+    {
+        .selector = 0x73,
+        .call = "glIndexf",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 1,
+    },
+    {
+        .selector = 0x74,
+        .call = "glIndexi",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 1,
+    },
+    {
+        /* The short and unsigned-byte senders share this framing. */
+        .selector = 0x75,
+        .call = "glIndexs or glIndexub",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 1,
+    },
+    {
         .selector = 0x34,
         .call = "float pixel map header",
         .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,

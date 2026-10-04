@@ -7181,6 +7181,111 @@ static void test_native_index_state(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void native_index_set(QTestState *s, unsigned type, double value)
+{
+    if (!type) {
+        kona_command_d(s, 0x72, &value, 1);
+    } else if (type == 1) {
+        kona_command_f(s, 0x73, (float[]) { value }, 1);
+    } else {
+        kona_command(s, 0x74, (uint32_t[]) { (int32_t)value }, 1);
+    }
+}
+
+static void test_native_index_setters(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    unsigned bits = mode < 6 && mode >= 3 ? 8 : 12;
+    unsigned type = mode < 6 ? mode % 3 : 1;
+    uint32_t expected[] = { 0x123, type == 2 ? 0xffe : 0xffd };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    native_index_visual(s, bits);
+    if (mode < 6) {
+        gl_begin(s, 0);
+        native_index_set(s, type, 291.75);
+        gl_vertex2f(s, 0, 0);
+        native_index_set(s, type, -2.75);
+        gl_vertex2f(s, 1.0f / 64, 0);
+        gl_end(s);
+    } else {
+        native_index_set(s, 1, 291.75);
+        if (mode == 6) {
+            kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+            native_index_set(s, 1, 1);
+            kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+            kona_command(s, 0xce, (uint32_t[]) { 0x207 }, 1);
+            kona_command(s, 0x3a,
+                         (uint32_t[]) { 2, 1, 13, 6, 0, 0, 0, 0 }, 8);
+            qtest_writel(s, REG_COMMAND, fbits(0.25f));
+            qtest_writel(s, REG_COMMAND, fbits(0.75f));
+            expected[1] = 0x123;
+            goto read;
+        } else if (mode == 7) {
+            kona_command(s, 0xc9, (uint32_t[]) { 1 }, 1);
+            native_index_set(s, 1, 1);
+            kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+        } else if (mode == 8) {
+            return_context_deactivate(s);
+            attrib_context_fresh(s, SAVE_AREA + 0x20000);
+            native_index_set(s, 1, 1);
+            return_context_deactivate(s);
+            return_context_restore(s, SAVE_AREA);
+        } else if (mode == 9) {
+            read_dma_migrate(from, &s, &to, &dir);
+        } else if (mode == 10) {
+            qtest_writel(s, REG_COMMAND, 0x73);
+            read_dma_migrate(from, &s, &to, &dir);
+            qtest_writel(s, REG_COMMAND, fbits(291.75f));
+        } else if (mode == 11) {
+            double value = 291.75;
+            uint64_t raw;
+
+            memcpy(&raw, &value, sizeof(raw));
+            qtest_writel(s, REG_COMMAND, 0x72);
+            qtest_writel(s, REG_COMMAND, raw >> 32);
+            read_dma_migrate(from, &s, &to, &dir);
+            qtest_writel(s, REG_COMMAND, raw);
+        } else if (mode == 12) {
+            kona_command(s, 0x75, (uint32_t[]) { 0x12000000 }, 1);
+        } else if (mode == 15) {
+            qtest_system_reset(s);
+            native_index_visual(s, 12);
+            expected[0] = 1;
+        }
+        if (mode == 13) {
+            gl_begin(s, 1);
+            gl_vertex2f(s, -0.25, 0.5f / 64);
+            gl_vertex2f(s, 0.25, 0.5f / 64);
+        } else if (mode == 14) {
+            gl_begin(s, 4);
+            gl_vertex2f(s, -0.5, -0.5);
+            gl_vertex2f(s, 0.5, -0.5);
+            gl_vertex2f(s, 0, 0.5);
+        } else {
+            gl_begin(s, 0);
+            gl_vertex2f(s, 0, 0);
+        }
+        gl_end(s);
+        assert_native_index_pixels(s, 64, expected, 1);
+        goto out;
+    }
+read:
+    for (unsigned k = 0; k < 2; k++) {
+        expected[k] &= (1u << bits) - 1;
+    }
+    assert_native_index_pixels(s, 64, expected, 2);
+out:
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_native_index_sources(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -13251,6 +13356,13 @@ int main(int argc, char **argv)
         }
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_bitmap_stencil_read);
+    }
+    for (unsigned mode = 0; mode < 16; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/native-index-setters/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_native_index_setters);
     }
     for (unsigned mode = 0; mode < 32; mode++) {
         g_autofree char *path = g_strdup_printf(

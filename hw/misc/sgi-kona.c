@@ -3182,6 +3182,21 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
                                                         SGI_GL_OP_VERTEX4F;
         cmd.nargs = selector == SGI_KONA_CMD_GL_VERTEX3S ? 3 : 4;
         break;
+    case SGI_KONA_CMD_GL_INDEXD:
+        cmd.op = SGI_GL_OP_INDEXF;
+        cmd.nargs = 1;
+        break;
+    case SGI_KONA_CMD_GL_INDEXF:
+        cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, args };
+        break;
+    case SGI_KONA_CMD_GL_INDEXI:
+        a[0] = sgi_kona_gl_int(args[0]);
+        cmd = (SGIGLCmd) { SGI_GL_OP_INDEXF, 1, a };
+        break;
+    case SGI_KONA_CMD_GL_INDEX_PACKED:
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: ambiguous packed index type;"
+                      " current index preserved\n");
+        return true;
     case SGI_KONA_CMD_GL_COLOR4F:
         cmd = (SGIGLCmd) { SGI_GL_OP_COLOR4F, 4, args };
         break;
@@ -3336,6 +3351,7 @@ static bool sgi_kona_gl_transform(SGIKonaState *s, int i, uint32_t selector,
     case SGI_KONA_CMD_GL_COLOR3D:
     case SGI_KONA_CMD_GL_COLOR4D:
     case SGI_KONA_CMD_GL_NORMAL3D:
+    case SGI_KONA_CMD_GL_INDEXD:
         for (int k = 0; k < cmd.nargs; k++) {
             a[k] = sgi_kona_gl_double(&args[2 * k]);
         }
