@@ -172,6 +172,18 @@ static const SGIKonaGLSelectorInfo sgi_kona_gl_selectors[] = {
         .arg0_values = { 0x0 },
     },
     {
+        .selector = 0x110,
+        .call = "pixel copy overlap query",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
+        .selector = 0x115,
+        .call = "pixel copy convolution query",
+        .evidence = SGI_KONA_GL_LAYOUT_ESTABLISHED,
+        .argc = 4,
+    },
+    {
         /*
          * Established. The table records four argument words.
          */
