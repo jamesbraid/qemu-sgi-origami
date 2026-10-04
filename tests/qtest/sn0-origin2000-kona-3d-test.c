@@ -6750,6 +6750,103 @@ static void test_raw_bitmap(gconstpointer opaque)
     }
 }
 
+static void test_raw_bitmap_dma(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool refused = mode >= 4;
+    uint32_t h[] = { 32, 2, 0, 1, 0, 0, 0, fbits(3), fbits(4) };
+    const uint8_t bytes[] = { 0x82, 0, 0, 0, 0x40, 0, 0, 0 };
+    uint32_t total = sizeof(bytes), line = total, gap = 0;
+    uint64_t io = mode == 6 ? 1 : 0;
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree Expected *e = g_new(Expected, 1);
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0x63, (float[]) { 1, 0, 0 }, 3);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode == 1) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf1, 1 }, 2);
+    } else if (mode == 2) {
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf3, 3 }, 2);
+    } else if (mode == 4) {
+        total = line = 4;
+    } else if (mode == 5) {
+        gap = 4;
+    } else if (mode == 7) {
+        h[0] = 64;
+        h[1] = 2049;
+        total = line = 16392;
+    } else if (mode == 10) {
+        h[5] = 0x7f800000;
+    } else if (mode == 11) {
+        line = 4;
+    } else if (mode == 12) {
+        h[0] = 16;
+    } else if (mode == 13) {
+        h[4] = 1;
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 64 }, 2);
+    } else if (mode == 14) {
+        h[2] = 1;
+    } else if (mode == 15) {
+        h[4] = 1;
+        kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 1 }, 2);
+    }
+    qtest_writel(s, KONA_REG(0x100000), mode == 9 ? 0 : 0x20000380);
+    qtest_memwrite(s, 0x380000 + io, bytes, sizeof(bytes));
+    if (mode == 7) {
+        qtest_memset(s, 0x380000, 0x80, 16384);
+    }
+    kona_command(s, 0x6, h, ARRAY_SIZE(h));
+    if (mode == 8) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    }
+    if (mode == 3) {
+        dir = g_dir_make_tmp("sn0-kona-bitmap-dma-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode < 12) {
+        texture_dma_packet(s, io, total, line, gap);
+    }
+    g_assert_cmphex(qtest_readl(s, REG_MAILBOX), ==, refused ? 0 : 0x100);
+    expected_clear(e, 0);
+    if (!refused) {
+        for (unsigned y = 0; y < 2; y++) {
+            for (unsigned x = 0; x < 8; x++) {
+                if (bytes[y * 4] & (mode == 1 ? 1 << x : 0x80 >> x)) {
+                    e->rgb[((127 - (64 + y)) * 128 + 64 + x) * 3] = 255;
+                }
+            }
+        }
+    }
+    assert_window_matches(s, e);
+    /* A failed source must neither move the raster nor leave PIO pending. */
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf2, 0 }, 2);
+    kona_command(s, 0x33, (uint32_t[]) { 0xcf4, 0 }, 2);
+    kona_command(s, 0x3a, (uint32_t[]) { 1, 1, 5, 1, 0, 0, 0, 0 }, 8);
+    qtest_writel(s, REG_COMMAND, 0x00ff00ff);
+    e->rgb[((127 - (refused ? 64 : 68)) * 128 +
+            (refused ? 64 : 67)) * 3 + 1] = 255;
+    assert_window_matches(s, e);
+    assert_native_query_word(s, 0xb92, 0x207, false);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_raw_bitmap_large(void)
 {
     QTestState *s = qtest_init(MACHINE_ARGS);
@@ -9580,6 +9677,19 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/copy-pixels/%s", copy_pixels_cases[mode]);
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_copy_pixels);
+    }
+    static const char *bitmap_dma_cases[] = {
+        "msb", "lsb", "skip-rows", "pending-migrates", "short-descriptor",
+        "gap-refused", "unaligned-address", "late-unmapped-page",
+        "context-changed", "unmapped-source", "invalid-placement",
+        "strided-descriptor", "narrow-width", "strided-source",
+        "source-phase", "pixel-skips",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(bitmap_dma_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/bitmap-dma/%s", bitmap_dma_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_raw_bitmap_dma);
     }
     static const char *raw_bitmap_cases[] = {
         "strided", "contiguous", "skips", "lsb-first", "skips-migrates",

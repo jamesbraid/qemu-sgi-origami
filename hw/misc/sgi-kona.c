@@ -5160,9 +5160,21 @@ static void sgi_kona_gl_bitmap_move(SGIKonaState *s, int i,
 static bool sgi_kona_gl_raw_bitmap_layout(const SGIKonaGLImageUpload *u,
                                            SGIKonaGLBitmapLayout *layout)
 {
-    return sgi_kona_gl_bitmap_pio_layout(u->header, u->row_length,
-                                         u->skip_rows, u->skip_pixels,
-                                         u->alignment, layout);
+    uint32_t header[9];
+
+    memcpy(header, u->header, sizeof(header));
+    if (header[3] > 1) {
+        return false;
+    }
+    header[3] = 0;
+    if (!sgi_kona_gl_bitmap_pio_layout(header, u->row_length,
+                                        u->skip_rows, u->skip_pixels,
+                                        u->alignment, layout)) {
+        return false;
+    }
+    return !u->header[3] ||
+           (!(header[0] & 31) && !layout->strided && !layout->phase &&
+            !u->skip_pixels && layout->stride == header[0] / 8);
 }
 
 static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
@@ -5173,6 +5185,12 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     const SGIKonaGLPipe *p = i == SGI_KONA_CONTEXT_NONE ?
                             &defaults : &s->gl_pipe[i];
     SGIKonaGLBitmapLayout layout;
+    SGIKonaGLImageUpload framing = {
+        .row_length = p->unpack_row_length,
+        .skip_rows = p->unpack_skip_rows,
+        .skip_pixels = p->unpack_skip_pixels,
+        .alignment = p->unpack_alignment,
+    };
 
     sgi_kona_gl_image_clear(s);
     if (!a[0] && !a[1]) {
@@ -5182,10 +5200,8 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     }
-    if (!sgi_kona_gl_bitmap_pio_layout(a, p->unpack_row_length,
-                                        p->unpack_skip_rows,
-                                        p->unpack_skip_pixels,
-                                        p->unpack_alignment, &layout) ||
+    memcpy(framing.header, a, sizeof(framing.header));
+    if (!sgi_kona_gl_raw_bitmap_layout(&framing, &layout) ||
         layout.payload_words > UINT32_MAX) {
         qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap framing unsupported;"
                       " source length unknown, stream recovery unsafe\n");
@@ -5193,15 +5209,14 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
     }
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: oversized raw bitmap;"
-                      " draining framed words\n");
-        return layout.payload_words;
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: oversized raw bitmap; %s\n",
+                      a[3] ? "DMA not staged" : "draining framed words");
+        return a[3] ? 0 : layout.payload_words;
     }
-    memcpy(u->header, a, sizeof(u->header));
-    u->row_length = p->unpack_row_length;
-    u->skip_rows = p->unpack_skip_rows;
-    u->skip_pixels = p->unpack_skip_pixels;
-    u->alignment = p->unpack_alignment;
+    if (a[3]) {
+        sgi_kona_texture_upload_clear(s);
+    }
+    *u = framing;
     u->lsb_first = p->unpack_lsb_first;
     u->context = i;
     u->count = layout.payload_words;
@@ -5210,23 +5225,24 @@ static uint32_t sgi_kona_gl_raw_bitmap_open(SGIKonaState *s, int i,
                  s->gl[i].cur.texture_3d ||
                  !sgi_kona_gl_bitmap_position_valid(a + 5, false);
     if (u->refused) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap profile refused;"
-                      " draining framed words\n");
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: raw bitmap profile refused; %s\n",
+                      a[3] ? "DMA not staged" : "draining framed words");
     }
     u->words = g_try_new0(uint32_t, u->count);
     if (!u->words) {
         sgi_kona_gl_image_clear(s);
     }
-    return layout.payload_words;
+    return a[3] ? 0 : layout.payload_words;
 }
 
-static void sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
+static bool sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
 {
     SGIKonaGLImageUpload *u = &s->gl_image_upload;
     SGIKonaGLBitmapLayout layout;
     SGIGLBitmap b;
     SGIGLSink sink;
     uint32_t i = u->context, row_bytes;
+    bool rendered = false;
     g_autofree uint8_t *bytes = NULL;
 
     if (!u->count || u->refused || i != s->context_current ||
@@ -5259,9 +5275,11 @@ static void sgi_kona_gl_raw_bitmap_done(SGIKonaState *s)
         sgi_kona_gl_sink(s, &sink);
         sgi_gl_bitmap_bytes(&s->gl[i], &sink, &b, 0, bytes,
                             row_bytes * layout.height);
+        rendered = true;
     }
 out:
     sgi_kona_gl_image_clear(s);
+    return rendered;
 }
 
 static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
@@ -6991,6 +7009,47 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
         len -= chunk;
     }
     return true;
+}
+
+bool sgi_kona_bitmap_dma_waiting(SGIKonaState *s)
+{
+    const SGIKonaGLImageUpload *u = &s->gl_image_upload;
+
+    return u->count && !u->draw_pixels && u->header[3] == 1;
+}
+
+bool sgi_kona_bitmap_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                                uint32_t per_line, uint64_t pitch)
+{
+    SGIKonaGLImageUpload *u = &s->gl_image_upload;
+    SGIKonaGLBitmapLayout layout;
+    uint8_t chunk[4096];
+    uint64_t bytes = (uint64_t)u->count * 4;
+
+    if (!sgi_kona_bitmap_dma_waiting(s) || u->refused ||
+        u->context != s->context_current ||
+        !sgi_kona_gl_raw_bitmap_layout(u, &layout) ||
+        (io & 3) || lines != 1 || per_line != bytes || pitch != bytes ||
+        bytes > UINT64_MAX - io) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: raw bitmap DMA source framing mismatch;"
+                      " image refused\n");
+        sgi_kona_gl_image_clear(s);
+        return false;
+    }
+    for (uint32_t offset = 0; offset < per_line;) {
+        uint32_t n = MIN(sizeof(chunk), per_line - offset);
+
+        if (!sgi_kona_device_read(s, io + offset, chunk, n)) {
+            sgi_kona_gl_image_clear(s);
+            return false;
+        }
+        for (uint32_t k = 0; k < n; k += 4) {
+            u->words[(offset + k) / 4] = ldl_be_p(chunk + k);
+        }
+        offset += n;
+    }
+    return sgi_kona_gl_raw_bitmap_done(s);
 }
 
 bool sgi_kona_texture_dma_waiting(SGIKonaState *s)
@@ -10347,12 +10406,14 @@ static int sgi_kona_gl_image_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
     const SGIKonaGLImageUpload *u = &s->gl_image_upload;
+    bool dma = !u->draw_pixels && u->header[3] == 1;
 
     if (!sgi_kona_gl_image_valid(u) ||
-        s->gl_data_token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
-                                            SGI_KONA_CMD_GL_BITMAP) ||
-        s->gl_data_have >= u->count ||
-        s->gl_data_remaining != u->count - s->gl_data_have ||
+        (dma ? (s->gl_data_token || s->gl_data_have || s->gl_data_remaining) :
+         (s->gl_data_token != (u->draw_pixels ? SGI_KONA_CMD_GL_DRAW_PIXELS :
+                                               SGI_KONA_CMD_GL_BITMAP) ||
+          s->gl_data_have >= u->count ||
+          s->gl_data_remaining != u->count - s->gl_data_have)) ||
         (!u->refused && (u->context != s->context_current ||
                         !s->contexts[u->context].valid))) {
         return -EINVAL;
