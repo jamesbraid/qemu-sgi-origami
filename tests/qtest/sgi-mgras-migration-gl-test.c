@@ -71,6 +71,11 @@ static void test_gl_pixels_float_migration(void)
     };
     static const uint32_t values[] = {
         0x3e808081, 0x3e808081, 0, 0x3f3fbfc0, 0x3e808081, 0,
+        0, 0x3e808081, 0x3e808081, 0, 0x3f3fbfc0, 0x3e808081,
+    };
+    static const uint32_t expected[2][2] = {
+        { 0x404000, 0xbf4000 },
+        { 0x004040, 0x00bf40 },
     };
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
@@ -90,25 +95,36 @@ static void test_gl_pixels_float_migration(void)
     gl_viewport(from, 0, 0, 128, 128);
     gl_window_projection(from);
     gl_raster_pos2f(from, 0, 0);
-    gl_pixels_program(from, GL_PIX_3UB, 6, 0, 0, 1, 0, 1);
+    gl_pixels_program(from, GL_PIX_3UB, 6, 0, 0, 1, 1, 1);
     gl_ge_load(from, GL_GE_CRAM, GL_GE_PROGRAM, program,
                ARRAY_SIZE(program));
     gl_ge_load(from, GL_GE_ERAM, 0x1d6, unpack, ARRAY_SIZE(unpack));
     gl_pixels_draw(from, 6);
-    gl_word(from, GL_INLINE_BLOCK | sizeof(values));
+    gl_word(from, GL_INLINE_BLOCK | 6 * sizeof(values[0]));
     for (int i = 0; i < 4; i++) {
         gl_word(from, values[i]);
     }
 
     sgi_migrate_stopped(from, uri);
 
-    for (int i = 4; i < ARRAY_SIZE(values); i++) {
-        gl_word(to, values[i]);
+    for (unsigned which = 0; which < 2; which++) {
+        QTestState *s = which ? to : from;
+
+        for (unsigned i = 4; i < 6; i++) {
+            gl_word(s, values[i]);
+        }
+        gl_pixels_row(s, 0, values + 6, 6);
+        gl_pixels_fence(s);
+        g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     }
-    gl_pixels_fence(to);
-    g_assert_cmphex(gl_window_pixel(to, 0, 0), ==, 0x404000);
-    g_assert_cmphex(gl_window_pixel(to, 1, 0), ==, 0xbf4000);
-    g_assert_cmphex(mgras_qom_get_uint(to, "x-test-error"), ==, 0);
+    for (unsigned y = 0; y < 3; y++) {
+        for (unsigned x = 0; x < 3; x++) {
+            uint32_t pixel = gl_window_pixel(from, x, y);
+
+            g_assert_cmphex(pixel, ==, x < 2 && y < 2 ? expected[y][x] : 0);
+            g_assert_cmphex(gl_window_pixel(to, x, y), ==, pixel);
+        }
+    }
 
     qtest_quit(to);
     qtest_quit(from);
