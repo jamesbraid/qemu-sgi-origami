@@ -63,7 +63,7 @@
 #define SN0_HUB_CPU_SLOTS_PER_NODE 2
 
 const SN0FlashImplementation sn0_flash = {
-    .sector_size = 0x10000,
+    .sector_size = SGI_IP27_FLASH_SECTOR_SIZE,
     .width = 1,
     .mappings = 1,
     .big_endian = true,

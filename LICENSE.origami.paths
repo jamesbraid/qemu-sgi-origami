@@ -89,6 +89,7 @@ hw/mips/sgi/baseio.c
 hw/mips/sgi/board-gigachannel.c
 hw/mips/sgi/board-pci-expansion.c
 hw/mips/sgi/board-pci-shoehorn.c
+hw/mips/sgi/initial-flash.c
 hw/mips/sgi/meson.build
 hw/mips/sgi/models/LICENSE
 hw/mips/sgi/models/fuel-vpro.yaml
@@ -288,6 +289,7 @@ include/hw/input/sgi-ioc3-kbc.h
 include/hw/mips/sgi-net-port.h
 include/hw/mips/sgi/baseio-flash.h
 include/hw/mips/sgi/baseio.h
+include/hw/mips/sgi/initial-flash.h
 include/hw/mips/sgi/net-cable.h
 include/hw/mips/sgi/pi-gfx.h
 include/hw/mips/sgi/prom-image.h
@@ -802,6 +804,7 @@ tests/unit/test-sgi-bedrock-ni.c
 tests/unit/test-sgi-dma.c
 tests/unit/test-sgi-gl-vmstate.c
 tests/unit/test-sgi-gl.c
+tests/unit/test-sgi-initial-flash.c
 tests/unit/test-sgi-kona-gl-decode.c
 tests/unit/test-sgi-kona-ports.c
 tests/unit/test-sgi-kona-texture.c
