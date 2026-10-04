@@ -89,7 +89,7 @@ typedef struct SGIGLPixelTransfer {
     float bias[4];
 } SGIGLPixelTransfer;
 
-/* Untextured RGBA8 pixel rectangles (OpenGL 1.2.1, 3.6.4). */
+/* Untextured RGBA pixel rectangles (OpenGL 1.2.1, 3.6.4). */
 typedef struct SGIRasterPixels {
     const struct SGIGLDrawState *state;
     double x, y;               /* raster position in window coordinates */
@@ -97,6 +97,7 @@ typedef struct SGIRasterPixels {
     SGIGLPixelTransfer transfer;
     uint32_t width, height;
     const uint32_t *rgba;       /* 0xRRGGBBAA, bottom row first */
+    const float (*rgba_float)[4]; /* unquantized, bottom row first */
     float z;                   /* raster position's window depth */
     float distance;            /* raster position's fog distance */
 } SGIRasterPixels;
@@ -1086,6 +1087,12 @@ void sgi_gl_draw_pixels_rgba_transfer(SGIGLContext *c, const SGIGLSink *sink,
                                      const uint32_t *rgba, float zoom_x,
                                      float zoom_y,
                                      const SGIGLPixelTransfer *transfer);
+/* Finite float sources remain unquantized until fragment operations. */
+bool sgi_gl_draw_pixels_float_transfer(SGIGLContext *c, const SGIGLSink *sink,
+                                       uint32_t width, uint32_t height,
+                                       const float (*rgba)[4], float zoom_x,
+                                       float zoom_y,
+                                       const SGIGLPixelTransfer *transfer);
 /*
  * Copy an RGBA8 source snapshot through pixel transfer and fragment operations.
  * The family bounds the source and resolves the read buffer; read_rgba gets

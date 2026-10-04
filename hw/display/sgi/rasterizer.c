@@ -3869,6 +3869,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
                             const SGIRasterTarget *t, const SGIRasterOp *op)
 {
     const SGIRasterPixels *p = &op->pixels;
+    bool image = p->rgba || p->rgba_float;
     SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
     SGISoftFrag frag = { .fog = p->distance };
     bool rgba_reported = false;
@@ -3878,7 +3879,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
     int64_t x0, y0, x1, y1;
 
     r.rgba_reported = &rgba_reported;
-    if (!p->width || !p->height || !p->rgba ||
+    if (!p->width || !p->height || !image ||
         !isfinite(p->x) || !isfinite(p->y) ||
         !isfinite(p->zoom[0]) || !isfinite(p->zoom[1]) ||
         !p->zoom[0] || !p->zoom[1] || !sgi_soft_window(p->state, &r.win)) {
@@ -3914,14 +3915,17 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
         for (int64_t x = x0; x <= x1; x++) {
             double qx = (x + 0.5 - p->x) / p->zoom[0];
             double sx = p->zoom[0] > 0 ? floor(qx) : ceil(qx) - 1;
+            uint64_t at;
             uint32_t rgba;
 
             if (!(sx >= 0 && sx < p->width)) {
                 continue;
             }
-            rgba = p->rgba[(uint64_t)sy * p->width + (uint32_t)sx];
+            at = (uint64_t)sy * p->width + (uint32_t)sx;
+            rgba = p->rgba_float ? 0 : p->rgba[at];
             for (int k = 0; k < 4; k++) {
-                double component = ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
+                double component = p->rgba_float ? p->rgba_float[at][k] :
+                                   ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
 
                 frag.rgba[k] = CLAMP(component * p->transfer.scale[k] +
                                      p->transfer.bias[k], 0.0, 1.0);
@@ -3937,7 +3941,7 @@ static void sgi_soft_pixels(const SGIRasterRules *rules,
  * clear depth to the depth plane and the clear stencil value under its
  * mask to the stencil buffer, where the planes have one, at every pixel of
  * its rectangle its clip list keeps. BITMAP draws its run of a bitmap,
- * and PIXELS draws a zoomed RGBA8 rectangle.
+ * and PIXELS draws a zoomed RGBA rectangle.
  * The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
