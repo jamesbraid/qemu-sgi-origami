@@ -12147,7 +12147,7 @@ static void test_texture_adapter_linear_r(void)
 }
 
 /* Captured combined selectors and planes, with an original synthetic volume. */
-static void texture_adapter_linear_strq(bool t_enabled)
+static void texture_adapter_linear_strq(bool t_enabled, bool bulk)
 {
     const uint32_t matrix[16] = {
         0x3f800000, 0, 0, 0,
@@ -12182,6 +12182,18 @@ static void texture_adapter_linear_strq(bool t_enabled)
         0x31008000,
         0x3300800a, 0x33008001, 0x290080f3, 0x2a008100, 0x2c00810c,
     };
+    const uint32_t planes[2][18] = {
+        { 0x31008100, 0x9080bda2,
+          0x3c800000, 0, 0, 0xbf000000,
+          0, 0x3c800000, 0, 0xbf000000,
+          0x3d000000, 0, 0, 0xbf800000,
+          0x3c000000, 0, 0, 0x3f000000 },
+        { 0x31008100, 0x9080bda2,
+          0x3d000000, 0, 0, 0xbf800000,
+          0, 0, 0, 0,
+          0, 0x3d000000, 0, 0xbf800000,
+          0, 0x3c000000, 0, 0x3f000000 },
+    };
     const uint32_t quad[] = {
         0x00014400, 7,
         0x8080c800, 32, 32, 0x8080c800, 96, 32,
@@ -12207,7 +12219,29 @@ static void texture_adapter_linear_strq(bool t_enabled)
     push_block_16(qts, 0xbf800000);
     texture_adapter_bind_3d(qts, 0x16a800, 2, 4, 2, 1, 1);
     push_user_words(qts, query_texture_4f[t_enabled ? 0 : 1], 5);
-    if (t_enabled) {
+    if (bulk) {
+        const uint32_t *setup = t_enabled ? setup_a : setup_b;
+        unsigned size = t_enabled ? ARRAY_SIZE(setup_a) : ARRAY_SIZE(setup_b);
+        unsigned first_plane = t_enabled ? 24 : 22;
+        unsigned tail = size - (t_enabled ? 5 : 6);
+
+        /* Start with the opposite planes, then reload through the kernel. */
+        push_user_words(qts, (uint32_t[]) {
+            0x31008104, 0x908091bb, 0, 0, 0, 0,
+        }, 6);
+        push_user_words(qts, t_enabled ? setup_b : setup_a,
+                        t_enabled ? ARRAY_SIZE(setup_b) : ARRAY_SIZE(setup_a));
+        texture_linear_program(qts, 0);
+        for (unsigned i = 0; i < ARRAY_SIZE(planes[0]); i++) {
+            cmd_push(qts, planes[t_enabled ? 0 : 1][i]);
+        }
+        /* Loading all four planes cannot enable coordinate generation. */
+        push_user_words(qts, quad, ARRAY_SIZE(quad));
+        g_assert_cmphex(odsy_test_pixel(qts, 36, 64), ==,
+                        t_enabled ? pixels[2][1] : pixels[3][2]);
+        push_user_words(qts, setup, first_plane);
+        push_user_words(qts, setup + tail, size - tail);
+    } else if (t_enabled) {
         push_user_words(qts, setup_a, ARRAY_SIZE(setup_a));
     } else {
         /* Retain the earlier A plane while B leaves T generation disabled. */
@@ -12253,12 +12287,22 @@ static void texture_adapter_linear_strq(bool t_enabled)
 
 static void test_texture_adapter_linear_strq(void)
 {
-    texture_adapter_linear_strq(true);
+    texture_adapter_linear_strq(true, false);
 }
 
 static void test_texture_adapter_linear_srq(void)
 {
-    texture_adapter_linear_strq(false);
+    texture_adapter_linear_strq(false, false);
+}
+
+static void test_texture_adapter_linear_strq_bulk(void)
+{
+    texture_adapter_linear_strq(true, true);
+}
+
+static void test_texture_adapter_linear_srq_bulk(void)
+{
+    texture_adapter_linear_strq(false, true);
 }
 
 static void test_texture_adapter_linear_q(void)
@@ -15411,6 +15455,10 @@ int main(int argc, char **argv)
                    test_texture_adapter_level_zero_3d);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-r",
                    test_texture_adapter_linear_r);
+    qtest_add_func("sn1/odyssey/texture-adapter/linear-strq-bulk",
+                   test_texture_adapter_linear_strq_bulk);
+    qtest_add_func("sn1/odyssey/texture-adapter/linear-srq-bulk",
+                   test_texture_adapter_linear_srq_bulk);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-srq",
                    test_texture_adapter_linear_srq);
     qtest_add_func("sn1/odyssey/texture-adapter/linear-strq",

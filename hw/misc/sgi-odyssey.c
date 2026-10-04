@@ -7828,10 +7828,19 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         }
         break;
     case ODSY_GL_LIGHT_VEC_LOAD:
+        if (s->gl_light_vec_sel == 0x100) {
+            memcpy(s->tex_linear_plane, s->cmd_operand,
+                   sizeof(s->tex_linear_plane));
+            memcpy(s->tex_linear_plane_r, &s->cmd_operand[8],
+                   sizeof(s->tex_linear_plane_r));
+            memcpy(s->tex_linear_plane_q, &s->cmd_operand[12],
+                   sizeof(s->tex_linear_plane_q));
+            s->tex_linear_valid |= 0xf;
+            break;
+        }
         /*
-         * Index 16 i is light i. Context setup also loads blocks at 0x80
-         * to 0x1e0 whose meaning is unknown; they are dropped, reported
-         * once (not per index, which would exhaust the word budget).
+         * Index 16 i is light i. Other context setup blocks at 0x80
+         * to 0x1e0 remain unknown and are reported once, not per index.
          */
         if (s->gl_light_vec_sel % ODSY_GL_LIGHT_VEC_FLOATS == 0 &&
             s->gl_light_vec_sel / ODSY_GL_LIGHT_VEC_FLOATS <
