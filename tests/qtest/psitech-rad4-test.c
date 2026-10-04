@@ -2510,8 +2510,8 @@ static void frame_acknowledge(QTestState *qts)
 /*
  * Right after recognition, frames arrive exactly every 1/@hz s of virtual
  * time: none a microsecond before each one, one a microsecond after. The
- * labels are at least 0.25 ms apart in period, so this tells every pair of
- * modes with different labels apart.
+ * closest labels, 75 and 76 Hz, are 175 us apart in period, so this tells
+ * every pair of modes with different labels apart.
  */
 static void check_frame_cadence(QTestState *qts, unsigned hz)
 {
