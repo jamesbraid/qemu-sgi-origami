@@ -178,7 +178,7 @@ bool sgi_kona_gl_bitmap_pio_byte(const SGIKonaGLBitmapLayout *layout,
                                  bool lsb_first, uint32_t row, uint32_t byte,
                                  uint8_t *out);
 
-/* Pack finite RGB/RGBA to native UBYTE, USHORT or FLOAT, transactionally. */
+/* Pack finite colour to the seven native scalar types, transactionally. */
 bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
                             const float rgba[4], bool swap_bytes,
                             uint8_t *out, size_t capacity);
