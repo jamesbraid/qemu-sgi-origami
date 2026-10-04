@@ -4829,6 +4829,17 @@ static uint32_t sgi_kona_gl_tex_native_words(SGIKonaState *s, int i,
 static bool sgi_kona_gl_pixels_layout(const SGIKonaGLImageUpload *u,
                                       SGIKonaGLPixelLayout *layout)
 {
+    if (u->header[5]) {
+        SGIKonaGLPixelDMALayout dma;
+
+        if (!sgi_kona_gl_pixels_dma_layout(u->header, u->row_length,
+                                            u->skip_rows, u->skip_pixels,
+                                            u->alignment, &dma)) {
+            return false;
+        }
+        *layout = dma.pixels;
+        return true;
+    }
     return sgi_kona_gl_pixels_pio_layout(u->header, u->row_length,
                                          u->skip_rows, u->skip_pixels,
                                          u->alignment, layout);
@@ -4840,35 +4851,45 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
 {
     SGIKonaGLImageUpload *u = &s->gl_image_upload;
     SGIKonaGLPixelLayout layout;
+    SGIKonaGLImageUpload framing = {
+        .row_length = p->unpack_row_length,
+        .skip_rows = p->unpack_skip_rows,
+        .skip_pixels = p->unpack_skip_pixels,
+        .alignment = p->unpack_alignment,
+    };
+    bool refused;
     uint64_t count = (uint64_t)a[0] * a[1];
 
-    if (!sgi_kona_gl_pixels_pio_layout(a, p->unpack_row_length,
-                                        p->unpack_skip_rows,
-                                        p->unpack_skip_pixels,
-                                        p->unpack_alignment, &layout) ||
+    memcpy(framing.header, a, 8 * sizeof(uint32_t));
+    if (!sgi_kona_gl_pixels_layout(&framing, &layout) ||
         layout.payload_words > UINT32_MAX) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels PIO framing unsupported;"
-                      " source length unknown, stream recovery unsafe\n");
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels source framing"
+                      " unsupported; source length unknown,"
+                      " stream recovery unsafe\n");
         return 0;
     }
     if (a[0] > SGI_KONA_GL_IMAGE_MAX || a[1] > SGI_KONA_GL_IMAGE_MAX ||
         layout.payload_words > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t) ||
         count > SGI_KONA_TEXTURE_BYTES /
-                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(double)) ||
-        a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
+                (a[3] == 1 ? sizeof(uint32_t) : 4 * sizeof(double))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels capacity exceeded; %s\n",
+                      a[5] ? "DMA not staged" : "draining framed words");
+        return a[5] ? 0 : layout.payload_words;
+    }
+    refused = a[7] || i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin ||
         s->gl[i].cur.texture_1d || s->gl[i].cur.texture_2d ||
         s->gl[i].cur.texture_3d || p->pixel_zoom_unsupported ||
-        p->pixel_transfer_unsupported) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels PIO profile refused;"
-                      " draining framed words\n");
-        return layout.payload_words;
+        p->pixel_transfer_unsupported;
+    if (refused) {
+        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels profile refused; %s\n",
+                      a[5] ? "DMA not staged" : "draining framed words");
+        if (!a[5]) {
+            return layout.payload_words;
+        }
     }
-    memcpy(u->header, a, 8 * sizeof(uint32_t));
+    *u = framing;
     u->header[8] = p->unpack_swap_bytes;
-    u->row_length = p->unpack_row_length;
-    u->skip_rows = p->unpack_skip_rows;
-    u->skip_pixels = p->unpack_skip_pixels;
-    u->alignment = p->unpack_alignment;
+    u->refused = refused;
     u->context = i;
     u->count = layout.payload_words;
     u->draw_pixels = true;
@@ -4876,10 +4897,10 @@ static uint32_t sgi_kona_gl_pixels_open(SGIKonaState *s, int i,
     if (!u->words) {
         sgi_kona_gl_image_clear(s);
     }
-    return layout.payload_words;
+    return a[5] ? 0 : layout.payload_words;
 }
 
-static void sgi_kona_gl_pixels_done(SGIKonaState *s)
+static bool sgi_kona_gl_pixels_done(SGIKonaState *s)
 {
     SGIKonaGLImageUpload *u = &s->gl_image_upload;
     SGIKonaGLPixelLayout layout;
@@ -4889,7 +4910,7 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     const SGIKonaGLPipe *p;
     g_autofree uint32_t *rgba = NULL;
     g_autofree double (*rgba_double)[4] = NULL;
-    bool scalar = u->header[3] != 1;
+    bool scalar = u->header[3] != 1, rendered = false;
     uint64_t count;
 
     if (!u->count || u->refused || i != s->context_current ||
@@ -4899,6 +4920,9 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
         goto out;
     }
     p = &s->gl_pipe[i];
+    if (p->pixel_zoom_unsupported || p->pixel_transfer_unsupported) {
+        goto out;
+    }
     count = (uint64_t)layout.width * layout.height;
     if (scalar) {
         rgba_double = g_try_malloc_n(count, sizeof(*rgba_double));
@@ -4935,6 +4959,9 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
     for (unsigned k = 0; k < 4; k++) {
         transfer.scale[k] = sgi_kona_gl_float(p->pixel_transfer.scale[k]);
         transfer.bias[k] = sgi_kona_gl_float(p->pixel_transfer.bias[k]);
+        if (!isfinite(transfer.scale[k]) || !isfinite(transfer.bias[k])) {
+            goto out;
+        }
     }
     sgi_kona_gl_sink(s, &sink);
     if (scalar) {
@@ -4950,86 +4977,26 @@ static void sgi_kona_gl_pixels_done(SGIKonaState *s)
                                          sgi_kona_gl_float(p->pixel_zoom[1]),
                                          &transfer);
     }
+    rendered = true;
 out:
     sgi_kona_gl_image_clear(s);
+    return rendered;
 }
 
 /* DrawPixels shares source staging, not texture destination semantics. */
 static uint32_t sgi_kona_gl_draw_pixels_open(SGIKonaState *s, int i,
                                              const uint32_t *a)
 {
-    SGIKonaTextureUpload *u = &s->texture_upload;
-    SGIKonaTextureUpload framing = { 0 };
     const SGIKonaGLPipe defaults = { .unpack_alignment = 4 };
     const SGIKonaGLPipe *p = i == SGI_KONA_CONTEXT_NONE ?
                             &defaults : &s->gl_pipe[i];
-    uint32_t bytes = sgi_kona_gl_texture_pixel_bytes(a[2], a[3]);
-    uint64_t count = (uint64_t)a[0] * a[1], stride, words;
 
     sgi_kona_gl_image_clear(s);
     sgi_kona_texture_upload_clear(s);
     if (i != SGI_KONA_CONTEXT_NONE && s->gl[i].in_begin) {
         sgi_kona_gl_set_error(s, 0x502);
     }
-    if (!a[5]) {
-        return sgi_kona_gl_pixels_open(s, i, a, p);
-    }
-    if (p->unpack_skip_rows || p->unpack_skip_pixels) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels unpack skips"
-                      " unsupported;"
-                      " source framing unknown\n");
-        return 0;
-    }
-    if (!bytes || !a[0] || !a[1] || a[0] > SGI_KONA_GL_IMAGE_MAX ||
-        a[1] > SGI_KONA_GL_IMAGE_MAX || a[4] > 3 || a[5] > 1 ||
-        a[6] > 1 || (p->unpack_alignment != 1 && p->unpack_alignment != 2 &&
-        p->unpack_alignment != 4 && p->unpack_alignment != 8)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels source length unknown;"
-                      " rows not framed\n");
-        return 0;
-    }
-    stride = a[6] ?
-             ROUND_UP((uint64_t)(p->unpack_row_length ? p->unpack_row_length :
-                                a[0]) * bytes, p->unpack_alignment) :
-             (uint64_t)a[0] * bytes;
-    if (stride > UINT32_MAX) {
-        return 0;
-    }
-    framing.header[1] = a[0];
-    framing.header[2] = a[1];
-    framing.header[3] = a[2];
-    framing.header[4] = a[3];
-    framing.header[5] = a[4];
-    framing.header[6] = a[5];
-    framing.header[7] = a[6];
-    framing.source_stride = stride;
-    words = a[6] ? sgi_kona_texture_words(&framing) :
-                   DIV_ROUND_UP(a[4] + count * bytes, 4);
-    if (words > UINT32_MAX) {
-        return 0;
-    }
-    if (i == SGI_KONA_CONTEXT_NONE || s->gl[i].in_begin || a[2] != 5 ||
-        a[3] != 1 || a[7] || p->pixel_zoom_unsupported ||
-        p->pixel_transfer_unsupported || stride < a[0] * bytes ||
-        count > SGI_KONA_TEXTURE_BYTES / sizeof(uint32_t)) {
-        goto refused;
-    }
-    framing.pixels = g_try_new0(uint32_t, count);
-    if (!framing.pixels) {
-        goto refused;
-    }
-    framing.count = count;
-    framing.draw_pixels = true;
-    framing.draw_context = i;
-    framing.swap_bytes = p->unpack_swap_bytes;
-    *u = framing;
-    s->texture_state_used = true;
-    return a[5] ? 0 : words;
-
-refused:
-    qemu_log_mask(LOG_UNIMP, "sgi-kona: DrawPixels profile refused; %s\n",
-                  a[5] ? "DMA not staged" : "draining framed rows");
-    return a[5] ? 0 : words;
+    return sgi_kona_gl_pixels_open(s, i, a, p);
 }
 
 static void sgi_kona_gl_draw_pixels_done(SGIKonaState *s)
@@ -5632,6 +5599,7 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         sgi_kona_texture_upload_clear(s);
         return;
     case SGI_KONA_CMD_GL_TEX_LOAD:
+        sgi_kona_gl_image_clear(s);
         sgi_kona_texture_upload_clear(s);
         words = sgi_kona_gl_tex_load_words(s, i, args);
         if (words) {
@@ -7009,6 +6977,67 @@ static bool sgi_kona_device_read(SGIKonaState *s, uint64_t device,
         len -= chunk;
     }
     return true;
+}
+
+bool sgi_kona_pixels_dma_waiting(SGIKonaState *s)
+{
+    const SGIKonaGLImageUpload *u = &s->gl_image_upload;
+
+    return u->count && u->draw_pixels && u->header[5] == 1;
+}
+
+bool sgi_kona_pixels_image_dma(SGIKonaState *s, uint64_t io, uint32_t lines,
+                                uint32_t per_line, uint64_t pitch)
+{
+    SGIKonaGLImageUpload *u = &s->gl_image_upload;
+    SGIKonaGLPixelDMALayout d;
+    uint8_t chunk[4096];
+
+    if (!sgi_kona_pixels_dma_waiting(s) || u->refused ||
+        u->context != s->context_current ||
+        !sgi_kona_gl_pixels_dma_layout(u->header, u->row_length,
+                                         u->skip_rows, u->skip_pixels,
+                                         u->alignment, &d) ||
+        (io & 3) != d.pixels.phase || lines != d.lines ||
+        per_line != d.line_bytes || pitch != d.pitch ||
+        d.span > UINT64_MAX - io) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-kona: DrawPixels DMA source framing mismatch;"
+                      " image refused\n");
+        sgi_kona_gl_image_clear(s);
+        return false;
+    }
+    for (uint32_t line = 0; line < lines; line++) {
+        for (uint32_t offset = 0; offset < per_line;) {
+            uint32_t n = MIN(sizeof(chunk), per_line - offset);
+
+            if (!sgi_kona_device_read(s, io + line * pitch + offset,
+                                       chunk, n)) {
+                sgi_kona_gl_image_clear(s);
+                return false;
+            }
+            for (uint32_t k = 0; k < n; k++) {
+                uint32_t row = d.pixels.strided ? line :
+                               (offset + k) / d.pixels.stride;
+                uint32_t col = d.pixels.strided ? offset + k :
+                               (offset + k) % d.pixels.stride;
+                uint64_t at;
+
+                if (col < d.pixels.row_bytes) {
+                    if (!sgi_kona_gl_pixels_pio_offset(&d.pixels, row, col,
+                                                        &at) ||
+                        at / 4 >= u->count) {
+                        sgi_kona_gl_image_clear(s);
+                        return false;
+                    }
+                    u->words[at / 4] |= (uint32_t)chunk[k] <<
+                                       (24 - 8 * (at % 4));
+                }
+            }
+            offset += n;
+        }
+    }
+    return sgi_kona_gl_pixels_done(s);
 }
 
 bool sgi_kona_bitmap_dma_waiting(SGIKonaState *s)
@@ -10406,7 +10435,7 @@ static int sgi_kona_gl_image_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
     const SGIKonaGLImageUpload *u = &s->gl_image_upload;
-    bool dma = !u->draw_pixels && u->header[3] == 1;
+    bool dma = u->draw_pixels ? u->header[5] == 1 : u->header[3] == 1;
 
     if (!sgi_kona_gl_image_valid(u) ||
         (dma ? (s->gl_data_token || s->gl_data_have || s->gl_data_remaining) :
