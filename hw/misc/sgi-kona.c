@@ -2277,6 +2277,10 @@ static int sgi_kona_gl_stencil_bits(SGIKonaState *s, uint32_t context)
 static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
                                SGIRasterRules *rules, int stencil_bits)
 {
+    static const SGIGLTexImage unsupported_texture = {
+        .base_format = UINT32_MAX,
+    };
+
     *rules = sgi_kona_gl_rules;
     rules->stencil_bits = stencil_bits == 8 ? 8 : 0;
     *t = (SGIRasterTarget) {
@@ -2292,6 +2296,13 @@ static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
         .screen_rows_down = false,
         .texture = sgi_kona_texture_resolve(&s->textures),
     };
+    /* A rejected live binding must not become an untextured draw. */
+    if (!s->textures.bound && s->texture_bind_valid &&
+        s->texture_bind[0] != UINT32_MAX &&
+        g_hash_table_lookup(s->textures.objects,
+                            GUINT_TO_POINTER(s->texture_bind[0]))) {
+        t->texture = &unsupported_texture;
+    }
 }
 
 /*
@@ -4973,7 +4984,8 @@ static void sgi_kona_texture_upload_clear(SGIKonaState *s)
 
 static uint32_t sgi_kona_texture_source_bytes(uint32_t format, uint32_t type)
 {
-    return format == 11 ? sgi_kona_gl_native_pixel_bytes(format, type) :
+    return format == 11 || format == 13 ?
+           sgi_kona_gl_native_pixel_bytes(format, type) :
                           sgi_kona_gl_texture_pixel_bytes(format, type);
 }
 
@@ -5011,6 +5023,9 @@ static uint32_t sgi_kona_texture_buffer_words(const SGIKonaTextureUpload *u)
 
 static uint32_t sgi_kona_texture_storage_base(const uint32_t *h)
 {
+    if (h[3] == 13) {
+        return h[9] == 0xd && !(h[17] & 1) ? SGI_GL_DEPTH_COMPONENT : 0;
+    }
     if (h[9] == 0xe && !(h[17] & 1)) {
         return SGI_GL_ALPHA;
     }
@@ -5172,6 +5187,7 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
     uint32_t words = sgi_kona_texture_source_words(u);
     const SGIKonaGLPixelTransfer identity = {
         .scale = { 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000 },
+        .depth_scale = 0x3f800000,
     };
     const SGIKonaGLPixelTransfer *t = u->transfer_captured ?
                                      &u->transfer : &identity;
@@ -5182,6 +5198,17 @@ static bool sgi_kona_texture_upload_normalize(SGIKonaTextureUpload *u)
         uint32_t rgba;
         bool converted;
 
+        if (base == SGI_GL_DEPTH_COMPONENT) {
+            if (!sgi_kona_gl_texture_pixel_depth(u->header[4],
+                    u->pixels + at * words, u->swap_bytes,
+                    t->depth_scale, t->depth_bias, &u->pixels[at])) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-kona: unsupported depth texture transfer; "
+                              "upload refused\n");
+                return false;
+            }
+            continue;
+        }
         if (u->header[3] == 11) {
             double index;
 
@@ -5399,12 +5426,15 @@ static void sgi_kona_gl_texture_bind(SGIKonaState *s)
     }
     sgi_kona_texture_defaults(&params);
     if (target < 1 || target > 3 ||
-        (target == 2 && (s->texture_bind[3] & 0xf00)) ||
+        (target == 2 && (s->texture_bind[3] & 0xf00) !=
+            ((s->texture_bind[2] & 0xc00) ? 0xf00 : 0)) ||
         !s->texture_record_valid ||
         !sgi_kona_gl_texture_internal_format((s->texture_bind[1] >> 12) & 0xfff,
                                              &base, &internal) ||
-        storage != (base == SGI_GL_ALPHA ? 0xe : base == SGI_GL_LUMINANCE ?
-                    0xd : base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
+        storage != (base == SGI_GL_ALPHA ? 0xe :
+                    (base == SGI_GL_LUMINANCE ||
+                     base == SGI_GL_DEPTH_COMPONENT) ? 0xd :
+                    base == SGI_GL_LUMINANCE_ALPHA ? 8 : 0x30) ||
         !sgi_kona_gl_texture_native_binding_layout(base,
             volume ? SGI_GL_TEXTURE_3D : one_dimensional ? SGI_GL_TEXTURE_1D :
                                                          SGI_GL_TEXTURE_2D,
@@ -10358,7 +10388,8 @@ static void sgi_kona_test_get_texture_pixel(Object *obj, Visitor *v,
     const SGIGLTexImage *image = sgi_kona_texture_resolve(&s->textures);
     uint32_t value = 0;
 
-    if (image && image->pyramid) {
+    if (image && image->pyramid &&
+        image->pyramid->count <= SGI_GL_TEX_LEVELS_MAX) {
         const SGIGLTexPyramid *p = image->pyramid;
 
         for (unsigned k = 0; k < p->count; k++) {
@@ -12255,6 +12286,15 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
         u->dma_phase != 0) {
         return false;
     }
+    if (u->transfer_captured && h[3] == 13 &&
+        (!isfinite(sgi_kona_gl_float(u->transfer.depth_scale)) ||
+         !isfinite(sgi_kona_gl_float(u->transfer.depth_bias)))) {
+        return false;
+    }
+    if (!u->transfer_captured &&
+        (u->transfer.depth_scale || u->transfer.depth_bias)) {
+        return false;
+    }
     if (u->transfer_captured && (!u->count || u->draw_pixels)) {
         return false;
     }
@@ -12276,7 +12316,7 @@ static bool sgi_kona_texture_upload_valid(const SGIKonaTextureUpload *u)
             return false;
         }
         if (u->transfer_captured ?
-            (h[3] != 11 &&
+            (h[3] != 11 && h[3] != 13 &&
              (!isfinite(sgi_kona_gl_float(u->transfer.scale[k])) ||
               !isfinite(sgi_kona_gl_float(u->transfer.bias[k])))) :
             (u->transfer.scale[k] || u->transfer.bias[k])) {
@@ -12356,6 +12396,8 @@ static bool sgi_kona_texture_upload_save(QEMUFile *f, void *pv, size_t size,
     qemu_put_byte(f, u->bitmap_lsb);
     qemu_put_be32(f, u->bitmap_skip);
     qemu_put_be32(f, u->bitmap_phase);
+    qemu_put_be32(f, u->transfer.depth_scale);
+    qemu_put_be32(f, u->transfer.depth_bias);
     for (uint32_t k = 0; k < sgi_kona_texture_buffer_words(u); k++) {
         qemu_put_be32(f, u->pixels[k]);
     }
@@ -12432,6 +12474,8 @@ static bool sgi_kona_texture_upload_load(QEMUFile *f, void *pv, size_t size,
     tmp.bitmap_lsb = bitmap_lsb;
     tmp.bitmap_skip = qemu_get_be32(f);
     tmp.bitmap_phase = qemu_get_be32(f);
+    tmp.transfer.depth_scale = qemu_get_be32(f);
+    tmp.transfer.depth_bias = qemu_get_be32(f);
     tmp.complete = complete;
     tmp.swap_bytes = swap;
     if (complete > 1 || swap > 1 || draw > 1 || transfer > 1 || pio > 1 ||

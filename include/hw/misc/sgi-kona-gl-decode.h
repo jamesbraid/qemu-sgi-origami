@@ -136,6 +136,11 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
 uint32_t sgi_kona_gl_texture_pixel_bytes(uint32_t format, uint32_t type);
 uint32_t sgi_kona_gl_native_pixel_bytes(uint32_t format, uint32_t type);
 
+/* Depth transfer retains full normalized precision until model storage. */
+bool sgi_kona_gl_texture_pixel_depth(uint32_t type, const uint32_t *source,
+                                     bool swap_bytes, uint32_t scale,
+                                     uint32_t bias, uint32_t *depth);
+
 /* Raw indices retain integer values, including fractional FLOAT input. */
 bool sgi_kona_gl_pixel_index(uint32_t type, const uint32_t *source,
                               bool swap_bytes, double *index);

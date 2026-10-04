@@ -385,16 +385,36 @@ bool sgi_kona_gl_texture_sampler(const uint32_t bind[5],
     unsigned hi = (record[2] >> 10) & 0x3ff;
     unsigned scale_s = record[1] & 0xff;
     unsigned scale_t = (record[1] >> 8) & 0xff;
+    unsigned compare = (bind[2] >> 10) & 3;
 
     /*
      * Non-repeat S/T collapse three public clamp modes into the same bits.
      * Their border storage is not established by this sampler record.
      */
-    if (bind[4] != 1 || params->base_level || !min_filter[min] ||
+    if (params->base_level || !min_filter[min] ||
         (record[2] & 0xfff00000) || lo > hi ||
         (mag > 1 && (mag < 3 || mag > 5)) ||
-        (bind[3] & 0x7000) || (bind[2] & 0xc00) ||
+        (bind[3] & 0x7000) ||
         !scale_s || !scale_t) {
+        return false;
+    }
+    next.shadow_compare = 0;
+    next.shadow_ambient = 0;
+    if (compare) {
+        unsigned target = bind[1] >> 28;
+
+        /* The R exponent is a reference marker, not a volume dimension. */
+        if (compare == 3 || bind[4] || (target != 1 && target != 2) ||
+            ((bind[1] >> 12) & 0xfff) != 63 ||
+            ((bind[2] >> 14) & 0x7f) != 0xd ||
+            (bind[3] & 0xf00) != 0xf00 || mag > 1 ||
+            record[4] || record[5] > 63) {
+            return false;
+        }
+        next.shadow_compare = compare == 1 ? SGI_GL_TEXTURE_GEQUAL_R_SGIX :
+                                            SGI_GL_TEXTURE_LEQUAL_R_SGIX;
+        next.shadow_ambient = record[5] / 63.0;
+    } else if (bind[4] != 1) {
         return false;
     }
     next.min_filter = min_filter[min];
@@ -475,6 +495,7 @@ bool sgi_kona_gl_texture_native_binding_layout(uint32_t base, uint32_t target,
         return false;
     }
     switch (base) {
+    case SGI_GL_DEPTH_COMPONENT:
     case SGI_GL_LUMINANCE:
     case SGI_GL_ALPHA:
     case SGI_GL_LUMINANCE_ALPHA:
@@ -498,7 +519,8 @@ bool sgi_kona_gl_texture_sampler_1d(const uint32_t bind[5],
     uint32_t ordinary_bind[5], ordinary_record[22];
 
     /* Only the base-zero, repeat interior profile is established. */
-    if ((bind[1] >> 28) != 1 || (bind[3] & 0xff0) ||
+    if ((bind[1] >> 28) != 1 || (bind[3] & 0xf0) ||
+        (bind[3] & 0xf00) != ((bind[2] & 0xc00) ? 0xf00 : 0) ||
         params->base_level || ((bind[2] >> 5) & 7) > 1) {
         return false;
     }
@@ -581,6 +603,7 @@ bool sgi_kona_gl_texture_internal_format(uint32_t index, uint32_t *base,
         [37] = { SGI_GL_RGB, SGI_GL_RGB },
         [38] = { SGI_GL_RGB, SGI_GL_RGB },
         [41] = { SGI_GL_RGBA, SGI_GL_RGBA },
+        [63] = { SGI_GL_DEPTH_COMPONENT, SGI_GL_DEPTH_COMPONENT },
     };
 
     if (index >= ARRAY_SIZE(formats) || !formats[index].base) {
@@ -941,6 +964,25 @@ bool sgi_kona_gl_pixel_rgba_double(uint32_t format, uint32_t type,
         return false;
     }
     memcpy(rgba, values, sizeof(values));
+    return true;
+}
+
+bool sgi_kona_gl_texture_pixel_depth(uint32_t type, const uint32_t *source,
+                                     bool swap_bytes, uint32_t scale,
+                                     uint32_t bias, uint32_t *depth)
+{
+    double rgba[4], value;
+    float zscale, zbias;
+
+    memcpy(&zscale, &scale, sizeof(zscale));
+    memcpy(&zbias, &bias, sizeof(zbias));
+
+    if (!depth || type > 6 || !isfinite(zscale) || !isfinite(zbias) ||
+        !sgi_kona_gl_pixel_rgba_double(0, type, source, swap_bytes, rgba)) {
+        return false;
+    }
+    value = MIN(MAX(rgba[0] * zscale + zbias, 0), 1);
+    *depth = (uint32_t)floor(value * UINT32_MAX + 0.5);
     return true;
 }
 

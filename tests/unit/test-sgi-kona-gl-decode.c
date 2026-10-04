@@ -993,10 +993,134 @@ static void test_texture_binding_layout(void)
     }
     g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_INTENSITY,
                                                    SGI_GL_TEXTURE_2D, 0x44));
-    g_assert_false(sgi_kona_gl_texture_native_binding_layout(0x1902,
-                                                   SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_true(sgi_kona_gl_texture_native_binding_layout(
+        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_2D, 0x44));
+    g_assert_true(sgi_kona_gl_texture_native_binding_layout(
+        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_1D, 0x44));
+    g_assert_false(sgi_kona_gl_texture_native_binding_layout(
+        SGI_GL_DEPTH_COMPONENT, SGI_GL_TEXTURE_2D, 0x43));
     g_assert_false(sgi_kona_gl_texture_native_binding_layout(SGI_GL_LUMINANCE,
                                                               0xdead, 0x44));
+}
+
+static void test_texture_shadow_sampler(void)
+{
+    SGIKonaTextureParams p, before;
+    uint32_t bind[5] = { 7, 0x2003f000, 0x34400, 0xf11, 0 };
+    uint32_t record[22] = { 0x44, 0x1010, 256u << 10 };
+
+    p = (SGIKonaTextureParams) {
+        .max_level = 1000, .min_lod = -1000, .max_lod = 1000,
+    };
+    for (unsigned target = 1; target <= 2; target++) {
+        for (unsigned compare = 1; compare <= 2; compare++) {
+            for (unsigned ambient = 0; ambient <= 63; ambient++) {
+                bind[1] = (target << 28) | (63 << 12);
+                bind[2] = (0xd << 14) | (compare << 10) | 0x24;
+                bind[3] = target == 1 ? 0xf01 : 0xf11;
+                record[5] = ambient;
+                g_assert_true(target == 1 ?
+                    sgi_kona_gl_texture_sampler_1d(bind, record, &p) :
+                    sgi_kona_gl_texture_sampler(bind, record, &p));
+                g_assert_cmpuint(p.shadow_compare, ==, compare == 1 ?
+                    SGI_GL_TEXTURE_GEQUAL_R_SGIX :
+                    SGI_GL_TEXTURE_LEQUAL_R_SGIX);
+                g_assert_cmpfloat(p.shadow_ambient, ==, ambient / 63.0);
+            }
+        }
+    }
+    before = p;
+    for (unsigned bad = 0; bad < 8; bad++) {
+        uint32_t b[5], r[22];
+
+        memcpy(b, bind, sizeof(b));
+        memcpy(r, record, sizeof(r));
+        switch (bad) {
+        case 0:
+            b[4] = 1;
+            break;
+        case 1:
+            b[2] |= 0xc00;
+            break;
+        case 2:
+            b[3] &= ~0xf00;
+            break;
+        case 3:
+            b[1] = 0x20003000;
+            break;
+        case 4:
+            b[2] ^= 1 << 14;
+            break;
+        case 5:
+            r[4] = 1;
+            break;
+        case 6:
+            r[5] = 64;
+            break;
+        case 7:
+            b[1] = 0x3003f000;
+            break;
+        }
+        g_assert_false(sgi_kona_gl_texture_sampler(b, r, &p));
+        g_assert_cmpmem(&p, sizeof(p), &before, sizeof(before));
+    }
+    /* Ordinary color bindings must clear the previous shadow state. */
+    bind[1] = 0x20021000;
+    bind[2] = (0x30 << 14) | 0x24;
+    bind[3] = 0x11;
+    bind[4] = 1;
+    g_assert_true(sgi_kona_gl_texture_sampler(bind, record, &p));
+    g_assert_cmpuint(p.shadow_compare, ==, 0);
+    g_assert_cmpfloat(p.shadow_ambient, ==, 0);
+}
+
+static void test_texture_pixel_depth(void)
+{
+    static const struct {
+        uint32_t type, source, expected;
+        bool swap;
+    } cases[] = {
+        { 0, 0x80000000, 0 }, { 0, 0x7f000000, UINT32_MAX },
+        { 0, 0, 0x01010101 }, { 1, 0x01000000, 0x01010101 },
+        { 2, 0x80000000, 0 }, { 2, 0x7fff0000, UINT32_MAX },
+        { 2, 0, 0x00010001 }, { 3, 0x80000000, 0x80008000 },
+        { 3, 0x00800000, 0x80008000, true },
+        { 4, 0x80000000, 0 }, { 4, 0x7fffffff, UINT32_MAX },
+        { 4, 0, 1 }, { 5, 0x7fffffff, 0x7fffffff },
+        { 5, 0x80000000, 0x80000000 },
+        { 5, 0x78563412, 0x12345678, true },
+        { 6, 0x3f000000, 0x80000000 },
+        { 6, 0x0000003f, 0x80000000, true },
+        { 6, 0x40000000, UINT32_MAX }, { 6, 0xbf800000, 0 },
+    };
+    uint32_t depth, source;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        depth = 0xdeadbeef;
+        g_assert_true(sgi_kona_gl_texture_pixel_depth(cases[i].type,
+            &cases[i].source, cases[i].swap, 0x3f800000, 0, &depth));
+        g_assert_cmphex(depth, ==, cases[i].expected);
+    }
+    source = 0x40000000; /* Two scales to one half before clamping. */
+    g_assert_true(sgi_kona_gl_texture_pixel_depth(6, &source, false,
+        0x3e800000, 0, &depth));
+    g_assert_cmphex(depth, ==, 0x80000000);
+    source = 0;
+    g_assert_true(sgi_kona_gl_texture_pixel_depth(5, &source, false,
+        0x3f800000, 0x3e800000, &depth));
+    g_assert_cmphex(depth, ==, 0x40000000);
+    source = 0x7fc00000;
+    depth = 0xdeadbeef;
+    g_assert_false(sgi_kona_gl_texture_pixel_depth(6, &source, false,
+        0x3f800000, 0, &depth));
+    source = 0;
+    g_assert_false(sgi_kona_gl_texture_pixel_depth(7, &source, false,
+        0x3f800000, 0, &depth));
+    g_assert_false(sgi_kona_gl_texture_pixel_depth(5, &source, false,
+        0x7f800000, 0, &depth));
+    g_assert_false(sgi_kona_gl_texture_pixel_depth(5, &source, false,
+        0x3f800000, 0x7fc00000, &depth));
+    g_assert_cmphex(depth, ==, 0xdeadbeef);
 }
 
 static void test_texture_sampler_1d(void)
@@ -1277,6 +1401,7 @@ static void test_texture_internal_format(void)
         { 37, SGI_GL_RGB, SGI_GL_RGB },
         { 38, SGI_GL_RGB, SGI_GL_RGB },
         { 41, SGI_GL_RGBA, SGI_GL_RGBA },
+        { 63, SGI_GL_DEPTH_COMPONENT, SGI_GL_DEPTH_COMPONENT },
     };
     uint32_t base, internal;
 
@@ -2889,6 +3014,10 @@ static void test_pixel_pack_refusals(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    g_test_add_func("/sgi-kona-gl-decode/texture-shadow-sampler",
+                    test_texture_shadow_sampler);
+    g_test_add_func("/sgi-kona-gl-decode/texture-depth-pixels",
+                    test_texture_pixel_depth);
     g_test_add_func("/sgi-kona-gl-decode/table", test_table_is_the_subset);
     g_test_add_func("/sgi-kona-gl-decode/subset", test_each_subset_selector);
     g_test_add_func("/sgi-kona-gl-decode/swap-finish",
