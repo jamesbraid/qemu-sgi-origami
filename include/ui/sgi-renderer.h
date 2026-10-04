@@ -25,6 +25,7 @@ typedef struct SGIRendererRequest {
     double alpha;             /* Flat source alpha, not stored plane alpha. */
     double colour[3][4];      /* Clamped vertex RGBA before interpolation. */
     double inverse_w[3];      /* Reciprocal clip w. */
+    double depth[3];          /* Normalized depth, linear in window space. */
     int32_t clip[4]; /* Inclusive local rectangle; {0,0,-1,-1} is empty. */
     uint8_t rgba[SGI_RENDERER_BYTES];
 } SGIRendererRequest;
@@ -220,6 +221,8 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request);
 /* Source colour at a covered pixel, before fragment operations. */
 bool sgi_renderer_fragment(const SGIRendererRequest *request, unsigned x,
                             unsigned y, double colour[4]);
+bool sgi_renderer_depth(const SGIRendererRequest *request, unsigned x,
+                         unsigned y, double *depth);
 bool sgi_renderer_request_cull(SGIRendererRequest *request, bool clockwise,
                                 bool cull_front, bool cull_back);
 /* Translate snapped window vertices and inclusive ownership into one tile. */

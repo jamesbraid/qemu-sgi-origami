@@ -12957,17 +12957,207 @@ static void test_renderer_smooth(gconstpointer opaque)
     qtest_quit(s);
 }
 
+static void test_renderer_depth(gconstpointer opaque)
+{
+    static const uint8_t passes[] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    unsigned mode = GPOINTER_TO_UINT(opaque), func = mode & 7;
+    unsigned variant = mode / 8;
+    int relation = variant == 1 ? 0 : variant == 2 || variant == 6 ? 1 : -1;
+    bool kept = variant == 5 || (passes[func] & (1 << (1 - relation)));
+    uint32_t old = variant == 1 ? 0x800000 :
+                   variant == 2 ? 0x400000 : 0x9fffff;
+    uint32_t incoming = variant == 6 ? 0xbfffff : 0x800000;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    if (variant == 1 || variant == 2) {
+        kona_command_d(s, 0x1f, (double[]) { variant == 1 ? 0.5 : 0.25 }, 1);
+        kona_command(s, 0x1a, (uint32_t[]) { 0x100 }, 1);
+    } else if (variant == 3) {
+        kona_command(s, 0x22, (uint32_t[]) { 0 }, 1);
+    } else if (variant == 4) {
+        kona_command(s, 0x21, (uint32_t[]) { 0, 0, 0, 0 }, 4);
+    } else if (variant == 5) {
+        kona_command(s, 1, (uint32_t[]) { 0, 12, 0, 0, 0, 0, 0, 0, 0, 0 }, 10);
+    } else if (variant == 6) {
+        kona_command_d(s, 0xcf, (double[]) { 0.75, 0.75 }, 2);
+    } else if (variant == 7) {
+        kona_command(s, 0xca, (uint32_t[]) { 0x200, F0 }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+        kept = false;
+    }
+    kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+    kona_command(s, 0xce, (uint32_t[]) { 0x200 + func }, 1);
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    g_assert_cmphex(stencil_colour_or_depth(s, 5), ==,
+                    kept && variant != 3 && variant != 5 ? incoming : old);
+    g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, 0x5a);
+    expected_clear(expected, kept && variant != 4 ? 0xff0000 : 0xffffff);
+    assert_window_matches(s, expected);
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    expected_clear(expected, kept && variant != 4 ? 0xff0000 : 0x326496);
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
+static void test_renderer_stencil(gconstpointer opaque)
+{
+    static const uint32_t ops[] = { 0x1e00, 0, 0x1e01, 0x1e02, 0x1e03, 0x150a };
+    static const uint32_t results[] = { 0xa5, 0, 0x33, 0xa6, 0xa4, 0x5a };
+    unsigned mode = GPOINTER_TO_UINT(opaque), op = mode % 6;
+    unsigned outcome = mode / 6 % 3, variant = mode / 18;
+    uint32_t mask = variant == 1 ? 15 : 255;
+    uint32_t value = (0xa5 & ~mask) | (results[op] & mask);
+    uint32_t selected[3] = { 0x1e00, 0x1e00, 0x1e00 };
+    bool colour = outcome == 2 && variant != 2;
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+
+    renderer_fixture(s);
+    stencil_config(s, 8);
+    stencil_clear(s, 0xa5, 255);
+    kona_command(s, 0x20, &mask, 1);
+    stencil_function(s, outcome == 0 ? 0x200 : 0x207, 0x33, 255);
+    selected[outcome] = ops[op];
+    stencil_operations(s, selected[0], selected[1], selected[2]);
+    kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+    kona_command(s, 0xce, (uint32_t[]) { outcome == 1 ? 0x200 : 0x207 }, 1);
+    if (variant == 2) {
+        kona_command(s, 0x21, (uint32_t[]) { 0, 0, 0, 0 }, 4);
+    }
+    gl_begin(s, 7);
+    gl_vertex2f(s, 0, 0);
+    gl_vertex2f(s, 128, 0);
+    gl_vertex2f(s, 128, 128);
+    gl_vertex2f(s, 0, 128);
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 2);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    g_assert_cmphex(stencil_colour_or_depth(s, 6), ==, value);
+    g_assert_cmphex(stencil_colour_or_depth(s, 5), ==,
+                    outcome == 2 ? 0x800000 : 0x9fffff);
+    expected_clear(expected, colour ? 0xff0000 : 0xffffff);
+    assert_window_matches(s, expected);
+    kona_command(s, 1, (uint32_t[]) { 3, 0x22, 200, 400, 600 }, 5);
+    expected_clear(expected, colour ? 0xff0000 : 0x326496);
+    assert_window_matches(s, expected);
+    qtest_quit(s);
+}
+
+static void test_renderer_depth_gradient(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    static const float positions[3][2] = { { 0, 0 }, { 128, 0 }, { 0, 128 } };
+    static const unsigned probes[4][2] = {
+        { 32, 16 }, { 64, 16 }, { 16, 64 }, { 96, 96 },
+    };
+    QTestState *s = qtest_init(MACHINE_ARGS " -global sgi-kona.host-gpu=on");
+    g_autofree Expected *expected = g_new(Expected, 1);
+    uint32_t depth[4], stencil[4];
+
+    renderer_fixture(s);
+    stencil_config(s, 8);
+    stencil_function(s, 0x207, 0, 255);
+    stencil_operations(s, 0x1e02, 0x1e02, 0x1e02);
+    kona_command(s, 0x24, (uint32_t[]) { 0xb71 }, 1);
+    kona_command(s, 0xce, (uint32_t[]) { 0x201 }, 1);
+    if (mode == 1) {
+        kona_command_d(s, 0xcf, (double[]) { 1, 0 }, 2);
+    } else if (mode == 2) {
+        kona_command(s, 0xc0, (uint32_t[]) { 0x1d01 }, 1);
+        kona_command(s, 0xca, (uint32_t[]) { 0x206, fbits(0.5f) }, 2);
+        kona_command(s, 0x24, (uint32_t[]) { 0xbc0 }, 1);
+    } else if (mode == 3) {
+        kona_command(s, 0xc, (uint32_t[]) { 32, 16, 64, 80 }, 4);
+        kona_command(s, 0x24, (uint32_t[]) { 0xc11 }, 1);
+    }
+    gl_begin(s, 4);
+    for (unsigned v = 0; v < 3; v++) {
+        float w = 1 << v;
+
+        kona_command_f(s, 0x6b, (float[]) { 1, 0, 0, v * 0.5f }, 4);
+        kona_command_f(s, 0x94,
+                       (float[]) { positions[v][0] * w, positions[v][1] * w,
+                                   (1 - (float)v) * w, w }, 4);
+    }
+    gl_end(s);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-requests"), ==, 1);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-draws"), ==, 0);
+    g_assert_cmpuint(renderer_counter(s, "x-test-gpu-fallbacks"), ==, 1);
+    expected_clear(expected, 0xffffff);
+    for (unsigned y = 0; y < 128; y++) {
+        for (unsigned x = 0; x < 128; x++) {
+            double z = ((x + 0.5) * 0.5 + y + 0.5) / 128;
+            double b0 = 1 - (x + y + 1.0) / 128;
+            double b1 = (x + 0.5) / 256, b2 = (y + 0.5) / 512;
+            double alpha = floor((b1 * 0.5 + b2) / (b0 + b1 + b2) *
+                                   255 + 0.5);
+            bool covered = x + y < 127 && (mode != 2 || alpha >= 128) &&
+                (mode != 3 || (x >= 32 && x < 96 && y >= 16 && y < 96));
+            uint32_t zq = floor((mode == 1 ? 1 - z : z) * 0xffffff + 0.5);
+            bool kept = covered && zq < 0x9fffff;
+            uint8_t *pixel = expected->rgb + ((127 - y) * 128 + x) * 3;
+
+            if (kept) {
+                pixel[0] = 255;
+                pixel[1] = pixel[2] = 0;
+            }
+            for (unsigned p = 0; p < ARRAY_SIZE(probes); p++) {
+                if (x == probes[p][0] && y == probes[p][1]) {
+                    depth[p] = kept ? zq : 0x9fffff;
+                    stencil[p] = covered ? 0x5b : 0x5a;
+                }
+            }
+        }
+    }
+    assert_window_matches(s, expected);
+    for (unsigned p = 0; p < ARRAY_SIZE(probes); p++) {
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+            "'property':'x-test-pixel-x','value':%u}}", PROBE_X + probes[p][0]);
+        qtest_qmp_assert_success(s,
+            "{'execute':'qom-set','arguments':{'path':'/machine/module0/kona0',"
+            "'property':'x-test-pixel-y','value':%u}}", PROBE_Y + probes[p][1]);
+        for (unsigned plane = 5; plane <= 6; plane++) {
+            QDict *reply;
+
+            qtest_qmp_assert_success(s,
+                "{'execute':'qom-set','arguments':"
+                "{'path':'/machine/module0/kona0',"
+                "'property':'x-test-plane','value':%u}}", plane);
+            reply = qtest_qmp(s,
+                "{'execute':'qom-get','arguments':"
+                "{'path':'/machine/module0/kona0',"
+                "'property':'x-test-plane-word'}}");
+            g_assert_cmphex(qdict_get_int(reply, "return"), ==,
+                            plane == 5 ? depth[p] : stencil[p]);
+            qobject_unref(reply);
+        }
+    }
+    qtest_quit(s);
+}
+
 static void test_renderer_excluded_state(void)
 {
     static const uint32_t enables[] = {
-        0xb71, 0xb90, 0xb60,
+        0xb60,
         0x8037, 0xde0, 0xde1, 0x806f, 0xbd0, 0x3000, 0xb41, 0xb42,
         0xb24, 0xb20, 0xb10, 0xb50,
     };
     static const uint32_t visual_cases[][10] = {
         { UINT32_MAX, 12 }, { 0, 16 }, { 0, 12, 1 }, { 0, 12, 0, 2 },
         { 0, 12, 0, 0, 1 }, { 0, 12, 0, 0, 0, 1 },
-        { 0, 12, 0, 0, 0, 0, 16 }, { 0, 12, 0, 0, 0, 0, 24, 8 },
+        { 0, 12, 0, 0, 0, 0, 33 }, { 0, 12, 0, 0, 0, 0, 24, 1 },
         { 0, 12, 0, 0, 0, 0, 24, 0, 1 },
         { 0, 12, 0, 0, 0, 0, 24, 0, 0, 1 },
     };
@@ -14050,6 +14240,26 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/renderer/smooth/%u", mode);
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_smooth);
+    }
+    for (unsigned mode = 0; mode < 64; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/depth/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_renderer_depth);
+    }
+    for (unsigned mode = 0; mode < 54; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/stencil/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_stencil);
+    }
+    for (unsigned mode = 0; mode < 4; mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/renderer/depth-gradient/%u", mode);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                           test_renderer_depth_gradient);
     }
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);

@@ -52,6 +52,7 @@ static void test_smooth(gconstpointer opaque)
         request->colour[i][i] = 1;
         request->colour[i][3] = i * 0.5;
         request->inverse_w[i] = inverse_w[i];
+        request->depth[i] = i * 0.5;
     }
     if (mode == 2) {
         float vertex[4];
@@ -63,6 +64,8 @@ static void test_smooth(gconstpointer opaque)
         memcpy(colour, request->colour[1], sizeof(colour));
         memcpy(request->colour[1], request->colour[2], sizeof(colour));
         memcpy(request->colour[2], colour, sizeof(colour));
+        request->depth[1] = 1;
+        request->depth[2] = 0.5;
     }
     if (mode == 3) {
         const int64_t bounds[4] = { 0, 0, 127, 127 };
@@ -75,17 +78,22 @@ static void test_smooth(gconstpointer opaque)
             unsigned wx = x + (mode == 3 ? 16 : 0);
             unsigned wy = y + (mode == 3 ? 32 : 0);
             uint8_t *pixel = request->rgba + (y * 128 + x) * 4;
-            double colour[4];
+            double colour[4], depth;
             bool covered = wx + wy < 127 &&
                            (mode != 3 || (x < 64 && y < 64));
 
             g_assert_cmpint(sgi_renderer_fragment(request, x, y, colour),
+                            ==, covered);
+            g_assert_cmpint(sgi_renderer_depth(request, x, y, &depth),
                             ==, covered);
             if (covered) {
                 double weights[3] = { 254 - 2 * (double)(wx + wy),
                                       2 * wx + 1, 2 * wy + 1 };
                 double sum = 0;
 
+                g_assert_cmpfloat_with_epsilon(depth,
+                    ((wx + 0.5) * 0.5 + wy + 0.5) / 128,
+                    0.00000000000001);
                 for (unsigned c = 0; c < 3; c++) {
                     weights[c] *= inverse_w[c];
                     sum += weights[c];
@@ -195,6 +203,13 @@ static void test_request(void)
     g_autofree SGIRendererRequest *request = fixture();
     double colour[4];
 
+    request->depth[1] = NAN;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->depth[1] = -1;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->depth[1] = 2;
+    g_assert_false(sgi_renderer_request_valid(request));
+    request->depth[1] = 0;
     request->alpha = NAN;
     g_assert_false(sgi_renderer_request_valid(request));
     request->alpha = 0.375;
@@ -466,6 +481,8 @@ static bool generation_draw(void *opaque, SGIRendererRequest *request,
         request->inverse_w[1] = 2;
     } else if (corrupt_attributes == 3) {
         request->alpha = 0.5;
+    } else if (corrupt_attributes == 4) {
+        request->depth[0] = 0.5;
     } else if (corrupt_vertices) {
         float vertex[4];
 
@@ -1114,7 +1131,7 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-renderer/input-colour", test_input_colour);
     g_test_add_func("/sgi-renderer/input-clip", test_input_clip);
     g_test_add_func("/sgi-renderer/input-vertices", test_input_vertices);
-    for (unsigned input = 0; input < 4; input++) {
+    for (unsigned input = 0; input < 5; input++) {
         g_autofree char *path = g_strdup_printf(
             "/sgi-renderer/input-attributes/%u", input);
 

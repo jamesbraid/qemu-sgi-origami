@@ -410,12 +410,12 @@ static bool sgi_soft_stencil_max(const SGIRasterRules *rules,
  * result written under the stencil write mask (4.1.5, 4.2.2). GL_INCR
  * and GL_DECR clamp to the buffer's range.
  */
-static void sgi_soft_stencil_op(const SGISoftDraw *r, int x, int y,
+static void sgi_soft_stencil_op(const SGIGLDrawState *st,
+                                const SGIRasterTarget *t, int x, int y,
                                 uint32_t op, uint32_t max, uint32_t ref)
 {
-    const SGIRasterTarget *t = r->t;
     uint32_t old = t->load_stencil(t->opaque, x, y) & max, value;
-    uint32_t mask = r->st->stencil_write_mask & max;
+    uint32_t mask = st->stencil_write_mask & max;
 
     switch (op) {
     case SGI_GL_KEEP:
@@ -437,6 +437,58 @@ static void sgi_soft_stencil_op(const SGISoftDraw *r, int x, int y,
         break;
     }
     t->store_stencil(t->opaque, x, y, (old & ~mask) | (value & mask));
+}
+
+bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
+                               const SGIGLDrawState *st,
+                               const SGIRasterTarget *t, int x, int y,
+                               double z)
+{
+    uint32_t zq, smax = 0, sref = 0;
+    bool stencil;
+
+    if (!(z >= 0 && z <= 1) ||
+        (st->depth_test && (!t->load_depth ||
+                           (st->depth_mask && !t->store_depth)))) {
+        return false;
+    }
+    /*
+     * The reference clamps to the buffer's range; with no stencil buffer
+     * the test passes and nothing is written.
+     */
+    stencil = st->stencil_test && sgi_soft_stencil_max(rules, t, &smax);
+    if (stencil) {
+        uint32_t vmask = st->stencil_value_mask;
+
+        sref = st->stencil_ref < 0 ? 0 : MIN((uint32_t)st->stencil_ref,
+                                                smax);
+        if (!sgi_soft_compare(st->stencil_func, sref & vmask,
+                              t->load_stencil(t->opaque, x, y) & smax &
+                              vmask)) {
+            sgi_soft_stencil_op(st, t, x, y, st->stencil_op[0], smax, sref);
+            return false;
+        }
+    }
+    zq = (uint32_t)sgi_soft_round(rules,
+                                  z * sgi_soft_depth_max(rules));
+    if (st->depth_test) {
+        if (!sgi_soft_compare(st->depth_func, zq,
+                              t->load_depth(t->opaque, x, y))) {
+            if (stencil) {
+                sgi_soft_stencil_op(st, t, x, y, st->stencil_op[1], smax,
+                                    sref);
+            }
+            return false;
+        }
+        if (st->depth_mask) {
+            t->store_depth(t->opaque, x, y, zq);
+        }
+    }
+    /* A disabled depth test passes (4.1.5). */
+    if (stencil) {
+        sgi_soft_stencil_op(st, t, x, y, st->stencil_op[2], smax, sref);
+    }
+    return true;
 }
 
 /*
@@ -1822,8 +1874,7 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
     SGISoftFrag fogged = *frag;
     const SGISoftFrag *f = &fogged;
     int x = r->win.ox + px, y = r->win.oy + py;
-    uint32_t zq, colour, smax = 0, sref = 0;
-    bool stencil;
+    uint32_t colour;
     SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
 
     if (!(z >= 0.0 && z <= 1.0)) {
@@ -1861,41 +1912,8 @@ static void sgi_soft_fragment_at(const SGISoftDraw *r, int px, int py,
                             dest, r->rgba_reported)) {
         return;
     }
-    /*
-     * The reference clamps to the buffer's range; with no stencil buffer
-     * the test passes and nothing is written.
-     */
-    stencil = r->st->stencil_test && sgi_soft_stencil_max(r->rules, t, &smax);
-    if (stencil) {
-        uint32_t vmask = r->st->stencil_value_mask;
-
-        sref = r->st->stencil_ref < 0 ? 0 : MIN((uint32_t)r->st->stencil_ref,
-                                                smax);
-        if (!sgi_soft_compare(r->st->stencil_func, sref & vmask,
-                              t->load_stencil(t->opaque, x, y) & smax &
-                              vmask)) {
-            sgi_soft_stencil_op(r, x, y, r->st->stencil_op[0], smax, sref);
-            return;
-        }
-    }
-    zq = (uint32_t)sgi_soft_round(r->rules,
-                                  z * sgi_soft_depth_max(r->rules));
-    if (r->st->depth_test) {
-        if (!sgi_soft_compare(r->st->depth_func, zq,
-                              t->load_depth(t->opaque, x, y))) {
-            if (stencil) {
-                sgi_soft_stencil_op(r, x, y, r->st->stencil_op[1], smax,
-                                    sref);
-            }
-            return;
-        }
-        if (r->st->depth_mask) {
-            t->store_depth(t->opaque, x, y, zq);
-        }
-    }
-    /* A disabled depth test passes (4.1.5). */
-    if (stencil) {
-        sgi_soft_stencil_op(r, x, y, r->st->stencil_op[2], smax, sref);
+    if (!sgi_raster_depth_stencil(r->rules, r->st, t, x, y, z)) {
+        return;
     }
     if (!r->st->index_bits && t->store_rgba) {
         for (unsigned i = 0; r->rgba_mask && i < r->ntargets; i++) {
@@ -1960,6 +1978,20 @@ static void sgi_soft_depth_range(const SGIGLDrawState *st, double *n,
     *f = st->window_matrix_given ? 1 : st->depth_range[1];
 }
 
+bool sgi_raster_window_depth(const SGIGLDrawState *st, double z,
+                              double offset, double *window)
+{
+    double n, f, zw;
+
+    if (!(z >= 0 && z <= 1)) {
+        return false;
+    }
+    sgi_soft_depth_range(st, &n, &f);
+    zw = n + (f - n) * z + offset;
+    *window = zw >= 1 ? 1 : zw > 0 ? zw : 0;
+    return true;
+}
+
 /*
  * The window pixels a primitive's fragments may fall on, inclusive: the
  * bounds of those the window owns, within the viewport unless a window
@@ -2003,15 +2035,13 @@ static void sgi_soft_fragment_coverage(const SGISoftDraw *r, int px, int py,
                                        const SGISoftFrag *frag,
                                        double coverage, bool antialias)
 {
-    double n, f, zw;
+    double zw;
 
-    sgi_soft_depth_range(r->st, &n, &f);
-    if (!(z >= 0.0 && z <= 1.0) || !(coverage > 0.0)) {
+    if (!(coverage > 0.0) ||
+        !sgi_raster_window_depth(r->st, z, offset, &zw)) {
         return;
     }
-    zw = n + (f - n) * z + offset;
-    sgi_soft_fragment_at(r, px, py, zw >= 1 ? 1 : zw > 0 ? zw : 0, frag,
-                         coverage, antialias);
+    sgi_soft_fragment_at(r, px, py, zw, frag, coverage, antialias);
 }
 
 static void sgi_soft_fragment(const SGISoftDraw *r, int px, int py, double z,
