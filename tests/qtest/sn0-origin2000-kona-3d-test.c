@@ -5296,7 +5296,9 @@ static void test_draw_pixels(gconstpointer opaque)
     gl_make_current(s);
     gl_window_cleared(s, 0, 0, 0);
     kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
-    if (mode == 5 || mode == 13 || mode == 16) {
+    if (mode == 5 || mode == 13) {
+        kona_command(s, 0x2f, (uint32_t[]) { 0x7f800000, 0x3f800000 }, 2);
+    } else if (mode == 16) {
         kona_command_f(s, 0x2f, (float[]) { 2, 1 }, 2);
     } else if (mode == 6) {
         kona_command(s, 0x30, (uint32_t[]) { 0x0d14, 0x3f800000 }, 2);
@@ -5375,6 +5377,135 @@ static void test_draw_pixels(gconstpointer opaque)
     }
     kona_command_f(s, 0x2f, (float[]) { 1, 1 }, 2);
     draw_pixels_expected(s, !refused);
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (tmpfs) {
+        g_rmdir(tmpfs);
+    }
+}
+
+static void draw_pixels_zoom_expected(QTestState *s, float zx, float zy)
+{
+    g_autofree Expected *e = g_new(Expected, 1);
+    static const uint32_t rgb[] = { 0xff0000, 0x00ff00, 0x0000ff, 0xffffff };
+
+    expected_clear(e, 0x000000);
+    if (isfinite(zx) && isfinite(zy)) {
+        for (unsigned k = 0; k < 4; k++) {
+            double x0 = 64 + (k % 2) * zx, x1 = x0 + zx;
+            double y0 = 64 + (k / 2) * zy, y1 = y0 + zy;
+
+            for (unsigned y = 0; y < 128; y++) {
+                for (unsigned x = 0; x < 128; x++) {
+                    unsigned at = ((127 - y) * 128 + x) * 3;
+
+                    if (x + 0.5 >= MIN(x0, x1) &&
+                        x + 0.5 < MAX(x0, x1) &&
+                        y + 0.5 >= MIN(y0, y1) &&
+                        y + 0.5 < MAX(y0, y1)) {
+                        e->rgb[at] = rgb[k] >> 16;
+                        e->rgb[at + 1] = rgb[k] >> 8;
+                        e->rgb[at + 2] = rgb[k];
+                    }
+                }
+            }
+        }
+    }
+    assert_window_matches(s, e);
+}
+
+static void test_draw_pixels_zoom(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool dma = mode == 1 || mode == 3;
+    bool migrate = mode == 7 || mode == 10;
+    float zx = 2, zy = 3;
+    const uint32_t data[] = { 0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff };
+    uint32_t h[] = { 2, 2, 5, 1, 0, dma, dma, 0 };
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *tmpfs = NULL, *uri = NULL;
+    GError *err = NULL;
+
+    gl_make_current(s);
+    gl_window_cleared(s, 0, 0, 0);
+    kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+    if (mode == 2 || mode == 3) {
+        zx = -2;
+        zy = -1;
+    } else if (mode == 4) {
+        zx = zy = 0.5;
+    } else if (mode == 5) {
+        zx = 0;
+    } else if (mode == 6) {
+        zx = 80;
+        zy = 60;
+    } else if (mode == 13) {
+        zx = INFINITY;
+    } else if (mode == 14) {
+        zx = 1.5;
+        zy = 0.75;
+    }
+    kona_command_f(s, 0x2f, (float[]) { zx, zy }, 2);
+    if (mode == 8 || mode == 9 || mode == 10) {
+        kona_command(s, 0xc9, (uint32_t[]) { mode == 9 ? 0x2020 : 0x20 }, 1);
+        kona_command_f(s, 0x2f, (float[]) { -1, -1 }, 2);
+    } else if (mode == 11) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        kona_command_f(s, 0x2f, (float[]) { -1, -1 }, 2);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+    } else if (mode == 12) {
+        gl_begin(s, 4);
+        kona_command_f(s, 0x2f, (float[]) { -1, -1 }, 2);
+        gl_end(s);
+    } else if (mode == 14) {
+        kona_command(s, 0x2f, (uint32_t[]) { 0x7fc00000, 0x3f800000 }, 2);
+        kona_command_f(s, 0x2f, (float[]) { zx, zy }, 2);
+    }
+    if (mode == 15 || mode == 16) {
+        if (mode == 15) {
+            return_context_deactivate(s);
+            attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        } else {
+            qtest_system_reset(s);
+            gl_make_current(s);
+        }
+        gl_window_cleared(s, 0, 0, 0);
+        kona_command_f(s, 0xa9, (float[]) { 0, 0 }, 2);
+        zx = zy = 1;
+    }
+    if (migrate) {
+        tmpfs = g_dir_make_tmp("sn0-kona-zoom-XXXXXX", &err);
+        g_assert_no_error(err);
+        uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 8 || mode == 9 || mode == 10) {
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+    }
+    kona_command(s, 0x3a, h, ARRAY_SIZE(h));
+    if (dma) {
+        static const uint8_t bytes[] = {
+            0xff, 0, 0, 0xff, 0, 0xff, 0, 0xff,
+            0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        };
+
+        qtest_writel(s, KONA_REG(0x100000), 0x20000380);
+        qtest_memwrite(s, 0x380000, bytes, sizeof(bytes));
+        texture_dma_packet(s, 0, sizeof(bytes), 8, 0);
+    } else {
+        for (unsigned k = 0; k < ARRAY_SIZE(data); k++) {
+            qtest_writel(s, REG_COMMAND, data[k]);
+        }
+    }
+    draw_pixels_zoom_expected(s, zx, zy);
     if (to) {
         qtest_quit(to);
     }
@@ -7549,11 +7680,25 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(0), test_renderer_migration);
     qtest_add_func("sn0/origin2000/kona-3d/renderer/excluded-state",
                    test_renderer_excluded_state);
+    static const char *draw_pixels_zoom_cases[] = {
+        "pio", "dma", "negative-pio", "negative-dma", "downscale",
+        "zero", "clipped", "migrates", "pixel-mode-pop", "combined-pop",
+        "attrib-migrates", "contexts", "begin-setter-refused", "nonfinite",
+        "finite-restored", "fresh-context-default", "reset-default",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(draw_pixels_zoom_cases); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-pixels-zoom/%s",
+            draw_pixels_zoom_cases[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode),
+                            test_draw_pixels_zoom);
+    }
     static const char *draw_pixels_cases[] = {
         "pio", "pio-padded", "dma", "dma-padded", "partial-migrates",
-        "zoom-refused", "transfer-refused", "imaging-refused",
+        "nonfinite-zoom-refused", "transfer-refused", "imaging-refused",
         "colour-matrix-refused", "begin-refused", "split-refused",
-        "scalar-refused", "dma-migrates", "zoom-refusal-migrates",
+        "scalar-refused", "dma-migrates", "nonfinite-zoom-migrates",
         "no-context", "texture-refused", "zoom-default-restored",
         "partial-context-aborted", "pio-contiguous-padded",
         "dma-contiguous-rowlength", "malformed-dimensions",
