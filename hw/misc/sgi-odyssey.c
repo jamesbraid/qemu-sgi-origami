@@ -7544,8 +7544,14 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         if (s->gl_begin_open) {
             s->gl_integer_prim = true;
         }
+        /*
+         * Bit 13 distinguishes the observed GL and X11 integer streams.
+         * Its hardware meaning is unknown. This is a model routing policy,
+         * not a claim that the bit enables hardware vertex transforms.
+         */
         if (s->gl_begin_open && !s->image_active &&
-            ((s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
+            ((s->pattern_mode & (1u << 13)) ||
+             (s->tex_mode & (ODSY_TEX_MODE_1D | ODSY_TEX_MODE_2D |
                              ODSY_TEX_MODE_3D)) ||
              s->gl_primitive == ODSY_GL_TRIANGLES ||
              s->gl_primitive == ODSY_GL_TRIANGLE_STRIP ||
@@ -7962,9 +7968,9 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
     case ODSY_REG_GL_BEGIN:
         /*
          * Record the primitive and, for an image, open the raster path. The
-         * shared GL path opens on a float vertex, a textured integer vertex,
-         * or an integer assembly absent from the 2D interpreter. Untextured
-         * integer points, lines, quads and polygons retain the 2D path.
+         * shared GL path opens on a float vertex, an integer GL stream,
+         * a textured integer vertex or an assembly absent from the 2D
+         * interpreter. Integer X11 geometry retains the 2D path.
          */
         s->gl_primitive = s->cmd_operand[0];
         s->gl_vertex_count = 0;
