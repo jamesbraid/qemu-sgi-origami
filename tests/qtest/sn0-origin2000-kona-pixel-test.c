@@ -21,6 +21,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qemu/bswap.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-migrate.h"
@@ -2161,6 +2162,197 @@ static void test_read_index12(gconstpointer opaque)
     qtest_quit(from);
 }
 
+static void read_dma_clear_notifications(QTestState *s, uint64_t page)
+{
+    uint8_t hub[8];
+
+    read_prepare(s, page);
+    qtest_writel(s, REG_INT_CAUSE, 0xffffffff);
+    for (unsigned vector = 0x10; vector <= 0x11; vector++) {
+        stq_be_p(hub, vector);
+        g_assert_true(qtest_memwrite_cpu(s, 0, HUB_LOCAL + 0x90,
+                                         hub, sizeof(hub)));
+    }
+}
+
+static void test_read_indexed_dma(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    bool halfword = mode == 2 || mode == 3 || mode == 10;
+    bool strided = mode == 1 || mode == 3 || mode == 19;
+    bool refused = mode >= 11 && mode != 25;
+    unsigned width = mode == 25 ? 1280 : 3;
+    unsigned height = mode == 25 ? 16 : 3;
+    unsigned bytes = halfword ? 2 : 1;
+    unsigned row_bytes = width * bytes, total = row_bytes * height;
+    unsigned phase = mode == 4 ? 3 : 0;
+    unsigned gap = mode == 19 ? 16384 - row_bytes : strided ? 5 : 0;
+    unsigned pitch = strided ? row_bytes + gap : row_bytes;
+    const uint64_t destination = 0x380000, reason_page = 0x300000;
+    const uint32_t index = 0x13579bdf;
+    uint32_t descriptor[] = { 0, 0x9000 | phase, total,
+                             strided ? row_bytes : total, gap, 0 };
+    uint32_t coordinates[] = { mode == 25 ? 0 : 10, 20 };
+    static const uint32_t native[] = {
+        0x00010123, 0x0abc0bad, 0x0fed0800,
+        0x0fff0bad, 0x005609ab, 0x00000bad,
+    };
+    static const uint16_t indices[] = {
+        1, 0x123, 0xabc, 0xfed, 0x800, 0xfff, 0x056, 0x9ab, 0,
+    };
+    g_autofree uint8_t *expected = g_malloc0(0x10000);
+    g_autofree uint8_t *actual = g_malloc(0x10000);
+    uint8_t reason[0x4000], got_reason[0x4000], hub[8];
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    read_activate(s, READ_SAVE, READ_PAGE);
+    if (halfword) {
+        index12_gc(s, 0xfff, 3);
+        x_command(s, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]){ 0, 1, 1, 4, 3, 3, 0 }, 7);
+        pixel_write(s, 10, 20);
+        data_words(s, native, ARRAY_SIZE(native));
+        pixel_finish(s);
+    } else {
+        read_write_pattern(s, coordinates[0], 20, width, height);
+    }
+    read_gc(s);
+    x_command(s, TOKEN_PIXEL_SETUP,
+              (uint32_t[]){ 2, 1, halfword ? 1 : 0, halfword ? 12 : 8,
+                            width, height, 0 }, 7);
+    read_gl_command(s, 0x1f1,
+                    (uint32_t[]){ 0x10000300, 0x9000, 0x4000 }, 3, true);
+    qtest_writel(s, KONA_REG(0x000034), 0x98000);
+    qtest_writel(s, KONA_REG(0x00003c), 0x1800090);
+    qtest_writel(s, KONA_REG(0x00005c), 0x3e2210);
+    qtest_writel(s, KONA_REG(0x100000), mode == 18 ? 0 : 0x20000380);
+    if (mode == 25) {
+        qtest_writel(s, KONA_REG(0x100004), 0x20000384);
+    }
+    read_prepare(s, READ_PAGE);
+    read_dma_clear_notifications(s, reason_page);
+    qtest_memset(s, destination, 0xa5, 0x10000);
+    if (mode == 11) {
+        descriptor[2]--;
+    } else if (mode == 12) {
+        descriptor[3] = 1;
+    } else if (mode == 13) {
+        descriptor[5] = 0x100;
+    } else if (mode == 14) {
+        seed_rgb(s, 12, 22, 0xabcdef);
+        read_gc(s);
+    } else if (mode == 20) {
+        x_command(s, TOKEN_PIXEL_SETUP,
+                  (uint32_t[]){ 2, 1, 0, 9, 3, 3, 0 }, 7);
+    } else if (mode == 21) {
+        x_command(s, TOKEN_GC, (uint32_t[13]) { 0 }, 13);
+    } else if (mode == 22) {
+        x_command(s, 0x1f2, (uint32_t[]){ 0x100003c0, 0x9000, 0x4000 }, 3);
+    } else if (mode == 23) {
+        coordinates[0] = -1;
+    } else if (mode == 24) {
+        coordinates[0] = 1279;
+    }
+    read_gl_command(s, 0x1f5, descriptor, 6, true);
+    if (mode == 8) {
+        x_command(s, TOKEN_PIXEL_READ, coordinates, 1);
+    }
+    if (mode == 7 || mode == 8) {
+        dir = g_dir_make_tmp("kona-x-read-dma-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 8) {
+        qtest_writel(s, REG_COMMAND_DATA, coordinates[1]);
+    } else if (mode != 26) {
+        x_command(s, TOKEN_PIXEL_READ, coordinates, 2);
+    }
+    read_unchanged(s, READ_PAGE);
+    qtest_memread(s, destination, actual, 0x10000);
+    memset(expected, 0xa5, 0x10000);
+    g_assert_cmpmem(actual, 0x10000, expected, 0x10000);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==, 0);
+    if (mode == 5) {
+        read_write_pattern(s, 10, 20, 1, 1);
+        seed_rgb(s, 12, 22, 0x123456);
+    } else if (mode == 15) {
+        x_command(s, 0x1fc, (uint32_t[]){ 0 }, 1);
+        read_activate(s, READ_SAVE, READ_PAGE);
+    } else if (mode == 16) {
+        x_command(s, TOKEN_PIXEL_READ, coordinates, 2);
+    } else if (mode == 17) {
+        read_gl_command(s, 0x39, (uint32_t[]){ 0, 0, 3, 3, 4, 1, 0 },
+                        7, false);
+    } else if (mode == 27) {
+        x_command(s, TOKEN_PIXEL_READ, coordinates, 1);
+        x_command(s, 0x1fc, (uint32_t[]){ 0 }, 1);
+        read_activate(s, READ_SAVE, READ_PAGE);
+    }
+    if (mode == 15 || mode == 27) {
+        g_assert_cmphex(read_guest_word(s, reason_page), ==, 0x101);
+        read_dma_clear_notifications(s, reason_page);
+    }
+    if (mode == 9) {
+        read_gl_command(s, 0x1f6, (uint32_t[]){ 0x100 }, 1, true);
+    }
+    if (mode == 6 || mode == 9 || mode == 10) {
+        dir = g_dir_make_tmp("kona-x-read-staged-XXXXXX", &error);
+        g_assert_no_error(error);
+        uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+        to = qtest_initf("%s -incoming %s", MACHINE_ARGS, uri);
+        sgi_migrate_stopped(from, uri);
+        s = to;
+    }
+    if (mode == 9) {
+        qtest_writel(s, REG_COMMAND, index);
+    } else {
+        read_gl_command(s, 0x1f6, (uint32_t[]){ 0x100, index }, 2, true);
+    }
+    if (!refused) {
+        for (unsigned r = 0; r < height; r++) {
+            for (unsigned c = 0; c < width; c++) {
+                uint8_t *out = expected + phase + r * pitch + c * bytes;
+
+                if (halfword) {
+                    stw_be_p(out, indices[r * width + c]);
+                } else {
+                    *out = read_pattern(c, r);
+                }
+            }
+        }
+    }
+    qtest_memread(s, destination, actual, 0x10000);
+    g_assert_cmpmem(actual, 0x10000, expected, 0x10000);
+    memset(reason, 0xa5, sizeof(reason));
+    memset(reason, 0, 4);
+    if (!refused) {
+        stl_be_p(reason, 0x100);
+        stl_be_p(reason + 4, index);
+        stl_be_p(reason + 8, 0);
+        stl_be_p(reason + 12, 0);
+    }
+    qtest_memread(s, reason_page, got_reason, sizeof(got_reason));
+    g_assert_cmpmem(got_reason, sizeof(got_reason), reason, sizeof(reason));
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE) & 0x20, ==,
+                    refused ? 0 : 0x20);
+    g_assert_true(qtest_memread_cpu(s, 0, HUB_LOCAL + PI_INT_PEND0,
+                                   hub, sizeof(hub)));
+    g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x11), ==,
+                    refused ? 0 : UINT64_C(1) << 0x11);
+    g_assert_cmphex(ldq_be_p(hub) & (UINT64_C(1) << 0x10), ==, 0);
+    read_unchanged(s, READ_PAGE);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
+}
+
 static void test_write_index12(gconstpointer opaque)
 {
     static const uint32_t words[] = { 0x01230abc, 0x0fff0aaa };
@@ -3023,6 +3215,24 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-pixel/migration-mid-write",
                    test_migration_mid_write);
 
+    static const char *read_dma_cases[] = {
+        "contiguous-byte", "strided-byte", "contiguous-halfword",
+        "strided-halfword", "unaligned", "captured-source", "staged-migrates",
+        "descriptor-migrates", "partial-read-migrates",
+        "partial-finish-migrates",
+        "halfword-migrates", "wrong-total", "wrong-line", "nonzero-final-word",
+        "late-source-tag", "context-changed", "duplicate-read", "mixed-gl-read",
+        "missing-map", "late-missing-map", "bad-setup", "bad-gc",
+        "mismatched-page", "negative-source", "outside-source",
+        "larger-than-return-page", "missing-read", "framing-abort",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(read_dma_cases); mode++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-pixel/read-dma/%s", read_dma_cases[mode]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
+                            test_read_indexed_dma);
+    }
     qtest_add_func("sn0/origin2000/kona-pixel/read-shapes", test_read_shapes);
     qtest_add_func("sn0/origin2000/kona-pixel/read-write-state",
                    test_read_ignores_write_state);

@@ -748,6 +748,7 @@ typedef struct SGIKonaGLReadDMA {
     bool active, refused;
     int32_t context;
     uint32_t descriptor[6], header[7];
+    uint32_t selector;
     uint32_t count;
     uint8_t *data;
 } SGIKonaGLReadDMA;
