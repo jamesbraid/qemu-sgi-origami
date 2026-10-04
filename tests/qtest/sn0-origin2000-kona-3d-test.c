@@ -6590,6 +6590,102 @@ static void stencil_map_upload(QTestState *s, uint32_t token,
     }
 }
 
+static void assert_pixel_map_sizes(QTestState *s, const unsigned *counts)
+{
+    for (unsigned k = 0; k < 9; k++) {
+        assert_native_query_word(s, 0xcb1 + k, counts[k], k & 1);
+    }
+}
+
+static void upload_pixel_map_sizes(QTestState *s, const unsigned *counts)
+{
+    for (unsigned k = 0; k < 9; k++) {
+        unsigned capacity = counts[k] <= 256 ? 256 :
+                            counts[k] <= 1024 ? 1024 : 4096;
+
+        kona_command(s, 0x35,
+                     (uint32_t[]) { 0xc71 + k, counts[k],
+                                    fbits(counts[k] - 1), capacity }, 4);
+        for (unsigned at = 0; at < counts[k]; at++) {
+            qtest_writel(s, REG_COMMAND, at);
+        }
+    }
+}
+
+static void test_pixel_map_sizes(gconstpointer opaque)
+{
+    static const unsigned defaults[] = { 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    static const unsigned sizes[] = { 4, 2, 8, 16, 32, 3, 5, 1024, 4096 };
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    QTestState *from = qtest_init(MACHINE_ARGS), *s = from, *to = NULL;
+    g_autofree char *dir = NULL;
+
+    gl_make_current(s);
+    assert_pixel_map_sizes(s, defaults);
+    if (mode == 0) {
+        goto out;
+    }
+    upload_pixel_map_sizes(s, sizes);
+    assert_pixel_map_sizes(s, sizes);
+    if (mode == 2) {
+        upload_pixel_map_sizes(s, defaults);
+        assert_pixel_map_sizes(s, defaults);
+    } else if (mode == 3) {
+        /* Invalid entries must leave the published sizes intact. */
+        kona_command(s, 0x34,
+                     (uint32_t[]) { 0xc76, 2, fbits(1), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, fbits(0));
+        qtest_writel(s, REG_COMMAND, fbits(NAN));
+        kona_command(s, 0x35,
+                     (uint32_t[]) { 0xc71, 3, fbits(2), 256 }, 4);
+        for (unsigned k = 0; k < 3; k++) {
+            qtest_writel(s, REG_COMMAND, 0);
+        }
+        assert_pixel_map_sizes(s, sizes);
+    } else if (mode == 4) {
+        kona_command(s, 0xc9, (uint32_t[]) { 0x20 }, 1);
+        upload_pixel_map_sizes(s, defaults);
+        read_dma_migrate(from, &s, &to, &dir);
+        assert_pixel_map_sizes(s, defaults);
+        kona_command(s, 0xc8, (uint32_t[]) { 0 }, 1);
+        assert_pixel_map_sizes(s, sizes);
+    } else if (mode == 5) {
+        return_context_deactivate(s);
+        attrib_context_fresh(s, SAVE_AREA + 0x20000);
+        assert_pixel_map_sizes(s, defaults);
+        upload_pixel_map_sizes(s, defaults);
+        return_context_deactivate(s);
+        return_context_restore(s, SAVE_AREA);
+        assert_pixel_map_sizes(s, sizes);
+    } else if (mode == 6) {
+        qtest_system_reset(s);
+        gl_make_current(s);
+        assert_pixel_map_sizes(s, defaults);
+    } else if (mode == 7) {
+        read_dma_migrate(from, &s, &to, &dir);
+        assert_pixel_map_sizes(s, sizes);
+    } else if (mode == 8) {
+        unsigned partial[] = { 4, 2, 8, 16, 32, 7, 5, 1024, 4096 };
+
+        kona_command(s, 0x35,
+                     (uint32_t[]) { 0xc76, 7, fbits(6), 256 }, 4);
+        qtest_writel(s, REG_COMMAND, 0);
+        read_dma_migrate(from, &s, &to, &dir);
+        for (unsigned k = 1; k < 7; k++) {
+            qtest_writel(s, REG_COMMAND, k);
+        }
+        assert_pixel_map_sizes(s, partial);
+    }
+out:
+    if (to) {
+        qtest_quit(to);
+    }
+    qtest_quit(from);
+    if (dir) {
+        g_rmdir(dir);
+    }
+}
+
 static void test_stencil_pixel_maps(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -12539,6 +12635,17 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(path, GUINT_TO_POINTER(mode),
                            test_indexed_texture_pixels);
+    }
+    static const char *pixel_map_size_names[] = {
+        "default", "published", "replaced", "rejected", "attributes",
+        "contexts", "reset", "migration", "partial-migration",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(pixel_map_size_names); mode++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/pixel-map-sizes/%s",
+            pixel_map_size_names[mode]);
+
+        qtest_add_data_func(path, GUINT_TO_POINTER(mode), test_pixel_map_sizes);
     }
     static const char *stencil_map_names[] = {
         "float", "uint", "ushort", "default", "read", "copy", "attributes",

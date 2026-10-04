@@ -4219,6 +4219,15 @@ static void sgi_kona_gl_get(SGIKonaState *s, uint32_t name)
     } else if (name == 0xbb0) {
         native[0] = s->gl_attrib_depth[i];
         n = 1;
+    } else if (name >= 0xcb1 && name <= 0xcb9) {
+        const SGIKonaGLPixelTransfer *t = &s->gl_pipe[i].pixel_transfer;
+        const SGIKonaGLPixelMap *map = name == 0xcb1 ? &t->stencil_map :
+            name <= 0xcb5 ? &t->index_rgba[name - 0xcb2] :
+                           &t->colour_rgba[name - 0xcb6];
+
+        /* Empty storage represents the public one-entry zero table. */
+        native[0] = map->count ? map->count : 1;
+        n = 1;
     } else if (name == 0xc02) {
         if (sgi_kona_gl_read_bank(s, i, &out[0]) < 0) {
             goto unsupported;
