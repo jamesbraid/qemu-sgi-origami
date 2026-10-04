@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "f121fab95bec365927e4d0bf2bc4dce317b73be48116038afe792cbba7857dfc"
+    "ae30ec1d0fbd893039c6437d10243166a3f1caf071b7ada273025ac0a2fd56ab"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -200,7 +200,7 @@ class StorageTests(unittest.TestCase):
                 inputs = {item["name"] for item in offering["init-inputs"]}
                 for item in offering["storage"]:
                     self.assertFalse(item["read-only"])
-                    self.assertTrue(item["initial"] == "zero"
+                    self.assertTrue(item["initial"] in {"zero", "ip27-nvram"}
                                     or item["initial"] in inputs)
                 for resource in offering["resources"]:
                     self.assertIn(resource["kind"],
@@ -220,9 +220,25 @@ class StorageTests(unittest.TestCase):
             {"name": "node1-flash", **flash, "initial": "boot-prom"},
             {"name": "io0-flash", **flash, "initial": "io-prom"},
             {"name": "nvram0", "size": 32768, "read-only": False,
-             "initial": "zero"},
+             "initial": "ip27-nvram"},
             {"name": "nvram0-clock", "size": 16, "read-only": False,
              "initial": "zero"}])
+
+    def test_ioc3_timekeeper_starts_from_the_fresh_ip27_image(self):
+        """An IOC3 Timekeeper with no backing installs the fresh IP27
+        image, so a new machine's NVRAM file starts from it too. A
+        selected system Timekeeper turns that fixture off and starts
+        from zeroes, as does Octane's different part."""
+        for offering in self.catalogue["offerings"]:
+            nvram = {item["initial"] for item in offering["storage"]
+                     if item["name"].startswith("nvram")
+                     and not item["name"].endswith("-clock")}
+            expected = ({"ip27-nvram"}
+                        if offering["product"] in {"origin200", "origin2000",
+                                                   "onyx2"}
+                        else {"zero"})
+            with self.subTest(options=offering["machine-options"]):
+                self.assertEqual(nvram, expected)
 
     def test_origin200_dual_has_a_store_per_board(self):
         offering = next(

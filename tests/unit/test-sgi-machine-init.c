@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include <sys/resource.h>
 #include "qemu/bswap.h"
+#include "hw/rtc/m48t35-ip27.h"
 
 typedef struct ToolRun {
     int status;
@@ -337,6 +338,26 @@ static void assert_zero_store(const char *dir, const char *name)
     assert_all(bytes, 0, size, 0);
 }
 
+/*
+ * @name holds the fresh IP27 Timekeeper image for the day the tool ran,
+ * which lies between @before and the time of this check.
+ */
+static void assert_fresh_nvram(const char *dir, const char *name,
+                               time_t before)
+{
+    time_t after = time(NULL);
+    gsize size;
+    g_autofree uint8_t *bytes = read_store(dir, name, &size);
+    g_autofree uint8_t *first = g_malloc(M48T35_SIZE);
+    g_autofree uint8_t *last = g_malloc(M48T35_SIZE);
+    struct tm tm;
+
+    g_assert_cmpuint(size, ==, M48T35_SIZE);
+    m48t35_ip27_fresh_image(first, gmtime_r(&before, &tm));
+    m48t35_ip27_fresh_image(last, gmtime_r(&after, &tm));
+    g_assert_true(!memcmp(bytes, first, size) || !memcmp(bytes, last, size));
+}
+
 static void assert_starts_with_payload(const uint8_t *bytes, uint8_t seed)
 {
     size_t i;
@@ -352,6 +373,7 @@ static void test_origin200(void)
         { "node0-flash", 1048576 }, { "nvram0", 32768 },
         { "nvram0-clock", 16 },
     };
+    time_t before = time(NULL);
     g_autofree char *dir = create_and_check(
         "o200", "origin200,topology=origin200,nodes=1", false, stores,
         ARRAY_SIZE(stores));
@@ -368,7 +390,7 @@ static void test_origin200(void)
     g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x2c), ==, 15);
     g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x30), ==, 1);
     g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x3c), ==, 4);
-    assert_zero_store(dir, "nvram0");
+    assert_fresh_nvram(dir, "nvram0", before);
     assert_zero_store(dir, "nvram0-clock");
     remove_tree(dir);
 }
@@ -380,6 +402,7 @@ static void test_origin2000(void)
         { "io0-flash", 1048576 }, { "nvram0", 32768 },
         { "nvram0-clock", 16 },
     };
+    time_t before = time(NULL);
     g_autofree char *dir = create_and_check(
         "o2k", "origin2000,topology=origin2000-deskside,nodes=2", true,
         stores, ARRAY_SIZE(stores));
@@ -402,6 +425,8 @@ static void test_origin2000(void)
         g_assert_cmphex(io[i], ==, (uint8_t)(0x06 + i * 7));
     }
     assert_all(io, IO_PROM_SIZE, size, 0xff);
+    assert_fresh_nvram(dir, "nvram0", before);
+    assert_zero_store(dir, "nvram0-clock");
     remove_tree(dir);
 }
 
@@ -492,6 +517,30 @@ static void test_octane(void)
     assert_all(flash, PAYLOAD_SIZE, size, 0xff);
     assert_zero_store(dir, "nvram0");
     remove_tree(dir);
+}
+
+/*
+ * The fresh image the Timekeeper datasheet gives for two dates: a month
+ * whose leap-cycle record is 1 and one whose record is 2.
+ */
+static void test_fresh_ip27_nvram(void)
+{
+    g_autofree uint8_t *cell = g_malloc(M48T35_SIZE);
+    struct tm september_2026 = { .tm_year = 126, .tm_mon = 8, .tm_mday = 1 };
+    struct tm april_2024 = { .tm_year = 124, .tm_mon = 3, .tm_mday = 1 };
+    size_t i;
+
+    m48t35_ip27_fresh_image(cell, &september_2026);
+    g_assert_cmphex(cell[0x3883], ==, 1);
+    g_assert_cmphex(cell[0x4bc], ==, 0x6d);
+    for (i = 0; i < M48T35_SIZE; i++) {
+        if (i != 0x3883 && i != 0x4bc) {
+            g_assert_cmphex(cell[i], ==, 0);
+        }
+    }
+    m48t35_ip27_fresh_image(cell, &april_2024);
+    g_assert_cmphex(cell[0x3883], ==, 2);
+    g_assert_cmphex(cell[0x4bc], ==, 0xad);
 }
 
 /* "DIR/" creates DIR, not something inside it. */
@@ -622,6 +671,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);
+    g_test_add_func("/sgi-machine-init/fresh-ip27-nvram",
+                    test_fresh_ip27_nvram);
     g_test_add_func("/sgi-machine-init/trailing-slash", test_trailing_slash);
     g_test_add_func("/sgi-machine-init/existing-refused",
                     test_existing_refused);

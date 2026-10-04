@@ -1347,10 +1347,14 @@
 #
 # @io-prom: built from the @io-prom initialization input
 #
+# @ip27-nvram: the image an IP27-family Timekeeper with no backing
+#     installs: zero-filled apart from IRIX's leap-cycle record for
+#     the creation date and the PROM environment checksum
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelStorageInitial',
-  'data': ['zero', 'boot-prom', 'io-prom'] }
+  'data': ['zero', 'boot-prom', 'io-prom', 'ip27-nvram'] }
 
 ##
 # @SGIModelStorageItem:

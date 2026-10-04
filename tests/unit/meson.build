@@ -297,7 +297,7 @@ test_env.set('G_TEST_BUILDDIR', meson.current_build_dir())
 
 # Runs the built tool rather than linking its sources.
 if is_variable('qemu_sgi_machine_init')
-  tests += {'test-sgi-machine-init': []}
+  tests += {'test-sgi-machine-init': ['../../hw/rtc/m48t35-ip27.c']}
   test_deps += {'test-sgi-machine-init': qemu_sgi_machine_init}
   test_env.set('QEMU_SGI_MACHINE_INIT', qemu_sgi_machine_init.full_path())
 endif
