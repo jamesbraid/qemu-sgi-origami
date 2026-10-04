@@ -960,38 +960,56 @@ bool sgi_kona_gl_pixel_pack(uint32_t format, uint32_t type,
                             uint8_t *out, size_t capacity)
 {
     uint8_t packed[16];
-    unsigned components = format == 4 ? 3 : 4;
-    unsigned size = type == 1 ? 1 : type == 3 ? 2 : 4;
+    double values[4];
+    unsigned components = sgi_kona_gl_texture_pixel_bytes(format, 1);
+    unsigned bytes = sgi_kona_gl_texture_pixel_bytes(format, type);
+    unsigned size;
 
-    if (!rgba || !out || (format != 4 && format != 5) ||
-        (type != 1 && type != 3 && type != 6) ||
-        capacity < components * size) {
+    if (!rgba || !out || !bytes || capacity < bytes) {
         return false;
     }
+    size = bytes / components;
     for (unsigned i = 0; i < 4; i++) {
         if (!isfinite(rgba[i])) {
             return false;
         }
+        values[i] = rgba[i];
+    }
+    if (format == 3) {
+        values[0] = values[3];
+    } else if (format == 6 || format == 7) {
+        /* ReadPixels luminance sums channels before clamping. */
+        values[0] = values[0] + values[1] + values[2];
+        values[1] = values[3];
     }
     for (unsigned i = 0; i < components; i++) {
-        double value = CLAMP(rgba[i], 0.0, 1.0);
+        double value = CLAMP(values[i], 0.0, 1.0);
         uint8_t *dest = packed + i * size;
+        uint32_t bits;
 
-        if (type == 1) {
-            dest[0] = value * 255 + 0.5;
-        } else if (type == 3) {
-            /* Nearest conversion is the model's declared packing policy. */
-            uint16_t bits = value * 65535 + 0.5;
-
-            stw_be_p(dest, swap_bytes ? bswap16(bits) : bits);
-        } else {
+        if (type == 6) {
             float component = value;
-            uint32_t bits;
 
             memcpy(&bits, &component, sizeof(bits));
+        } else {
+            double maximum = size == 4 ? 4294967295.0 :
+                                         (1u << (8 * size)) - 1;
+            double converted = value * maximum;
+
+            if (!(type & 1)) {
+                converted = (converted - 1) / 2;
+            }
+            /* Nearest conversion with half ties toward positive infinity. */
+            bits = floor(converted + 0.5);
+        }
+        if (size == 1) {
+            dest[0] = bits;
+        } else if (size == 2) {
+            stw_be_p(dest, swap_bytes ? bswap16(bits) : bits);
+        } else {
             stl_be_p(dest, swap_bytes ? bswap32(bits) : bits);
         }
     }
-    memcpy(out, packed, components * size);
+    memcpy(out, packed, bytes);
     return true;
 }

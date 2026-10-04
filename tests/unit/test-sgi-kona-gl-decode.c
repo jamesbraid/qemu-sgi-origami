@@ -1769,9 +1769,24 @@ static void test_pixel_pack_types(void)
         0, 0, 0, 0, 0x3f, 0, 0, 0,
         0x3f, 0x80, 0, 0, 0x3e, 0x80, 0, 0,
     };
-    const uint8_t *expected[] = { bytes, shorts, floats };
-    const uint32_t types[] = { 1, 3, 6 };
-    const unsigned sizes[] = { 1, 2, 4 };
+    const uint8_t integers[] = {
+        0, 0, 0, 0, 0x80, 0, 0, 0,
+        0xff, 0xff, 0xff, 0xff, 0x40, 0, 0, 0,
+    };
+    const uint8_t signed_bytes[] = { 0, 0x3f, 0x7f, 0x1f };
+    const uint8_t signed_shorts[] = {
+        0, 0, 0x3f, 0xff, 0x7f, 0xff, 0x1f, 0xff,
+    };
+    const uint8_t signed_ints[] = {
+        0, 0, 0, 0, 0x3f, 0xff, 0xff, 0xff,
+        0x7f, 0xff, 0xff, 0xff, 0x1f, 0xff, 0xff, 0xff,
+    };
+    const uint8_t *expected[] = {
+        signed_bytes, bytes, signed_shorts, shorts,
+        signed_ints, integers, floats,
+    };
+    const uint32_t types[] = { 0, 1, 2, 3, 4, 5, 6 };
+    const unsigned sizes[] = { 1, 1, 2, 2, 4, 4, 4 };
 
     for (uint32_t format = 4; format <= 5; format++) {
         for (unsigned k = 0; k < ARRAY_SIZE(types); k++) {
@@ -1794,6 +1809,17 @@ static void test_pixel_pack_expansion_and_swap(void)
     float rgba[4] = { 0, 0, 0, 1 };
     uint8_t out[16];
     const uint8_t swapped_short[] = { 0, 0x80, 0, 0, 0, 0, 0xff, 0xff };
+    const uint8_t swapped_int[] = {
+        0, 0, 0, 0x80, 0, 0, 0, 0,
+        0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff,
+    };
+    const uint8_t swapped_signed_short[] = {
+        0xff, 0x3f, 0, 0, 0, 0, 0xff, 0x7f,
+    };
+    const uint8_t swapped_signed_int[] = {
+        0xff, 0xff, 0xff, 0x3f, 0, 0, 0, 0,
+        0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f,
+    };
     const uint8_t swapped_float[] = {
         0, 0, 0, 0x3f, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0x80, 0x3f,
@@ -1811,9 +1837,39 @@ static void test_pixel_pack_expansion_and_swap(void)
     g_assert_true(sgi_kona_gl_pixel_pack(5, 3, rgba, true, out, sizeof(out)));
     g_assert_cmpmem(out, sizeof(swapped_short), swapped_short,
                     sizeof(swapped_short));
+    g_assert_true(sgi_kona_gl_pixel_pack(5, 2, rgba, true, out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(swapped_signed_short), swapped_signed_short,
+                    sizeof(swapped_signed_short));
+    g_assert_true(sgi_kona_gl_pixel_pack(5, 4, rgba, true, out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(swapped_signed_int), swapped_signed_int,
+                    sizeof(swapped_signed_int));
+    g_assert_true(sgi_kona_gl_pixel_pack(5, 5, rgba, true, out, sizeof(out)));
+    g_assert_cmpmem(out, sizeof(swapped_int), swapped_int, sizeof(swapped_int));
     g_assert_true(sgi_kona_gl_pixel_pack(5, 6, rgba, true, out, sizeof(out)));
     g_assert_cmpmem(out, sizeof(swapped_float), swapped_float,
                     sizeof(swapped_float));
+}
+
+static void test_pixel_pack_channels(void)
+{
+    const float rgba[4] = { -1, 0.75f, 0.75f, 0.25f };
+    const uint8_t expected[][8] = {
+        { 0x3e, 0x80, 0, 0 },
+        { 0x3f, 0, 0, 0 },
+        { 0x3f, 0, 0, 0, 0x3e, 0x80, 0, 0 },
+    };
+    const uint32_t formats[] = { 3, 6, 7 };
+
+    for (unsigned k = 0; k < ARRAY_SIZE(formats); k++) {
+        uint8_t out[9];
+        unsigned count = k == 2 ? 8 : 4;
+
+        memset(out, 0xa5, sizeof(out));
+        g_assert_true(sgi_kona_gl_pixel_pack(formats[k], 6, rgba, false,
+                                            out, count));
+        g_assert_cmpmem(out, count, expected[k], count);
+        g_assert_cmphex(out[count], ==, 0xa5);
+    }
 }
 
 static void test_pixel_pack_refusals(void)
@@ -1823,8 +1879,8 @@ static void test_pixel_pack_refusals(void)
     uint8_t out[16];
 
     memcpy(out, before, sizeof(out));
-    g_assert_false(sgi_kona_gl_pixel_pack(3, 1, rgba, false, out, sizeof(out)));
-    g_assert_false(sgi_kona_gl_pixel_pack(5, 0, rgba, false, out, sizeof(out)));
+    g_assert_false(sgi_kona_gl_pixel_pack(2, 1, rgba, false, out, sizeof(out)));
+    g_assert_false(sgi_kona_gl_pixel_pack(5, 7, rgba, false, out, sizeof(out)));
     g_assert_false(sgi_kona_gl_pixel_pack(5, 3, rgba, false, out, 7));
     for (unsigned k = 0; k < 4; k++) {
         rgba[k] = INFINITY;
@@ -1932,6 +1988,8 @@ int main(int argc, char **argv)
                     test_pixel_pack_types);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/expansion-and-swap",
                     test_pixel_pack_expansion_and_swap);
+    g_test_add_func("/sgi-kona-gl-decode/pixel-pack/channels",
+                    test_pixel_pack_channels);
     g_test_add_func("/sgi-kona-gl-decode/pixel-pack/refusals",
                     test_pixel_pack_refusals);
     return g_test_run();
