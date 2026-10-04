@@ -380,6 +380,8 @@ const SGICommandPortSelector sgi_kona_gl_tokens[] = {
     { SGI_KONA_CMD_GL_HINT, 2 },
     { SGI_KONA_CMD_GL_DRAW_BUFFER, 1 },
     { SGI_KONA_CMD_GL_READ_BUFFER, 1 },
+    { SGI_KONA_CMD_GL_PIXEL_ZOOM, 2 },
+    { SGI_KONA_CMD_GL_PIXEL_TRANSFER, 2 },
     { SGI_KONA_CMD_GL_PIXEL_STORE, 2 },
     { SGI_KONA_CMD_GL_TEX_ENVF, 5 },
     { SGI_KONA_CMD_GL_TEX_ENVI, 5 },

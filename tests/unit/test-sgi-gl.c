@@ -1207,6 +1207,149 @@ static void test_bitmap_depth_is_the_raster_depth(void)
     g_assert_cmphex(p.depth[planes_index(10, 20)], ==, 0xbfffff);
 }
 
+/* Pixel centres decide unit-zoom coverage, including fractional origins. */
+static void test_draw_pixels_placement(void)
+{
+    static const uint32_t image[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+    uint32_t word[2];
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    for (int k = 0; k < 3; k++) {
+        float fraction = 0.25f * (k + 1);
+        int x = k == 2 ? 11 : 10, y = k == 2 ? 21 : 20;
+        float before[4];
+
+        memset(&p, 0, sizeof(p));
+        context_init(&c);
+        word[0] = bits((10 + fraction) / 32 - 1);
+        word[1] = bits((20 + fraction) / 32 - 1);
+        command(&c, &sink, SGI_GL_OP_RASTER_POS2F, word, 2);
+        memcpy(before, c.raster_pos, sizeof(before));
+        /* Pixel rectangles are not bounded by the current viewport. */
+        c.cur.viewport[2] = c.cur.viewport[3] = 1;
+        sgi_gl_draw_pixels_rgba(&c, &sink, 2, 2, image);
+        g_assert_cmphex(p.colour[0][planes_index(x, y)], ==, 0xff0000);
+        g_assert_cmphex(p.colour[0][planes_index(x + 1, y)], ==, 0x00ff00);
+        g_assert_cmphex(p.colour[0][planes_index(x, y + 1)], ==, 0x0000ff);
+        g_assert_cmphex(p.colour[0][planes_index(x + 1, y + 1)], ==, 0xffffff);
+        g_assert_cmphex(p.colour[0][planes_index(x - 1, y)], ==, 0);
+        g_assert_cmphex(p.colour[0][planes_index(x + 2, y + 1)], ==, 0);
+        g_assert_cmpmem(c.raster_pos, sizeof(before), before, sizeof(before));
+        /* A second call starts at the same raster position. */
+        sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, image + 2);
+        g_assert_cmphex(p.colour[0][planes_index(x, y)], ==, 0x0000ff);
+    }
+}
+
+static void test_draw_pixels_fragment_operations(void)
+{
+    static const uint32_t image[] = { 0xff000000, 0xff000080, 0xff0000ff };
+    static Planes p;
+    SGIRasterRules rules = rules_supported;
+    Recorder rec = { .rules = &rules };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    rules.stencil_bits = 8;
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.raster_pos[0] = 10.25f;
+    c.raster_pos[1] = 20.25f;
+    c.raster_pos[2] = 0.75f;
+    c.cur.alpha_test = 1;
+    c.cur.alpha_func = SGI_GL_GEQUAL;
+    c.cur.alpha_ref = 0.5f;
+    c.cur.depth_test = 1;
+    c.cur.depth_func = SGI_GL_LESS;
+    c.cur.stencil_test = 1;
+    c.cur.stencil_func = SGI_GL_ALWAYS;
+    c.cur.stencil_op[2] = SGI_GL_INCR;
+    for (int x = 10; x < 13; x++) {
+        p.depth[planes_index(x, 20)] = 0xffffff;
+    }
+    sgi_gl_draw_pixels_rgba(&c, &sink, 3, 1, image);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(11, 20)], ==, 0xff0000);
+    g_assert_cmphex(p.depth[planes_index(11, 20)], ==, 0xbfffff);
+    g_assert_cmphex(p.stencil[planes_index(10, 20)], ==, 0);
+    g_assert_cmphex(p.stencil[planes_index(11, 20)], ==, 1);
+    /* A repeated LESS test fails and neither colour nor stencil changes. */
+    sgi_gl_draw_pixels_rgba(&c, &sink, 3, 1, image);
+    g_assert_cmphex(p.stencil[planes_index(11, 20)], ==, 1);
+
+    c.cur.depth_test = c.cur.stencil_test = 0;
+    c.cur.blend = 1;
+    c.cur.blend_src = SGI_GL_SRC_ALPHA;
+    c.cur.blend_dst = SGI_GL_ONE_MINUS_SRC_ALPHA;
+    c.cur.colour_mask = SGI_GL_COLOUR_MASK_RED;
+    p.colour[0][planes_index(11, 20)] = 0x0000ff;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 3, 1, image);
+    g_assert_cmphex(p.colour[0][planes_index(11, 20)], ==, 0x8000ff);
+
+    c.cur.blend = 0;
+    c.cur.colour_mask = SGI_GL_COLOUR_MASK_ALL;
+    c.cur.fog = 1;
+    c.cur.fog_mode = SGI_GL_LINEAR;
+    c.cur.fog_start = 0;
+    c.cur.fog_end = 1;
+    c.cur.fog_color[2] = 1;
+    c.raster_distance = 0.5f;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 3, 1, image);
+    g_assert_cmphex(p.colour[0][planes_index(12, 20)], ==, 0x800080);
+}
+
+static void test_draw_pixels_window_and_scissor(void)
+{
+    static const uint32_t image[] = {
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+        0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
+    };
+    static Planes p;
+    Recorder rec = { .rules = &rules_supported };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    sink.raster = drawing_raster;
+    rec.target = planes_target(&p);
+    memset(&p, 0, sizeof(p));
+    context_init(&c);
+    c.cur.drawable.origin[0] = 10;
+    c.cur.drawable.origin[1] = 20;
+    c.cur.drawable.clip.n = 2;
+    c.cur.drawable.clip.r[0] = (SGIClipRect) { 10, 20, 10, 21 };
+    c.cur.drawable.clip.r[1] = (SGIClipRect) { 12, 20, 13, 21 };
+    c.raster_pos[0] = c.raster_pos[1] = 0.25f;
+    c.cur.scissor_test = 1;
+    c.cur.scissor[0] = 0;
+    c.cur.scissor[1] = 1;
+    c.cur.scissor[2] = 3;
+    c.cur.scissor[3] = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 4, 2, image);
+    g_assert_cmphex(p.colour[0][planes_index(10, 21)], ==, 0xff0000);
+    g_assert_cmphex(p.colour[0][planes_index(11, 21)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(12, 21)], ==, 0x0000ff);
+    g_assert_cmphex(p.colour[0][planes_index(13, 21)], ==, 0);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0);
+
+    /* Only visible source columns are read, even for a far-off corner. */
+    c.cur.scissor_test = 0;
+    c.raster_pos[0] = -2.75f;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 4, 1, image);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xffffff);
+    c.raster_pos[0] = -1.0e30f;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 4, 1, image);
+    g_assert_cmphex(p.colour[0][planes_index(10, 20)], ==, 0xffffff);
+}
+
 /*
  * glDepthRange (OpenGL 1.2.1, 2.10.1): initially [0, 1]; each value is
  * clamped to [0, 1] and kept, and far may be below near.
@@ -2919,6 +3062,56 @@ static char *logged_by(void (*fn)(void))
     g_remove(path);
     g_rmdir(dir);
     return text;
+}
+
+static void draw_pixels_refusals(void)
+{
+    const uint32_t pixel = 0xff0000ff;
+    Recorder rec = { 0 };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    context_init(&c);
+    c.in_begin = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.in_begin = 0;
+    c.cur.index_bits = 8;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.cur.index_bits = 0;
+    c.cur.texture_1d = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.cur.texture_1d = 0;
+    c.cur.texture_2d = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.cur.texture_2d = 0;
+    c.cur.texture_3d = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.cur.texture_3d = 0;
+    c.cur.drawable.bound = false;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    g_assert_cmpuint(rec.ops, ==, 0);
+}
+
+static void test_draw_pixels_refusals(void)
+{
+    g_autofree char *log = logged_by(draw_pixels_refusals);
+    const uint32_t pixel = 0xff0000ff;
+    Recorder rec = { 0 };
+    SGIGLSink sink = recorder_sink(&rec);
+    SGIGLContext c;
+
+    g_assert_nonnull(strstr(log, "glDrawPixels inside glBegin"));
+    g_assert_nonnull(strstr(log, "textured or colour-index"));
+    g_assert_nonnull(strstr(log, "glDrawPixels with no window"));
+    context_init(&c);
+    c.raster_valid = 0;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    c.raster_valid = 1;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 0, 1, NULL);
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 0, NULL);
+    c.cur.drawable.clip.n = 0;
+    sgi_gl_draw_pixels_rgba(&c, &sink, 1, 1, &pixel);
+    g_assert_cmpuint(rec.ops, ==, 0);
 }
 
 static Planes window_planes;
@@ -10926,6 +11119,13 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-gl/index-value", test_index_value);
     g_test_add_func("/sgi-gl/index-draw", test_index_draw);
     g_test_add_func("/sgi-gl/bitmap", test_bitmap);
+    g_test_add_func("/sgi-gl/draw-pixels/refusals", test_draw_pixels_refusals);
+    g_test_add_func("/sgi-gl/draw-pixels/placement",
+                    test_draw_pixels_placement);
+    g_test_add_func("/sgi-gl/draw-pixels/fragment-operations",
+                    test_draw_pixels_fragment_operations);
+    g_test_add_func("/sgi-gl/draw-pixels/window-and-scissor",
+                    test_draw_pixels_window_and_scissor);
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
     g_test_add_func("/sgi-gl/bitmap-depth-is-the-raster-depth",

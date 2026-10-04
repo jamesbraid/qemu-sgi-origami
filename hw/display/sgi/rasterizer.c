@@ -14,7 +14,8 @@
  * alpha test, the stencil test, the depth test, blending, dithering and
  * the logical operation, and is stored under the write masks through the
  * family's target. What it draws follows OpenGL 1.2.1 for
- * aliased points and lines, polygons and untextured bitmaps,
+ * aliased points and lines, polygons, untextured bitmaps and unit-zoom
+ * RGBA8 pixel rectangles,
  * flat or smooth shaded, in RGBA or colour-index mode, from vertex colours
  * the context has already lit, with a back-facing polygon's back colours under
  * two-sided lighting, and polygons culled by facing. Where OpenGL leaves a
@@ -3864,12 +3865,49 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     }
 }
 
+static void sgi_soft_pixels(const SGIRasterRules *rules,
+                            const SGIRasterTarget *t, const SGIRasterOp *op)
+{
+    const SGIRasterPixels *p = &op->pixels;
+    SGISoftDraw r = { .rules = rules, .t = t, .st = p->state };
+    SGISoftFrag frag = { .fog = p->distance };
+    bool rgba_reported = false;
+    int64_t x0, y0, x1, y1;
+
+    r.rgba_reported = &rgba_reported;
+    if (!p->width || !p->height || !p->rgba ||
+        !sgi_soft_window(p->state, &r.win)) {
+        return;
+    }
+    r.ntargets = MIN(op->ntargets, SGI_GL_MAX_TARGETS);
+    memcpy(r.targets, op->targets, sizeof(r.targets));
+    if (!sgi_soft_setup_ops(&r)) {
+        return;
+    }
+    /* Clip before indexing the image or iterating over off-window rows. */
+    x0 = MAX(0, (int64_t)r.win.x0 - r.win.ox - p->x);
+    y0 = MAX(0, (int64_t)r.win.y0 - r.win.oy - p->y);
+    x1 = MIN((int64_t)p->width - 1, (int64_t)r.win.x1 - r.win.ox - p->x);
+    y1 = MIN((int64_t)p->height - 1, (int64_t)r.win.y1 - r.win.oy - p->y);
+    for (int64_t y = y0; y <= y1; y++) {
+        for (int64_t x = x0; x <= x1; x++) {
+            uint32_t rgba = p->rgba[(uint64_t)y * p->width + x];
+
+            for (int k = 0; k < 4; k++) {
+                frag.rgba[k] = ((rgba >> (24 - 8 * k)) & 0xff) / 255.0;
+            }
+            sgi_soft_fragment_at(&r, p->x + x, p->y + y, p->z, &frag, 1, false);
+        }
+    }
+}
+
 /*
  * CLEAR writes the clear colour under the colour mask, or in colour-index
  * mode the clear index under the index mask, to the op's targets, the
  * clear depth to the depth plane and the clear stencil value under its
  * mask to the stencil buffer, where the planes have one, at every pixel of
- * its rectangle its clip list keeps. BITMAP draws its run of a bitmap.
+ * its rectangle its clip list keeps. BITMAP draws its run of a bitmap,
+ * and PIXELS draws a unit-zoom RGBA8 rectangle.
  * The other kinds are not executed here yet.
  */
 void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
@@ -3889,6 +3927,10 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
     SGIRasterColour clear = { 0 };
 
     if (!sgi_soft_check_rules(rules)) {
+        return;
+    }
+    if (op->kind == SGI_RASTER_PIXELS) {
+        sgi_soft_pixels(rules, t, op);
         return;
     }
     if (op->kind == SGI_RASTER_BITMAP) {
