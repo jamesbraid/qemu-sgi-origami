@@ -279,18 +279,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  * look-up table, goes through this one physical port, driven by the same
  * RAD4_BAR2_RGB_LO/RAD4_BAR2_RGB_HI index
  * registers already used to select an entry for the ordinary single-cycle
- * RAD4_BAR2_RGB_DATA port. This model
- * implements the two ranges the qualified guest workload actually exercises:
- * the frame-buffer window attribute
- * table (FB_WAT) and the runtime color look-up table it points into. Any
- * other multi-cycle index, the overlay
- * WAT, the gamma tables, the cursor/cross-hair look-up table, is
- * unimplemented and trace-visible rather than
- * silently accepted.
+ * RAD4_BAR2_RGB_DATA port. This model implements the ranges the qualified
+ * guest workload exercises for display: the frame-buffer and overlay window
+ * attribute tables (FB_WAT, OL_WAT), the runtime color look-up table they
+ * point into and the cursor/cross-hair look-up table. The gamma tables are
+ * unimplemented and trace-visible rather than silently accepted.
  */
 #define RAD4_WAT_BASE           0x1000
 #define RAD4_WAT_COUNT          256
 #define RAD4_WAT_LAST           (RAD4_WAT_BASE + RAD4_WAT_COUNT - 1)
+#define RAD4_OL_WAT_BASE        0x1400
+#define RAD4_OL_WAT_LAST        (RAD4_OL_WAT_BASE + RAD4_WAT_COUNT - 1)
 #define RAD4_WAT_CYCLES         2
 
 #define RAD4_COLOR_LUT_BASE     0x4000
@@ -306,17 +305,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  * to the pixel's index data to form the color LUT address; this model only
  * evidences PIX_FORM 8bpp (00) in Index
  * mode, so RAD4_WAT_PIXFORM_8BPP gates that formula and anything else is
- * traced rather than guessed at.
+ * traced rather than guessed at. Page 48's OL_WAT entry uses the same field
+ * positions with overlay meanings: PIX_FORM 00 is an 8-bit overlay and 11 a
+ * double-buffered 4-bit overlay, and MODE 00 is Index.
  */
 #define RAD4_WAT_START_ADDR_SHIFT 6
 #define RAD4_WAT_START_ADDR_MASK  0xf
 #define RAD4_WAT_PIXFORM_SHIFT    4
 #define RAD4_WAT_PIXFORM_MASK     0x3
 #define RAD4_WAT_PIXFORM_8BPP     0x0
+#define RAD4_WAT_BS               (1u << 3)
 #define RAD4_WAT_MODE_SHIFT       1
 #define RAD4_WAT_MODE_MASK        0x3
 #define RAD4_WAT_MODE_INDEX       0x0
 #define RAD4_WAT_MODE_TRUE        0x3
+#define RAD4_WAT_TR               (1u << 0)
+#define RAD4_OL_WAT_PIXFORM_8BIT  0x0
+#define RAD4_OL_WAT_PIXFORM_4BIT  0x3
 
 /*
  * Two cycle transfer of a 10-bit WAT entry, same document page 4's Table 5:
@@ -329,25 +334,53 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_WAT_CYCLE1_MASK    0x3
 
 /*
- * The WID byte's position within RAD4's 32-bit software pixel word. The
- * RGB561 datasheet defines the WID *input
- * pins* and how many bits CONF/4 allocates to them, but not which VRAM byte a
- * given board wires to those pins. That is board-specific. This model's
- * best-supported choice is the top byte:
- * every login-screen pixel already has
- * this byte at zero, matching the "0x00RRGGBB" True-color layout established
- * from the driver's channel order and
- * the shipped X server's compiled visual masks, consistent with those pixels
- * all belonging to window ID 0. With
- * this shift, the whole qualified guest workload (IRIX 6.5.30, RAD4 at PCI
- * slot 5) renders a correctly colored xdm
- * login screen end to end, light gray/white window chrome, a pink login
- * field and a real yellow/ red/black
- * EZsetup icon, not the near-black symptom this change fixes. This confirms
- * the shift for window ID 0, the only
- * value the qualified workload's login screen exercises; it has not been
- * independently confirmed against a pixel
- * with a nonzero window ID.
+ * Single-cycle registers that select how the window attribute tables are
+ * addressed and how overlay data is combined with frame buffer data: CONF/1
+ * (page 29), CONF/4 (page 32), the WAT segment registers and the overlay
+ * chroma key and mask registers (page 34), and the auxiliary window
+ * attribute tables (page 46).
+ */
+#define RAD4_RGB_CONF1              0x0001
+#define RAD4_RGB_CONF4              0x0004
+#define RAD4_RGB_FB_WAT_SEGMENT     0x0006
+#define RAD4_RGB_OL_WAT_SEGMENT     0x0007
+#define RAD4_RGB_AUX_OL_WAT_SEGMENT 0x0009
+#define RAD4_RGB_CHROMA_KEY0        0x0010
+#define RAD4_RGB_CHROMA_MASK0       0x0012
+#define RAD4_RGB_AUX_FB_WAT         0x0e00
+#define RAD4_RGB_AUX_OL_WAT         0x0f00
+#define RAD4_RGB_AUX_WAT_COUNT      16
+
+#define RAD4_CONF1_MUX_SHIFT        5
+#define RAD4_CONF1_MUX_4TO1_BASIC   0x1
+#define RAD4_CONF1_OVLY_SHIFT       3
+#define RAD4_CONF1_OVLY_MASK        0x3
+#define RAD4_CONF1_OVLY_NONE        0x0
+#define RAD4_CONF1_OVLY_8BIT        0x1
+#define RAD4_CONF1_LWID_MASK        0x7
+#define RAD4_CONF4_FB_WID_SHIFT     3
+#define RAD4_CONF4_FB_WID_MASK      0xf
+#define RAD4_CONF4_SWE              (1u << 2)
+#define RAD4_CONF4_AOW              (1u << 1)
+
+/* AUX_OL_WAT entry, page 46: CK in bit 5, OL enable in bit 3, OT in bit 0. */
+#define RAD4_AUX_OL_WAT_CK          (1u << 5)
+#define RAD4_AUX_OL_WAT_OL          (1u << 3)
+#define RAD4_AUX_OL_WAT_OT          (1u << 0)
+
+/*
+ * The top byte of RAD4's 32-bit software pixel word. The RGB561 4:1 basic
+ * serializer that CONF/1 selects (page 9, Table 9) takes 32 pixel bits, of
+ * which bits 24-31 are the overlay port, and a separate 8-bit window-ID
+ * input. A 4-bit overlay places buffer A in bits 24-27 and buffer B in bits
+ * 28-31.
+ *
+ * The board's wiring of the window-ID input is not documented. This model
+ * feeds it the same top byte. The shipped X server's own programming
+ * supports that: it loads FB_WAT in blocks of 16 identical entries, so the
+ * entry it selects depends only on bits 28-31 and not on the overlay value
+ * in bits 24-27, and it sets CONF/4's AFW so the auxiliary frame-buffer
+ * table follows the same upper four bits.
  */
 #define RAD4_PIXEL_WID_SHIFT    24
 
@@ -526,9 +559,9 @@ struct PsitechRad4State {
     uint8_t *rgb_store;
 
     /*
-     * RGB561 multi-cycle port state (BAR2 +0x930000): the frame-buffer window
-     * attribute table, the color look-up
-     * table it addresses, and the cursor/cross-hair look-up table. One phase
+     * RGB561 multi-cycle port state (BAR2 +0x930000): the frame-buffer and
+     * overlay window attribute tables, the color look-up
+     * table they address, and the cursor/cross-hair look-up table. One phase
      * counter serves the whole port,
      * matching the datasheet's description of a single
      * address-index-register-driven state machine (IBM RGB561
@@ -539,6 +572,7 @@ struct PsitechRad4State {
      * which index range is currently selected.
      */
     uint16_t fb_wat[RAD4_WAT_COUNT];
+    uint16_t ol_wat[RAD4_WAT_COUNT];
     uint8_t color_lut[RAD4_COLOR_LUT_COUNT][3];
     uint8_t cursor_lut[RAD4_RGB_CURSOR_LUT_COUNT][3];
     uint8_t rgb_reserved_phase;
@@ -565,9 +599,34 @@ static uint16_t rad4_rgb_index(PsitechRad4State *s)
     return ((uint16_t)s->rgb_index_high << 8) | s->rgb_index_low;
 }
 
-static bool rad4_index_in_wat(uint16_t index)
+/*
+ * The FB_WAT or OL_WAT entry selected by a multi-cycle port index, or NULL
+ * for any other index.
+ */
+static uint16_t *rad4_wat_entry(PsitechRad4State *s, uint16_t index)
 {
-    return index >= RAD4_WAT_BASE && index <= RAD4_WAT_LAST;
+    if (index >= RAD4_WAT_BASE && index <= RAD4_WAT_LAST) {
+        return &s->fb_wat[index - RAD4_WAT_BASE];
+    }
+    if (index >= RAD4_OL_WAT_BASE && index <= RAD4_OL_WAT_LAST) {
+        return &s->ol_wat[index - RAD4_OL_WAT_BASE];
+    }
+    return NULL;
+}
+
+/*
+ * Single-cycle registers whose value changes what the scanout shows for
+ * pixels already in the frame buffer.
+ */
+static bool rad4_rgb_index_is_display_attribute(uint16_t index)
+{
+    return (index >= RAD4_RGB_CONF1 && index <= RAD4_RGB_AUX_OL_WAT_SEGMENT) ||
+           (index >= RAD4_RGB_CHROMA_KEY0 &&
+            index <= RAD4_RGB_CHROMA_MASK0 + 1) ||
+           (index >= RAD4_RGB_AUX_FB_WAT &&
+            index < RAD4_RGB_AUX_FB_WAT + RAD4_RGB_AUX_WAT_COUNT) ||
+           (index >= RAD4_RGB_AUX_OL_WAT &&
+            index < RAD4_RGB_AUX_OL_WAT + RAD4_RGB_AUX_WAT_COUNT);
 }
 
 static bool rad4_index_in_color_lut(uint16_t index)
@@ -600,7 +659,126 @@ static void rad4_rgb_reserved_advance(PsitechRad4State *s, uint16_t index,
 }
 
 /*
- * Interpret one raw 32-bit framebuffer word for display, per its window ID's
+ * How the window-ID input addresses the window attribute tables, decoded once
+ * per scanout pass from CONF/1, CONF/4 and the segment registers (IBM RGB561
+ * Architecture pages 15-17, 29 and 32-34). CONF/1's LWID gives the number of
+ * logical window-ID bits, taken from the least significant end of the
+ * window-ID input. In common mode (CONF/4 SWE clear) those bits address both
+ * FB_WAT and OL_WAT. In split mode the low FB_WID of them address FB_WAT and
+ * the rest address OL_WAT. Address bits a table does not receive come from
+ * its segment register, so a table that receives none uses the segment
+ * register's entry for every pixel.
+ */
+typedef struct Rad4WatLayout {
+    uint8_t lwid_mask;
+    uint8_t fb_bits;
+    uint8_t ol_bits;
+    uint8_t ol_shift;
+    uint8_t fb_segment;
+    uint8_t ol_segment;
+    uint8_t aux_ol_segment;
+    bool aux_ol_msb;
+    unsigned overlay;
+    bool overlay_reported;
+} Rad4WatLayout;
+
+/* The low @bits bits of a window ID; @bits may be 0 to 8. */
+static uint8_t rad4_wid_mask(unsigned bits)
+{
+    return (1u << bits) - 1;
+}
+
+static unsigned rad4_lwid_bits(uint8_t conf1)
+{
+    unsigned lwid = conf1 & RAD4_CONF1_LWID_MASK;
+
+    /* Page 29: 000, 001, 010 and 011 select 0, 2, 4 and 6; 1xx selects 8. */
+    return lwid >= 4 ? 8 : lwid * 2;
+}
+
+static void rad4_wat_layout(PsitechRad4State *s, Rad4WatLayout *l)
+{
+    uint8_t conf1 = s->rgb_store[RAD4_RGB_CONF1];
+    uint8_t conf4 = s->rgb_store[RAD4_RGB_CONF4];
+    unsigned lwid = rad4_lwid_bits(conf1);
+
+    l->lwid_mask = rad4_wid_mask(lwid);
+    if (conf4 & RAD4_CONF4_SWE) {
+        unsigned fb_wid = (conf4 >> RAD4_CONF4_FB_WID_SHIFT) &
+                          RAD4_CONF4_FB_WID_MASK;
+
+        /*
+         * Page 32: 1xxx selects all 8 window-ID bits for the frame buffer.
+         * The document does not say what happens when FB_WID asks for more
+         * bits than CONF/1's LWID provides; this model gives the frame
+         * buffer all of them.
+         */
+        l->fb_bits = MIN(fb_wid >= 8 ? 8 : fb_wid, lwid);
+        l->ol_bits = lwid - l->fb_bits;
+        l->ol_shift = l->fb_bits;
+    } else {
+        l->fb_bits = lwid;
+        l->ol_bits = lwid;
+        l->ol_shift = 0;
+    }
+    l->fb_segment = s->rgb_store[RAD4_RGB_FB_WAT_SEGMENT];
+    l->ol_segment = s->rgb_store[RAD4_RGB_OL_WAT_SEGMENT];
+    l->aux_ol_segment = s->rgb_store[RAD4_RGB_AUX_OL_WAT_SEGMENT] & 0xf;
+    l->aux_ol_msb = conf4 & RAD4_CONF4_AOW;
+    l->overlay = (conf1 >> RAD4_CONF1_OVLY_SHIFT) & RAD4_CONF1_OVLY_MASK;
+    /*
+     * Only the 4:1 basic serializer's pixel layout (page 9, Table 9) is
+     * modeled; the overlay port of any other mode is reported as an
+     * unimplemented overlay rather than read from the wrong bits.
+     */
+    if (l->overlay != RAD4_CONF1_OVLY_NONE &&
+        (conf1 >> RAD4_CONF1_MUX_SHIFT) != RAD4_CONF1_MUX_4TO1_BASIC) {
+        l->overlay = RAD4_CONF1_OVLY_MASK + 1;
+    }
+    l->overlay_reported = false;
+}
+
+/*
+ * A WAT address: the window-ID bits, padded above by the segment register.
+ * Pages 4, 15 and 32 and Figures 2-3 take the missing bits from the segment
+ * register. The note on page 29 says they are padded with zeros instead;
+ * this model follows the majority, which matches zeros whenever the
+ * segment register is zero, as the shipped X server leaves it.
+ */
+static uint8_t rad4_wat_address(unsigned bits, uint8_t wid, uint8_t segment)
+{
+    uint8_t mask = rad4_wid_mask(bits);
+
+    return (segment & ~mask) | (wid & mask);
+}
+
+/*
+ * A 16-entry auxiliary WAT address, Figures 2 and 3 on pages 16-17: with four
+ * or fewer window-ID bits they are padded above by the auxiliary segment
+ * register; with more, the alignment bit picks the four least or most
+ * significant of them.
+ */
+static uint8_t rad4_aux_wat_address(unsigned bits, uint8_t wid,
+                                    uint8_t segment, bool msb)
+{
+    if (bits <= 4) {
+        return rad4_wat_address(bits, wid, segment) & 0xf;
+    }
+    return msb ? (wid >> (bits - 4)) & 0xf : wid & 0xf;
+}
+
+static uint32_t rad4_lut_rgb(PsitechRad4State *s, uint16_t wat, uint8_t index)
+{
+    unsigned start_addr = (wat >> RAD4_WAT_START_ADDR_SHIFT) &
+                          RAD4_WAT_START_ADDR_MASK;
+    uint16_t lut_addr = (start_addr * 64 + index) & (RAD4_COLOR_LUT_COUNT - 1);
+    const uint8_t *rgb = s->color_lut[lut_addr];
+
+    return ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+}
+
+/*
+ * Interpret one raw 32-bit framebuffer word's frame-buffer layer, per its
  * FB_WAT entry (IBM RGB561 Architecture
  * p.47). True color mode bypasses the color LUT and presents the pixel data
  * directly (same document p.20, Figure
@@ -612,39 +790,137 @@ static void rad4_rgb_reserved_advance(PsitechRad4State *s, uint16_t index,
  * 8bpp, are not exercised by the
  * qualified guest workload and are traced rather than guessed at.
  */
-static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, uint32_t word)
+static uint32_t rad4_fb_to_rgb(PsitechRad4State *s, uint32_t word,
+                               uint8_t fb_addr)
 {
-    uint8_t wid = (word >> RAD4_PIXEL_WID_SHIFT) & 0xff;
-    uint16_t wat = s->fb_wat[wid];
+    uint16_t wat = s->fb_wat[fb_addr];
     unsigned mode = (wat >> RAD4_WAT_MODE_SHIFT) & RAD4_WAT_MODE_MASK;
 
     if (mode == RAD4_WAT_MODE_INDEX) {
         unsigned pix_form = (wat >> RAD4_WAT_PIXFORM_SHIFT) &
                             RAD4_WAT_PIXFORM_MASK;
-        unsigned start_addr = (wat >> RAD4_WAT_START_ADDR_SHIFT) &
-                              RAD4_WAT_START_ADDR_MASK;
-        uint8_t index = word & 0xff;
-        uint16_t lut_addr = (start_addr * 64 + index) &
-                            (RAD4_COLOR_LUT_COUNT - 1);
-        const uint8_t *rgb = s->color_lut[lut_addr];
 
         if (pix_form != RAD4_WAT_PIXFORM_8BPP) {
             qemu_log_mask(LOG_UNIMP,
-                         "psitech-rad4: FB_WAT PIX_FORM %u for WID 0x%02x "
+                         "psitech-rad4: FB_WAT PIX_FORM %u for entry 0x%02x "
                          "in Index mode is unimplemented; treating pixel "
                          "data as an 8-bit index regardless\n",
-                         pix_form, wid);
+                         pix_form, fb_addr);
         }
-        return ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+        return rad4_lut_rgb(s, wat, word & 0xff);
     }
 
     if (mode != RAD4_WAT_MODE_TRUE) {
         qemu_log_mask(LOG_UNIMP,
-                     "psitech-rad4: FB_WAT color mode %u for WID 0x%02x is "
+                     "psitech-rad4: FB_WAT color mode %u for entry 0x%02x is "
                      "unimplemented; treating as direct pass-through\n",
-                     mode, wid);
+                     mode, fb_addr);
     }
     return word & 0x00ffffffu;
+}
+
+/*
+ * The overlay layer of one pixel, or false where the frame-buffer layer
+ * shows through. IBM RGB561 Architecture pages 19-21, 46 and 48: overlay data
+ * is displayed only where its AUX_OL_WAT entry enables the overlay and, when
+ * its OL_WAT entry enables transparency, the data does not match the
+ * AUX_OL_WAT CK/OT selection: X'00, X'FF, or chroma key 0 or 1 compared under
+ * its mask. Index mode looks the data up in the color LUT at the OL_WAT
+ * START_ADDR.
+ *
+ * The 8-bit overlay port is the pixel word's top byte. PIX_FORM 11, the
+ * double-buffered 4-bit overlay, takes buffer A from its low four bits and
+ * buffer B from its high four (Table 9 and Table 17). Transparency compares
+ * the selected buffer's 4-bit value, shifted down, and the X'FF comparison
+ * against 4-bit data uses the all-ones 4-bit value; the document says
+ * neither. Overlay formats with an underlay, serializer modes other than 4:1
+ * basic, the 16-bit and variable overlay ports and modes other than Index are
+ * not implemented. They are reported once per scanout pass and leave the
+ * frame-buffer layer showing.
+ */
+static bool rad4_overlay_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
+                                uint32_t word, uint8_t ol_addr,
+                                uint8_t aux_addr, uint32_t *rgb)
+{
+    uint8_t aux = s->rgb_store[RAD4_RGB_AUX_OL_WAT + aux_addr];
+    uint16_t wat = s->ol_wat[ol_addr];
+    unsigned pix_form = (wat >> RAD4_WAT_PIXFORM_SHIFT) &
+                        RAD4_WAT_PIXFORM_MASK;
+    unsigned mode = (wat >> RAD4_WAT_MODE_SHIFT) & RAD4_WAT_MODE_MASK;
+    uint8_t byte = word >> RAD4_PIXEL_WID_SHIFT;
+    uint8_t data, ones;
+
+    if (l->overlay == RAD4_CONF1_OVLY_NONE || !(aux & RAD4_AUX_OL_WAT_OL)) {
+        return false;
+    }
+    if (l->overlay != RAD4_CONF1_OVLY_8BIT ||
+        (pix_form != RAD4_OL_WAT_PIXFORM_8BIT &&
+         pix_form != RAD4_OL_WAT_PIXFORM_4BIT) ||
+        (pix_form == RAD4_OL_WAT_PIXFORM_8BIT && (wat & RAD4_WAT_BS)) ||
+        mode != RAD4_WAT_MODE_INDEX) {
+        if (!l->overlay_reported) {
+            l->overlay_reported = true;
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: overlay with CONF/1 0x%02x and "
+                         "OL_WAT entry 0x%02x = 0x%03x is unimplemented; "
+                         "showing the frame buffer\n",
+                         s->rgb_store[RAD4_RGB_CONF1], ol_addr, wat);
+        }
+        return false;
+    }
+
+    if (pix_form == RAD4_OL_WAT_PIXFORM_4BIT) {
+        data = (wat & RAD4_WAT_BS) ? byte >> 4 : byte & 0xf;
+        ones = 0xf;
+    } else {
+        data = byte;
+        ones = 0xff;
+    }
+
+    if (wat & RAD4_WAT_TR) {
+        unsigned key = ((aux & RAD4_AUX_OL_WAT_CK) ? 2 : 0) |
+                       ((aux & RAD4_AUX_OL_WAT_OT) ? 1 : 0);
+        bool transparent;
+
+        switch (key) {
+        case 0:
+            transparent = data == 0;
+            break;
+        case 1:
+            transparent = data == ones;
+            break;
+        default: {
+            uint8_t chroma = s->rgb_store[RAD4_RGB_CHROMA_KEY0 + key - 2];
+            uint8_t mask = s->rgb_store[RAD4_RGB_CHROMA_MASK0 + key - 2];
+
+            transparent = ((data ^ chroma) & mask) == 0;
+            break;
+        }
+        }
+        if (transparent) {
+            return false;
+        }
+    }
+
+    *rgb = rad4_lut_rgb(s, wat, data);
+    return true;
+}
+
+static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
+                                  uint32_t word)
+{
+    uint8_t wid = (word >> RAD4_PIXEL_WID_SHIFT) & l->lwid_mask;
+    uint8_t ol_wid = (wid >> l->ol_shift) & rad4_wid_mask(l->ol_bits);
+    uint8_t fb_addr = rad4_wat_address(l->fb_bits, wid, l->fb_segment);
+    uint8_t ol_addr = rad4_wat_address(l->ol_bits, ol_wid, l->ol_segment);
+    uint8_t aux_addr = rad4_aux_wat_address(l->ol_bits, ol_wid,
+                                            l->aux_ol_segment, l->aux_ol_msb);
+    uint32_t rgb;
+
+    if (rad4_overlay_to_rgb(s, l, word, ol_addr, aux_addr, &rgb)) {
+        return rgb;
+    }
+    return rad4_fb_to_rgb(s, word, fb_addr);
 }
 
 static void rad4_update_irq(PsitechRad4State *s)
@@ -1024,8 +1300,10 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
  */
 static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 {
+    Rad4WatLayout layout;
     int x, y;
 
+    rad4_wat_layout(s, &layout);
     for (y = y_start; y <= y_end; y++) {
         uint32_t row = (uint32_t)y * RAD4_MODE0_STRIDE;
         uint32_t *dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
@@ -1033,7 +1311,7 @@ static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
         for (x = 0; x < RAD4_MODE0_WIDTH; x++) {
             uint32_t word = ldl_be_p(s->framebuffer + row + x * 4);
 
-            *dst++ = rad4_pixel_to_rgb(s, word);
+            *dst++ = rad4_pixel_to_rgb(s, &layout, word);
         }
     }
 }
@@ -1581,9 +1859,9 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
          * Architecture p.1, "Address Index Register"). Only
          * the frame-buffer window attribute table, the runtime color look-up
          * table and the cursor/cross-hair
-         * look-up table are modeled; the overlay WAT and gamma tables
-         * reaching this port through other indices are
-         * not handled by this model.
+         * look-up table are modeled, along with the overlay window attribute
+         * table; the gamma tables reaching this port through other indices
+         * are not handled by this model.
          */
         uint16_t index = rad4_rgb_index(s);
         uint8_t val = 0;
@@ -1592,8 +1870,8 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
             val = s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
                                [s->rgb_reserved_phase];
             rad4_rgb_reserved_advance(s, index, 3);
-        } else if (rad4_index_in_wat(index)) {
-            uint16_t wat = s->fb_wat[index - RAD4_WAT_BASE];
+        } else if (rad4_wat_entry(s, index)) {
+            uint16_t wat = *rad4_wat_entry(s, index);
 
             /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
             val = s->rgb_reserved_phase == 0 ?
@@ -1712,6 +1990,12 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
                   index < RAD4_RGB_CURSOR_PIXMAP_BASE +
                           RAD4_CURSOR_PIXMAP_SIZE) {
             rad4_cursor_invalidate(s);
+        } else if (rad4_rgb_index_is_display_attribute(index)) {
+            /*
+             * Same reasoning as an FB_WAT write: these registers change how
+             * existing frame buffer data is displayed.
+             */
+            rad4_mark_all_dirty(s);
         }
 
         /* Documented auto-increment on data-port access. */
@@ -1743,21 +2027,19 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             if (s->rgb_reserved_phase == 0) {
                 rad4_cursor_invalidate(s);
             }
-        } else if (rad4_index_in_wat(index)) {
-            uint16_t wid = index - RAD4_WAT_BASE;
+        } else if (rad4_wat_entry(s, index)) {
+            uint16_t *wat = rad4_wat_entry(s, index);
 
             /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
             if (s->rgb_reserved_phase == 0) {
-                s->fb_wat[wid] = (uint16_t)(v & 0xff) <<
-                                 RAD4_WAT_CYCLE0_SHIFT;
+                *wat = (uint16_t)(v & 0xff) << RAD4_WAT_CYCLE0_SHIFT;
             } else {
-                s->fb_wat[wid] |= (v >> RAD4_WAT_CYCLE1_SHIFT) &
-                                  RAD4_WAT_CYCLE1_MASK;
+                *wat |= (v >> RAD4_WAT_CYCLE1_SHIFT) & RAD4_WAT_CYCLE1_MASK;
             }
             rad4_rgb_reserved_advance(s, index, RAD4_WAT_CYCLES);
             /*
-             * A window's FB_WAT entry selects how rad4_pixel_to_rgb()
-             * interprets every pixel tagged with that
+             * A window's FB_WAT or OL_WAT entry selects how
+             * rad4_pixel_to_rgb() interprets every pixel tagged with that
              * window ID. That changes what the existing scanout data means
              * without touching s->framebuffer, so the
              * raw-write dirty tracking above never sees it. Repaint the whole
@@ -1861,6 +2143,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
      * deterministic post-reset state.
      */
     memset(s->fb_wat, 0, sizeof(s->fb_wat));
+    memset(s->ol_wat, 0, sizeof(s->ol_wat));
     memset(s->color_lut, 0, sizeof(s->color_lut));
     memset(s->cursor_lut, 0, sizeof(s->cursor_lut));
     s->rgb_reserved_phase = 0;
@@ -1989,8 +2272,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2016,6 +2299,7 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_BUFFER_POINTER_UNSAFE(rgb_store, PsitechRad4State, 1,
                                       0x10000),
         VMSTATE_UINT16_ARRAY(fb_wat, PsitechRad4State, RAD4_WAT_COUNT),
+        VMSTATE_UINT16_ARRAY(ol_wat, PsitechRad4State, RAD4_WAT_COUNT),
         VMSTATE_UINT8_2DARRAY(color_lut, PsitechRad4State,
                               RAD4_COLOR_LUT_COUNT, 3),
         VMSTATE_UINT8_2DARRAY(cursor_lut, PsitechRad4State,

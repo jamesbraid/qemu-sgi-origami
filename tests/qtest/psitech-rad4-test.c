@@ -131,7 +131,39 @@
  * bit layout and page 2's Table 1 color LUT addressing formula.
  */
 #define WAT_BASE        0x1000
+#define OL_WAT_BASE     0x1400
 #define COLOR_LUT_BASE  0x4000
+
+/*
+ * Single-cycle registers that address the window attribute tables and
+ * combine the overlay with the frame buffer (same document, pages 29, 32, 34
+ * and 46), and the values the shipped X server programs into them: a 4:1
+ * basic serializer with an 8-bit overlay port and 8 window-ID bits, all of
+ * them split to the frame buffer, and overlay value 0 transparent through
+ * chroma key 0 under mask 0x0f.
+ */
+#define RGB_CONF1               0x0001
+#define RGB_CONF4               0x0004
+#define RGB_OL_WAT_SEGMENT      0x0007
+#define RGB_AUX_OL_WAT_SEGMENT  0x0009
+#define RGB_CHROMA_KEY0         0x0010
+#define RGB_CHROMA_MASK0        0x0012
+#define RGB_AUX_OL_WAT          0x0f00
+
+#define CONF1_4TO1_OVLY8_LWID8  0x2c
+#define CONF4_SPLIT_FB8         0x45
+#define CONF4_COMMON            0x00
+#define CONF4_COMMON_AOW        0x02
+#define CONF4_SPLIT_FB4         0x24
+#define CONF1_4TO1_OVLY8_LWID4  0x2a
+#define AUX_OL_WAT_CK0_ENABLED  0x28
+#define AUX_OL_WAT_CK0_DISABLED 0x20
+
+/* 10-bit WAT entries, page 47-48: START_ADDR, PIX_FORM, BS, MODE, TR. */
+#define WAT_ENTRY(start, pix_form, bs, mode, tr) \
+    (((start) << 6) | ((pix_form) << 4) | ((bs) << 3) | ((mode) << 1) | (tr))
+#define FB_WAT_TRUE_24          WAT_ENTRY(0, 3, 0, 3, 0)
+#define OL_WAT_4BIT_INDEX(start, bs) WAT_ENTRY(start, 3, bs, 0, 1)
 
 #define CTRL_MODE_CMD   0x20u
 #define CTRL_STORED_BIT 0x02u
@@ -1584,6 +1616,23 @@ static void test_cursor_lut_tri_write(void)
     qtest_quit(qts);
 }
 
+/* One window attribute table entry, in the two cycles of page 4's Table 5. */
+static void rgb_write_wat(QTestState *qts, uint16_t base, uint8_t entry,
+                          uint16_t value)
+{
+    rgb_set_index(qts, base + entry);
+    bar2_write(qts, B_RGB_RESERVED, value >> 2);
+    bar2_write(qts, B_RGB_RESERVED, (value & 0x3) << 6);
+}
+
+static void rgb_write_lut(QTestState *qts, uint16_t entry, uint32_t rgb)
+{
+    rgb_set_index(qts, COLOR_LUT_BASE + entry);
+    bar2_write(qts, B_RGB_RESERVED, (rgb >> 16) & 0xff);
+    bar2_write(qts, B_RGB_RESERVED, (rgb >> 8) & 0xff);
+    bar2_write(qts, B_RGB_RESERVED, rgb & 0xff);
+}
+
 /* One displayed pixel, as 0xRRGGBB, from a fresh QMP screendump. */
 static uint32_t rad4_screendump_pixel(QTestState *qts, unsigned x, unsigned y)
 {
@@ -1739,6 +1788,202 @@ static void test_cursor_no_ghost_after_far_fb_update(void)
     qtest_quit(qts);
 }
 
+/*
+ * OL_WAT has the same 10-bit, two-cycle transfer as FB_WAT at its own index
+ * range (IBM RGB561 Architecture pages 4, 27 and 48), and the address index
+ * register auto increments after the second cycle.
+ */
+static void test_ol_wat_round_trip(void)
+{
+    QTestState *qts = rad4_init();
+
+    rgb_write_wat(qts, OL_WAT_BASE, 7, 0x2b5);
+
+    rgb_set_index(qts, OL_WAT_BASE + 7);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x2b5 >> 2);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, (0x2b5 & 3) << 6);
+    g_assert_cmphex(rgb_current_index(qts), ==, OL_WAT_BASE + 8);
+
+    /* The FB_WAT entry with the same number is a separate table. */
+    rgb_set_index(qts, WAT_BASE + 7);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* The X server's RAMDAC setup, with one 4-bit index overlay entry. */
+static void rad4_setup_overlay(QTestState *qts, uint16_t ol_wat)
+{
+    rad4_play_mode0(qts);
+    rgb_write_byte(qts, RGB_CONF1, CONF1_4TO1_OVLY8_LWID8);
+    rgb_write_byte(qts, RGB_CONF4, CONF4_SPLIT_FB8);
+    rgb_write_byte(qts, RGB_CHROMA_KEY0, 0x00);
+    rgb_write_byte(qts, RGB_CHROMA_MASK0, 0x0f);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT, AUX_OL_WAT_CK0_ENABLED);
+    for (unsigned wid = 0; wid < 0x100; wid++) {
+        rgb_write_wat(qts, WAT_BASE, wid, FB_WAT_TRUE_24);
+    }
+    rgb_write_wat(qts, OL_WAT_BASE, 0, ol_wat);
+    /* Overlay value 5 with START_ADDR 2 is color LUT entry 2 * 64 + 5. */
+    rgb_write_lut(qts, 2 * 64 + 5, 0x112233);
+}
+
+/*
+ * A Motif menu on the IRIX desktop is drawn through a 4-bit overlay visual
+ * into bits 24-27 of each pixel and leaves the true-color bits underneath
+ * alone, so the menu shows only if the scanout combines the overlay with the
+ * frame buffer the way the RAMDAC does (IBM RGB561 Architecture pages 9,
+ * 15-21, 32, 46 and 48). A nonzero overlay value shows its color LUT entry,
+ * overlay value 0 matches chroma key 0 and lets the frame buffer through,
+ * disabling the overlay in AUX_OL_WAT shows the frame buffer everywhere, and
+ * buffer B takes bits 28-31 instead.
+ */
+static void test_overlay_composited_into_scanout(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, OL_WAT_4BIT_INDEX(2, 0));
+    bar2_write(qts, 10 * TEST_FB_STRIDE + 10 * 4, 0x05abcdefu);
+    bar2_write(qts, 10 * TEST_FB_STRIDE + 11 * 4, 0x00abcdefu);
+    bar2_write(qts, 10 * TEST_FB_STRIDE + 12 * 4, 0x50abcdefu);
+
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 10), ==, 0x112233);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 11, 10), ==, 0xabcdef);
+    /* Bits 28-31 select the window, not buffer A's overlay data. */
+    g_assert_cmphex(rad4_screendump_pixel(qts, 12, 10), ==, 0xabcdef);
+
+    /*
+     * Disabling the overlay changes no frame buffer word, so the scanout
+     * must notice the AUX_OL_WAT write itself.
+     */
+    rgb_write_byte(qts, RGB_AUX_OL_WAT, AUX_OL_WAT_CK0_DISABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 10), ==, 0xabcdef);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 10), ==, 0x112233);
+
+    /* Buffer B: bits 28-31 carry the overlay data. */
+    rgb_write_wat(qts, OL_WAT_BASE, 0, OL_WAT_4BIT_INDEX(2, 1));
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 10), ==, 0xabcdef);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 12, 10), ==, 0x112233);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Overlay transparency compares the overlay data with chroma key 0 under its
+ * mask, and only when the OL_WAT entry enables transparency (pages 21, 46
+ * and 48). With transparency off, even value 0 is an opaque overlay color.
+ */
+static void test_overlay_chroma_key_and_opaque(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, OL_WAT_4BIT_INDEX(2, 0));
+    rgb_write_lut(qts, 2 * 64 + 4, 0x445566);
+    rgb_write_lut(qts, 2 * 64 + 0, 0x778899);
+    bar2_write(qts, 20 * TEST_FB_STRIDE + 10 * 4, 0x05abcdefu);
+    bar2_write(qts, 20 * TEST_FB_STRIDE + 11 * 4, 0x04abcdefu);
+    bar2_write(qts, 20 * TEST_FB_STRIDE + 12 * 4, 0x00abcdefu);
+
+    /*
+     * Key 0 under mask 0x0f: only 0 is transparent. Taking this screendump
+     * first means the key change below repaints only if the scanout
+     * notices the key and mask writes themselves.
+     */
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x112233);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 12, 20), ==, 0xabcdef);
+
+    /* Key 4 under mask 0x0e makes both 4 and 5 transparent, and 0 opaque. */
+    rgb_write_byte(qts, RGB_CHROMA_KEY0, 0x04);
+    rgb_write_byte(qts, RGB_CHROMA_MASK0, 0x0e);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0xabcdef);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 11, 20), ==, 0xabcdef);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 12, 20), ==, 0x778899);
+
+    /* TR clear: no comparison at all. */
+    rgb_write_wat(qts, OL_WAT_BASE, 0, WAT_ENTRY(2, 3, 0, 0, 0));
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 20), ==, 0x112233);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 11, 20), ==, 0x445566);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Which OL_WAT entry a pixel uses depends on how CONF/4 shares the window-ID
+ * bits (pages 15-17 and 32). Split with all 8 bits to the frame buffer, no
+ * bits are left for the overlay and the OL_WAT segment register picks the
+ * entry for every pixel. In common mode the whole window ID addresses
+ * OL_WAT too, so the overlay value in bits 24-27 is part of the address.
+ */
+static void test_overlay_wat_addressing(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, OL_WAT_4BIT_INDEX(2, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 3, OL_WAT_4BIT_INDEX(4, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 5, OL_WAT_4BIT_INDEX(6, 0));
+    rgb_write_lut(qts, 4 * 64 + 5, 0x445566);
+    rgb_write_lut(qts, 6 * 64 + 5, 0x778899);
+    bar2_write(qts, 30 * TEST_FB_STRIDE + 10 * 4, 0x05abcdefu);
+
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0x112233);
+    rgb_write_byte(qts, RGB_OL_WAT_SEGMENT, 3);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0x445566);
+
+    /*
+     * Common mode also addresses AUX_OL_WAT from the window ID's low four
+     * bits, so entry 5 must enable the overlay as well.
+     */
+    rgb_write_byte(qts, RGB_CONF4, CONF4_COMMON);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0xabcdef);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 5, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 30), ==, 0x778899);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The other WAT addressing shapes of Figures 2 and 3 (pages 16-17). Split
+ * with 4 bits to the frame buffer, the overlay takes the upper four
+ * window-ID bits for both OL_WAT and AUX_OL_WAT. In common mode with AOW
+ * set, AUX_OL_WAT takes the window ID's upper four bits. With 4 logical
+ * window-ID bits, only the low four reach the tables and the segment
+ * register supplies the rest.
+ */
+static void test_overlay_wat_addressing_shapes(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_setup_overlay(qts, WAT_ENTRY(2, 3, 0, 0, 1));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x03, OL_WAT_4BIT_INDEX(4, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x35, OL_WAT_4BIT_INDEX(6, 0));
+    rgb_write_wat(qts, OL_WAT_BASE, 0x75, OL_WAT_4BIT_INDEX(8, 0));
+    rgb_write_lut(qts, 4 * 64 + 5, 0x445566);
+    rgb_write_lut(qts, 6 * 64 + 5, 0x778899);
+    rgb_write_lut(qts, 8 * 64 + 5, 0xaabbcc);
+    bar2_write(qts, 40 * TEST_FB_STRIDE + 10 * 4, 0x35abcdefu);
+
+    /* AUX_OL_WAT 0 enables the overlay; 3 and 5 stay disabled. */
+    rgb_write_byte(qts, RGB_CONF4, CONF4_SPLIT_FB4);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xabcdef);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 3, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0x445566);
+
+    rgb_write_byte(qts, RGB_CONF4, CONF4_COMMON_AOW);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0x778899);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 3, AUX_OL_WAT_CK0_DISABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xabcdef);
+
+    rgb_write_byte(qts, RGB_CONF1, CONF1_4TO1_OVLY8_LWID4);
+    rgb_write_byte(qts, RGB_CONF4, CONF4_COMMON);
+    rgb_write_byte(qts, RGB_OL_WAT_SEGMENT, 0x70);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT_SEGMENT, 0x0);
+    rgb_write_byte(qts, RGB_AUX_OL_WAT + 5, AUX_OL_WAT_CK0_ENABLED);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 10, 40), ==, 0xaabbcc);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -1849,6 +2094,7 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/rgb-data-read-autoincrement",
                    test_rgb_data_read_autoincrement);
     qtest_add_func("/psitech-rad4/fb-wat-round-trip", test_fb_wat_round_trip);
+    qtest_add_func("/psitech-rad4/ol-wat-round-trip", test_ol_wat_round_trip);
     qtest_add_func("/psitech-rad4/reserved-port-index-write-resets-phase",
                    test_reserved_port_index_write_resets_phase);
     qtest_add_func("/psitech-rad4/color-lut-round-trip",
@@ -1889,6 +2135,14 @@ int main(int argc, char **argv)
                    test_cursor_composited_into_scanout);
     qtest_add_func("/psitech-rad4/cursor-no-ghost-after-far-fb-update",
                    test_cursor_no_ghost_after_far_fb_update);
+    qtest_add_func("/psitech-rad4/overlay-composited-into-scanout",
+                   test_overlay_composited_into_scanout);
+    qtest_add_func("/psitech-rad4/overlay-chroma-key-and-opaque",
+                   test_overlay_chroma_key_and_opaque);
+    qtest_add_func("/psitech-rad4/overlay-wat-addressing",
+                   test_overlay_wat_addressing);
+    qtest_add_func("/psitech-rad4/overlay-wat-addressing-shapes",
+                   test_overlay_wat_addressing_shapes);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
