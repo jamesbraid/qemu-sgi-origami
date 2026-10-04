@@ -207,12 +207,12 @@ static void test_inactive_barrier_storage(void)
         g_assert_cmphex(qtest_readq(s, count), ==, 0);
         qtest_writeq(s, count, 63);
         g_assert_cmphex(qtest_readq(s, count), ==, 63);
-        for (unsigned bit = 6; bit < 64; bit++) {
+        for (unsigned bit = 26; bit < 64; bit++) {
             qtest_writeq(s, count, (UINT64_C(1) << bit) | 7);
             g_assert_cmpuint(get(s, "failure"), ==, 5);
             g_assert_cmphex(qtest_readq(s, count), ==, 63);
         }
-        qtest_writeq(s, count, (UINT64_MAX & ~UINT64_C(63)) | 9);
+        qtest_writeq(s, count, (UINT64_MAX & ~((UINT64_C(1) << 26) - 1)) | 9);
         g_assert_cmpuint(get(s, "failure"), ==, 5);
         g_assert_cmphex(qtest_readq(s, count), ==, 63);
         qtest_readq(s, count + 1);
@@ -234,14 +234,68 @@ static void test_inactive_barrier_storage(void)
         g_assert_cmpuint(get(s, "failure"), ==, 4);
         g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0x1234000 + p);
     }
-    for (unsigned context = 0; context <= 10; context++) {
-        if (context >= 1 && context <= 8) {
-            continue;
-        }
+    for (unsigned context = 32; context <= 33; context++) {
         qtest_readq(s, BASE + 0x8000 + 8 * context);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
         qtest_writeq(s, BASE + 0x8000 + 8 * context, 1);
         g_assert_cmpuint(get(s, "failure"), ==, 4);
+    }
+    qtest_quit(s);
+}
+
+static void test_inactive_barrier_fields(void)
+{
+    QTestState *s = qtest_init(ARGS);
+    const unsigned contexts[] = { 0, 8, 31 };
+    const uint64_t mask = (UINT64_C(1) << 26) - 1;
+
+    for (unsigned context = 0; context < 32; context++) {
+        uint64_t address = BASE + 0x8000 + 8 * context;
+
+        g_assert_cmphex(qtest_readq(s, address), ==, 0);
+        g_assert_cmpuint(get(s, "result"), ==, 2);
+        qtest_writeq(s, address, mask - context);
+        g_assert_cmpuint(get(s, "result"), ==, 2);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(contexts); i++) {
+        unsigned context = contexts[i];
+        uint64_t address = BASE + 0x8000 + 8 * context;
+
+        for (unsigned bit = 0; bit < 26; bit++) {
+            qtest_writeq(s, address, UINT64_C(1) << bit);
+            g_assert_cmpuint(get(s, "result"), ==, 2);
+            g_assert_cmphex(qtest_readq(s, address), ==, UINT64_C(1) << bit);
+        }
+        qtest_writeq(s, address, mask - context);
+        for (unsigned bit = 26; bit < 64; bit++) {
+            qtest_writeq(s, address, (UINT64_C(1) << bit) | 7);
+            g_assert_cmpuint(get(s, "result"), ==, 1);
+            g_assert_cmpuint(get(s, "failure"), ==, 5);
+            g_assert_cmphex(qtest_readq(s, address), ==, mask - context);
+        }
+        qtest_readq(s, address + 1);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readl(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readw(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_readb(s, address);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeq(s, address + 1, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writel(s, address, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writew(s, address, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+        qtest_writeb(s, address, 0);
+        g_assert_cmpuint(get(s, "failure"), ==, 4);
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        uint64_t address = BASE + 0x8000 + 8 * context;
+
+        g_assert_cmphex(qtest_readq(s, address), ==, mask - context);
+        qtest_writeq(s, address, 0);
+        g_assert_cmphex(qtest_readq(s, address), ==, 0);
     }
     qtest_quit(s);
 }
@@ -289,6 +343,38 @@ static void test_inactive_barrier_no_effects(void)
             qtest_writeq(s, count, (UINT64_C(1) << 26) | 17);
             g_assert_cmpuint(get(s, "failure"), ==, 5);
             g_assert_cmphex(qtest_readq(s, count), ==, p + 1);
+            set(s, "vector", 8);
+            g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0x5678);
+            g_assert_cmpuint(get(s, "result"), ==, 2);
+            g_assert_cmphex(get(s, "reply"), ==, 1);
+            set(s, "vector", 0);
+        }
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        uint64_t address = BASE + 0x8000 + 8 * context;
+        uint64_t value = ((UINT64_C(1) << 26) - 1) - context;
+
+        for (unsigned attempt = 0; attempt < 4; attempt++) {
+            uint64_t data = value;
+
+            if (attempt) {
+                data |= UINT64_C(1) << (attempt == 3 ? 63 : 25 + attempt);
+            }
+            qtest_writeq(s, address, data);
+            g_assert_cmpuint(get(s, "result"), ==, attempt ? 1 : 2);
+            g_assert_cmpuint(get(s, "failure"), ==, attempt ? 5 : 0);
+            g_assert_cmphex(qtest_readq(s, address), ==, value);
+            g_assert_cmphex(qtest_readq(s, BASE), ==, status);
+            g_assert_cmphex(get(s, "route"), ==, 4 | (2 << 8));
+            for (unsigned p = 0; p < 8; p++) {
+                g_assert_cmphex(qtest_readq(s, BASE + bank[p] + 8), ==, 0);
+                g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==,
+                                UINT64_C(1) << 29);
+            }
+            for (unsigned i = 0; i < 5; i++) {
+                g_assert_cmphex(qtest_readq(s, BASE + 0x100 + 8 * i), ==,
+                                i < 3 ? 0x1200 + i : 1);
+            }
             set(s, "vector", 8);
             g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0x5678);
             g_assert_cmpuint(get(s, "result"), ==, 2);
@@ -438,7 +524,10 @@ static void test_reset(void)
     qtest_readq(s, BASE + 0x518);
     for (unsigned p = 0; p < 8; p++) {
         qtest_writeq(s, BASE + bank[p], UINT64_MAX);
-        qtest_writeq(s, BASE + 0x8000 + 8 * (p + 1), 63 - p);
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        qtest_writeq(s, BASE + 0x8000 + 8 * context,
+                     ((UINT64_C(1) << 26) - 1) - context);
     }
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
     g_assert_cmphex(qtest_readq(s, BASE + 0x100), ==, 0);
@@ -447,7 +536,9 @@ static void test_reset(void)
     g_assert_cmphex((qtest_readq(s, BASE) >> 28) & 15, ==, 1);
     for (unsigned p = 0; p < 8; p++) {
         g_assert_cmphex(qtest_readq(s, BASE + bank[p]), ==, 0);
-        g_assert_cmphex(qtest_readq(s, BASE + 0x8000 + 8 * (p + 1)), ==, 0);
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        g_assert_cmphex(qtest_readq(s, BASE + 0x8000 + 8 * context), ==, 0);
     }
     qtest_quit(s);
 }
@@ -467,7 +558,10 @@ static void test_migration(void)
         qtest_writeq(from, BASE + bank[p] + 0x200, p);
         qtest_writeq(from, BASE + bank[p] + 0x100, 7 - p);
         qtest_writeq(from, BASE + bank[p], 0x31234000 + p);
-        qtest_writeq(from, BASE + 0x8000 + 8 * (p + 1), 63 - p);
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        qtest_writeq(from, BASE + 0x8000 + 8 * context,
+                     ((UINT64_C(1) << 26) - 1) - context);
     }
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
@@ -482,8 +576,10 @@ static void test_migration(void)
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x200), ==, p);
         g_assert_cmphex(qtest_readq(to, BASE + bank[p] + 0x100), ==, 7 - p);
         g_assert_cmphex(qtest_readq(to, BASE + bank[p]), ==, 0x31234000 + p);
-        g_assert_cmphex(qtest_readq(to, BASE + 0x8000 + 8 * (p + 1)), ==,
-                        63 - p);
+    }
+    for (unsigned context = 0; context < 32; context++) {
+        g_assert_cmphex(qtest_readq(to, BASE + 0x8000 + 8 * context), ==,
+                        ((UINT64_C(1) << 26) - 1) - context);
     }
     qtest_quit(from);
     qtest_quit(to);
@@ -557,6 +653,8 @@ int main(int argc, char **argv)
                    test_error_clear_vector);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-storage",
                    test_inactive_barrier_storage);
+    qtest_add_func("/sgi/sn1-router/inactive-barrier-fields",
+                   test_inactive_barrier_fields);
     qtest_add_func("/sgi/sn1-router/inactive-barrier-no-effects",
                    test_inactive_barrier_no_effects);
     qtest_add_func("/sgi/sn1-router/position", test_position);

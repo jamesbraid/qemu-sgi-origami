@@ -17,7 +17,8 @@
 #define FORCE_LOCAL (UINT64_C(1) << 12)
 #define META_ID_MASK (UINT64_C(15) << 8)
 #define PARAMETER_MASK ((UINT64_C(1) << 30) - 1)
-#define LEAF_COUNT_MASK UINT64_C(63)
+#define INACTIVE_BARRIER_CONTEXTS 32
+#define INACTIVE_BARRIER_MASK ((UINT64_C(1) << 26) - 1)
 
 struct SGISN1RouterState {
     SysBusDevice parent_obj;
@@ -33,7 +34,7 @@ struct SGISN1RouterState {
     uint64_t jbus_control;
     uint64_t scratch[5];
     uint64_t parameter[SGI_SN1_ROUTER_PORTS];
-    uint64_t leaf_count[SGI_SN1_ROUTER_PORTS];
+    uint64_t inactive_barrier[INACTIVE_BARRIER_CONTEXTS];
     uint8_t local[SGI_SN1_ROUTER_PORTS][128];
     uint8_t meta[SGI_SN1_ROUTER_PORTS][16];
     uint64_t generation;
@@ -168,11 +169,11 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         storage = &s->scratch[(address - 0x100) / 8];
         mask = address >= 0x118 ? 1 : UINT64_MAX;
         break;
-    case 0x8008 ... 0x8040:
-        if (write && (packet->data & ~LEAF_COUNT_MASK)) {
+    case 0x8000 ... 0x80f8:
+        if (write && (packet->data & ~INACTIVE_BARRIER_MASK)) {
             return refuse(packet, SGI_NET_PACKET_FAILURE_COMMAND);
         }
-        storage = &s->leaf_count[(address - 0x8008) / 8];
+        storage = &s->inactive_barrier[(address - 0x8000) / 8];
         notify = false;
         break;
     default:
@@ -312,7 +313,7 @@ static void router_reset_enter(Object *obj, ResetType type)
     memset(s->global, 0, sizeof(s->global));
     memset(s->scratch, 0, sizeof(s->scratch));
     memset(s->parameter, 0, sizeof(s->parameter));
-    memset(s->leaf_count, 0, sizeof(s->leaf_count));
+    memset(s->inactive_barrier, 0, sizeof(s->inactive_barrier));
     memset(s->local, 0, sizeof(s->local));
     memset(s->meta, 0, sizeof(s->meta));
 }
@@ -331,14 +332,18 @@ static int router_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     for (unsigned p = 0; p < SGI_SN1_ROUTER_PORTS; p++) {
-        if ((s->parameter[p] & ~PARAMETER_MASK) ||
-            (s->leaf_count[p] & ~LEAF_COUNT_MASK)) {
+        if (s->parameter[p] & ~PARAMETER_MASK) {
             return -EINVAL;
         }
         for (unsigned i = 0; i < 128; i++) {
             if (s->local[p][i] > 7 || (i < 16 && s->meta[p][i] > 7)) {
                 return -EINVAL;
             }
+        }
+    }
+    for (unsigned context = 0; context < INACTIVE_BARRIER_CONTEXTS; context++) {
+        if (s->inactive_barrier[context] & ~INACTIVE_BARRIER_MASK) {
+            return -EINVAL;
         }
     }
     sgi_net_port_flood_start();
@@ -348,8 +353,8 @@ static int router_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_router = {
     .name = TYPE_SGI_SN1_ROUTER,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = router_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_EQUAL(revision, SGISN1RouterState),
@@ -359,8 +364,8 @@ static const VMStateDescription vmstate_router = {
         VMSTATE_UINT64_ARRAY(scratch, SGISN1RouterState, 5),
         VMSTATE_UINT64_ARRAY(parameter, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS),
-        VMSTATE_UINT64_ARRAY(leaf_count, SGISN1RouterState,
-                             SGI_SN1_ROUTER_PORTS),
+        VMSTATE_UINT64_ARRAY(inactive_barrier, SGISN1RouterState,
+                             INACTIVE_BARRIER_CONTEXTS),
         VMSTATE_UINT8_2DARRAY(local, SGISN1RouterState,
                              SGI_SN1_ROUTER_PORTS, 128),
         VMSTATE_UINT8_2DARRAY(meta, SGISN1RouterState,
