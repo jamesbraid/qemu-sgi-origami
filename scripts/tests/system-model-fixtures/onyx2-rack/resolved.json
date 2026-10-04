@@ -4074,17 +4074,14 @@
     "harness": {
       "console": "ioc3-serial-a",
       "default_cpu_model": "R10000",
-      "default_firmware_asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
       "default_topology": "onyx2-rack",
       "disk_bus": "scsi.0",
-      "has_managed_boot_flash": false,
       "install_media": [
         "disk-image"
       ],
       "netboot_adapter": "ioc3-ethernet",
       "prom_dialogue": "ip27-menu",
       "provenance": "derived",
-      "requires_per_node_flash": true,
       "sources": [
         "tools/origami_lib/node_prom.py: node_prom_drives, the harness's own requirement that every launch seed one independent node flash image per node because the machine takes no -bios",
         "docs/machines/layers/products/origin2000-module.yaml: the same IP27 PROM dialogue, console and disk bus as the Origin 2000 module this rack is built on"

@@ -1483,8 +1483,9 @@ class OccupiedConnectorTests(unittest.TestCase):
         # network; it has no Timekeeper, so the NVRAM count stays at the
         # BaseIO's one.
         self.assertEqual(len(offering["networks"]), 2)
-        nvram = next(item for item in offering["resources"] if item["kind"] == "nvram")
-        self.assertEqual(nvram["count"], 1)
+        self.assertEqual([item["name"] for item in offering["storage"]
+                          if item["name"].startswith("nvram")],
+                         ["nvram0", "nvram0-clock"])
 
 
 def _fit_crosstown(model: dict) -> dict:
@@ -1553,9 +1554,10 @@ class CrosstownTests(unittest.TestCase):
         board = catalogue["topologies"][0]["io-boards"][0]
         self.assertEqual((board["preset"], board["carrier"]),
                          ("ip29-io-crosstown", "onboard"))
-        nvram = next(item for item in catalogue["offerings"][0]["resources"]
-                     if item["kind"] == "nvram")
-        self.assertEqual(nvram["count"], 1)
+        self.assertEqual([item["name"]
+                          for item in catalogue["offerings"][0]["storage"]
+                          if item["name"].startswith("nvram")],
+                         ["nvram0", "nvram0-clock"])
 
     def test_gigachannel_cabinet_is_a_machine_placed_board(self):
         model = _fit_occupant(_resolved("origin2000-rack"),
@@ -1851,8 +1853,11 @@ class OriginThreeHundredTwoChassisTests(unittest.TestCase):
         counts = {item["argument"]: item["count"] for item in offerings[0]["resources"]
                   if item["kind"] == "identity-eeprom"}
         self.assertEqual(counts, {"chassis-eeprom.N=": 4, "board-eeprom.N=": 4})
-        flash = [item for item in offerings[0]["resources"] if item["kind"] == "boot-flash"]
-        self.assertEqual([item["count"] for item in flash], [2])
+        flash = [item for item in offerings[0]["storage"]
+                 if item["name"].startswith("node")]
+        self.assertEqual([(item["name"], item["size"]) for item in flash],
+                         [("node0-flash", 16 * 1024 * 1024),
+                          ("node1-flash", 16 * 1024 * 1024)])
         self.assertEqual(
             [(item["kind"], item["node"], item["argument"]) for item in offerings[0]["consoles"]],
             [("console", 0, "-serial chardev:l1"),
@@ -2028,9 +2033,10 @@ class CatalogueJsonTests(unittest.TestCase):
             [(1, 1), (1, 2), (2, 2), (2, 3), (2, 4), (3, 3), (3, 4), (3, 5),
              (3, 6), (4, 4), (4, 5), (4, 6), (4, 7), (4, 8)])
         for offering in offerings:
-            flash = next(r for r in offering["resources"]
-                         if r["kind"] == "boot-flash")
-            self.assertEqual(flash["count"], offering["nodes"])
+            flash = [item["name"] for item in offering["storage"]
+                     if item["name"].startswith("node")]
+            self.assertEqual(flash, [f"node{index}-flash"
+                                     for index in range(offering["nodes"])])
 
     def test_every_offering_names_its_products_default_topology(self):
         # The default is the product's base composition (model_inputs'
@@ -2071,15 +2077,16 @@ class CatalogueJsonTests(unittest.TestCase):
         # (ISP12160, head F) and no others -- head E's own pci list is
         # empty, and IOC3/LUCENT_OHCI are not storage controllers.
         catalogue = json.loads(render_catalogue_json([_resolved("origin300")]))
-        storage = catalogue["offerings"][0]["storage"]
-        self.assertEqual(len(storage), 1)
-        self.assertEqual(storage[0]["bus"], "scsi.0")
+        adapters = catalogue["offerings"][0]["scsi-adapters"]
+        self.assertEqual(len(adapters), 1)
+        self.assertEqual(adapters[0]["bus"], "scsi.0")
 
     def test_origin_200_has_two_storage_controllers(self):
         # Both onboard ISP1040 channels are host adapters of their own.
         catalogue = json.loads(render_catalogue_json([_resolved("origin200")]))
-        storage = catalogue["offerings"][0]["storage"]
-        self.assertEqual([item["bus"] for item in storage], ["scsi.0", "scsi.1"])
+        adapters = catalogue["offerings"][0]["scsi-adapters"]
+        self.assertEqual([item["bus"] for item in adapters],
+                         ["scsi.0", "scsi.1"])
 
     def test_consoles_follow_podlibs_line_order(self):
         # tools/podlib.py's CHARDEV_IOC3_A/IOC3_B/SYSTEM_CONTROLLER/

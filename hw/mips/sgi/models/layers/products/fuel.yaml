@@ -142,8 +142,6 @@ layer:
         disk_bus: scsi.0
         netboot_adapter: ioc3-ethernet
         default_topology: one-chassis
-        requires_per_node_flash: false
-        has_managed_boot_flash: false
         timekeeper_nvram: true
         identity_inputs: [chassis-eeprom, board-eeprom]
         identity_record_slots: [node-board]

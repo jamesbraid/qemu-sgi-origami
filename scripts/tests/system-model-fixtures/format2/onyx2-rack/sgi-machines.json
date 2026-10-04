@@ -35,18 +35,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -69,49 +75,78 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 8,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node3-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -155,18 +190,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -189,49 +230,78 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 4,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node3-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -275,18 +345,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -309,49 +385,78 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 5,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node3-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -395,18 +500,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -429,24 +540,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 6,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -472,6 +567,51 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 6,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node3-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -515,18 +655,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=4",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -549,49 +695,78 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 4,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 7,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node3-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -633,18 +808,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -667,49 +848,72 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 3,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 6,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -751,18 +955,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -785,49 +995,72 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 3,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 3,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -869,18 +1102,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -903,24 +1142,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 3,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 4,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -946,6 +1169,45 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -987,18 +1249,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=3",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1021,49 +1289,72 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 3,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 5,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node2-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -1103,18 +1394,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1137,24 +1434,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 4,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -1180,6 +1461,39 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -1219,18 +1533,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1253,24 +1573,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 2,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -1296,6 +1600,39 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -1335,18 +1672,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=2",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1369,49 +1712,66 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
+      "resources": [],
+      "scsi-adapters": [
         {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         },
         {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 2,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
         }
       ],
       "smp": 3,
       "storage": [
         {
-          "bus": "scsi.0",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
         },
         {
-          "bus": "scsi.1",
-          "targets": [
-            1,
-            2,
-            3,
-            4,
-            5,
-            6,
-            7
-          ],
-          "type": "scsi"
+          "initial": "boot-prom",
+          "name": "node1-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -1449,18 +1809,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1483,24 +1849,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 1,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 2,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -1526,6 +1876,33 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 2,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [
@@ -1563,18 +1940,24 @@
       ],
       "disk-bus": "scsi.0",
       "display-name": "Onyx2 rack with one InfiniteReality pipe",
-      "firmware": {
-        "argument": "-bios",
-        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
-        "kind": "ip27-prom",
-        "per-node-flash": true,
-        "size": 1048576
-      },
       "hardware-inputs": [],
       "identity-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "ip27-prom",
+          "name": "boot-prom",
+          "required": true
+        },
+        {
+          "kind": "io6-prom",
+          "name": "io-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
+      "machine-options": "onyx2,topology=onyx2-rack,nodes=1",
       "memory-per-node-mib": {
         "accepted": [
           64
@@ -1597,24 +1980,8 @@
       },
       "product": "onyx2",
       "prom-dialogue": "ip27-menu",
-      "resources": [
-        {
-          "argument": "-drive if=mtd,index=N",
-          "count": 1,
-          "kind": "nvram",
-          "scope": "board",
-          "size": 32768
-        },
-        {
-          "argument": "-drive if=pflash,unit=N",
-          "count": 1,
-          "kind": "boot-flash",
-          "scope": "node",
-          "size": 1048576
-        }
-      ],
-      "smp": 1,
-      "storage": [
+      "resources": [],
+      "scsi-adapters": [
         {
           "bus": "scsi.0",
           "targets": [
@@ -1640,6 +2007,33 @@
             7
           ],
           "type": "scsi"
+        }
+      ],
+      "smp": 1,
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "io-prom",
+          "name": "io0-flash",
+          "read-only": false,
+          "size": 1048576
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0",
+          "read-only": false,
+          "size": 32768
+        },
+        {
+          "initial": "zero",
+          "name": "nvram0-clock",
+          "read-only": false,
+          "size": 16
         }
       ],
       "supported-guests": [

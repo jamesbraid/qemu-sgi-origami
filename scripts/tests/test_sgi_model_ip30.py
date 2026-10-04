@@ -43,9 +43,17 @@ class IP30CatalogueTests(unittest.TestCase):
             "r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
             "r12000-scache-bytes", "r12000-scache-block-words"])
         offering = next(o for o in catalogue["offerings"] if o["product"] == "octane2")
-        self.assertNotIn("asset", offering["firmware"])
-        self.assertEqual(offering["firmware"]["kind"], "ip30-prom")
-        self.assertEqual(len(offering["storage"]), 2)
+        self.assertNotIn("firmware", offering)
+        self.assertEqual(offering["init-inputs"], [
+            {"name": "boot-prom", "kind": "ip30-prom", "required": True}])
+        self.assertEqual(offering["storage"], [
+            {"name": "node0-flash", "size": 1048576, "read-only": False,
+             "initial": "boot-prom"},
+            {"name": "nvram0", "size": 512, "read-only": False,
+             "initial": "zero"},
+            {"name": "nvram0-clock", "size": 24, "read-only": False,
+             "initial": "zero"}])
+        self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)
 

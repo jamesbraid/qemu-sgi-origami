@@ -32,7 +32,13 @@ the binary it ships instead of carrying a second copy out of band. The
 catalogue carries two sections; only ``topologies`` reaches this builder.
 ``offerings``, one entry per accepted population a launcher may select, is
 for packaging and launch tooling outside the emulator, never
-read here.
+read here. Each offering names the ``-M`` value that selects it
+(``machine-options``), every writable persistent store the machine has
+(``storage``: per-node boot flash ``node<N>-flash``, BASEIO or GIGAchannel
+PROM flash ``io<N>-flash``, Timekeeper NVRAM ``nvram<N>`` and its clock
+record ``nvram<N>-clock``, each with its exact size and what a new
+machine's copy starts from) and the firmware images that initial content
+is built from (``init-inputs``).
 Four products stand on this base today:
 ``origin200``, ``origin2000`` and ``onyx2`` (SN0), and ``origin300``
 (SN1). ``onyx2`` is Origin 2000 silicon with graphics: the same IP27

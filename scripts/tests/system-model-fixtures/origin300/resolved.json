@@ -1383,7 +1383,6 @@
       "default_cpu_model": "R14000",
       "default_topology": "one-chassis",
       "disk_bus": "scsi.0",
-      "has_managed_boot_flash": true,
       "identity_inputs": [
         "chassis-eeprom",
         "board-eeprom",
@@ -1402,7 +1401,6 @@
       "netboot_adapter": "ioc3-ethernet",
       "prom_dialogue": "ip35-l1-prompt",
       "provenance": "derived",
-      "requires_per_node_flash": false,
       "smdk": {
         "diagnostic_mac_bootarg": false,
         "discovery_prerequisites": [
