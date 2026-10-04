@@ -1510,8 +1510,10 @@ static void test_point_data_framing(gconstpointer opaque)
         assert_box(s, 10, 20, 12, 22, 0x55);
         g_assert_cmphex(front_at(s, 0, 26), ==,
                         c->token == 0x14c || c->token == 0x14d ||
-                        c->token == 0x14e || c->token == 0x159 ||
-                        c->token == 0x15c ? 0x55 : 0);
+                        c->token == 0x14e || c->token == 0x14f ||
+                        c->token == 0x150 || c->token == 0x159 ||
+                        c->token == 0x15c || c->token == 0x15d ||
+                        c->token == 0x15e ? 0x55 : 0);
         assert_in_step(s);
         qtest_quit(s);
         found = kona_log_read(log);
@@ -1761,7 +1763,9 @@ static void test_point_batch(gconstpointer opaque)
 static void test_solid_line_batch(gconstpointer opaque)
 {
     unsigned value = GPOINTER_TO_UINT(opaque), shape = value / 16;
-    unsigned mode = value % 16, count = shape == 2 ? 7 : shape ? 1 : 2;
+    unsigned mode = value % 16;
+    bool six = shape == 2 || shape == 4, relative = shape >= 3;
+    unsigned count = six ? 7 : relative ? 2 : shape ? 1 : 2;
     bool rgb = mode == 2 || mode == 3;
     unsigned gx = mode == 1 || mode == 3 || mode == 5 ? 6 :
                   mode == 8 ? 5 : 3;
@@ -1775,17 +1779,27 @@ static void test_solid_line_batch(gconstpointer opaque)
                        mask);
     uint32_t gc[13] = { 0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
                         0xc, 1, 1, 6, 0, 1, 1 };
-    const uint32_t pending[] = { XY(10, 20), XY(14, 20) };
+    const uint32_t absolute_pending[] = { XY(10, 20), XY(14, 20) };
+    const uint32_t relative_pending[] = { XY(10, 20), XY(4, 0) };
+    const uint32_t *pending = relative ? relative_pending : absolute_pending;
     const uint32_t segment[] = { XY(18, 22), XY(22, 22) };
     const uint32_t line[] = { XY(14, 24) };
     const uint32_t line6[] = {
         XY(14, 24), XY(18, 24), XY(18, 28), XY(22, 28),
         XY(22, 32), XY(26, 32), XY(26, 36),
     };
-    const uint32_t *args = shape == 2 ? line6 : shape ? line : segment;
-    unsigned token = shape == 2 ? 0x15c : shape ? 0x15b : 0x159;
-    unsigned bad_x = shape == 2 ? 26 : shape ? 14 : 22;
-    unsigned bad_y = shape == 2 ? 35 : shape ? 24 : 22;
+    const uint32_t relative_line[] = { XY(0, 2), XY(0, 2) };
+    const uint32_t relative_line6[] = {
+        XY(0, 4), XY(4, 0), XY(0, 4), XY(4, 0),
+        XY(0, 4), XY(4, 0), XY(0, 4),
+    };
+    const uint32_t *args = relative ?
+        (six ? relative_line6 : relative_line) :
+        (six ? line6 : shape ? line : segment);
+    unsigned token = relative ? (six ? 0x15e : 0x15d) :
+                     six ? 0x15c : shape ? 0x15b : 0x159;
+    unsigned bad_x = six ? 26 : shape ? 14 : 22;
+    unsigned bad_y = six ? 35 : shape ? 24 : 22;
     g_autofree char *dir = NULL, *uri = NULL;
     GError *error = NULL;
     QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
@@ -1818,7 +1832,7 @@ static void test_solid_line_batch(gconstpointer opaque)
         qtest_writel(s, REG_COMMAND, 0x80000000);
         kona_command(s, 0x13c, (uint32_t[]) { 5 }, 1);
     }
-    kona_command(s, 0x142, pending, ARRAY_SIZE(pending));
+    kona_command(s, 0x142, pending, 2);
     g_assert_cmphex(front_at(s, 10, 20), ==, dest);
     if (mode == 6) {
         unsigned partial = count / 2;
@@ -1847,7 +1861,7 @@ static void test_solid_line_batch(gconstpointer opaque)
                            (y == 22 && x >= 18 && x <= 22);
             } else {
                 covered |= x == 14 && y >= 20 && y <= 24;
-                if (shape == 2) {
+                if (six) {
                     covered |= (y == 24 && x >= 14 && x <= 18) ||
                                (x == 18 && y >= 24 && y <= 28) ||
                                (y == 28 && x >= 18 && x <= 22) ||
@@ -1864,9 +1878,13 @@ static void test_solid_line_batch(gconstpointer opaque)
                             0x123456 : drawn ? result : dest);
         }
     }
-    if (shape == 2 && mode != 5) {
+    if (six && mode != 5) {
         kona_command(s, 0x141, (uint32_t[]) { XY(26, 36) }, 1);
-        kona_command(s, 0x15b, (uint32_t[]) { XY(30, 36) }, 1);
+        if (relative) {
+            kona_command(s, 0x15d, (uint32_t[]) { XY(2, 0), XY(2, 0) }, 2);
+        } else {
+            kona_command(s, 0x15b, (uint32_t[]) { XY(30, 36) }, 1);
+        }
         for (unsigned x = 26; x <= 30; x++) {
             g_assert_cmphex(front_at(s, x, 36), ==,
                             mode == 4 ? dest : result);
@@ -2005,6 +2023,133 @@ static void test_solid_line_control(gconstpointer opaque)
     }
     assert_in_step(s);
     qtest_quit(s);
+}
+
+static void test_relative_line_coordinates(gconstpointer opaque)
+{
+    unsigned mode = GPOINTER_TO_UINT(opaque);
+    uint32_t xor_gc[] = { 0x3c000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+                          0xc, 1, 1, 12, 0, 1, 1 };
+    g_autofree char *dir = NULL, *uri = NULL;
+    GError *error = NULL;
+    QTestState *from = qtest_init(MACHINE_ARGS), *to = NULL, *s = from;
+
+    load_gc(s, 0);
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(0, 0), XY(64, 64) }, 2);
+    load_gc(s, 0x3c);
+    if (mode == 0) {
+        kona_command(s, 0x15d, (uint32_t[]) { XY(20, 20), XY(4, 0) }, 2);
+        kona_command(s, 0x15d, (uint32_t[]) { XY(10, 20), XY(4, 0) }, 2);
+        for (unsigned x = 10; x <= 30; x++) {
+            bool covered = x <= 14 || (x >= 20 && x <= 24);
+
+            g_assert_cmphex(front_at(s, x, 20), ==, covered ? 0x3c : 0);
+        }
+    } else if (mode == 1) {
+        kona_command(s, TOKEN_GC, xor_gc, ARRAY_SIZE(xor_gc));
+        kona_command(s, 0x144,
+                     (uint32_t[]) { XY(10, 20), XY(4, 0),
+                                    XY(0, 4), XY(-4, 0) }, 4);
+        kona_command(s, 0x15d, (uint32_t[]) { XY(0, -2), XY(0, -2) }, 2);
+        for (unsigned y = 19; y <= 25; y++) {
+            for (unsigned x = 9; x <= 15; x++) {
+                bool border = x >= 10 && x <= 14 && y >= 20 && y <= 24 &&
+                              (x == 10 || x == 14 || y == 20 || y == 24);
+
+                g_assert_cmphex(front_at(s, x, y), ==, border ? 0x3c : 0);
+            }
+        }
+    } else if (mode == 2) {
+        kona_command(s, TOKEN_GC, xor_gc, ARRAY_SIZE(xor_gc));
+        kona_command(s, 0x143, (uint32_t[]) { XY(10, 20), 0, 0 }, 3);
+        kona_command(s, 0x15d, (uint32_t[]) { 0, 0 }, 2);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0x3c);
+        kona_command(s, 0x15e,
+                     (uint32_t[]) { XY(12, 20), 0, 0, 0, 0, 0, 0 }, 7);
+        g_assert_cmphex(front_at(s, 12, 20), ==, 0);
+    } else if (mode == 3) {
+        kona_command(s, TOKEN_CLIP, (uint32_t[]) { 1, 0, 0, 4, 4 }, 5);
+        kona_command(s, 0x15d, (uint32_t[]) { XY(-3, -1), XY(5, 2) }, 2);
+        for (unsigned y = 0; y < 4; y++) {
+            for (unsigned x = 0; x < 4; x++) {
+                bool covered = (x == 0 && y == 0) ||
+                               (x == 1 && y == 1) || (x == 2 && y == 1);
+
+                g_assert_cmphex(front_at(s, x, y), ==, covered ? 0x3c : 0);
+            }
+        }
+    } else if (mode >= 4 && mode <= 7) {
+        bool vertical = mode & 1, lower = mode >= 6;
+        int delta = lower ? INT16_MIN : INT16_MAX;
+        uint32_t args[] = {
+            vertical ? XY(0, lower ? delta : 4) : XY(lower ? delta : 4, 0),
+            vertical ? XY(0, delta) : XY(delta, 0),
+        };
+
+        kona_command(s, 0x141, (uint32_t[]) { XY(10, 20) }, 1);
+        kona_command(s, 0x15d, args, ARRAY_SIZE(args));
+        for (unsigned y = 20; y <= 24; y++) {
+            for (unsigned x = 10; x <= 14; x++) {
+                g_assert_cmphex(front_at(s, x, y), ==, 0);
+            }
+        }
+        kona_command(s, 0x15d, (uint32_t[]) { XY(20, 20), XY(4, 0) }, 2);
+        g_assert_cmphex(front_at(s, 20, 20), ==, 0x3c);
+        g_assert_cmphex(front_at(s, 24, 20), ==, 0x3c);
+    } else if (mode == 8 || mode == 11) {
+        uint32_t pending[32], args[7];
+
+        pending[0] = XY(10, 20);
+        for (unsigned i = 1; i < ARRAY_SIZE(pending); i++) {
+            pending[i] = XY(1, 0);
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(args); i++) {
+            args[i] = XY(1, 0);
+        }
+        for (unsigned i = 0; i < 30; i += 10) {
+            kona_command(s, 0x14b, pending + i, 10);
+        }
+        kona_command(s, 0x142, pending + 30, 2);
+        if (mode == 11) {
+            kona_command(s, 0x15e, args, 3);
+            dir = g_dir_make_tmp("kona-relative-line-XXXXXX", &error);
+            g_assert_no_error(error);
+            uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+            to = qtest_initf("%s -incoming %s", MIGRATION_ARGS, uri);
+            sgi_migrate_stopped(from, uri);
+            s = to;
+            for (unsigned i = 3; i < ARRAY_SIZE(args); i++) {
+                qtest_writel(s, REG_COMMAND, args[i]);
+            }
+        } else {
+            kona_command(s, 0x15e, args, ARRAY_SIZE(args));
+        }
+        for (unsigned x = 9; x <= 49; x++) {
+            g_assert_cmphex(front_at(s, x, 20), ==,
+                            x >= 10 && x < 48 ? 0x3c : 0);
+        }
+    } else {
+        kona_command(s, 0x141, (uint32_t[]) { XY(10, 20) }, 1);
+        if (mode == 9) {
+            qtest_system_reset(s);
+            load_gc(s, 0x3c);
+        } else {
+            kona_command(s, TOKEN_POSITION,
+                         (uint32_t[]) { 100, 50, 200, 200 }, 4);
+        }
+        kona_command(s, 0x15d, (uint32_t[]) { XY(20, 20), XY(4, 0) }, 2);
+        g_assert_cmphex(front_at(s, 10, 20), ==, 0);
+        for (unsigned x = 20; x <= 24; x++) {
+            g_assert_cmphex(front_at(s, x, 20), ==, 0x3c);
+        }
+        g_assert_cmphex(front_at(s, 30, 40), ==, 0);
+    }
+    assert_in_step(s);
+    if (to) {
+        qtest_quit(to);
+        g_rmdir(dir);
+    }
+    qtest_quit(from);
 }
 
 static void test_relative_point_batch(gconstpointer opaque)
@@ -2807,8 +2952,10 @@ int main(int argc, char **argv)
                                 test_relative_point_batch);
         }
     }
-    for (unsigned shape = 0; shape < 3; shape++) {
-        static const char *names[] = { "segment", "line", "line6" };
+    for (unsigned shape = 0; shape < 5; shape++) {
+        static const char *names[] = {
+            "segment", "line", "line6", "relative", "relative6",
+        };
 
         for (unsigned mode = 0; mode < ARRAY_SIZE(point_batch_cases); mode++) {
             g_autofree char *name = g_strdup_printf(
@@ -2837,6 +2984,20 @@ int main(int argc, char **argv)
 
         qtest_add_data_func(name, GUINT_TO_POINTER(mode),
                             test_solid_line_control);
+    }
+    static const char *relative_line_cases[] = {
+        "fresh-anchor", "closed-xor", "degenerate", "signed-clip",
+        "x-upper-overflow", "y-upper-overflow", "x-lower-overflow",
+        "y-lower-overflow", "maximum-run", "reset", "interrupted",
+        "maximum-run-migrates",
+    };
+    for (unsigned mode = 0; mode < ARRAY_SIZE(relative_line_cases); mode++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-fill/relative-line-coordinates/%s",
+            relative_line_cases[mode]);
+
+        qtest_add_data_func(name, GUINT_TO_POINTER(mode),
+                            test_relative_line_coordinates);
     }
     static const char *data5_cases[] = {
         "absolute", "relative", "background", "partial-migrates",
