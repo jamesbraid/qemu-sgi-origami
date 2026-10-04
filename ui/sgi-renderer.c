@@ -254,6 +254,36 @@ static int64_t renderer_edge(const int64_t a[2], const int64_t b[2],
     return dx * (y - a[1]) - dy * (x - a[0]);
 }
 
+static int64_t renderer_triangle(const SGIRendererRequest *request,
+                                  int64_t vertices[3][2])
+{
+    for (unsigned i = 0; i < 3; i++) {
+        for (unsigned axis = 0; axis < 2; axis++) {
+            vertices[i][axis] = request->vertices[i][axis] * 256;
+        }
+    }
+    return renderer_edge(vertices[0], vertices[1],
+                         vertices[2][0], vertices[2][1]);
+}
+
+bool sgi_renderer_request_cull(SGIRendererRequest *request, bool clockwise,
+                                bool cull_front, bool cull_back)
+{
+    int64_t vertices[3][2], area;
+    bool front;
+
+    if (!sgi_renderer_request_valid(request)) {
+        return false;
+    }
+    area = renderer_triangle(request, vertices);
+    front = clockwise ? area < 0 : area > 0;
+    if (front ? cull_front : cull_back) {
+        request->clip[0] = request->clip[1] = 0;
+        request->clip[2] = request->clip[3] = -1;
+    }
+    return true;
+}
+
 /* Match the CPU model's bottom-origin top-left coverage and 8-bit grid. */
 static bool renderer_covered(const int64_t vertices[3][2], int64_t area,
                              unsigned x, unsigned y)
@@ -280,13 +310,7 @@ bool sgi_renderer_staging_valid(const SGIRendererRequest *request)
     if (!sgi_renderer_request_valid(request)) {
         return false;
     }
-    for (unsigned i = 0; i < 3; i++) {
-        for (unsigned axis = 0; axis < 2; axis++) {
-            vertices[i][axis] = request->vertices[i][axis] * 256;
-        }
-    }
-    area = renderer_edge(vertices[0], vertices[1],
-                         vertices[2][0], vertices[2][1]);
+    area = renderer_triangle(request, vertices);
     if (area < 0) {
         for (unsigned axis = 0; axis < 2; axis++) {
             int64_t tmp = vertices[1][axis];

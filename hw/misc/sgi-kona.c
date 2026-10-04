@@ -2407,13 +2407,18 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
     }
     if (st->shade_model != SGI_GL_FLAT ||
         (st->colour_mask & 7) != 7 || (st->colour_mask & ~15) ||
-        st->cull_face || st->alpha_test || st->depth_test || st->stencil_test ||
+        st->alpha_test || st->depth_test || st->stencil_test ||
         st->blend || st->index_logic_op || st->color_logic_op || st->fog ||
         st->polygon_offset || st->texture_1d || st->texture_2d ||
         st->texture_3d || st->dither || st->clip_planes ||
         st->window_matrix_given || st->window_rows_down ||
         st->depth_range[0] != 0 || st->depth_range[1] != 1 ||
         st->viewport[2] < 0 || st->viewport[3] < 0) {
+        return false;
+    }
+    if (st->cull_face && st->cull_face_mode != SGI_GL_FRONT &&
+        st->cull_face_mode != SGI_GL_BACK &&
+        st->cull_face_mode != SGI_GL_FRONT_AND_BACK) {
         return false;
     }
     for (unsigned i = 0; i < 3; i++) {
@@ -2471,7 +2476,15 @@ static bool sgi_kona_renderer_request(SGIKonaState *s, const SGIGLDraw *d,
                          (int64_t)st->scissor[1] + st->scissor[3] - 1);
     }
     request->generation = s->renderer_generation;
-    return sgi_renderer_request_tile(request, tx, ty, width, height, bounds);
+    if (!sgi_renderer_request_tile(request, tx, ty, width, height, bounds)) {
+        return false;
+    }
+    return !st->cull_face || sgi_renderer_request_cull(request,
+        st->front_face == SGI_GL_CW,
+        st->cull_face_mode == SGI_GL_FRONT ||
+        st->cull_face_mode == SGI_GL_FRONT_AND_BACK,
+        st->cull_face_mode == SGI_GL_BACK ||
+        st->cull_face_mode == SGI_GL_FRONT_AND_BACK);
 }
 
 static unsigned sgi_kona_renderer_count(const SGIGLDraw *d)
