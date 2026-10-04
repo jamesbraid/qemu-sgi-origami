@@ -172,11 +172,11 @@ typedef enum SGIMachineInput {
 } SGIMachineInput;
 
 static const char *const sgi_machine_input_names[] = {
-    [SGI_INPUT_BOARD_ID] = "fuel-board-id-word",
-    [SGI_INPUT_IOC3_SUBSYSTEM] = "fuel-ioc3-subsystem-id",
-    [SGI_INPUT_L1_TYPE] = "fuel-l1-type-code",
-    [SGI_INPUT_L1_REVISION] = "fuel-l1-revision",
-    [SGI_INPUT_BEDROCK_REVISION] = "fuel-bedrock-revision",
+    [SGI_INPUT_BOARD_ID] = "board-id-word",
+    [SGI_INPUT_IOC3_SUBSYSTEM] = "ioc3-subsystem-id",
+    [SGI_INPUT_L1_TYPE] = "l1-type-code",
+    [SGI_INPUT_L1_REVISION] = "l1-revision",
+    [SGI_INPUT_BEDROCK_REVISION] = "bedrock-revision",
     [SGI_INPUT_MAC_EEPROM] = "fuel-mac-eeprom",
 };
 
@@ -326,16 +326,21 @@ struct SGIMachineState {
     strList *chassis_eeprom;
     strList *board_eeprom;
     strList *spd_eeprom;
-    uint64_t fuel_board_id_word;
-    bool fuel_board_id_word_set;
-    uint16_t fuel_ioc3_subsystem_id;
-    bool fuel_ioc3_subsystem_id_set;
-    uint8_t fuel_l1_type_code;
-    bool fuel_l1_type_code_set;
-    int32_t fuel_l1_revision[3];
-    bool fuel_l1_revision_set;
-    uint8_t fuel_bedrock_revision;
-    bool fuel_bedrock_revision_set;
+    /*
+     * Family overrides of catalogue board values. Each one replaces the
+     * catalogue value in every node, L1 or I/O board of the selected
+     * topology that carries the field.
+     */
+    uint64_t board_id_override;
+    bool board_id_override_set;
+    uint16_t ioc3_subsystem_override;
+    bool ioc3_subsystem_override_set;
+    uint8_t l1_type_override;
+    bool l1_type_override_set;
+    int32_t l1_revision_override[3];
+    bool l1_revision_override_set;
+    uint8_t bedrock_revision_override;
+    bool bedrock_revision_override_set;
     char *fuel_mac_eeprom;
     /* mac=: node 0's onboard Ethernet address; NULL selects the default. */
     char *mac;
@@ -3495,15 +3500,15 @@ static bool sgi_machine_input_present(SGIMachineState *s,
 {
     switch (input) {
     case SGI_INPUT_BOARD_ID:
-        return s->fuel_board_id_word_set;
+        return s->board_id_override_set;
     case SGI_INPUT_IOC3_SUBSYSTEM:
-        return s->fuel_ioc3_subsystem_id_set;
+        return s->ioc3_subsystem_override_set;
     case SGI_INPUT_L1_TYPE:
-        return s->fuel_l1_type_code_set;
+        return s->l1_type_override_set;
     case SGI_INPUT_L1_REVISION:
-        return s->fuel_l1_revision_set;
+        return s->l1_revision_override_set;
     case SGI_INPUT_BEDROCK_REVISION:
-        return s->fuel_bedrock_revision_set;
+        return s->bedrock_revision_override_set;
     case SGI_INPUT_MAC_EEPROM:
         return s->fuel_mac_eeprom != NULL;
     default:
@@ -3541,21 +3546,21 @@ static bool sgi_machine_bind_input(SGIMachineState *s,
     return true;
 }
 
+/*
+ * A family override applies to every instance of its field, so it is
+ * marked used rather than bound once. Without an override the catalogue
+ * value stands; a topology with neither cannot be built.
+ */
 static bool sgi_machine_resolve_uint(SGIMachineState *s,
                                     const SGIModelTopology *t,
-                                    const SGIModelInputBinding *binding,
                                     SGIMachineInput input, unsigned int *used,
                                     bool has_default, uint64_t default_value,
                                     uint64_t *value, Error **errp)
 {
-    bool present;
-
-    if (!sgi_machine_bind_input(s, t, binding, input, used, &present, errp)) {
-        return false;
-    }
-    if (!present) {
+    *used |= 1U << input;
+    if (!sgi_machine_input_present(s, input)) {
         if (!has_default) {
-            error_setg(errp, "topology '%s' has no resolved value for '%s'",
+            error_setg(errp, "topology '%s' has no catalogue value for %s",
                        t->name, sgi_machine_input_names[input]);
             return false;
         }
@@ -3564,16 +3569,16 @@ static bool sgi_machine_resolve_uint(SGIMachineState *s,
     }
     switch (input) {
     case SGI_INPUT_BOARD_ID:
-        *value = s->fuel_board_id_word;
+        *value = s->board_id_override;
         break;
     case SGI_INPUT_IOC3_SUBSYSTEM:
-        *value = s->fuel_ioc3_subsystem_id;
+        *value = s->ioc3_subsystem_override;
         break;
     case SGI_INPUT_L1_TYPE:
-        *value = s->fuel_l1_type_code;
+        *value = s->l1_type_override;
         break;
     case SGI_INPUT_BEDROCK_REVISION:
-        *value = s->fuel_bedrock_revision;
+        *value = s->bedrock_revision_override;
         break;
     default:
         g_assert_not_reached();
@@ -3617,9 +3622,9 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
             return false;
         }
         resolved->controller_index = module->controller_index;
-        if (!sgi_machine_resolve_uint(s, t, config->board_id_input,
-                SGI_INPUT_BOARD_ID, &used, config->has_board_id_word,
-                config->board_id_word, &resolved->board_id_word, errp)) {
+        if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_BOARD_ID, &used,
+                config->has_board_id_word, config->board_id_word,
+                &resolved->board_id_word, errp)) {
             return false;
         }
         if (config->has_board_id_mask != config->has_board_id_required_bits ||
@@ -3632,16 +3637,14 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
                        t->name, node->id);
             return false;
         }
-        if (!sgi_machine_resolve_uint(s, t, config->revision_input,
-                SGI_INPUT_BEDROCK_REVISION, &used,
+        if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_BEDROCK_REVISION, &used,
                 node->identity->has_widget_revision,
                 node->identity->widget_revision, &value, errp)) {
             return false;
         }
         if (value > 15) {
             error_setg(errp, "%s must fit four bits",
-                       config->revision_input ?
-                       config->revision_input->option : "Bedrock revision");
+                       sgi_machine_input_names[SGI_INPUT_BEDROCK_REVISION]);
             return false;
         }
         if (config->local_region >= 64 || config->initiator_region >= 64) {
@@ -3678,25 +3681,20 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
                        t->name, controllers[i]->id);
             return false;
         }
-        if (!sgi_machine_resolve_uint(s, t, config->reported_type_input,
-                SGI_INPUT_L1_TYPE, &used, config->has_reported_type,
-                config->reported_type, &value, errp)) {
+        if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_L1_TYPE, &used,
+                config->has_reported_type, config->reported_type, &value,
+                errp)) {
             return false;
         }
         if (!value || value > UINT8_MAX) {
             error_setg(errp, "%s must be nonzero and fit eight bits",
-                       config->reported_type_input ?
-                       config->reported_type_input->option :
-                       "L1 reported type");
+                       sgi_machine_input_names[SGI_INPUT_L1_TYPE]);
             return false;
         }
         resolved->reported_type = value;
-        if (!sgi_machine_bind_input(s, t, config->revision_input,
-                SGI_INPUT_L1_REVISION, &used, &present, errp)) {
-            return false;
-        }
-        if (present) {
-            memcpy(resolved->revision, s->fuel_l1_revision,
+        used |= 1U << SGI_INPUT_L1_REVISION;
+        if (s->l1_revision_override_set) {
+            memcpy(resolved->revision, s->l1_revision_override,
                    sizeof(resolved->revision));
         } else if (config->revision) {
             if (config->revision->major > INT32_MAX ||
@@ -3735,9 +3733,9 @@ static bool sgi_machine_resolve_config(SGIMachineState *s,
              board->preset != SGI_MODEL_IO_BOARD_PRESET_FUEL)) {
             continue;
         }
-        if (!sgi_machine_resolve_uint(s, t, board->ioc3_subsystem_input,
-                SGI_INPUT_IOC3_SUBSYSTEM, &used, board->has_ioc3_subsystem_id,
-                board->ioc3_subsystem_id, &value, errp)) {
+        if (!sgi_machine_resolve_uint(s, t, SGI_INPUT_IOC3_SUBSYSTEM, &used,
+                board->has_ioc3_subsystem_id, board->ioc3_subsystem_id,
+                &value, errp)) {
             return false;
         }
         if (value > UINT16_MAX || !board->has_mac_source) {
@@ -5130,47 +5128,45 @@ static void sgi_machine_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
-static void sgi_machine_get_fuel_board_id_word(Object *obj, Visitor *v,
-                                                const char *name, void *opaque,
-                                                Error **errp)
+static void sgi_machine_get_board_id_word(Object *obj, Visitor *v,
+                                          const char *name, void *opaque,
+                                          Error **errp)
 {
-    uint64_t value = SGI_MACHINE(obj)->fuel_board_id_word;
+    uint64_t value = SGI_MACHINE(obj)->board_id_override;
 
     visit_type_uint64(v, name, &value, errp);
 }
 
-static void sgi_machine_set_fuel_board_id_word(Object *obj, Visitor *v,
-                                                const char *name, void *opaque,
-                                                Error **errp)
+static void sgi_machine_set_board_id_word(Object *obj, Visitor *v,
+                                          const char *name, void *opaque,
+                                          Error **errp)
 {
     uint64_t value;
 
     if (visit_type_uint64(v, name, &value, errp)) {
-        SGI_MACHINE(obj)->fuel_board_id_word = value;
-        SGI_MACHINE(obj)->fuel_board_id_word_set = true;
+        SGI_MACHINE(obj)->board_id_override = value;
+        SGI_MACHINE(obj)->board_id_override_set = true;
     }
 }
 
-static void sgi_machine_get_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
-                                                    const char *name,
-                                                    void *opaque,
-                                                    Error **errp)
+static void sgi_machine_get_ioc3_subsystem_id(Object *obj, Visitor *v,
+                                              const char *name, void *opaque,
+                                              Error **errp)
 {
-    uint16_t value = SGI_MACHINE(obj)->fuel_ioc3_subsystem_id;
+    uint16_t value = SGI_MACHINE(obj)->ioc3_subsystem_override;
 
     visit_type_uint16(v, name, &value, errp);
 }
 
-static void sgi_machine_set_fuel_ioc3_subsystem_id(Object *obj, Visitor *v,
-                                                    const char *name,
-                                                    void *opaque,
-                                                    Error **errp)
+static void sgi_machine_set_ioc3_subsystem_id(Object *obj, Visitor *v,
+                                              const char *name, void *opaque,
+                                              Error **errp)
 {
     uint16_t value;
 
     if (visit_type_uint16(v, name, &value, errp)) {
-        SGI_MACHINE(obj)->fuel_ioc3_subsystem_id = value;
-        SGI_MACHINE(obj)->fuel_ioc3_subsystem_id_set = true;
+        SGI_MACHINE(obj)->ioc3_subsystem_override = value;
+        SGI_MACHINE(obj)->ioc3_subsystem_override_set = true;
     }
 }
 
@@ -5206,40 +5202,41 @@ static void sgi_machine_set_mac(Object *obj, const char *value, Error **errp)
     s->mac = g_strdup(value);
 }
 
-static void sgi_machine_get_fuel_l1_type_code(Object *obj, Visitor *v,
-                                               const char *name, void *opaque,
-                                               Error **errp)
+static void sgi_machine_get_l1_type_code(Object *obj, Visitor *v,
+                                         const char *name, void *opaque,
+                                         Error **errp)
 {
-    uint8_t value = SGI_MACHINE(obj)->fuel_l1_type_code;
+    uint8_t value = SGI_MACHINE(obj)->l1_type_override;
 
     visit_type_uint8(v, name, &value, errp);
 }
 
-static void sgi_machine_set_fuel_l1_type_code(Object *obj, Visitor *v,
-                                               const char *name, void *opaque,
-                                               Error **errp)
+static void sgi_machine_set_l1_type_code(Object *obj, Visitor *v,
+                                         const char *name, void *opaque,
+                                         Error **errp)
 {
     uint8_t value;
 
     if (visit_type_uint8(v, name, &value, errp)) {
-        SGI_MACHINE(obj)->fuel_l1_type_code = value;
-        SGI_MACHINE(obj)->fuel_l1_type_code_set = true;
+        SGI_MACHINE(obj)->l1_type_override = value;
+        SGI_MACHINE(obj)->l1_type_override_set = true;
     }
 }
 
-static char *sgi_machine_get_fuel_l1_revision(Object *obj, Error **errp)
+static char *sgi_machine_get_l1_revision(Object *obj, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
 
-    if (!s->fuel_l1_revision_set) {
+    if (!s->l1_revision_override_set) {
         return NULL;
     }
-    return g_strdup_printf("%d.%d.%d", s->fuel_l1_revision[0],
-                           s->fuel_l1_revision[1], s->fuel_l1_revision[2]);
+    return g_strdup_printf("%d.%d.%d", s->l1_revision_override[0],
+                           s->l1_revision_override[1],
+                           s->l1_revision_override[2]);
 }
 
-static void sgi_machine_set_fuel_l1_revision(Object *obj, const char *value,
-                                              Error **errp)
+static void sgi_machine_set_l1_revision(Object *obj, const char *value,
+                                        Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
     int32_t revision[3];
@@ -5271,33 +5268,33 @@ static void sgi_machine_set_fuel_l1_revision(Object *obj, const char *value,
             goto invalid;
         }
     }
-    memcpy(s->fuel_l1_revision, revision, sizeof(revision));
-    s->fuel_l1_revision_set = true;
+    memcpy(s->l1_revision_override, revision, sizeof(revision));
+    s->l1_revision_override_set = true;
     return;
 
 invalid:
-    error_setg(errp, "fuel-l1-revision requires three decimal components "
+    error_setg(errp, "l1-revision requires three decimal components "
                "(major.minor.patch), each at most %d", INT32_MAX);
 }
 
-static void sgi_machine_get_fuel_bedrock_revision(Object *obj, Visitor *v,
-                                                   const char *name,
-                                                   void *opaque, Error **errp)
+static void sgi_machine_get_bedrock_revision(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
 {
-    uint8_t value = SGI_MACHINE(obj)->fuel_bedrock_revision;
+    uint8_t value = SGI_MACHINE(obj)->bedrock_revision_override;
 
     visit_type_uint8(v, name, &value, errp);
 }
 
-static void sgi_machine_set_fuel_bedrock_revision(Object *obj, Visitor *v,
-                                                   const char *name,
-                                                   void *opaque, Error **errp)
+static void sgi_machine_set_bedrock_revision(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
 {
     uint8_t value;
 
     if (visit_type_uint8(v, name, &value, errp)) {
-        SGI_MACHINE(obj)->fuel_bedrock_revision = value;
-        SGI_MACHINE(obj)->fuel_bedrock_revision_set = true;
+        SGI_MACHINE(obj)->bedrock_revision_override = value;
+        SGI_MACHINE(obj)->bedrock_revision_override_set = true;
     }
 }
 
@@ -5623,42 +5620,40 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
 
-    object_class_property_add(oc, "fuel-board-id-word", "uint64",
-                              sgi_machine_get_fuel_board_id_word,
-                              sgi_machine_set_fuel_board_id_word, NULL, NULL);
-    object_class_property_set_description(oc, "fuel-board-id-word",
-        "Full 64-bit board-identification launch input; applicability and "
-        "requirements are declared by the selected model.");
+    object_class_property_add(oc, "board-id-word", "uint64",
+                              sgi_machine_get_board_id_word,
+                              sgi_machine_set_board_id_word, NULL, NULL);
+    object_class_property_set_description(oc, "board-id-word",
+        "Override the catalogue's 64-bit board-identification word for "
+        "every Bedrock node. The product's catalogue mask still applies.");
 
-    object_class_property_add(oc, "fuel-ioc3-subsystem-id", "uint16",
-                              sgi_machine_get_fuel_ioc3_subsystem_id,
-                              sgi_machine_set_fuel_ioc3_subsystem_id,
-                              NULL, NULL);
-    object_class_property_set_description(oc, "fuel-ioc3-subsystem-id",
-        "IOC3 PCI subsystem ID launch input; applicability and requirements "
-        "are declared by the selected model.");
+    object_class_property_add(oc, "ioc3-subsystem-id", "uint16",
+                              sgi_machine_get_ioc3_subsystem_id,
+                              sgi_machine_set_ioc3_subsystem_id, NULL, NULL);
+    object_class_property_set_description(oc, "ioc3-subsystem-id",
+        "Override the catalogue's IOC3 PCI subsystem ID for every Bedrock "
+        "I/O board.");
 
-    object_class_property_add(oc, "fuel-l1-type-code", "uint8",
-                              sgi_machine_get_fuel_l1_type_code,
-                              sgi_machine_set_fuel_l1_type_code, NULL, NULL);
-    object_class_property_set_description(oc, "fuel-l1-type-code",
-        "L1 local identity reply byte; applicability and requirements are "
-        "declared by the selected model. Accepts a nonzero byte.");
+    object_class_property_add(oc, "l1-type-code", "uint8",
+                              sgi_machine_get_l1_type_code,
+                              sgi_machine_set_l1_type_code, NULL, NULL);
+    object_class_property_set_description(oc, "l1-type-code",
+        "Override the catalogue's nonzero L1 local identity reply byte for "
+        "every node L1.");
 
-    object_class_property_add_str(oc, "fuel-l1-revision",
-                                  sgi_machine_get_fuel_l1_revision,
-                                  sgi_machine_set_fuel_l1_revision);
-    object_class_property_set_description(oc, "fuel-l1-revision",
-        "L1 firmware revision as decimal major.minor.patch; applicability "
-        "and requirements are declared by the selected model.");
+    object_class_property_add_str(oc, "l1-revision",
+                                  sgi_machine_get_l1_revision,
+                                  sgi_machine_set_l1_revision);
+    object_class_property_set_description(oc, "l1-revision",
+        "Override the catalogue's L1 firmware revision, as decimal "
+        "major.minor.patch, for every node L1.");
 
-    object_class_property_add(oc, "fuel-bedrock-revision", "uint8",
-                              sgi_machine_get_fuel_bedrock_revision,
-                              sgi_machine_set_fuel_bedrock_revision,
-                              NULL, NULL);
-    object_class_property_set_description(oc, "fuel-bedrock-revision",
-        "Fitted Bedrock revision, 0 through 15; applicability and requirements "
-        "are declared by the selected model.");
+    object_class_property_add(oc, "bedrock-revision", "uint8",
+                              sgi_machine_get_bedrock_revision,
+                              sgi_machine_set_bedrock_revision, NULL, NULL);
+    object_class_property_set_description(oc, "bedrock-revision",
+        "Override the catalogue's Bedrock revision, 0 through 15, for "
+        "every Bedrock node.");
 
     object_class_property_add_str(oc, "fuel-mac-eeprom",
                                   sgi_machine_get_fuel_mac_eeprom,

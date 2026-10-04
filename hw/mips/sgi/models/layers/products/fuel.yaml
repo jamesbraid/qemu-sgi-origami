@@ -49,10 +49,8 @@ layer:
       emulation:
         bedrock_nodes:
           bedrock:
-            board_id_input: {option: fuel-board-id-word, required: true}
             board_id_mask: 61440
             board_id_required_bits: 16384
-            revision_input: {option: fuel-bedrock-revision, required: true}
             local_region: 0
             initiator_region: 0
             installed_bank_mask: {mode: fitted-banks}
@@ -61,15 +59,12 @@ layer:
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         l1_controllers:
           l1:
-            reported_type_input: {option: fuel-l1-type-code, required: true}
-            revision_input: {option: fuel-l1-revision, required: false}
             mac_eeprom_input: {option: fuel-mac-eeprom, required: false}
             provenance: derived
             sources: [hw/mips/sgi/sn1-node.c, hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
         io_boards:
           ip34-system-board:
-            ioc3_subsystem_input: {option: fuel-ioc3-subsystem-id, required: true}
             mac_source: module-l1
             provenance: derived
             sources: [hw/mips/sgi/baseio.c]

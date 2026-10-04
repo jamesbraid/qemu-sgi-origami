@@ -105,27 +105,24 @@ class BedrockConfigurationTests(unittest.TestCase):
             "revision": {"major": 2, "minor": 3, "patch": 4},
         })
 
-    def test_fuel_unknowns_preserve_required_and_optional_inputs(self):
+    def test_fuel_unknowns_carry_no_input_bindings(self):
         topology = self.catalogue(_resolved("fuel"))
         node = topology["nodes"][0]
         self.assertNotIn("widget-revision", node["identity"])
         self.assertNotIn("board-id-word", node["bedrock"])
         self.assertEqual(node["bedrock"]["installed-bank-mask"], 3)
-        self.assertEqual(node["bedrock"]["board-id-input"], {
-            "option": "fuel-board-id-word", "required": True})
+        self.assertEqual(
+            set(node["bedrock"]),
+            {"board-id-mask", "board-id-required-bits", "initiator-region",
+             "installed-bank-mask", "local-region"})
         l1 = topology["controllers"][0]["l1"]
-        self.assertNotIn("reported-type", l1)
-        self.assertNotIn("revision", l1)
-        self.assertEqual(l1["reported-type-input"], {
-            "option": "fuel-l1-type-code", "required": True})
-        self.assertEqual(l1["revision-input"], {
-            "option": "fuel-l1-revision", "required": False})
+        self.assertEqual(l1, {"mac-eeprom-input": {
+            "option": "fuel-mac-eeprom", "required": False}})
         board = topology["io-boards"][0]
         self.assertTrue(board["populated"])
         self.assertEqual(board["mac-source"], "module-l1")
         self.assertNotIn("ioc3-subsystem-id", board)
-        self.assertEqual(board["ioc3-subsystem-input"], {
-            "option": "fuel-ioc3-subsystem-id", "required": True})
+        self.assertNotIn("ioc3-subsystem-input", board)
         self.assertEqual(board["pci-functions"], [
             {"kind": "isp12160", "revision": 6},
             {"kind": "ioc3", "revision": 1},
@@ -143,14 +140,20 @@ class BedrockConfigurationTests(unittest.TestCase):
         self.assertFalse(entry["io_boards"][0]["populated"])
         self.assertTrue(entry["io_boards"][1]["populated"])
 
-    def test_default_and_required_binding_are_distinct(self):
-        model = _resolved("origin300")
-        model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
-            "board_id_input"] = {
-                "option": "fuel-board-id-word", "required": False}
-        config = self.catalogue(model)["nodes"][0]["bedrock"]
-        self.assertEqual(config["board-id-word"], 0x8001)
-        self.assertFalse(config["board-id-input"]["required"])
+    def test_board_values_take_no_input_binding(self):
+        # Overrides are family machine properties, not per-field bindings.
+        for section, owner, field in (
+                ("bedrock_nodes", "bedrock", "board_id_input"),
+                ("bedrock_nodes", "bedrock", "revision_input"),
+                ("l1_controllers", "l1", "reported_type_input"),
+                ("l1_controllers", "l1", "revision_input"),
+                ("io_boards", "xbridge-bridge-f", "ioc3_subsystem_input")):
+            with self.subTest(field=field):
+                model = _resolved("origin300")
+                model["machine"]["emulation"][section][owner][field] = {
+                    "option": "board-id-word", "required": False}
+                with self.assertRaisesRegex(ValueError, "invalid"):
+                    compile_model(model)
 
     def test_malformed_configuration_is_rejected(self):
         mutations = [
@@ -193,7 +196,7 @@ class BedrockConfigurationTests(unittest.TestCase):
         model = _resolved("origin300-vbrick")
         model["machine"]["emulation"]["l1_controllers"]["graphics-l1"] = {
             "reported_type": 0x34,
-            "revision_input": {"option": "fuel-l1-revision", "required": False},
+            "revision": {"major": 1, "minor": 18, "patch": 5},
         }
         with self.assertRaisesRegex(ValueError, "no Bedrock"):
             compile_model(model)
@@ -262,46 +265,27 @@ class BedrockConfigurationTests(unittest.TestCase):
         self.assertEqual(
             [board["populated"] for board in boards], [False, True])
 
-    def test_incomplete_required_values_are_rejected(self):
-        for section, owner, field in (
-                ("bedrock_nodes", "bedrock", "board_id_word"),
-                ("l1_controllers", "l1", "reported_type")):
-            with self.subTest(field=field):
-                model = _resolved("origin300")
-                del model["machine"]["emulation"][section][owner][field]
-                with self.assertRaisesRegex(ValueError, "required input"):
-                    compile_model(model)
+    def test_missing_l1_configuration_is_rejected(self):
         model = _resolved("origin300")
         model["machine"]["emulation"].pop("l1_controllers")
         with self.assertRaisesRegex(ValueError, "configured L1"):
-            compile_model(model)
-        model = _resolved("fuel")
-        model["machine"]["emulation"]["bedrock_nodes"]["bedrock"][
-            "revision_input"]["required"] = False
-        with self.assertRaisesRegex(ValueError, "Bedrock revision"):
             compile_model(model)
 
     def test_binding_aliases_have_one_owner(self):
         model = _resolved("origin300-two-chassis")
         for entry in model["machine"]["emulation"]["l1_controllers"].values():
-            entry["revision_input"] = {
-                "option": "fuel-l1-revision", "required": False}
+            entry["mac_eeprom_input"] = {
+                "option": "fuel-mac-eeprom", "required": False}
         with self.assertRaisesRegex(ValueError, "multiple owners"):
             compile_model(model)
 
     def test_offering_inputs_follow_selected_configuration(self):
-        model = _resolved("fuel")
-        policy = model["machine"]["emulation"]["bedrock_nodes"]["bedrock"]
-        policy["board_id_word"] = 0x4000
-        policy["board_id_input"]["required"] = False
-        catalogue = json.loads(
-            render_catalogue_json([model, _resolved("origin300")]))
+        catalogue = json.loads(render_catalogue_json(
+            [_resolved("fuel"), _resolved("origin300")]))
         offerings = catalogue["offerings"]
         fuel = next(item for item in offerings if item["topology"] == "fuel")
-        self.assertEqual(len(fuel["hardware-inputs"]), 6)
-        board = next(binding for binding in fuel["hardware-inputs"]
-                     if binding["option"] == "fuel-board-id-word")
-        self.assertFalse(board["required"])
+        self.assertEqual(fuel["hardware-inputs"], [
+            {"option": "fuel-mac-eeprom", "required": False}])
         for offering in offerings:
             if offering["topology"] == "origin300":
                 self.assertEqual(offering["hardware-inputs"], [])

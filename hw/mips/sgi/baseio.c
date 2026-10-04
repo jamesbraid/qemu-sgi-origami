@@ -1157,9 +1157,6 @@ static void baseio_instance_init(Object *obj)
      * to learn what design part number and silicon revision that chip's
      * own identity properties should carry (see the header comment).
      */
-    object_property_add_alias(obj, "fuel-subsystem-id", obj,
-                              "ioc3-subsystem-id");
-    object_property_add_alias(obj, "fuel-mac", obj, "ioc3-mac");
     object_property_add_str(obj, "part", baseio_get_part, baseio_set_part);
     object_property_add(obj, "revision", "uint32", baseio_get_revision,
                         baseio_set_revision, NULL, NULL);

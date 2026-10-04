@@ -31,26 +31,6 @@
       "display-name": "Fuel with VPro",
       "hardware-inputs": [
         {
-          "option": "fuel-bedrock-revision",
-          "required": true
-        },
-        {
-          "option": "fuel-board-id-word",
-          "required": true
-        },
-        {
-          "option": "fuel-ioc3-subsystem-id",
-          "required": true
-        },
-        {
-          "option": "fuel-l1-revision",
-          "required": false
-        },
-        {
-          "option": "fuel-l1-type-code",
-          "required": true
-        },
-        {
           "option": "fuel-mac-eeprom",
           "required": false
         }
@@ -194,26 +174,6 @@
       "disk-bus": "scsi.0",
       "display-name": "Fuel",
       "hardware-inputs": [
-        {
-          "option": "fuel-bedrock-revision",
-          "required": true
-        },
-        {
-          "option": "fuel-board-id-word",
-          "required": true
-        },
-        {
-          "option": "fuel-ioc3-subsystem-id",
-          "required": true
-        },
-        {
-          "option": "fuel-l1-revision",
-          "required": false
-        },
-        {
-          "option": "fuel-l1-type-code",
-          "required": true
-        },
         {
           "option": "fuel-mac-eeprom",
           "required": false
@@ -11146,14 +11106,6 @@
             "mac-eeprom-input": {
               "option": "fuel-mac-eeprom",
               "required": false
-            },
-            "reported-type-input": {
-              "option": "fuel-l1-type-code",
-              "required": true
-            },
-            "revision-input": {
-              "option": "fuel-l1-revision",
-              "required": false
             }
           },
           "module-index": 0
@@ -11168,10 +11120,6 @@
           "carrier": "onboard",
           "id": "ip34-system-board",
           "ioc3-serial": 103835129348099,
-          "ioc3-subsystem-input": {
-            "option": "fuel-ioc3-subsystem-id",
-            "required": true
-          },
           "mac-source": "module-l1",
           "module-index": 0,
           "other-identity-parts": [],
@@ -11259,19 +11207,11 @@
             0
           ],
           "bedrock": {
-            "board-id-input": {
-              "option": "fuel-board-id-word",
-              "required": true
-            },
             "board-id-mask": 61440,
             "board-id-required-bits": 16384,
             "initiator-region": 0,
             "installed-bank-mask": 3,
-            "local-region": 0,
-            "revision-input": {
-              "option": "fuel-bedrock-revision",
-              "required": true
-            }
+            "local-region": 0
           },
           "cpu-slots": [
             {
@@ -11348,14 +11288,6 @@
             "mac-eeprom-input": {
               "option": "fuel-mac-eeprom",
               "required": false
-            },
-            "reported-type-input": {
-              "option": "fuel-l1-type-code",
-              "required": true
-            },
-            "revision-input": {
-              "option": "fuel-l1-revision",
-              "required": false
             }
           },
           "module-index": 0
@@ -11370,10 +11302,6 @@
           "carrier": "onboard",
           "id": "ip34-system-board",
           "ioc3-serial": 103835129348099,
-          "ioc3-subsystem-input": {
-            "option": "fuel-ioc3-subsystem-id",
-            "required": true
-          },
           "mac-source": "module-l1",
           "module-index": 0,
           "other-identity-parts": [],
@@ -11448,19 +11376,11 @@
             0
           ],
           "bedrock": {
-            "board-id-input": {
-              "option": "fuel-board-id-word",
-              "required": true
-            },
             "board-id-mask": 61440,
             "board-id-required-bits": 16384,
             "initiator-region": 0,
             "installed-bank-mask": 3,
-            "local-region": 0,
-            "revision-input": {
-              "option": "fuel-bedrock-revision",
-              "required": true
-            }
+            "local-region": 0
           },
           "cpu-slots": [
             {

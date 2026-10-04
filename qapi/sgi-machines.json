@@ -258,11 +258,9 @@
 # Node initialization selected by the authored configuration.
 #
 # @board-id-word: configured board identity response, when known
-# @board-id-input: operator input permitted to supply that response
 # @board-id-mask: mask for a board response constraint
 # @board-id-required-bits: required masked response, paired with
 #     @board-id-mask
-# @revision-input: input supplying the ASIC identity's widget revision
 # @local-region: local region value
 # @initiator-region: initiator region value
 # @installed-bank-mask: configured installed-bank indication
@@ -271,10 +269,8 @@
 ##
 { 'struct': 'SGIModelBedrockConfig',
   'data': { '*board-id-word': 'uint64',
-            '*board-id-input': 'SGIModelInputBinding',
             '*board-id-mask': 'uint64',
             '*board-id-required-bits': 'uint64',
-            '*revision-input': 'SGIModelInputBinding',
             'local-region': 'uint8',
             'initiator-region': 'uint8',
             'installed-bank-mask': 'uint8' } }
@@ -285,10 +281,7 @@
 # Reported identity and allowed inputs for a node's shared controller.
 #
 # @reported-type: raw type response, when known
-# @reported-type-input: input permitted to supply that response
 # @revision: reported version, when available
-# @revision-input: input permitted to supply a complete reported
-#     version
 # @mac-eeprom-input: input supplying this controller's MAC EEPROM
 #     record
 #
@@ -296,9 +289,7 @@
 ##
 { 'struct': 'SGIModelL1Config',
   'data': { '*reported-type': 'uint8',
-            '*reported-type-input': 'SGIModelInputBinding',
             '*revision': 'SGIModelL1Revision',
-            '*revision-input': 'SGIModelInputBinding',
             '*mac-eeprom-input': 'SGIModelInputBinding' } }
 
 ##
@@ -981,8 +972,6 @@
 #
 # @ioc3-subsystem-id: supplied IOC3 subsystem identity, when known
 #
-# @ioc3-subsystem-input: allowed operator input for that identity
-#
 # @mac-source: selected source for an optional supplied IOC3 address
 #
 # @system-timekeeper: explicit experimental fitted system-clock
@@ -1009,7 +998,6 @@
             'populated': 'bool',
             '*pci-functions': ['SGIModelPciFunction'],
             '*ioc3-subsystem-id': 'uint16',
-            '*ioc3-subsystem-input': 'SGIModelInputBinding',
             '*mac-source': 'SGIModelMacSource' } }
 
 ##
@@ -1558,8 +1546,9 @@
 #
 # @identity-inputs: named identity/SPD inputs this offering accepts
 #
-# @hardware-inputs: configured allowed hardware input aliases and
-#     requirements
+# @hardware-inputs: product-specific launch inputs the configuration
+#     binds, and whether each is required.  The family overrides of
+#     catalogue board values are machine properties, not listed here
 #
 # @smdk: selected diagnostic launch recipe, when supported
 #
