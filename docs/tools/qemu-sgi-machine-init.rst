@@ -133,7 +133,8 @@ the machine property of the same name::
       -smp 4 -m 512M
 
 A launcher can build this command line from the ``storage`` list of the
-machine's ``query-sgi-machines`` entry.
+machine's ``query-sgi-machines`` entry. No ``-bios`` is needed: every
+machine boots from its bound node flash.
 
 Exit status
 -----------
