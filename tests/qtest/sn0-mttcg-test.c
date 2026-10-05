@@ -1919,8 +1919,10 @@ static void gdb_peer_command(int fd, const char *command,
  * from guest code before the two timer writes left a window of host time
  * (GH_COMPARE ticks, a few milliseconds) in which a descheduled vCPU took the
  * interrupt at the breakpoint address before the breakpoint could stop it.
- * Unmasking while held gives the same resumed state with no race: the match
- * is already pending, so the interrupt is taken at the held PC.
+ * Unmasking once held, before the hold, gives the old sequence with no race:
+ * the match becomes pending while the CPU is held with the interrupt enabled,
+ * the PC check after the hold shows it did not move, and the interrupt is
+ * taken at the held PC on resume.
  */
 static void gdb_peer_unmask_timer(int fd)
 {
@@ -2029,6 +2031,9 @@ static void test_gdb_peer_hold(const void *data)
     command[0] = 'z';
     gdb_peer_command(gdb, command, reply, sizeof(reply));
     g_assert_cmpstr(reply, ==, "OK");
+    if (interrupt_vm) {
+        gdb_peer_unmask_timer(gdb);
+    }
     peer_before = state_word(qts, GH_PEER_OFF);
     peer_count_before = state_word(qts, GH_PEER_COUNT_OFF + 8);
     hub_before = qtest_readq(qts, GH_HUB_COUNT);
@@ -2059,9 +2064,6 @@ static void test_gdb_peer_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
-    if (interrupt_vm) {
-        gdb_peer_unmask_timer(gdb);
-    }
     if (migrate_vm) {
         source_hub_at_save = qtest_readq(qts, GH_HUB_COUNT);
         migration_path = g_build_filename(dir, "migration.sock", NULL);
@@ -2289,6 +2291,9 @@ static void test_gdb_sn1_hold(const void *data)
                                       IMAGE_KSEG1_BASE | gh_count_pos),
                         ==, break_pc);
     }
+    if (interrupt_vm) {
+        gdb_peer_unmask_timer(gdb);
+    }
     peer_before = sn1_timer_state_word(qts, GH_PEER_OFF);
     hub_before = qtest_readq(qts, SN1_BEDROCK_LOCAL + 0x30100);
     if (gh_peer_timer_writes) {
@@ -2344,9 +2349,6 @@ static void test_gdb_sn1_hold(const void *data)
     gdb_peer_command(gdb, "p24", reply, sizeof(reply));
     g_assert_cmphex(g_ascii_strtoull(reply, NULL, 16) & CAUSE_IP7,
                     ==, CAUSE_IP7);
-    if (interrupt_vm) {
-        gdb_peer_unmask_timer(gdb);
-    }
     if (reset_vm) {
         uint64_t status;
 
