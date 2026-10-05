@@ -360,6 +360,40 @@ callbacks are called:
   accesses; if false, unaligned accesses will be emulated by two aligned
   accesses.
 
+Optional ->read_buffer() and ->write_buffer() callbacks let a region that
+forwards accesses take a long transfer in one call instead of a sequence
+of accesses of at most 8 bytes. address_space_read(),
+address_space_write() and the bounce buffers of address_space_map() offer
+them the rest of the transfer, bounded by the end of the current section
+and of any IOMMU entry, whenever that is longer than 8 bytes. The offer
+comes after the same MMIO locking and device reentrancy guard as an
+ordinary access. Regions with .valid.accepts or ioeventfds are never
+offered a buffer.
+
+Everything else always uses ordinary dispatch: CPU loads and stores, the
+ld*/st* helpers, accesses through a MemoryRegionCache
+(address_space_*_cached()), and any step of 8 bytes or less, including
+the partial ends of a transfer a buffer callback declined. A region's
+ordinary read and write callbacks must therefore remain complete and
+correct on their own; the buffer callbacks only make long transfers
+cheaper.
+
+A buffer callback returns the length of the prefix it consumed and sets
+the transaction result. Returning zero declines the offer: it must leave
+the buffer and the device unchanged and the result MEMTX_OK, and the step
+then falls back to ordinary dispatch. The buffer holds bytes in address
+order; the core applies no endian conversion. ->write_buffer() receives
+the buffer as const.
+
+The buffer path skips memory_region_access_valid() and the per-access
+trace events, so a region implementing it checks its own access rules and
+traces the transfer itself. It must keep the guest-visible behaviour of the
+equivalent ordinary accesses: their validity, ordering, side effects and
+errors, including the access widths seen by anything the region forwards
+to. A forwarding region can meet this by accepting only when its onward
+range is RAM and moving the bytes there with address_space_read() or
+address_space_write(), which keeps dirty tracking intact.
+
 API Reference
 -------------
 

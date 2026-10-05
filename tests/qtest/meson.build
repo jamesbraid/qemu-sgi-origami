@@ -124,6 +124,9 @@ qtests_generic += [
 if enable_modules
   qtests_generic += [ 'modules-test' ]
 endif
+if config_all_devices.has_key('CONFIG_MEMORY_BUFFER_TESTDEV')
+  qtests_generic += [ 'memory-buffer-test' ]
+endif
 
 qtests_pci = \
   (config_all_devices.has_key('CONFIG_VGA') ? ['display-vga-test'] : []) +                  \
