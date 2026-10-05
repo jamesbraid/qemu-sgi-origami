@@ -1860,6 +1860,18 @@
             "not": { "properties": { "kind": { "const": "memory" } } }
           },
           "then": { "not": { "required": ["memory"] } }
+        },
+        {
+          "if": {
+            "properties": { "hardware_kind": { "const": "ds1742" } },
+            "required": ["hardware_kind"]
+          },
+          "then": {
+            "properties": {
+              "ds1742_fresh_year_base": { "enum": [0, 1968] }
+            }
+          },
+          "else": { "not": { "required": ["ds1742_fresh_year_base"] } }
         }
       ],
       "properties": {
@@ -1868,6 +1880,11 @@
         "kind": { "$ref": "#/$defs/component-kind" },
         "board_record": {"type": "object", "required": ["role", "barcode", "part", "revision", "name", "serial"], "additionalProperties": false, "properties": {"role": {"type": "string", "minLength": 1}, "barcode": {"type": "string", "minLength": 1}, "part": {"type": "string", "minLength": 1}, "revision": {"type": "string", "minLength": 1}, "name": {"type": "string", "minLength": 1}, "serial": {"$ref": "#/$defs/address"}}},
         "hardware_kind": { "$ref": "#/$defs/identifier", "description": "Stable hardware identity used by generated consumers. This names the part family, not a driver or implementation type." },
+        "ds1742_fresh_year_base": {
+          "type": "integer",
+          "enum": [0, 1968],
+          "description": "Year base for a fresh seed on this linked DS1742-compatible clock."
+        },
         "ioc4": {
           "type": "object",
           "required": ["clock_hz"],

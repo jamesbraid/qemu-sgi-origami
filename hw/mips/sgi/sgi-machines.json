@@ -20594,6 +20594,7 @@
         {
           "carrier": "machine-placed",
           "ds1742": true,
+          "ds1742-fresh-year-base": 1968,
           "id": "io9",
           "module-index": 0,
           "other-identity-parts": [],

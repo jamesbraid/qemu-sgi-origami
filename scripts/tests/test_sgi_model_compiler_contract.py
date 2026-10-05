@@ -1114,6 +1114,47 @@ class PicIo9DescriptorTests(unittest.TestCase):
                               if item["id"] == "fixture-io9")
         self.assertTrue(exported_board["ds1742"])
 
+    def test_io9_ds1742_year_base_defaults_to_zero_and_projects_when_set(self):
+        model = self.model_with_ds1742_link()
+        board = next(item for item in compile_model(model)["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertNotIn("ds1742_fresh_year_base", board)
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertNotIn("ds1742-fresh-year-base", exported_board)
+
+        source = next(item for item in model["components"]
+                      if item["id"] == "fixture-ds1742")
+        source["ds1742_fresh_year_base"] = 1968
+        board = next(item for item in compile_model(model)["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertEqual(board["ds1742_fresh_year_base"], 1968)
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertEqual(exported_board["ds1742-fresh-year-base"], 1968)
+
+    def test_io9_ds1742_year_base_follows_nested_clock_ownership(self):
+        model = self.model_with_ds1742_link()
+        source = next(item for item in model["components"]
+                      if item["id"] == "fixture-ds1742")
+        model["components"].append({
+            "id": "fixture-clock-carrier", "name": "RTC carrier",
+            "kind": "subfunction", "parent": "fixture-io9",
+            "provenance": "derived",
+        })
+        source["parent"] = "fixture-clock-carrier"
+        source["ds1742_fresh_year_base"] = 1968
+
+        board = next(item for item in compile_model(model)["io_boards"]
+                     if item["id"] == "fixture-io9")
+        self.assertEqual(board["ds1742_fresh_year_base"], 1968)
+        exported = json.loads(render_catalogue_json([model]))["topologies"][0]
+        exported_board = next(item for item in exported["io-boards"]
+                              if item["id"] == "fixture-io9")
+        self.assertEqual(exported_board["ds1742-fresh-year-base"], 1968)
+
     def test_io9_without_clock_link_omits_the_ds1742_board_marker(self):
         exported = json.loads(render_catalogue_json([
             self.model_with_pic_io9()

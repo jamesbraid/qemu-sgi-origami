@@ -133,9 +133,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 108)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 34)
-        self.assertEqual(len(layers), 73)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 112)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 35)
+        self.assertEqual(len(layers), 77)
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
                 self.assertIn(_layer(path)["kind"], {
@@ -487,6 +487,18 @@ class FuelTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ResolutionError):
                 model_composition.validate_system_timekeepers(altered)
 
+
+
+class Origin350ClockPolicyTests(unittest.TestCase):
+    def test_ip53_catalogue_sets_fresh_seed_year_base(self):
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sn-catalogue.json"])
+        topology = next(row for row in catalogue["topologies"]
+                        if row["product"] == "origin350")
+        board = next(row for row in topology["io-boards"]
+                     if row["id"] == "io9")
+        self.assertTrue(board["ds1742"])
+        self.assertEqual(board["ds1742-fresh-year-base"], 1968)
 
 
 if __name__ == "__main__":
