@@ -2047,7 +2047,8 @@ static void rad4_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->mailbox = val;
         break;
     case RAD4_BAR0_INTCSR:
-        if (val & RAD4_INTCSR_SERR) {
+        /* Table 45: SERR# fires on writing 1 while the bit is 0. */
+        if ((val & RAD4_INTCSR_SERR) && !(s->intcsr & RAD4_INTCSR_SERR)) {
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad4: INTCSR SERR# generation not "
                          "modelled\n");
