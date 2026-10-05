@@ -805,21 +805,25 @@ static bool rad4_rgb_index_is_display_attribute(uint16_t index)
  * new = (old & ~mask) | (value & mask).
  *
  * Guest compatibility approximation, not established board behaviour: with
- * overlay-index-compat on, a store under the overlay plane mask whose value
- * is a bare 4-bit index (nothing outside bits 0-3) writes that index into
- * the overlay bits. The shipped IRIX 6.5.30 X server draws Motif's
+ * overlay-index-compat on, a CPU store under the overlay plane mask whose
+ * value is a bare 4-bit index (nothing outside bits 0-3) writes that index
+ * into the overlay bits. The shipped IRIX 6.5.30 X server draws Motif's
  * insensitive (greyed) menu labels with a tiled span fill that copies raw
  * depth-4 tile pixels unshifted, while every other overlay path it and the
  * driver use shifts the index to bits 24-27. Under a plain plane mask those
  * labels come out transparent and the window behind shows through them. No
- * other observed overlay store is a bare low-nibble index, so the remaining
- * overlay drawing is unchanged. The property turns this off for strict
- * plane-mask behaviour.
+ * other observed CPU overlay store is a bare low-nibble index, so the
+ * remaining overlay drawing is unchanged. DMA never gets the rule: the
+ * buffered X server's sweep uploads 8-bit root-visual pixels such as
+ * 0x0000000d while the overlay mask is in force, and shifting those turned
+ * the whole desktop into opaque overlay. The property turns this off for
+ * strict plane-mask behaviour.
  */
 static uint32_t rad4_masked_store(PsitechRad4State *s, uint32_t old,
-                                  uint32_t value)
+                                  uint32_t value, bool cpu)
 {
-    if (s->overlay_index_compat && s->mask == RAD4_OVERLAY_PLANE_MASK &&
+    if (cpu && s->overlay_index_compat &&
+        s->mask == RAD4_OVERLAY_PLANE_MASK &&
         (value & ~0xfu) == 0) {
         value <<= RAD4_PIXEL_WID_SHIFT;
     }
@@ -2112,7 +2116,7 @@ static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
         uint32_t old = ldl_be_p(dst);
 
         stl_be_p(dst, rad4_masked_store(s, old,
-                                        rad4_dma_from_pci(buf + off)));
+                                        rad4_dma_from_pci(buf + off), false));
     }
     rad4_mark_dirty_range(s, local_addr, len);
 }
@@ -2581,7 +2585,7 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     if (offset < RAD4_FB_SIZE) {
         uint32_t old = ldl_be_p(s->framebuffer + offset);
 
-        stl_be_p(s->framebuffer + offset, rad4_masked_store(s, old, v));
+        stl_be_p(s->framebuffer + offset, rad4_masked_store(s, old, v, true));
         rad4_mark_dirty_range(s, offset, size);
         return;
     }
