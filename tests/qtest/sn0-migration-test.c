@@ -697,11 +697,11 @@ static void test_elsc_rotation_position_patched(const void *data)
     enable_cpu_pcf_observer(from, 2);
     /*
      * sgi_migrate_stopped() and sgi_wait_migration_status() give up after
-     * 30 seconds of host wall-clock time, not guest time. On 2026-10-04
-     * this case failed once with the migration still "active" at that
-     * deadline, in a four-way parallel run at host load average about 75,
-     * and passed twice when rerun alone. A failure here on a loaded host
-     * may be the deadline rather than the stream.
+     * 120 seconds of host wall-clock time, not guest time. On 2026-10-04,
+     * under the earlier 30 s bound, this case failed once with the
+     * destination's load still "active", in a four-way parallel run at host
+     * load average about 75, and passed twice when rerun alone. A failure
+     * here on a loaded host may be the deadline rather than the stream.
      */
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
