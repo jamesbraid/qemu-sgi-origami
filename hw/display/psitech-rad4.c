@@ -590,6 +590,22 @@ struct PsitechRad4State {
     uint32_t rom_mode;
     uint32_t rom_command;
 
+    /*
+     * DMA channel 0 in flight: running from its start until the chain ends,
+     * fails or is aborted, and paused while DMACSR0's enable bit is clear.
+     * The descriptor being moved, how far it has got, its next-pointer word
+     * and how many descriptors the chain has loaded.
+     */
+    QEMUTimer *dma_timer;
+    bool dma_running;
+    bool dma_have_desc;
+    uint32_t dma_pci;
+    uint32_t dma_local;
+    uint32_t dma_size;
+    uint32_t dma_moved;
+    uint32_t dma_next;
+    uint32_t dma_descs;
+
     /* BAR2 framebuffer and mask. */
     uint8_t *framebuffer;
     uint32_t mask;
@@ -602,7 +618,7 @@ struct PsitechRad4State {
      * trap, not a RAM MemoryRegion, so it
      * cannot use the region dirty-bitmap helpers in hw/display/framebuffer.c;
      * rad4_bar2_write() and
-     * rad4_dma_run()'s upload branch mark rows by hand as they write, and
+     * rad4_dma_merge() mark rows by hand as they write, and
      * rad4_gfx_update() converts and pushes
      * only this range instead of the whole frame every refresh. Not migrated:
      * rad4_post_load() marks the whole
@@ -2030,22 +2046,61 @@ static const MemoryRegionOps rad4_bar0_ops = {
 };
 
 /*
- * Each descriptor's span moves in chunks of up to RAD4_DMA_CHUNK bytes, one
- * PCI access per chunk rather than per dword; the Bridge still translates
- * and lane-swaps every dword of it. When a chunk fails, the chunk is redone
- * a dword at a time so the transfer stops with exactly the dwords before
- * the failing one moved.
+ * DMA channel 0 runs alongside the processor, as the PLX part does: the
+ * DMACSR0 store that starts it only latches the transfer, and a virtual-clock
+ * timer moves it (the pattern of hw/dma/pl330.c). Each expiry stands for one
+ * slot of bus time just past and moves at most RAD4_DMA_SLICE bytes in it,
+ * so a callback's work stays bounded however long the chain (as
+ * hw/dma/i8257.c bounds each run of its bottom half).
+ *
+ * The rate is an approximation: the PCI 9060 Data Sheet (Version 1.2,
+ * December 1995, page 1) gives "PCI Bus Master transfers up to 132
+ * MBytes/sec", one 32-bit dword per clock at its 33 MHz maximum PCI clock
+ * (page 71's AC characteristics). Arbitration, wait states, the Bridge's own
+ * latency and the board's local bus are not modelled, so this is the
+ * chip's upper bound, not a measured transfer time. A descriptor fetch is
+ * charged as 16 bytes of bus time, the 16 bytes it reads (inferred: the
+ * data sheet gives no fetch timing).
  */
-#define RAD4_DMA_CHUNK  4096
+#define RAD4_DMA_RATE           132000000   /* bytes per second */
+#define RAD4_DMA_DESC_BYTES     16
+#define RAD4_DMA_SLICE          4096
+#define RAD4_DMA_SLOT_NS \
+    ((int64_t)RAD4_DMA_SLICE * NANOSECONDS_PER_SECOND / RAD4_DMA_RATE)
 
 /*
- * Merge @len bytes of little-endian PCI dwords into the framebuffer under
- * the plane mask (RAD4_BAR2_MASK), as a CPU pixel write is: the mask register
- * is documented as programmed "before CPU transfer/fill and restored
- * afterward" and both driver DMA render paths (bigx_update and
- * rad4_rect_dma_move/fill/copy) share the same threshold logic deciding
- * between them, so it is the memory controller's masked write, not a
- * CPU-only feature.
+ * DMACSR0 bits a read returns (PCI 9060 Data Sheet Table 57): each channel's
+ * enable and user-defined bits as written, and its Done bit. Start, abort
+ * and clear-interrupt are write-only. Channel 1 is not modelled; its bits
+ * are kept for readback only.
+ */
+#define RAD4_DMA_CSR_STORED     0xe1e1u
+#define RAD4_DMA_CH1_CONTROL    0x0e00u
+#define RAD4_DMA_CH1_DONE       (1u << 12)
+
+/*
+ * Byte order of DMA data, decided here and nowhere else: a pixel or a
+ * host-memory descriptor word crosses PCI as a little-endian dword. That
+ * choice is under separate review; the engine below only calls these.
+ */
+static uint32_t rad4_dma_from_pci(const uint8_t *bytes)
+{
+    return ldl_le_p(bytes);
+}
+
+static void rad4_dma_to_pci(uint8_t *bytes, uint32_t value)
+{
+    stl_le_p(bytes, value);
+}
+
+/*
+ * Merge @len bytes of PCI dwords into the framebuffer under the plane mask
+ * (RAD4_BAR2_MASK), as a CPU pixel write is: the mask register is documented
+ * as programmed "before CPU transfer/fill and restored afterward" and both
+ * driver DMA render paths (bigx_update and rad4_rect_dma_move/fill/copy)
+ * share the same threshold logic deciding between them, so it is the memory
+ * controller's masked write, not a CPU-only feature. The mask in force when
+ * the data arrives applies.
  */
 static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
                            const uint8_t *buf, uint32_t len)
@@ -2056,259 +2111,291 @@ static void rad4_dma_merge(PsitechRad4State *s, uint32_t local_addr,
         uint8_t *dst = s->framebuffer + local_addr + off;
         uint32_t old = ldl_be_p(dst);
 
-        stl_be_p(dst, rad4_masked_store(s, old, ldl_le_p(buf + off)));
+        stl_be_p(dst, rad4_masked_store(s, old,
+                                        rad4_dma_from_pci(buf + off)));
     }
     rad4_mark_dirty_range(s, local_addr, len);
 }
 
-static bool rad4_dma_upload(PsitechRad4State *s, uint32_t pci_addr,
-                            uint32_t local_addr, uint32_t size)
+/*
+ * Move @len bytes, at most RAD4_DMA_SLICE, between host memory and the
+ * framebuffer. One PCI access covers the whole span; the Bridge still
+ * translates and lane-swaps each dword of it. If it fails, the span is
+ * redone a dword at a time so the transfer stops with exactly the dwords
+ * before the failing one moved.
+ */
+static bool rad4_dma_move(PsitechRad4State *s, bool local_to_pci,
+                          uint32_t pci_addr, uint32_t local_addr,
+                          uint32_t len)
 {
-    uint8_t buf[RAD4_DMA_CHUNK];
-    uint32_t done, len, off;
+    uint8_t buf[RAD4_DMA_SLICE];
+    uint32_t off;
 
-    for (done = 0; done < size; done += len) {
-        len = MIN(size - done, sizeof(buf));
-        if (pci_dma_read(&s->pci, pci_addr + done, buf, len) == MEMTX_OK) {
-            rad4_dma_merge(s, local_addr + done, buf, len);
-            continue;
+    assert(len <= sizeof(buf));
+    if (local_to_pci) {
+        for (off = 0; off < len; off += 4) {
+            rad4_dma_to_pci(buf + off,
+                            ldl_be_p(s->framebuffer + local_addr + off));
+        }
+        if (pci_dma_write(&s->pci, pci_addr, buf, len) == MEMTX_OK) {
+            return true;
         }
         for (off = 0; off < len; off += 4) {
-            if (pci_dma_read(&s->pci, pci_addr + done + off, buf + off,
-                             4) != MEMTX_OK) {
-                rad4_dma_merge(s, local_addr + done, buf, off);
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad4: DMA payload read failed at "
-                             "0x%x\n", pci_addr + done + off);
-                return false;
-            }
-        }
-        rad4_dma_merge(s, local_addr + done, buf, len);
-    }
-    return true;
-}
-
-static bool rad4_dma_readback(PsitechRad4State *s, uint32_t pci_addr,
-                              uint32_t local_addr, uint32_t size)
-{
-    uint8_t buf[RAD4_DMA_CHUNK];
-    uint32_t done, len, off;
-
-    for (done = 0; done < size; done += len) {
-        len = MIN(size - done, sizeof(buf));
-        for (off = 0; off < len; off += 4) {
-            stl_le_p(buf + off,
-                     ldl_be_p(s->framebuffer + local_addr + done + off));
-        }
-        if (pci_dma_write(&s->pci, pci_addr + done, buf, len) == MEMTX_OK) {
-            continue;
-        }
-        for (off = 0; off < len; off += 4) {
-            if (pci_dma_write(&s->pci, pci_addr + done + off, buf + off,
+            if (pci_dma_write(&s->pci, pci_addr + off, buf + off,
                               4) != MEMTX_OK) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                              "psitech-rad4: DMA readback write failed at "
-                             "0x%x\n", pci_addr + done + off);
+                             "0x%x\n", pci_addr + off);
                 return false;
             }
         }
+        return true;
     }
+
+    if (pci_dma_read(&s->pci, pci_addr, buf, len) == MEMTX_OK) {
+        rad4_dma_merge(s, local_addr, buf, len);
+        return true;
+    }
+    for (off = 0; off < len; off += 4) {
+        if (pci_dma_read(&s->pci, pci_addr + off, buf + off,
+                         4) != MEMTX_OK) {
+            rad4_dma_merge(s, local_addr, buf, off);
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "psitech-rad4: DMA payload read failed at 0x%x\n",
+                         pci_addr + off);
+            return false;
+        }
+    }
+    rad4_dma_merge(s, local_addr, buf, len);
     return true;
 }
 
 /*
- * Run one PLX9054-family scatter/gather DMA transfer to completion, starting
- * from the descriptor chain DMADPR0
- * (RAD4_ROM_DESC) names. Real PCI9060/9054 hardware overlaps this with the
- * rest of the system; this model runs it
- * synchronously inside the register write that starts it, matching how every
- * other multi-step register sequence in
- * this file (the RGB561 serial EEPROM shift, the mode recognizer) already
- * resolves within the write that drives it.
+ * Load the descriptor s->dma_next names. Descriptor format: 16 bytes per
+ * entry (PLX PCI9054 Data Book, Table 11-80 and Figure 3-16): PCI address,
+ * Local address, transfer size, and next-descriptor pointer, each a 32-bit
+ * word: a local one is read as the values the CPU stored through BAR2, a
+ * host-memory one as PCI dwords. A descriptor's next-pointer word is loaded
+ * into DMADPR0 with it, and its flags describe that descriptor's own
+ * transfer (PCI 9060 Data Sheet, Version 1.2, Table 51 and section 3.6.2):
+ * bit1 ends the chain after it, bit2 asks for an interrupt once its transfer
+ * completes, and bit3 picks its direction. The shipped driver relies on
+ * this, putting each descriptor's direction in its own next-pointer word
+ * and end of chain with interrupt (0x6) in the last one's. Bit0, which a
+ * pointer carries to say whether the descriptor it names lives in host
+ * memory, is a PCI 9054 addition (Data Book Table 11-80); the 9060 reserves
+ * it and keeps descriptors in local memory.
  *
- * Descriptor format: 16 bytes per entry (PLX PCI9054 Data Book, Table 11-80
- * and Figure 3-16): PCI address, Local address, transfer size, and
- * next-descriptor pointer, each a 32-bit word: a local one is read as the
- * values the CPU stored through BAR2, a host-memory one as little-endian
- * PCI dwords. A descriptor's next-pointer word is loaded into DMADPR0
- * with it, and its flags describe that descriptor's own transfer (PCI 9060
- * Data Sheet, Version 1.2, Table 51 and section 3.6.2): bit1 ends the chain
- * after it, bit2 asks for an interrupt once its transfer completes, and
- * bit3 picks its direction. The shipped driver relies on this, putting each
- * descriptor's direction in its own next-pointer word and end of chain with
- * interrupt (0x6) in the last one's. Bit0, which a pointer carries to say
- * whether the descriptor it names lives in host memory, is a PCI 9054
- * addition (Data Book Table 11-80); the 9060 reserves it and keeps
- * descriptors in local memory.
+ * A Local-space descriptor is read straight out of s->framebuffer at the
+ * masked pointer: BAR2's framebuffer memory is this model's only locally
+ * addressable storage. A live capture of an IRIX 6.5.30 buffered-mode
+ * transfer confirmed the shipped 1.101 driver builds its descriptor array
+ * there, at the top of the 8 MiB local extent.
  *
- * A descriptor claiming Local Address space is read straight out of
- * s->framebuffer at the masked pointer: BAR2's
- * framebuffer memory is this model's only locally addressable storage, the
- * same array
- * rad4_bar2_read()/rad4_bar2_write() already serve BAR2 accesses from, so a
- * Local-space descriptor pointer is
- * simply a BAR2 offset. A live capture confirmed this against a real IRIX
- * 6.5.30 buffered-mode transfer: the
- * shipped 1.101 driver's own first descriptor names Local Address space, and
- * its 16 bytes decode into a
- * self-consistent chain only under that interpretation: local address 0,
- * size 0x1400 (one 1280-pixel, 4-byte
- * scanline), a PCI-Direct source address, and a next-pointer chaining
- * backward through a 40-entry descriptor array
- * built at the top of the 8 MiB local extent, while the same 16 bytes read
- * as an ordinary guest-physical address
- * were all zero.
- *
- * Returns true once an end-of-chain descriptor has been transferred, false on
- * any failure (a chain that never ends
- * within RAD4_DMA_MAX_DESCRIPTORS, a Local-space descriptor pointer outside
- * the framebuffer, a failed guest-memory
- * read for a PCI-space descriptor, or a descriptor whose Local address/size
- * run outside the framebuffer). The
- * caller leaves RAD4_DMA_STATUS_DONE clear on failure, so the guest's
- * existing timeout/abort recovery (already
- * exercised before this transfer was modeled at all, since the guest's
- * wait-and-retry logic runs regardless of
- * whether the model completes it) runs unchanged.
+ * A descriptor this model cannot honour (a pointer outside local memory, a
+ * failed host-memory read, a span outside the framebuffer or unaligned)
+ * stops the channel with Done clear; the guest's own timeout and abort
+ * recovery then runs.
  */
-static bool rad4_dma_run(PsitechRad4State *s)
+static bool rad4_dma_load_desc(PsitechRad4State *s)
 {
-    uint32_t ptr = s->rom_desc;
-    int64_t guard;
+    uint32_t ptr = s->dma_next;
+    hwaddr desc_addr = ptr & RAD4_DMA_DESC_ADDR_MASK;
+    bool from_pci = (ptr & RAD4_DMA_DESC_LOC_PCI) != 0;
+    uint8_t raw[RAD4_DMA_DESC_BYTES];
+    uint32_t word[4];
+    int i;
 
-    for (guard = 0; guard < RAD4_DMA_MAX_DESCRIPTORS; guard++) {
-        hwaddr desc_addr = ptr & RAD4_DMA_DESC_ADDR_MASK;
-        bool from_pci = (ptr & RAD4_DMA_DESC_LOC_PCI) != 0;
-        bool local_to_pci, end_of_chain, intr_on_tc;
-        uint8_t raw[16];
-        uint32_t pci_addr, local_addr, size, next;
+    if (s->dma_descs >= RAD4_DMA_MAX_DESCRIPTORS) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA descriptor chain exceeded %" PRId64
+                     " entries without an end-of-chain descriptor\n",
+                     (int64_t)RAD4_DMA_MAX_DESCRIPTORS);
+        return false;
+    }
+    s->dma_descs++;
 
-        if (from_pci) {
-            if (pci_dma_read(&s->pci, desc_addr, raw,
-                             sizeof(raw)) != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad4: DMA descriptor read failed at "
-                             "0x%"HWADDR_PRIx"\n", desc_addr);
-                return false;
-            }
-        } else {
-            if (desc_addr >= RAD4_FB_SIZE ||
-                sizeof(raw) > RAD4_FB_SIZE - desc_addr) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad4: DMA descriptor at Local address "
-                             "0x%"HWADDR_PRIx" falls outside the "
-                             "framebuffer\n", desc_addr);
-                return false;
-            }
-            memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
-        }
-
-        if (from_pci) {
-            pci_addr = ldl_le_p(raw);
-            local_addr = ldl_le_p(raw + 4);
-            size = ldl_le_p(raw + 8) & RAD4_DMA_SIZE_MASK;
-            next = ldl_le_p(raw + 12);
-        } else {
-            pci_addr = ldl_be_p(raw);
-            local_addr = ldl_be_p(raw + 4);
-            size = ldl_be_p(raw + 8) & RAD4_DMA_SIZE_MASK;
-            next = ldl_be_p(raw + 12);
-        }
-        local_to_pci = (next & RAD4_DMA_DESC_LOCAL_TO_PCI) != 0;
-        end_of_chain = (next & RAD4_DMA_DESC_END_OF_CHAIN) != 0;
-        intr_on_tc = (next & RAD4_DMA_DESC_INTR_ON_TC) != 0;
-
-        if (local_addr >= RAD4_FB_SIZE || size > RAD4_FB_SIZE - local_addr) {
+    if (from_pci) {
+        if (pci_dma_read(&s->pci, desc_addr, raw, sizeof(raw)) != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
-                         " targets local address 0x%x size 0x%x outside "
-                         "the framebuffer\n", desc_addr, local_addr, size);
+                         "psitech-rad4: DMA descriptor read failed at "
+                         "0x%"HWADDR_PRIx"\n", desc_addr);
             return false;
         }
-
-        if (local_addr % 4 != 0 || size % 4 != 0) {
+    } else {
+        if (desc_addr >= RAD4_FB_SIZE ||
+            sizeof(raw) > RAD4_FB_SIZE - desc_addr) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
-                         " has an unaligned local address 0x%x or size "
-                         "0x%x\n", desc_addr, local_addr, size);
+                         "psitech-rad4: DMA descriptor at Local address "
+                         "0x%"HWADDR_PRIx" falls outside the "
+                         "framebuffer\n", desc_addr);
             return false;
         }
-
-        /*
-         * The PCI 9060 carries PCI byte lanes straight to the local bus;
-         * its data sheet gives it no byte swapping. A pixel moves as a
-         * 32-bit little-endian PCI dword, the same value a CPU store
-         * through the little-endian BAR2 window delivers.
-         */
-        if (!(local_to_pci ? rad4_dma_readback(s, pci_addr, local_addr, size)
-                           : rad4_dma_upload(s, pci_addr, local_addr, size))) {
-            return false;
-        }
-
-        /*
-         * The descriptor's own interrupt request needs no mode bit: the
-         * mode register enables only the done interrupt (PCI 9060 Data
-         * Sheet section 3.10.2.3).
-         */
-        if (intr_on_tc) {
-            s->dma0_irq = true;
-            rad4_update_irq(s);
-        }
-
-        if (end_of_chain) {
-            return true;
-        }
-        ptr = next;
+        memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
+    }
+    for (i = 0; i < 4; i++) {
+        word[i] = from_pci ? rad4_dma_from_pci(raw + 4 * i)
+                           : ldl_be_p(raw + 4 * i);
     }
 
-    qemu_log_mask(LOG_GUEST_ERROR,
-                 "psitech-rad4: DMA descriptor chain exceeded %" PRId64
-                 " entries without an end-of-chain descriptor\n",
-                 (int64_t)RAD4_DMA_MAX_DESCRIPTORS);
-    return false;
+    s->dma_pci = word[0];
+    s->dma_local = word[1];
+    s->dma_size = word[2] & RAD4_DMA_SIZE_MASK;
+    s->dma_next = word[3];
+    s->dma_moved = 0;
+    s->rom_desc = word[3];
+
+    if (s->dma_local >= RAD4_FB_SIZE ||
+        s->dma_size > RAD4_FB_SIZE - s->dma_local) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
+                     " targets local address 0x%x size 0x%x outside "
+                     "the framebuffer\n", desc_addr, s->dma_local,
+                     s->dma_size);
+        return false;
+    }
+    if (s->dma_local % 4 != 0 || s->dma_size % 4 != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
+                     " has an unaligned local address 0x%x or size "
+                     "0x%x\n", desc_addr, s->dma_local, s->dma_size);
+        return false;
+    }
+    s->dma_have_desc = true;
+    return true;
+}
+
+/* Run the channel's timer exactly while it is running and enabled. */
+static void rad4_dma_schedule(PsitechRad4State *s)
+{
+    if (!s->dma_running || !(s->rom_command & RAD4_DMA_CMD_ENABLE)) {
+        timer_del(s->dma_timer);
+    } else if (!timer_pending(s->dma_timer)) {
+        timer_mod(s->dma_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + RAD4_DMA_SLOT_NS);
+    }
+}
+
+static void rad4_dma_stop(PsitechRad4State *s)
+{
+    s->dma_running = false;
+    s->dma_have_desc = false;
+    timer_del(s->dma_timer);
 }
 
 /*
- * DMACSR0 (RAD4_ROM_COMMAND) write side. The driver writes ENABLE|START (0x3)
- * to begin a transfer, then either
- * observes DONE (0x10) or, after its own `ddi_sv_wait` timeout, writes ABORT
- * (0x4).
+ * The current descriptor has moved its last byte. Its own interrupt request
+ * needs no mode bit: the mode register enables only the done interrupt (PCI
+ * 9060 Data Sheet section 3.10.2.3). The done interrupt follows the mode
+ * register as it stands when the chain ends: the driver's timeout path
+ * clears that bit to stop an interrupt from a transfer it gave up on.
+ */
+static void rad4_dma_desc_done(PsitechRad4State *s)
+{
+    s->dma_have_desc = false;
+    if (s->dma_next & RAD4_DMA_DESC_INTR_ON_TC) {
+        s->dma0_irq = true;
+    }
+    if (s->dma_next & RAD4_DMA_DESC_END_OF_CHAIN) {
+        rad4_dma_stop(s);
+        s->rom_command |= RAD4_DMA_STATUS_DONE;
+        if (s->rom_mode & RAD4_DMA_MODE_DONE_IRQ_ENABLE) {
+            s->dma0_irq = true;
+        }
+    }
+    rad4_update_irq(s);
+}
+
+/* One slot of bus time has passed: move what fits in it. */
+static void rad4_dma_timer_cb(void *opaque)
+{
+    PsitechRad4State *s = opaque;
+    uint32_t budget = RAD4_DMA_SLICE;
+
+    while (s->dma_running && budget) {
+        uint32_t len;
+
+        if (!s->dma_have_desc) {
+            if (!rad4_dma_load_desc(s)) {
+                rad4_dma_stop(s);
+                return;
+            }
+            budget -= MIN(budget, RAD4_DMA_DESC_BYTES);
+            continue;
+        }
+        len = MIN(budget, s->dma_size - s->dma_moved);
+        if (len &&
+            !rad4_dma_move(s, s->dma_next & RAD4_DMA_DESC_LOCAL_TO_PCI,
+                           s->dma_pci + s->dma_moved,
+                           s->dma_local + s->dma_moved, len)) {
+            rad4_dma_stop(s);
+            return;
+        }
+        s->dma_moved += len;
+        budget -= len;
+        if (s->dma_moved == s->dma_size) {
+            rad4_dma_desc_done(s);
+        }
+    }
+    rad4_dma_schedule(s);
+}
+
+/*
+ * DMACSR0 (RAD4_ROM_COMMAND) write side, per PCI 9060 Data Sheet Table 57.
+ * Start (bit 1) begins a transfer if enable (bit 0) is set, clearing Done
+ * (bit 4) until the chain ends. Clearing enable while a transfer runs
+ * suspends it ("Pause"); setting it again resumes it, which the table
+ * implies but does not state. Abort (bit 2) needs enable clear in the same
+ * write and sets Done once the channel has stopped; an abort written with
+ * enable set has no stated effect, so it is logged and ignored. Bit 3
+ * clears the channel's interrupt.
+ *
+ * The shipped driver writes ENABLE|START (0x3), sleeps until the
+ * interrupt or its own timeout, and on timeout writes ABORT (0x4) and polls
+ * Done; its interrupt handler acknowledges with Done and clear-interrupt
+ * set and enable clear.
  */
 static void rad4_dma_command_write(PsitechRad4State *s, uint32_t val)
 {
-    bool starting = (val & RAD4_DMA_CMD_ENABLE) &&
-                    (val & RAD4_DMA_CMD_START);
+    bool enable = val & RAD4_DMA_CMD_ENABLE;
 
-    s->rom_command = val;
+    if (val & RAD4_DMA_CH1_CONTROL) {
+        qemu_log_mask(LOG_UNIMP,
+                     "psitech-rad4: DMA channel 1 command 0x%x not "
+                     "modelled\n", val);
+    }
+    s->rom_command = (s->rom_command &
+                      (RAD4_DMA_STATUS_DONE | RAD4_DMA_CH1_DONE)) |
+                     (val & RAD4_DMA_CSR_STORED);
 
-    /* PCI 9060 Data Sheet Table 57, bit 3: "clears channel 0 interrupts". */
     if (val & RAD4_DMA_CMD_CLEAR_INT) {
         s->dma0_irq = false;
         rad4_update_irq(s);
     }
 
-    if (starting) {
-        if (rad4_dma_run(s)) {
-            s->rom_command |= RAD4_DMA_STATUS_DONE;
-            if (s->rom_mode & RAD4_DMA_MODE_DONE_IRQ_ENABLE) {
-                s->dma0_irq = true;
-                rad4_update_irq(s);
-            }
-        }
+    if ((val & RAD4_DMA_CMD_ABORT) && enable) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad4: DMA abort written with the channel "
+                     "enabled; ignored\n");
     } else if (val & RAD4_DMA_CMD_ABORT) {
-        /*
-         * PLX PCI9054 Data Book, Table 11-86: "Channel 0 Abort ... Sets
-         * Channel 0 Done bit when abort is complete."
-         * This model's transfers already ran to completion (or to a logged
-         * failure) synchronously inside the write
-         * above that started them, so by the time an abort arrives the only
-         * thing left for it to do is unblock a
-         * guest still waiting because that outcome was failure. That is the
-         * recovery path already exercised
-         * before DMA execution was modeled at all.
-         */
+        rad4_dma_stop(s);
         s->rom_command |= RAD4_DMA_STATUS_DONE;
     }
+
+    if (enable && (val & RAD4_DMA_CMD_START)) {
+        if (s->dma_running) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "psitech-rad4: DMA start while a transfer is in "
+                         "progress; ignored\n");
+        } else {
+            s->rom_command &= ~RAD4_DMA_STATUS_DONE;
+            s->dma_running = true;
+            s->dma_have_desc = false;
+            s->dma_next = s->rom_desc;
+            s->dma_descs = 0;
+        }
+    }
+    rad4_dma_schedule(s);
 }
 
 static uint64_t rad4_romroute_read(void *opaque, hwaddr addr, unsigned size)
@@ -2708,7 +2795,9 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     s->rom_desc = 0;
     s->rom_mode = 0;
-    s->rom_command = 0;
+    /* PCI 9060 Data Sheet Table 57: both channels' Done bits reset set. */
+    s->rom_command = RAD4_DMA_STATUS_DONE | RAD4_DMA_CH1_DONE;
+    rad4_dma_stop(s);
 
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
@@ -2870,6 +2959,7 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     }
 
     s->frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rad4_frame_timer_cb, s);
+    s->dma_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rad4_dma_timer_cb, s);
 
     rad4_ensure_surface(s);
 }
@@ -2879,6 +2969,7 @@ static void rad4_exit(PCIDevice *dev)
     PsitechRad4State *s = PSITECH_RAD4(dev);
 
     timer_free(s->frame_timer);
+    timer_free(s->dma_timer);
     qemu_graphic_console_close(s->con);
     g_free(s->framebuffer);
     g_free(s->rgb_store);
@@ -2903,6 +2994,13 @@ static bool rad4_migrated_state_valid(PsitechRad4State *s)
         s->rec_index > longest ||
         s->eeprom_address >= RAD4_EEPROM_WORDS ||
         s->rgb_reserved_phase >= RAD4_COLOR_LUT_CYCLES) {
+        return false;
+    }
+    if (s->dma_have_desc &&
+        (s->dma_local >= RAD4_FB_SIZE ||
+         s->dma_size > RAD4_FB_SIZE - s->dma_local ||
+         s->dma_moved > s->dma_size ||
+         (s->dma_local | s->dma_size | s->dma_moved) % 4)) {
         return false;
     }
     switch (s->serial_state) {
@@ -2944,6 +3042,9 @@ static int rad4_post_load(void *opaque, int version_id)
     s->cursor_shown_y_end = -1;
     rad4_ensure_surface(s);
     rad4_update_irq(s);
+    /* A transfer in flight resumes with the next slot of bus time. */
+    timer_del(s->dma_timer);
+    rad4_dma_schedule(s);
     if (s->rec_state == RAD4_REC_RECOGNIZED && s->frame_timer &&
         !timer_pending(s->frame_timer)) {
         timer_mod(s->frame_timer,
@@ -2955,8 +3056,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 9,
-    .minimum_version_id = 9,
+    .version_id = 10,
+    .minimum_version_id = 10,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -3005,6 +3106,14 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_UINT32(mode, PsitechRad4State),
         VMSTATE_BOOL(km_irq_level, PsitechRad4State),
         VMSTATE_BOOL(dma0_irq, PsitechRad4State),
+        VMSTATE_BOOL(dma_running, PsitechRad4State),
+        VMSTATE_BOOL(dma_have_desc, PsitechRad4State),
+        VMSTATE_UINT32(dma_pci, PsitechRad4State),
+        VMSTATE_UINT32(dma_local, PsitechRad4State),
+        VMSTATE_UINT32(dma_size, PsitechRad4State),
+        VMSTATE_UINT32(dma_moved, PsitechRad4State),
+        VMSTATE_UINT32(dma_next, PsitechRad4State),
+        VMSTATE_UINT32(dma_descs, PsitechRad4State),
         VMSTATE_END_OF_LIST()
     },
 };

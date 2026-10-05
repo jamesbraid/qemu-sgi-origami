@@ -214,6 +214,7 @@
 #define DMA_MODE_SCATTER_GATHER (1u << 9)
 #define DMA_MODE_DONE_IRQ       (1u << 10)
 
+#define DMA_CMD_ENABLE          0x1u
 #define DMA_CMD_START           0x3u    /* ENABLE | START */
 #define DMA_CMD_ABORT           0x4u
 #define DMA_CMD_CLEAR_INT       0x8u
@@ -756,6 +757,20 @@ static void dma_start(QTestState *qts, uint32_t val)
                 DEV_MEMORY_SPACE | (base >> 20));
     qtest_writel(qts, WINDOW_RAD4 + ((RAD4_ROM_PCI + ROM_COMMAND) &
                                     (WINDOW_SIZE - 1)), val);
+}
+
+/*
+ * The channel runs on the virtual clock (PCI 9060 Data Sheet page 1: up to
+ * 132 MB/s), so a start returns before any data has moved. Start, then let
+ * enough bus time pass for anything these tests transfer, including a
+ * chain that loops until local memory's worth of descriptors is spent.
+ */
+#define DMA_SETTLE_NS   (200 * 1000 * 1000)
+
+static void dma_run(QTestState *qts)
+{
+    dma_start(qts, DMA_CMD_START);
+    qtest_clock_step(qts, DMA_SETTLE_NS);
 }
 
 static void test_pci_identity(void)
@@ -1524,10 +1539,13 @@ static void test_dma_registers_before_start(void)
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_DESC), ==,
                     0xaabbccc0u);
 
-    /* No pixel, completion or interrupt effect from either write alone. */
+    /*
+     * No pixel or interrupt effect from either write alone, and Done keeps
+     * its reset value, set (PCI 9060 Data Sheet Table 57).
+     */
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0);
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
-                    DMA_STATUS_DONE, ==, 0);
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
 
     qtest_quit(qts);
@@ -1552,7 +1570,7 @@ static void test_dma_single_descriptor_upload(void)
     rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, DMA_MODE_SCATTER_GATHER);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -1583,7 +1601,7 @@ static void test_dma_upload_honors_mask(void)
                          0x000020u, sizeof(payload), DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     /* Only the masked low half of the incoming word took effect. */
     g_assert_cmphex(bar2_read(qts, 0x000020), ==, 0x00aa2233u);
@@ -1627,7 +1645,7 @@ static void check_overlay_index_compat(QTestState *qts, bool compat)
                          0x00000cu, sizeof(payload), DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
     g_assert_cmphex(bar2_read(qts, 0x00000c), ==,
                     compat ? 0x05123456u : 0x00123456u);
 }
@@ -1661,7 +1679,7 @@ static void dma_one_word(QTestState *qts, uint32_t mode, uint32_t flags)
     rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, mode);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
     g_assert_cmphex(bar2_read(qts, 0x000030), ==, payload[0]);
 }
 
@@ -1822,7 +1840,7 @@ static void test_dma_descriptor_chain(void)
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -1856,7 +1874,7 @@ static void test_dma_local_descriptor_upload(void)
     bar2_write(qts, desc_local + 12, DMA_DESC_END_OF_CHAIN);
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc_local);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -1896,7 +1914,7 @@ static void test_dma_local_descriptor_chain(void)
     bar2_write(qts, first_desc_local + 12, second_desc_local);
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, first_desc_local);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -1950,7 +1968,7 @@ static void test_dma_driver_chain_layout(void)
     bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, 0x7c3u & ~DMA_MODE_DONE_IRQ);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, top);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -1989,7 +2007,7 @@ static void test_dma_long_chain(void)
         bar2_write(qts, desc + 12, last ? DMA_DESC_END_OF_CHAIN : desc - 16);
     }
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, top);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
@@ -2011,7 +2029,7 @@ static void test_dma_looping_chain(void)
     bar2_write(qts, desc + 8, 0);
     bar2_write(qts, desc + 12, desc);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
@@ -2042,7 +2060,7 @@ static void test_dma_partial_transfer(void)
                          DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
@@ -2057,7 +2075,10 @@ static void test_dma_partial_transfer(void)
     bar2_write(qts, 0x84, 0x00b1b2b3u);
     dma_write_descriptor(qts, DMA_DESC_PHYS, pci, 0x80, 16,
                          DMA_DESC_END_OF_CHAIN | DMA_DESC_LOCAL_TO_PCI);
-    dma_start(qts, DMA_CMD_START);
+    /* The chip reloaded DMADPR0 from the descriptor; point it back. */
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
@@ -2066,6 +2087,257 @@ static void test_dma_partial_transfer(void)
     g_assert_cmphex(ldl_be_p(back + 4), ==, 0x00b1b2b3u);
 
     qtest_quit(qts);
+}
+
+/*
+ * Bus time for a transfer, from the PCI 9060 Data Sheet alone: page 1 gives
+ * up to 132 MB/s. The model charges each 16-byte descriptor fetch as bus
+ * time too, and moves data in slots of 4 KiB, so a transfer finishes no
+ * earlier than its bytes take at that rate and within one slot after.
+ */
+#define DMA_RATE_BYTES_PER_S    132000000ull
+#define DMA_SLOT_NS             (4096ull * 1000000000ull / DMA_RATE_BYTES_PER_S)
+#define DMA_BIG_BYTES           0x10000u
+#define DMA_BIG_LOCAL           0x100000u
+
+static int64_t dma_bus_ns(uint64_t bytes)
+{
+    return bytes * 1000000000ull / DMA_RATE_BYTES_PER_S;
+}
+
+static bool dma_done(QTestState *qts)
+{
+    return rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) & DMA_STATUS_DONE;
+}
+
+/*
+ * Put DMA_BIG_BYTES of distinct words at DMA_SRC_PHYS, mark the target span
+ * in the framebuffer, and write one Local-space descriptor that uploads it
+ * with the given mode and next-pointer flags, under the driver's INTCSR
+ * enables.
+ */
+static void dma_prepare_big(QTestState *qts, uint32_t mode, uint32_t flags)
+{
+    g_autofree uint8_t *buf = g_malloc(DMA_BIG_BYTES);
+    uint32_t desc = FB_SIZE - 16;
+
+    for (unsigned i = 0; i < DMA_BIG_BYTES / 4; i++) {
+        stl_be_p(buf + 4 * i, 0x00100000u | i);
+    }
+    qtest_memwrite(qts, DMA_SRC_PHYS, buf, DMA_BIG_BYTES);
+    bar2_write(qts, DMA_BIG_LOCAL, 0x00eeeeeeu);
+    bar2_write(qts, DMA_BIG_LOCAL + DMA_BIG_BYTES - 4, 0x00eeeeeeu);
+    bar2_write(qts, desc, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, desc + 4, DMA_BIG_LOCAL);
+    bar2_write(qts, desc + 8, DMA_BIG_BYTES);
+    bar2_write(qts, desc + 12, DMA_DESC_END_OF_CHAIN | flags);
+    bar0_write(qts, R_INTCSR, INTCSR_DRIVER_ENABLES);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, mode);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, desc);
+}
+
+static void dma_start_big(QTestState *qts, uint32_t mode, uint32_t flags)
+{
+    dma_prepare_big(qts, mode, flags);
+    dma_start(qts, DMA_CMD_START);
+}
+
+static uint32_t dma_big_first(QTestState *qts)
+{
+    return bar2_read(qts, DMA_BIG_LOCAL);
+}
+
+static uint32_t dma_big_last(QTestState *qts)
+{
+    return bar2_read(qts, DMA_BIG_LOCAL + DMA_BIG_BYTES - 4);
+}
+
+#define DMA_BIG_LAST_WORD   (0x00100000u | (DMA_BIG_BYTES / 4 - 1))
+
+/*
+ * The start returns with nothing moved and Done clear; data arrives as the
+ * virtual clock advances, and Done and the done interrupt come when the
+ * transfer's bus time at 132 MB/s has passed, not before. Start, abort and
+ * clear-interrupt read back as zero; enable reads as written.
+ */
+static void test_dma_runs_in_bus_time(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_start_big(qts, 0x7c3u, 0);
+    g_assert_false(dma_done(qts));
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) & 0xfu, ==,
+                    DMA_CMD_ENABLE);
+    g_assert_cmphex(dma_big_first(qts), ==, 0x00eeeeeeu);
+    g_assert_false(rad4_pci_irq(qts));
+
+    qtest_clock_step(qts, total / 2);
+    g_assert_false(dma_done(qts));
+    g_assert_cmphex(dma_big_first(qts), ==, 0x00100000u);
+    g_assert_cmphex(dma_big_last(qts), ==, 0x00eeeeeeu);
+    g_assert_false(rad4_pci_irq(qts));
+
+    qtest_clock_step(qts, total * 9 / 10 - total / 2);
+    g_assert_false(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, 0x00eeeeeeu);
+
+    qtest_clock_step(qts, total - total * 9 / 10 + DMA_SLOT_NS + 1);
+    g_assert_true(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, DMA_BIG_LAST_WORD);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_DMA0_ACTIVE, ==,
+                    INTCSR_DMA0_ACTIVE);
+    g_assert_true(rad4_pci_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * Abort with enable clear stops the channel part-way and sets Done at once:
+ * the words already moved stay, none after arrive, and no done interrupt
+ * follows. Aborting with enable still set is ignored.
+ */
+static void test_dma_abort_mid_transfer(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_start_big(qts, 0x7c3u, 0);
+    qtest_clock_step(qts, total / 2);
+    dma_start(qts, DMA_CMD_ENABLE | DMA_CMD_ABORT);
+    g_assert_false(dma_done(qts));
+    dma_start(qts, DMA_CMD_ABORT);
+    g_assert_true(dma_done(qts));
+
+    qtest_clock_step(qts, 4 * total);
+    g_assert_cmphex(dma_big_first(qts), ==, 0x00100000u);
+    g_assert_cmphex(dma_big_last(qts), ==, 0x00eeeeeeu);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_DMA0_ACTIVE, ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/* Clearing enable mid-transfer pauses it; setting enable again resumes. */
+static void test_dma_pause_resume(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_start_big(qts, 0x7c3u, 0);
+    qtest_clock_step(qts, total / 2);
+    dma_start(qts, 0);
+    qtest_clock_step(qts, 4 * total);
+    g_assert_false(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, 0x00eeeeeeu);
+
+    dma_start(qts, DMA_CMD_ENABLE);
+    qtest_clock_step(qts, total);
+    g_assert_true(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, DMA_BIG_LAST_WORD);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two chained descriptors: the first asks for an interrupt when it is done,
+ * the mode asks for none at the end. The first's interrupt arrives about
+ * halfway, while Done is still clear; it clears with enable kept set and
+ * the transfer carries on to Done without another. DMADPR0 then holds the
+ * last descriptor's next-pointer word, as the chip loads it (PCI 9060 Data
+ * Sheet section 3.6.2).
+ */
+static void test_dma_chain_interrupt_timing(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t half = DMA_BIG_BYTES / 2;
+    uint32_t top = FB_SIZE - 16;
+    int64_t first = dma_bus_ns(half + 16);
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 32);
+
+    dma_prepare_big(qts, DMA_MODE_SCATTER_GATHER, 0);
+    bar2_write(qts, top + 8, half);
+    bar2_write(qts, top + 12, (top - 16) | DMA_DESC_INTR_ON_TC);
+    bar2_write(qts, top - 16, PCI_DMA_DIRECT | (DMA_SRC_PHYS + half));
+    bar2_write(qts, top - 12, DMA_BIG_LOCAL + half);
+    bar2_write(qts, top - 8, half);
+    bar2_write(qts, top - 4, DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    qtest_clock_step(qts, first * 9 / 10);
+    g_assert_false(rad4_pci_irq(qts));
+    qtest_clock_step(qts, first / 10 + DMA_SLOT_NS + 1);
+    g_assert_true(rad4_pci_irq(qts));
+    g_assert_false(dma_done(qts));
+
+    dma_start(qts, DMA_CMD_ENABLE | DMA_CMD_CLEAR_INT);
+    g_assert_false(rad4_pci_irq(qts));
+    qtest_clock_step(qts, total);
+    g_assert_true(dma_done(qts));
+    g_assert_false(rad4_pci_irq(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, DMA_BIG_LAST_WORD);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_DESC), ==,
+                    DMA_DESC_END_OF_CHAIN);
+
+    qtest_quit(qts);
+}
+
+/* Reset part-way stops the channel; Done and the interrupt reset. */
+static void test_dma_reset_mid_transfer(void)
+{
+    QTestState *qts = rad4_init();
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_start_big(qts, 0x7c3u, 0);
+    qtest_clock_step(qts, total / 2);
+    qtest_system_reset(qts);
+    rad4_configure_bars(qts);
+    bar2_write(qts, DMA_BIG_LOCAL + DMA_BIG_BYTES - 4, 0x00eeeeeeu);
+
+    qtest_clock_step(qts, 4 * total);
+    g_assert_true(dma_done(qts));
+    g_assert_cmphex(dma_big_last(qts), ==, 0x00eeeeeeu);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_DMA0_ACTIVE, ==, 0);
+    g_assert_false(rad4_pci_irq(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A transfer part-way through migrates with its progress: the destination
+ * carries on from where the source stopped and finishes with Done and the
+ * interrupt.
+ */
+static void test_dma_migration_mid_transfer(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("psitech-rad4-dmamig-XXXXXX",
+                                          NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = rad4_init();
+    QTestState *to = qtest_init(MACHINE_WITH_BRIDGE " -incoming defer");
+    int64_t total = dma_bus_ns(DMA_BIG_BYTES + 16);
+
+    dma_start_big(from, 0x7c3u, 0);
+    qtest_clock_step(from, total / 2);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+
+    g_assert_false(dma_done(to));
+    g_assert_cmphex(dma_big_first(to), ==, 0x00100000u);
+    g_assert_cmphex(dma_big_last(to), ==, 0x00eeeeeeu);
+    qtest_clock_step(to, total);
+    g_assert_true(dma_done(to));
+    g_assert_cmphex(dma_big_last(to), ==, DMA_BIG_LAST_WORD);
+    g_assert_true(rad4_pci_irq(to));
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
 /*
@@ -2079,7 +2351,7 @@ static void test_dma_local_descriptor_out_of_bounds(void)
     QTestState *qts = rad4_init();
 
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, FB_SIZE);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
 
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
@@ -2105,7 +2377,7 @@ static void test_dma_abort_recovers_a_failed_transfer(void)
                          FB_SIZE - 4, 16, DMA_DESC_END_OF_CHAIN);
     rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
                (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
-    dma_start(qts, DMA_CMD_START);
+    dma_run(qts);
     g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
                     DMA_STATUS_DONE, ==, 0);
 
@@ -3497,6 +3769,17 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/dma-driver-chain-layout",
                    test_dma_driver_chain_layout);
     qtest_add_func("/psitech-rad4/dma-long-chain", test_dma_long_chain);
+    qtest_add_func("/psitech-rad4/dma-runs-in-bus-time",
+                   test_dma_runs_in_bus_time);
+    qtest_add_func("/psitech-rad4/dma-abort-mid-transfer",
+                   test_dma_abort_mid_transfer);
+    qtest_add_func("/psitech-rad4/dma-pause-resume", test_dma_pause_resume);
+    qtest_add_func("/psitech-rad4/dma-chain-interrupt-timing",
+                   test_dma_chain_interrupt_timing);
+    qtest_add_func("/psitech-rad4/dma-reset-mid-transfer",
+                   test_dma_reset_mid_transfer);
+    qtest_add_func("/psitech-rad4/dma-migration-mid-transfer",
+                   test_dma_migration_mid_transfer);
     qtest_add_func("/psitech-rad4/dma-partial-transfer",
                    test_dma_partial_transfer);
     qtest_add_func("/psitech-rad4/dma-looping-chain", test_dma_looping_chain);
