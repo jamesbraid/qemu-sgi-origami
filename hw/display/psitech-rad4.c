@@ -90,9 +90,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_BAR0_INTCSR        0x68
 #define RAD4_BAR0_SERIAL        0x6c
 
-#define RAD4_INTCSR_PENDING     (1u << 15)
-#define RAD4_INTCSR_ENABLE      (1u << 8)
-#define RAD4_INTCSR_WRITABLE    0xffff7fffu
+/*
+ * INTCSR bits, PLX PCI 9060 Data Sheet (Version 1.2, December 1995) Table
+ * 45. PENDING is the local interrupt input's status and DMA0_ACTIVE the DMA
+ * channel 0 interrupt's; both follow their sources and ignore writes.
+ */
+#define RAD4_INTCSR_ENABLE              (1u << 8)
+#define RAD4_INTCSR_PENDING             (1u << 15)
+#define RAD4_INTCSR_LOCAL_OUT_ENABLE    (1u << 16)
+#define RAD4_INTCSR_LOCAL_DMA0_ENABLE   (1u << 18)
+#define RAD4_INTCSR_DMA0_ACTIVE         (1u << 21)
+#define RAD4_INTCSR_STATUS      (RAD4_INTCSR_PENDING | RAD4_INTCSR_DMA0_ACTIVE)
 
 #define RAD4_SERIAL_CLOCK       (1u << 24)
 #define RAD4_SERIAL_CS          (1u << 25)
@@ -135,6 +143,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_DMA_CMD_ENABLE     (1u << 0)
 #define RAD4_DMA_CMD_START      (1u << 1)
 #define RAD4_DMA_CMD_ABORT      (1u << 2)
+#define RAD4_DMA_CMD_CLEAR_INT  (1u << 3)
 #define RAD4_DMA_STATUS_DONE    (1u << 4)
 
 /*
@@ -548,6 +557,8 @@ struct PsitechRad4State {
     uint32_t mailbox;
     uint32_t intcsr;
     uint32_t serial;
+    /* DMA channel 0's interrupt, active until DMACSR0 clears it. */
+    bool dma0_irq;
 
     int serial_state; /* Rad4SerialState, as plain int for VMState */
     bool serial_clk_prev;
@@ -1190,11 +1201,33 @@ static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, Rad4WatLayout *l,
     return rad4_gamma_rgb(s, rgb);
 }
 
+/*
+ * The PLX part's DMA interrupt goes only to its local interrupt output
+ * (PCI 9060 Data Sheet section 3.10.2, Table 45 bits 16 and 18); the data
+ * sheet's own route to the host is that output wired to the local interrupt
+ * input (section 3.6.1). This board is taken to be wired that way, which is
+ * inferred from the shipped driver rather than a schematic: it enables the
+ * DMA channel 0 interrupt only towards the local output (INTCSR bits 16 and
+ * 18, DMA mode 0x7c3), and its interrupt handler looks for DMA completion,
+ * INTCSR bit 21, only when the local input's status, bit 15, is set. The
+ * board's frame event drives the same input.
+ */
 static void rad4_update_irq(PsitechRad4State *s)
 {
-    bool level = (s->intcsr & RAD4_INTCSR_PENDING) &&
-                 (s->intcsr & RAD4_INTCSR_ENABLE);
+    bool local_out = s->dma0_irq &&
+                     (s->intcsr & RAD4_INTCSR_LOCAL_OUT_ENABLE) &&
+                     (s->intcsr & RAD4_INTCSR_LOCAL_DMA0_ENABLE);
+    bool level;
 
+    s->intcsr &= ~RAD4_INTCSR_STATUS;
+    if (s->frame_pending || local_out) {
+        s->intcsr |= RAD4_INTCSR_PENDING;
+    }
+    if (s->dma0_irq) {
+        s->intcsr |= RAD4_INTCSR_DMA0_ACTIVE;
+    }
+    level = (s->intcsr & RAD4_INTCSR_PENDING) &&
+            (s->intcsr & RAD4_INTCSR_ENABLE);
     pci_set_irq(&s->pci, level || s->km_irq_level);
 }
 
@@ -1295,7 +1328,6 @@ static void rad4_frame_timer_cb(void *opaque)
     }
 
     s->frame_pending = true;
-    s->intcsr |= RAD4_INTCSR_PENDING;
     rad4_update_irq(s);
 
     timer_mod(s->frame_timer,
@@ -1946,8 +1978,8 @@ static void rad4_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->mailbox = val;
         break;
     case RAD4_BAR0_INTCSR:
-        s->intcsr = (s->intcsr & RAD4_INTCSR_PENDING) |
-                    (val & RAD4_INTCSR_WRITABLE & ~RAD4_INTCSR_PENDING);
+        s->intcsr = (s->intcsr & RAD4_INTCSR_STATUS) |
+                    (val & ~RAD4_INTCSR_STATUS);
         rad4_update_irq(s);
         break;
     case RAD4_BAR0_SERIAL: {
@@ -2128,8 +2160,13 @@ static bool rad4_dma_run(PsitechRad4State *s)
             }
         }
 
-        if (intr_on_tc && (s->rom_mode & RAD4_DMA_MODE_DONE_IRQ_ENABLE)) {
-            s->intcsr |= RAD4_INTCSR_PENDING;
+        /*
+         * The descriptor's own interrupt request needs no mode bit: the
+         * mode register enables only the done interrupt (PCI 9060 Data
+         * Sheet section 3.10.2.3).
+         */
+        if (intr_on_tc) {
+            s->dma0_irq = true;
             rad4_update_irq(s);
         }
 
@@ -2159,11 +2196,17 @@ static void rad4_dma_command_write(PsitechRad4State *s, uint32_t val)
 
     s->rom_command = val;
 
+    /* PCI 9060 Data Sheet Table 57, bit 3: "clears channel 0 interrupts". */
+    if (val & RAD4_DMA_CMD_CLEAR_INT) {
+        s->dma0_irq = false;
+        rad4_update_irq(s);
+    }
+
     if (starting) {
         if (rad4_dma_run(s)) {
             s->rom_command |= RAD4_DMA_STATUS_DONE;
             if (s->rom_mode & RAD4_DMA_MODE_DONE_IRQ_ENABLE) {
-                s->intcsr |= RAD4_INTCSR_PENDING;
+                s->dma0_irq = true;
                 rad4_update_irq(s);
             }
         }
@@ -2526,7 +2569,6 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
 
         if (acknowledged) {
             s->frame_pending = false;
-            s->intcsr &= ~RAD4_INTCSR_PENDING;
             rad4_update_irq(s);
         }
         s->bar2_ctrl_bit = v & RAD4_CTRL_STORED_BIT;
@@ -2569,6 +2611,7 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->reg18 = 0;
     s->mailbox = 0;
     s->intcsr = 0;
+    s->dma0_irq = false;
     s->serial = 0;
     rad4_serial_reset(s);
     s->serial_clk_prev = false;
@@ -2827,8 +2870,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 8,
-    .minimum_version_id = 8,
+    .version_id = 9,
+    .minimum_version_id = 9,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -2876,6 +2919,7 @@ static const VMStateDescription vmstate_psitech_rad4 = {
                              RAD4_CANDIDATE_WORDS),
         VMSTATE_UINT32(mode, PsitechRad4State),
         VMSTATE_BOOL(km_irq_level, PsitechRad4State),
+        VMSTATE_BOOL(dma0_irq, PsitechRad4State),
         VMSTATE_END_OF_LIST()
     },
 };
