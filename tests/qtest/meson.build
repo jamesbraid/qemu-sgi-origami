@@ -117,6 +117,11 @@ slow_qtests = {
   # processes because a destination cannot share its source's. Its
   # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s.
   'sn0-migration-test': 180,
+  # Sixteen machine configurations, each a migrated source and destination
+  # pair. Measured 53.56s alone under debug_tcg on 2026-10-04, and 85-106s
+  # on a host at load average 100 (three runs alone, one four-way
+  # parallel). Allow about three times the loaded figure.
+  'sgi-migration-roundtrip-test': 300,
   # The 59 RTC storage and register cases measured 49.02s alone.
   # Three times that leaves room for the repeated QEMU launches under load.
   'sn0-ds1685-test': 150,
@@ -596,6 +601,7 @@ sn0_machine_qtests = \
                                                    'sn0-smp-rendezvous-test',
                                                    'sn0-warm-reset-test',
                                                    'sn0-migration-test',
+                                                   'sgi-migration-roundtrip-test',
                                                    'sn0-snapshot-test',
                                                    'sn0-ds1685-test',
                                                    'sn0-fabric-test',
