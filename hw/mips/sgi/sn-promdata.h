@@ -110,6 +110,12 @@ struct SNPromDataState {
      * yet; see sn_promdata_poll_cb() in sn-promdata.c.
      */
     uint32_t straggler_polls;
+    /*
+     * A poll's sample is queued on the processor and has not run yet. Not
+     * migrated: a fresh destination has no queued work, and a queued sample
+     * that survives a snapshot load in this process clears it when it runs.
+     */
+    bool sample_queued;
     /* Through the filter, for tracing only. */
     uint64_t private_reads;
     uint64_t private_writes;

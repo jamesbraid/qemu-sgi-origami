@@ -173,9 +173,14 @@ static void sn_promdata_poll_cb(void *opaque)
         }
         /*
          * A processor that is not running yet has the previous sample still
-         * queued; one is enough, however long it stays stopped.
+         * queued; one is enough, however long it stays stopped. Ask about
+         * this poll's own sample, not the processor's whole work list: QEMU
+         * queues work there at host-timed moments (a virtual timer armed
+         * from the main loop does), and a sample skipped for that reason
+         * would make record/replay diverge.
          */
-        if (cpu_work_list_empty(CPU(s->cpu))) {
+        if (!s->sample_queued) {
+            s->sample_queued = true;
             async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
                              RUN_ON_CPU_HOST_PTR(s));
         }
@@ -259,6 +264,7 @@ static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
     SNPromDataState *s = data.host_ptr;
 
     BQL_LOCK_GUARD();
+    s->sample_queued = false;
     if (s->fast && !sn_promdata_sp_in_window(s)) {
         sn_promdata_unmap(s, "stack-switch");
     }
