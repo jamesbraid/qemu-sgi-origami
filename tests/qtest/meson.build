@@ -1,7 +1,4 @@
 slow_qtests = {
-  # The 117-case suite took 294.35s alone under debug_tcg on 2026-10-03.
-  # Allow three times that duration, rounded up.
-  'sgi-pci-expansion-ni-test': 900,
   'ahci-test': 150,
   'aspeed_smc-test': 360,
   'bios-tables-test' : 910,
@@ -18,240 +15,81 @@ slow_qtests = {
   'pxe-test': 610,
   'prom-env-test': 360,
   'boot-serial-test': 360,
-  # Complete one-wire memory reads transfer every bit through QMP, on top
-  # of sn0-router-test's own register and BIST cases.
-  'sn0-router-test': 400,
-  # Complete one-wire reads plus module identity and migration exceed 120s.
-  'sn0-module-management-test': 300,
   'qos-test': 120,
   'vmgenid-test': 610,
-  # Where a note below gives a measured figure, it is that test's wall time
-  # in one parallel check-qtest-mips64 run on a workstation at a load
-  # average of 58 with no TIMEOUT_MULTIPLIER, and its budget is three times
-  # that figure. Two of them, sn0-origin2000-test and sn1-address-map-test,
-  # were killed at the budgets they had in the three runs before this one,
-  # and CI does not see that only because it doubles every budget.
-  #
-  # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
-  # headroom and they time out under CI load. Give them the 120s slow budget.
-  'sn0-pi-error-test': 120,
-  # Eight cases, each a guest run under TCG; one boots two nodes.
-  'sn0-pi-gfx-test': 180,
-  # Six cases run processors under TCG; one boots two chassis.
-  'sn1-pi-gfx-test': 180,
-  # 314 cases: the 74-case texture group alone took 566s. A whole
-  # run passed 271 cases before the old 576s allowance expired.
-  'sn1-odyssey-test': 1200,
-  # The 38-case Fuel suite took 59.71s before backed clock migration
-  # added two cases taking 27.99s. Keep headroom beyond the 60s default.
-  'sn1-fuel-test': 180,
-  # Fuel adds three migration cases. All 29 SCSI cases took 50.43s locally
-  # and exceeded the 60s default under parallel CI.
-  'sn1-io8-scsi-test': 180,
-  # FIFO snapshots expand parallel coverage to 45 cases. It took 47.31s
-  # alone and exceeded 60s alongside other device suites.
-  'sn0-ioc3-parallel-test': 180,
-  # Expanded DMA swap coverage starts a head for each offset and size.
-  # The full 60-case Ethernet suite exceeded the 60s default.
-  'sgi-ioc3-eth-test': 180,
-  # The MTTCG primitives run several thread=multi TCG cases, and the R10000
-  # performance test adds live migration and a stream analysis pass. Both fit
-  # under 60s unloaded but need headroom under parallel CI load.
-  'sn0-mttcg-test': 120,
-  'sn0-r10k-perf-migration-test': 120,
-  # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
-  # deadlines. Allow startup and teardown headroom beyond those 120s.
-  'sn0-qtest-cpu-test': 180,
-  # The KONA register suite timed out at meson's 60 s default in two of
-  # three parallel runs of the KONA suites (60.24 s and 60.30 s).
-  'sn0-origin2000-kona-test': 120,
-  # The KONA bring-up suite starts a machine for most cases. On the
-  # one-node machine it ran 17-47 s beside the other KONA suites.
-  'sn0-origin2000-kona-bringup-test': 120,
-  # The KONA video suite starts a machine for most cases. On the
-  # one-node machine it ran 16-48 s beside the other KONA suites.
-  'sn0-origin2000-kona-video-test': 120,
-  # The KONA scanout suite took 32-33 s of the 60 s default in parallel
-  # runs and carries several migrations.
-  'sn0-origin2000-kona-scanout-test': 120,
-  # The KONA glyph suite took 40 s of the 60 s default alongside the other
-  # KONA suites and carries three migrations.
-  'sn0-origin2000-kona-glyph-test': 120,
-  # The KONA context suite starts a machine for each case and carries
-  # three migrations. On the one-node machine it ran 16-40 s beside the
-  # other KONA suites.
-  'sn0-origin2000-kona-context-test': 120,
-  # The KONA GL suite draws through the shared rasterizer and carries a
-  # migration; it shares one single-node machine between its other cases.
-  'sn0-origin2000-kona-gl-test': 120,
-  # Texture framing covers every partial header and payload migration.
-  # The 120 s budget expired during the eleventh of 168 new positions.
-  'sn0-origin2000-kona-3d-test': 900,
-  # Complete pixel contracts took 165.72 s beside the fill suite.
-  # Allow three times that observed duration for the expanded copy cases.
-  'sn0-origin2000-kona-pixel-test': 500,
-  # Complete fill contracts took 149.27 s beside the pixel suite.
-  # Round three times that observed duration up to 450 seconds.
-  'sn0-origin2000-kona-fill-test': 450,
-  # The KONA X image DMA suite starts a logged machine for each case and
-  # reads back a 256 by 256 image's rows one pixel at a time.
-  'sn0-origin2000-kona-xdma-test': 120,
-  # The full 32-reset run took 265s under load. Keep headroom for all cycles.
-  'sn0-warm-reset-test': 600,
-  # IOC3 shares one machine across every case that wants a plain origin200
-  # and starts its own for the rest. Measured 58.74s.
-  'sn0-ioc3-test': 180,
-  # The 104 Octane cases measured 61.19s under host load.
-  'octane-test': 180,
-  # The Hub's cases share one machine, but the file's time is mostly its
-  # multi-processor rendezvous cases, which run a real guest under TCG and
-  # do not get faster for sharing anything. Measured 138.14s.
-  'sn0-hub-test': 415,
-  # Routed acceptance was killed at a 120s ceiling in every parallel run
-  # before this budget was raised. Measured 114.90s at 27 cases; merging in
-  # the outgoing-hub-io and xio-owner cases added three more
-  # private-launch boots (30 total) and measured 115.09s under the same
-  # parallel CI load, so keep the same three-times-measured budget.
-  'sn0-origin2000-test': 350,
-  # The migration suite runs fifteen sequential cases, each a pair of QEMU
-  # processes because a destination cannot share its source's. Its
-  # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s
-  # with twenty cases.
-  'sn0-migration-test': 180,
-  # Sixteen machine configurations, each a migrated source and destination
-  # pair. Measured 53.56s alone under debug_tcg on 2026-10-04, and 85-106s
-  # on a host at load average 100 (three runs alone, one four-way
-  # parallel). Allow about three times the loaded figure.
-  'sgi-migration-roundtrip-test': 300,
-  # 36 cases on Octane and Octane2 machines. Measured 30.90s alone on
-  # 2026-10-04, and killed at the 60s default when nine suites ran in
-  # parallel at host load average about 95. Allow three times 60s.
-  'octane-mgras-test': 180,
-  # The 59 RTC storage and register cases measured 49.02s alone.
-  # Three times that leaves room for the repeated QEMU launches under load.
-  'sn0-ds1685-test': 150,
-  # Nine dual-node startups took 48.80s; seven cases consumed 52.41s
-  # in parallel CI before the final migration hit the 60s default.
-  'sn0-fabric-test': 150,
-  # Tigon reached 60.10s in the same loaded run without a failed assertion.
-  'sn0-tigon-test': 120,
-  # Bridge was the fourth most killed test in CI over Aug 30 - Sep 3, with
-  # 20 timeout kills at what was then a 120s ceiling and zero failing
-  # subtests. It now shares one machine across the cases that want no card
-  # in any slot, plus the widget-addressing and PIO-translated-window cases
-  # folded in later, each on its own private launch. Measured 50.70s for
-  # 88 subtests.
-  'sn0-bridge-test': 160,
-  # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
-  # deadline is 120s to tolerate scheduling delay (see
-  # tests/qtest/sn0-ioc3-serial-test.c). This budget has to exceed that deadline,
-  # not equal it: a stalled socket reaches both at the same instant, and whichever
-  # wins decides whether the run reports which socket stalled or just says the
-  # binary was killed. Leave room for the deadline to fire and the test to report.
-  'sn0-ioc3-serial-test': 240,
-  # sn0-elsc-test's AUX socket-accept deadline is likewise 120s (see
-  # tests/qtest/sn0-elsc-test.c), and needs the same headroom above it for the
-  # same reason.
-  'sn0-elsc-test': 240,
-  # sn0-isp12160-test holds a read behind a block filter in each recovery case,
-  # so its runtime tracks host load: 75.9s measured at a load average near 90,
-  # against meson's 60s default, and a timeout kill was seen there. The backlog,
-  # recovery and unplug cases added later hold reads the same way, and the whole
-  # suite then measured between 45s and 108s across repeated runs on a
-  # workstation that was also building and testing other trees. 180s leaves that
-  # spread the same room the 120s left the figure it was set from.
-  'sn0-isp12160-test': 180,
-  # sn1-address-map-test had no entry here, so it ran on the 60s default and
-  # was killed at it in every parallel run before this entry existed.
-  # Measured 54.23s at 53 cases; merging in the io8-ioc3 transceiver, mac
-  # record and migration cases (six more, several starting their own QEMU
-  # processes) raised a standalone measurement to 91.75s at 59 cases, so
-  # keep the same three-times-measured budget.
-  'sn1-address-map-test': 280,
-  # sn1-cross-node-test starts the two-chassis machine for each of its
-  # thirteen cases. Measured 27.53s beside two other suites at host load
-  # 60; allow three times that, rounded up.
-  'sn1-cross-node-test': 90,
-  # sn1-presence-test boots the four processors for each of its twelve
-  # cases, and its three silent-partner cases each wait out the model's 2 s
-  # park bound. Measured 75.33s alone; allow three times that, rounded up.
-  'sn1-presence-test': 240,
-  # The merged 75-case MD file measured 79.48s alone under a 136 host load.
-  # Its 60s default timed out during a six-test run. Allow three times that.
-  'sn1-bedrock-md-test': 240,
-  # sn1-directory-state-test boots two or four processors for each of its
-  # twenty-three cases, one of them twice around a snapshot. Measured 22s
-  # alone, and past the 60s default beside other suites; allow 240s.
-  'sn1-directory-state-test': 240,
-  # sn1-bedrock-flash-test rewrites a whole 64 KiB sector one flash word at a
-  # time, which is four qtest round trips per word, and starts eight further
-  # QEMU processes for the rejection and migration cases.
-  'sn1-bedrock-flash-test': 180,
-  # The MGRAS cases are split by area so that no one binary approaches the
-  # runner's cap and the areas run in parallel. The register cases share one
-  # machine per binary; the migration cases start a source and a destination
-  # of their own each.
-  'sgi-mgras-board-test': 600,
-  'sgi-mgras-fifo-test': 300,
-  'sgi-mgras-gl-test': 600,
-  'sgi-mgras-gl-draw-test': 300,
-  'sgi-mgras-pixels-test': 300,
-  'sgi-mgras-texture-test': 900,
-  'sgi-mgras-migration-test': 600,
-  'sgi-mgras-migration-gl-test': 600,
-  'sgi-mgras-migration-glstate-test': 600,
-  'sgi-mgras-irq-test': 300,
-  # Two machines, one per BaseIO preset, serve the whole file, but each is a
-  # four-node module with eight processors and 256 MB and the timekeeper
-  # repair-store loop resets one of them once per processor. It has grown
-  # past the measurement above: alone on this host, at a load average of
-  # 120-155 -- well above the load of 58 the rest of this table was set
-  # from -- 3 runs measured 273.64s-361.37s, and it was already hitting
-  # this budget at an ordinary load of 65 (85-112s alone). Budget three
-  # times the highest of those three loaded runs.
-  'sn0-baseio-test': 1090,
-  # The BCM570x drives ninety-nine cases, nearly all of them on a machine of
-  # their own with a socket or user-mode backend behind the card, and eight of
-  # them migrate, which is a second process each. Measured 44.99s.
-  'bcm570x-test': 135,
-  # The flash file gained the chip's read-array and read-only cases, each
-  # starting a four-node Origin 2000 with four backing files. Measured 44.75s,
-  # and killed at the 60s default in a parallel run of the whole suite.
-  'sn0-origin2000-pflash-test': 135,
-  # Neither of these changed, but both were killed at the 60s default once the
-  # four card tests joined this suite and its parallel load went up. They are
-  # far more load-sensitive than their own work suggests: 34s and 36s with
-  # nothing else running, and 153.68s for sn-builder-test with four other
-  # tests in flight. Budget three times the loaded figure, the way the rest of
-  # this table does.
+  # SGI qtests: three times the longest of six four-process thorough runs
+  # on a 32-thread workstation at load average 25 to 290, counting a run
+  # killed at its budget as that long, 2026-10-05. Tests that fit three
+  # times inside the 60s default have no entry.
+  'bcm570x-test': 180,
+  'octane-mgras-test': 440,
+  'octane-test': 500,
+  'psitech-rad4-test': 140,
+  'sgi-ioc3-eth-test': 500,
+  'sgi-kona-read-defense-test': 80,
+  'sgi-mgras-board-test': 670,
+  'sgi-mgras-fifo-test': 190,
+  'sgi-mgras-gl-draw-test': 760,
+  'sgi-mgras-gl-test': 740,
+  'sgi-mgras-migration-gl-test': 320,
+  'sgi-mgras-migration-glstate-test': 550,
+  'sgi-mgras-migration-test': 150,
+  'sgi-mgras-pixels-test': 330,
+  'sgi-mgras-texture-test': 1050,
+  'sgi-migration-roundtrip-test': 170,
+  'sgi-pci-expansion-ni-test': 2050,
   'sgi-replay-test': 330,
-  'sn-builder-test': 460,
-  # Fourteen machines, one per chassis and node count, and eight refused
-  # launches: 28.65s with nothing else running. Budget four times that for
-  # the parallel suite's load.
-  'sn-node-population-test': 120,
-  # The shoehorn's card-behind-a-plain-expansion-board and card-behind-the
-  # catalogue-placed-board cases each start their own machine. 5 runs
-  # measured 27.05s-55.74s, and a sixth run at the same load was killed at
-  # the 60s default, timing out at 60.68s. Budget three times the highest
-  # completed run.
-  # The dual-serial card's four cases took it to 13; one loaded run took
-  # 130.77s. Budget three times that.
-  'sn0-pci-shoehorn-test': 390,
-  # The carrier's three cases -- widget liveness, a card in each slot, and
-  # the refused fourth slot -- each start their own machine. 3 runs
-  # measured 32.23s-57.39s, close enough to the 60s default that a slower
-  # run would time out. Budget three times the highest measured run.
-  'sn0-pci-carrier-test': 180,
-  # Thirteen cases, each starting its own machine.
-  'sn0-menet-test': 180,
-  # Eleven cases, each starting its own machine; budgeted like the MENET's.
-  'sn0-mscsi-test': 180,
-  # Sixteen cases, each starting its own machine. 50.58s alone after the
-  # MENET record case joined; run beside two other SN0 suites it was killed
-  # at the 60s default with seven cases done. Budget three times the
-  # measured solo run until a loaded run completes.
-  'sn0-bridge-identity-test': 160,
+  'sn-builder-test': 810,
+  'sn0-address-map-test': 110,
+  'sn0-bridge-identity-test': 80,
+  'sn0-bridge-test': 290,
+  'sn0-ds1685-test': 210,
+  'sn0-fabric-test': 460,
+  'sn0-ioc3-parallel-test': 200,
+  'sn0-ioc3-test': 550,
+  'sn0-isp12160-test': 250,
+  'sn0-menet-test': 150,
+  'sn0-migration-test': 190,
+  'sn0-module-management-test': 220,
+  'sn0-mscsi-test': 130,
+  'sn0-mttcg-test': 390,
+  'sn0-origin2000-kona-3d-test': 990,
+  'sn0-origin2000-kona-bringup-test': 230,
+  'sn0-origin2000-kona-fill-test': 360,
+  'sn0-origin2000-kona-pixel-test': 710,
+  'sn0-origin2000-kona-xdma-test': 70,
+  'sn0-origin2000-pflash-test': 80,
+  'sn0-origin2000-test': 430,
+  'sn0-pci-carrier-test': 70,
+  'sn0-pci-shoehorn-test': 100,
+  'sn0-qlogic-isp-test': 80,
+  'sn0-qtest-cpu-test': 240,
+  'sn0-r10k-perf-migration-test': 110,
+  'sn0-router-test': 350,
+  'sn0-smp-rendezvous-test': 90,
+  'sn0-tigon-test': 320,
+  'sn0-warm-reset-test': 1100,
+  'sn1-address-map-test': 340,
+  'sn1-bedrock-flash-test': 110,
+  'sn1-bedrock-md-test': 160,
+  'sn1-cross-node-test': 70,
+  'sn1-directory-state-test': 160,
+  'sn1-fuel-test': 250,
+  'sn1-io8-scsi-test': 160,
+  'sn1-l1-test': 110,
+  'sn1-odyssey-query-test': 100,
+  'sn1-odyssey-test': 3400,
+  'sn1-presence-test': 140,
+  'sn1-xbridge-chip-test': 190,
+  'xframe-test': 70,
+  # Not yet re-measured: both run several times slower under meson's
+  # MALLOC_PERTURB_ than alone, which is still being investigated.
+  'sn0-baseio-test': 1090,
+  'sn0-hub-test': 415,
+  # Each holds a 120s socket deadline; the budget must outlast it so a
+  # stalled socket reports itself rather than a killed binary.
+  'sn0-elsc-test': 730,
+  'sn0-ioc3-serial-test': 240,
 }
 
 qtest_priorities = {
