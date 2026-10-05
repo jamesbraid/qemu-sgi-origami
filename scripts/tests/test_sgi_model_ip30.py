@@ -61,6 +61,17 @@ class IP30CatalogueTests(unittest.TestCase):
         self.assertEqual(topology["nodes"][0]["flash"],
                          {"kind": "operator-prom", "size": 1048576,
                           "select": False, "strap": False})
+        # Board values with catalogue defaults are machine properties; the
+        # processor part's are -cpu properties.
+        self.assertEqual(offering["overrides"], [
+            {"property": "flash-select", "target": "machine"},
+            {"property": "flash-strap", "target": "machine"},
+            {"property": "mac", "target": "machine"},
+            {"property": "r12000-prid", "target": "cpu"},
+            {"property": "r12000-fpu-id", "target": "cpu"},
+            {"property": "r12000-reset-mode", "target": "cpu"},
+            {"property": "r12000-scache-bytes", "target": "cpu"},
+            {"property": "r12000-scache-block-words", "target": "cpu"}])
         self.assertEqual(len(offering["scsi-adapters"]), 2)
         self.assertEqual(len(offering["consoles"]), 2)
         self.assertEqual(len(offering["networks"]), 1)

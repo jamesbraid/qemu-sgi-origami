@@ -650,9 +650,9 @@ def _resources_for(topology: dict, harness: dict,
 
 
 def _hardware_inputs(topology: dict) -> list[dict]:
-    """Launch inputs this configuration binds by name. The family overrides
-    of catalogue board values (board-id-word and the rest) are machine
-    properties every SN product accepts, so they are not listed here.
+    """Launch inputs this configuration binds by name. Overrides of the
+    catalogue's own identity and board values are listed separately, in
+    `_overrides`.
     """
     bindings = []
     for controller in topology["controllers"]:
@@ -660,6 +660,39 @@ def _hardware_inputs(topology: dict) -> list[dict]:
         if "mac_eeprom_input" in record:
             bindings.append(dict(record["mac_eeprom_input"]))
     return sorted(bindings, key=lambda entry: entry["option"])
+
+
+# The -cpu properties each processor part takes for the values the
+# catalogue describes (target/mips/r10k_cpu.c); the machine applies the
+# catalogue's values through them unless -cpu names one.
+_CPU_OVERRIDES = {
+    "R10000": ("r10000-prid",),
+    "R12000": ("r12000-prid", "r12000-fpu-id", "r12000-reset-mode",
+               "r12000-scache-bytes", "r12000-scache-block-words"),
+    "R14000": ("r14000-prid",),
+}
+
+
+def _overrides(topology: dict) -> list[dict]:
+    """Every catalogue identity or board value this configuration lets a
+    launch override, and where: a `-M` property, or a `-cpu` property of
+    its processor part. The machine refuses a board override its
+    configuration does not bind, so each is listed only where one is."""
+    machine = ["mac"]
+    if any(node["asic_kind"] == "BEDROCK" for node in topology["nodes"]):
+        machine += ["board-id-word", "bedrock-revision"]
+    if any("l1" in controller for controller in topology["controllers"]):
+        machine += ["l1-type-code", "l1-revision"]
+    if any(board["board_kind"] in ("IO8", "FUEL") and board.get("populated")
+           for board in topology["io_boards"]):
+        machine += ["ioc3-subsystem-id"]
+    if topology["generation"] == "IP30":
+        machine += ["flash-select", "flash-strap"]
+    part = topology["nodes"][0]["cpu_slots"][0]["assembly"]["kind"]
+    return ([{"property": name, "target": "machine"}
+             for name in sorted(machine)] +
+            [{"property": name, "target": "cpu"}
+             for name in _CPU_OVERRIDES[part]])
 
 
 def _machine_options(machine_name: str, topology: dict, nodes: int) -> str:
@@ -740,6 +773,7 @@ def _offerings_for(model: dict, topology: dict,
                 "netboot-adapter": harness["netboot_adapter"],
                 "identity-inputs": list(identity_inputs),
                 "hardware-inputs": _hardware_inputs(topology),
+                "overrides": _overrides(topology),
                 **diagnostic,
                 "supported-guests": list(harness["supported_guests"]),
                 "install-media": list(harness["install_media"]),

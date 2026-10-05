@@ -64,6 +64,16 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -203,6 +213,16 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -342,6 +362,16 @@
         }
       ],
       "nodes": 2,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -479,6 +509,16 @@
         }
       ],
       "nodes": 1,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,
@@ -610,6 +650,16 @@
         }
       ],
       "nodes": 1,
+      "overrides": [
+        {
+          "property": "mac",
+          "target": "machine"
+        },
+        {
+          "property": "r10000-prid",
+          "target": "cpu"
+        }
+      ],
       "processor": {
         "cache-mib": 1,
         "clock-hz": 180000000,

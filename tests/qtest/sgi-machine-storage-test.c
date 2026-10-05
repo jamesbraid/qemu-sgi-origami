@@ -288,6 +288,65 @@ static void test_machine_help_lists_storage(void)
     }
 }
 
+/* Whether type @type has a property named @name. */
+static bool type_has_property(QTestState *qts, const char *type,
+                              const char *name)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute': 'qom-list-properties', 'arguments': {'typename': %s}}",
+        type);
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(reply, "return"), entry) {
+        QDict *property = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(property, "name"), name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Every override an offering lists is a property of its machine or of its
+ * processor part's CPU type, so a launcher can take the list instead of
+ * keeping its own.
+ */
+static void test_overrides_name_properties(void)
+{
+    QTestState *qts = qtest_init("-M none");
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute': 'query-sgi-machines'}");
+    QList *offerings = qdict_get_qlist(qdict_get_qdict(reply, "return"),
+                                       "offerings");
+    const QListEntry *entry, *item;
+    unsigned int checked = 0;
+
+    QLIST_FOREACH_ENTRY(offerings, entry) {
+        QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
+        g_autofree char *machine = g_strdup_printf(
+            "%s-machine", qdict_get_str(offering, "product"));
+        g_autofree char *cpu = g_strdup_printf(
+            "%s-mips64-cpu", qdict_get_str(offering, "default-cpu-model"));
+
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(offering, "overrides"), item) {
+            QDict *override = qobject_to(QDict, qlist_entry_obj(item));
+            const char *name = qdict_get_str(override, "property");
+            bool on_cpu = g_str_equal(qdict_get_str(override, "target"),
+                                      "cpu");
+
+            if (!type_has_property(qts, on_cpu ? cpu : machine, name)) {
+                g_error("%s lists %s, which %s lacks",
+                        qdict_get_str(offering, "machine-options"), name,
+                        on_cpu ? cpu : machine);
+            }
+            checked++;
+        }
+    }
+    g_assert_cmpuint(checked, >, 0);
+    qtest_quit(qts);
+}
+
 /* One block node cannot back two stores. */
 static void test_shared_node_refused(void)
 {
@@ -729,6 +788,8 @@ int main(int argc, char **argv)
                    test_sn0_node_flash_refusals);
     qtest_add_func("/sgi-machine-storage/machine-help",
                    test_machine_help_lists_storage);
+    qtest_add_func("/sgi-machine-storage/overrides-name-properties",
+                   test_overrides_name_properties);
     qtest_add_func("/sgi-machine-storage/shared-node-refused",
                    test_shared_node_refused);
     qtest_add_func("/sgi-machine-storage/sn1-node-flash/bound",

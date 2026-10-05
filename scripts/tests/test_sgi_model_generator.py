@@ -16,7 +16,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "5e3d04de158427f8ea38a55249122d98a51ff376e599de174c1c616bbc9c5bd9"
+    "e6332bf4bc5f2e45bd7a72dcf6b46591b834db362ad74346c3ef518a7af41e34"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -339,6 +339,34 @@ class FuelTests(unittest.TestCase):
             with self.subTest(topology=row["topology"]):
                 self.assertEqual(row["console"], "l1-uart")
                 self.assertEqual(row["consoles"], expected)
+
+    def test_overrides_follow_what_each_machine_binds(self):
+        """The Bedrock board values are listed only where a Bedrock, an L1
+        and an IO8 or Fuel board bind them; every machine takes mac=, and
+        the processor part's PRId is a -cpu property."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        bedrock = ["bedrock-revision", "board-id-word", "ioc3-subsystem-id",
+                   "l1-revision", "l1-type-code", "mac"]
+        expected = {
+            "fuel": (bedrock, ["r14000-prid"]),
+            "origin300": (bedrock, ["r14000-prid"]),
+            "origin200": (["mac"], ["r10000-prid"]),
+            "origin2000": (["mac"], ["r10000-prid"]),
+            "octane": (["flash-select", "flash-strap", "mac"],
+                       ["r10000-prid"]),
+        }
+        for row in catalogue["offerings"]:
+            if row["product"] not in expected:
+                continue
+            machine, cpu = expected[row["product"]]
+            with self.subTest(offering=row["machine-options"]):
+                self.assertEqual(
+                    [o["property"] for o in row["overrides"]
+                     if o["target"] == "machine"], machine)
+                self.assertEqual(
+                    [o["property"] for o in row["overrides"]
+                     if o["target"] == "cpu"], cpu)
 
     def test_fuel_export_has_system_timekeeper(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
