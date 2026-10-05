@@ -160,9 +160,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 #define RAD4_DMA_DESC_LOCAL_TO_PCI  (1u << 3) /* 1: framebuffer -> host */
 #define RAD4_DMA_DESC_ADDR_MASK     0xfffffff0u
 
-/* DMASIZ0 is a 23-bit byte count (Table 11-79); bound a chain walk too. */
+/* DMASIZ0 is a 23-bit byte count (Table 11-79). */
 #define RAD4_DMA_SIZE_MASK      0x7fffffu
-#define RAD4_DMA_MAX_DESCRIPTORS 256
+/*
+ * The chip walks a chain until a descriptor ends it; the bound only stops
+ * the model spinning on a chain that loops. Local memory holds this many
+ * distinct descriptors, so any longer walk has revisited one. The shipped
+ * driver's chains run one descriptor per scanline, 1024 for a full
+ * 1280x1024 upload.
+ */
+#define RAD4_DMA_MAX_DESCRIPTORS (RAD4_FB_SIZE / 16)
 
 /* BAR2 apertures. */
 #define RAD4_BAR2_FB_BASE       0x000000
@@ -2082,7 +2089,7 @@ static const MemoryRegionOps rad4_bar0_ops = {
 static bool rad4_dma_run(PsitechRad4State *s)
 {
     uint32_t ptr = s->rom_desc;
-    int guard;
+    int64_t guard;
 
     for (guard = 0; guard < RAD4_DMA_MAX_DESCRIPTORS; guard++) {
         hwaddr desc_addr = ptr & RAD4_DMA_DESC_ADDR_MASK;
@@ -2192,9 +2199,9 @@ static bool rad4_dma_run(PsitechRad4State *s)
     }
 
     qemu_log_mask(LOG_GUEST_ERROR,
-                 "psitech-rad4: DMA descriptor chain exceeded %d entries "
-                 "without an end-of-chain descriptor\n",
-                 RAD4_DMA_MAX_DESCRIPTORS);
+                 "psitech-rad4: DMA descriptor chain exceeded %" PRId64
+                 " entries without an end-of-chain descriptor\n",
+                 (int64_t)RAD4_DMA_MAX_DESCRIPTORS);
     return false;
 }
 
