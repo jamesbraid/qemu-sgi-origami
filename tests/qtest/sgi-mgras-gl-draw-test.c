@@ -2883,10 +2883,20 @@ static void test_gl_polygon_stipple_all_board_families(void)
     sparse[2] = 1u << 2;
     sparse[31] = 1u << 31;
     for (int board = 0; board < ARRAY_SIZE(boards); board++) {
-        g_autofree char *args = g_strdup_printf(
+        g_autofree char *args = NULL;
+        QTestState *s;
+
+        /*
+         * The quick setup draws on the first and last boards, the smallest
+         * and the largest; the thorough setup draws on every one.
+         */
+        if (board != 0 && board != ARRAY_SIZE(boards) - 1 && !g_test_slow()) {
+            continue;
+        }
+        args = g_strdup_printf(
             MACHINE_ARGS " -global sgi-mgras.board=%s "
             "-global sgi-mgras.x-unimplemented-board=on", boards[board]);
-        QTestState *s = qtest_init(args);
+        s = qtest_init(args);
 
         g_test_message("polygon stipple on MGRAS board %s", boards[board]);
         gl_transform_start(s);
