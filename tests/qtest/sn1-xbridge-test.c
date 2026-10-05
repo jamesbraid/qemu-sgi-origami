@@ -1221,6 +1221,39 @@ static const PlaceWidth place_widths[] = {
     { 0xff, true },
 };
 
+/*
+ * A memory-only transaction behind a swap-clear slot is refused and moves
+ * nothing: QEMU checks that the final region is RAM before dispatch, and
+ * the placement target is a callback region. The same transfer with the
+ * swap request set reaches the RAM target directly. This pins the stated
+ * limitation; a fix needs a memory-core change.
+ */
+static void test_placement_memory_only(const void *data)
+{
+    const PlaceWidth *w = data;
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-bridge-dma-test.dma-buffer=%s "
+        "-global sgi-bridge-dma-test.memory-only=on "
+        "-global sgi-xbridge-head.dma-64bit-slots=0x%x",
+        w->native ? "off" : "on", w->mask);
+    QTestState *qts = transport_start(extra);
+
+    reg_write(qts, 0x80, 0xa00000);
+    for (unsigned swap = 0; swap < 2; swap++) {
+        place_set_swap(qts, PLACE_DIRECT32, swap);
+        place_fill(qts, false);
+        place_transfer(qts, PLACE_DIRECT32, swap, 0, 16);
+        if (swap) {
+            g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_OK);
+            place_check_write(qts, PLACE_DIRECT32, 1, 0, 16);
+        } else {
+            g_assert_cmphex(card_read(qts, 0x28), ==, MEMTX_ACCESS_ERROR);
+            place_check_write(qts, PLACE_DIRECT32, 1, 0, 0);
+        }
+    }
+    qtest_quit(qts);
+}
+
 static void add_placement_tests(void)
 {
     for (unsigned i = 0; i < G_N_ELEMENTS(place_widths); i++) {
@@ -1238,6 +1271,12 @@ static void add_placement_tests(void)
         qtest_add_data_func(matrix, w, test_placement_matrix);
         qtest_add_data_func(refusals, w, test_placement_refusals);
         qtest_add_data_func(reset, w, test_placement_after_reset);
+        if (w->mask != (uint8_t)~(1u << PLACE_SLOT)) {
+            g_autofree char *memory = g_strdup_printf(
+                "/sn1/xbridge/dma-placement/memory-only/%s", suffix);
+
+            qtest_add_data_func(memory, w, test_placement_memory_only);
+        }
     }
 }
 
