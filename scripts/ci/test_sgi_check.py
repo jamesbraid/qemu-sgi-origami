@@ -28,10 +28,6 @@ slow_qtests = {
   'b-test': 120,
 }
 
-qtest_priorities = {
-  'a-test': 10,
-}
-
 foreach test : qtests
   test(test)
 endforeach
@@ -49,11 +45,6 @@ class ChangedTableTests(unittest.TestCase):
         self.assertEqual(
             self.changed(BASE.replace("'b-test': 120,", "'b-test': 180,")),
             {'b-test'})
-
-    def test_priority_change_selects_that_test(self):
-        self.assertEqual(
-            self.changed(BASE.replace("'a-test': 10,", "'a-test': 20,")),
-            {'a-test'})
 
     def test_added_and_removed_entries(self):
         new = BASE.replace("  'b-test': 120,\n", "  'c-test': 30,\n")
@@ -84,7 +75,7 @@ class ChangedTableTests(unittest.TestCase):
             "'b-test': 120,", "'b-test':\n    180,")))
 
     def test_missing_table_is_other(self):
-        new = BASE.replace('qtest_priorities = {\n  \'a-test\': 10,\n}\n', '')
+        new = BASE.replace("slow_qtests = {", "other_qtests = {")
         self.assertIsNone(self.changed(new))
 
     def test_tree_meson_build_parses(self):

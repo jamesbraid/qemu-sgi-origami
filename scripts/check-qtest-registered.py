@@ -25,9 +25,8 @@ FAMILY_GUARDS = {
 def registration_names(meson: str) -> set[str]:
     text = "\n".join(line for line in meson.splitlines()
                      if not line.lstrip().startswith("#"))
-    # A timeout or scheduling entry does not put a binary in a test suite.
-    for table in ("slow_qtests", "qtest_priorities"):
-        text = re.sub(rf"(?ms)^{table}\s*=\s*\{{.*?^\}}", "", text)
+    # A timeout entry does not put a binary in a test suite.
+    text = re.sub(r"(?ms)^slow_qtests\s*=\s*\{.*?^\}", "", text)
     # Meson also uses quoted strings for suite labels such as 'sgi-qtest'.
     # Registered qtest executables all use the source basename's -test suffix.
     return {name for name in re.findall(r"'([^']+)'", text)
@@ -60,7 +59,7 @@ def registration_occurrences(meson: str) -> Counter[str]:
             assignment = re.match(r"([A-Za-z_]\w*)\s*=", line)
             name = assignment.group(1) if assignment else ""
             collecting = (name.startswith("qtests_") or name.endswith("_qtests")) \
-                and name not in ("slow_qtests", "qtest_priorities")
+                and name != "slow_qtests"
         if collecting and not line.lstrip().startswith("#"):
             counts.update(name for name in re.findall(r"'([^']+)'", line)
                           if name.endswith("-test") and

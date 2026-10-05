@@ -92,25 +92,6 @@ slow_qtests = {
   'sn0-ioc3-serial-test': 240,
 }
 
-qtest_priorities = {
-  # Keep Fuel's scheduling order unchanged by its larger clock-test budget.
-  'sn1-fuel-test': 60,
-  # Preserve the SCSI and parallel suites' order when enlarging their budgets.
-  'sn1-io8-scsi-test': 60,
-  'sn0-ioc3-parallel-test': 60,
-  'sn0-fabric-test': 60,
-  # Enlarging the pixel budget must not promote it ahead of other suites.
-  'sn0-origin2000-kona-pixel-test': 60,
-  # Keep the fill suite's scheduling order independent of its larger budget.
-  'sn0-origin2000-kona-fill-test': 60,
-  # Keep the Hub suite's scheduling order independent of its larger budget.
-  'sn0-hub-test': 240,
-  # These four-vCPU MTTCG tests need longer timeouts, but promoting them with
-  # long SN0 device suites causes host contention and unrelated timeouts.
-  'sn0-qtest-cpu-test': 60,
-  'sn0-warm-reset-test': 60,
-}
-
 qtests_generic = [
   'cdrom-test',
   'device-introspect-test',
@@ -866,7 +847,7 @@ foreach dir : target_dirs
          args: test_args,
          protocol: 'tap',
          timeout: slow_qtests.get(test, 60),
-         priority: qtest_priorities.get(test, slow_qtests.get(test, 60)),
+         priority: slow_qtests.get(test, 60),
          suite: ['qtest', 'qtest-' + target_base] +
                 (slow_qtests.has_key(test) and test not in sgi_qtests ?
                   ['slow'] : []) +
