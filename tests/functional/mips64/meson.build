@@ -353,6 +353,27 @@ tests_mips64_system_sgi = tests_mips64_system_quick + \
 tests_mips64_system_thorough += ['malta']
 test_mips64_timeouts += {'malta': 420}
 
+# Extra Meson suites per test and benchmark, read by the shared functional
+# test loop: the SGI tests, the OpenBSD install, the IRIX diagnostics rows
+# and the OpenBSD network checks each get suites a CI job can select.
+test_mips64_system_extra_suites = {}
+foreach name : tests_mips64_system_quick + tests_mips64_system_thorough
+  extra = name in tests_mips64_system_sgi ? ['sgi', 'sgi-functional'] : []
+  if name == 'openbsd_install'
+    extra += ['func-install']
+  elif name.startswith('irix_diag')
+    extra += ['func-diag']
+  elif name in ['openbsd_net_transfer', 'xframe_pci']
+    extra += ['func-openbsd']
+  endif
+  if extra.length() > 0
+    test_mips64_system_extra_suites += {name: extra}
+  endif
+endforeach
+foreach name : benchmarks_mips64_system
+  test_mips64_system_extra_suites += {name: ['sgi']}
+endforeach
+
 # The unit tests of the lib_*.py helper modules the boot tests import,
 # plus the one verdict companion that is a parser in its own right (the
 # PROM's RSLT ledger). These unittest modules need no QEMU or assets, but
