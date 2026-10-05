@@ -139,7 +139,6 @@
 #define CPU_NUMBER_READY_MARKER UINT64_C(0x600d)
 #define CONFIG0_RESET_READBACK UINT64_C(0x6c9aa985)
 #define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
-#define POLL_TRIES 10000
 #define POLL_INTERVAL_US 1000
 /*
  * Guest run-time to allow a mistaken NMI to vector before asserting none did.
@@ -512,11 +511,14 @@ static uint32_t cpu_cause(QTestState *qts, unsigned int cpu)
 static void wait_for_cpu_gpr(QTestState *qts, unsigned int cpu,
                              const char *name, uint64_t expected)
 {
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    SgiWait w;
+
+    sgi_wait_start(&w, "CPU register value");
+    for (;;) {
         if (cpu_gpr(qts, cpu, name) == expected) {
             return;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(cpu_gpr(qts, cpu, name), ==, expected);
 }
@@ -525,13 +527,15 @@ static uint64_t wait_for_cpu_gpr_change(QTestState *qts, unsigned int cpu,
                                         const char *name, uint64_t previous)
 {
     uint64_t current = previous;
+    SgiWait w;
 
-    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+    sgi_wait_start(&w, "CPU register change");
+    for (;;) {
         current = cpu_gpr(qts, cpu, name);
         if (current != previous) {
             return current;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(current, !=, previous);
     return current;
@@ -1567,7 +1571,7 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
     g_autofree char *extra = NULL;
     QTestState *qts;
     int sv[2];
-    unsigned int i;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     extra = g_strdup_printf(
@@ -1584,11 +1588,12 @@ static void test_io8_ioc3_superio_interrupt(const void *data)
     io8_ioc3_writel(qts, IO8_IOC3_INT_ENABLE_SET, IOC3_INT_SERIAL_A);
     qtest_writeb(qts, IO8_IOC3_WINDOW + IO8_IOC3_SERIAL_A + 1, 0x01);
     g_assert_cmpint(write(sv[0], "S", 1), ==, 1);
-    for (i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "IOC3 serial pending");
+    for (;;) {
         if (qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) == pending) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_INT_STATUS) &
                     IOC3_INT_SERIAL_A, ==, IOC3_INT_SERIAL_A);
@@ -1632,7 +1637,7 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     g_autofree char *extra = NULL;
     QTestState *qts;
     int sv[2];
-    unsigned int i;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     extra = g_strdup_printf("-nic socket,fd=%d,id=ioc3-net", sv[1]);
@@ -1670,11 +1675,12 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     memcpy(packet + 4, frame, sizeof(frame));
     g_assert_cmpint(write(sv[0], packet, sizeof(packet)), ==,
                     (int)sizeof(packet));
-    for (i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "IOC3 receive");
+    for (;;) {
         if (io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME) == 8) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
@@ -1951,7 +1957,7 @@ static void test_l1_uart_irq_reaches_cpu(const void *data)
     g_autofree char *extra = NULL;
     QTestState *qts;
     int sv[2];
-    unsigned int i;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     extra = g_strdup_printf("-S -chardev socket,id=l1-console,fd=%d "
@@ -1974,12 +1980,13 @@ static void test_l1_uart_irq_reaches_cpu(const void *data)
 
     /* A keystroke at the operator console reaches the node's UART queue. */
     g_assert_cmpint(write(sv[0], "x", 1), ==, 1);
-    for (i = 0; i < POLL_TRIES; i++) {
+    sgi_wait_start(&w, "L1 UART keystroke pending");
+    for (;;) {
         if (qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
             PI_UART_PENDING) {
             break;
         }
-        g_usleep(POLL_INTERVAL_US);
+        sgi_wait_pause(&w, POLL_INTERVAL_US);
     }
     g_assert_cmphex(qtest_readq(qts, L1_UART_LOCAL_BASE + L1_UART_STATUS) &
                     1, ==, 1);

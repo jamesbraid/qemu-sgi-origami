@@ -7,6 +7,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 #define LB_PATH "/machine/peripheral/lb"
 #define LB_BASE 0x11000000ULL
@@ -140,9 +141,10 @@ static QTestState *lb_start_clock(const char *extra)
  */
 static void lb_wait_for_clock_running(QTestState *s)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
     bool asked = false;
+    SgiWait w;
 
+    sgi_wait_start(&w, "machine running");
     for (;;) {
         g_autoptr(QDict) response = qtest_qmp(s, "{'execute':'query-status'}");
         QDict *status = qdict_get_qdict(response, "return");
@@ -154,8 +156,7 @@ static void lb_wait_for_clock_running(QTestState *s)
             qtest_qmp_assert_success(s, "{'execute':'cont'}");
             asked = true;
         }
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
 }
 

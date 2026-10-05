@@ -3,6 +3,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "qobject/qdict.h"
 #include "sgi-test.h"
 
@@ -1846,21 +1847,7 @@ static void test_writable_masks(void)
 
 static void migrate_wait(QTestState *from)
 {
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response =
-            qtest_qmp(from, "{'execute':'query-migrate'}");
-        const char *status = qdict_get_str(qdict_get_qdict(response, "return"),
-                                           "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    sgi_wait_migration(from, "completed");
 }
 
 static void migrate_pair(QTestState *from, QTestState *to, const char *uri)

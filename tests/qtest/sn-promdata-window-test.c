@@ -24,6 +24,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 
 /* This file's own copies, the way every sn0-*-test.c stands alone. */
 #define PROMDATA_PADDR          UINT64_C(0x00100000)
@@ -174,22 +175,7 @@ static void test_copy_local_window_survives_migration(const void *data)
     }
     to = qtest_init(dest_args);
 
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
+    sgi_migrate_stopped(from, uri);
 
     mtree = qtest_hmp(to, "info mtree -D");
     mapping = g_strdup_printf(
