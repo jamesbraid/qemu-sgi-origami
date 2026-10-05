@@ -18,6 +18,7 @@
 #include "libqtest.h"
 #include <sys/socket.h>
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_IO + ((uint64_t)BRIDGE_WIDGET << 24))
@@ -241,16 +242,13 @@ static void net_send_frame(int fd, const uint8_t *buf, size_t len)
  */
 static void wait_for_completed_descriptor(QTestState *qts)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
-        if (bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN) != 0) {
-            return;
-        }
+    sgi_wait_start(&w, "completed receive descriptor");
+    while (bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN) == 0) {
         qtest_clock_step(qts, 1 * 1000 * 1000);
-        g_usleep(2000);
+        sgi_wait_pause(&w, 2000);
     }
-    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), !=, 0);
 }
 
 /*
@@ -458,17 +456,18 @@ static void build_big_rx_frame(uint8_t *f, size_t len)
 }
 
 /*
- * A dropped frame produces no completion to poll for. Pump the same
- * clock-and-sleep cycle wait_for_completed_descriptor uses, for a fixed,
- * generous span, then let the caller assert nothing arrived.
+ * A dropped frame produces no completion to poll for. Wait until QEMU has
+ * read everything sent on @fd, so a dropped frame has reached the device,
+ * then run the clock on for a fixed span, and let the caller assert nothing
+ * arrived.
  */
-static void pump_settle(QTestState *qts)
+static void pump_settle(QTestState *qts, int fd)
 {
     int attempt;
 
+    sgi_wait_socket_read(fd);
     for (attempt = 0; attempt < 40; attempt++) {
         qtest_clock_step(qts, 1 * 1000 * 1000);
-        g_usleep(2000);
     }
 }
 
@@ -613,7 +612,7 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
 
     build_big_rx_frame(big, sizeof(big));
     net_send_frame(sv[0], big, sizeof(big));
-    pump_settle(qts);
+    pump_settle(qts, sv[0]);
 
     g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
     g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
@@ -643,14 +642,12 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
  */
 static void wait_for_rx_producer(QTestState *qts, uint16_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
-        if (status_rx_prod_be(qts) >= want) {
-            return;
-        }
+    sgi_wait_start(&w, "status block receive producer %u", want);
+    while (!(status_rx_prod_be(qts) >= want)) {
         qtest_clock_step(qts, 1 * 1000 * 1000);
-        g_usleep(2000);
+        sgi_wait_pause(&w, 2000);
     }
     g_assert_cmphex(status_rx_prod_be(qts), ==, want);
 }
@@ -736,7 +733,7 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
 
     build_big_rx_frame(big, sizeof(big));
     net_send_frame(sv[0], big, sizeof(big));
-    pump_settle(qts);
+    pump_settle(qts, sv[0]);
 
     /* No completion, no producer movement, and neither buffer written. */
     g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
@@ -774,7 +771,7 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
     post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
                        JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
     bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
-    pump_settle(qts);
+    pump_settle(qts, sv[0]);
 
     g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
     g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS + BCM_RXBD_SIZE,
@@ -854,7 +851,7 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
 
     build_big_rx_frame(big, sizeof(big));
     net_send_frame(sv[0], big, sizeof(big));
-    pump_settle(qts);
+    pump_settle(qts, sv[0]);
 
     g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
     g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
@@ -993,14 +990,12 @@ static void test_dma_rides_plain_route(const void *data)
  */
 static void wait_for_status_rx_prod(QTestState *qts, uint16_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
-        if (status_rx_prod_be(qts) == want) {
-            return;
-        }
+    sgi_wait_start(&w, "status block receive producer %u", want);
+    while (!(status_rx_prod_be(qts) == want)) {
         qtest_clock_step(qts, 1 * 1000 * 1000);
-        g_usleep(2000);
+        sgi_wait_pause(&w, 2000);
     }
     g_assert_cmphex(status_rx_prod_be(qts), ==, want);
 }
@@ -1056,7 +1051,7 @@ static void test_status_block_update_criteria(const void *data)
     wait_for_completed_descriptor(qts);
 
     /* The completion is in the ring and the host has not been told. */
-    pump_settle(qts);
+    pump_settle(qts, sv[0]);
     qtest_memread(qts, STATUS_PHYS, word0, sizeof(word0));
     g_assert_cmphex(word0[0], ==, 0);
     g_assert_cmphex(word0[1], ==, 0);
@@ -1090,13 +1085,11 @@ static void test_status_block_update_criteria(const void *data)
  */
 static uint16_t rx_producer_without_clock(QTestState *qts, uint16_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 100; attempt++) {
-        if (status_rx_prod_be(qts) >= want) {
-            break;
-        }
-        g_usleep(5000);
+    sgi_wait_start(&w, "status block receive producer %u", want);
+    while (status_rx_prod_be(qts) < want) {
+        sgi_wait_pause(&w, 5000);
     }
     return status_rx_prod_be(qts);
 }

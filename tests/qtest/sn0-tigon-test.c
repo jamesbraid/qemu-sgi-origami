@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include "sgi-test.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 
 /* I/O space, and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
@@ -393,13 +394,14 @@ static void net_send_frame(int fd, const uint8_t *buf, size_t len)
 /* Give the main loop passes to read the socket and deliver a frame. */
 static uint32_t wait_return_prod(QTestState *qts)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "return producer");
+    for (;;) {
         if (qtest_readl(qts, RETURN_PROD_PHYS) != 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return qtest_readl(qts, RETURN_PROD_PHYS);
@@ -412,13 +414,14 @@ static uint32_t wait_return_prod(QTestState *qts)
  */
 static uint32_t wait_return_prod_reaches(QTestState *qts, uint32_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "return producer");
+    for (;;) {
         if (qtest_readl(qts, RETURN_PROD_PHYS) == want) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return qtest_readl(qts, RETURN_PROD_PHYS);
@@ -494,15 +497,16 @@ static void wait_log_contains(QTestState *qts, const char *logfile,
                               const char *needle)
 {
     g_autofree char *log = NULL;
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "trace log line");
+    for (;;) {
         g_clear_pointer(&log, g_free);
         g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
         if (strstr(log, needle)) {
             return;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
@@ -805,6 +809,7 @@ static void test_descriptor_dma_route_used_for_traffic(const void *data)
     uint8_t got[sizeof(test_frame)];
     gsize traffic_start;
     unsigned i;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = tigon_init_netdev_dma_routes_traced(sv[1], logfile);
@@ -840,11 +845,12 @@ static void test_descriptor_dma_route_used_for_traffic(const void *data)
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
     net_send_frame(sv[0], test_frame, sizeof(test_frame));
     net_send_frame(sv[0], test_frame, sizeof(test_frame));
-    for (i = 0; i < 200; i++) {
+    sgi_wait_start(&w, "two returned frames");
+    for (;;) {
         if (qtest_readl(qts, RETURN_PROD_PHYS) == 2) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 2);
@@ -1494,13 +1500,14 @@ static void test_receive_jumbo_posted_by_command(const void *data)
  */
 static uint32_t return_prod_without_clock(QTestState *qts, uint32_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 100; attempt++) {
+    sgi_wait_start(&w, "return producer");
+    for (;;) {
         if (qtest_readl(qts, RETURN_PROD_PHYS) >= want) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     return qtest_readl(qts, RETURN_PROD_PHYS);
 }
@@ -2396,8 +2403,8 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
     int from_sv[2], to_sv[2];
     QTestState *from, *to;
     uint8_t got[TX_PENDING * 20];
-    unsigned attempt;
     unsigned i;
+    SgiWait w;
 
     tmpdir = g_dir_make_tmp("sn0-tigon-overflow-migration-XXXXXX", &err);
     g_assert_no_error(err);
@@ -2420,11 +2427,12 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
     for (i = 0; i < RX_PENDING; i++) {
         net_send_frame(from_sv[0], rx_frame_ours, sizeof(rx_frame_ours));
     }
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "return producer");
+    for (;;) {
         if (qtest_readl(from, RETURN_PROD_PHYS) == RX_PENDING) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(from, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(from, RETURN_PROD_PHYS), ==, RX_PENDING);
@@ -3559,13 +3567,14 @@ static void test_statistics_head_tracks_interface_state(const void *data)
 /* Step the live interval until the head's discard count reaches want. */
 static uint32_t wait_head_discards_reaches(QTestState *qts, uint32_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "head discard count");
+    for (;;) {
         if (qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS) == want) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, STATS_LIVE_NS);
     }
     return qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS);

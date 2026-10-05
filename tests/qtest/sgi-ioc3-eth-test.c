@@ -11,6 +11,7 @@
 #include "libqtest.h"
 #include "qemu/bswap.h"
 #include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "libqos/pci.h"
 #include "libqos/pci-sgi-bridge.h"
 #include "hw/pci/pci_regs.h"
@@ -390,18 +391,19 @@ static void build_arp_request(uint8_t *frame, size_t len)
 static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
 {
     uint8_t landed[42];
-    int attempt;
+    SgiWait w;
 
     /*
  * The reply is delivered from a bottom half after the transmit walk and
  * published at its arrival deadline, so give the main loop passes and
  * advance the virtual clock rather than reading once.
  */
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "reply in receive slot 0");
+    for (;;) {
         if (ioc3_readl(qts, ENET_RX_CONSUME) == 8) {
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 8);
@@ -664,16 +666,17 @@ static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
 {
     uint32_t base = rxbuf + slot * 0x1000;
     uint32_t word0, word1, count, split;
-    int attempt;
+    SgiWait w;
 
     net_socket_send_frame(host_fd, frame, len);
 
     /* A socket backend delivers on a later main-loop pass: poll. */
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "receive consume index past the slot");
+    for (;;) {
         if (ioc3_readl(qts, ENET_RX_CONSUME) != slot * 8) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, (slot + 1) * 8);
@@ -799,13 +802,14 @@ static void test_the_delivery_truncation_point(const void *data)
 /* A socket backend delivers on a later main-loop pass. */
 static void wait_for_rx_consume(QTestState *qts, uint32_t want)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 2000; attempt++) {
+    sgi_wait_start(&w, "receive consume index");
+    for (;;) {
         if (ioc3_readl(qts, ENET_RX_CONSUME) == want) {
             return;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, want);
@@ -978,6 +982,7 @@ static void test_dma_prefix_side_effects(const void *data)
                               0x55, 0x66, 0x77, 0x88 };
     const uint32_t ring = RAM_SCRATCH + 0x8000;
     const char *trace_dir = g_getenv("QEMU_DMA_IOC3_TRACE");
+    SgiWait w;
 
     for (unsigned mode = 0; mode < 4; mode++) {
         bool native = mode & 1, mastering = mode & 2;
@@ -1015,7 +1020,8 @@ static void test_dma_prefix_side_effects(const void *data)
                      MCR_PROMISC | MCR_TX_DMA_EN | MCR_TX_EN |
                      MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(42 / 2));
         net_socket_send_frame(sv[0], frame, sizeof(frame));
-        for (unsigned attempt = 0; attempt < 50; attempt++) {
+        sgi_wait_start(&w, "receive DMA prefix side effect");
+        for (;;) {
             if (mastering ?
                 !(qpci_config_readw(ioc3_dev, PCI_COMMAND) &
                   PCI_COMMAND_MASTER) :
@@ -1023,7 +1029,7 @@ static void test_dma_prefix_side_effects(const void *data)
                 break;
             }
             qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
-            g_usleep(10000);
+            sgi_wait_pause(&w, 10000);
         }
         if (mastering) {
             g_assert_cmphex(qpci_config_readw(ioc3_dev, PCI_COMMAND), ==,
@@ -1703,7 +1709,7 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
 
     /* Refused while looping back: the index must sit still. */
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(200000);
+    sgi_wait_socket_read(sv[0]);
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
@@ -1846,7 +1852,8 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_END - 128;
     uint32_t status = 0x55667788;
-    unsigned int attempt, i;
+    unsigned int i;
+    SgiWait w;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = i + 1;
@@ -1862,12 +1869,13 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     dma_stl_be(qts, rxbuf + 4, 0x55667788);
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "receive status word");
+    for (;;) {
         status = dma_ldl_be(qts, rxbuf + 4);
         if (status != 0x55667788) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
 
     g_assert_cmphex(status, ==, RXE_GOODPKT | RXE_BROADCAST | (8u << 16));
@@ -2042,7 +2050,7 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     uint8_t landed[sizeof(frame)];
     QTestState *qts;
     int sv[2];
-    int attempt;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
@@ -2058,12 +2066,13 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
  * the buffer. Nothing here advances the virtual clock, so the arrival
  * deadline cannot have passed.
  */
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "frame payload in the buffer");
+    for (;;) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
         if (memcmp(landed, frame, sizeof(frame)) == 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
 
@@ -2110,7 +2119,7 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     unsigned int i;
-    int attempt;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
@@ -2134,12 +2143,13 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     }
     memset(frame, 0xff, 6);
     memset(frame + 6, 0x40, sizeof(frame) - 6);
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "first frame payload in buffer 0");
+    for (;;) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
         if (memcmp(landed, frame, sizeof(frame)) == 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
@@ -2151,7 +2161,7 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     memset(frame, 0xff, 6);
     memset(frame + 6, 0x99, sizeof(frame) - 6);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(20000);
+    sgi_wait_socket_read(sv[0]);
 
     /*
  * Buffer 0's first frame must still be there: the guest has not been told
@@ -2208,7 +2218,7 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     uint32_t base = RAM_SCRATCH;
     uint8_t landed[sizeof(seed)];
     unsigned int i;
-    int attempt;
+    SgiWait w;
 
     for (i = 0; i < sizeof(seed); i++) {
         seed[i] = (uint8_t)(i + 0x30);
@@ -2228,12 +2238,13 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
  * polling for it proves the frame was staged without needing the clock.
  */
     net_socket_send_frame(sv[0], seed, sizeof(seed));
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "seed frame payload in the buffer");
+    for (;;) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
         if (memcmp(landed, seed, sizeof(seed)) == 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
@@ -2294,7 +2305,7 @@ static void test_loopback_respects_a_held_completion(const void *data)
     uint32_t ring = RAM_SCRATCH + 0x8000;
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     uint32_t base = RAM_SCRATCH;
-    int attempt;
+    SgiWait w;
 
     memset(seed, 0xff, 6);
     memset(seed + 6, 0x40, sizeof(seed) - 6);
@@ -2317,12 +2328,13 @@ static void test_loopback_respects_a_held_completion(const void *data)
  * loopback-respects-a-full-arrival-line does for its seed frame.
  */
     net_socket_send_frame(sv[0], seed, sizeof(seed));
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "wire frame payload in the buffer");
+    for (;;) {
         qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
         if (memcmp(landed, seed, sizeof(seed)) == 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
@@ -2540,7 +2552,7 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
 
     /* Refused while looping back: the index must sit still. */
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(200000);
+    sgi_wait_socket_read(sv[0]);
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 

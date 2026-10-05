@@ -37,6 +37,8 @@
 #include "qemu/iov.h"
 #include "libqos/libqos-sgi-bridge.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
 #include "net/eth.h"
@@ -869,18 +871,15 @@ static void xframe_program_mac_entry(XframeTx *t, unsigned offset,
  * that injects it, the same reason sgi-ioc3-eth-test.c's wait_for_rx_consume
  * polls instead of guessing a delay.
  */
-static bool xframe_wait_rx_traffic(XframeTx *t, int attempts)
+static void xframe_wait_rx_traffic(XframeTx *t)
 {
-    int i;
+    SgiWait w;
 
-    for (i = 0; i < attempts; i++) {
-        if (sock_pif_readq(t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0) {
-            return true;
-        }
-        g_usleep(1000);
+    sgi_wait_start(&w, "ring 0 receive traffic interrupt");
+    while (!(sock_pif_readq(t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0)) {
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    return false;
 }
 
 /*
@@ -889,18 +888,15 @@ static bool xframe_wait_rx_traffic(XframeTx *t, int attempts)
  * descriptor is in play it cannot tell which one landed. The descriptor's own
  * OWN bit can.
  */
-static bool xframe_wait_rxd_consumed(XframeTx *t, uint64_t desc, int attempts)
+static void xframe_wait_rxd_consumed(XframeTx *t, uint64_t desc)
 {
-    int i;
+    SgiWait w;
 
-    for (i = 0; i < attempts; i++) {
-        if (!(dma_ldq_be(t->qs->qts, desc + 8) & RXD_OWN)) {
-            return true;
-        }
-        g_usleep(1000);
+    sgi_wait_start(&w, "receive descriptor ownership release");
+    while (dma_ldq_be(t->qs->qts, desc + 8) & RXD_OWN) {
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    return false;
 }
 
 /*
@@ -926,7 +922,7 @@ static void test_receive_delivers_a_frame(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex((dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) >>
@@ -952,6 +948,7 @@ static void test_receive_waits_for_its_arrival_deadline(void)
     uint8_t frame[64];
     uint8_t landed[64];
     unsigned i;
+    SgiWait w;
 
     for (i = 0; i < sizeof(frame); i++) {
         frame[i] = (uint8_t)(0x80 + i);
@@ -973,12 +970,13 @@ static void test_receive_waits_for_its_arrival_deadline(void)
      * the buffer. Nothing here advances the virtual clock, so the arrival
      * deadline cannot have passed.
      */
-    for (i = 0; i < 5000; i++) {
+    sgi_wait_start(&w, "frame in the receive buffer");
+    for (;;) {
         qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
         if (memcmp(landed, frame, sizeof(frame)) == 0) {
             break;
         }
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
 
@@ -1038,7 +1036,7 @@ static void test_receive_fetches_descriptor_once(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
     xframe_tx_stop(&t);
 
     g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
@@ -1084,9 +1082,9 @@ static void test_receive_recomputes_pending_irq_once(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rxd_consumed(&t, slot0, 5000));
+    xframe_wait_rxd_consumed(&t, slot0);
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rxd_consumed(&t, slot1, 5000));
+    xframe_wait_rxd_consumed(&t, slot1);
     g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
                     ==, RX_TRAFFIC_RING0);
     g_assert_true(xframe_intx_asserted(t.dev));
@@ -1123,14 +1121,19 @@ static void test_receive_out_of_range_ring_pointer_is_safe(void)
 
     xframe_rx_ring_arm(&t, 0xffffffff00000000ULL);
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_false(xframe_wait_rx_traffic(&t, 500));
+    sgi_wait_socket_read(t.host_fd);
+    for (i = 0; i < 8; i++) {
+        qtest_clock_step(t.qs->qts, RX_ARRIVAL_LATENCY_NS);
+    }
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, 0);
 
     /* The device is still alive: reprogramming a valid ring recovers. */
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF1, RX_BUF_CAPACITY);
     sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     qtest_memread(t.qs->qts, RX_BUF1, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
@@ -1169,16 +1172,16 @@ static void test_receive_filtered_frame_does_not_wedge(void)
 
     net_socket_send_frame(t.host_fd, filtered, sizeof(filtered));
     /*
-     * Give the filtered frame time to reach and be dropped by the device, and
+     * Wait for the filtered frame to reach and be dropped by the device, and
      * confirm it did not spuriously land. The next step tests whether the
      * queue still works.
      */
-    g_usleep(200000);
+    sgi_wait_socket_read(t.host_fd);
     g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
                     ==, 0);
 
     net_socket_send_frame(t.host_fd, legit, sizeof(legit));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
@@ -1209,7 +1212,7 @@ static void test_receive_buffer_too_small_truncates(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex((dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) >>
@@ -1260,19 +1263,20 @@ static void test_receive_recovers_after_exhaustion_via_recovery_poll(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame1, sizeof(frame1));
-    g_assert_true(xframe_wait_rxd_consumed(&t, slot0, 5000));
+    xframe_wait_rxd_consumed(&t, slot0);
 
     net_socket_send_frame(t.host_fd, frame2, sizeof(frame2));
-    g_assert_true(xframe_wait_rxd_consumed(&t, slot1, 5000));
+    xframe_wait_rxd_consumed(&t, slot1);
 
     /*
      * Slot 2 was never posted; the frame remains in QEMU's netdev queue. An
      * untouched OWN=0 descriptor looks like a completed one, so memory cannot
-     * prove the queue state. Wall-clock waiting lets the socket backend reach
-     * the no-buffer path; successful delivery after refill proves recovery.
+     * prove the queue state. Waiting until QEMU has read the frame lets the
+     * socket backend reach the no-buffer path; successful delivery after
+     * refill proves recovery.
      */
     net_socket_send_frame(t.host_fd, frame3, sizeof(frame3));
-    g_usleep(200000);
+    sgi_wait_socket_read(t.host_fd);
 
     /*
      * First, read the pending interrupt bits and write them back. This
@@ -1300,7 +1304,7 @@ static void test_receive_recovers_after_exhaustion_via_recovery_poll(void)
      */
     qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
 
-    g_assert_true(xframe_wait_rxd_consumed(&t, slot2, 5000));
+    xframe_wait_rxd_consumed(&t, slot2);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame3), frame3, sizeof(frame3));
 
@@ -1343,12 +1347,12 @@ static void test_receive_multicast_exact_match(void)
      * a real, immediate, device-visible signal that nothing landed.
      */
     net_socket_send_frame(t.host_fd, wrong_group, sizeof(wrong_group));
-    g_usleep(200000);
+    sgi_wait_socket_read(t.host_fd);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
                     RXD_OWN);
 
     net_socket_send_frame(t.host_fd, right_group, sizeof(right_group));
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(right_group), right_group,
                     sizeof(right_group));
@@ -1384,7 +1388,7 @@ static void test_receive_multicast_allmulti_wildcard(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
 
@@ -1421,12 +1425,12 @@ static void test_receive_unicast_still_matches(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, random_frame, sizeof(random_frame));
-    g_usleep(200000);
+    sgi_wait_socket_read(t.host_fd);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==,
                     RXD_OWN);
 
     net_socket_send_frame(t.host_fd, station_frame, sizeof(station_frame));
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(station_frame), station_frame,
                     sizeof(station_frame));
@@ -2259,7 +2263,7 @@ static void test_descriptors_honor_swapper_ctrl_little_endian(void)
     xframe_rx_ring_arm(&t, RX_RING_BASE);
 
     net_socket_send_frame(t.host_fd, rx_frame, sizeof(rx_frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex(dma_ldq_le(t.qs->qts, RX_RING_BASE + 16) >>
@@ -3197,7 +3201,7 @@ static void traffic_rx_capture(XframeTx *t, const uint8_t *frame, size_t len,
     xframe_rx_ring_arm(t, TRAFFIC_RX_RING);
 
     net_socket_send_frame(t->host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(t, 5000));
+    xframe_wait_rx_traffic(t);
 
     g_assert_cmphex(dma_ldq_be(t->qs->qts, TRAFFIC_RX_RING + 8) & RXD_OWN,
                     ==, 0);
@@ -3780,7 +3784,7 @@ static void test_receive_pads_after_vnet_header(void)
                            sizeof(struct virtio_net_hdr));
     redirector_send_packet(inject_fd, packet, sizeof(packet),
                            sizeof(struct virtio_net_hdr));
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
                     RXD_BUFSIZ_SHIFT, ==, ETH_ZLEN);
@@ -3880,7 +3884,7 @@ static void test_receive_reports_checksum_results(void)
      * already set and read a descriptor whose arrival deadline has not
      * passed.
      */
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
 
     c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(c1 & RXD_PROTO_IPV4, ==, RXD_PROTO_IPV4);
@@ -3894,7 +3898,7 @@ static void test_receive_reports_checksum_results(void)
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, RX_RING_BASE);
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_wait_rxd_consumed(&t, RX_RING_BASE);
 
     c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(c1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
@@ -3946,7 +3950,7 @@ static void test_receive_five_buffer_unclassified_frame(void)
     sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
 
     net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     /* The card handed the descriptor back. */
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
@@ -4005,7 +4009,7 @@ static void test_receive_five_buffer_splits_classified_headers(void)
     sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
 
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
 
     /* L2 -> buffer 0, L3+L4 -> buffer 1, payload -> buffer 2. */
@@ -4081,7 +4085,7 @@ static void test_receive_five_buffer_splits_truncated_transport(void)
     sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
 
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
     g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, c0);
@@ -4177,7 +4181,7 @@ static void test_receive_five_buffer_splits_ipv4_fragments(void)
     for (i = 0; i < 2; i++) {
         desc = RX_RING_BASE + i * RXD5_SIZE;
         net_socket_send_frame(t.host_fd, fragments[i], frame_len[i]);
-        g_assert_true(xframe_wait_rxd_consumed(&t, desc, 5000));
+        xframe_wait_rxd_consumed(&t, desc);
 
         ctrl2 = dma_ldq_be(t.qs->qts, desc + 16);
         g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, ETH_HDR_LEN);
@@ -4250,7 +4254,7 @@ static void test_receive_five_buffer_splits_a_jumbo_frame(void)
     sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
 
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
 
     ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
@@ -4422,7 +4426,7 @@ static void test_statistics_block_word_order_follows_swapper(void)
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, RX_RING_BASE);
     net_socket_send_frame(t.host_fd, rx_frame, sizeof(rx_frame));
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    xframe_wait_rx_traffic(&t);
 
     sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
     sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | STAT_CFG_ONE_SHOT);
@@ -4624,23 +4628,7 @@ static void traffic_interrupt_commit(XframeTx *t, bool rx, unsigned entry,
 
 static void xframe_migrate(QTestState *from, const char *uri)
 {
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert_true(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
+    sgi_migrate_stopped(from, uri);
 }
 
 static char *xframe_migration_directory(void)
@@ -4692,7 +4680,7 @@ static void test_traffic_interrupt_moderation(void)
                        RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, TRAFFIC_RX_RING);
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING, 5000));
+    xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING);
 
     memcpy(frame, traffic_remote_mac, sizeof(traffic_remote_mac));
     g_assert_cmpuint(traffic_tx_capture(&t, frame, len, got, sizeof(got)), ==,
@@ -4731,7 +4719,7 @@ static void test_traffic_interrupt_moderation(void)
                        RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, TRAFFIC_RX_RING);
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING, 5000));
+    xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING);
     g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
                     ==, RX_TRAFFIC_RING0);
 
@@ -5004,7 +4992,7 @@ static void test_receive_interrupt_rate_is_one_per_frame(void)
         uint64_t slot = TRAFFIC_RX_RING + (uint64_t)i * RXD_SIZE;
 
         net_socket_send_frame(t.host_fd, frame, len);
-        g_assert_true(xframe_wait_rxd_consumed(&t, slot, 5000));
+        xframe_wait_rxd_consumed(&t, slot);
 
         /* This frame's completion raised its own interrupt. */
         if (xframe_intx_asserted(t.dev)) {

@@ -17,6 +17,7 @@
  */
 #include <netinet/in.h>
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -585,18 +586,15 @@ static void test_transmit_payload_skips_lane_swap(const void *data)
     unlink(logfile);
 }
 
-static bool wait_rx_traffic(QTestState *qts, int attempts)
+static void wait_rx_traffic(QTestState *qts)
 {
-    int i;
+    SgiWait w;
 
-    for (i = 0; i < attempts; i++) {
-        if (win_readq(qts, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0) {
-            return true;
-        }
-        g_usleep(1000);
+    sgi_wait_start(&w, "ring 0 receive traffic interrupt");
+    while (!(win_readq(qts, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0)) {
+        sgi_wait_pause(&w, 1000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    return false;
 }
 
 /*
@@ -636,7 +634,7 @@ static void test_receive_payload_skips_lane_swap(const void *data)
     win_writeq(qts, PRC_CTRL_0, RC_IN_SVC);
 
     net_socket_send_frame(host_fd, frame, sizeof(frame));
-    g_assert_true(wait_rx_traffic(qts, 5000));
+    wait_rx_traffic(qts);
 
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
@@ -744,7 +742,7 @@ static void test_five_buffer_receive_splits_icmp_ip_header(const void *data)
     win_writeq(qts, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
 
     net_socket_send_frame(host_fd, frame, sizeof(frame));
-    g_assert_true(wait_rx_traffic(qts, 5000));
+    wait_rx_traffic(qts);
 
     dma_read_canonical(qts, DESC_PHYS + 16, word, sizeof(word));
     control2 = ldq_be_buf(word);

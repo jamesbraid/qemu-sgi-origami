@@ -19,6 +19,7 @@
 #include "sgi-migrate.h"
 #include "sgi-launch.h"
 #include "sgi-test.h"
+#include "sgi-wait.h"
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -1040,7 +1041,7 @@ static void test_gpio_input_migration_mismatch(const void *data)
     g_autofree char *dir = g_dir_make_tmp("ioc3-input-mismatch-XXXXXX", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
     QTestState *from, *to;
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    SgiWait w;
 
     g_assert_nonnull(dir);
     from = qtest_init("-M origin200 -device sgi-ioc3,id=input-card,addr=3,"
@@ -1054,9 +1055,9 @@ static void test_gpio_input_migration_mismatch(const void *data)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_start(&w, "destination exit after a refused migration");
     while (qtest_probe_child(to)) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
+        sgi_wait_pause(&w, 1000);
     }
     qtest_quit(to);
     qtest_quit(from);
@@ -3074,6 +3075,7 @@ static void test_dma_buffer_payloads(const void *data)
     const uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     uint8_t frame[1514], seen[1514], received[70 + 1514 + 8];
     uint8_t guard[8];
+    SgiWait w;
 
     for (unsigned i = 0; i < sizeof(frame); i++) {
         frame[i] = 0x30 + i;
@@ -3098,7 +3100,7 @@ static void test_dma_buffer_payloads(const void *data)
                     "-global sgi-ioc3-eth.dma-buffer=%s %s",
                     native ? "off" : "on", tracing);
                 QTestState *qts;
-                int sv[2], attempt;
+                int sv[2];
 
                 g_test_message("%s order=%u offset=%u length=%u",
                                native ? "native" : "buffer", order,
@@ -3140,11 +3142,12 @@ static void test_dma_buffer_payloads(const void *data)
                 qtest_writel(qts, RX_RING_LO, pci_dma_address(ring));
                 qtest_writel(qts, RX_PRODUCE, 8);
                 net_socket_send_frame(sv[0], frame, length);
-                for (attempt = 0; attempt < 50; attempt++) {
+                sgi_wait_start(&w, "receive consume index");
+                for (;;) {
                     if (qtest_readl(qts, RX_CONSUME)) {
                         break;
                     }
-                    g_usleep(10000);
+                    sgi_wait_pause(&w, 10000);
                     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
                 }
                 g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
@@ -3693,7 +3696,8 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
     uint32_t rxbuf = RAM_SCRATCH + 0x4000;
     uint8_t back[128];
     uint32_t word0, hwsum, csum;
-    int len, attempt;
+    int len;
+    SgiWait w;
 
     g_assert_cmpuint(size + 4, <=, sizeof(back));
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
@@ -3714,11 +3718,12 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
 
     net_socket_send_frame(sv[0], frame, size);
 
-    for (attempt = 0; attempt < 50; attempt++) {
+    sgi_wait_start(&w, "receive consume index");
+    for (;;) {
         if (qtest_readl(qts, RX_CONSUME) != 0) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
@@ -3802,13 +3807,14 @@ static void sn0_ioc3_filter_setup(QTestState *qts, uint32_t ring,
  */
 static void sn0_ioc3_wait_for_consume(QTestState *qts)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 50; attempt++) {
+    sgi_wait_start(&w, "receive consume index");
+    for (;;) {
         if (qtest_readl(qts, RX_CONSUME) != 0) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 }
@@ -3863,10 +3869,12 @@ static void test_address_filter_drops_foreign_unicast(const void *data)
     sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
-    /* Delivery is not synchronous with the send; the index staying put
-     * through the wait is the assertion. */
+    /*
+     * Once QEMU has read the frame, the index staying put through the
+     * arrival deadlines is the assertion.
+     */
+    sgi_wait_socket_read(sv[0]);
     for (attempt = 0; attempt < 20; attempt++) {
-        g_usleep(10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
@@ -4013,8 +4021,8 @@ static void test_multicast_hash_drops_an_unset_bit(const void *data)
     sn0_ioc3_filter_setup(qts, ring, rxbuf, 0);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
 
+    sgi_wait_socket_read(sv[0]);
     for (attempt = 0; attempt < 20; attempt++) {
-        g_usleep(10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
@@ -4037,7 +4045,7 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
                           0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
                           0x08, 0x06, 0xde, 0xad };
     unsigned int i;
-    int attempt;
+    SgiWait w;
 
     qtest_writel(qts, MAC_CONTROL,
                 MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
@@ -4059,11 +4067,12 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
 
     net_socket_send_frame(host_fd, frame, sizeof(frame));
 
-    for (attempt = 0; attempt < 50; attempt++) {
+    sgi_wait_start(&w, "receive consume index");
+    for (;;) {
         if (qtest_readl(qts, RX_CONSUME) != 0) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
@@ -4156,7 +4165,7 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
     uint32_t ring = RAM_SCRATCH;
     uint32_t rxbuf = RAM_SCRATCH + 0x4000;
     unsigned int i;
-    int attempt;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
@@ -4179,11 +4188,12 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
     for (i = 0; i < 2; i++) {
         qtest_writel(qts, ENET_INT_STATUS, 0xffffffffu);
         net_socket_send_frame(sv[0], frame, sizeof(frame));
-        for (attempt = 0; attempt < 200; attempt++) {
+        sgi_wait_start(&w, "receive consume index for this frame");
+        for (;;) {
             if (qtest_readl(qts, RX_CONSUME) == (i + 1) * 8) {
                 break;
             }
-            g_usleep(5000);
+            sgi_wait_pause(&w, 5000);
             qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
         }
         g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, (i + 1) * 8);
@@ -4210,7 +4220,7 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
     uint8_t frame[16] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
                           0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
                           0x08, 0x06, 0xbe, 0xef };
-    int attempt;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
@@ -4226,11 +4236,12 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
     qtest_writel(qts, RX_PRODUCE, 8 << 3);
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    for (attempt = 0; attempt < 50; attempt++) {
+    sgi_wait_start(&w, "receive consume index for the second frame");
+    for (;;) {
         if (qtest_readl(qts, RX_CONSUME) != 8) {
             break;
         }
-        g_usleep(10000);
+        sgi_wait_pause(&w, 10000);
         qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 16);

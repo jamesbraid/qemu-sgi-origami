@@ -20,6 +20,8 @@
 #include "qemu/osdep.h"
 #include "libqos/libqos-sgi-bridge.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
+#include "sgi-wait.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
 
@@ -570,13 +572,14 @@ static void net_send_frame(int fd, const uint8_t *buf, size_t len)
 /* Give the main loop passes to read the socket and deliver a frame. */
 static uint32_t wait_return_prod(TigonTest *t)
 {
-    int attempt;
+    SgiWait w;
 
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "return producer");
+    for (;;) {
         if (dma_ldl(t, t->ret_prod) != 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
         qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return dma_ldl(t, t->ret_prod);
@@ -643,23 +646,7 @@ static void test_transmit(void)
 
 static void tigon_migrate(QTestState *from, const char *uri)
 {
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert_true(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
+    sgi_migrate_stopped(from, uri);
 }
 
 static char *tigon_migration_directory(void)
@@ -843,7 +830,7 @@ static void test_receive_waits_for_its_arrival_deadline(void)
     int sv[2];
     TigonTest t;
     uint8_t landed[sizeof(rx_frame_ours)];
-    int attempt;
+    SgiWait w;
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     tigon_boot_netdev(&t, sv[1]);
@@ -867,12 +854,13 @@ static void test_receive_waits_for_its_arrival_deadline(void)
      * the buffer. Nothing here advances the virtual clock, so the arrival
      * deadline cannot have passed.
      */
-    for (attempt = 0; attempt < 200; attempt++) {
+    sgi_wait_start(&w, "frame in the receive buffer");
+    for (;;) {
         qtest_memread(t.qs->qts, t.rx_buf, landed, sizeof(landed));
         if (memcmp(landed, rx_frame_ours, sizeof(landed)) == 0) {
             break;
         }
-        g_usleep(5000);
+        sgi_wait_pause(&w, 5000);
     }
     g_assert_cmpmem(landed, sizeof(landed),
                     rx_frame_ours, sizeof(rx_frame_ours));
