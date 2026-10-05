@@ -90,14 +90,12 @@ foreach speed : ['quick', 'thorough']
       test_env.set('QEMU_TEST_GDB', gdb)
     endif
 
-    foreach test : target_tests + target_benchmarks
+    foreach test : target_tests
       testname = '@0@-@1@'.format(target_base, test)
-      is_benchmark = test in target_benchmarks
-      test_suites = is_benchmark ? ['system-' + target_base] : suites
+      test_suites = suites
       if target_base == 'mips64' and sysmode == 'system' and \
-         (test in get_variable('tests_mips64_system_sgi', []) or \
-          test in get_variable('benchmarks_mips64_system', []))
-        test_suites += is_benchmark ? ['sgi'] : ['sgi', 'sgi-functional']
+         test in get_variable('tests_mips64_system_sgi', [])
+        test_suites = suites + ['sgi', 'sgi-functional']
       endif
       if testname == 'mips64-openbsd_install'
         test_suites += ['func-install']
@@ -143,21 +141,61 @@ foreach speed : ['quick', 'thorough']
       # If the above bug ever gets fixed, when QEMU changes the min
       # meson version, add the 'depends' and remove the custom
       # 'run_target' logic below & in Makefile.include
-      test_kwargs = {
-        'depends': [test_deps, test_emulator, emulator_modules, plugin_modules,
-                    get_variable('test_' + target_base + '_' + sysmode +
-                                 '_extra_deps', {}).get(test, [])],
-        'env': test_env,
-        'args': [testpath],
-        'protocol': 'tap',
-        'timeout': time_out,
-        'suite': test_suites,
-      }
-      if is_benchmark
-        benchmark(testname, python, kwargs: test_kwargs)
-      else
-        test('func-' + testname, python, priority: time_out, kwargs: test_kwargs)
+      test('func-' + testname,
+           python,
+           depends: [test_deps, test_emulator, emulator_modules, plugin_modules,
+                     get_variable('test_' + target_base + '_' + sysmode +
+                                  '_extra_deps', {}).get(test, [])],
+           env: test_env,
+           args: [testpath],
+           protocol: 'tap',
+           timeout: time_out,
+           priority: time_out,
+           suite: test_suites)
+    endforeach
+
+    # Benchmarks run under "meson test --benchmark" rather than with the
+    # tests, with the same environment, dependencies and pre-caching.
+    foreach test : target_benchmarks
+      testname = '@0@-@1@'.format(target_base, test)
+      bench_suites = ['system-' + target_base]
+      if target_base == 'mips64' and sysmode == 'system' and \
+         test in get_variable('benchmarks_mips64_system', [])
+        bench_suites += ['sgi']
       endif
+      if fs.exists('generic' / 'test_' + test + '.py')
+        testfile = 'generic' / 'test_' + test + '.py'
+      else
+        testfile = target_base / 'test_' + test + '.py'
+      endif
+      testpath = meson.current_source_dir() / testfile
+      teststamp = testname + '.tstamp'
+      test_precache_env = environment()
+      test_precache_env.set('QEMU_TEST_PRECACHE', meson.current_build_dir() / teststamp)
+      test_precache_env.set('MESON_BUILD_ROOT', meson.project_build_root())
+      test_precache_env.prepend('PYTHONPATH',
+                                meson.project_source_root() / 'python',
+                                meson.current_source_dir(),
+                                separator : ':')
+      precache_all += custom_target('func-precache-' + testname,
+                                    output: teststamp,
+                                    command: [python, testpath],
+                                    depends: pyvenv_functests_group,
+                                    depend_files: files(testpath),
+                                    build_by_default: false,
+                                    env: test_precache_env)
+      benchmark(testname,
+                python,
+                depends: [test_deps, test_emulator, emulator_modules,
+                          plugin_modules,
+                          get_variable('test_' + target_base + '_' + sysmode +
+                                       '_extra_deps', {}).get(test, [])],
+                env: test_env,
+                args: [testpath],
+                protocol: 'tap',
+                timeout: get_variable('test_' + target_base + '_timeouts',
+                                      {}).get(test, 90),
+                suite: bench_suites)
     endforeach
   endforeach
 endforeach
