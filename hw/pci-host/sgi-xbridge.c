@@ -1614,7 +1614,7 @@ static MemTxResult chip_source_send(void *opaque, SGIXBridgeHeadState *head,
     return chip_peer_rw(s, peer, address, buffer, size, write, source);
 }
 
-static void chip_realize(DeviceState *dev, Error **errp)
+static void chip_build(DeviceState *dev, Error **errp)
 {
     SGIXBridgeState *s = SGI_XBRIDGE(dev);
     unsigned i, n;
@@ -1810,6 +1810,19 @@ static void chip_realize(DeviceState *dev, Error **errp)
         sysbus_init_mmio(SYS_BUS_DEVICE(s),
                          &s->external[s->xio_port - CHIP_LINK_FIRST].routes);
     }
+}
+
+/*
+ * A chip added with -device realizes outside a board's build, so each of
+ * the dozens of regions it maps would commit on its own. Build it in one
+ * transaction. The build realizes the crossbar and heads, maps and links
+ * regions and wires IRQs; nothing in it accesses an address space.
+ */
+static void chip_realize(DeviceState *dev, Error **errp)
+{
+    memory_region_transaction_begin();
+    chip_build(dev, errp);
+    memory_region_transaction_commit();
 }
 
 bool sgi_xbridge_attach_xio_port(SGIXBridgeState *s, unsigned index,
@@ -2169,7 +2182,10 @@ static void chip_init(Object *obj)
     /*
      * The space and its views exist before realize: a host links the views
      * while the chip links the host's region, so neither can go first.
+     * Mapping each port's face would commit once per port; one
+     * transaction commits them together.
      */
+    memory_region_transaction_begin();
     memory_region_init(&s->xio, obj, "sgi-xbridge.xio",
                        16 * CHIP_WIDGET_SPACE);
     memory_region_init_io(&s->unmapped, obj, &chip_unmapped_ops, s,
@@ -2190,6 +2206,7 @@ static void chip_init(Object *obj)
                                     (uint64_t)(i + 8) << CHIP_WIDGET_SHIFT,
                                     &port->face);
     }
+    memory_region_transaction_commit();
     sysbus_init_mmio(SYS_BUS_DEVICE(s), &s->xio);
     for (i = 0; i < ARRAY_SIZE(chip_view_widget); i++) {
         g_autofree char *name = g_strdup_printf("sgi-xbridge.widget-%x",
