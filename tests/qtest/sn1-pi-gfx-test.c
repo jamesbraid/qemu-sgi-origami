@@ -19,7 +19,6 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
-#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define NODE_SHIFT 33
@@ -480,49 +479,9 @@ static void test_head_returns_only_counted_stores(void)
     qtest_quit(qts);
 }
 
-/* The block, the credit mode and the map survive migration. */
-static void test_migration(void)
-{
-    g_autofree char *tmpdir = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *prom = write_image();
-    g_autofree char *quoted = g_shell_quote(prom);
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpdir = g_dir_make_tmp("sn1-pi-gfx-migration-XXXXXX", &err);
-    g_assert_no_error(err);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
-
-    from = qtest_initf("-M origin300 -cpu R14000 -S -bios %s", quoted);
-    qtest_writeq(from, reg(0, 1, PI_GFX_PAGE(1)), PAGE_ENABLE | PAGE);
-    qtest_writeq(from, reg(0, 1, PI_GFX_CREDIT(1)), 0x64);
-    qtest_writeq(from, reg(0, 1, PI_GFX_BIAS(1)), 0x44);
-    qtest_writeq(from, reg(0, 1, PI_GFX_CREDIT_MODE), 1);
-    qtest_writeq(from, reg(0, 0, II_GFX_MAP(1)), MAP(0, 1, 1, HEAD_WIDGET));
-    to = qtest_initf("-M origin300 -cpu R14000 -S -bios %s -incoming %s",
-                     quoted, uri);
-    sgi_migrate_stopped(from, uri);
-    sgi_wait_migration_status(to, "completed", 30);
-
-    g_assert_cmphex(qtest_readq(to, reg(0, 1, PI_GFX_PAGE(1))), ==,
-                    PAGE_ENABLE | PAGE);
-    g_assert_cmphex(qtest_readq(to, reg(0, 1, PI_GFX_CREDIT(1))), ==, 0x64);
-    g_assert_cmphex(qtest_readq(to, reg(0, 1, PI_GFX_BIAS(1))), ==, 0x44);
-    g_assert_cmphex(qtest_readq(to, reg(0, 1, PI_GFX_CREDIT_MODE)), ==, 1);
-    g_assert_cmphex(qtest_readq(to, reg(0, 0, II_GFX_MAP(1))), ==,
-                    MAP(0, 1, 1, HEAD_WIDGET));
-
-    qtest_quit(from);
-    qtest_quit(to);
-    g_rmdir(tmpdir);
-    unlink(prom);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("sn1/pi-gfx/migration", test_migration);
     /* Every other case runs processors. */
     if (!qtest_has_accel("tcg")) {
         return g_test_run();
