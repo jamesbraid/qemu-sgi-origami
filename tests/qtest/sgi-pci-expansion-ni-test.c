@@ -1801,67 +1801,6 @@ static void test_processor_absence_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_processor_absence_old_stream(const void *data)
-{
-    bool selected = GPOINTER_TO_UINT(data);
-    static const char name[] = "sgi-origin300-pci-expansion-module";
-    uint8_t header[1 + sizeof(name) - 1 + 8];
-    GError *error = NULL;
-    g_autofree char *directory = g_dir_make_tmp("ni-absence-v5-XXXXXX", &error);
-    g_autofree char *file = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *stream = NULL;
-    gsize length, found = 0, payload = 0;
-    QTestState *from = management_start(ABSENCE_OPTIONS);
-    QTestState *to = management_start(selected ?
-        ABSENCE_OPTIONS " -incoming defer" :
-        "-global sgi-pci-expansion-ni-fixture.power=on -incoming defer");
-
-    g_assert_no_error(error);
-    file = g_build_filename(directory, "migration.bin", NULL);
-    uri = g_strdup_printf("file:%s", file);
-    sgi_migrate_stopped(from, uri);
-    g_assert_true(g_file_get_contents(file, &stream, &length, &error));
-    g_assert_no_error(error);
-    header[0] = sizeof(name) - 1;
-    memcpy(header + 1, name, sizeof(name) - 1);
-    stl_be_p(header + sizeof(name), 0);
-    stl_be_p(header + sizeof(name) + 4, 8);
-    for (gsize i = 0; i + sizeof(header) < length; i++) {
-        if (!memcmp(stream + i, header, sizeof(header))) {
-            payload = i + sizeof(header);
-            found++;
-        }
-    }
-    g_assert_cmpuint(found, ==, 1);
-    g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
-    g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 0);
-    g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 0);
-    g_assert_cmpuint(ldl_be_p(stream + payload + 6), ==, 2);
-    g_assert_cmpuint((uint8_t)stream[payload + 10], ==, 1);
-    /* Remove UART selection/count and processor-absence selection for v5. */
-    stl_be_p(stream + payload - 4, 5);
-    memmove(stream + payload, stream + payload + 11, length - payload - 11);
-    g_assert_true(g_file_set_contents(file, stream, length - 11, &error));
-    g_assert_no_error(error);
-    if (selected) {
-        qtest_set_expected_status(to, EXIT_FAILURE);
-    }
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    if (selected) {
-        qtest_wait_qemu(to);
-    } else {
-        sgi_wait_migration_status(to, "completed", 30);
-        absence_transfer(to, BIC_IO + 0x1800040, 8, false,
-                         MEMTX_DECODE_ERROR);
-    }
-    qtest_quit(from);
-    qtest_quit(to);
-    g_assert_cmpint(unlink(file), ==, 0);
-    g_assert_cmpint(g_rmdir(directory), ==, 0);
-}
-
 static void test_storage_cpu_carrier(void)
 {
     g_autofree char *image = storage_image();
@@ -3175,59 +3114,6 @@ static void test_uart_migration_mismatch(gconstpointer opaque)
     g_rmdir(dir);
 }
 
-static void test_uart_old_stream(void)
-{
-    if (g_test_subprocess()) {
-        static const char name[] = "sgi-origin300-pci-expansion-module";
-        uint8_t header[1 + sizeof(name) - 1 + 8];
-        GError *error = NULL;
-        g_autofree char *dir = g_dir_make_tmp("ni-uart-v6-XXXXXX", &error);
-        g_autofree char *file = g_build_filename(dir, "migration.bin", NULL);
-        g_autofree char *uri = g_strdup_printf("file:%s", file);
-        g_autofree char *stream = NULL;
-        gsize length, found = 0, payload = 0;
-        QTestState *from = management_start(POWER_OPTIONS);
-        QTestState *to = management_start(UART_OPTIONS
-            " -d guest_errors -incoming defer");
-
-        g_assert_no_error(error);
-        sgi_migrate_stopped(from, uri);
-        g_assert_true(g_file_get_contents(file, &stream, &length, &error));
-        g_assert_no_error(error);
-        header[0] = sizeof(name) - 1;
-        memcpy(header + 1, name, sizeof(name) - 1);
-        stl_be_p(header + sizeof(name), 0);
-        stl_be_p(header + sizeof(name) + 4, 8);
-        for (gsize i = 0; i + sizeof(header) < length; i++) {
-            if (!memcmp(stream + i, header, sizeof(header))) {
-                payload = i + sizeof(header);
-                found++;
-            }
-        }
-        g_assert_cmpuint(found, ==, 1);
-        g_assert_cmpuint((uint8_t)stream[payload], ==, 0);
-        g_assert_cmpuint(ldl_be_p(stream + payload + 1), ==, 0);
-        g_assert_cmpuint((uint8_t)stream[payload + 5], ==, 0);
-        g_assert_cmpuint(ldl_be_p(stream + payload + 6), ==, 2);
-        stl_be_p(stream + payload - 4, 6);
-        memmove(stream + payload, stream + payload + 10, length - payload - 10);
-        g_assert_true(g_file_set_contents(file, stream, length - 10, &error));
-        g_assert_no_error(error);
-        qtest_set_expected_status(to, EXIT_FAILURE);
-        qtest_qmp_assert_success(to,
-            "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-        qtest_wait_qemu(to);
-        qtest_quit(from);
-        qtest_quit(to);
-        g_assert_cmpint(g_unlink(file), ==, 0);
-        g_assert_cmpint(g_rmdir(dir), ==, 0);
-        return;
-    }
-    g_test_trap_subprocess(NULL, 30 * G_TIME_SPAN_SECOND, 0);
-    g_test_trap_assert_passed();
-    g_test_trap_assert_stderr("*synthetic UART requires migration version 7*");
-}
-
 static void test_teardown(void)
 {
     QTestState *qts = management_start("");
@@ -3250,8 +3136,6 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sgi/pci-expansion-ni/uart/registers", test_uart_registers);
-    qtest_add_func("/sgi/pci-expansion-ni/uart/old-stream",
-                   test_uart_old_stream);
     qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/two",
                         GUINT_TO_POINTER(2), test_uart_origins);
     qtest_add_data_func("/sgi/pci-expansion-ni/uart/origins/four",
@@ -3308,12 +3192,6 @@ int main(int argc, char **argv)
                    test_processor_absence);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/refusals",
                    test_processor_absence_refusals);
-    qtest_add_data_func(
-        "/sgi/pci-expansion-ni/processor-absence/old-stream-selected",
-                        GUINT_TO_POINTER(1), test_processor_absence_old_stream);
-    qtest_add_data_func(
-        "/sgi/pci-expansion-ni/processor-absence/old-stream-unselected",
-                        GUINT_TO_POINTER(0), test_processor_absence_old_stream);
     qtest_add_func("/sgi/pci-expansion-ni/processor-absence/remap",
                    test_processor_absence_remap);
     qtest_add_data_func("/sgi/pci-expansion-ni/processor-absence/migration",
