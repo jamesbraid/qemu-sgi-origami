@@ -28,10 +28,26 @@ from sgi_model.model_validation import load_checked_system_model, schema
 from sgi_model.model_qemu import generate_qemu_inputs, render_qemu_inputs
 from sgi_model.model_validation import discover_model_paths, load_checked_system_models
 from sgi_model.system_model import _layer
-from sgi_model.registry import IMPLEMENTED_TOPOLOGIES, PRODUCT_NAMES
+from sgi_model.registry import (
+    IMPLEMENTED_TOPOLOGIES, PRODUCT_NAMES, REFERENCE_TOPOLOGIES,
+)
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_reference_models_are_public_without_runtime_offerings(self):
+        catalogue = json.loads(
+            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
+        references = catalogue["references"]
+        self.assertEqual(
+            {item["name"] for item in references}, set(REFERENCE_TOPOLOGIES))
+        self.assertTrue(all(item["product"] and item["display-name"]
+                            and item["description"] for item in references))
+        runtime_names = {item["name"] for item in catalogue["topologies"]}
+        runtime_offerings = {item["topology"]
+                             for item in catalogue["offerings"]}
+        self.assertFalse(set(REFERENCE_TOPOLOGIES) & runtime_names)
+        self.assertFalse(set(REFERENCE_TOPOLOGIES) & runtime_offerings)
+
     def test_default_export_is_complete_and_compatible(self):
         outputs = render_qemu_inputs(INPUTS)
         catalogue_text = outputs["hw/mips/sgi/sgi-machines.json"]
@@ -76,6 +92,11 @@ class GeneratorTests(unittest.TestCase):
             and model["machine"]["emulation"]["lifecycle"] == "implemented"
             and model["machine"]["emulation"]["machine_name"] in PRODUCT_NAMES
         }
+        resolved.update({
+            path.stem: model for path, model in checked
+            if path.stem in REFERENCE_TOPOLOGIES
+            and model["machine"]["model_role"] == "reference"
+        })
         expected_source_digest = hashlib.sha256(json.dumps(
             resolved, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         self.assertEqual(manifest["source_sha256"], expected_source_digest)
@@ -492,7 +513,7 @@ class FuelTests(unittest.TestCase):
 class Origin350ClockPolicyTests(unittest.TestCase):
     def test_ip53_catalogue_sets_fresh_seed_year_base(self):
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
-            "hw/mips/sgi/sn-catalogue.json"])
+            "hw/mips/sgi/sgi-machines.json"])
         topology = next(row for row in catalogue["topologies"]
                         if row["product"] == "origin350")
         board = next(row for row in topology["io-boards"]

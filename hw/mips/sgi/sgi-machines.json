@@ -13407,6 +13407,62 @@
       "topology": "origin350"
     }
   ],
+  "references": [
+    {
+      "description": "The boot module has an IP53 node board, Bedrock, an IO9 in bus 1, slot 1, and an L1 controller. Figure 3-2 (printed page 53) labels a PIC ASIC and a PCI riser card. PIC placement, count, widget, revision, PCI device numbers and interrupt route, fitted DIMMs, board revisions, L1 identity, PROM flash fitment and guest serial routing remain unknown. The guide also lists a factory SCSI disk, which this reference layer does not model. Origin 350 placements and software inputs do not establish those values for Onyx 350. The graphics attachment is outside this non-graphics reference.",
+      "display-name": "Onyx 350 base compute module",
+      "name": "onyx350-base",
+      "product": "onyx350"
+    },
+    {
+      "description": "The selected Onyx 350 base compute module supplies boot IO9, CPUs and memory. A G2 attaches as an I/O brick through the host's XIO connector. It adds no compute node. The separate G2N product instead adds a node board, processors and memory over NUMAlink. Graphics internals, G2 widget identity, host ASIC revisions, PCI device numbers and installed DIMMs are unknown or outside this reference.",
+      "display-name": "Onyx4 host with G2",
+      "name": "onyx4-host-g2",
+      "product": "onyx4"
+    },
+    {
+      "description": "This selected host is an Onyx 350 base compute module with boot IO9. A G2N contributes another node board, two selected processors and memory over NUMAlink. G2N has no boot I/O and cannot run alone. Graphics internals are outside this reference. The guide's G2 brick is an I/O device attached over XIO and is not a compute node. G2N board revision, fabric port numbers, ASIC widgets, PCI device numbers and installed DIMMs are unknown.",
+      "display-name": "Onyx4 host with G2N",
+      "name": "onyx4-host-g2n",
+      "product": "onyx4"
+    },
+    {
+      "description": "One Origin 350 compute module (IP53): the posted PROM inventory reports Bedrock ASIC revision 2 and separately reports ASIC XBOW revision 3. Bedrock's crossbar-facing XIO widget on this board is unverified. The PIC at widget 0xF has two heads that share that one widget number. The second head's registers start at offset +0x800000. IO9 is on the PIC's first head, PCI devices 1 (IOC4), 3 (QLogic ISP12160) and 4 (BCM5701), the PROM's device numbers running one higher than the PIC's internal slots 0-3. No processors-catalogue entry for R16000 exists in the shared SN1 architecture layer, so this composition asserts no processor clock or cache identity, even though the closure record names 600 and 700 MHz at 4 MiB as established; adding that catalogue entry is left to a step that also re-baselines the existing origin300 goldens it would otherwise perturb. This configuration never compiles: Origami's QEMU consumer has no Origin 350 machine today. Device 2 remains unspecified until an Origin 350 IO9 revision and its PCI population are identified.",
+      "display-name": "Origin 350",
+      "name": "origin350-reference",
+      "product": "origin350"
+    },
+    {
+      "description": "One enclosure carries the processor board, memory, IO9 in the first PCI slot, and four PCI/PCI-X slots on two buses. The guide depicts Bedrock and PIC in its system architecture figure. The NUMAlink connector is unoccupied in this selected configuration. ASIC revisions, widget placement, PCI device numbers and fitted DIMMs are unknown. Graphics hardware is outside this reference.",
+      "display-name": "Tezro rack, one enclosure",
+      "name": "tezro-rack-base",
+      "product": "tezro"
+    },
+    {
+      "description": "One selected R16000 remains in the first enclosure. The second enclosure has no processors; it adds memory and four PCI/PCI-X slots, joined to the first by the documented system interconnect. Its IO9 is absent in this reference; the guide limits the rack workstation to one IO9 card. The guide does not identify the second enclosure as another processor node. ASIC revisions, widget placement, PCI device numbers, fitted DIMMs and interconnect register behavior are unknown. Graphics hardware is outside this reference.",
+      "display-name": "Tezro rack, two enclosures",
+      "name": "tezro-rack-two-enclosure",
+      "product": "tezro"
+    },
+    {
+      "description": "This reference selects four R16000 processors from the documented two- or four-processor tower family. The interface board has eight PCI-X slots on four buses, with IO9 fixed at bus 1 slot 1. Bus 4 slot 2 shares an opening with the second XIO slot. The one-processor tower has a different interface board. Bedrock and PIC revision, widget placement, PCI device numbers, and fitted DIMMs are unknown. The overview on printed page 29 says three PCI buses, but the detailed bus list and slot figure on printed pages 38-39 enumerate four; this reference follows the detailed list. Graphics hardware is outside this reference.",
+      "display-name": "Tezro tower, four processors",
+      "name": "tezro-tower-four",
+      "product": "tezro"
+    },
+    {
+      "description": "This reference selects two R16000 processors from the documented two- or four-processor tower family. The interface board has eight PCI-X slots on four buses, with IO9 fixed at bus 1 slot 1. Bus 4 slot 2 shares an opening with the second XIO slot. The one-processor tower has a different interface board. Bedrock and PIC revision, widget placement, PCI device numbers, and fitted DIMMs are unknown. The overview on printed page 29 says three PCI buses, but the detailed bus list and slot figure on printed pages 38-39 enumerate four; this reference follows the detailed list. Graphics hardware is outside this reference.",
+      "display-name": "Tezro tower, two or four processors",
+      "name": "tezro-tower-multi",
+      "product": "tezro"
+    },
+    {
+      "description": "The IP53 node board carries one R16000. Its interface board has four PCI-X slots on two buses and one XIO slot; IO9 occupies PCI bus 1, slot 1. The guide rules out fitting a two- or four-processor board as an upgrade to this one-processor workstation. Bedrock and PIC revision, widget placement, PCI device numbers, and fitted DIMMs are unknown. Graphics hardware is outside this reference.",
+      "display-name": "Tezro tower, one processor",
+      "name": "tezro-tower-one",
+      "product": "tezro"
+    }
+  ],
   "schema": "sgi-machines",
   "topologies": [
     {
