@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
-"""Check how scripts/ci/sgi-check reads tests/qtest/meson.build's tables."""
+"""Check scripts/ci/sgi-check's qtest selection, sharding and results."""
 
 import importlib.machinery
+import argparse
+import contextlib
 import importlib.util
+import io
+import json
+import os
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[2]
@@ -86,6 +92,130 @@ class ChangedTableTests(unittest.TestCase):
         self.assertIsNotNone(tables)
         self.assertEqual(set(tables), set(sgi_check.QTEST_TABLES))
         self.assertTrue(all(tables.values()))
+
+
+class QtestShards(unittest.TestCase):
+    DURATIONS = {'a': 600, 'b': 300, 'c': 300, 'd': 100, 'e': 50}
+
+    def test_shards_cover_every_test_once(self):
+        tests = list(self.DURATIONS) + ['new-1', 'new-2']
+        shards, _ = sgi_check.qtest_shards(tests, self.DURATIONS, 3)
+        flat = [test for shard in shards for test in shard]
+        self.assertEqual(sorted(flat), sorted(tests))
+
+    def test_split_ignores_input_order(self):
+        tests = list(self.DURATIONS)
+        forward, _ = sgi_check.qtest_shards(tests, self.DURATIONS, 2)
+        backward, _ = sgi_check.qtest_shards(tests[::-1], self.DURATIONS, 2)
+        self.assertEqual(forward, backward)
+
+    def test_longest_first_balances(self):
+        shards, loads = sgi_check.qtest_shards(list(self.DURATIONS),
+                                               self.DURATIONS, 2)
+        self.assertEqual(shards, [['a', 'd'], ['b', 'c', 'e']])
+        self.assertEqual(loads, [700, 650])
+
+    def test_unmeasured_test_counts_as_the_median(self):
+        _, loads = sgi_check.qtest_shards(['a', 'new'], {'a': 10, 'b': 30},
+                                          1)
+        self.assertEqual(loads, [20])
+
+    def test_tree_durations_split_evenly(self):
+        durations = sgi_check.read_durations(sgi_check.QTEST_DURATIONS)
+        shards, loads = sgi_check.qtest_shards(list(durations), durations, 2)
+        self.assertTrue(all(shards))
+        self.assertLess(max(loads) / min(loads), 1.05)
+
+    def test_tree_durations_carry_the_generated_header(self):
+        text = sgi_check.QTEST_DURATIONS.read_text(encoding='utf-8')
+        self.assertTrue(text.startswith(sgi_check.DURATIONS_HEADER))
+
+
+class FullPart(unittest.TestCase):
+    def test_accepted(self):
+        for part in ('functional', 'qtest-1-of-2', 'qtest-2-of-2',
+                     'qtest-3-of-10'):
+            self.assertEqual(sgi_check.full_part(part), part)
+
+    def test_rejected(self):
+        for part in ('qtest-3-of-2', 'qtest-0-of-2', 'qtest-1', 'qtest',
+                     'functional-1', 'qtest-1-of-0'):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                sgi_check.full_part(part)
+
+
+class NeedsPassed(unittest.TestCase):
+    JOBS = ['full-part']
+
+    def verdict(self, needs, jobs=None):
+        env = {'NEEDS': needs if isinstance(needs, str) else
+               json.dumps(needs)}
+        args = argparse.Namespace(jobs=jobs or self.JOBS)
+        with mock.patch.dict(os.environ, env), \
+                contextlib.redirect_stdout(io.StringIO()):
+            try:
+                sgi_check.needs_passed(args)
+            except SystemExit as exc:
+                return str(exc)
+        return None
+
+    def needs(self, result):
+        return {'full-part': {'result': result, 'outputs': {}}}
+
+    def test_success_passes(self):
+        self.assertIsNone(self.verdict(self.needs('success')))
+
+    def test_every_other_result_fails(self):
+        for result in ('failure', 'skipped', 'cancelled', '', None):
+            with self.subTest(result=result):
+                self.assertIsNotNone(self.verdict(self.needs(result)))
+
+    def test_one_failure_among_several_fails(self):
+        needs = {'a': {'result': 'success'}, 'b': {'result': 'failure'}}
+        self.assertIn('b (failure)', self.verdict(needs, ['a', 'b']))
+
+    def test_missing_job_fails(self):
+        self.assertIn('full-part (missing)', self.verdict({}))
+        self.assertIn('full-part (missing)', self.verdict(''))
+
+    def test_malformed_needs_fails(self):
+        self.assertIsNotNone(self.verdict('not json'))
+        self.assertIsNotNone(self.verdict('[]'))
+        self.assertIsNotNone(self.verdict({'full-part': 'success'}))
+
+
+class FailingStepReported(unittest.TestCase):
+    RUN = 'https://forge/o/r/actions/runs/7'
+
+    def status(self, statuses):
+        args = argparse.Namespace(run_url=self.RUN)
+        text = statuses if isinstance(statuses, str) else json.dumps(statuses)
+        with mock.patch('sys.stdin', io.StringIO(text)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            try:
+                sgi_check.failing_step_reported(args)
+            except SystemExit as exc:
+                return exc.code
+        return None
+
+    def test_this_runs_report_counts(self):
+        self.assertEqual(self.status([
+            {'context': 'merge-queue/last-run', 'target_url': ''},
+            {'context': 'ci/failing-step', 'target_url': self.RUN,
+             'description': 'qtest-1-of-2: run this part'}]), 0)
+
+    def test_another_runs_report_does_not(self):
+        self.assertEqual(self.status([
+            {'context': 'ci/failing-step',
+             'target_url': 'https://forge/o/r/actions/runs/6'}]), 1)
+
+    def test_no_statuses(self):
+        self.assertEqual(self.status([]), 1)
+
+    def test_unreadable_statuses(self):
+        self.assertEqual(self.status('<html>'), 2)
+        self.assertEqual(self.status({'message': 'not found'}), 2)
 
 
 if __name__ == '__main__':

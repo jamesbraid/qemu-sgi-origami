@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shlex
+import statistics
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[2]
 CHECKER = SOURCE / 'scripts/check-sgi-test-results.py'
 OPTIONAL_QTEST_SKIPS = SOURCE / 'tests/qtest/mips64-qtest-optional-skips.txt'
+QTEST_DURATIONS = SOURCE / 'scripts/ci/qtest-durations.txt'
 
 CONFIGURE_ARGS = [
     '--target-list=mips64-softmmu', '--disable-docs', '--enable-tests',
@@ -102,7 +104,7 @@ class Build:
             cmd += ['--num-processes', str(processes)]
         run(cmd + list(args))
         reports = sorted((self.path / 'meson-logs').glob(
-            f'{logbase}*.junit.xml'))
+            f'{logbase}-*.junit.xml'))
         if len(reports) != 1:
             sys.exit(f'expected one JUnit report for {logbase}, '
                      f'found {len(reports)}')
@@ -343,8 +345,8 @@ def required_cases(build, module, test_class, dest, selected=None):
     return ['--test-args', ' '.join(selected)]
 
 
-def full(args):
-    build = Build(args.build)
+def full_functional(build):
+    """Run the boots, the ROM suite and the unit tests."""
     build.ninja(*(f'tests/functional/mips64-{target[len("func-mips64-"):]}'
                   '.tstamp' for target, *_ in FULL_FUNCTIONAL))
     runs = []
@@ -362,11 +364,155 @@ def full(args):
     build.list_meson_tests(expected, '--suite', 'qemu:sgi-unit')
     build.meson_test('full-unit', ['--suite', 'qemu:sgi-unit'], expected)
 
-    expected = build.path / 'full-qtest.expected'
-    build.list_meson_tests(expected, '--suite', 'qemu:qtest-mips64')
-    build.meson_test('full-qtest', ['--suite', 'qemu:qtest-mips64'], expected,
+
+def read_durations(path):
+    durations = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        if line.strip() and not line.lstrip().startswith('#'):
+            name, seconds = line.split()
+            durations[name] = float(seconds)
+    return durations
+
+
+def qtest_shards(tests, durations, count):
+    """Split tests into count lists of roughly equal measured duration.
+
+    Take the longest test first and give each to the least-loaded shard,
+    breaking ties by name and shard number, so every job that computes
+    the split from the same tests gets the same answer. A test with no
+    measurement counts as the median of those that have one.
+    """
+    known = [durations[test] for test in tests if test in durations]
+    default = statistics.median(known) if known else 1.0
+    weight = {test: durations.get(test, default) for test in tests}
+    shards = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for test in sorted(tests, key=lambda test: (-weight[test], test)):
+        shard = min(range(count), key=lambda k: (loads[k], k))
+        shards[shard].append(test)
+        loads[shard] += weight[test]
+    return [sorted(shard) for shard in shards], loads
+
+
+def full_qtest(build, index, count):
+    """Run one of count roughly equal shares of the MIPS64 qtests."""
+    every = build.path / 'full-qtest.all'
+    build.list_meson_tests(every, '--suite', 'qemu:qtest-mips64')
+    tests = every.read_text(encoding='utf-8').split()
+    shards, loads = qtest_shards(tests, read_durations(QTEST_DURATIONS),
+                                 count)
+    share = shards[index - 1]
+    if not share:
+        sys.exit(f'qtest shard {index} of {count} has no tests')
+    print(f'qtest shard {index} of {count}: {len(share)} of {len(tests)} '
+          f'tests, about {loads[index - 1] / 60:.0f} of '
+          f'{sum(loads) / 60:.0f} test-minutes', flush=True)
+    logbase = f'full-qtest-{index}-of-{count}'
+    expected = build.path / f'{logbase}.expected'
+    expected.write_text('\n'.join(share) + '\n', encoding='utf-8')
+    build.meson_test(logbase, share, expected,
                      allow_skips=OPTIONAL_QTEST_SKIPS,
                      processes=QTEST_PROCESSES)
+
+
+FULL_PART = re.compile(r'functional|qtest-(?P<index>[1-9]\d*)-of-'
+                       r'(?P<count>[1-9]\d*)')
+
+
+def full_part(text):
+    match = FULL_PART.fullmatch(text)
+    if not match or (match['index'] and
+                     int(match['index']) > int(match['count'])):
+        raise argparse.ArgumentTypeError(
+            f'{text!r} is not functional or qtest-K-of-N with K <= N')
+    return text
+
+
+def full(args):
+    build = Build(args.build)
+    if args.part in (None, 'functional'):
+        full_functional(build)
+    if args.part is None:
+        full_qtest(build, 1, 1)
+    elif args.part != 'functional':
+        match = FULL_PART.fullmatch(args.part)
+        full_qtest(build, int(match['index']), int(match['count']))
+
+
+def needs_passed(args):
+    """Fail unless every named job in $NEEDS, toJSON(needs), succeeded.
+
+    A required check must not pass because a job it depends on was
+    skipped or cancelled, so anything but success fails, including a
+    job missing from $NEEDS.
+    """
+    try:
+        needs = json.loads(os.environ.get('NEEDS') or '{}')
+    except json.JSONDecodeError as exc:
+        sys.exit(f'$NEEDS is not JSON: {exc}')
+    if not isinstance(needs, dict):
+        sys.exit('$NEEDS is not a JSON object')
+    failed = []
+    for job in args.jobs:
+        result = needs.get(job)
+        result = (result.get('result') if isinstance(result, dict)
+                  else None) or 'missing'
+        print(f'{job}: {result}')
+        if result != 'success':
+            failed.append(f'{job} ({result})')
+    if failed:
+        sys.exit('jobs that did not succeed: ' + ', '.join(failed))
+
+
+def failing_step_reported(args):
+    """Say whether this run already published its failing step.
+
+    Read the commit's statuses, as the forge's API lists them, on stdin.
+    Exit 0 if one is a ci/failing-step status pointing at this run, 1 if
+    none is, and 2 if the list cannot be read.
+    """
+    try:
+        statuses = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        print(f'cannot read the commit statuses: {exc}', file=sys.stderr)
+        sys.exit(2)
+    if not isinstance(statuses, list):
+        print('the commit statuses are not a list', file=sys.stderr)
+        sys.exit(2)
+    for status in statuses:
+        if (isinstance(status, dict) and
+                status.get('context') == 'ci/failing-step' and
+                status.get('target_url') == args.run_url):
+            print(f'this run already published: {status.get("description")}')
+            sys.exit(0)
+    sys.exit(1)
+
+
+DURATIONS_HEADER = """\
+# Seconds each MIPS64 qtest took in a full run, which scripts/ci/sgi-check
+# uses to split the qtests evenly between the full run's jobs. Measured in
+# actions run 42473 on an 8-CPU builder at four processes, 2026-10-05.
+# Refresh from a later full run's Meson test logs with
+#   scripts/ci/sgi-check qtest-durations build-ci/meson-logs/full-qtest-*.json
+# A test missing from this list counts as the median of the others.
+"""
+
+
+def qtest_durations(args):
+    """Print a durations list from Meson's JSON test logs."""
+    durations = {}
+    for log in args.logs:
+        for line in log.read_text(encoding='utf-8').splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get('name', '').startswith('qtest-mips64/'):
+                durations[entry['name']] = entry['duration']
+    if not durations:
+        sys.exit('no MIPS64 qtest durations in those logs')
+    sys.stdout.write(DURATIONS_HEADER + ''.join(
+        f'{name} {seconds:.0f}\n' for name, seconds in sorted(
+            durations.items())))
 
 
 def main(argv=None):
@@ -407,7 +553,31 @@ def main(argv=None):
     mode = modes.add_parser(
         'full', help='the merge-queue checks: every qtest, the PROM, '
                      'one-CPU Linux and IRIX boots, and every ROM')
+    mode.add_argument('--part', type=full_part,
+                      help='run one part, as each full-run job does: '
+                           'functional (the boots, ROMs and unit tests) '
+                           'or qtest-K-of-N (share K of the qtests split '
+                           'N ways by measured duration); default all')
     mode.set_defaults(func=full)
+
+    mode = modes.add_parser(
+        'needs-passed', help='fail unless each named job in $NEEDS, the '
+                             "workflow's toJSON(needs), succeeded")
+    mode.add_argument('jobs', nargs='+')
+    mode.set_defaults(func=needs_passed)
+
+    mode = modes.add_parser(
+        'failing-step-reported',
+        help='exit 0 if the statuses on stdin hold a ci/failing-step '
+             'status for this run, 1 if not, 2 if they cannot be read')
+    mode.add_argument('run_url')
+    mode.set_defaults(func=failing_step_reported)
+
+    mode = modes.add_parser(
+        'qtest-durations', help='print a new scripts/ci/qtest-durations.txt '
+                                "from Meson's JSON test logs")
+    mode.add_argument('logs', nargs='+', type=Path)
+    mode.set_defaults(func=qtest_durations)
 
     mode = modes.add_parser('list-cases', help=argparse.SUPPRESS)
     mode.add_argument('module')

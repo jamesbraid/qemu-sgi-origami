@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Build QEMU and run native MIPS64 checks. Both jobs first run the script
-# and model suites, which need no build. Smoke covers changed qtests, SGI
-# unit tests, the one-CPU Linux boot and the source-built ROM suite; full
-# adds every register test and the PROM and IRIX miniroot boots. The two-
-# and four-CPU Linux boots run only in the nightly's Monday, Wednesday and
-# Friday matrix workload. Guest assets are checksum-verified.
+# Build QEMU and run native MIPS64 checks. Smoke and the full run's
+# functional part first run the script and model suites, which need no
+# build. Smoke covers changed qtests, SGI unit tests, the one-CPU Linux boot
+# and the source-built ROM suite; full adds every register test and the
+# PROM and IRIX miniroot boots. The two- and four-CPU Linux boots run only
+# in the nightly's Monday, Wednesday and Friday matrix workload. Guest
+# assets are checksum-verified.
 # scripts/ci/sgi-check holds the checks themselves, so a developer can run
 # them in the same image; scripts/ci/runner-setup holds the job-container
 # steps around them.
@@ -152,8 +153,16 @@ jobs:
           FORGE_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
         run: bash scripts/ci/runner-setup nudge-queue
 
-  full-suite:
+  # The full run is three jobs on separate builders, each building its own
+  # QEMU: half the qtests each in two, and the boots, ROMs and unit tests in
+  # the third. full-suite below collects them.
+  full-part:
     if: ${{ github.server_url != 'https://github.com' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
+    strategy:
+      # Let every part finish, so one failure does not hide another.
+      fail-fast: false
+      matrix:
+        part: [qtest-1-of-2, qtest-2-of-2, functional]
     runs-on: ${{ vars.CI_RUNNER }}
     timeout-minutes: 175
     # Save the current step name for failure reporting.
@@ -161,6 +170,7 @@ jobs:
       CI_STEP: /tmp/ci-current-step
       CI_ASSET_BASE_URL: ${{ vars.CI_ASSET_BASE_URL }}
       FORGE_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+      PART: ${{ matrix.part }}
     # Keep the checkout action's JavaScript runtime and provide the Docker
     # client in the job image.
     container:
@@ -169,74 +179,78 @@ jobs:
         username: ${{ vars.CI_REGISTRY_USER }}
         password: ${{ secrets.CI_BOT_TOKEN }}
     steps:
-      # Keep the PR base available for changed-qtest selection.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
       - name: docker client
         run: |
-          echo "docker client" > "$CI_STEP"
+          echo "$PART: docker client" > "$CI_STEP"
           bash scripts/ci/runner-setup docker
 
       - name: name the runner
         run: bash scripts/ci/runner-setup describe
 
+      # The checks that need no build run once, in the functional part.
       - name: every qtest source is one the suite runs
+        if: ${{ matrix.part == 'functional' }}
         run: |
-          echo "every qtest source is one the suite runs" > "$CI_STEP"
+          echo "$PART: every qtest source is one the suite runs" > "$CI_STEP"
           python3 scripts/check-qtest-registered.py
           python3 scripts/test_check_qtest_registered.py
 
       - name: build the QEMU test image
         run: |
-          echo "build the QEMU test image" > "$CI_STEP"
+          echo "$PART: build the QEMU test image" > "$CI_STEP"
           bash scripts/ci/runner-setup image
 
       - name: find the workspace volume
         run: |
-          echo "find the workspace volume" > "$CI_STEP"
+          echo "$PART: find the workspace volume" > "$CI_STEP"
           bash scripts/ci/runner-setup volume
 
+      # Only the boots read guest assets.
       - name: fetch SGI test assets
+        if: ${{ matrix.part == 'functional' }}
         env:
           ASSET_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
         run: |
-          echo "fetch SGI test assets" > "$CI_STEP"
+          echo "$PART: fetch SGI test assets" > "$CI_STEP"
           bash scripts/ci/runner-setup assets
 
       - name: check the build container can see the checkout
         run: |
-          echo "check the build container can see the checkout" > "$CI_STEP"
+          echo "$PART: check the build container can see the checkout" > "$CI_STEP"
           bash scripts/ci/runner-setup check
 
       # These need no QEMU build, so run them first: a broken model file
       # or script fails the job in minutes instead of after the build.
       - name: script and model suites
+        if: ${{ matrix.part == 'functional' }}
         run: |
-          echo "script and model suites" > "$CI_STEP"
+          echo "$PART: script and model suites" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               "$IMAGE_ID" python3 scripts/ci/sgi-check scripts
 
       - name: configure and build QEMU
         run: |
-          echo "configure and build QEMU" > "$CI_STEP"
+          echo "$PART: configure and build QEMU" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src "$IMAGE_ID" \
               sh -euxc 'git submodule update --init --depth=1
                         python3 scripts/ci/sgi-check build'
 
-      - name: run the SGI test suite
+      - name: run this part of the SGI test suite
         run: |
-          echo "run the SGI test suite" > "$CI_STEP"
+          echo "$PART: run this part of the SGI test suite" > "$CI_STEP"
           bash scripts/ci/runner-setup run -v "$WORKSPACE_VOLUME:/src" -w /src \
               -e QEMU_TEST_SGI_ASSET_DIR=/src/sgi-assets \
-              "$IMAGE_ID" python3 scripts/ci/sgi-check full
+              "$IMAGE_ID" python3 scripts/ci/sgi-check full --part "$PART"
 
       - name: retain failure diagnostics
         if: ${{ failure() }}
         uses: actions/upload-artifact@v3
         with:
-          name: full-failure-diagnostics
+          name: full-failure-diagnostics-${{ matrix.part }}
           # Keep text logs and test reports, excluding guest disks and assets.
           path: |
             build-ci/meson-logs/*.txt
@@ -253,6 +267,48 @@ jobs:
           FORGE_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
           COMMIT_SHA: ${{ github.sha }}
+        run: bash scripts/ci/runner-setup report-failure
+
+  # The merge queue lands on the dispatched run's overall status, which
+  # Forgejo computes from every job, so a failed or cancelled part already
+  # fails the run. This job runs whatever the parts' results were. It
+  # nudges the queue once when the whole run passed, publishes the failing
+  # step when a part was cancelled rather than failing, and checks the
+  # parts' results itself in case the queue ever reads this job instead.
+  full-suite:
+    needs: [full-part]
+    if: ${{ always() && github.server_url != 'https://github.com' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 20
+    env:
+      CI_STEP: /tmp/ci-current-step
+      FORGE_API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Forgejo gives a matrix job's needs result as success only if every
+      # part succeeded or was skipped, and the parts share one condition.
+      - name: every part of the full run passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "full-suite: a part did not succeed" > "$CI_STEP"
+          python3 scripts/ci/sgi-check needs-passed full-part
+
+      # A failed part has already published its own failing step. Publish
+      # here only when no part did: a cancelled part, or this job failing.
+      - name: publish the failing step
+        if: ${{ failure() }}
+        env:
+          FORGE_TOKEN: ${{ secrets.CI_BOT_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+          ONLY_IF_UNREPORTED: 1
         run: bash scripts/ci/runner-setup report-failure
 
       - name: tell the merge queue this build is green

@@ -95,6 +95,23 @@ case "${1-}" in
     : "${COMMIT_SHA:?COMMIT_SHA is required}"
     step=$(cat "$CI_STEP" 2>/dev/null || echo "before any step ran")
     echo "failing step: $step"
+    # The full run's parts each publish their own failing step. With
+    # ONLY_IF_UNREPORTED=1 the job that collects them publishes only when
+    # none did, so it never replaces a part's more specific message. If
+    # the statuses cannot be read, publish nothing rather than risk that.
+    if [ "${ONLY_IF_UNREPORTED-}" = 1 ]; then
+      reported=0
+      curl -sS -H "Authorization: token $FORGE_TOKEN" \
+          "$FORGE_API/commits/$COMMIT_SHA/statuses?sort=recentupdate&limit=50" \
+          | python3 scripts/ci/sgi-check failing-step-reported "$RUN_URL" \
+          || reported=$?
+      case "$reported" in
+        0) exit 0 ;;
+        1) ;;
+        *) echo "could not read this commit's statuses; not publishing"
+           exit 0 ;;
+      esac
+    fi
     curl -sS -X POST \
       -H "Authorization: token $FORGE_TOKEN" \
       -H "Content-Type: application/json" \
