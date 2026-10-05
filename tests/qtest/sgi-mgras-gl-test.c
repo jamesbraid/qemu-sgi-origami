@@ -2099,6 +2099,18 @@ static void test_hq_query_answers_the_write_mask(void)
 }
 
 /*
+ * Each loop below reaches one subsection from several states. The quick
+ * setup keeps the states in quick_states, a bit for each: the first that
+ * sends the subsection, the subsection turned off again where the loop has
+ * one, and the first parameter that sends it on its own. The thorough
+ * setup also tries the other ways of reaching it.
+ */
+static bool subsection_state_runs(int i, unsigned quick_states)
+{
+    return g_test_slow() || (quick_states & (1u << i));
+}
+
+/*
  * The rules of the optional GL state subsections, each against a state
  * that meets only it. What every context setup sends, the opener,
  * glEnable(GL_DITHER) as 0x6704 with 3, glDepthRange(0, 1) and a
@@ -2149,6 +2161,9 @@ static void test_gl_state_subsections_follow_their_state(void)
      * contexts above, which loaded nothing, sent neither.
      */
     for (int i = 0; i < 4; i++) {
+        if (!subsection_state_runs(i, 0x5)) {
+            continue;
+        }
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
         gl_word(s, GL_CONTEXT_OPENER);
@@ -2174,6 +2189,9 @@ static void test_gl_state_subsections_follow_their_state(void)
      * turned off again with no box sends nothing.
      */
     for (int i = 0; i < 3; i++) {
+        if (!subsection_state_runs(i, 0x5)) {
+            continue;
+        }
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
         gl_word(s, GL_CONTEXT_OPENER);
@@ -2196,6 +2214,9 @@ static void test_gl_state_subsections_follow_their_state(void)
      * nothing.
      */
     for (int i = 0; i < 4; i++) {
+        if (!subsection_state_runs(i, 0x7)) {
+            continue;
+        }
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
         gl_word(s, GL_CONTEXT_OPENER);
@@ -2228,6 +2249,9 @@ static void test_gl_state_subsections_follow_their_state(void)
             GL_SUB_CLEAR_STENCIL, GL_SUB_CLEAR_STENCIL,
         };
 
+        if (!subsection_state_runs(i, 0x17)) {
+            continue;
+        }
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
         gl_word(s, GL_CONTEXT_OPENER);
@@ -2261,6 +2285,9 @@ static void test_gl_state_subsections_follow_their_state(void)
      * factors and equation, and blending turned off again, send nothing.
      */
     for (int i = 0; i < 4; i++) {
+        if (!subsection_state_runs(i, 0x7)) {
+            continue;
+        }
         s = qtest_init(MIGRATION_ARGS);
         gl_enter_slot(s, GL_SLOT_A);
         gl_word(s, GL_CONTEXT_OPENER);
