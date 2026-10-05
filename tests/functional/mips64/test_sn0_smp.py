@@ -1442,7 +1442,17 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[SLICE_B_IOC3_ID // 8], 0x000310a9, state)
         self.assertEqual(state[SLICE_B_UART_SCRATCH // 8], 0x5a, state)
         self.assertEqual(state[SLICE_B_ARB_HELD // 8], 1, state)
-        self.assertEqual(state[SLICE_B_START_ADDRESS // 8], 0x10, state)
+        # The data register read during the pre-START delay is not the
+        # staged address once an ELSC grant lands in that window: an
+        # adapter with a nonzero own address copies each unmatched grant
+        # address into its read buffer (pcf8584_observe_address, the
+        # software-required approximation in the PCF8584/ELSC datasheet's
+        # "Origin 2000 address-only grants" section), while START still
+        # sends the staged byte.  Accept either; the clear LRB and the ver
+        # reply below prove the staged address reached the wire.
+        start_address = state[SLICE_B_START_ADDRESS // 8]
+        self.assertTrue(start_address == 0x10 or
+                        0xe0 <= start_address <= 0xef, state)
         self.assertEqual(state[SLICE_B_START_STATUS // 8] & PCF_LRB, 0, state)
         self.assertEqual(state[SLICE_B_VER_PREFIX // 8], 0x6f6b, state)
 
