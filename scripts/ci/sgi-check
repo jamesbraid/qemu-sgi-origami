@@ -270,7 +270,8 @@ def select_qtests(build, base):
 def smoke(args):
     build = Build(args.build)
     script_suites(BUILD_SCRIPT_SUITES, build.python)
-    build.ninja('tests/functional/mips64-linux_kernel.tstamp')
+    build.ninja('tests/functional/mips64-linux_kernel.tstamp',
+                'tests/functional/mips64-sn0_smp.tstamp')
 
     qtests, _ = select_qtests(build, args.base)
     expected = build.path / 'expected-qtests.txt'
@@ -285,6 +286,14 @@ def smoke(args):
     build.meson_test('smoke-linux',
                      ['--test-args', 'LinuxKernel.test_one_cpu',
                       'func-mips64-linux_kernel'], expected)
+
+    # The SMP machine cases build their own firmware and need no guest
+    # assets, so every pull request runs all of them.
+    expected = build.path / 'expected-smp.txt'
+    build.meson_test('smoke-smp',
+                     required_cases(build, 'test_sn0_smp', 'SN0SMPMachine',
+                                    expected) + ['func-mips64-sn0_smp'],
+                     expected)
 
     # sgi-unit includes the unit tests of the functional tests' lib_*.py
     # helpers.
@@ -307,6 +316,8 @@ FULL_FUNCTIONAL = [
      'test_linux_kernel', 'LinuxKernel', ['test_one_cpu']),
     ('func-mips64-irix_miniroot', 'full-irix',
      'test_irix_miniroot', 'IrixMiniroot', None),
+    ('func-mips64-sn0_smp', 'full-smp',
+     'test_sn0_smp', 'SN0SMPMachine', None),
 ]
 
 
