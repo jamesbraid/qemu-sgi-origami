@@ -279,6 +279,9 @@ struct SGIBridgeState {
     /* Slots forced exempt whatever is plugged in them: a test override. */
     uint32_t byte_lane_exempt;
 
+    /* Slots whose DMA data phases are 64 bits wide, one bit per slot. */
+    uint8_t dma_64bit_slots;
+
     /* Per-window context: which slot a callback serves, set at realize. */
     struct SGIBridgeDeviceWindow {
         SGIBridgeState *s;

@@ -204,7 +204,16 @@ the direct windows and one for the translated window) select where a
 DMA's bytes land. With the bit set the transfer is a byte stream; a
 byte-addressed model is that already. With it clear -- the reset
 state -- each aligned 32-bit word is byte-reversed and the words keep
-their order (specification Tables 73 and 76).
+their order on a 32-bit data phase (specification Tables 73 and 76),
+and each aligned doubleword is reversed on a 64-bit one (Tables 77
+and 80).
+
+PCI negotiates data-phase width per transaction. The model takes it
+per slot instead, from the ``dma-64bit-slots`` property (one bit per
+slot, all 32-bit by default), and in a 64-bit slot every transfer,
+including one shorter than a doubleword, takes the doubleword
+placement. Which width a card runs at in an SGI slot is not
+established; the machine or launcher that fits the card chooses it.
 
 Which window applies is judged on the raw PCI address the device
 issued, before any translation rewrites it. Local-window transfers
