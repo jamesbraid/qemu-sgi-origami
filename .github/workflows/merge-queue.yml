@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Rebase and land one eligible pull request at a time on the fast-forward-only trunk.
+# Rebase and land eligible pull requests on the fast-forward-only trunk, up to
+# two at a time through one combined build and full suite.
 # Green pull requests land unless they are drafts or carry the `hold` label.
 # The schedule backs up the green-build dispatch and catches changes that do
 # not start a build, such as removing a hold from an already-green pull request.
@@ -53,4 +54,36 @@ jobs:
           LAND_WORKFLOW: "build.yml"
           LAND_INPUTS: "suite=full"
           LAND_CHECK: "build and register suite / full-suite (workflow_dispatch)"
-        run: python3 .merge-queue/merge-queue
+          # Land up to two green pull requests per smoke build and full suite
+          # instead of one each. Two, not more: a batch goes red whenever any
+          # member's full suite would, and with about a fifth of full suites
+          # red, larger batches split often enough to save nothing. The driver
+          # combines them in WORKTREE, tests the combination through a held
+          # integration pull request on its own merge-queue/batch-<time>
+          # branch, then moves each member's branch to its tested commits and
+          # merges it, so the job needs a clone it can push from. A batch in
+          # flight lives on the forge, so a run that ends mid-batch loses
+          # nothing.
+          BATCH_MAX: "2"
+          WORKTREE: ${{ github.workspace }}/.merge-queue/worktree
+        # The clone is blob-less: a run with nothing to batch pays for commits
+        # and trees, and file contents arrive only when a batch is built. It is
+        # removed first so a reused workspace cannot make the clone fail. The
+        # token reaches git through the environment, never the remote URL, so
+        # it is not written into the clone or quoted back in a git error the
+        # driver prints, and its base64 form is masked in the log like the
+        # secret itself. user.name and user.email are the committer of the
+        # replayed commits; authorship stays with each commit's author.
+        run: |
+          auth=$(printf 'jamesb-ci-bot:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=3
+          export GIT_CONFIG_KEY_0=http.extraHeader
+          export GIT_CONFIG_VALUE_0="Authorization: Basic $auth"
+          export GIT_CONFIG_KEY_1=user.name GIT_CONFIG_VALUE_1=jamesb-ci-bot
+          export GIT_CONFIG_KEY_2=user.email
+          export GIT_CONFIG_VALUE_2=jamesb-ci-bot@noreply.git.octanix.dev
+          rm -rf "$WORKTREE"
+          git clone -q --filter=blob:none --no-checkout \
+            "$FORGE/$REPO.git" "$WORKTREE"
+          python3 -u .merge-queue/merge-queue
