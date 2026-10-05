@@ -522,10 +522,11 @@ static void test_r10000_logs_unimp(void)
 }
 
 /*
- * llsc: the R10000 load-linked link breakers. Reservations are broken on
- * exceptions and ERET. Intervening loads, stores, SYNC, CACHE, and PREF
- * do not break the link, avoiding link-break overhead on every memory
- * operation.
+ * llsc: pins the R10000 family to QEMU's common LL/SC model. The link breaks
+ * on exception entry (the handler returns with JR, not ERET) and on ERET, so
+ * SC fails after either. An intervening load, store, SYNC, CACHE or PREF
+ * leaves the link alone and SC succeeds, as on QEMU's other LL/SC targets,
+ * although the R10000 User's Manual says SC fails after each of them.
  */
 
 #define RESULT_BASE         0x00

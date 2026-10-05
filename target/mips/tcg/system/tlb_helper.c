@@ -1712,6 +1712,15 @@ void mips_cpu_do_interrupt(CPUState *cs)
      * breaks the link -- a handler that comes back without an ERET does
      * not restore it. The in-band poison value is helper_eret()'s: never
      * a valid word address, so no later store-conditional can match it.
+     *
+     * Otherwise the R10000 family uses QEMU's common LL/SC model: SC is a
+     * compare-and-swap against the value LL read, and the link breaks only
+     * on exception entry and ERET, as Arm, RISC-V and PowerPC clear their
+     * reservations on exception entry or return. The manual's other
+     * breakers -- an intervening load, store, SYNC, CACHE or PREF, and an
+     * external intervention on the linked block -- are not modelled, so SC
+     * can succeed where the processor would fail it, and a changed-and-
+     * restored value goes unnoticed (docs/devel/multi-thread-tcg.rst).
      */
     if (env->cfg.exception_breaks_ll_link) {
         env->lladdr = 1;
