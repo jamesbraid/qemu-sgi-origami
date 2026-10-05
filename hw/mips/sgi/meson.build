@@ -1,8 +1,6 @@
 # SN machine ASIC models and machines
 # Consolidated builds for hw/mips/sgi
 
-mips_ss.add(when: 'CONFIG_SGI_SN1', if_true: files('r14000.c'))
-
 # sgi-machines.json is a tracked source embedded here as a C string constant,
 # the same way ui/shader/meson.build turns a GLSL source file into one, so
 # sgi-machines.c parses the embedded bytes rather than reading the file at run

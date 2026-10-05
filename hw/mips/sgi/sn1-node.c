@@ -55,6 +55,7 @@
 #include "cpu-qom.h"
 #include "sn1-node.h"
 #include "sn1-topology.h"
+#include "hw/mips/sgi/sgi-cpu.h"
 
 /*
  * The node's own I/O-space and Hub-register address decode: identical on
@@ -1425,10 +1426,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             g_strdup_printf("sn1.node%u.cpu%u.system", node->nasid, i);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
-        uint32_t prid = sn1_cpu_processor(node->model_node, i)->prid;
-        const char *cpu_type = prid == 0x0f23 ?
-            MIPS_CPU_TYPE_NAME("sgi-r14000-rev23") : machine->cpu_type;
-        DeviceState *cpu_dev = qdev_new(cpu_type);
+        DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
         /*
@@ -1454,6 +1452,13 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         object_property_set_uint(OBJECT(cpu_dev), "reset-mode",
             node->model_node->cpu_slots->value->assembly->mode_bits &
             0x01ffffff, &error_abort);
+        /*
+         * The slot's R14000 revision, through r14000-prid unless -cpu
+         * R14000,r14000-prid= named one: Fuel's catalogue part is revision
+         * 2.3 (0x0f23), Origin 300's the model default 0x0f24.
+         */
+        sgi_cpu_apply_processor(cpu_dev, sn1_cpu_processor(node->model_node, i),
+                                &error_fatal);
         /* Release both vCPUs from the machine reset handler, not realize. */
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,
                                  &error_abort);
