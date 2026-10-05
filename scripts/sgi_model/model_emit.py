@@ -100,7 +100,11 @@ def _identity(raw: dict) -> dict:
 # compiler ever emitted was already sized to the flash's own total size),
 # so sn1-node.c now names them itself instead of reading them here.
 def _flash(raw: dict) -> dict:
-    return {"kind": _enum(raw["kind"]), "size": raw["size"]}
+    flash = {"kind": _enum(raw["kind"]), "size": raw["size"]}
+    for wire in ("select", "strap"):
+        if wire in raw:
+            flash[wire] = raw[wire]
+    return flash
 
 
 def _node(raw: dict) -> dict:

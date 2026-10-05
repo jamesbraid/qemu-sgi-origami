@@ -128,6 +128,8 @@ def compile_heart_node(model, components, entry):
         "board_records": [records[role] for role in BOARD_ROLES],
     }
     _validate_integer(heart_identity["widget_id_64"], 64, "HEART widget identity")
+    wiring = _required(model["machine"]["emulation"], "boot_flash_wiring",
+                       "IP30 boot flash")
     if heart_identity["widget_id_64"] >> 28 != heart_identity["widget_revision"]:
         raise CompileError("HEART widget identity disagrees with its revision")
     return {
@@ -137,6 +139,10 @@ def compile_heart_node(model, components, entry):
         "cpu_slots": [{"interface": 0, "slot": 0, "assembly": processor}],
         "bank_mib": banks, "accepted_memory_mib": [memory],
         "accepted_bank_layouts": [{"bank_mib": row} for row in layouts],
-        "flash": {"kind": "OPERATOR_PROM", "size": model["machine"]["harness"]["firmware_bytes"]},
+        "flash": {
+            "kind": "OPERATOR_PROM",
+            "size": model["machine"]["harness"]["firmware_bytes"],
+            "select": wiring["select"], "strap": wiring["strap"],
+        },
         "slave_role": False,
     }

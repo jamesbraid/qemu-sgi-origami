@@ -235,6 +235,19 @@
                 }
               }
             },
+            "boot_flash_wiring": {
+              "type": "object",
+              "required": ["select", "strap", "provenance", "sources", "notes"],
+              "additionalProperties": false,
+              "description": "Which Bridge flash select an IP30 boot flash is wired to and the level of the strap that picks the select the PROM boots from. The machine takes these as defaults that -M flash-select and flash-strap override.",
+              "properties": {
+                "select": { "type": "boolean", "description": "Whether the part sits on Bridge flash select 1 rather than 0." },
+                "strap": { "type": "boolean", "description": "The select strap's level: true boots from select 1." },
+                "provenance": { "$ref": "#/$defs/fact-provenance" },
+                "sources": { "$ref": "#/$defs/sources" },
+                "notes": { "type": "string", "minLength": 1 }
+              }
+            },
             "machine_name": { "type": "string", "description": "The -M name." },
             "display_description": { "type": "string", "description": "The product description exposed by the emulator." },
             "profile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "description": "Stable emulated population profile within this machine." },
