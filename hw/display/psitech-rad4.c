@@ -2087,15 +2087,32 @@ static const MemoryRegionOps rad4_bar0_ops = {
 /*
  * DMA channel 0 runs alongside the processor, as the PLX part does: the
  * DMACSR0 store that starts it only latches the transfer, and a virtual-clock
- * timer moves it (the pattern of hw/dma/pl330.c). Progress follows virtual
- * time: each expiry moves what the bus could have moved since the last one,
- * at least RAD4_DMA_SLICE bytes and at most RAD4_DMA_CATCHUP, so a callback
- * the host ran late catches up instead of stretching the transfer, and a
- * callback's work stays bounded however long the chain (as hw/dma/i8257.c
- * bounds each run of its bottom half). Stretched transfers matter: the
- * shipped driver times a transfer out after about 0.4 s and its recovery
- * path then deadlocks a uniprocessor guest, which real hardware, finishing
- * a 200 KB chain in about 1.5 ms, never reaches.
+ * timer moves it (the pattern of hw/dma/pl330.c). Each expiry moves what
+ * the bus could have moved since the last one, at least RAD4_DMA_SLICE
+ * bytes and at most RAD4_DMA_CATCHUP, and runs again at once while still
+ * behind, so time the host spends elsewhere between callbacks is made up
+ * rather than added to the transfer. That is all the catch-up does: it
+ * cannot copy faster than the host can, and a loaded host copies far below
+ * the bus rate, so a transfer still takes longer in virtual time than on
+ * the bus.
+ *
+ * Stretched transfers matter. The shipped driver gives a transfer
+ * size / 20 + 400000 microseconds, size in bytes (about 0.41 s for a
+ * 200 KB chain), before it aborts it, and its abort path then deadlocks a
+ * uniprocessor guest: it polls for Done while holding the spinlock the
+ * completion interrupt needs (driver object listing offsets 0x9eb0-0x9f2c
+ * for the timeout, 0x9f4c-0xa0dc for the abort). Real hardware, finishing
+ * a 200 KB chain in about 1.5 ms, never gets there.
+ *
+ * RAD4_DMA_CATCHUP bounds one callback's work, as hw/dma/i8257.c bounds
+ * each run of its bottom half, at the cost of how long that callback holds
+ * the BQL. 256 KiB covers one of the driver's usual 40-row chains, about
+ * 200 KB, in one callback. In one paired run of IRIX 6.5.30's buffered X
+ * server on a host at load about 120 on 32 CPUs, against a 64 KiB cap,
+ * the 99th-percentile hold rose from 25 ms to 54 ms, but the slowest
+ * transfer fell from 324 ms to 221 ms and the closest any transfer came
+ * to the driver's timeout widened from 86 ms to 184 ms. A stall is
+ * preferable to a deadlocked guest.
  *
  * The rate is an approximation: the PCI 9060 Data Sheet (Version 1.2,
  * December 1995, page 1) gives "PCI Bus Master transfers up to 132
