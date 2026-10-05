@@ -2498,34 +2498,6 @@ const VMStateDescription vmstate_sgi_mgras_gl_clip_query = {
 };
 
 /*
- * The parser inside a glBitmap image, live or set aside with a context,
- * keeps its place in the payload fields the stream already carries. A
- * binary without the image's class would read its words as another
- * packet's, so this empty section is sent while one is under way, for
- * such a binary to refuse.
- */
-static bool mgras_gl_block_needed(void *opaque)
-{
-    SGIMgrasState *s = opaque;
-    bool block = s->cmd_token_class == SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
-
-    for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {
-        block |= s->gl_context[i].parser.cls == SGI_MGRAS_CMD_TOKEN_GL_BLOCK;
-    }
-    return block;
-}
-
-const VMStateDescription vmstate_sgi_mgras_gl_block = {
-    .name = TYPE_SGI_MGRAS "/gl-block",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mgras_gl_block_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-/*
  * The GE's pixel parameters and each context's pixel draw, sent once a
  * parameter has been loaded, a draw or load is under way, or a parser is
  * inside a load or a pixel row: a binary without them would read those
